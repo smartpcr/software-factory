@@ -59,6 +59,12 @@ public class ProductStoryRow
     public string Description { get; set; } = string.Empty;
 
     public int Points { get; set; }
+
+    /// <summary>
+    /// Phase 43 — JSON array of operator-uploaded reference documents.
+    /// Carried through to <see cref="StorySpawnRow.AttachmentsJson"/> on spawn.
+    /// </summary>
+    public string? AttachmentsJson { get; set; }
 }
 
 public class CardRow
@@ -2104,6 +2110,14 @@ public class StorySpawnRow
     /// re-fires the loop so a process kill mid-Resume self-heals.
     /// </summary>
     public string? ResumePendingJson { get; set; }
+
+    /// <summary>
+    /// Phase 43 — JSON array of operator-uploaded reference documents.
+    /// Each entry: <c>{ "id": "guid", "fileName": "spec.md", "storagePath": "relative/path", "mimeType": "text/markdown", "sizeBytes": 1234 }</c>.
+    /// Files live on disk under <c>E:\forge\attachments\{spawnId}\</c>.
+    /// Architect agents read these before producing plan docs.
+    /// </summary>
+    public string? AttachmentsJson { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

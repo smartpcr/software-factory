@@ -113,7 +113,8 @@ public static class StateEndpoints
             string productId,
             [FromBody] CreateStoryRequest req,
             ForgeDbContext db,
-            IHubContext<ForgeHub> hub) =>
+            IHubContext<ForgeHub> hub,
+            IConfiguration config) =>
         {
             var auth = ForgeUser.RequireWriter(ctx);
             if (auth is not null) return auth;
@@ -151,6 +152,17 @@ public static class StateEndpoints
                 Description = (req.Description ?? string.Empty).Trim(),
                 Points = points,
             };
+
+            // Phase 43 — resolve pre-uploaded attachments.
+            if (req.UploadIds is { Count: > 0 })
+            {
+                var attachments = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, config);
+                if (attachments.Count > 0)
+                {
+                    row.AttachmentsJson = System.Text.Json.JsonSerializer.Serialize(attachments);
+                }
+            }
+
             db.ProductStories.Add(row);
             await db.SaveChangesAsync();
 
@@ -165,7 +177,8 @@ public static class StateEndpoints
             string storyId,
             [FromBody] PatchStoryRequest req,
             ForgeDbContext db,
-            IHubContext<ForgeHub> hub) =>
+            IHubContext<ForgeHub> hub,
+            IConfiguration config) =>
         {
             var auth = ForgeUser.RequireWriter(ctx);
             if (auth is not null) return auth;
@@ -197,6 +210,40 @@ public static class StateEndpoints
                 if (points < 0)
                     return Results.Problem(title: "Points must be >= 0", statusCode: 400);
                 row.Points = points;
+            }
+
+            // Phase 43 — append newly uploaded attachments.
+            if (req.UploadIds is { Count: > 0 })
+            {
+                var newFiles = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, config);
+                if (newFiles.Count > 0)
+                {
+                    var existing = string.IsNullOrEmpty(row.AttachmentsJson)
+                        ? new List<System.Text.Json.JsonElement>()
+                        : System.Text.Json.JsonSerializer.Deserialize<List<System.Text.Json.JsonElement>>(row.AttachmentsJson) ?? new();
+                    var merged = new List<object>();
+                    foreach (var e in existing) merged.Add(e);
+                    merged.AddRange(newFiles);
+                    row.AttachmentsJson = System.Text.Json.JsonSerializer.Serialize(merged);
+                }
+            }
+
+            // Phase 43 — remove attachments by file name.
+            if (req.RemoveFileNames is { Count: > 0 } && !string.IsNullOrEmpty(row.AttachmentsJson))
+            {
+                var removeSet = new HashSet<string>(req.RemoveFileNames, StringComparer.OrdinalIgnoreCase);
+                var current = System.Text.Json.JsonSerializer.Deserialize<List<System.Text.Json.JsonElement>>(row.AttachmentsJson) ?? new();
+                var filtered = current.Where(e =>
+                {
+                    if (e.TryGetProperty("fileName", out var fn) || e.TryGetProperty("FileName", out fn))
+                    {
+                        return !removeSet.Contains(fn.GetString() ?? string.Empty);
+                    }
+                    return true;
+                }).ToList();
+                row.AttachmentsJson = filtered.Count > 0
+                    ? System.Text.Json.JsonSerializer.Serialize(filtered)
+                    : null;
             }
 
             await db.SaveChangesAsync();
@@ -239,17 +286,24 @@ public static class StateEndpoints
         string? Id = null,
         string? Status = null,
         string? Description = null,
-        int? Points = null);
+        int? Points = null,
+        IReadOnlyList<string>? UploadIds = null);
 
     public sealed record PatchStoryRequest(
         string? Name = null,
         string? Status = null,
         string? Description = null,
-        int? Points = null);
+        int? Points = null,
+        IReadOnlyList<string>? UploadIds = null,
+        /// <summary>Phase 43 — file names to remove from AttachmentsJson.</summary>
+        IReadOnlyList<string>? RemoveFileNames = null);
 
     private static ProductStory MapStory(ProductStoryRow r) => new(
         r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"),
-        r.Description ?? string.Empty, r.Points);
+        r.Description ?? string.Empty, r.Points,
+        string.IsNullOrEmpty(r.AttachmentsJson)
+            ? null
+            : System.Text.Json.JsonSerializer.Deserialize<object[]>(r.AttachmentsJson));
 
     private static Epic MapEpic(EpicRow r) => new(
         r.Id, r.Name, r.Status, r.Progress,

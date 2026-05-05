@@ -527,15 +527,45 @@ public sealed class DeliverableLoop : IDeliverableLoop
     {
         if (chain.Count == 0) return string.Empty;
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Prior iterations on this work item ({chain.Count} attempt{(chain.Count == 1 ? string.Empty : "s")}):");
+
+        // Show the LATEST iteration's feedback prominently at the top.
+        var latest = chain[chain.Count - 1];
+        sb.AppendLine($"## LATEST evaluator feedback (iteration {latest.Iter}, score {latest.Score}, verdict: {latest.Verdict})");
         sb.AppendLine();
-        foreach (var (i, s, v, n) in chain)
+        sb.AppendLine(string.IsNullOrWhiteSpace(latest.Notes) ? "(no notes)" : latest.Notes);
+        sb.AppendLine();
+
+        // If there's more than one prior iteration, show a condensed summary
+        // of older ones so the generator sees the pattern without drowning
+        // in repetitive text.
+        if (chain.Count > 1)
         {
-            sb.AppendLine($"### Iteration {i} — score {s} ({v})");
-            sb.AppendLine(string.IsNullOrWhiteSpace(n) ? "(no notes)" : n);
+            sb.AppendLine("---");
+            sb.AppendLine();
+            sb.AppendLine($"### Iteration history ({chain.Count} total attempts)");
+            sb.AppendLine();
+
+            // Show second-most-recent in full (useful for diff vs latest),
+            // older ones condensed to one line.
+            for (var idx = 0; idx < chain.Count - 1; idx++)
+            {
+                var (i, s, v, n) = chain[idx];
+                if (idx == chain.Count - 2)
+                {
+                    sb.AppendLine($"**Iteration {i}** — score {s} ({v})");
+                    sb.AppendLine(string.IsNullOrWhiteSpace(n) ? "(no notes)" : n);
+                }
+                else
+                {
+                    var oneLiner = string.IsNullOrWhiteSpace(n) ? "(no notes)" : n.Split('\n')[0];
+                    if (oneLiner.Length > 120) oneLiner = oneLiner[..117] + "...";
+                    sb.AppendLine($"- Iter {i}: score {s} ({v}) — {oneLiner}");
+                }
+            }
             sb.AppendLine();
         }
-        sb.AppendLine("Read this chain carefully. If you see the same critique repeated across multiple iterations, the prior approach did not work and a different angle is required.");
+
+        sb.AppendLine("⚠ If you see the SAME critique repeated across iterations, your prior approach did NOT work. You MUST try a fundamentally different strategy — do not repeat the same edit.");
         return sb.ToString();
     }
 }

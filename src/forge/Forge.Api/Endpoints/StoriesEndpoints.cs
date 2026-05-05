@@ -79,17 +79,21 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/accept", AcceptArtifact).WithName("AcceptStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/restart", RestartArtifact).WithName("RestartStoryArtifact");
         // Phase 42 — manual force-reconcile of workstreams + workitems against the current
         // implementation-plan.md. The other triggers (per-iter commit, Resume/Restart of the
         // implementation-plan artifact, scheduler tick) cover automatic cases; this one is for
         // operator-driven recovery after a manual edit on the plan branch.
         grp.MapPost("/{storyId}/spawn/reconcile", Reconcile).WithName("ReconcileStorySpawn");
+        // Phase 43 — upload reference documents before spawning.
+        grp.MapPost("/attachments/upload", UploadAttachments).WithName("UploadStoryAttachments")
+            .DisableAntiforgery();
 
         return app;
     }
 
-    public sealed record SpawnRequest(string? RepoId);
+    public sealed record SpawnRequest(string? RepoId, IReadOnlyList<string>? UploadIds = null);
 
     public sealed record DecomposeRequest(IReadOnlyList<DecomposeWorkstream> Workstreams);
 
@@ -110,7 +114,8 @@ public static class StoriesEndpoints
         [FromBody] SpawnRequest? req,
         ForgeDbContext db,
         IHubContext<ForgeHub> hub,
-        StorySpawnOrchestrator orchestrator)
+        StorySpawnOrchestrator orchestrator,
+        IConfiguration config)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -141,11 +146,13 @@ public static class StoriesEndpoints
         string? defaultRepoId = null;
 
         var ps = await db.ProductStories.AsNoTracking().FirstOrDefaultAsync(s => s.Id == storyId);
+        string? storyAttachmentsJson = null;
         if (ps is not null)
         {
             title = ps.Name;
             description = ps.Description ?? string.Empty;
             points = ps.Points;
+            storyAttachmentsJson = ps.AttachmentsJson;
             // ProductStoryRow is product-scoped, not repo-scoped; caller must
             // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
         }
@@ -189,6 +196,21 @@ public static class StoriesEndpoints
             CreatedAt = now,
             UpdatedAt = now,
         };
+
+        // Phase 43 — link pre-uploaded attachments to the spawn.
+        // Priority: explicit uploadIds from the spawn request > attachments from the ProductStory.
+        if (req?.UploadIds is { Count: > 0 })
+        {
+            var attachments = ResolveUploadedFiles(req.UploadIds, config);
+            if (attachments.Count > 0)
+            {
+                spawn.AttachmentsJson = System.Text.Json.JsonSerializer.Serialize(attachments);
+            }
+        }
+        else if (!string.IsNullOrEmpty(storyAttachmentsJson))
+        {
+            spawn.AttachmentsJson = storyAttachmentsJson;
+        }
         db.StorySpawns.Add(spawn);
         await db.SaveChangesAsync();
 
@@ -223,9 +245,15 @@ public static class StoriesEndpoints
         return Results.Created($"/api/stories/{storyId}/spawn", ToContract(spawn));
     }
 
-    private static async Task<IResult> ListSpawns(ForgeDbContext db, [FromQuery] string? phase)
+    private static async Task<IResult> ListSpawns(HttpContext ctx, ForgeDbContext db, [FromQuery] string? phase)
     {
+        var scope = await ProductScope.ResolveAsync(ctx, db);
         var q = db.StorySpawns.AsNoTracking().AsQueryable();
+        if (!scope.IsAll)
+        {
+            var ids = scope.RepoIds!;
+            q = q.Where(s => s.RepoId != null && ids.Contains(s.RepoId));
+        }
         if (!string.IsNullOrEmpty(phase) && !string.Equals(phase, "all", StringComparison.OrdinalIgnoreCase))
         {
             q = q.Where(s => s.Phase == phase);
@@ -728,6 +756,178 @@ public static class StoriesEndpoints
             storyId,
             key,
             status = "cancelled",
+            queueRowsCancelled = queueRows.Count,
+            invocationsCancelled,
+        });
+    }
+
+    /// <summary>
+    /// Manually accept a plan-doc artifact despite its score being below the
+    /// passing threshold (90). The operator overrides the evaluator verdict:
+    /// the latest deliverable is flipped to <c>pass</c>, any in-flight
+    /// invocations and queued rows are cancelled, and the doc transitions to
+    /// the <c>awaiting-pr-review</c> / <c>completed</c> lifecycle stage.
+    /// After acceptance, the plan branch is pushed and merged to main via
+    /// a PR (opening a new one if the original plan PR was already merged).
+    /// Iterations and transcript history are preserved.
+    /// </summary>
+    private static async Task<IResult> AcceptArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub,
+        IStoryGitOps git,
+        IStoryProviderOps provider)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // Must have at least one deliverable to accept.
+        var lastDel = (await db.Deliverables
+            .Where(d => d.WorkItemId == workItemId)
+            .ToListAsync())
+            .OrderByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        if (lastDel is null)
+            return Results.Problem(title: "No iterations to accept", statusCode: 400);
+
+        var alreadyPassed = string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+        var previousVerdict = lastDel.Verdict;
+        var previousScore = lastDel.Score;
+
+        // (1) Override verdict to pass (no-op when already passed — the
+        // caller is re-triggering to get the PR merge that was missed).
+        if (!alreadyPassed)
+            lastDel.Verdict = "pass";
+
+        // (2) Kill in-flight invocations so the loop doesn't keep running.
+        var invocationsCancelled = 0;
+        try
+        {
+            invocationsCancelled = await runner.CancelByTaskAsync(workItemId, ctx.RequestAborted);
+        }
+        catch { /* best effort */ }
+
+        // (3) Cancel any queued/active TaskQueue rows.
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == workItemId && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (4) Reset WorkItem ExecutionStatus.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId);
+        if (wi is not null && wi.ExecutionStatus is "live" or "queued")
+        {
+            wi.ExecutionStatus = "idle";
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (5) Drop the resume-pending marker.
+        if (RemoveResumePending(spawn, key))
+        {
+            spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-accepted", storyId, key });
+
+        // (6) Fire-and-forget: push the plan branch and merge to main via
+        // a PR. Per-iteration commits are local-only (CommitPathInWorktree
+        // doesn't push), so we push the branch first, then open/merge a PR.
+        // PushBranchAsync stages any uncommitted changes and pushes without
+        // calling EnsureWorktreeAsync (which can reset the local branch).
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        var capturedStoryId = storyId;
+        var capturedSpawnId = spawn.Id;
+        var capturedRepoId = spawn.RepoId;
+        var capturedPlanBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var capturedPlanPrId = spawn.PlanPrId;
+        var capturedStoryTitle = spawn.StoryTitle ?? storyId;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var scopeDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var scopeHub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+
+                RepoRow? repo = null;
+                if (!string.IsNullOrEmpty(capturedRepoId))
+                    repo = await scopeDb.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == capturedRepoId);
+
+                // Push the plan branch — stages any uncommitted changes
+                // from a cancelled agent and pushes all local-only
+                // per-iteration commits to origin.
+                await git.PushBranchAsync(repo, capturedPlanBranch, CancellationToken.None);
+
+                // Determine if we need a new PR or can merge the existing one.
+                string? prId = capturedPlanPrId;
+                var needNewPr = true;
+                if (!string.IsNullOrEmpty(prId))
+                {
+                    var existingPr = await scopeDb.Prs.FirstOrDefaultAsync(p => p.Id == prId);
+                    needNewPr = existingPr is null
+                        || string.Equals(existingPr.Col, "merged", StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (needNewPr)
+                {
+                    prId = await provider.OpenPrAsync(new StoryPrRequest(
+                        Branch: capturedPlanBranch,
+                        BaseBranch: "main",
+                        Title: $"[plan-update] {capturedStoryTitle}",
+                        Body: $"Accepted plan artifact `{fileName}` for story `{StoryPaths.Safe(capturedStoryId)}` (score {previousScore}, operator override).",
+                        Repo: repo,
+                        WorkItemId: capturedStoryId,
+                        Workstream: null,
+                        Epic: capturedStoryId), CancellationToken.None);
+
+                    var spawnRow = await scopeDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == capturedSpawnId);
+                    if (spawnRow is not null)
+                    {
+                        spawnRow.PlanPrId = prId;
+                        spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                        await scopeDb.SaveChangesAsync();
+                    }
+                }
+
+                // Auto-approve + merge.
+                try { await provider.ApprovePrAsync(prId!, "rev-default", CancellationToken.None); }
+                catch { /* best effort — may already be approved */ }
+
+                await provider.MergePrAsync(prId!, CancellationToken.None);
+                await git.MergeAsync(repo, capturedPlanBranch, "main", CancellationToken.None);
+
+                if (scopeHub is not null)
+                {
+                    await scopeHub.Clients.All.SendAsync("story-spawn.changed",
+                        new { kind = "artifact-merged", storyId = capturedStoryId, key });
+                }
+            }
+            catch { /* orchestrator-grade best-effort; errors surface via LastError on the spawn */ }
+        });
+
+        return Results.Ok(new
+        {
+            storyId,
+            key,
+            status = "accepted",
+            previousVerdict,
+            previousScore,
             queueRowsCancelled = queueRows.Count,
             invocationsCancelled,
         });
@@ -1697,6 +1897,10 @@ public static class StoriesEndpoints
         // explicit POST /api/stories/{storyId}/spawn/retry from the UI.
         lastError = row.LastError,
         lastErrorAt = row.LastErrorAt,
+        // Phase 43 — operator-uploaded reference documents.
+        attachments = string.IsNullOrEmpty(row.AttachmentsJson)
+            ? (object)Array.Empty<object>()
+            : System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement[]>(row.AttachmentsJson)!,
     };
 
     private static string SlugFor(string title)
@@ -1742,6 +1946,127 @@ public static class StoriesEndpoints
         visited[node] = 2;
         return false;
     }
+
+    // ── Phase 43 — story attachments ─────────────────────────────────────
+
+    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".md", ".txt", ".json", ".csv", ".yaml", ".yml", ".toml", ".xml", ".log", ".ini", ".cfg",
+    };
+
+    private const int MaxFiles = 10;
+    private const long MaxFileSizeBytes = 5 * 1024 * 1024; // 5 MB
+
+    private static async Task<IResult> UploadAttachments(
+        HttpContext ctx,
+        IConfiguration config)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (!ctx.Request.HasFormContentType)
+        {
+            return Results.Problem(title: "Expected multipart/form-data", statusCode: 400);
+        }
+
+        var form = await ctx.Request.ReadFormAsync();
+        var files = form.Files;
+        if (files.Count == 0) return Results.Problem(title: "No files uploaded", statusCode: 400);
+        if (files.Count > MaxFiles) return Results.Problem(title: $"Max {MaxFiles} files allowed", statusCode: 400);
+
+        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var uploadId = Guid.NewGuid().ToString("N")[..12];
+        var uploadDir = Path.Combine(stateDir, "attachments", uploadId);
+        Directory.CreateDirectory(uploadDir);
+
+        var result = new List<object>();
+        foreach (var file in files)
+        {
+            var ext = Path.GetExtension(file.FileName);
+            if (!AllowedExtensions.Contains(ext))
+            {
+                return Results.Problem(
+                    title: $"File type '{ext}' not allowed. Allowed: {string.Join(", ", AllowedExtensions)}",
+                    statusCode: 400);
+            }
+            if (file.Length > MaxFileSizeBytes)
+            {
+                return Results.Problem(title: $"File '{file.FileName}' exceeds 5 MB limit", statusCode: 400);
+            }
+
+            var safeFileName = SanitizeFileName(file.FileName);
+            var diskPath = Path.Combine(uploadDir, safeFileName);
+            await using var stream = new FileStream(diskPath, FileMode.Create);
+            await file.CopyToAsync(stream);
+
+            result.Add(new
+            {
+                id = uploadId,
+                fileName = file.FileName,
+                storagePath = Path.Combine("attachments", uploadId, safeFileName).Replace('\\', '/'),
+                mimeType = file.ContentType ?? "application/octet-stream",
+                sizeBytes = file.Length,
+            });
+        }
+
+        return Results.Ok(new { uploadId, files = result });
+    }
+
+    internal static List<object> ResolveUploadedFiles(
+        IReadOnlyList<string> uploadIds, IConfiguration config)
+    {
+        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var attachments = new List<object>();
+
+        foreach (var uploadId in uploadIds)
+        {
+            var uploadDir = Path.Combine(stateDir, "attachments", uploadId);
+            if (!Directory.Exists(uploadDir)) continue;
+
+            foreach (var filePath in Directory.EnumerateFiles(uploadDir))
+            {
+                var fi = new FileInfo(filePath);
+                attachments.Add(new
+                {
+                    id = uploadId,
+                    fileName = fi.Name,
+                    storagePath = Path.Combine("attachments", uploadId, fi.Name).Replace('\\', '/'),
+                    mimeType = GuessMimeType(fi.Extension),
+                    sizeBytes = fi.Length,
+                });
+            }
+        }
+
+        return attachments;
+    }
+
+    private static string SanitizeFileName(string fileName)
+    {
+        var name = Path.GetFileNameWithoutExtension(fileName);
+        var ext = Path.GetExtension(fileName);
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+        }
+        var safe = sb.ToString().Trim('-');
+        if (string.IsNullOrEmpty(safe)) safe = "file";
+        return safe + ext;
+    }
+
+    private static string GuessMimeType(string ext) => ext.ToLowerInvariant() switch
+    {
+        ".md" => "text/markdown",
+        ".txt" => "text/plain",
+        ".json" => "application/json",
+        ".csv" => "text/csv",
+        ".yaml" or ".yml" => "text/yaml",
+        ".toml" => "text/toml",
+        ".xml" => "application/xml",
+        _ => "application/octet-stream",
+    };
 }
 
 /// <summary>

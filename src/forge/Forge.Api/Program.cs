@@ -412,6 +412,9 @@ using (var scope = app.Services.CreateScope())
     // Phase 38 — backfill WorkItemRow rows for legacy plan-doc and
     // workstream ids so DeliverableLoop.PointsToMaxIter has a real
     // wi.Points to read from.
+    // Phase 43 must run first — it adds AttachmentsJson to story_spawns
+    // which Phase 38's EF query reads via the mapped entity.
+    await Phase43Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
@@ -423,6 +426,8 @@ using (var scope = app.Services.CreateScope())
     // Resume kicked off via /spawn/artifacts/{key}/resume survives a
     // process restart (StoryResumeRecoveryService re-fires unfinished keys).
     await Phase41Migration.ApplyAsync(db);
+    // Phase 43 — AttachmentsJson on story_spawns for operator-uploaded reference docs.
+    await Phase43Migration.ApplyAsync(db);
     // Phase 42 already ran at the top of this scope (must precede the EF
     // queries in Phase 38 / Phase 40 that select all WorkItem / Workstream
     // columns including the new PlanAnchor / PlanContentHash).

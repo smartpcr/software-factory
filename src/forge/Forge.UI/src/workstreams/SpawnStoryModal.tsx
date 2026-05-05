@@ -46,6 +46,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
   const [repoId, setRepoId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadIds, setUploadIds] = useState<string[]>([]);
 
   // Load stories + repos when the modal opens.
   useEffect(() => {
@@ -56,6 +58,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setSelected(null);
     setRepoId(null);
     setErr(null);
+    setFiles([]);
+    setUploadIds([]);
 
     let cancelled = false;
     setLoading(true);
@@ -106,7 +110,14 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      await forgeApi.spawnStory(selected.id, repoId ?? null);
+      // Phase 43 — upload files first, then pass uploadIds to spawn.
+      let ids = uploadIds;
+      if (files.length > 0 && ids.length === 0) {
+        const result = await forgeApi.uploadStoryAttachments(files);
+        ids = [result.uploadId];
+        setUploadIds(ids);
+      }
+      await forgeApi.spawnStory(selected.id, repoId ?? null, ids.length > 0 ? ids : undefined);
       setBusy(false);
       onSpawned?.(selected.id);
       onClose();
@@ -226,6 +237,28 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                   <option key={r.id} value={r.id}>{r.displayName ?? r.id}</option>
                 ))}
               </select>
+            </Field>
+            <Field label="Reference documents (optional)">
+              <div style={{ display: 'grid', gap: 6 }}>
+                <input
+                  type="file"
+                  multiple
+                  accept=".md,.txt,.json,.csv,.yaml,.yml,.toml,.xml"
+                  onChange={(e) => {
+                    const picked = e.target.files ? Array.from(e.target.files) : [];
+                    setFiles(picked);
+                    setUploadIds([]);
+                  }}
+                  style={{ fontSize: 11 }}
+                />
+                {files.length > 0 && (
+                  <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+                    {files.length} file{files.length > 1 ? 's' : ''} selected
+                    ({(files.reduce((s, f) => s + f.size, 0) / 1024).toFixed(1)} KB)
+                    — uploaded before spawn so architect agents can read them.
+                  </div>
+                )}
+              </div>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
               Branches and worktrees are derived automatically. The architect crew starts on

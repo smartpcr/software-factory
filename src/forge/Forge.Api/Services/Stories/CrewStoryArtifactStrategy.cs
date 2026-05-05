@@ -143,6 +143,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
 
+        // Phase 43 — copy operator-uploaded attachments into the worktree
+        // so architect agents can read them with their file tools.
+        var attachmentPaths = await CopyAttachmentsToWorktreeAsync(spawn, worktreePath, ct);
+
         // ── Assign different generator agents per doc (round-robin) ────
         // Load all available architect crew agents so each doc gets a
         // distinct generator. This improves diversity — four agents writing
@@ -261,6 +265,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
 
+        // Phase 43 — build attachment prompt section if the story has uploaded reference docs.
+        var attachmentPromptSection = BuildAttachmentPromptSection(spawn);
+
         // Phase 42 — sibling docs live at their real repo paths in the
         // shared worktree (no copy-into-siblings/ trick anymore). Some may
         // not exist yet on iter 1 of parallel execution; the agent reads
@@ -299,7 +306,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 module structure when describing what to build.
             A plan written in isolation drifts from the codebase. A plan
             written WITH the codebase under your tools stays anchored.
-
+            {{attachmentPromptSection}}
             ## Sibling plan documents
             The other plan docs in this story are written in PARALLEL by
             sibling architects. They live at:
@@ -533,6 +540,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+
+        // Phase 43 — copy operator-uploaded attachments into the worktree.
+        await CopyAttachmentsToWorktreeAsync(spawn, worktreePath, ct);
 
         await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume: true,
@@ -1238,9 +1248,39 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
         {
-            var iterPrompt = iter == 1
-                ? generatorPrompt
-                : $"{generatorPrompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+            string iterPrompt;
+            if (iter == 1 || string.IsNullOrWhiteSpace(evalNotes))
+            {
+                iterPrompt = generatorPrompt;
+            }
+            else
+            {
+                // Place evaluator feedback BEFORE the original prompt so it
+                // gets maximum attention weight. The generator must address
+                // every critique before re-reading the original brief.
+                iterPrompt = $"""
+                    ╔══════════════════════════════════════════════════════════╗
+                    ║  EVALUATOR FEEDBACK — YOU MUST ADDRESS EVERY ITEM BELOW ║
+                    ╚══════════════════════════════════════════════════════════╝
+
+                    This is iteration {iter}. Your prior attempts scored below the
+                    pass threshold. The evaluator's feedback below tells you EXACTLY
+                    what to fix. Do NOT re-read the original brief and start from
+                    scratch — read the feedback, open the file, and make TARGETED
+                    edits that address each critique. If the same critique appears
+                    in multiple iterations, your prior fix did not work — try a
+                    fundamentally different approach.
+
+                    {evalNotes}
+
+                    ════════════════════════════════════════════════════════════
+                    Now here is the original task brief (for reference only —
+                    the feedback above takes priority):
+                    ════════════════════════════════════════════════════════════
+
+                    {generatorPrompt}
+                    """;
+            }
 
             // Phase 41 — snapshot the protected file before invoking the
             // generator so an agent that deletes it mid-turn (observed:
@@ -1691,4 +1731,104 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .FirstOrDefaultAsync(ct);
         return pts is > 0 ? pts.Value : Math.Max(1, fallback);
     }
+
+    /// <summary>
+    /// Phase 43 — copies operator-uploaded attachments from the canonical
+    /// storage dir (<c>E:\forge\attachments\{uploadId}\</c>) into the git
+    /// worktree at <c>.forge-attachments/</c> so architect agents can read
+    /// them with their file tools. The target dir is rebuilt from scratch on
+    /// each call so replaced/deleted files stay current.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> CopyAttachmentsToWorktreeAsync(
+        StorySpawnRow spawn, string worktreePath, CancellationToken ct)
+    {
+        var paths = new List<string>();
+        if (string.IsNullOrEmpty(spawn.AttachmentsJson)) return paths;
+
+        List<AttachmentEntry>? entries;
+        try { entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentEntry>>(spawn.AttachmentsJson, CamelCase); }
+        catch { return paths; }
+        if (entries is null || entries.Count == 0) return paths;
+
+        var targetDir = Path.Combine(worktreePath, ".forge-attachments");
+        if (Directory.Exists(targetDir))
+        {
+            try { Directory.Delete(targetDir, recursive: true); }
+            catch { /* best-effort */ }
+        }
+        Directory.CreateDirectory(targetDir);
+
+        // Also ensure .gitignore contains .forge-attachments/
+        var gitignorePath = Path.Combine(worktreePath, ".gitignore");
+        var gitignoreEntry = ".forge-attachments/";
+        try
+        {
+            var existing = File.Exists(gitignorePath) ? await File.ReadAllTextAsync(gitignorePath, ct) : string.Empty;
+            if (!existing.Contains(gitignoreEntry))
+            {
+                await File.AppendAllTextAsync(gitignorePath, $"\n{gitignoreEntry}\n", ct);
+            }
+        }
+        catch { /* best-effort */ }
+
+        var dbDir = Path.GetDirectoryName(
+            System.Environment.GetEnvironmentVariable("FORGE_DB_PATH") ?? @"E:\forge\forge.db") ?? @"E:\forge";
+
+        foreach (var entry in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            var sourcePath = Path.Combine(dbDir, entry.StoragePath.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(sourcePath)) continue;
+
+            var destPath = Path.Combine(targetDir, entry.FileName);
+            try
+            {
+                File.Copy(sourcePath, destPath, overwrite: true);
+                paths.Add($".forge-attachments/{entry.FileName}");
+            }
+            catch { /* best-effort — agent can still work without this file */ }
+        }
+
+        return paths;
+    }
+
+    /// <summary>
+    /// Phase 43 — builds the prompt section that tells the architect agent
+    /// about available reference documents. Returns empty string when no
+    /// attachments exist.
+    /// </summary>
+    private static string BuildAttachmentPromptSection(StorySpawnRow spawn)
+    {
+        if (string.IsNullOrEmpty(spawn.AttachmentsJson)) return string.Empty;
+
+        List<AttachmentEntry>? entries;
+        try { entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentEntry>>(spawn.AttachmentsJson, CamelCase); }
+        catch { return string.Empty; }
+        if (entries is null || entries.Count == 0) return string.Empty;
+
+        var lines = entries.Select(e => $"  - `.forge-attachments/{e.FileName}` ({e.SizeBytes:N0} bytes)");
+        return $"""
+
+            ## Story attachments — IMPORTANT
+            The operator uploaded reference documents for this story. Read ALL
+            of them FIRST before writing your artifact — they contain critical
+            context, requirements, and design constraints that your output must
+            reflect. Do NOT ignore them or treat them as optional.
+            Paths (relative to your working directory):
+            {string.Join("\n", lines)}
+
+            """;
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions CamelCase = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    private sealed record AttachmentEntry(
+        string Id,
+        string FileName,
+        string StoragePath,
+        string MimeType,
+        long SizeBytes);
 }

@@ -3,6 +3,9 @@ import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { useProductsStore } from '@/state/useProductsStore';
 
+const ACCEPT = '.md,.txt,.json,.csv,.yaml,.yml,.toml,.xml';
+const ACCEPT_SET = new Set(['md','txt','json','csv','yaml','yml','toml','xml']);
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -14,9 +17,10 @@ interface Props {
 export function NewStoryModal({ open, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [points, setPoints] = useState<string>('0');
+  const [points, setPoints] = useState<string>('5');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const nameRef = useRef<HTMLInputElement | null>(null);
   const activeProductId = useProductsStore((s) => s.activeProductId);
 
@@ -24,9 +28,10 @@ export function NewStoryModal({ open, onClose }: Props) {
     if (!open) return;
     setName('');
     setDescription('');
-    setPoints('0');
+    setPoints('5');
     setBusy(false);
     setErr(null);
+    setFiles([]);
     const t = window.requestAnimationFrame(() => nameRef.current?.focus());
     return () => window.cancelAnimationFrame(t);
   }, [open]);
@@ -47,10 +52,17 @@ export function NewStoryModal({ open, onClose }: Props) {
     setBusy(true);
     setErr(null);
     try {
+      // Phase 43 — upload files first, then pass uploadIds to create.
+      let uploadIds: string[] | undefined;
+      if (files.length > 0) {
+        const result = await forgeApi.uploadStoryAttachments(files);
+        uploadIds = [result.uploadId];
+      }
       const story = await forgeApi.createProductStory(activeProductId, {
         name: cleanName,
         description: description.trim(),
         points: ptsNum,
+        uploadIds,
       });
       useToastStore.getState().show(`Story "${story.name}" created`, 'success');
       onClose();
@@ -136,6 +148,11 @@ export function NewStoryModal({ open, onClose }: Props) {
             />
           </label>
 
+          <div style={{ display: 'grid', gap: 5 }}>
+            <span style={labelStyle}>Reference documents (optional)</span>
+            <FileDropZone files={files} onChange={setFiles} disabled={busy} />
+          </div>
+
           {err && (
             <div role="alert" style={errStyle}>
               <span style={{ marginRight: 6 }}>⚠</span>
@@ -195,3 +212,174 @@ const errStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-sm)',
   padding: '7px 10px',
 };
+
+function fileIcon(name: string) {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'json': return '{ }';
+    case 'csv':  return '⊞';
+    case 'yaml': case 'yml': return '⁞';
+    case 'xml':  return '⟨/⟩';
+    default:     return '¶';
+  }
+}
+
+function FileDropZone({ files, onChange, disabled }: { files: File[]; onChange: (f: File[]) => void; disabled: boolean }) {
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function addFiles(incoming: File[]) {
+    const valid = incoming.filter(f => {
+      const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+      return ACCEPT_SET.has(ext);
+    });
+    if (valid.length < incoming.length) {
+      useToastStore.getState().show('Some files skipped — unsupported type', 'danger');
+    }
+    if (valid.length > 0) onChange([...files, ...valid]);
+  }
+
+  function remove(index: number) {
+    onChange(files.filter((_, i) => i !== index));
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      {files.length > 0 && (
+        <div style={{ display: 'grid', gap: 2 }}>
+          {files.map((f, i) => (
+            <div
+              key={`${f.name}-${i}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '5px 8px',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              <span style={{
+                width: 20, height: 20,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--accent-bg)',
+                color: 'var(--accent)',
+                fontSize: 8,
+                fontFamily: 'var(--font-mono)',
+                fontWeight: 700,
+                flexShrink: 0,
+              }}>
+                {fileIcon(f.name)}
+              </span>
+              <span style={{
+                flex: 1, minWidth: 0,
+                fontSize: 11,
+                color: 'var(--text-primary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {f.name}
+              </span>
+              <span style={{
+                fontSize: 9,
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--text-tertiary)',
+                flexShrink: 0,
+              }}>
+                {f.size < 1024 ? `${f.size} B` : `${(f.size / 1024).toFixed(1)} KB`}
+              </span>
+              <button
+                type="button"
+                title="Remove"
+                onClick={() => remove(i)}
+                disabled={disabled}
+                style={{
+                  width: 18, height: 18,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'transparent',
+                  border: '1px solid transparent',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  padding: 0,
+                  flexShrink: 0,
+                  transition: 'all 120ms',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--danger)';
+                  e.currentTarget.style.borderColor = 'var(--danger-border)';
+                  e.currentTarget.style.background = 'var(--danger-bg)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--text-tertiary)';
+                  e.currentTarget.style.borderColor = 'transparent';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div
+        onDragOver={(e) => { e.preventDefault(); if (!disabled) setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (!disabled && e.dataTransfer.files.length > 0) {
+            addFiles(Array.from(e.dataTransfer.files));
+          }
+        }}
+        onClick={() => { if (!disabled) inputRef.current?.click(); }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 3,
+          padding: files.length > 0 ? '8px 12px' : '14px 12px',
+          border: `1.5px dashed ${dragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
+          borderRadius: 'var(--radius-md)',
+          background: dragOver ? 'var(--accent-bg)' : 'transparent',
+          cursor: disabled ? 'default' : 'pointer',
+          transition: 'all 150ms ease',
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          onChange={(e) => {
+            if (e.target.files) addFiles(Array.from(e.target.files));
+            e.target.value = '';
+          }}
+          disabled={disabled}
+          style={{ display: 'none' }}
+        />
+        <span style={{
+          fontSize: 11,
+          color: dragOver ? 'var(--accent)' : 'var(--text-secondary)',
+          fontWeight: 500,
+          transition: 'color 150ms',
+        }}>
+          {dragOver ? 'Drop files here' : 'Drop files or click to browse'}
+        </span>
+        <span style={{
+          fontSize: 9,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-tertiary)',
+          letterSpacing: 0.3,
+        }}>
+          .md · .txt · .json · .csv · .yaml · .xml
+        </span>
+      </div>
+    </div>
+  );
+}

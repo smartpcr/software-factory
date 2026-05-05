@@ -7,6 +7,7 @@ import { useBoardStore } from '@/state/useBoardStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { sampleState } from '@/sampleData';
+import { useProductsStore } from '@/state/useProductsStore';
 import { StatsStrip } from '@/workstreams/StatsStrip';
 import { WorkstreamCard } from '@/workstreams/WorkstreamCard';
 import { NewWorkstreamCta } from '@/workstreams/NewWorkstreamCta';
@@ -60,7 +61,9 @@ export function WorkstreamsView() {
   const [teamFilter, setTeamFilter] = useState('');
   const [storyFilter, setStoryFilter] = useState('');
 
-  useEffect(() => { void load(); }, [load]);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+
+  useEffect(() => { void load(); }, [load, activeProductId]);
 
   // Seed the Spawned-stories panel from the server so it survives a page
   // reload (the array used to be local-only and emptied on refresh).
@@ -79,7 +82,7 @@ export function WorkstreamsView() {
     void loadSpawns();
     const interval = setInterval(() => { void loadSpawns(); }, 15_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [activeProductId]);
 
   // Re-fetch workstreams + work items every 15s so the live badge picks up
   // newly auto-linked cards from the queue worker.

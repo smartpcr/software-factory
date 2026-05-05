@@ -71,13 +71,14 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [resuming, setResuming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
   const isLive = status === 'live';
   const isCompleted = status === 'completed';
   const hasIterations = rows.length > 0;
   const canResume = !isLive && !isCompleted && hasIterations;
-  const busy = resuming || cancelling || restarting;
+  const busy = resuming || cancelling || restarting || accepting;
 
   async function handleResume() {
     setResuming(true);
@@ -120,6 +121,23 @@ export function DocConversationPane({ storyId, docId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Restart failed', 'danger');
     } finally { setRestarting(false); }
+  }
+  async function handleAccept() {
+    const ok = await useConfirmStore.getState().ask({
+      title: `Accept ${key}.md as-is?`,
+      body: 'This overrides the evaluator verdict and marks the document as passed at its current score. The gen↔eval loop will stop.',
+      tone: 'warn',
+      confirmLabel: '✓ Accept',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    setAccepting(true);
+    try {
+      const r = await forgeApi.acceptStoryArtifact(storyId, key);
+      showToast(`Accepted ${key}.md (was ${r.previousVerdict} @ ${r.previousScore}).`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Accept failed', 'danger');
+    } finally { setAccepting(false); }
   }
 
   useEffect(() => {
@@ -242,6 +260,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
           onClick={() => void handleCancel()}
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-red, #ff6b80)' }}>
           {cancelling ? '⏳…' : '✕ CANCEL'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={!hasIterations || busy}
+          title={!hasIterations ? 'No iterations.' : 'Accept the doc at its current score and merge to main.'}
+          onClick={() => void handleAccept()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-green, #4ade80)' }}>
+          {accepting ? '⏳…' : '✓ ACCEPT'}
         </button>
         <button type="button" className="doc-conv-resume-btn" disabled={busy}
           title="Wipe iterations and restart from iter 1."

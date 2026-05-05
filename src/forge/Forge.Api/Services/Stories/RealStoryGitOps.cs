@@ -225,6 +225,43 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
     }
 
+    public async Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        if (!Directory.Exists(wtPath))
+        {
+            this.logger?.LogInformation("PushBranchAsync: worktree '{Path}' does not exist; skipping.", wtPath);
+            return;
+        }
+
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            // Stage + commit any uncommitted changes so they're included
+            // in the push (e.g. a generator interrupted mid-write).
+            await this.RunGitCaptureAsync(wtPath, ct, "add", "-A");
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain");
+            if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
+            {
+                await this.RunGitCaptureAsync(wtPath, ct,
+                    "-c", "user.email=forge-architect@local",
+                    "-c", "user.name=Forge Architect",
+                    "commit", "-m", "plan: stage uncommitted changes before push");
+            }
+
+            await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string ResolveCloneRoot(RepoRow? repo)

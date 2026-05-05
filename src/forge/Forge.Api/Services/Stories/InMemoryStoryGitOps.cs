@@ -114,6 +114,9 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.CompletedTask;
     }
 
+    public Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+        => Task.CompletedTask;
+
     private static string Key(RepoRow? repo, string branch) =>
         $"{repo?.Id ?? "_default"}@{branch}";
 

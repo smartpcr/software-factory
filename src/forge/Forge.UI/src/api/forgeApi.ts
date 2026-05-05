@@ -25,6 +25,7 @@ import type {
   ProductIteration,
   ProductStats,
   ProductStory,
+  StoryAttachment,
   PayrollTodaySummary,
   PromotionRunResponse,
   Repo,
@@ -71,6 +72,8 @@ export interface StorySpawn {
    *  explicit POST /api/stories/{storyId}/spawn/retry. */
   lastError?: string | null;
   lastErrorAt?: string | null;
+  /** Phase 43 — operator-uploaded reference documents. */
+  attachments?: StoryAttachment[];
 }
 
 export interface StorySpawnWorkstreamSummary {
@@ -542,7 +545,7 @@ export const forgeApi = {
   /** POST /api/products/{productId}/stories — create a story under a product. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number },
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[] },
   ): Promise<ProductStory> {
     return fetchJson<ProductStory>(`/api/products/${encodeURIComponent(productId)}/stories`, {
       method: 'POST',
@@ -555,7 +558,7 @@ export const forgeApi = {
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number },
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[] },
   ): Promise<ProductStory> {
     return fetchJson<ProductStory>(
       `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
@@ -891,12 +894,36 @@ export const forgeApi = {
   // ---------------------------------------------------------------------
 
   /** POST /api/stories/{storyId}/spawn — start the multi-team delivery flow. */
-  async spawnStory(storyId: string, repoId?: string | null): Promise<StorySpawn> {
+  async spawnStory(storyId: string, repoId?: string | null, uploadIds?: string[]): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn`, {
       method: 'POST',
-      body: JSON.stringify({ repoId: repoId ?? null }),
+      body: JSON.stringify({ repoId: repoId ?? null, uploadIds: uploadIds?.length ? uploadIds : undefined }),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** POST /api/stories/attachments/upload — upload reference files before spawning. */
+  async uploadStoryAttachments(files: File[]): Promise<{ uploadId: string; files: StoryAttachment[] }> {
+    const form = new FormData();
+    for (const f of files) form.append('files', f);
+    const productId = getActiveProductId();
+    const res = await fetch(`${baseUrl}/api/stories/attachments/upload`, {
+      method: 'POST',
+      body: form,
+      headers: {
+        ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+        'X-Forge-User': writerHeader(),
+      },
+    });
+    if (!res.ok) {
+      const ct = res.headers.get('content-type') ?? '';
+      let detail = res.statusText;
+      if (ct.includes('json')) {
+        try { const p = await res.json(); detail = p.detail ?? p.title ?? detail; } catch { /* */ }
+      }
+      throw new ForgeApiError(res.status, null, `upload: ${res.status} ${detail}`);
+    }
+    return res.json();
   },
 
   /** GET /api/stories/spawns — list all story spawns (optionally filtered by phase). */
@@ -954,6 +981,22 @@ export const forgeApi = {
     invocationsCancelled: number;
   }> {
     return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/accept — manually accept a doc artifact despite score < 90. */
+  async acceptStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    status: string;
+    previousVerdict: string;
+    previousScore: number;
+    queueRowsCancelled: number;
+    invocationsCancelled: number;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/accept`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });

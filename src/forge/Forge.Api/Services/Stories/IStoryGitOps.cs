@@ -57,4 +57,11 @@ public interface IStoryGitOps
     /// </summary>
     Task<string> CommitPathInWorktreeAsync(
         RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Push the local branch to <c>origin</c>. Stages and commits any
+    /// uncommitted changes in the worktree first so local-only per-iteration
+    /// commits are included. No-op when nothing to push.
+    /// </summary>
+    Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 }

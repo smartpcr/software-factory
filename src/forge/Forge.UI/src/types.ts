@@ -8,6 +8,15 @@ export type Priority = 'low' | 'med' | 'high';
 export type EpicStatus = 'active' | 'merging' | 'planning';
 export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning' | 'idle';
 
+/** Phase 43 — metadata for an operator-uploaded reference document. */
+export interface StoryAttachment {
+  id: string;
+  fileName: string;
+  storagePath: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface Agent {
   /**
    * Stable identifier (e.g. crew member id like 'E1', GitHub login,
@@ -42,6 +51,8 @@ export interface ProductStory {
   /** User prompt the architect agent receives when this story is picked up. */
   description: string;
   points: number;
+  /** Phase 43 — operator-uploaded reference documents. */
+  attachments?: StoryAttachment[];
 }
 
 export interface Card {
