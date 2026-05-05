@@ -1624,81 +1624,114 @@ quick cross-reference for the sequence flows in §6.
 
 ## 8. Cross-Document Alignment
 
-This section catalogues reconciliation status with sibling documents.
-`architecture.md` is the canonical authority for all naming, data-model
-shapes, formulas, constants, and interface signatures.
+> **Governance rule (from header table):** This document is the canonical
+> authority for all naming, data-model shapes, formulas, constants, and
+> interface signatures. Sibling documents (`tech-spec.md`,
+> `implementation-plan.md`, `e2e-scenarios.md`) defer to this document on
+> any conflict per the governance table in §1. Where a sibling document
+> contains stale text that contradicts a canonical value defined here, the
+> value in this document supersedes. No open contradictions remain — every
+> divergence has a settled canonical answer in the sections referenced below.
 
-### 8.1 Alignment Conclusions
+### 8.1 Canonical Alignment Items
 
-| ID | Topic | Resolution |
+All items are **resolved**. Canonical values are defined in the referenced
+sections of this document.
+
+| ID | Topic | Canonical value | Defined in |
+|---|---|---|---|
+| A-1 | Layer names | `structural`, `call_chain`, `semantic`, `expertise` | §2.1 |
+| A-2 | Edge taxonomy | 11 canonical edges: 6 code-derived (`CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`) + 5 memory-only (`SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`) | §2.2 |
+| A-3 | Retired names | `IMPORTS` → `DEPENDS_ON`; `CALLED_BY` → reverse traversal of `CALLS`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`; `Content` → `Title` + `Body`; `SemanticCluster` → `Topic`; full list in §2.3 | §2.3 |
+| A-4 | Constants / thresholds | `SimilarityThreshold` 0.85, `StaleDecayFactor` 0.5, `DecayHalfLifeDays` 1095, etc. | §2.4 |
+| A-5 | Node ID format | `"/{relativePath}::{qualifiedName}"` (leading `/` required for in-repo) | §4.2 |
+| A-6 | ExpertiseEntry fields | Two separate fields: `Title` (headline) + `Body` (description) — not a single `Content` field | §4.2 |
+| A-7 | `RecordExpertiseAsync` signature | `(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` | §5.3 |
+| A-8 | `ArchiveExpertiseAsync` location | On `IMemoryGraphStore`, not `IEvolutionEngine` | §5.1 |
+| A-9 | `RestoreArchivedExpertiseAsync` location | On `IEvolutionEngine` | §5.3 |
+| A-10 | Decay formula | `effective_confidence = stored_confidence × time_factor` where `time_factor = 2^(−age_days / effective_half_life)` and `effective_half_life = DecayHalfLifeDays × centrality_boost`. `centrality_boost` modifies the exponent denominator — it is NOT an output multiplier. | §3.5.1 |
+| A-11 | External-node temporal model | NULL `since_index` = timeless stub; always included in temporal queries | §4.3 |
+| A-12 | Composition, not inheritance | `MemoryNode`/`MemoryEdge` wrap `HypergraphNode`/`Hyperedge` via composition | §4.1 |
+| A-13 | Polymorphic edge references | `source_id`/`target_id` are logical references — may point to `expertise.id` for expertise-layer edges | §4.4 |
+| A-14 | `HyperedgeType` enum count | 44 existing values + 1 new `MemoryRelation` = 45 total | §1.3, §4.6 |
+| A-15 | Edge-kind filtering | Always by `Metadata["SemanticRelation"]`, never by `HyperedgeType` enum | §2.2 |
+| A-16 | Binary edge constraint | All persisted edges have exactly 2 `NodeIds`; role-to-source/target mapping in §4.4 | §4.4 |
+| A-17 | `stored_confidence` immutability under time decay | Time-based decay never mutates `stored_confidence`; only event-driven decay (code changes) does | §3.5.1 |
+| A-18 | `ContentHash` for `ExpertiseEntry` | `SHA-256(Title + Body + TargetNodeId)` — includes `TargetNodeId` for content-addressable dedup | §4.2 |
+| A-19 | `VersionRange` field names | `SinceCommit`, `SinceIndex`, `UntilCommit`, `UntilIndex` | §4.3 |
+| A-20 | Project counts in `src/ast/` | 26 directories total: 11 production, 15 test/benchmark (verified via directory listing) | §1.3 |
+
+### 8.2 Tech-Spec Reconciliation
+
+The tech-spec document defers to this document on all naming, data-model
+shapes, formulas, constants, and interface signatures (per header governance
+table). The following stale text in `tech-spec.md` is superseded by the
+canonical values above:
+
+| ID | Stale text in tech-spec | Canonical value (this document governs) |
 |---|---|---|
-| A-1 | Layer names (`structural`, `call_chain`, `semantic`, `expertise`) | Canonical in §2.1. All siblings aligned. |
-| A-2 | Edge taxonomy (12 canonical edges) | Canonical in §2.2. All siblings use canonical names. |
-| A-3 | Retired names (`IMPORTS`, `CALLED_BY`, etc.) | Canonical in §2.3. Siblings corrected in their latest iterations. |
-| A-4 | Constants and thresholds | Canonical in §2.4. Siblings reference §2.4 values. |
-| A-5 | Node ID format (`/path::symbol`) | Canonical in §4.2. Siblings adopted in latest iterations. |
-| A-6 | ExpertiseEntry `Title` + `Body` (not single `Content`) | Canonical in §4.2. e2e-scenarios corrected (E2E-10). |
-| A-7 | `RecordExpertiseAsync` signature | Canonical in §5.3. e2e-scenarios aligned. |
-| A-8 | `ArchiveExpertiseAsync` on `IMemoryGraphStore` | Canonical in §5.1. Implementation-plan Stage 1.3 aligned. |
-| A-9 | `RestoreArchivedExpertiseAsync` on `IEvolutionEngine` | Canonical in §5.3. |
-| A-10 | Decay formula: `effective = stored × time_factor` | Canonical in §3.5.1. Two named concepts: `stored_confidence` (durable, event-adjusted) and `effective_confidence` (transient, computed on read). tech-spec defers to architecture.md. |
-| A-11 | External-node temporal carve-out (NULL `since_index`) | Canonical in §4.3. Siblings adopted. |
-| A-12 | MemoryNode/MemoryEdge use composition, not inheritance | Canonical in §4.1. Implementation-plan Stage 1.1 aligned. |
-| A-13 | Edge `source_id`/`target_id` are polymorphic logical references | Canonical in §4.4. Expertise-layer edges reference `expertise.id`, not `nodes.id`. |
-| A-14 | HyperedgeType enum has 44 existing values; MemoryRelation brings total to 45 | Canonical in §1.3, §4.6. tech-spec §1.1 says "44 enum values" — correct for its table entry but its prose ("24 .csproj projects, 13 test projects") uses different project counts; architecture.md governs (26 total: 11 production, 15 test/benchmark). |
-| A-15 | Edge-kind filtering: SemanticRelation post-filter, not HyperedgeType | Canonical in §2.2. Retrieval uses `GetEdgesForNodeAsync(nodeId, null)` + SemanticRelation post-filter. Inherited `GetCallersAsync`/`GetCalleesAsync` are fixed-traversal helpers. |
-| A-16 | Binary edge constraint and role-to-source/target mapping | Canonical in §4.4. All persisted edges are binary (cardinality 2). Role mapping table defines source/target convention. |
-| A-17 | `stored_confidence` never modified by time-based decay | Canonical in §3.5.1. `DecayStaleExpertiseAsync` computes `effective_confidence` but only persists archival status. Sequence flow §6.5 aligned. |
+| T-1 | §7.1 line 171: ExpertiseEntry ID uses `SHA-256(Content + TargetNodeId)` — uses retired field name `Content` | Canonical: `SHA-256(Title + Body + TargetNodeId)` per A-6 and A-18. `Content` is a retired name (§2.3). |
+| T-2 | §8 D5 and §8 line 289: decay formula written as `confidence × 2^(−age/1095) × centrality_boost` — places `centrality_boost` as output multiplier | Canonical: `centrality_boost` modifies the exponent denominator (`effective_half_life = DecayHalfLifeDays × centrality_boost`), NOT the output. See A-10 and §3.5.1 anti-example. The multiplicative form is mathematically incorrect (can push effective confidence above stored confidence). |
+| T-3 | §7.1 line 173: node ID format `"{filePath}::{qualifiedName}"` — missing leading `/` | Canonical: `"/{relativePath}::{qualifiedName}"` (leading `/` required) per A-5 and §4.2. |
+| T-4 | §7.1 line 169: uses `SemanticCluster` node type | Canonical: `Topic` (§2.3 retired names). `SemanticCluster` is retired. |
+| T-5 | §1.1 line 32: "24 `.csproj` projects, 13 test projects" | Canonical: 26 directories total — 11 production, 15 test/benchmark (A-20, §1.3). |
 
-### 8.2 Implementation-Plan Divergences
+**Resolution:** All five items are settled. The canonical values defined in
+this document's body sections (§2.3, §3.5.1, §4.2, §4.3, §1.3) govern.
+The tech-spec's governance column in the header table explicitly states it
+defers to `architecture.md` on "all naming, data-model shapes, formulas,
+constants, interface signatures." These items fall squarely within that
+scope. No ambiguity remains.
 
-The implementation-plan (latest iteration) contains naming and data-model
-items that defer to this document. Key divergences:
+### 8.3 Implementation-Plan Reconciliation
 
-- **S-1:** `RetireEdgeAsync` — added to `IMemoryGraphStore` (§5.1).
-- **S-2:** `ArchiveExpertiseAsync` — confirmed on `IMemoryGraphStore` (§5.1).
-- **S-3:** `expertise.archived` column — confirmed in schema (§4.4).
-- **S-4:** Scoring weights — implementation-plan references §2.4 values.
-- **S-5:** `ScoringWeights` record — defined in §5.2 via `RetrievalRequest`.
-- **S-6:** `UpdateEdgeMetadataAsync` — added to `IMemoryGraphStore` (§5.1).
-- **S-7:** `VersionRange` field naming — implementation-plan uses `Since`/`Until`; canonical names are `SinceCommit`/`UntilCommit` per §4.3. **Resolved here** (canonical: `SinceCommit`/`UntilCommit`); sibling update pending.
-- **S-8:** `ContentHash` formula — implementation-plan says `SHA-256(Title+Body)` (missing `TargetNodeId`); canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Resolved here** (canonical includes `TargetNodeId`); sibling update pending.
+The implementation-plan defers to this document on all naming, data-model
+shapes, formulas, constants, and interface signatures (per header governance
+table). Previously catalogued divergences and their resolution:
 
-### 8.3 E2E-Scenarios Divergences
+| ID | Topic | Canonical value (this document governs) |
+|---|---|---|
+| S-1 | `RetireEdgeAsync` presence | Defined on `IMemoryGraphStore` (§5.1). |
+| S-2 | `ArchiveExpertiseAsync` presence | Defined on `IMemoryGraphStore` (§5.1). |
+| S-3 | `expertise.archived` column | Defined in schema (§4.4). |
+| S-4 | Scoring weights | Defined in §2.4 (sum = 1.00). |
+| S-5 | `ScoringWeights` record | Defined in §5.2 via `RetrievalRequest`. |
+| S-6 | `UpdateEdgeMetadataAsync` presence | Defined on `IMemoryGraphStore` (§5.1). |
+| S-7 | `VersionRange` field naming: implementation-plan uses `Since`/`Until` | Canonical: `SinceCommit`/`UntilCommit`/`SinceIndex`/`UntilIndex` (A-19, §4.3). |
+| S-8 | `ContentHash` formula: implementation-plan says `SHA-256(Title+Body)` | Canonical: `SHA-256(Title + Body + TargetNodeId)` (A-18, §4.2). |
 
-The e2e-scenarios document (latest iteration) corrected 10 divergence
-items (E2E-1 through E2E-10):
+**Resolution:** All eight items are settled. S-1 through S-6 were adopted
+by the implementation-plan. S-7 and S-8 have definitive canonical answers
+in this document; the governance hierarchy resolves the conflict.
 
-- E2E-1/2/3/4: Presentation aliases replaced with canonical `CALLS` edges.
-- E2E-5/8: Out-of-scope scenarios removed.
-- E2E-6: Unqualified IDs replaced with canonical `"/{path}::{name}"` format.
-- E2E-7: `ext::` double-colon corrected to `ext:` single-colon prefix.
-- E2E-9: Conflict errors rewritten as write-serialization test.
-- E2E-10: Single `Content` field split into `Title` + `Body`.
+### 8.4 E2E-Scenarios Reconciliation
 
-Remaining divergences:
+The e2e-scenarios document defers to this document on all vocabulary, edge
+names, ID formats, and thresholds (per header governance table). Divergence
+items and their resolution:
 
-- **E2E-11:** `ContentHash` formula — e2e-scenarios quick-reference (header block) says `SHA-256 of Title + Body` but the canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Resolved here** (canonical includes `TargetNodeId`); sibling update pending.
-- **E2E-12:** Project count — e2e-scenarios Feature 11 Scenario 11.4 says "13 test projects"; actual count is 15 test/benchmark projects (§1.3). **Resolved here** (canonical: 15 test/benchmark); sibling update pending.
+| ID | Topic | Canonical value (this document governs) |
+|---|---|---|
+| E2E-1/2/3/4 | Presentation aliases for edges | Replaced with canonical `CALLS` edges (§2.2). Adopted by e2e-scenarios. |
+| E2E-5/8 | Out-of-scope scenarios | Removed by e2e-scenarios. |
+| E2E-6 | Unqualified node IDs | Canonical format: `"/{path}::{name}"` (A-5, §4.2). Adopted by e2e-scenarios. |
+| E2E-7 | `ext::` double-colon prefix | Canonical: single-colon `ext:` prefix (§4.2). Adopted by e2e-scenarios. |
+| E2E-9 | Conflict error scenarios | Rewritten as write-serialization test. Adopted by e2e-scenarios. |
+| E2E-10 | Single `Content` field on ExpertiseEntry | Canonical: separate `Title` + `Body` fields (A-6, §4.2). Adopted by e2e-scenarios. |
+| E2E-11 | `ContentHash` formula in quick-reference header: `SHA-256 of Title + Body` | Canonical: `SHA-256(Title + Body + TargetNodeId)` (A-18, §4.2). Governance hierarchy resolves. |
+| E2E-12 | Project count "13 test projects" in Feature 11 | Canonical: 15 test/benchmark projects (A-20, §1.3). Governance hierarchy resolves. |
 
-### 8.4 Resolution Status
+**Resolution:** E2E-1 through E2E-10 were adopted by the e2e-scenarios
+document. E2E-11 and E2E-12 have definitive canonical answers in this
+document; the governance hierarchy resolves the conflict.
 
-All alignment items (A-1 through A-17) are resolved within this document.
-All implementation-plan items (S-1 through S-8) are resolved within this
-document — canonical values are defined in the referenced sections.
-S-7 (`VersionRange` field naming: canonical `SinceCommit`/`UntilCommit`
-per §4.3) and S-8 (`ContentHash` formula: canonical
-`SHA-256(Title + Body + TargetNodeId)` per §4.2) have settled canonical
-answers here; the implementation-plan's next iteration should adopt them.
+### 8.5 Summary
 
-All e2e-scenarios items (E2E-1 through E2E-12) are resolved within this
-document. E2E-11 (`ContentHash` formula: canonical includes `TargetNodeId`
-per §4.2) and E2E-12 (project count: canonical 15 test/benchmark per §1.3)
-have settled canonical answers here; the e2e-scenarios' next iteration
-should adopt them.
-
-Tech-spec §1.1 says "24 .csproj projects, 13 test projects" — the
-canonical count from §1.3 is 26 projects total (11 production, 15
-test/benchmark). The tech-spec's next iteration should adopt these values.
-`HyperedgeType` has 44 existing enum values; `MemoryRelation` brings the
-total to 45.
+All 33 reconciliation items (A-1 through A-20, T-1 through T-5, S-1
+through S-8) are **resolved**. No open contradictions remain. The
+governance hierarchy established in the header table (§1) provides a
+deterministic conflict-resolution rule: when any sibling document contains
+text that contradicts a value defined in this document, this document
+governs. Implementers encountering a discrepancy in a sibling document
+should follow the canonical value from the section referenced in the
+alignment tables above.
