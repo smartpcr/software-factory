@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>Ast.Memory</RootNamespace>
+    <AssemblyName>Ast.Memory</AssemblyName>
+    <Description>Agent memory layer for the code knowledge hypergraph.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Neo4j.Driver" Version="5.26.0" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ast.Memory.Tests" />
+  </ItemGroup>
+
+</Project>
