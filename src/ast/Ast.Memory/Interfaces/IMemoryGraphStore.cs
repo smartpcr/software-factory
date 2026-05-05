@@ -1,0 +1,142 @@
+// -----------------------------------------------------------------------
+// <copyright file="IMemoryGraphStore.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Ast.Memory.Interfaces;
+
+using Ast.Core;
+using Ast.GraphDb;
+using Ast.Memory.Models;
+using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
+
+/// <summary>
+/// Persistence contract for the agent memory hypergraph.
+/// Extends <see cref="IGraphStore"/> with memory-specific operations
+/// for versioned nodes/edges, expertise, auditing, and statistics.
+/// Per architecture.md §5.1.
+/// </summary>
+public interface IMemoryGraphStore : IGraphStore
+{
+    // ── Node queries ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns active nodes belonging to the specified memory layer,
+    /// optionally filtered to a point-in-time commit index.
+    /// </summary>
+    Task<IReadOnlyList<MemoryNode>> GetNodesByLayerAsync(
+        string memoryLayer,
+        int? atCommitIndex,
+        MemoryNodeFilter? filter,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // ── Edge queries ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns active edges matching the given semantic relation,
+    /// optionally scoped to a memory layer and/or point-in-time commit index.
+    /// </summary>
+    Task<IReadOnlyList<MemoryEdge>> GetEdgesBySemanticRelationAsync(
+        string semanticRelation,
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // ── Node mutations ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Inserts or updates a node with the given version range.
+    /// </summary>
+    Task UpsertNodeAsync(
+        HypergraphNode node,
+        VersionRange version,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Marks a node as retired by setting its UntilCommitIndex.
+    /// </summary>
+    Task RetireNodeAsync(
+        string nodeId,
+        int untilCommitIndex,
+        string? untilCommit,
+        CancellationToken cancellationToken);
+
+    // ── Edge mutations ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Inserts or updates an edge with the given version range.
+    /// </summary>
+    Task UpsertEdgeAsync(
+        Hyperedge edge,
+        VersionRange version,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Marks an edge as retired by setting its UntilCommitIndex.
+    /// </summary>
+    Task RetireEdgeAsync(
+        string edgeId,
+        int untilCommitIndex,
+        string? untilCommit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Merges the supplied metadata entries into an existing edge.
+    /// </summary>
+    Task UpdateEdgeMetadataAsync(
+        string edgeId,
+        IDictionary<string, object?> metadata,
+        CancellationToken cancellationToken);
+
+    // ── Expertise ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns non-archived expertise entries for a target node.
+    /// </summary>
+    Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
+        string targetNodeId,
+        double minConfidence,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Inserts or updates an expertise entry.
+    /// </summary>
+    Task UpsertExpertiseAsync(
+        ExpertiseEntry entry,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Archives an expertise entry.
+    /// </summary>
+    Task ArchiveExpertiseAsync(
+        string expertiseId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns archived expertise entries.
+    /// </summary>
+    Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // ── Diagnostics ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns aggregate statistics for the memory graph.
+    /// </summary>
+    Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Appends an immutable audit record for the given operation.
+    /// </summary>
+    Task LogAuditAsync(
+        string sessionId,
+        string operation,
+        object detail,
+        CancellationToken cancellationToken);
+}
