@@ -23,6 +23,14 @@ public interface IStoryProviderOps
     /// <summary>Mark a PR merged in the local cache (and optionally upstream).</summary>
     Task MergePrAsync(string prId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Phase 45 — change the target branch of an open PR. Used when the
+    /// operator switches a spawn's base branch mid-flight: every still-open
+    /// PR (plan / impl / qa / step-def) is repointed at the new base so a
+    /// subsequent merge replays into the right tree.
+    /// </summary>
+    Task UpdatePrBaseBranchAsync(string prId, string newBaseBranch, CancellationToken ct = default);
+
     /// <summary>Approve a PR.</summary>
     Task ApprovePrAsync(string prId, string reviewerAgentId, CancellationToken ct = default);
 

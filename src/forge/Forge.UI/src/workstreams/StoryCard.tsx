@@ -100,6 +100,21 @@ export function StoryCard({ storyId, defaultExpanded = false }: Props) {
           {spawn.storyId}
         </span>
         <span style={{ fontSize: 13, color: 'var(--text-primary)', flex: 1 }}>{spawn.storyTitle}</span>
+        {spawn.baseBranch && spawn.baseBranch !== 'main' && (
+          <span
+            style={{
+              fontSize: 10.5,
+              color: 'var(--text-tertiary)',
+              fontFamily: 'monospace',
+              padding: '2px 6px',
+              borderRadius: 'var(--radius-xs)',
+              border: '1px solid var(--border-subtle)',
+            }}
+            title="Phase 45 — every PR this spawn produces (plan, workstream, QA, step-defs) targets this branch."
+          >
+            base: {spawn.baseBranch}
+          </span>
+        )}
       </div>
 
       <div style={progressOuterStyle} aria-label="Phase progress">

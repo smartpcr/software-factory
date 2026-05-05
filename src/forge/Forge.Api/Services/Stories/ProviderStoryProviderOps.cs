@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Realtime;
@@ -48,15 +49,13 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
-        // Per-repo overrides for the provider's default project / repo. ADO
-        // and GitHub use different naming, so we map from the matching
-        // RepoRow columns.
-        var (repoName, projectName) = req.Repo.Kind.ToLowerInvariant() switch
-        {
-            "github" => (req.Repo.GhRepo, req.Repo.GhOwner),
-            "ado" => (req.Repo.DisplayName, req.Repo.AdoProject),
-            _ => (null, null),
-        };
+        // Phase 45 follow-up (2026-05-05) — use the same canonical resolver
+        // as CrewQueueWorker + WorkItemsEndpoints, so live-exec PRs and
+        // story-spawn PRs both end up with the right per-repo coordinates.
+        // Operator's local DisplayName is just a friendly alias ("update");
+        // ADO's PR API needs the slug after `_git/` in the remote URL
+        // ("ASZ-UpdateService" for the operator's hci/update setup).
+        var (repoName, projectName) = PrCoordsResolver.Resolve(req.Repo, req.Repo.Kind?.ToLowerInvariant());
 
         string prId;
         try
@@ -124,6 +123,31 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         }
         this.logger?.LogInformation("Story PR opened via {Kind}: {PrId} ({Branch} → {Base})",
             req.Repo.Kind, prId, req.Branch, req.BaseBranch);
+
+        // Phase 45 follow-up — populate file / commit / iteration stats
+        // immediately so the PR tab doesn't show "0 files, 0 commits" until
+        // the periodic PrSyncJob tick (~60s later). Fire-and-forget so the
+        // accept flow doesn't block on a slow ADO probe; PrSyncJob.RunSyncForAsync
+        // is idempotent — a follow-up periodic tick is a safe no-op.
+        var syncJob = this.services.GetService<Forge.Api.Services.PrSyncJob>();
+        if (syncJob is not null)
+        {
+            var capturedPrId = prId;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await syncJob.RunSyncForAsync(capturedPrId, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    this.logger?.LogWarning(ex,
+                        "Inline PR enrichment failed for {PrId}; the periodic sync tick will retry.",
+                        capturedPrId);
+                }
+            });
+        }
+
         return prId;
     }
 
@@ -139,8 +163,10 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             throw new InvalidOperationException($"PR {prId} has no provider — cannot merge.");
 
         var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
-        await provider.MergePullRequestAsync(prId, ProviderCallContext.Anonymous, ct);
+        var ctx = await BuildCallContextAsync(db, pr, ct);
+        await provider.MergePullRequestAsync(prId, ctx, ct);
 
+        var wasMerged = string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase);
         pr.Col = "merged";
         pr.IsActive = false;
         pr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
@@ -150,6 +176,24 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", id = prId }, ct);
         }
         this.logger?.LogInformation("Story PR merged via {Kind}: {PrId}", pr.Provider, prId);
+
+        // Phase 45 follow-up — Forge-issued plan-PR merge needs to stop any
+        // still-running plan-doc loops. PrSyncJob runs the same hook for
+        // upstream-detected merges; both paths converge on PlanPrMergeReactor.
+        if (!wasMerged)
+        {
+            try
+            {
+                var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
+                await PlanPrMergeReactor.OnPlanPrMergedAsync(db, runner, hub, prId, this.logger, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "PlanPrMergeReactor failed for {PrId}; PR is merged but in-flight plan-doc loops were not cancelled.",
+                    prId);
+            }
+        }
     }
 
     public async Task ApprovePrAsync(string prId, string reviewerAgentId, CancellationToken ct = default)
@@ -164,7 +208,8 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             throw new InvalidOperationException($"PR {prId} has no provider — cannot approve.");
 
         var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
-        await provider.ApprovePullRequestAsync(prId, ProviderCallContext.Anonymous, ct);
+        var ctx = await BuildCallContextAsync(db, pr, ct);
+        await provider.ApprovePullRequestAsync(prId, ctx, ct);
 
         pr.ReviewJson = $"{{\"verdict\":\"approve\",\"reviewer\":\"{reviewerAgentId}\"}}";
         pr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
@@ -210,7 +255,8 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             {
                 var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
                 var formatted = $"`{filePath}:{line}` — {body}\n\n_({authorAgentId})_";
-                await provider.CommentOnPullRequestAsync(prId, formatted, ProviderCallContext.Anonymous, ct);
+                var ctx = await BuildCallContextAsync(db, pr, ct);
+                await provider.CommentOnPullRequestAsync(prId, formatted, ctx, ct);
             }
             catch (Exception ex)
             {
@@ -218,6 +264,31 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             }
         }
         return row.Id;
+    }
+
+    /// <summary>
+    /// Phase 45 — build a <see cref="ProviderCallContext"/> with per-PR repo
+    /// coordinates so AdoProvider's PR ops target the correct repo even when
+    /// the global <c>Forge:Ado:Repository</c> config points elsewhere. Looks
+    /// up the PR's <see cref="PrRow.RepoId"/> → <see cref="RepoRow"/> and
+    /// resolves canonical coords via <see cref="PrCoordsResolver"/> (the same
+    /// resolver <c>CrewQueueWorker</c> + <c>WorkItemsEndpoints</c> use for
+    /// PR creation, so live-exec and story-spawn now share one resolution
+    /// path end-to-end).
+    /// </summary>
+    private static async Task<ProviderCallContext> BuildCallContextAsync(
+        ForgeDbContext db, PrRow pr, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(pr.RepoId)) return ProviderCallContext.Anonymous;
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+        if (repo is null) return ProviderCallContext.Anonymous;
+        var (repoName, projectName) = PrCoordsResolver.Resolve(repo, repo.Kind?.ToLowerInvariant());
+        return new ProviderCallContext(
+            UserId: null,
+            UserPat: null,
+            IdempotencyKey: null,
+            RepositoryName: repoName,
+            ProjectName: projectName);
     }
 
     public async Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)
@@ -232,6 +303,39 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         c.ResolvedAt = DateTimeOffset.UtcNow;
         c.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Phase 45 — retarget an open PR at a new base branch. Currently the
+    /// <see cref="IForgeProvider"/> contract has no edit-PR endpoint (PATCH
+    /// <c>/repos/{owner}/{repo}/pulls/{number}</c> for GitHub, equivalent
+    /// REST for ADO). We update the local <see cref="PrRow"/> + emit a
+    /// SignalR event so the UI reflects the change immediately, and surface
+    /// the missing upstream call as a structured warning so the next sync
+    /// pass can catch divergence. When provider-side update support lands,
+    /// add the real edit call here ahead of the local row.
+    /// </summary>
+    public async Task UpdatePrBaseBranchAsync(string prId, string newBaseBranch, CancellationToken ct = default)
+    {
+        using var scope = this.services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+
+        var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct)
+            ?? throw new InvalidOperationException($"PR {prId} not found in local cache.");
+        if (string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase)) return;
+
+        pr.Base = newBaseBranch;
+        pr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+        await db.SaveChangesAsync(ct);
+        if (hub is not null)
+        {
+            await hub.Clients.All.SendAsync("pr.changed",
+                new { kind = "base-branch-changed", id = prId, newBaseBranch }, ct);
+        }
+        this.logger?.LogWarning(
+            "PR {PrId} base branch changed locally to {Base}, but the IForgeProvider has no edit-PR endpoint — operator must reset the base on {Provider} manually until provider support lands.",
+            prId, newBaseBranch, pr.Provider);
     }
 
     public async Task TransitionWorkItemAsync(string workItemId, string state, CancellationToken ct = default)

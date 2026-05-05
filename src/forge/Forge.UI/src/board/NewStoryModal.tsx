@@ -18,6 +18,9 @@ export function NewStoryModal({ open, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [points, setPoints] = useState<string>('5');
+  // Phase 45 — operator's default base branch for spawns produced from
+  // this story. Empty input → "main".
+  const [baseBranch, setBaseBranch] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -29,6 +32,7 @@ export function NewStoryModal({ open, onClose }: Props) {
     setName('');
     setDescription('');
     setPoints('5');
+    setBaseBranch('');
     setBusy(false);
     setErr(null);
     setFiles([]);
@@ -58,13 +62,24 @@ export function NewStoryModal({ open, onClose }: Props) {
         const result = await forgeApi.uploadStoryAttachments(files);
         uploadIds = [result.uploadId];
       }
-      const story = await forgeApi.createProductStory(activeProductId, {
+      const trimmedBase = baseBranch.trim();
+      const result = await forgeApi.createProductStory(activeProductId, {
         name: cleanName,
         description: description.trim(),
         points: ptsNum,
         uploadIds,
+        // Phase 45 — empty / unset means the server uses the default ("main").
+        baseBranch: trimmedBase.length > 0 ? trimmedBase : undefined,
       });
-      useToastStore.getState().show(`Story "${story.name}" created`, 'success');
+      useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
+      if (result.branchWarnings && result.branchWarnings.length > 0) {
+        useToastStore.getState().show(
+          `Base branch '${trimmedBase}' could not be created in some repos: ${result.branchWarnings.join('; ')}`,
+          'danger',
+        );
+      } else if (trimmedBase.length > 0 && trimmedBase !== 'main') {
+        useToastStore.getState().show(`Base branch '${trimmedBase}' created in product repos`, 'success');
+      }
       onClose();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Create failed';
@@ -146,6 +161,23 @@ export function NewStoryModal({ open, onClose }: Props) {
               disabled={busy}
               style={inputStyle}
             />
+          </label>
+
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={labelStyle}>Base branch (optional, default: main)</span>
+            <input
+              value={baseBranch}
+              onChange={(e) => setBaseBranch(e.target.value)}
+              placeholder="main"
+              disabled={busy}
+              spellCheck={false}
+              style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
+            />
+            <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+              Default base branch for spawns produced from this story.
+              Non-default values are created from <code>main</code> immediately
+              in every repo of the product.
+            </span>
           </label>
 
           <div style={{ display: 'grid', gap: 5 }}>

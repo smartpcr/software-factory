@@ -48,6 +48,10 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [uploadIds, setUploadIds] = useState<string[]>([]);
+  // Phase 45 — operator-chosen base branch for every PR this spawn produces.
+  // Empty input = default "main"; non-default values are branched from main
+  // by the orchestrator on first drive.
+  const [baseBranch, setBaseBranch] = useState('');
 
   // Load stories + repos when the modal opens.
   useEffect(() => {
@@ -60,6 +64,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setErr(null);
     setFiles([]);
     setUploadIds([]);
+    setBaseBranch('');
 
     let cancelled = false;
     setLoading(true);
@@ -117,7 +122,13 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         ids = [result.uploadId];
         setUploadIds(ids);
       }
-      await forgeApi.spawnStory(selected.id, repoId ?? null, ids.length > 0 ? ids : undefined);
+      const trimmedBase = baseBranch.trim();
+      await forgeApi.spawnStory(
+        selected.id,
+        repoId ?? null,
+        ids.length > 0 ? ids : undefined,
+        trimmedBase.length > 0 ? trimmedBase : undefined,
+      );
       setBusy(false);
       onSpawned?.(selected.id);
       onClose();
@@ -237,6 +248,19 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                   <option key={r.id} value={r.id}>{r.displayName ?? r.id}</option>
                 ))}
               </select>
+            </Field>
+            <Field label="Base branch (optional, default: main)">
+              <input
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                placeholder="main"
+                style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 12 }}
+              />
+              <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                Every PR this spawn produces (plan, workstreams, QA, step-defs)
+                targets this branch. Non-default values are branched from{' '}
+                <code>main</code> automatically.
+              </span>
             </Field>
             <Field label="Reference documents (optional)">
               <div style={{ display: 'grid', gap: 6 }}>

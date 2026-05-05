@@ -448,9 +448,9 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
                     onClick={async () => {
                       if (!activeProductId) return;
                       try {
-                        const story = await forgeApi.createProductStory(activeProductId, { name: newStoryName.trim() });
-                        setProductStories((prev) => [...prev, { id: story.id, name: story.name }]);
-                        setEpic(story.id);
+                        const result = await forgeApi.createProductStory(activeProductId, { name: newStoryName.trim() });
+                        setProductStories((prev) => [...prev, { id: result.story.id, name: result.story.name }]);
+                        setEpic(result.story.id);
                       } catch {
                         // Fallback: create local-only entry.
                         const fid = newStoryName.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').slice(0, 20);

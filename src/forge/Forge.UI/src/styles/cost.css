@@ -74,7 +74,7 @@
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 10px;
-  align-items: end;
+  align-items: stretch;
   position: relative;
   min-height: 200px;
 }
@@ -97,10 +97,13 @@
   justify-content: end;
   position: relative;
   z-index: 1;
+  padding-bottom: 22px;
 }
 .cost-chart-col .label {
+  position: absolute;
+  bottom: 0;
+  left: 0; right: 0;
   text-align: center;
-  margin-top: 8px;
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--text-tertiary);

@@ -53,6 +53,11 @@ export interface ProductStory {
   points: number;
   /** Phase 43 — operator-uploaded reference documents. */
   attachments?: StoryAttachment[];
+  /** Phase 45 — default base branch carried into spawns produced from this
+   *  story. Defaults to "main". Setting a non-default value via PATCH causes
+   *  the server to create that branch in every repo of the product
+   *  immediately. */
+  baseBranch: string;
 }
 
 export interface Card {

@@ -59,6 +59,10 @@ export interface StorySpawn {
   storyTitle: string;
   repoId: string | null;
   phase: StorySpawnPhase;
+  /** Phase 45 — operator-chosen base branch for every PR this spawn opens
+   *  (plan, workstream, QA, step-def). Defaults to "main". When non-default
+   *  the orchestrator branches it from main on first drive. */
+  baseBranch: string;
   planBranch: string | null;
   planPrId: string | null;
   decompositionJson: string | null;
@@ -542,25 +546,50 @@ export const forgeApi = {
     return fetchJson<ProductStory[]>(`/api/products/${encodeURIComponent(productId)}/stories`);
   },
 
-  /** POST /api/products/{productId}/stories — create a story under a product. */
+  /** POST /api/products/{productId}/stories — create a story under a product.
+   *  Phase 45: server returns either a bare ProductStory or `{ story, branchWarnings }`
+   *  when a non-default base branch is set. The client normalises both shapes. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[] },
-  ): Promise<ProductStory> {
-    return fetchJson<ProductStory>(`/api/products/${encodeURIComponent(productId)}/stories`, {
-      method: 'POST',
-      body: JSON.stringify(req),
-      headers: { 'X-Forge-User': writerHeader() },
-    });
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string },
+  ): Promise<{ story: ProductStory; branchWarnings?: string[] }> {
+    const resp = await fetchJson<ProductStory | { story: ProductStory; branchWarnings: string[] }>(
+      `/api/products/${encodeURIComponent(productId)}/stories`,
+      {
+        method: 'POST',
+        body: JSON.stringify(req),
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+    return 'story' in resp
+      ? { story: resp.story, branchWarnings: resp.branchWarnings }
+      : { story: resp };
   },
 
-  /** PATCH /api/products/{productId}/stories/{storyId} — edit a story's name / desc / points / status. */
+  /** PATCH /api/products/{productId}/stories/{storyId} — edit a story's name / desc / points / status / base branch.
+   *  Phase 45: changing baseBranch to a non-"main" value triggers an immediate
+   *  `git branch` creation in every repo of the product AND, when a spawn
+   *  exists for this story, the full rebase + replay-merged-PRs + retarget-open-PRs
+   *  flow. The optional fields below are populated only when a base-branch
+   *  change actually occurred and a spawn was present. */
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[] },
-  ): Promise<ProductStory> {
-    return fetchJson<ProductStory>(
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string },
+  ): Promise<{
+    story: ProductStory;
+    branchWarnings?: string[];
+    replayedBranches?: string[];
+    retargetedPrs?: string[];
+    replayFailures?: string[];
+  }> {
+    const resp = await fetchJson<ProductStory | {
+      story: ProductStory;
+      branchWarnings?: string[] | null;
+      replayedBranches?: string[] | null;
+      retargetedPrs?: string[] | null;
+      replayFailures?: string[] | null;
+    }>(
       `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
       {
         method: 'PATCH',
@@ -568,6 +597,15 @@ export const forgeApi = {
         headers: { 'X-Forge-User': writerHeader() },
       },
     );
+    return 'story' in resp
+      ? {
+          story: resp.story,
+          branchWarnings: resp.branchWarnings ?? undefined,
+          replayedBranches: resp.replayedBranches ?? undefined,
+          retargetedPrs: resp.retargetedPrs ?? undefined,
+          replayFailures: resp.replayFailures ?? undefined,
+        }
+      : { story: resp };
   },
 
   /** DELETE /api/products/{productId}/stories/{storyId} — delete a story. */
@@ -894,10 +932,38 @@ export const forgeApi = {
   // ---------------------------------------------------------------------
 
   /** POST /api/stories/{storyId}/spawn — start the multi-team delivery flow. */
-  async spawnStory(storyId: string, repoId?: string | null, uploadIds?: string[]): Promise<StorySpawn> {
+  async spawnStory(
+    storyId: string,
+    repoId?: string | null,
+    uploadIds?: string[],
+    baseBranch?: string,
+  ): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn`, {
       method: 'POST',
-      body: JSON.stringify({ repoId: repoId ?? null, uploadIds: uploadIds?.length ? uploadIds : undefined }),
+      body: JSON.stringify({
+        repoId: repoId ?? null,
+        uploadIds: uploadIds?.length ? uploadIds : undefined,
+        // Phase 45 — operator-chosen target branch. Server treats null /
+        // missing as "main" so existing callers stay compatible.
+        baseBranch: baseBranch ?? undefined,
+      }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/stories/{storyId}/spawn/base-branch — switch the spawn's base branch.
+   *  The server rebases the new base on top of main, replays every already-merged
+   *  spawn PR onto it, and retargets every still-open PR. Returns the updated
+   *  spawn plus a list of replayed branches and retargeted PR ids. */
+  async changeStoryBaseBranch(storyId: string, baseBranch: string): Promise<{
+    spawn: StorySpawn;
+    replayedBranches: string[];
+    retargetedPrs: string[];
+    replayFailures: string[];
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/base-branch`, {
+      method: 'PATCH',
+      body: JSON.stringify({ baseBranch }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

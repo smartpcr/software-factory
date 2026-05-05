@@ -65,6 +65,16 @@ public class ProductStoryRow
     /// Carried through to <see cref="StorySpawnRow.AttachmentsJson"/> on spawn.
     /// </summary>
     public string? AttachmentsJson { get; set; }
+
+    /// <summary>
+    /// Phase 45 — operator-chosen default base branch carried through to
+    /// <see cref="StorySpawnRow.BaseBranch"/> when the story is spawned.
+    /// Defaults to <c>"main"</c>. Setting this to a non-default value via
+    /// PATCH triggers an immediate <c>git branch</c> creation in every repo
+    /// of the owning product so the branch is materialised before any spawn
+    /// runs against it.
+    /// </summary>
+    public string BaseBranch { get; set; } = "main";
 }
 
 public class CardRow
@@ -2091,6 +2101,16 @@ public class StorySpawnRow
 
     /// <summary>One of: <c>plan | decompose | implement | review | qa | done</c>.</summary>
     public string Phase { get; set; } = StorySpawnPhases.Plan;
+
+    /// <summary>
+    /// Operator-chosen base branch for every PR produced under this spawn
+    /// (plan PR, workstream PRs, QA PR, step-def PRs). Defaults to <c>"main"</c>.
+    /// When non-default, the orchestrator branches it from <c>main</c> on first
+    /// drive; rebases on change pull main forward and replay every
+    /// already-merged spawn PR onto the new tip so downstream work stays
+    /// consistent.
+    /// </summary>
+    public string BaseBranch { get; set; } = "main";
 
     /// <summary>Branch holding planning artifacts, e.g. "story/{storyId}/plan".</summary>
     public string? PlanBranch { get; set; }

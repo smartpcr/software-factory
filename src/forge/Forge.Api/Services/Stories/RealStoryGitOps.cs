@@ -129,23 +129,150 @@ public sealed class RealStoryGitOps : IStoryGitOps
     {
         var root = ResolveCloneRoot(repo);
 
-        // Merge happens in a dedicated worktree on the base branch so we
-        // don't disturb whatever the operator has checked out at the root.
-        var sanitized = SanitizeBranchSlug($"merge-{baseBranch}");
-        var wtPath = WorktreePath(root, sanitized);
-        await this.EnsureWorktreeAsync(root, wtPath, baseBranch, baseBranch, ct);
+        // Phase 45 follow-up — git refuses to check out the same branch in
+        // two different worktrees. EnsureBranchAsync may have already created
+        // a worktree for this base branch (e.g. when the operator chose
+        // feature/memory-pressure as their spawn base). Reuse it. Otherwise
+        // fall back to a dedicated `merge-{base}` worktree.
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, baseBranch, ct);
+        if (wtPath is null)
+        {
+            var sanitized = SanitizeBranchSlug($"merge-{baseBranch}");
+            wtPath = WorktreePath(root, sanitized);
+            await this.EnsureWorktreeAsync(root, wtPath, baseBranch, baseBranch, ct);
+        }
 
+        // Phase 45 follow-up — sync-not-re-merge.
+        //
+        // Story flow always calls this AFTER provider.MergePrAsync, which
+        // already merged the source into the base on the upstream remote
+        // (ADO squash merge / GitHub merge button). origin/{baseBranch}
+        // therefore already contains every file the source brought in.
+        // The previous code did `merge --no-ff origin/{branch}` here on
+        // top, producing add/add conflicts on every file the upstream
+        // merge had just added (operator hit this on 2026-05-05 with
+        // architecture.md, tech-spec.md, implementation-plan.md,
+        // e2e-scenarios.md, workstreams.json — all freshly added by the
+        // ADO squash merge, then re-added by the local merge attempt).
+        //
+        // The local worktree's job is to MIRROR the remote, not to do its
+        // own merge. fetch + reset --hard origin/{baseBranch} accomplishes
+        // that cleanly. We don't push anything (the upstream already has
+        // the right tip).
         await this.GitAsync(wtPath, ct, "fetch", "origin", baseBranch);
-        await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
         await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{baseBranch}");
 
-        // No-ff merge so the merge commit shows up in history; matches what
-        // GitHub's "Merge pull request" button does.
+        // Sanity check — the source branch's tip should now be reachable
+        // from origin/{baseBranch} (the upstream merge brought it in). If
+        // it isn't, the upstream merge somehow didn't include this source;
+        // the operator needs to inspect manually. Log a warning but don't
+        // fail the call: the merge upstream is the source of truth, so a
+        // local-only mismatch is a recoverable cache divergence.
+        try
+        {
+            await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+            var (mbCode, _, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "merge-base", "--is-ancestor", $"origin/{branch}", "HEAD");
+            if (mbCode != 0)
+            {
+                this.logger?.LogWarning(
+                    "MergeAsync sanity: origin/{Branch} is NOT an ancestor of HEAD on {Base} after sync. "
+                    + "Upstream merge may not have actually merged this source — investigate the PR state.",
+                    branch, baseBranch);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogDebug(ex,
+                "MergeAsync ancestor sanity check failed (non-fatal); local sync to origin/{Base} already done.",
+                baseBranch);
+        }
+    }
+
+    /// <summary>
+    /// Phase 45 follow-up — return the absolute path of an existing worktree
+    /// already checked out on <paramref name="branch"/>, or null when no
+    /// worktree has it. Parses <c>git worktree list --porcelain</c> output:
+    /// each worktree block is <c>worktree {path}\n... branch refs/heads/{name}</c>
+    /// separated by blank lines. Returning a hit lets <see cref="MergeAsync"/>
+    /// and <see cref="RebaseBaseBranchAsync"/> reuse the existing worktree
+    /// instead of triggering "branch is already used by worktree" from git.
+    /// </summary>
+    private async Task<string?> TryFindExistingWorktreeAsync(string root, string branch, CancellationToken ct)
+    {
+        var (code, stdout, _) = await this.RunGitCaptureAsync(root, ct, "worktree", "list", "--porcelain");
+        if (code != 0 || string.IsNullOrEmpty(stdout)) return null;
+
+        string? currentPath = null;
+        foreach (var rawLine in stdout.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("worktree ", StringComparison.Ordinal))
+            {
+                currentPath = line["worktree ".Length..].Trim();
+            }
+            else if (line.StartsWith("branch refs/heads/", StringComparison.Ordinal))
+            {
+                var b = line["branch refs/heads/".Length..].Trim();
+                if (string.Equals(b, branch, StringComparison.Ordinal) && !string.IsNullOrEmpty(currentPath))
+                {
+                    return currentPath;
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(line))
+            {
+                currentPath = null; // block separator
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Phase 45 — bring <paramref name="baseBranch"/> up to <c>origin/{upstream}</c>
+    /// inside a dedicated worktree. Used when the operator changes a spawn's
+    /// base branch and we need to pull in any upstream commits before
+    /// replaying the spawn's already-merged PRs onto it. Pushes the result
+    /// back to origin so subsequent merges target the rebased tip.
+    /// </summary>
+    public async Task RebaseBaseBranchAsync(
+        RepoRow? repo, string baseBranch, string upstreamBranch, CancellationToken ct = default)
+    {
+        if (string.Equals(baseBranch, upstreamBranch, StringComparison.Ordinal))
+        {
+            // Rebasing main onto main is a no-op — and a self-loop fetch races.
+            return;
+        }
+
+        var root = ResolveCloneRoot(repo);
+
+        // Phase 45 follow-up — same worktree-reuse rule as MergeAsync. If
+        // the base branch is already checked out somewhere (typically the
+        // worktree EnsureBranchAsync created when first materialising the
+        // branch), reuse it. Otherwise create a fresh `rebase-{base}` one.
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, baseBranch, ct);
+        if (wtPath is null)
+        {
+            var sanitized = SanitizeBranchSlug($"rebase-{baseBranch}");
+            wtPath = WorktreePath(root, sanitized);
+            await this.EnsureWorktreeAsync(root, wtPath, baseBranch, upstreamBranch, ct);
+        }
+
+        await this.GitAsync(wtPath, ct, "fetch", "origin", baseBranch);
+        await this.GitAsync(wtPath, ct, "fetch", "origin", upstreamBranch);
+        await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{baseBranch}");
+
+        // `git rebase` against the upstream tip; `--rebase-merges` keeps any
+        // merge commits the operator already pulled in. A clean linear base
+        // (no prior merge commits) just fast-forwards.
         await this.GitAsync(wtPath, ct,
-            "-c", "user.email=forge-merger@local",
+            "-c", "user.email=forge-rebaser@local",
             "-c", "user.name=Forge",
-            "merge", "--no-ff", "-m", $"Merge {branch} into {baseBranch}", $"origin/{branch}");
-        await this.GitAsync(wtPath, ct, "push", "origin", baseBranch);
+            "rebase", "--rebase-merges", $"origin/{upstreamBranch}");
+
+        // `--force-with-lease` so we never clobber a concurrent push from
+        // another operator. Branch protection on a base branch should reject
+        // this push anyway; that's a deliberate guard.
+        await this.GitAsync(wtPath, ct, "push", "--force-with-lease", "origin", baseBranch);
     }
 
     public async Task<string> EnsureWorktreeAsync(

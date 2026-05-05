@@ -107,7 +107,11 @@ public sealed class PlanReconciler
         // plan PR opens, and per-iter commits made AFTER the PR merge stay
         // local-only. Reading from disk picks up the freshest content the
         // architect actually wrote.
-        var planMd = await this.SafeReadWorktreeAsync(repo, planBranch, planPath, ct);
+        // Phase 45 — pass the spawn's chosen base branch so worktree
+        // creation roots at the right branch when the worktree must be
+        // materialised on first read.
+        var spawnBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var planMd = await this.SafeReadWorktreeAsync(repo, planBranch, planPath, spawnBase, ct);
         if (planMd is null)
         {
             this.logger?.LogInformation(
@@ -329,13 +333,13 @@ public sealed class PlanReconciler
     /// per-iter commits are local-only (no auto-push), so origin/{branch} can
     /// be many iterations stale once the plan PR has merged.
     /// </summary>
-    private async Task<string?> SafeReadWorktreeAsync(RepoRow? repo, string branch, string path, CancellationToken ct)
+    private async Task<string?> SafeReadWorktreeAsync(RepoRow? repo, string branch, string path, string baseBranch, CancellationToken ct)
     {
         if (repo is null) return await this.SafeReadAsync(repo, branch, path, ct);
 
         try
         {
-            var worktreePath = await this.git.EnsureWorktreeAsync(repo, branch, "main", ct);
+            var worktreePath = await this.git.EnsureWorktreeAsync(repo, branch, baseBranch, ct);
             var diskPath = Path.Combine(worktreePath, path.Replace('/', Path.DirectorySeparatorChar));
             if (File.Exists(diskPath))
             {
@@ -368,7 +372,9 @@ public sealed class PlanReconciler
             RepoId = spawn.RepoId,
             Name = stage.Name,
             Branch = $"ws/{safeStory}/{branchSlug}",
-            Base = "main",
+            // Phase 45 — reconciler-created workstreams inherit the spawn's
+            // chosen base branch so PRs they produce target the right branch.
+            Base = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch,
             Epic = spawn.StoryId,
             Status = "planning",
             WorktreeJson = "[\"(not yet created)\"]",

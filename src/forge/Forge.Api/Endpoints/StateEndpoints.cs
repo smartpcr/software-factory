@@ -114,7 +114,9 @@ public static class StateEndpoints
             [FromBody] CreateStoryRequest req,
             ForgeDbContext db,
             IHubContext<ForgeHub> hub,
-            IConfiguration config) =>
+            IConfiguration config,
+            Forge.Api.Services.Stories.IStoryGitOps git,
+            ILoggerFactory loggerFactory) =>
         {
             var auth = ForgeUser.RequireWriter(ctx);
             if (auth is not null) return auth;
@@ -141,6 +143,20 @@ public static class StateEndpoints
                 .Select(s => (int?)s.Sort).MaxAsync() ?? -1;
             var points = req.Points.GetValueOrDefault(0);
             if (points < 0) points = 0;
+
+            // Phase 45 — operator-chosen default base branch. Validated via
+            // the same helper used by spawn endpoints so a typo can't reach
+            // a `git fetch` command line. Empty / missing → "main".
+            var baseBranchInput = req.BaseBranch?.Trim();
+            var baseBranch = string.IsNullOrEmpty(baseBranchInput) ? "main" : baseBranchInput!;
+            if (!StoriesEndpoints.IsValidBranchName(baseBranch))
+            {
+                return Results.Problem(
+                    title: "Invalid base branch name",
+                    detail: $"'{baseBranch}' is not a valid git branch name.",
+                    statusCode: 400);
+            }
+
             var row = new ProductStoryRow
             {
                 Id = id,
@@ -151,6 +167,7 @@ public static class StateEndpoints
                 CreatedAt = DateTimeOffset.UtcNow,
                 Description = (req.Description ?? string.Empty).Trim(),
                 Points = points,
+                BaseBranch = baseBranch,
             };
 
             // Phase 43 — resolve pre-uploaded attachments.
@@ -166,9 +183,25 @@ public static class StateEndpoints
             db.ProductStories.Add(row);
             await db.SaveChangesAsync();
 
+            // Phase 45 — when the operator picks a non-default base at
+            // creation time, materialise the branch in every repo of the
+            // product so a subsequent spawn doesn't have to wait for first
+            // drive to create it. Best-effort — a missing-clone repo gets
+            // logged as a warning and reported in the response.
+            var branchWarnings = new List<string>();
+            if (!string.Equals(row.BaseBranch, "main", StringComparison.Ordinal))
+            {
+                branchWarnings.AddRange(
+                    await EnsureBranchInProductReposAsync(
+                        db, productId, row.BaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+            }
+
             var story = MapStory(row);
             await hub.Clients.All.SendAsync("story.changed", new { kind = "created", story });
-            return Results.Created($"/api/products/{productId}/stories/{row.Id}", story);
+            return Results.Created($"/api/products/{productId}/stories/{row.Id}",
+                branchWarnings.Count == 0
+                    ? (object)story
+                    : new { story, branchWarnings });
         }).WithName("CreateProductStory");
 
         stories.MapPatch("/{storyId}", async (
@@ -178,7 +211,10 @@ public static class StateEndpoints
             [FromBody] PatchStoryRequest req,
             ForgeDbContext db,
             IHubContext<ForgeHub> hub,
-            IConfiguration config) =>
+            IConfiguration config,
+            Forge.Api.Services.Stories.IStoryGitOps git,
+            Forge.Api.Services.Stories.IStoryProviderOps storyProvider,
+            ILoggerFactory loggerFactory) =>
         {
             var auth = ForgeUser.RequireWriter(ctx);
             if (auth is not null) return auth;
@@ -240,6 +276,34 @@ public static class StateEndpoints
                 }
             }
 
+            // Phase 45 — operator-chosen default base branch. When the
+            // value moves off "main" (or to a different non-default branch),
+            // we (a) validate, (b) persist, (c) immediately create the
+            // branch in every repo of the product so a future spawn doesn't
+            // have to wait for first drive, (d) propagate the change to a
+            // pre-existing spawn that was created from this story so its
+            // future PRs target the new base.
+            string? newBaseBranch = null;
+            var branchWarnings = new List<string>();
+            if (req.BaseBranch is { } baseBranchInput)
+            {
+                var trimmed = baseBranchInput.Trim();
+                if (string.IsNullOrEmpty(trimmed)) trimmed = "main";
+                if (!StoriesEndpoints.IsValidBranchName(trimmed))
+                {
+                    return Results.Problem(
+                        title: "Invalid base branch name",
+                        detail: $"'{trimmed}' is not a valid git branch name.",
+                        statusCode: 400);
+                }
+
+                if (!string.Equals(row.BaseBranch, trimmed, StringComparison.Ordinal))
+                {
+                    row.BaseBranch = trimmed;
+                    newBaseBranch = trimmed;
+                }
+            }
+
             // Phase 43 — append newly uploaded attachments.
             if (req.UploadIds is { Count: > 0 })
             {
@@ -288,9 +352,66 @@ public static class StateEndpoints
             }
 
             await db.SaveChangesAsync();
+
+            // Phase 45 — branch materialisation + spawn propagation. Done
+            // after the SaveChanges so the persisted row is the source of
+            // truth even if branch creation fails (the warning is reported
+            // back to the caller).
+            string[]? replayedBranches = null;
+            string[]? retargetedPrs = null;
+            string[]? replayFailures = null;
+            if (newBaseBranch is not null && !string.Equals(newBaseBranch, "main", StringComparison.Ordinal))
+            {
+                branchWarnings.AddRange(
+                    await EnsureBranchInProductReposAsync(
+                        db, productId, newBaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+            }
+            if (newBaseBranch is not null)
+            {
+                // Phase 45 (revision after operator feedback) — when a spawn
+                // already exists, run the FULL retarget flow: rebase the new
+                // base on top of main, replay merged spawn PRs onto it, and
+                // retarget every still-open spawn PR. This matches user
+                // requirements #5 + #6 ("base branch change, make sure all
+                // existing spawn tasks now create PR against new base").
+                var spawnRow = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                if (spawnRow is not null
+                    && !string.Equals(spawnRow.BaseBranch, newBaseBranch, StringComparison.Ordinal))
+                {
+                    var spawnResult = await StoriesEndpoints.ApplySpawnBaseBranchChangeAsync(
+                        db, hub, git, storyProvider, spawnRow, newBaseBranch, ctx.RequestAborted);
+                    if (spawnResult.PrepareError is not null)
+                    {
+                        // Prepare failure is non-fatal at the story level —
+                        // surface it as a warning so the operator sees what
+                        // went wrong but the story PATCH still completes.
+                        branchWarnings.Add($"spawn base-branch change failed: {spawnResult.PrepareError}");
+                    }
+                    else
+                    {
+                        replayedBranches = spawnResult.ReplayedBranches.ToArray();
+                        retargetedPrs = spawnResult.RetargetedPrs.ToArray();
+                        replayFailures = spawnResult.ReplayFailures.ToArray();
+                    }
+                }
+            }
+
             var story = MapStory(row);
             await hub.Clients.All.SendAsync("story.changed", new { kind = "updated", story });
-            return Results.Ok(story);
+            var hasExtras = branchWarnings.Count > 0
+                || (replayedBranches is { Length: > 0 })
+                || (retargetedPrs is { Length: > 0 })
+                || (replayFailures is { Length: > 0 });
+            return Results.Ok(hasExtras
+                ? (object)new
+                {
+                    story,
+                    branchWarnings = branchWarnings.Count > 0 ? branchWarnings : null,
+                    replayedBranches,
+                    retargetedPrs,
+                    replayFailures,
+                }
+                : story);
         }).WithName("UpdateProductStory");
 
         stories.MapDelete("/{storyId}", async (
@@ -328,7 +449,9 @@ public static class StateEndpoints
         string? Status = null,
         string? Description = null,
         int? Points = null,
-        IReadOnlyList<string>? UploadIds = null);
+        IReadOnlyList<string>? UploadIds = null,
+        /// <summary>Phase 45 — default base branch for spawns produced from this story. Empty / missing = "main".</summary>
+        string? BaseBranch = null);
 
     public sealed record PatchStoryRequest(
         string? Name = null,
@@ -337,14 +460,59 @@ public static class StateEndpoints
         int? Points = null,
         IReadOnlyList<string>? UploadIds = null,
         /// <summary>Phase 43 — file names to remove from AttachmentsJson.</summary>
-        IReadOnlyList<string>? RemoveFileNames = null);
+        IReadOnlyList<string>? RemoveFileNames = null,
+        /// <summary>Phase 45 — change the story's default base branch. When the new value is non-"main" the server creates the branch in every repo of the product immediately.</summary>
+        string? BaseBranch = null);
 
     private static ProductStory MapStory(ProductStoryRow r) => new(
         r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"),
         r.Description ?? string.Empty, r.Points,
         string.IsNullOrEmpty(r.AttachmentsJson)
             ? null
-            : System.Text.Json.JsonSerializer.Deserialize<object[]>(r.AttachmentsJson));
+            : System.Text.Json.JsonSerializer.Deserialize<object[]>(r.AttachmentsJson),
+        string.IsNullOrEmpty(r.BaseBranch) ? "main" : r.BaseBranch);
+
+    /// <summary>
+    /// Phase 45 — create <paramref name="baseBranch"/> branched from
+    /// <c>main</c> in every repo of the given product. Idempotent — repos
+    /// where the branch already exists are no-op'd. Returns a list of
+    /// per-repo warning strings for repos where creation failed (e.g.
+    /// missing clone, no auth) so the caller can surface them without
+    /// failing the whole request.
+    /// </summary>
+    private static async Task<List<string>> EnsureBranchInProductReposAsync(
+        ForgeDbContext db,
+        string productId,
+        string baseBranch,
+        Forge.Api.Services.Stories.IStoryGitOps git,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var warnings = new List<string>();
+        var repos = await db.Repos.AsNoTracking()
+            .Where(r => r.ProductId == productId)
+            .ToListAsync(ct);
+        if (repos.Count == 0)
+        {
+            warnings.Add($"No repos attached to product '{productId}'; branch '{baseBranch}' was recorded but not created in any working tree.");
+            return warnings;
+        }
+        foreach (var repo in repos)
+        {
+            try
+            {
+                await git.EnsureBranchAsync(repo, baseBranch, "main", ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex,
+                    "Branch '{Branch}' could not be created in repo {RepoId} ({DisplayName}).",
+                    baseBranch, repo.Id, repo.DisplayName);
+                warnings.Add($"{repo.DisplayName ?? repo.Id}: {ex.Message}");
+            }
+        }
+        return warnings;
+    }
 
     private static Epic MapEpic(EpicRow r) => new(
         r.Id, r.Name, r.Status, r.Progress,

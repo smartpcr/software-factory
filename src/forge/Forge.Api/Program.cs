@@ -416,9 +416,11 @@ using (var scope = app.Services.CreateScope())
     // Phase 38 — backfill WorkItemRow rows for legacy plan-doc and
     // workstream ids so DeliverableLoop.PointsToMaxIter has a real
     // wi.Points to read from.
-    // Phase 43 must run first — it adds AttachmentsJson to story_spawns
-    // which Phase 38's EF query reads via the mapped entity.
+    // Phase 43 + Phase 45 must run first — they add columns to story_spawns
+    // (AttachmentsJson, BaseBranch) which Phase 38's EF query reads via the
+    // mapped entity. Skipping either would crash with "no such column".
     await Phase43Migration.ApplyAsync(db);
+    await Phase45Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
@@ -434,6 +436,8 @@ using (var scope = app.Services.CreateScope())
     await Phase43Migration.ApplyAsync(db);
     // Phase 44 — agent_claims table + MaxConcurrentTasks on agents.
     await Phase44Migration.ApplyAsync(db);
+    // Phase 45 ran above (out of numeric order) so Phase 38's EF read of
+    // story_spawns sees the BaseBranch column.
     // Phase 42 already ran at the top of this scope(must precede the EF
     // queries in Phase 38 / Phase 40 that select all WorkItem / Workstream
     // columns including the new PlanAnchor / PlanContentHash).

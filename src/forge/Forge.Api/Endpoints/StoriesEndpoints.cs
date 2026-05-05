@@ -70,6 +70,11 @@ public static class StoriesEndpoints
         grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
+        // Phase 45 — change the operator-chosen base branch on a live spawn.
+        // Triggers a rebase + retarget of every still-open PR; merged spawn
+        // PRs are replayed onto the new base so downstream phases see the
+        // already-checked-in story work.
+        grp.MapPatch("/{storyId}/spawn/base-branch", ChangeBaseBranch).WithName("ChangeStoryBaseBranch");
         grp.MapPost("/{storyId}/spawn/retry", RetrySpawn).WithName("RetryStorySpawn");
         grp.MapPost("/{storyId}/spawn/dismiss-error", DismissError).WithName("DismissStorySpawnError");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
@@ -94,7 +99,9 @@ public static class StoriesEndpoints
         return app;
     }
 
-    public sealed record SpawnRequest(string? RepoId, IReadOnlyList<string>? UploadIds = null);
+    public sealed record SpawnRequest(string? RepoId, IReadOnlyList<string>? UploadIds = null, string? BaseBranch = null);
+
+    public sealed record ChangeBaseBranchRequest(string BaseBranch);
 
     public sealed record DecomposeRequest(IReadOnlyList<DecomposeWorkstream> Workstreams);
 
@@ -145,6 +152,9 @@ public static class StoriesEndpoints
         string description = string.Empty;
         int points = 0;
         string? defaultRepoId = null;
+        // Phase 45 — when SpawnRequest.BaseBranch is omitted, fall back to
+        // the story's default. Spawn-side override still wins when set.
+        string? defaultBaseBranchFromStory = null;
 
         var ps = await db.ProductStories.AsNoTracking().FirstOrDefaultAsync(s => s.Id == storyId);
         string? storyAttachmentsJson = null;
@@ -154,6 +164,7 @@ public static class StoriesEndpoints
             description = ps.Description ?? string.Empty;
             points = ps.Points;
             storyAttachmentsJson = ps.AttachmentsJson;
+            defaultBaseBranchFromStory = string.IsNullOrEmpty(ps.BaseBranch) ? null : ps.BaseBranch;
             // ProductStoryRow is product-scoped, not repo-scoped; caller must
             // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
         }
@@ -182,6 +193,24 @@ public static class StoriesEndpoints
         var repoId = req?.RepoId ?? defaultRepoId;
         var now = DateTimeOffset.UtcNow;
         var safeStoryId = StoryPaths.Safe(storyId);
+
+        // Phase 45 — operator-chosen base branch. Defaults to "main"; non-default
+        // values are validated as a single git ref name (no spaces, no leading/
+        // trailing slash, no `..`) so a typo can't escape into a `git fetch`
+        // command line. Created branched from main on first orchestrator drive.
+        // Resolution order: explicit SpawnRequest.BaseBranch > story default > "main".
+        var baseBranchInput = req?.BaseBranch?.Trim();
+        var baseBranch = !string.IsNullOrEmpty(baseBranchInput)
+            ? baseBranchInput!
+            : (defaultBaseBranchFromStory ?? "main");
+        if (!IsValidBranchName(baseBranch))
+        {
+            return Results.Problem(
+                title: "Invalid base branch name",
+                detail: $"'{baseBranch}' is not a valid git branch name.",
+                statusCode: 400);
+        }
+
         var spawn = new StorySpawnRow
         {
             Id = $"spawn-{safeStoryId}",
@@ -191,6 +220,7 @@ public static class StoriesEndpoints
             StoryPoints = points,
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
+            BaseBranch = baseBranch,
             // Branch must use the sanitized id — `:` is illegal in Windows
             // worktree paths and crashes the orchestrator on commit.
             PlanBranch = $"story/{safeStoryId}/plan",
@@ -444,6 +474,265 @@ public static class StoriesEndpoints
         if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
         var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
         return Results.Ok(ToContract(refreshed));
+    }
+
+    /// <summary>
+    /// Phase 45 — change the operator-chosen base branch on a live spawn.
+    /// The orchestrator (a) rebases the new base on top of <c>main</c> so
+    /// commits added to <c>main</c> after the spawn started are pulled in,
+    /// (b) replays every already-merged spawn PR (plan + impl + qa + step-def)
+    /// onto the rebased base so downstream phases see the in-progress story
+    /// work, and (c) retargets every still-open spawn PR at the new base
+    /// branch via the provider.
+    /// </summary>
+    private static async Task<IResult> ChangeBaseBranch(
+        HttpContext ctx,
+        string storyId,
+        [FromBody] ChangeBaseBranchRequest? req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator,
+        IStoryGitOps git,
+        IStoryProviderOps provider)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.BaseBranch))
+        {
+            return Results.Problem(title: "baseBranch is required", statusCode: 400);
+        }
+
+        var newBase = req.BaseBranch.Trim();
+        if (!IsValidBranchName(newBase))
+        {
+            return Results.Problem(
+                title: "Invalid base branch name",
+                detail: $"'{newBase}' is not a valid git branch name.",
+                statusCode: 400);
+        }
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var oldBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        if (string.Equals(oldBase, newBase, StringComparison.Ordinal))
+        {
+            // No-op — keeps the endpoint idempotent.
+            return Results.Ok(ToContract(spawn));
+        }
+
+        var result = await ApplySpawnBaseBranchChangeAsync(
+            db, hub, git, provider, spawn, newBase, ctx.RequestAborted);
+        if (result.PrepareError is not null)
+        {
+            return Results.Problem(
+                title: "Failed to prepare new base branch",
+                detail: result.PrepareError,
+                statusCode: 500);
+        }
+
+        return Results.Ok(new
+        {
+            spawn = ToContract(result.Spawn!),
+            replayedBranches = result.ReplayedBranches,
+            retargetedPrs = result.RetargetedPrs,
+            replayFailures = result.ReplayFailures,
+        });
+    }
+
+    /// <summary>
+    /// Phase 45 — outcome of <see cref="ApplySpawnBaseBranchChangeAsync"/>. When
+    /// <see cref="PrepareError"/> is non-null, the new-branch creation /
+    /// rebase step failed and no other state was touched. Otherwise the spawn
+    /// row was updated, merged branches replayed, and open PRs retargeted —
+    /// per-step failures collected in <see cref="ReplayFailures"/>.
+    /// </summary>
+    internal sealed record SpawnBaseBranchChangeResult(
+        StorySpawnRow? Spawn,
+        IReadOnlyList<string> ReplayedBranches,
+        IReadOnlyList<string> RetargetedPrs,
+        IReadOnlyList<string> ReplayFailures,
+        string? PrepareError);
+
+    /// <summary>
+    /// Phase 45 — apply a base-branch change to a live spawn. Used by both
+    /// <c>PATCH /api/stories/{id}/spawn/base-branch</c> (operator-explicit)
+    /// AND the story-level <c>PATCH /api/products/{p}/stories/{id}</c> when
+    /// the operator edits the story's default base and a spawn already
+    /// exists. The two callers want the same behavior — replay merged PRs
+    /// onto the new base so the rest of the lifecycle stays consistent
+    /// (user requirements #5 + #6).
+    /// </summary>
+    internal static async Task<SpawnBaseBranchChangeResult> ApplySpawnBaseBranchChangeAsync(
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IStoryGitOps git,
+        IStoryProviderOps provider,
+        StorySpawnRow spawn,
+        string newBase,
+        CancellationToken ct)
+    {
+        var oldBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+
+        var repo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
+            : null;
+
+        // (a) Ensure the new base branch exists, branched from main, and is
+        // up-to-date with main's tip so it can carry forward both the new
+        // upstream commits AND the spawn's already-merged PRs.
+        try
+        {
+            await git.EnsureBranchAsync(repo, newBase, "main", ct);
+            await git.RebaseBaseBranchAsync(repo, newBase, "main", ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new SpawnBaseBranchChangeResult(
+                Spawn: null,
+                ReplayedBranches: Array.Empty<string>(),
+                RetargetedPrs: Array.Empty<string>(),
+                ReplayFailures: Array.Empty<string>(),
+                PrepareError: ex.Message);
+        }
+
+        // (b) Replay every already-merged spawn PR onto the new base so a
+        // workstream that depends on a sibling whose PR has already merged
+        // doesn't lose the precondition. Best-effort — a real conflict gets
+        // surfaced as a LastError on the spawn instead of failing the call.
+        var mergedBranches = new List<string>();
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var plan = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId, ct);
+            if (plan is not null && string.Equals(plan.Col, "merged", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(plan.Branch))
+            {
+                mergedBranches.Add(plan.Branch);
+            }
+        }
+        if (!string.IsNullOrEmpty(spawn.QaPrId))
+        {
+            var qa = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.QaPrId, ct);
+            if (qa is not null && string.Equals(qa.Col, "merged", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(qa.Branch))
+            {
+                mergedBranches.Add(qa.Branch);
+            }
+        }
+
+        var workstreams = await db.Workstreams.AsNoTracking()
+            .Where(w => w.StorySpawnId == spawn.Id)
+            .ToListAsync(ct);
+        var allWsPrIds = workstreams
+            .SelectMany(w => StoriesJsonHelpers.Deserialize(w.PrsJson))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var wsPrs = allWsPrIds.Count == 0
+            ? new List<PrRow>()
+            : await db.Prs.AsNoTracking().Where(p => allWsPrIds.Contains(p.Id)).ToListAsync(ct);
+
+        foreach (var pr in wsPrs.Where(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrEmpty(p.Branch)))
+        {
+            if (!mergedBranches.Contains(pr.Branch!, StringComparer.Ordinal))
+                mergedBranches.Add(pr.Branch!);
+        }
+
+        var replayFailures = new List<string>();
+        foreach (var b in mergedBranches)
+        {
+            try
+            {
+                await git.MergeAsync(repo, b, newBase, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                replayFailures.Add($"{b}: {ex.Message}");
+            }
+        }
+
+        // (c) Retarget every still-open spawn PR at the new base. Workstreams
+        // pinned to the old base are switched too so the next orchestrator
+        // tick opens new PRs against the right tip.
+        var openPrIds = new List<string>();
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var plan = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId, ct);
+            if (plan is not null && !string.Equals(plan.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                openPrIds.Add(plan.Id);
+        }
+        if (!string.IsNullOrEmpty(spawn.QaPrId))
+        {
+            var qa = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.QaPrId, ct);
+            if (qa is not null && !string.Equals(qa.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                openPrIds.Add(qa.Id);
+        }
+        foreach (var pr in wsPrs.Where(p => !string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase)))
+        {
+            openPrIds.Add(pr.Id);
+        }
+
+        foreach (var prId in openPrIds.Distinct(StringComparer.Ordinal))
+        {
+            try
+            {
+                await provider.UpdatePrBaseBranchAsync(prId, newBase, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                replayFailures.Add($"pr {prId} retarget: {ex.Message}");
+            }
+        }
+
+        // Update each workstream row's Base so subsequent PRs (a workstream
+        // with no merged PR yet, or step-def branches opened later) target
+        // the new base too.
+        var trackedWs = await db.Workstreams.Where(w => w.StorySpawnId == spawn.Id).ToListAsync(ct);
+        foreach (var w in trackedWs)
+        {
+            w.Base = newBase;
+        }
+
+        var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+        spawnRow.BaseBranch = newBase;
+        spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+        if (replayFailures.Count > 0)
+        {
+            spawnRow.LastError = $"base-branch change replay incomplete: {string.Join("; ", replayFailures)}";
+            spawnRow.LastErrorAt = DateTimeOffset.UtcNow;
+        }
+        await db.SaveChangesAsync(ct);
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "base-branch-changed", spawn = ToContract(spawnRow), oldBase, newBase }, ct);
+
+        return new SpawnBaseBranchChangeResult(
+            Spawn: spawnRow,
+            ReplayedBranches: mergedBranches,
+            RetargetedPrs: openPrIds.Distinct(StringComparer.Ordinal).ToArray(),
+            ReplayFailures: replayFailures,
+            PrepareError: null);
+    }
+
+    /// <summary>
+    /// Cheap subset of git's <c>refname</c> rules — enough to refuse the
+    /// obvious typos that would otherwise reach <c>git fetch</c>. Full
+    /// validation lives in <c>git check-ref-format</c>; we don't shell out
+    /// here because the operator UI is the only caller.
+    /// </summary>
+    internal static bool IsValidBranchName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        if (name.Length > 250) return false;
+        if (name.StartsWith('-') || name.StartsWith('/') || name.EndsWith('/') || name.EndsWith(".lock")) return false;
+        if (name.Contains("..") || name.Contains("//") || name.Contains("@{")) return false;
+        foreach (var c in name)
+        {
+            if (c <= 0x20 || c == 0x7f) return false;
+            if (c is ' ' or '~' or '^' or ':' or '?' or '*' or '[' or '\\') return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -867,14 +1156,17 @@ public static class StoriesEndpoints
         // PushBranchAsync stages any uncommitted changes and pushes without
         // calling EnsureWorktreeAsync (which can reset the local branch).
         var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        var loggerFactory = ctx.RequestServices.GetService<ILoggerFactory>();
         var capturedStoryId = storyId;
         var capturedSpawnId = spawn.Id;
         var capturedRepoId = spawn.RepoId;
         var capturedPlanBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var capturedPlanPrId = spawn.PlanPrId;
         var capturedStoryTitle = spawn.StoryTitle ?? storyId;
+        var capturedBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         _ = Task.Run(async () =>
         {
+            var logger = loggerFactory?.CreateLogger("forge.story.accept");
             try
             {
                 using var scope = scopeFactory.CreateScope();
@@ -890,21 +1182,62 @@ public static class StoriesEndpoints
                 // per-iteration commits to origin.
                 await git.PushBranchAsync(repo, capturedPlanBranch, CancellationToken.None);
 
-                // Determine if we need a new PR or can merge the existing one.
+                // Phase 45 (revision after operator feedback) — every ACCEPT
+                // results in a PR that targets the spawn's CURRENT base
+                // branch. Three cases:
+                //   1. No PR recorded → open a new one.
+                //   2. Existing PR merged → open a fresh "[plan-update]" PR.
+                //   3. Existing PR open but its `Base` differs from the
+                //      current spawn base → close it locally and open a new
+                //      one against the current base. (Operators changed the
+                //      base branch mid-flight; the stale PR would never
+                //      merge to the right place.)
+                //   4. Existing PR open AND already targets the current base
+                //      → reuse it (idempotent across multiple per-doc accepts).
                 string? prId = capturedPlanPrId;
-                var needNewPr = true;
+                var openNewPr = true;
+                PrRow? existingPr = null;
                 if (!string.IsNullOrEmpty(prId))
                 {
-                    var existingPr = await scopeDb.Prs.FirstOrDefaultAsync(p => p.Id == prId);
-                    needNewPr = existingPr is null
-                        || string.Equals(existingPr.Col, "merged", StringComparison.OrdinalIgnoreCase);
+                    existingPr = await scopeDb.Prs.FirstOrDefaultAsync(p => p.Id == prId);
+                }
+                if (existingPr is null)
+                {
+                    openNewPr = true;
+                }
+                else if (string.Equals(existingPr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    openNewPr = true;
+                }
+                else if (!string.Equals(existingPr.Base ?? "main", capturedBase, StringComparison.Ordinal))
+                {
+                    // Stale base — close locally and open a new PR. The
+                    // upstream PR (if any) is left for the operator to close
+                    // since IForgeProvider has no edit-PR endpoint at v0.1.
+                    logger?.LogInformation(
+                        "Closing stale plan PR {PrId} (base '{OldBase}' ≠ current spawn base '{NewBase}') and opening a fresh one.",
+                        existingPr.Id, existingPr.Base, capturedBase);
+                    existingPr.Col = "closed";
+                    existingPr.IsActive = false;
+                    existingPr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+                    await scopeDb.SaveChangesAsync();
+                    if (scopeHub is not null)
+                    {
+                        await scopeHub.Clients.All.SendAsync("pr.changed",
+                            new { kind = "superseded", id = existingPr.Id, reason = "base-branch-change" });
+                    }
+                    openNewPr = true;
+                }
+                else
+                {
+                    openNewPr = false;
                 }
 
-                if (needNewPr)
+                if (openNewPr)
                 {
                     prId = await provider.OpenPrAsync(new StoryPrRequest(
                         Branch: capturedPlanBranch,
-                        BaseBranch: "main",
+                        BaseBranch: capturedBase,
                         Title: $"[plan-update] {capturedStoryTitle}",
                         Body: $"Accepted plan artifact `{fileName}` for story `{StoryPaths.Safe(capturedStoryId)}` (score {previousScore}, operator override).",
                         Repo: repo,
@@ -919,6 +1252,11 @@ public static class StoriesEndpoints
                         spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
                         await scopeDb.SaveChangesAsync();
                     }
+                    if (scopeHub is not null)
+                    {
+                        await scopeHub.Clients.All.SendAsync("story-spawn.changed",
+                            new { kind = "plan-pr-opened", storyId = capturedStoryId, prId, baseBranch = capturedBase });
+                    }
                 }
 
                 // Auto-approve + merge.
@@ -926,7 +1264,7 @@ public static class StoriesEndpoints
                 catch { /* best effort — may already be approved */ }
 
                 await provider.MergePrAsync(prId!, CancellationToken.None);
-                await git.MergeAsync(repo, capturedPlanBranch, "main", CancellationToken.None);
+                await git.MergeAsync(repo, capturedPlanBranch, capturedBase, CancellationToken.None);
 
                 if (scopeHub is not null)
                 {
@@ -934,7 +1272,37 @@ public static class StoriesEndpoints
                         new { kind = "artifact-merged", storyId = capturedStoryId, key });
                 }
             }
-            catch { /* orchestrator-grade best-effort; errors surface via LastError on the spawn */ }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Phase 45 — surface the failure via spawn.LastError so the
+                // operator can see WHY the accept didn't land. Previously
+                // swallowed silently, which produced the "I clicked accept
+                // and nothing happened" symptom the operator hit on
+                // 2026-05-05 with feature/memory-pressure.
+                logger?.LogError(ex,
+                    "Accept fire-and-forget failed for story {StoryId} key={Key}; persisting LastError.",
+                    capturedStoryId, key);
+                try
+                {
+                    using var scope = scopeFactory.CreateScope();
+                    var scopeDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var scopeHub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+                    var spawnRow = await scopeDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == capturedSpawnId);
+                    if (spawnRow is not null)
+                    {
+                        spawnRow.LastError = $"accept {key} failed: {ex.Message}";
+                        spawnRow.LastErrorAt = DateTimeOffset.UtcNow;
+                        spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                        await scopeDb.SaveChangesAsync();
+                        if (scopeHub is not null)
+                        {
+                            await scopeHub.Clients.All.SendAsync("story-spawn.changed",
+                                new { kind = "spawn-error", storyId = capturedStoryId, message = spawnRow.LastError });
+                        }
+                    }
+                }
+                catch { /* best-effort — already in the failure path */ }
+            }
         });
 
         return Results.Ok(new
@@ -1357,7 +1725,10 @@ public static class StoriesEndpoints
                 RepoId = spawn.RepoId,
                 Name = w.Title,
                 Branch = $"ws/{safeStory}/{slug}",
-                Base = "main",
+                // Phase 45 — manually-submitted workstreams inherit the
+                // spawn's chosen base branch so their PRs target the same
+                // branch as the orchestrator-created ones.
+                Base = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch,
                 Epic = spawn.StoryId,
                 Status = "planning",
                 WorktreeJson = "[\"(not yet created)\"]",
@@ -1904,6 +2275,10 @@ public static class StoriesEndpoints
         storyPoints = row.StoryPoints,
         repoId = row.RepoId,
         phase = row.Phase,
+        // Phase 45 — operator-chosen base branch (defaults to "main"). The
+        // empty-string fallback covers rows persisted before Phase 45's
+        // backfill ran; the orchestrator treats those as "main" as well.
+        baseBranch = string.IsNullOrEmpty(row.BaseBranch) ? "main" : row.BaseBranch,
         planBranch = row.PlanBranch,
         planPrId = row.PlanPrId,
         decompositionJson = row.DecompositionJson,

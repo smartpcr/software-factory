@@ -144,7 +144,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // scratch dir + sibling-copy trick.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+        // Phase 45 — root the worktree at the spawn's chosen base branch
+        // (defaults to main). Plan branch was branched off this base, so
+        // worktree create here mirrors that ancestry.
+        var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
 
         // Phase 43 — copy operator-uploaded attachments into the worktree
         // so architect agents can read them with their file tools.
@@ -251,22 +255,61 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var diskPath = Path.Combine(worktreePath, spec.RepoPath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(diskPath)!);
 
-        // Resume case — a previous tick's architect already wrote this file
-        // and committed it to the branch. Skip re-invoking the LLM unless
-        // forceResume is set.
-        if (!forceResume && File.Exists(diskPath))
+        var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+
+        // Phase 45 follow-up — pass-verdict guard. If the latest deliverable
+        // for this doc already evaluated to `pass`, do NOT spin up another
+        // LLM iteration. The previous file content is already in the worktree;
+        // returning it short-circuits the loop. forceResume (operator clicked
+        // Retry on a stalled doc) bypasses; Restart works because it deletes
+        // deliverables first, so the check finds none. Without this guard,
+        // any path that re-enters the strategy (Resume click, scheduler tick,
+        // base-branch-change replay, boot recovery) re-iterates a doc that
+        // was already done — burning tokens and confusing the UI's status.
+        if (!forceResume)
         {
-            var existing = await File.ReadAllTextAsync(diskPath, ct);
-            if (!string.IsNullOrWhiteSpace(existing))
+            using var passScope = this.scopeFactory.CreateScope();
+            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var latestVerdict = (await passDb.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == docWorkItemId)
+                    .ToListAsync(ct))
+                .OrderByDescending(d => d.CreatedAt)
+                .FirstOrDefault()?.Verdict;
+            if (string.Equals(latestVerdict, "pass", StringComparison.OrdinalIgnoreCase))
             {
+                var cachedFromDisk = File.Exists(diskPath)
+                    ? await File.ReadAllTextAsync(diskPath, ct)
+                    : string.Empty;
                 this.logger?.LogInformation(
-                    "Plan file '{File}' already in worktree ({Bytes} bytes); skipping architect invocation.",
-                    spec.FileName, existing.Length);
-                return existing;
+                    "Plan file '{File}' (workItem {WorkItem}) latest verdict already 'pass'; skipping architect invocation.",
+                    spec.FileName, docWorkItemId);
+                return cachedFromDisk;
             }
         }
 
-        var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+        // Resume case — a previous tick's architect already wrote this file
+        // and committed it to the branch. Skip re-invoking the LLM unless
+        // forceResume is set OR the doc has no deliverables (PENDING — the
+        // previous run's loop was cancelled/timed out before the evaluator
+        // could score, so the file exists but the doc needs to be scored).
+        if (!forceResume && File.Exists(diskPath))
+        {
+            using var checkScope = this.scopeFactory.CreateScope();
+            var checkDb = checkScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var hasDeliverables = await checkDb.Deliverables.AsNoTracking()
+                .AnyAsync(d => d.WorkItemId == docWorkItemId, ct);
+            if (hasDeliverables)
+            {
+                var existing = await File.ReadAllTextAsync(diskPath, ct);
+                if (!string.IsNullOrWhiteSpace(existing))
+                {
+                    this.logger?.LogInformation(
+                        "Plan file '{File}' already in worktree ({Bytes} bytes) with deliverables; skipping architect invocation.",
+                        spec.FileName, existing.Length);
+                    return existing;
+                }
+            }
+        }
 
         // Phase 43 — build attachment prompt section if the story has uploaded reference docs.
         var attachmentPromptSection = BuildAttachmentPromptSection(spawn);
@@ -547,7 +590,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Phase 42 — same git-worktree plumbing as the full plan run.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+        // Phase 45 — root the worktree at the spawn's chosen base branch
+        // (defaults to main). Plan branch was branched off this base, so
+        // worktree create here mirrors that ancestry.
+        var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
 
         // Phase 43 — copy operator-uploaded attachments into the worktree.
         await CopyAttachmentsToWorktreeAsync(spawn, worktreePath, ct);

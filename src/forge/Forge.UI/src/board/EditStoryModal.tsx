@@ -50,14 +50,14 @@ export function EditStoryModal({ open, story, onClose, onSaved }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const updated = await forgeApi.updateProductStory(story.productId, story.id, {
+      const result = await forgeApi.updateProductStory(story.productId, story.id, {
         name: cleanName,
         description: description.trim(),
         points: ptsNum,
         status: status.trim() || 'planning',
       });
-      useToastStore.getState().show(`Story "${updated.name}" updated`, 'success');
-      onSaved?.(updated);
+      useToastStore.getState().show(`Story "${result.story.name}" updated`, 'success');
+      onSaved?.(result.story);
       onClose();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Update failed';

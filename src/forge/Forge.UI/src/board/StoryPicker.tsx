@@ -71,9 +71,9 @@ export function StoryPicker({ open, currentStory, productId: propProductId, onSe
     if (!name || !productId) return;
     setBusy(true);
     try {
-      const story = await forgeApi.createProductStory(productId, { name });
-      useToastStore.getState().show(`Story "${story.name}" created`, 'success');
-      onSelect(story.id);
+      const result = await forgeApi.createProductStory(productId, { name });
+      useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
+      onSelect(result.story.id);
       onClose();
     } catch (e) {
       useToastStore.getState().show(

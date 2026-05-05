@@ -716,7 +716,7 @@ The six open questions from `docs/forge/scoring-and-promotion.md` §9 default-st
 
 - [ ] **14.1** **Schema migrations.** New columns on `agents`: `level INT NOT NULL DEFAULT 0`, `level_updated_at DATETIME?`, `hourly_usd DECIMAL(8,2) NOT NULL` (computed at write time as `4 + level * 3` so the invariant survives backfills). New columns on `crews`: `timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles'`, `schedule_enabled BIT NOT NULL DEFAULT 1`. New tables — `deliverables(id, work_item_id, crew_id, generator_agent_id, evaluator_agent_id, iter, score, dims_json, verdict, notes, gen_cost_usd, eval_cost_usd, judge_agent_id?, judge_score?, judge_notes?, created_at)` and `agent_level_history(id, agent_id, old_level, new_level, window_avg, reason, created_at)`. Backfill: every existing agent → `level=0`, `hourly_usd=4`; every existing crew → `timezone='America/Los_Angeles'`, `schedule_enabled=1`. Migration is `Forge.Api/Persistence/Phase14Migration.cs` and runs idempotently on boot like the others. Locked numbers live in `Forge.Api/ScoringConstants.cs`.
 - [ ] **14.2** **Schedule gate middleware.** `ScheduleGate` ASP.NET endpoint filter applied to `POST /api/crews/{id}/plan` and `POST /api/crews/{id}/code` (and any future dispatch verb). Reads the crew's `timezone` + `schedule_enabled`, computes "is now within Mon–Sat 09:00–21:00 in that TZ?", refuses with `409 + crew.off_shift` otherwise. `?override=true` requires `crew.lead == caller || global ProductOwner role` and writes `crew_history(kind='dispatch-after-hours', ...)`. Telemetry: `forge.crew.schedule.refused` counter tagged with crew id and current hour-of-day. **Status:** `Forge.Api/Services/ScheduleGate.cs` is the pure helper; `CrewsEndpoints.ApplyScheduleGateAsync` wires it into both stubs ahead of the CLI check; override path writes `dispatch-after-hours` to `crew_history`. Telemetry counter is deferred to Phase 14.12.
-- [ ] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=800 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score and work-item points (`>=90 → pass`, `>=RejectThreshold(points) → iterate`, else `reject`); the reject threshold scales down for higher-point items (pts 1→70, 2→65, 3→60, 4→50, 5→40, 6→30, 7→20, 9+→10) so harder tasks iterate more before giving up. The model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text, points) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
+- [ ] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=4000 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score and work-item points (`>=90 → pass`, `score == 0 → iterate` (always — score 0 means the generator failed to produce the file, not that the work quality is rejectable), `>=RejectThreshold(points) → iterate`, else `reject`); the reject threshold scales down for higher-point items (pts 1→70, 2→65, 3→60, 4→50, 5→40, 6→30, 7→20, 9+→10) so harder tasks iterate more before giving up. The model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text, points) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `DeriveVerdict` returns `iterate` for score 0 regardless of reject threshold; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
 - [~] **14.4** **Iteration loop in dispatcher.** `DeliverableLoop` orchestrates: (a) generator run, (b) evaluator run, (c) parse + persist `deliverable` row, (d) on `iterate` re-enter (a) up to **5 iterations** total, (e) on `pass` mark the work item green and exit, (f) on `reject` flip the work item back to `proposed` for the lead. Caps from spec §3: hard iteration cap = 5, budget cap = `crew.maxTaskBudgetUsd`, time cap = the schedule window (if 21:00 is hit, deliverable persists with `verdict='paused-eod'` and resumes at 09:00 — the loop is already idempotent because the iteration counter is in the row, not in memory). Each iteration emits `forge.deliverable.iteration.{started,scored,passed,iterated,rejected,stalled}` for the OTel pipeline. **Status (Batch 3):** `Forge.Api/Services/DeliverableLoop.cs` (registered as `IDeliverableLoop` in DI) is the orchestrator — pure, takes generator/evaluator delegates so it's testable without a live runner. Pass/reject/iterate/stalled/stalled-budget verdicts implemented + work-item state flips wired (`pass→closed`, `reject→proposed`, stall leaves state). **Remaining:** time-cap (`paused-eod` resume), telemetry counters (deferred to 14.12), and the production wiring that calls into `AgentRunnerDispatcher` from the plan/code endpoints — that lands when 13.4/13.5 stop returning 501.
 - [~] **14.5** **Dispute path (Q14.2).** `POST /api/deliverables/{id}/dispute` — caller must be the deliverable's `generator_agent_id` (or that agent's `lead`); refuses if `judge_agent_id` is already set on the row (one dispute per deliverable). Spawns a `judge` task on the team lead's crew via the existing `AgentRunnerDispatcher.StartAsync(kind='judge', ...)` path, with `judge-system.md` template. Judge writes `judge_score` + `judge_notes` to the same row; if `judge_score >= 90` the deliverable transitions to `pass` retroactively (work item flips green). Dispute does NOT reset the iteration counter — the spec is explicit on this (§3: dispute is not a free retry). **Status (Batch 3):** `Forge.Api/Endpoints/DeliverablesEndpoints.cs` exposes `GET /api/deliverables/{id}`, `GET /api/work-items/{id}/deliverables`, and `POST /api/deliverables/{id}/dispute` with body `{ judgeAgentId, judgeScore, judgeNotes }`. One-dispute-per-row guard, generator/lead/PO authority gate, and retroactive work-item close on `judgeScore ≥ 90` are implemented. **Remaining:** auto-spawning a judge task on the team lead's crew (depends on the runner being live — caller currently supplies the judge result synchronously, which the eventual autonomous judge will also do via the same endpoint).
 - [~] **14.6** **Soul preamble injector.** New file `agents/_preamble.md` in the repo (NOT under `%LOCALAPPDATA%`, so the rubric is auditable in git). The runner concatenates `<preamble>\n\n---\n\n<soul.md body>` before sending to the model and records `agent.preambleSha = sha256(preamble bytes)` on every deliverable for tamper detection. New templates `agents/templates/judge-system.md` and (rubric reminder) `agents/templates/eval-system.md` extend the existing Phase 13.2 templates rather than replacing them. Bumping the preamble is a deliberate operator action — the change is logged as `forge.preamble.changed` with the before/after sha and the user id. **Status (Batch 1):** preamble file written; runner concatenation + sha recording + judge/eval templates remain.
@@ -4670,6 +4670,224 @@ Feature: Implementation-plan hierarchy & sizing limits
 - **Manual context emission from the UI.** Operators cannot hand-author an ACP context at v0.1 — only agents emit. A "post note to bus" CTA on the work item is a Phase R polish.
 
 ---
+
+## Phase 43 — Story attachments & operator accept
+
+> Operator-uploaded reference documents and manual acceptance of plan-doc artifacts.
+
+### Story attachments
+
+`StorySpawnRow.AttachmentsJson` — JSON array of operator-uploaded reference documents. Each entry: `{ "id": "guid", "fileName": "spec.md", "storagePath": "relative/path", "mimeType": "text/markdown", "sizeBytes": 1234 }`. Files live on disk under `E:\forge\attachments\{spawnId}\`. Schema migration `Phase43Migration.cs` adds the `AttachmentsJson TEXT` column to `story_spawns`. **Migration ordering:** Phase 43 must run before Phase 38 because Phase 38's EF query reads `StorySpawns` which maps the new column — without it the startup crashes with `no such column: s.AttachmentsJson`.
+
+Upload flow: `POST /api/stories/upload` stores files on disk and returns upload ids; the PATCH `/api/products/{id}/stories/{storyId}` endpoint accepts `uploadIds` / `removeFileNames` to attach/detach files from the story. `CrewStoryArtifactStrategy.CopyAttachmentsToWorktreeAsync` copies attachments into the plan worktree so architect agents can read them with file tools.
+
+### Operator accept (manual pass override)
+
+`POST /api/stories/{storyId}/spawn/artifacts/{key}/accept` — manually marks a plan-doc artifact as passed despite its evaluator score being below the 90-point pass threshold. The operator overrides the evaluator verdict: the latest deliverable is flipped to `pass`, any in-flight invocations and queued rows are cancelled, and the doc transitions to the `awaiting-pr-review` lifecycle stage. **Idempotent:** calling accept on an already-passed doc re-triggers the PR merge flow without re-flipping the verdict.
+
+After acceptance, a background task pushes the plan branch (via `IStoryGitOps.PushBranchAsync` which stages uncommitted changes and pushes all local-only per-iteration commits) and opens a PR to merge the accepted content to main. If the original plan PR is already merged, a new `[plan-update]` PR is opened. The PR is auto-approved and merged.
+
+**UI:** a green-bordered `✓ ACCEPT` button sits between CANCEL and RESTART in the doc conversation pane (`DocConversationPane.tsx`). A confirmation dialog warns the operator that the evaluator verdict is being overridden. The button stays enabled even after the doc is completed so the operator can re-trigger the merge if the first attempt failed.
+
+**API:** `forgeApi.acceptStoryArtifact(storyId, key)` — returns `{ storyId, key, status, previousVerdict, previousScore, queueRowsCancelled, invocationsCancelled }`.
+
+### Default story points
+
+`NewStoryModal.tsx` defaults points to **5** (was 0) so newly created stories have a reasonable budget and reject threshold out of the box.
+
+### Story points propagation
+
+`PATCH /api/products/{id}/stories/{storyId}` — when `points` is updated, the change is propagated to `StorySpawnRow.StoryPoints` so the spawn's budget and scoring thresholds reflect the updated value. Previously the spawn snapshot was a one-time copy at creation and never synced.
+
+### Plan-doc budget improvements
+
+- **Budget uses work-item points, not story points.** `CrewStoryArtifactStrategy.ProducePlanFileAsync` recomputes the budget from `docPoints` (the plan-doc work item's points) instead of `spawn.StoryPoints`. This prevents 0-point stories from starving their docs.
+- **10-minute floor for plan docs.** `BudgetForPhase` enforces a 600-second minimum for `plan:*` phase tags. The previous floor of 180s (3 minutes) caused hard timeouts when the architect needed to read repo context, process sibling docs, and write large markdown files.
+- **Timeout displayed in UI.** The conversation tab pager shows `timeout Nm` alongside `iter X of Y`. The backend returns `budgetSeconds` from the `GetArtifactIterations` endpoint.
+
+### Orchestrator re-drive after resume
+
+`RunResumeWithCleanupAsync` — after a resumed doc's gen-eval loop completes successfully (verdict = pass), the orchestrator is re-driven via `orchestrator.DriveAsync(storyId)`. This fixes the case where docs are restarted/resumed individually (outside the orchestrator's original `Task.WhenAll`): previously the orchestrator was never notified that all docs had passed, so the plan PR was never opened.
+
+### IStoryGitOps.PushBranchAsync
+
+New interface method `PushBranchAsync(repo, branch)` — stages any uncommitted changes in the worktree (from a cancelled agent mid-write) and pushes the branch to origin. Unlike `CommitFilesAsync` (which calls `EnsureWorktreeAsync` and can reset the local branch), `PushBranchAsync` operates directly on the existing worktree without a checkout step, preserving local-only per-iteration commits. `RealStoryGitOps` implements with branch-level locking; `InMemoryStoryGitOps` is a no-op.
+
+---
+
+## Phase 45 — Operator-chosen base branch on a story spawn
+
+> Replaces the hard-coded "every spawn ships to `main`" assumption with a per-spawn base branch the operator picks at spawn time and can change mid-flight. Every PR a spawn produces — plan, workstream, QA, step-defs — targets this branch. The lifecycle, gate logic, and crew flow are unchanged.
+
+### Why
+
+A real product team rarely ships every story straight to `main`. Release branches, feature gates, and long-running integration branches all need stories that fan out across many PRs but converge on a non-`main` target. Forcing operators to retarget every PR by hand after the fact is busywork and error-prone; the swarm's whole value is end-to-end automation.
+
+### Concept
+
+A spawn now carries a `BaseBranch` field on `StorySpawnRow` (defaults to `"main"`). Every place the orchestrator previously passed `"main"` as a base — `git.EnsureBranchAsync` (plan / workstream / qa / step-def branches), `provider.OpenPrAsync` (PR target), `git.MergeAsync` (local merge after PR merge), and `git.FileExistsAsync` (artifact-existence gate) — now reads `BaseBranchOf(spawn)`.
+
+When `BaseBranch != "main"`, the orchestrator's first drive calls `EnsureSpawnBaseBranchAsync` to create the branch from `main` so the spawn's plan branch can fork off it. This is idempotent — the branch is no-op'd when it already exists in the repo.
+
+### Data model
+
+`StorySpawnRow.BaseBranch TEXT NOT NULL DEFAULT 'main'` — added by `Phase45Migration`. Backfill `UPDATE story_spawns SET BaseBranch = 'main' WHERE BaseBranch IS NULL OR BaseBranch = ''` so existing rows behave identically.
+
+`WorkstreamRow.Base` is no longer hard-coded to `"main"` at insert. Both code paths that create workstream rows (`StorySpawnOrchestrator.PersistDecompositionAsync`, `PlanReconciler.InsertWorkstream`, manual `POST /spawn/decompose`) now read `spawn.BaseBranch` so a workstream's `Base` matches the spawn's chosen target.
+
+### REST API
+
+- `POST /api/stories/{storyId}/spawn` — `SpawnRequest` gains `baseBranch?: string`. Validated against a cheap subset of `git check-ref-format` (no spaces, no leading/trailing slash, no `..`, no `@{`, ASCII-control or `\ ~ ^ : ? * [` characters) so a typo cannot reach the `git fetch` command line. Empty / missing falls back to `"main"`.
+- `PATCH /api/stories/{storyId}/spawn/base-branch` — change the base branch on a live spawn. Body: `{ "baseBranch": "..." }`. Returns `{ spawn, replayedBranches, retargetedPrs, replayFailures }`. Idempotent — when the new base equals the old, it's a no-op.
+- `GET /api/stories/{storyId}/spawn` — response gains `baseBranch` on the `spawn` object.
+
+### Base-branch change semantics
+
+The PATCH endpoint runs three steps in order:
+
+1. **Ensure + rebase the new base on top of `main`.** `IStoryGitOps.EnsureBranchAsync` creates the branch from `main` if it doesn't exist; `IStoryGitOps.RebaseBaseBranchAsync` (new) brings it up to `origin/main`'s tip via `git rebase --rebase-merges` in a dedicated worktree, pushed with `--force-with-lease`. So the new base contains every commit that landed on `main` after the spawn started.
+2. **Replay every already-merged spawn PR onto the new base.** Plan PR, every merged workstream PR, QA PR, and any merged step-def PRs are walked; their source branches are merged into the new base via `IStoryGitOps.MergeAsync`. Failures are collected (not thrown) and surfaced as `replayFailures[]` so the operator can resolve conflicts manually without losing the rest of the operation.
+3. **Retarget every still-open spawn PR.** Plan PR (if open), open workstream PRs, QA PR (if open), open step-def PRs are walked; `IStoryProviderOps.UpdatePrBaseBranchAsync` (new) updates each one's target branch.
+
+After the three steps the spawn's `BaseBranch` is updated and every workstream's `Base` is updated to match. Subsequent orchestrator ticks use the new base for everything that hasn't been opened yet — workstreams that are still `planning`, step-def PRs not yet opened, etc.
+
+### Provider support
+
+`IStoryProviderOps.UpdatePrBaseBranchAsync(prId, newBase, ct)` — local cache binding (`LocalStoryProviderOps`) updates `PrRow.Base` and emits a SignalR `pr.changed { kind: "base-branch-changed" }`. Production binding (`ProviderStoryProviderOps`) does the same and logs a structured warning that the upstream provider edit is missing — the `IForgeProvider` contract has no PATCH-PR endpoint at v0.1, so the operator must reset the base on GitHub / ADO manually until provider support lands. **`forge_v2.md` candidate:** add `IForgeProvider.UpdatePullRequestBaseAsync` and a PATCH `/repos/{owner}/{repo}/pulls/{n}` (GitHub) / equivalent ADO call so the retarget is end-to-end automatic.
+
+### Git ops
+
+`IStoryGitOps.RebaseBaseBranchAsync(repo, baseBranch, upstreamBranch, ct)` — bring the spawn's base branch up to the upstream tip:
+
+- **Real binding (`RealStoryGitOps`):** dedicated worktree at `{cloneRoot}/.worktree/spawn-rebase-{slug}/`. `git fetch origin {base}` + `git fetch origin {upstream}` + `git reset --hard origin/{base}` + `git rebase --rebase-merges origin/{upstream}` + `git push --force-with-lease origin {base}`. No-op when `base == upstream`.
+- **In-memory binding (`InMemoryStoryGitOps`):** copies the upstream tree over the base branch tree and bumps the tip sha. Tests rely on this to assert that downstream phases see commits that were on `main` after the spawn started.
+
+### UI
+
+- **`SpawnStoryModal`** — adds an optional "Base branch" input below the repo picker. Placeholder = `"main"`; help text explains that non-default values are branched from main automatically and that every PR the spawn produces targets this branch.
+- **`StoryCard`** — header shows a `base: {branchName}` chip when the spawn's base differs from `"main"`, with a tooltip explaining the targeting behavior.
+- **`forgeApi.spawnStory`** — gains an optional `baseBranch` parameter. `forgeApi.changeStoryBaseBranch(storyId, baseBranch)` calls the new PATCH endpoint and returns the replay summary.
+
+### Story-level default base branch
+
+Operators rarely want to type a base branch on every spawn — most stories should target the same branch end-to-end. The story itself carries the default, and the spawn endpoint reads it as the fallback when `SpawnRequest.BaseBranch` is omitted.
+
+`ProductStoryRow.BaseBranch TEXT NOT NULL DEFAULT 'main'` — added by `Phase45Migration` to the `product_stories` table alongside the `story_spawns` column. Backfilled to `"main"`. Surfaced through:
+
+- **API** — `CreateStoryRequest.BaseBranch` (POST) and `PatchStoryRequest.BaseBranch` (PATCH) on `/api/products/{productId}/stories[/{storyId}]`. The `ProductStory` contract gains `BaseBranch` (defaulting to `"main"` for back-compat).
+- **Spawn fallback** — `StoriesEndpoints.Spawn` reads the originating `ProductStoryRow.BaseBranch` and uses it when the `SpawnRequest.BaseBranch` is null/empty. Explicit `SpawnRequest` value still wins.
+- **NewStoryModal** — optional Base branch input (placeholder `"main"`) below the Points field. Help text explains that non-default values are created from `main` immediately in every repo of the product.
+- **StoryDetailPanel** — Base branch field in the meta grid alongside Status / Points. Inline-editable with the same commit-on-blur pattern. A "branch created" toast confirms success; a `branchWarnings[]` toast surfaces any per-repo failures.
+
+#### Auto-create branch on POST + PATCH
+
+When the operator either (a) creates a story with `baseBranch != "main"`, or (b) PATCHes an existing story to change `baseBranch` to a non-default value, the server immediately calls `IStoryGitOps.EnsureBranchAsync(repo, baseBranch, "main")` for every `RepoRow` in the product. The branch is materialised in advance so a subsequent spawn doesn't have to wait for the first orchestrator drive — and so the operator can see the branch on GitHub / ADO right after the PATCH returns.
+
+Implementation details:
+- `EnsureBranchInProductReposAsync` helper iterates `Repos` filtered by `ProductId`. Each `EnsureBranchAsync` call is idempotent — repos where the branch already exists are no-ops. Per-repo failures (no clone yet, auth failure, branch protection) get logged + collected as `branchWarnings[]` strings.
+- The endpoint's response wraps the `ProductStory` payload as `{ story, branchWarnings }` whenever any warning surfaced; otherwise it returns the bare `ProductStory` for back-compat. The TypeScript client (`forgeApi.createProductStory` / `updateProductStory`) normalises both shapes to `{ story, branchWarnings? }`.
+- Patching the story's `BaseBranch` ALSO triggers the **full retarget flow** when a spawn already exists for the story: rebase the new base on top of `main`, replay every already-merged spawn PR onto it, retarget every still-open spawn PR to the new base, and update every workstream row's `Base`. The story-level PATCH and the spawn-level `PATCH /api/stories/{id}/spawn/base-branch` therefore share a single internal helper (`StoriesEndpoints.ApplySpawnBaseBranchChangeAsync`) so both code paths produce identical results. This satisfies user requirements #5 + #6: changing base branch on a story with a live spawn must immediately retarget every existing spawn task at the new base, not just set the default for future work.
+- Response body when retarget runs: `{ story, branchWarnings?, replayedBranches?, retargetedPrs?, replayFailures? }`. The UI's `StoryDetailPanel` shows two toasts on save — one for branch creation and one summarising the spawn retarget (e.g. `"Spawn retargeted: 4 open PRs → feature/memory-pressure, 0 merged branches replayed"`).
+- Empty-string base branch is normalised to `"main"` so the operator can clear the field via the inline editor.
+
+### Constraints / non-goals
+
+- **No automatic conflict resolution during replay.** A merge conflict during step 2 of the PATCH endpoint surfaces as a `replayFailures[]` entry plus a `LastError` on the spawn so the operator can resolve it manually. The PATCH still completes — the new base is set, open PRs are retargeted — but the operator owns the conflict resolution.
+- **No upstream PR-edit at v0.1.** Provider support for retargeting open PRs upstream is a `forge_v2.md` candidate. Until then the local cache reflects the new base but GitHub / ADO need a manual reset on each open PR.
+- **Base branch can't be changed while a phase is mid-step.** The endpoint runs synchronously, so a concurrent orchestrator tick may see the partially-updated state. Subsequent ticks recover (the orchestrator's per-step methods are idempotent), but operators should expect to see a brief "two open PRs against different bases" gap on the UI between PATCH start and finish.
+- **No multi-base spawn.** A spawn has exactly one base branch; per-workstream base override is out of scope.
+- ~~**Story-level PATCH does NOT replay merged PRs.**~~ **Revised after operator feedback (2026-05-05): story-level PATCH now runs the same full retarget flow as `PATCH /api/stories/{id}/spawn/base-branch` when a spawn exists**, because operators expect "I changed my base branch, all my open PRs should target the new branch" without having to discover a second endpoint.
+
+### ADO repo identifier — canonical, not display name
+
+Operator hit `TF401019: Git repository 'update' does not exist` when ACCEPT auto-opened a PR against ADO. Root cause: `ProviderStoryProviderOps.OpenPrAsync` was passing `Repo.DisplayName` ("update" — operator's friendly alias) as the ADO repo identifier. ADO's PR REST API needs the canonical slug from the remote URL (`https://msazure.visualstudio.com/One/_git/ASZ-UpdateService` → `ASZ-UpdateService`).
+
+Fix: `ProviderStoryProviderOps.OpenPrAsync` now uses `PrCoordsResolver.Resolve(req.Repo, req.Repo.Kind)` — the same canonical resolver `CrewQueueWorker` (live-exec PRs) and `WorkItemsEndpoints` (agent-callable `POST /work-items/{id}/create-pr`) already use. The resolver extracts the slug after `_git/` for ADO and uses `GhRepo` / `GhOwner` for GitHub. Story-spawn PRs and live-exec PRs now share the exact same repo-coordinate resolution path so a new provider kind is wired in exactly one place.
+
+### Plan-doc loop guards — pass-verdict + PR-merge cancellation
+
+After fixing ACCEPT to always open a PR, the operator hit a residual UX bug: two of four plan-docs stayed at `LIVE` even though they'd already evaluated to score 92 on iter 28 / iter 19. Status logic in `GetArtifactIterations` puts `isRunnerLive`/`isRecentEvent` ahead of `lastWasPass`, so any in-flight iteration shows `LIVE` regardless of past pass verdicts. And the only "skip if already done" check in `ProducePlanFileAsync` was guarding on the worktree file existing — not on the deliverable history. Any re-entry path (Resume click, scheduler tick, base-branch-change replay, boot recovery via `StoryResumeRecoveryService`) re-iterated docs that were already passing.
+
+Two fixes, both shipping in this same revision:
+
+**Pass-verdict guard in the strategy.** At the top of `ProducePlanFileAsync` (and inherited by `ResumeSingleArtifactAsync`), query the latest `DeliverableRow.Verdict` for `plan-doc:{spawn.Id}:{fileName}`. When it's `pass` AND `forceResume` is false, return the cached worktree content immediately — no LLM call. Restart still works (it deletes deliverables first, so the check finds none). Retry with `forceResume=true` still bypasses. This prevents new iterations from being kicked off after a pass.
+
+**Plan-PR-merge reactor.** New helper `PlanPrMergeReactor.OnPlanPrMergedAsync` walks every plan-doc work item for the spawn whose plan PR was just merged, calls `IAgentRunner.CancelByTaskAsync` to kill in-flight invocations, flips `WorkItemRow.ExecutionStatus` to `idle`, cancels live `task_queue` rows, and clears `StorySpawnRow.ResumePendingJson` so boot recovery doesn't re-fire. Called from BOTH paths that flip `PrRow.Col` to `merged`:
+
+- `ProviderStoryProviderOps.MergePrAsync` — Forge-issued merges (e.g. ACCEPT auto-merge).
+- `PrSyncJob.RunSyncAsync` — when the periodic sweep observes the upstream PR is now completed (operator-merged on ADO/GitHub directly).
+
+Idempotent: re-firing on an already-handled spawn is a no-op. Each call emits `story-spawn.changed { kind: "plan-pr-merged-cancelled", cancelledCount: N }` so the UI can surface a confirmation.
+
+### ACCEPT always opens a PR against the current base
+
+`POST /api/stories/{storyId}/spawn/artifacts/{key}/accept` is the operator-override that flips a plan-doc deliverable to `pass` despite a sub-90 score. Earlier the fire-and-forget post-accept task only opened a new PR when the existing plan PR was already merged — which is the wrong shape when the operator changes the base branch mid-flight, because the still-open plan PR is targeting a stale base. Operator feedback (2026-05-05): "PR should be created no matter if base branch is changed."
+
+Revised algorithm in `AcceptArtifact`'s background task:
+
+1. Push the plan branch to origin.
+2. Decide whether to open a new PR or reuse the existing one:
+   - No existing PR → open new.
+   - Existing PR is `merged` → open a new `[plan-update]` PR.
+   - Existing PR is open AND its `Base` differs from the current `spawn.BaseBranch` → close the stale PR locally, emit `pr.changed { kind: "superseded" }`, open a new PR against the current base.
+   - Existing PR is open AND already targets the current base → reuse it. Idempotent across multiple per-doc accepts (the four plan docs share one PR).
+3. Auto-approve + merge the resulting PR.
+
+Failures in the fire-and-forget task are no longer silently swallowed — they persist as `StorySpawnRow.LastError` + emit `story-spawn.changed { kind: "spawn-error" }` so the workstream banner surfaces the reason. Previously the empty `catch {}` block left operators stuck with `AWAITING-PR-REVIEW` artifacts and no signal about why the merge stalled.
+
+### Test scenarios
+
+```gherkin
+@phase45 @base-branch
+Feature: Operator-chosen base branch on a story spawn
+
+  Scenario: Spawn defaults to main when baseBranch is omitted
+    When the operator spawns a story without specifying a base branch
+    Then the StorySpawnRow.BaseBranch is "main"
+    And the plan PR targets main
+
+  Scenario: Spawn with custom base branch persists and surfaces on plan PR
+    When the operator spawns a story with baseBranch = "release/2026-q2"
+    Then the StorySpawnRow.BaseBranch is "release/2026-q2"
+    And the plan PR targets "release/2026-q2"
+
+  Scenario: Custom base branch is created from main on first drive
+    Given a spawn with baseBranch = "feature/big-thing" exists
+    When the orchestrator drives the spawn for the first time
+    Then a git branch "feature/big-thing" exists branched from main
+
+  Scenario: Workstreams inherit base branch from spawn
+    Given a spawn with baseBranch = "release/lts" reaches the implement phase
+    When the architect's decomposition creates workstream rows
+    Then every WorkstreamRow.Base equals "release/lts"
+    And every workstream PR targets "release/lts"
+
+  Scenario: Change base branch endpoint rebases new base + retargets open PRs
+    Given a spawn with baseBranch = "main" has an open plan PR and one open workstream PR
+    When the operator PATCHes the spawn with baseBranch = "release/tip"
+    Then the new base branch is rebased on top of main
+    And the plan PR's target is "release/tip"
+    And the workstream PR's target is "release/tip"
+    And every workstream row's Base is "release/tip"
+
+  Scenario: Change base branch replays already-merged spawn PRs onto new base
+    Given a spawn has its plan PR merged on the old base
+    And one workstream PR has merged on the old base
+    When the operator changes the spawn's base branch
+    Then the new base branch contains the plan branch's tree
+    And the new base branch contains the merged workstream branch's tree
+
+  Scenario: Change base branch rejects invalid branch names
+    Given a spawn exists
+    When the operator PATCHes the spawn with baseBranch = "has spaces"
+    Then the API returns 400
+    And the spawn's BaseBranch is unchanged
+
+  Scenario: Change base branch is idempotent when new base equals old
+    Given a spawn with baseBranch = "main"
+    When the operator PATCHes the spawn with baseBranch = "main"
+    Then the API returns 200 with no replayed branches and no retargeted PRs
+```
 
 ## Phase R — Post-implementation refactor (deferred)
 

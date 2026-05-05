@@ -320,6 +320,31 @@ public sealed class PrSyncJob : BackgroundService
 
         await db.SaveChangesAsync(ct);
 
+        // Phase 45 follow-up — when PrSyncJob observes upstream "completed"
+        // (= Forge "merged") for the first time, fire the plan-PR-merge
+        // reactor so any still-running plan-doc loops stop. We only fire
+        // when colChanged AND newCol == "merged" — every other path is a
+        // no-op. Best-effort: failure here just means the loops keep
+        // running until they hit pass; the next tick re-fires.
+        if (colChanged && string.Equals(newCol, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var runner = this.scopeFactory.CreateScope().ServiceProvider.GetService<Forge.Api.Agents.IAgentRunner>();
+                if (runner is not null)
+                {
+                    await Forge.Api.Services.Stories.PlanPrMergeReactor.OnPlanPrMergedAsync(
+                        db, runner, this.hub, candidate.PrId, this.logger, ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger.LogWarning(ex,
+                    "PrSyncJob: PlanPrMergeReactor failed for {PrId}; loops may keep running until they hit pass.",
+                    candidate.PrId);
+            }
+        }
+
         // -- Run linker (best effort) --
         if (snapshot.CommentsFetched)
         {

@@ -208,8 +208,24 @@ public sealed record NewPullRequestRequest(
 /// Phase 6.11 — passes the per-request user PAT to provider write paths.
 /// When <see cref="UserPat"/> is non-null, the provider authenticates as
 /// the user; otherwise it falls back to the server PAT (read-only).
+///
+/// Phase 45 follow-up — <see cref="RepositoryName"/> and <see cref="ProjectName"/>
+/// carry per-call repo coordinates for merge/comment/approve/close, mirroring
+/// the explicit fields on <see cref="NewPullRequestRequest"/>. Without this,
+/// AdoProvider's merge/comment/approve fall back to the global
+/// <c>Forge:Ado:Repository</c> + <c>Forge:Ado:Project</c> config, which fails
+/// with 404 in multi-repo deployments where the PR lives in a different
+/// repo than the global default. Set by <c>ProviderStoryProviderOps</c> on
+/// every call by looking up the PR's <c>RepoRow</c> and resolving via
+/// <see cref="PrCoordsResolver"/>. Anonymous keeps both null so single-repo
+/// deployments fall through to the global config unchanged.
 /// </summary>
-public sealed record ProviderCallContext(string? UserId, string? UserPat, string? IdempotencyKey)
+public sealed record ProviderCallContext(
+    string? UserId,
+    string? UserPat,
+    string? IdempotencyKey,
+    string? RepositoryName = null,
+    string? ProjectName = null)
 {
     public static readonly ProviderCallContext Anonymous = new(null, null, null);
 }

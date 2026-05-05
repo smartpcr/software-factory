@@ -100,6 +100,12 @@ function niceTicks(maxVal: number, segments: number): { max: number; ticks: numb
     if (idx >= choices.length) { idx = 0; step = base * 10; break; }
     step = choices[idx] * base;
   }
+  // Prefer a tighter ceiling by trying one step down — accept it when
+  // the max still covers the data (>= maxVal) and wastes less headroom.
+  if (idx > 0) {
+    const tighterStep = choices[idx - 1] * base;
+    if (tighterStep * segments >= maxVal) step = tighterStep;
+  }
   const max = step * segments;
   const ticks: number[] = [];
   for (let i = 0; i <= segments; i++) ticks.push(step * i);
@@ -192,7 +198,7 @@ export function CostView() {
   // stat cell — including it here flattens every bar to a hairline when
   // realised spend is well below the cap (the common case during ramp-up).
   const yScale = useMemo(
-    () => niceTicks(Math.max(0, ...summary.days.map((d) => d.totalUsd)), 3),
+    () => niceTicks(Math.max(0, ...summary.days.map((d) => d.totalUsd)), 4),
     [summary],
   );
   const dayMax = yScale.max;
@@ -327,7 +333,7 @@ export function CostView() {
               </div>
               <div className="cost-chart-bars">
                 <div className="cost-chart-grid">
-                  <div /><div /><div /><div />
+                  {yScale.ticks.map((_, i) => <div key={i} />)}
                 </div>
                 {summary.days.map((day, i) => {
                   const dayTotal = day.totalUsd;
@@ -335,16 +341,17 @@ export function CostView() {
                   return (
                     <div className="cost-chart-col" key={day.date} data-today={i === summary.todayIndex || undefined}>
                       <div className="cost-chart-stack" style={{ height: `${heightPct}%` }}>
-                        {epics.map((e) => {
-                          const v = day.byEpic[e.id] ?? 0;
+                        {Object.entries(day.byEpic).map(([epicId, v]) => {
                           if (v === 0) return null;
                           const segPct = dayTotal > 0 ? (v / dayTotal) * 100 : 0;
+                          const meta = epicById.get(epicId);
+                          const color = meta ? epicVar(meta.color) : 'var(--text-tertiary)';
                           return (
                             <div
-                              key={e.id}
+                              key={epicId}
                               className="seg"
-                              style={{ height: `${segPct}%`, background: epicVar(e.color) }}
-                              title={`${e.id} · ${fmt(v)}`}
+                              style={{ height: `${segPct}%`, background: color }}
+                              title={`${epicId} · ${fmt(v)}`}
                             />
                           );
                         })}

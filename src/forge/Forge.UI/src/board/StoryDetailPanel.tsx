@@ -9,7 +9,7 @@ interface Props {
   storyId: string;
 }
 
-type EditableField = 'name' | 'description' | 'points' | 'status';
+type EditableField = 'name' | 'description' | 'points' | 'status' | 'baseBranch';
 
 export function StoryDetailPanel({ storyId }: Props) {
   const activeProductId = useProductsStore((s) => s.activeProductId);
@@ -44,17 +44,43 @@ export function StoryDetailPanel({ storyId }: Props) {
   const totalPts = useMemo(() => storyCards.reduce((s, c) => s + c.pts, 0), [storyCards]);
   const doneCards = useMemo(() => storyCards.filter((c) => c.col === 'done'), [storyCards]);
 
-  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status'>>) {
+  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status' | 'baseBranch'>>) {
     if (!story) return;
     setSavingField(field);
     try {
-      const updated = await forgeApi.updateProductStory(story.productId, story.id, {
+      const result = await forgeApi.updateProductStory(story.productId, story.id, {
         name: patch.name ?? story.name,
         description: patch.description ?? story.description,
         points: patch.points ?? story.points,
         status: patch.status ?? story.status,
+        // Phase 45 — only send baseBranch when this edit changes it; sending
+        // the unchanged value would still pass through validation but is
+        // wasted bandwidth and would re-emit the "branch created" toast.
+        baseBranch: patch.baseBranch,
       });
-      setStory(updated);
+      setStory(result.story);
+      // Phase 45 — surface auto-create-branch + spawn-retarget result.
+      if (field === 'baseBranch') {
+        const newBase = patch.baseBranch ?? result.story.baseBranch;
+        if (result.branchWarnings && result.branchWarnings.length > 0) {
+          useToastStore.getState().show(
+            `Base branch '${newBase}' could not be created in some repos: ${result.branchWarnings.join('; ')}`,
+            'danger',
+          );
+        } else if (newBase && newBase !== 'main') {
+          useToastStore.getState().show(`Base branch '${newBase}' created in product repos`, 'success');
+        }
+        // Spawn retarget summary (only present when a spawn existed).
+        const retargeted = result.retargetedPrs?.length ?? 0;
+        const replayed = result.replayedBranches?.length ?? 0;
+        const replayFails = result.replayFailures?.length ?? 0;
+        if (retargeted > 0 || replayed > 0) {
+          useToastStore.getState().show(
+            `Spawn retargeted: ${retargeted} open PR${retargeted === 1 ? '' : 's'} → ${newBase}, ${replayed} merged branch${replayed === 1 ? '' : 'es'} replayed${replayFails > 0 ? ` (${replayFails} failure${replayFails === 1 ? '' : 's'} — see LastError)` : ''}`,
+            replayFails > 0 ? 'danger' : 'success',
+          );
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Save failed';
       useToastStore.getState().show(msg, 'danger');
@@ -164,6 +190,29 @@ export function StoryDetailPanel({ storyId }: Props) {
                     }
                     if (!story || n === story.points) return;
                     void persist('points', { points: n });
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="detail-meta" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginTop: 12 }}>
+            <div className="detail-meta-cell">
+              <div className="detail-meta-label">
+                Base branch
+                <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                  Default for spawns. Non-default values are created from <code>main</code> immediately in every repo.
+                </span>
+              </div>
+              <div className="detail-meta-val">
+                <InlineInput
+                  value={story?.baseBranch ?? 'main'}
+                  placeholder="main"
+                  disabled={!story}
+                  saving={savingField === 'baseBranch'}
+                  onCommit={(v) => {
+                    const trimmed = v.trim() || 'main';
+                    if (!story || trimmed === (story.baseBranch || 'main')) return;
+                    void persist('baseBranch', { baseBranch: trimmed });
                   }}
                 />
               </div>
@@ -494,7 +543,7 @@ function AttachmentSection({ story, onUpdate }: { story: ProductStory | null; on
       const updated = await forgeApi.updateProductStory(story.productId, story.id, {
         uploadIds: [result.uploadId],
       });
-      onUpdate(updated);
+      onUpdate(updated.story);
       useToastStore.getState().show(`${fileList.length} file${fileList.length > 1 ? 's' : ''} added`, 'success');
     } catch (e) {
       useToastStore.getState().show(e instanceof Error ? e.message : 'Upload failed', 'danger');
@@ -510,7 +559,7 @@ function AttachmentSection({ story, onUpdate }: { story: ProductStory | null; on
       const updated = await forgeApi.updateProductStory(story.productId, story.id, {
         removeFileNames: [fileName],
       });
-      onUpdate(updated);
+      onUpdate(updated.story);
     } catch (e) {
       useToastStore.getState().show(e instanceof Error ? e.message : 'Remove failed', 'danger');
     } finally {

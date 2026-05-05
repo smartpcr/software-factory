@@ -179,20 +179,61 @@ public sealed class StorySpawnOrchestrator
         return advanced;
     }
 
+    /// <summary>
+    /// Phase 45 — return the spawn's chosen base branch (defaults to
+    /// <c>"main"</c>). Every PR target + every branch-creation base in this
+    /// orchestrator routes through this helper so the operator-chosen
+    /// branch flows everywhere consistently.
+    /// </summary>
+    private static string BaseBranchOf(StorySpawnRow spawn) =>
+        string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+
+    /// <summary>
+    /// Phase 45 — make sure the spawn's base branch exists, branched from
+    /// <c>main</c>. No-op when the base is <c>main</c> itself or when the
+    /// branch is already present in the repo. Called at the very start of
+    /// every drive so a freshly-spawned story creates the operator's branch
+    /// before the plan branch is forked off it.
+    /// </summary>
+    private async Task EnsureSpawnBaseBranchAsync(
+        StorySpawnRow spawn, RepoRow? repo, CancellationToken ct)
+    {
+        var b = BaseBranchOf(spawn);
+        if (string.Equals(b, "main", StringComparison.Ordinal)) return;
+        await this.git.EnsureBranchAsync(repo, b, "main", ct);
+    }
+
     // ── plan ─────────────────────────────────────────────────────────────────
     private async Task<bool> DrivePlanAsync(
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
+        var baseBranch = BaseBranchOf(spawn);
+        await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
+
         // Step 1 — PR doesn't exist yet: produce artifacts, commit, open PR.
         // Also re-enters when forceResume=true and PR exists: re-generate
         // stalled/iterate docs, commit new content, push to existing PR.
-        if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume)
+        // Also re-enters when some plan docs have no deliverables (PENDING)
+        // — they need their gen-eval loops run even if the PR was already
+        // opened for a sibling doc that passed earlier.
+        var hasPendingDocs = false;
+        if (!string.IsNullOrEmpty(spawn.PlanPrId) && !forceResume)
+        {
+            var planDocIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
+            var docIdsWithDeliverables = await db.Deliverables.AsNoTracking()
+                .Where(d => planDocIds.Contains(d.WorkItemId))
+                .Select(d => d.WorkItemId)
+                .Distinct()
+                .ToListAsync(ct);
+            hasPendingDocs = docIdsWithDeliverables.Count < planDocIds.Count;
+        }
+        if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume || hasPendingDocs)
         {
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
-                await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
+                await this.git.EnsureBranchAsync(repo, planBranch, baseBranch, ct);
 
                 await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
 
@@ -207,7 +248,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                         Branch: planBranch,
-                        BaseBranch: "main",
+                        BaseBranch: baseBranch,
                         Title: $"[plan] {story.Title}",
                         Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
                         Repo: repo,
@@ -226,7 +267,7 @@ public sealed class StorySpawnOrchestrator
                     {
                         spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
                         await db.SaveChangesAsync(ct);
-                        await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
+                        await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, baseBranch, ct);
                     }
 
                     await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
@@ -266,7 +307,7 @@ public sealed class StorySpawnOrchestrator
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
-                await this.ApproveAndMergeAsync(spawn.PlanPrId, planBranch, reviewer, repo, ct);
+                await this.ApproveAndMergeAsync(spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
                 var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                 await ClearLastErrorAsync(db, spawnRow, ct);
                 await db.SaveChangesAsync(ct);
@@ -510,7 +551,9 @@ public sealed class StorySpawnOrchestrator
                 RepoId = spawn.RepoId,
                 Name = w.Title,
                 Branch = $"ws/{GitSafe(spawn.StoryId)}/{idSlug}",
-                Base = "main",
+                // Phase 45 — workstreams inherit the spawn's chosen base
+                // branch so every coding-task PR targets the right branch.
+                Base = BaseBranchOf(spawn),
                 Epic = spawn.StoryId,
                 Status = "planning",
                 WorktreeJson = "[\"(not yet created)\"]",
@@ -578,6 +621,9 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
+        await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
+        var baseBranch = BaseBranchOf(spawn);
+
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
             .OrderBy(w => w.Sort)
@@ -617,8 +663,18 @@ public sealed class StorySpawnOrchestrator
             w.Status = "active";
             await db.SaveChangesAsync(ct);
 
-            // Branch + commit + PR.
-            await this.git.EnsureBranchAsync(repo, w.Branch, "main", ct);
+            // Branch + commit + PR. Branch is rooted at the spawn's chosen
+            // base branch so the diff against the PR target is the workstream's
+            // changes only.
+            // If the workstream row carries a stale Base (e.g. from a
+            // pre-Phase-45 row, or before the operator changed the spawn
+            // base mid-flight), bring it forward here so the persisted row
+            // stays consistent with what we actually opened the PR against.
+            if (!string.Equals(w.Base, baseBranch, StringComparison.Ordinal))
+            {
+                w.Base = baseBranch;
+            }
+            await this.git.EnsureBranchAsync(repo, w.Branch, baseBranch, ct);
 
             // Check if the gen/eval loop already passed for this workstream.
             // If so, skip re-running the loop and use the cached workspace
@@ -653,7 +709,7 @@ public sealed class StorySpawnOrchestrator
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: w.Branch,
-                BaseBranch: "main",
+                BaseBranch: baseBranch,
                 Title: $"[impl] {w.Name}",
                 Body: $"Implementation of `{w.Id}` for story `{GitSafe(spawn.StoryId)}`.",
                 Repo: repo,
@@ -678,6 +734,7 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
+        var baseBranch = BaseBranchOf(spawn);
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
             .ToListAsync(ct);
@@ -699,7 +756,7 @@ public sealed class StorySpawnOrchestrator
                 if (comments.Count == 0)
                 {
                     // No findings — straight to approve and merge.
-                    await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, ct);
+                    await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
                     w.Status = "merging";
                     await db.SaveChangesAsync(ct);
                     changed = true;
@@ -732,7 +789,7 @@ public sealed class StorySpawnOrchestrator
             if (stillOpen == 0)
             {
                 var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
-                await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, ct);
+                await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
                 changed = true;
@@ -746,6 +803,9 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
+        await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
+        var baseBranch = BaseBranchOf(spawn);
+
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
             .OrderBy(w => w.Sort)
@@ -755,14 +815,14 @@ public sealed class StorySpawnOrchestrator
         if (string.IsNullOrEmpty(spawn.QaPrId))
         {
             var qaBranch = spawn.QaBranch ?? $"story/{GitSafe(spawn.StoryId)}/qa";
-            await this.git.EnsureBranchAsync(repo, qaBranch, "main", ct);
+            await this.git.EnsureBranchAsync(repo, qaBranch, baseBranch, ct);
             var files = await this.strategy.ProduceQaFeatureFilesAsync(spawn, story, workstreams, ct);
             await this.git.CommitFilesAsync(repo, qaBranch, files,
                 $"qa: feature files for story {GitSafe(spawn.StoryId)}", ct);
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: qaBranch,
-                BaseBranch: "main",
+                BaseBranch: baseBranch,
                 Title: $"[qa] {story.Title}",
                 Body: $"QA feature files for story `{GitSafe(spawn.StoryId)}`.",
                 Repo: repo,
@@ -778,7 +838,7 @@ public sealed class StorySpawnOrchestrator
 
             // Auto-merge the QA PR (review of QA artifacts is implicit in the deterministic flow).
             var qaReviewer = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(prId, qaBranch, qaReviewer, repo, ct);
+            await this.ApproveAndMergeAsync(prId, qaBranch, qaReviewer, repo, baseBranch, ct);
             await EmitChange(hub, "qa-pr-merged", spawnRow, ct);
             return true;
         }
@@ -798,14 +858,14 @@ public sealed class StorySpawnOrchestrator
                 .FirstOrDefaultAsync(ct);
             if (existing is not null) continue;
 
-            await this.git.EnsureBranchAsync(repo, stepBranch, "main", ct);
+            await this.git.EnsureBranchAsync(repo, stepBranch, baseBranch, ct);
             var files = await this.strategy.ProduceStepDefinitionsAsync(spawn, w, ct);
             await this.git.CommitFilesAsync(repo, stepBranch, files,
                 $"qa-steps({w.Id}): step definitions", ct);
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: stepBranch,
-                BaseBranch: "main",
+                BaseBranch: baseBranch,
                 Title: $"[qa-steps] {w.Name}",
                 Body: $"Step definitions for `{w.Id}` (story `{GitSafe(spawn.StoryId)}`).",
                 Repo: repo,
@@ -815,7 +875,7 @@ public sealed class StorySpawnOrchestrator
 
             // Approve + merge.
             var qaId = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(prId, stepBranch, qaId, repo, ct);
+            await this.ApproveAndMergeAsync(prId, stepBranch, qaId, repo, baseBranch, ct);
 
             // Stash on workstream PrsJson so artifacts endpoint surfaces it.
             var prsList = ParseStringList(w.PrsJson);
@@ -873,10 +933,16 @@ public sealed class StorySpawnOrchestrator
     /// not a reason to abort the merge. The merge + git-merge are NOT caught
     /// here — the caller decides whether to defer (catch externally) or let
     /// the scheduler surface the failure.
+    /// <para>
+    /// Phase 45 — <paramref name="baseBranch"/> is the spawn's chosen target
+    /// branch (defaults to <c>"main"</c>). Each caller passes its own
+    /// resolved value so the local <c>git merge</c> matches the upstream PR
+    /// merge target.
+    /// </para>
     /// </summary>
     private async Task ApproveAndMergeAsync(
         string prId, string branch, string reviewerAgentId,
-        RepoRow? repo, CancellationToken ct)
+        RepoRow? repo, string baseBranch, CancellationToken ct)
     {
         try
         {
@@ -890,7 +956,7 @@ public sealed class StorySpawnOrchestrator
         }
 
         await this.provider.MergePrAsync(prId, ct);
-        await this.git.MergeAsync(repo, branch, "main", ct);
+        await this.git.MergeAsync(repo, branch, baseBranch, ct);
     }
 
     /// <summary>
@@ -926,6 +992,11 @@ public sealed class StorySpawnOrchestrator
     // ── helpers ──────────────────────────────────────────────────────────────
     private async Task<bool> PlanArtifactsLandedAsync(RepoRow? repo, StorySpawnRow spawn, CancellationToken ct)
     {
+        // Phase 45 — verify the four plan artifacts on the spawn's chosen
+        // base branch (defaults to "main"). The plan PR merges into the
+        // spawn's base branch, not necessarily main, so this is the branch
+        // downstream phases will read from.
+        var baseBranch = BaseBranchOf(spawn);
         var paths = new[]
         {
             $"docs/stories/{GitSafe(spawn.StoryId)}/tech-spec.md",
@@ -935,7 +1006,7 @@ public sealed class StorySpawnOrchestrator
         };
         foreach (var p in paths)
         {
-            if (!await this.git.FileExistsAsync(repo, "main", p, ct)) return false;
+            if (!await this.git.FileExistsAsync(repo, baseBranch, p, ct)) return false;
         }
         return true;
     }

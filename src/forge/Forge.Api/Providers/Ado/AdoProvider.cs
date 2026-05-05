@@ -351,15 +351,74 @@ public class AdoProvider : IForgeProvider
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
         var responseBody = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
+        if (resp.IsSuccessStatusCode)
         {
-            // Surface the ADO error details (e.g. duplicate PR, missing branch)
-            // instead of the generic "400 (Bad Request)" from EnsureSuccessStatusCode.
-            throw new HttpRequestException(
-                $"ADO PR creation failed ({(int)resp.StatusCode}): {responseBody}");
+            using var ok = JsonDocument.Parse(responseBody);
+            return AdoMapper.ToPr(ok.RootElement, this.EffectiveProject);
         }
-        using var doc = JsonDocument.Parse(responseBody);
-        return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
+
+        // Phase 45 follow-up — ADO 409 / TF401179 means an active PR already
+        // exists for this {source, target} pair. This happens when our local
+        // PrRow was superseded but ADO's still holds the original (no edit-PR
+        // endpoint, so the operator's base-branch change couldn't be pushed
+        // upstream). Recover by querying ADO for the existing active PR and
+        // returning it as if creation succeeded — the caller's local cache
+        // gets aligned to the real upstream state.
+        if (resp.StatusCode == HttpStatusCode.Conflict
+            && responseBody.Contains("TF401179", StringComparison.OrdinalIgnoreCase))
+        {
+            var existing = await this.FindExistingActivePrAsync(
+                project, repoName, req.Branch, req.BaseBranch, client, ct);
+            if (existing is not null)
+            {
+                this.logger.LogInformation(
+                    "ADO PR creation hit 409 (active PR already exists for {Source} → {Target}); reusing PR {PrId}.",
+                    req.Branch, req.BaseBranch, existing.Id);
+                return existing;
+            }
+        }
+
+        // Surface the ADO error details (e.g. missing branch, permissions)
+        // instead of the generic "400 (Bad Request)" from EnsureSuccessStatusCode.
+        throw new HttpRequestException(
+            $"ADO PR creation failed ({(int)resp.StatusCode}): {responseBody}");
+    }
+
+    /// <summary>
+    /// Phase 45 follow-up — query ADO for an active PR matching the
+    /// <paramref name="sourceBranch"/> and <paramref name="targetBranch"/>.
+    /// Used to recover from <c>TF401179</c> ("active PR already exists")
+    /// without crashing PR creation when our local cache and ADO drifted.
+    /// </summary>
+    private async Task<Contracts.Pr?> FindExistingActivePrAsync(
+        string project, string repoName, string sourceBranch, string targetBranch,
+        HttpClient client, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{project}/_apis/git/repositories/{repoName}/pullrequests"
+                + $"?searchCriteria.sourceRefName={Uri.EscapeDataString("refs/heads/" + sourceBranch)}"
+                + $"&searchCriteria.targetRefName={Uri.EscapeDataString("refs/heads/" + targetBranch)}"
+                + "&searchCriteria.status=active&api-version=7.1";
+            var lookupResp = await client.GetAsync(url, ct);
+            this.health.RecordResponse(lookupResp);
+            if (!lookupResp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("value", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                return null;
+            foreach (var pr in arr.EnumerateArray())
+            {
+                return AdoMapper.ToPr(pr, project);
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger.LogWarning(ex,
+                "ADO active-PR lookup failed for {Source} → {Target}; will throw original 409.",
+                sourceBranch, targetBranch);
+            return null;
+        }
     }
 
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
@@ -372,6 +431,7 @@ public class AdoProvider : IForgeProvider
     public async Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
+        var (project, repo) = this.ResolveCallCoords(ctx);
         var client = this.NewClient(ctx);
         var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
         var payload = JsonSerializer.Serialize(new
@@ -380,53 +440,130 @@ public class AdoProvider : IForgeProvider
             status = 1,
         });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/threads?api-version=7.1")
+            $"{project}/_apis/git/repositories/{repo}/pullRequests/{num}/threads?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
+        var responseBody = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"ADO PR comment failed ({(int)resp.StatusCode}) at {project}/_apis/git/repositories/{repo}/pullRequests/{num}: {responseBody}");
+        }
     }
 
     public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
+        var (project, repo) = this.ResolveCallCoords(ctx);
         var client = this.NewClient(ctx);
         var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var prUrl = $"{project}/_apis/git/repositories/{repo}/pullrequests/{num}?api-version=7.1";
+
+        // Phase 45 follow-up — ADO's complete-PR endpoint rejects payloads
+        // with `lastMergeSourceCommit = null` ("Invalid argument value.
+        // Parameter name: You must specify a valid LastMergeSourceCommit").
+        // It's an anti-race-condition policy: the caller has to explicitly
+        // confirm which source commit they're merging so a concurrent push
+        // can't sneak content in. Fetch the current PR first, pull
+        // `lastMergeSourceCommit.commitId` out of the GET response, then
+        // pass it back in the PATCH payload. Returns 404 → bubble up so the
+        // caller sees a clean error, not a confusing merge failure.
+        string? lastMergeSourceCommit = null;
+        using (var probe = await client.GetAsync(prUrl, ct))
+        {
+            this.health.RecordResponse(probe);
+            if (probe.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new HttpRequestException(
+                    $"ADO PR merge failed (404): pull request {num} not found at {project}/_apis/git/repositories/{repo}.");
+            }
+            if (!probe.IsSuccessStatusCode)
+            {
+                var probeBody = await probe.Content.ReadAsStringAsync(ct);
+                throw new HttpRequestException(
+                    $"ADO PR merge precheck failed ({(int)probe.StatusCode}) at {prUrl}: {probeBody}");
+            }
+            using var probeDoc = JsonDocument.Parse(await probe.Content.ReadAsStringAsync(ct));
+            // Detect already-completed PR — ADO returns the PR with status
+            // "completed" / "abandoned" and would 400 our PATCH with a
+            // confusing message; surface a clean "already merged" instead.
+            if (probeDoc.RootElement.TryGetProperty("status", out var statusEl)
+                && statusEl.ValueKind == JsonValueKind.String)
+            {
+                var statusStr = statusEl.GetString();
+                if (string.Equals(statusStr, "completed", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Already merged upstream — return the current state to
+                    // the caller as if our merge succeeded. PrSyncJob will
+                    // reconcile the local Col → "merged" on the next tick.
+                    return AdoMapper.ToPr(probeDoc.RootElement, project);
+                }
+                if (string.Equals(statusStr, "abandoned", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new HttpRequestException(
+                        $"ADO PR merge refused: PR {num} is in 'abandoned' state. Reopen it on ADO before retrying.");
+                }
+            }
+            if (probeDoc.RootElement.TryGetProperty("lastMergeSourceCommit", out var srcEl)
+                && srcEl.ValueKind == JsonValueKind.Object
+                && srcEl.TryGetProperty("commitId", out var commitEl)
+                && commitEl.ValueKind == JsonValueKind.String)
+            {
+                lastMergeSourceCommit = commitEl.GetString();
+            }
+        }
+
         // Merge by transitioning the PR to "completed" with a squash merge.
+        // Pass lastMergeSourceCommit as an OBJECT containing the commitId —
+        // that's the shape ADO expects (mirrors the GET response shape it
+        // returned a moment ago).
         var payload = JsonSerializer.Serialize(new
         {
             status = "completed",
-            lastMergeSourceCommit = (object?)null,
+            lastMergeSourceCommit = string.IsNullOrEmpty(lastMergeSourceCommit)
+                ? (object?)null
+                : new { commitId = lastMergeSourceCommit },
             completionOptions = new { mergeStrategy = "squash", deleteSourceBranch = false },
         });
-        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"),
-            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
+        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"), prUrl)
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
+        var responseBody = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"ADO PR merge failed ({(int)resp.StatusCode}) at {prUrl}: {responseBody}");
+        }
+        using var doc = JsonDocument.Parse(responseBody);
+        return AdoMapper.ToPr(doc.RootElement, project);
     }
 
     public async Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
+        var (project, repo) = this.ResolveCallCoords(ctx);
         var client = this.NewClient(ctx);
         var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
         var payload = JsonSerializer.Serialize(new { status = "abandoned" });
         using var msg = new HttpRequestMessage(new HttpMethod("PATCH"),
-            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
+            $"{project}/_apis/git/repositories/{repo}/pullrequests/{num}?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
+        var responseBody = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"ADO PR close failed ({(int)resp.StatusCode}) at {project}/_apis/git/repositories/{repo}/pullrequests/{num}: {responseBody}");
+        }
     }
 
     public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
@@ -466,18 +603,42 @@ public class AdoProvider : IForgeProvider
     private async Task SetReviewerVoteAsync(string id, int vote, ProviderCallContext ctx, CancellationToken ct)
     {
         this.RequireConfigured();
+        var (project, repo) = this.ResolveCallCoords(ctx);
         var client = this.NewClient(ctx);
         var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
         // ADO requires a reviewer GUID — for the placeholder we PATCH with `me`.
         var payload = JsonSerializer.Serialize(new { vote });
         using var msg = new HttpRequestMessage(HttpMethod.Put,
-            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/reviewers/me?api-version=7.1")
+            $"{project}/_apis/git/repositories/{repo}/pullRequests/{num}/reviewers/me?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
+        var responseBody = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"ADO PR reviewer vote failed ({(int)resp.StatusCode}) at {project}/_apis/git/repositories/{repo}/pullRequests/{num}: {responseBody}");
+        }
+    }
+
+    /// <summary>
+    /// Phase 45 — pick (project, repository) for a PR call. Per-call coords
+    /// from <see cref="ProviderCallContext"/> win when present; otherwise we
+    /// fall back to the global config (single-repo deployments). Throws when
+    /// neither is set so the caller sees a useful error instead of building
+    /// a malformed URL like <c>//_apis/git/repositories//pullrequests/123</c>.
+    /// </summary>
+    private (string Project, string Repository) ResolveCallCoords(ProviderCallContext ctx)
+    {
+        var project = !string.IsNullOrWhiteSpace(ctx.ProjectName) ? ctx.ProjectName! : this.EffectiveProject;
+        var repository = !string.IsNullOrWhiteSpace(ctx.RepositoryName) ? ctx.RepositoryName! : this.options.Repository;
+        if (string.IsNullOrWhiteSpace(project))
+            throw new InvalidOperationException("ADO project is not configured (set Forge:Ado:Project or pass ProjectName via ProviderCallContext).");
+        if (string.IsNullOrWhiteSpace(repository))
+            throw new InvalidOperationException("ADO repository is not configured (set Forge:Ado:Repository or pass RepositoryName via ProviderCallContext).");
+        return (project, repository);
     }
 
     private void RequireConfigured()

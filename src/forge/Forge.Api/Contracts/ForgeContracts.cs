@@ -27,7 +27,9 @@ public sealed record ProductStory(
     string CreatedAt,
     string Description,
     int Points,
-    object[]? Attachments = null);
+    object[]? Attachments = null,
+    /// <summary>Phase 45 — default base branch carried into every spawn produced from this story. Defaults to "main".</summary>
+    string BaseBranch = "main");
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).

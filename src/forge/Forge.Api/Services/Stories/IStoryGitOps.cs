@@ -39,6 +39,17 @@ public interface IStoryGitOps
     Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 45 — bring <paramref name="baseBranch"/> up to date with
+    /// <paramref name="upstreamBranch"/> (typically <c>main</c>). Production runs
+    /// <c>git fetch origin {upstream}</c> followed by <c>git rebase origin/{upstream}</c>
+    /// against the worktree for the base branch. Tests just fast-forward the
+    /// in-memory branch pointer to the upstream tip when no divergence has
+    /// happened locally. No-op when <paramref name="baseBranch"/> already
+    /// contains every commit on <paramref name="upstreamBranch"/>.
+    /// </summary>
+    Task RebaseBaseBranchAsync(RepoRow? repo, string baseBranch, string upstreamBranch, CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>
     /// and return its absolute disk path. Use as the agent's working
     /// directory when running plan / coding tasks so the agent's tools see

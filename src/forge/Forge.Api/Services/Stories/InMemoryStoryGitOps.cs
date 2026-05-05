@@ -117,6 +117,29 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     public Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    /// <summary>
+    /// Phase 45 — fast-forward the in-memory base branch to the upstream tip.
+    /// Tests rely on the base branch carrying every artifact already merged
+    /// into <paramref name="upstreamBranch"/>, so we copy the upstream tree
+    /// over the base. This is the test-grade equivalent of
+    /// <c>git rebase origin/{upstream}</c>.
+    /// </summary>
+    public Task RebaseBaseBranchAsync(
+        RepoRow? repo, string baseBranch, string upstreamBranch, CancellationToken ct = default)
+    {
+        var srcKey = Key(repo, upstreamBranch);
+        var dstKey = Key(repo, baseBranch);
+        if (!this.trees.TryGetValue(srcKey, out var src)) return Task.CompletedTask;
+        if (!this.trees.TryGetValue(dstKey, out var dst))
+        {
+            dst = new Dictionary<string, string>(StringComparer.Ordinal);
+            this.trees[dstKey] = dst;
+        }
+        foreach (var (path, body) in src) dst[path] = body;
+        this.tips[dstKey] = ShaOf(dst, $"rebase {baseBranch} onto {upstreamBranch}");
+        return Task.CompletedTask;
+    }
+
     private static string Key(RepoRow? repo, string branch) =>
         $"{repo?.Id ?? "_default"}@{branch}";
 

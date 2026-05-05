@@ -152,6 +152,28 @@ public sealed class LocalStoryProviderOps : IStoryProviderOps
         }, ct);
     }
 
+    public Task UpdatePrBaseBranchAsync(string prId, string newBaseBranch, CancellationToken ct = default)
+    {
+        return this.WithDbAsync<bool>(async (db, hub) =>
+        {
+            var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+            if (pr is null) return false;
+            // Open PRs only — re-targeting a merged PR is meaningless and
+            // would mislead anyone reading PR history. Caller is responsible
+            // for filtering, but we still no-op defensively.
+            if (string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase)) return false;
+            pr.Base = newBaseBranch;
+            pr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+            await db.SaveChangesAsync(ct);
+            if (hub is not null)
+            {
+                await hub.Clients.All.SendAsync("pr.changed",
+                    new { kind = "base-branch-changed", id = prId, newBaseBranch }, ct);
+            }
+            return true;
+        }, ct);
+    }
+
     public Task TransitionWorkItemAsync(string workItemId, string state, CancellationToken ct = default)
     {
         return this.WithDbAsync<bool>(async (db, hub) =>
