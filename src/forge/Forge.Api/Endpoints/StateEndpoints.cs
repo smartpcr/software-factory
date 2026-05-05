@@ -203,7 +203,26 @@ public static class StateEndpoints
             }
             if (req.Description is { } description)
             {
-                row.Description = description.Trim();
+                var trimmedDesc = description.Trim();
+                row.Description = trimmedDesc;
+
+                // Propagate to the spawn snapshot so workstream prompts
+                // use the updated value (mirrors Points propagation below).
+                var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                if (spawn is not null && spawn.StoryDescription != trimmedDesc)
+                {
+                    spawn.StoryDescription = trimmedDesc;
+                    spawn.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+
+                // Also update the parent work item so the orchestrator
+                // sees the current description when building prompts.
+                var parentWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+                if (parentWi is not null)
+                {
+                    parentWi.DescriptionMd = trimmedDesc;
+                    parentWi.UpdatedAt = DateTimeOffset.UtcNow;
+                }
             }
             if (req.Points is { } points)
             {
@@ -253,6 +272,19 @@ public static class StateEndpoints
                 row.AttachmentsJson = filtered.Count > 0
                     ? System.Text.Json.JsonSerializer.Serialize(filtered)
                     : null;
+            }
+
+            // Propagate attachments to the spawn snapshot so architect
+            // prompts include the latest reference documents.
+            // Always sync — covers both fresh uploads and pre-existing
+            // attachments that were never propagated to the spawn.
+            {
+                var spawnForAttach = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                if (spawnForAttach is not null && spawnForAttach.AttachmentsJson != row.AttachmentsJson)
+                {
+                    spawnForAttach.AttachmentsJson = row.AttachmentsJson;
+                    spawnForAttach.UpdatedAt = DateTimeOffset.UtcNow;
+                }
             }
 
             await db.SaveChangesAsync();

@@ -89,6 +89,7 @@ public static class StoriesEndpoints
         // Phase 43 — upload reference documents before spawning.
         grp.MapPost("/attachments/upload", UploadAttachments).WithName("UploadStoryAttachments")
             .DisableAntiforgery();
+        grp.MapGet("/attachments/{uploadId}/{fileName}", GetAttachmentContent).WithName("GetStoryAttachmentContent");
 
         return app;
     }
@@ -634,6 +635,21 @@ public static class StoriesEndpoints
                         // the scheduler tick will retry shortly.
                     }
                 }
+            }
+
+            // After a successful resume (doc passed), re-drive the
+            // orchestrator so it can commit + open the plan PR when all
+            // docs have passed. Resumed docs run outside the orchestrator's
+            // original Task.WhenAll, so without this nudge the PR is never
+            // opened.
+            try
+            {
+                var orchestrator = scope.ServiceProvider.GetRequiredService<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync(storyId, ct);
+            }
+            catch (Exception ox) when (ox is not OperationCanceledException)
+            {
+                // Best-effort — the scheduler tick will retry.
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2058,6 +2074,19 @@ public static class StoriesEndpoints
         var safe = sb.ToString().Trim('-');
         if (string.IsNullOrEmpty(safe)) safe = "file";
         return safe + ext;
+    }
+
+    private static IResult GetAttachmentContent(
+        string uploadId, string fileName, IConfiguration config)
+    {
+        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var filePath = Path.Combine(stateDir, "attachments", uploadId, fileName);
+        if (!File.Exists(filePath))
+            return Results.Problem(title: "Attachment not found", statusCode: 404);
+        var ext = Path.GetExtension(fileName);
+        var mime = GuessMimeType(ext);
+        return Results.File(filePath, mime, fileName);
     }
 
     private static string GuessMimeType(string ext) => ext.ToLowerInvariant() switch

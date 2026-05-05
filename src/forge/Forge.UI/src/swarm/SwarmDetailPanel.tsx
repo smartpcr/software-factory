@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
-import type { Build, PrComment } from '@/types';
+import type { Build, PrComment, StoryAttachment } from '@/types';
 import { PrCommentsList } from '@/prs/PrCommentsList';
 import { PrApprovalBadge } from '@/prs/PrApprovalBadge';
 import { deriveVerdict } from '@/prs/prVerdict';
@@ -575,6 +575,107 @@ function isTruncated(s: string | undefined | null): boolean {
   return !!s && TRUNCATION_MARKER_RE.test(s);
 }
 
+/* ── Attachment badge strip + content popup ── */
+function AttachmentBadges({ attachments }: { attachments?: StoryAttachment[] }) {
+  const [viewing, setViewing] = useState<{ fileName: string; content: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  if (!attachments || attachments.length === 0) return null;
+
+  async function handleClick(a: StoryAttachment) {
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/stories/attachments/${encodeURIComponent(a.id)}/${encodeURIComponent(a.fileName)}`,
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      const text = await res.text();
+      setViewing({ fileName: a.fileName, content: text });
+    } catch {
+      setViewing({ fileName: a.fileName, content: '(failed to load content)' });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return (
+    <>
+      <div style={{ marginBottom: 16 }}>
+        <span style={{
+          fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.18em',
+          color: 'var(--sc-text-dim)', display: 'block', marginBottom: 6,
+        }}>ATTACHMENTS</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {attachments.map((a) => (
+            <button
+              key={`${a.id}-${a.fileName}`}
+              onClick={() => void handleClick(a)}
+              disabled={loading}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '3px 10px', border: '1px solid var(--sc-border)',
+                borderRadius: 4, background: 'var(--sc-bg-raised)',
+                fontFamily: 'var(--sc-font-mono)', fontSize: 10,
+                color: 'var(--sc-cyan)', cursor: 'pointer',
+                transition: 'border-color .15s',
+              }}
+            >
+              📎 {a.fileName}{' '}
+              <span style={{ color: 'var(--sc-text-dim)' }}>({formatSize(a.sizeBytes)})</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {viewing && (
+        <div
+          onClick={() => setViewing(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9000,
+            background: 'rgba(0,0,0,0.72)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '70vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+              background: 'var(--sc-bg)', border: '1px solid var(--sc-border)', borderRadius: 6,
+            }}
+          >
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '8px 12px', borderBottom: '1px solid var(--sc-border)',
+              fontFamily: 'var(--sc-font-display)', fontSize: 11, color: 'var(--sc-amber)',
+              letterSpacing: '0.14em',
+            }}>
+              <span>📎 {viewing.fileName}</span>
+              <button
+                onClick={() => setViewing(null)}
+                style={{
+                  background: 'none', border: 'none', color: 'var(--sc-text-dim)',
+                  fontSize: 16, cursor: 'pointer', lineHeight: 1,
+                }}
+              >✕</button>
+            </div>
+            <pre style={{
+              margin: 0, padding: 12, overflow: 'auto', flex: 1,
+              fontFamily: 'var(--sc-font-mono)', fontSize: 11, color: 'var(--sc-text)',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}>{viewing.content}</pre>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 interface AgentOverviewProps {
   detail: StorySpawnDetail;
   selection: Selection;
@@ -703,6 +804,7 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
 
   return (
     <div style={{ padding: 16, overflow: 'auto' }}>
+      <AttachmentBadges attachments={detail.spawn.attachments} />
       {/* Agent pair — centered */}
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 16, marginBottom: 16 }}>
         <PairSide

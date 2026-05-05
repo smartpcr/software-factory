@@ -586,6 +586,23 @@ public static class WorkstreamsEndpoints
             wi.ExecutionStatus = null;
             wi.AssignedAgentJson = null;
             wi.UpdatedAt = DateTimeOffset.UtcNow;
+
+            // Refresh DescriptionMd from the current story description
+            // so restarted tasks pick up any updates the user made.
+            if (!string.IsNullOrEmpty(ws.StorySpawnId))
+            {
+                var spawnForDesc = await db.StorySpawns.AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.Id == ws.StorySpawnId);
+                if (spawnForDesc is not null)
+                {
+                    var story = await db.ProductStories.AsNoTracking()
+                        .FirstOrDefaultAsync(s => s.Id == spawnForDesc.StoryId);
+                    if (story is not null && !string.IsNullOrEmpty(story.Description))
+                    {
+                        wi.DescriptionMd = story.Description;
+                    }
+                }
+            }
         }
 
         await db.SaveChangesAsync();
