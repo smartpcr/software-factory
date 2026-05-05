@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import { NewProductModal } from '@/products/NewProductModal';
 import { EditProductModal } from '@/products/EditProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
@@ -194,10 +195,16 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
 
   async function confirmDelete() {
     const repoCount = repos.length;
-    const prompt = repoCount > 0
-      ? `Delete "${product.name}" and detach its ${repoCount} repo${repoCount === 1 ? '' : 's'}? This cannot be undone.`
-      : `Delete "${product.name}"? This cannot be undone.`;
-    if (!window.confirm(prompt)) return;
+    const ok = await useConfirmStore.getState().ask({
+      title: `Delete "${product.name}"?`,
+      body: repoCount > 0
+        ? `This deletes the product and detaches its ${repoCount} repo${repoCount === 1 ? '' : 's'}. The repo records remain — only the product binding is removed.`
+        : 'This deletes the product. There are no attached repos.',
+      tone: 'danger',
+      confirmLabel: '✕ Delete product',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await deleteProduct(product.id, repoCount > 0);
@@ -210,7 +217,14 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
   }
 
   async function detachRepo(r: Repo) {
-    if (!window.confirm(`Detach "${r.displayName}" from ${product.name}?`)) return;
+    const ok = await useConfirmStore.getState().ask({
+      title: `Detach "${r.displayName}"?`,
+      body: `Removes the repo from ${product.name}. The repo record stays in the database; only the product binding is dropped.`,
+      tone: 'warn',
+      confirmLabel: 'Detach',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
     try {
       await forgeApi.deleteRepo(r.id, true);
       toast(`Detached ${r.displayName}`, 'info');

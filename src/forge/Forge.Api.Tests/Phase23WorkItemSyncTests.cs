@@ -1090,13 +1090,17 @@ public class Phase23IdempotencyTests
         await sync1.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         var assignee = new WorkItemAssignee("human", "alice", "Alice", "AL");
+        // UpdatedAt MUST be strictly newer than the first sync — the upsert
+        // short-circuits when `remote.UpdatedAt <= existing.UpdatedAt`
+        // (WorkItemSyncService.cs:190). Without the bump, item2's fields are
+        // discarded and the assertions all fall back to item1's values.
         var item2 = new WorkItem(
             Id: "WI-IDEM-7", RepoId: null, Provider: "ado", ProviderRef: 907,
             Track: "design", Type: "phase", State: "resolved", Title: "v2",
             DescriptionMd: "updated desc", ParentId: "EP-1", FeatureRef: null,
             IterationRef: "Sprint 2", AreaPath: "Atlas\\New", AssignedTo: assignee,
             Points: 8, Priority: "high", Tags: new[] { "urgent" },
-            CreatedAt: now, UpdatedAt: now, RemoteRevision: "rev-2");
+            CreatedAt: now, UpdatedAt: now.AddSeconds(1), RemoteRevision: "rev-2");
         var sync2 = MakeSyncService(factory, new[] { item2 });
         await sync2.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
@@ -1166,6 +1170,7 @@ public class Phase23IdempotencyTests
         public Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();
         public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();
@@ -1318,8 +1323,10 @@ public class WorkItemSyncJobTests
 
         foreach (var interval in intervals)
         {
-            // Must be within [1140s, 1260s] = base 1200 ± 60.
-            Assert.InRange(interval.TotalSeconds, 1140, 1260);
+            // Base interval bumped from 1200s → 7200s (2h) — see
+            // SyncConstants.WorkItemSyncIntervalSeconds. Envelope is the
+            // base ± 60s.
+            Assert.InRange(interval.TotalSeconds, 7140, 7260);
         }
     }
 
@@ -1421,7 +1428,8 @@ public class ScheduleJitterTests
         for (int i = 0; i < 100; i++)
         {
             var interval = job.NextJitteredInterval();
-            Assert.InRange(interval.TotalSeconds, 1140, 1260);
+            // Base interval bumped from 1200s → 7200s; envelope is base ± 60s.
+            Assert.InRange(interval.TotalSeconds, 7140, 7260);
         }
     }
 
@@ -1888,6 +1896,7 @@ public class Phase23IntegrationTests
         public Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();
         public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();

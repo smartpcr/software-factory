@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Forge.Api.Persistence;
@@ -29,6 +30,13 @@ using Forge.Api.Persistence;
 public sealed class RealStoryGitOps : IStoryGitOps
 {
     private readonly ILogger<RealStoryGitOps>? logger;
+
+    /// <summary>
+    /// Phase 42 — per-branch git lock. Concurrent architect agents share one
+    /// worktree (git refuses two worktrees on one branch); this serialises
+    /// staging + commit ops so they don't race the git index.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> branchLocks = new();
 
     public RealStoryGitOps(ILogger<RealStoryGitOps>? logger = null)
     {
@@ -94,7 +102,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.GitAsync(wtPath, ct, "-c", "user.email=forge-architect@local", "-c", "user.name=Forge Architect", "commit", "-m", message);
         }
 
-        await this.GitAsync(wtPath, ct, "push", "origin", branch);
+        await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
 
         // Return the head sha of the branch.
         var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
@@ -138,6 +146,83 @@ public sealed class RealStoryGitOps : IStoryGitOps
             "-c", "user.name=Forge",
             "merge", "--no-ff", "-m", $"Merge {branch} into {baseBranch}", $"origin/{branch}");
         await this.GitAsync(wtPath, ct, "push", "origin", baseBranch);
+    }
+
+    public async Task<string> EnsureWorktreeAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        // Serialise the ensure step against itself per-branch so two concurrent
+        // callers don't race `git worktree add`.
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            await this.EnsureWorktreeAsync(root, wtPath, branch, baseBranch, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+        return wtPath;
+    }
+
+    public async Task<string> CommitPathInWorktreeAsync(
+        RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(repoRelativePath))
+            throw new ArgumentException("Path is required.", nameof(repoRelativePath));
+        if (Path.IsPathRooted(repoRelativePath) || repoRelativePath.Contains(".."))
+            throw new InvalidOperationException($"Refusing absolute or parent-traversal path '{repoRelativePath}'.");
+
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        // Serialise per-branch so concurrent agent commits don't race the
+        // git index lock.
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            // Worktree must exist before we stage anything.
+            await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
+
+            // Stage only the requested path so a sibling agent's mid-edit
+            // changes don't get rolled into this commit.
+            var diskPath = Path.Combine(wtPath, repoRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(diskPath))
+            {
+                this.logger?.LogInformation(
+                    "CommitPathInWorktreeAsync: file '{Path}' does not exist on disk for branch {Branch}; skipping commit.",
+                    repoRelativePath, branch);
+                return string.Empty;
+            }
+            await this.GitAsync(wtPath, ct, "add", "--", repoRelativePath);
+
+            // No-op when the path's content is identical to the branch tip.
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain", "--", repoRelativePath);
+            if (statusCode == 0 && string.IsNullOrWhiteSpace(statusOut))
+            {
+                return string.Empty;
+            }
+
+            await this.GitAsync(wtPath, ct,
+                "-c", "user.email=forge-architect@local",
+                "-c", "user.name=Forge Architect",
+                "commit", "-m", message, "--", repoRelativePath);
+
+            var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
+            return shaCode == 0 ? shaOut.Trim() : string.Empty;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -224,6 +309,61 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.GitAsync(cloneRoot, ct, "fetch", "origin", baseBranch);
             await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
         }
+    }
+
+    /// <summary>
+    /// Push <paramref name="branch"/> to <c>origin</c>; on a non-fast-forward
+    /// rejection, fetch + rebase the local commits onto <c>origin/{branch}</c>
+    /// and retry the push once. Recovers the common case where a prior
+    /// orchestrator run advanced the remote branch but the dedicated
+    /// worktree's local ref didn't catch up — without this, the spawn halts
+    /// and the operator has to click Retry, which fails with the same error.
+    /// </summary>
+    private async Task PushWithAutoRecoverAsync(string wtPath, string branch, CancellationToken ct)
+    {
+        var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, "push", "origin", branch);
+        if (code == 0) return;
+
+        var combined = (stdout + "\n" + stderr).ToLowerInvariant();
+        var isNonFastForward = combined.Contains("non-fast-forward")
+            || combined.Contains("[rejected]")
+            || combined.Contains("fetch first");
+        if (!isNonFastForward)
+        {
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {code}) in '{wtPath}'.\nstdout: {stdout}\nstderr: {stderr}");
+        }
+
+        this.logger?.LogWarning(
+            "Push to origin/{Branch} rejected as non-fast-forward; fetching + rebasing onto remote and retrying once.", branch);
+
+        await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+        var (rebaseCode, rebaseOut, rebaseErr) = await this.RunGitCaptureAsync(
+            wtPath, ct,
+            "-c", "user.email=forge-architect@local",
+            "-c", "user.name=Forge Architect",
+            "rebase", $"origin/{branch}");
+        if (rebaseCode != 0)
+        {
+            // Real conflict — abort so the worktree is left clean, then surface
+            // the original push error with the rebase context so the operator
+            // can resolve manually.
+            await this.RunGitCaptureAsync(wtPath, ct, "rebase", "--abort");
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {code}) in '{wtPath}' and auto-rebase onto origin/{branch} also failed.\n"
+                + $"push stderr: {stderr}\nrebase stdout: {rebaseOut}\nrebase stderr: {rebaseErr}");
+        }
+
+        var (retryCode, retryOut, retryErr) = await this.RunGitCaptureAsync(wtPath, ct, "push", "origin", branch);
+        if (retryCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {retryCode}) in '{wtPath}' after auto-rebase recover.\n"
+                + $"stdout: {retryOut}\nstderr: {retryErr}");
+        }
+
+        this.logger?.LogInformation(
+            "Push to origin/{Branch} succeeded after auto-rebase recover.", branch);
     }
 
     /// <summary>Run git, throwing on non-zero exit. Use <see cref="RunGitCaptureAsync"/> when you want to inspect the result.</summary>

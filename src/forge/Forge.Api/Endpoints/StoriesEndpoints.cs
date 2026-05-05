@@ -7,6 +7,7 @@
 namespace Forge.Api.Endpoints;
 
 using System.Text.Json;
+using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -15,6 +16,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// forge_implementation.md Phase 28 — story-driven spawn endpoints. The
@@ -41,23 +44,22 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
-    /// When <c>true</c> (default), POST /spawn awaits the orchestrator drive
-    /// before returning so callers can read <c>PlanPrId</c> in the response.
-    /// Tests rely on this. When <c>false</c> (production via
-    /// <c>Forge:Stories:SpawnDriveInline=false</c> in appsettings.json), the
-    /// drive is fire-and-forget — the response returns 201 immediately and
-    /// the architect crew runs in the background. Required because real-LLM
-    /// architect runs take many minutes, which would otherwise freeze the
-    /// spawn-button on the UI. <see cref="SpawnDependencyScheduler"/> ticks
-    /// every 15 s and will re-drive the spawn if the background task falls
-    /// over.
+    /// When <c>true</c>, POST /spawn awaits the orchestrator drive before
+    /// returning so callers can read <c>PlanPrId</c> in the response. Tests
+    /// set <c>Forge:Stories:SpawnDriveInline=true</c> in the test factory.
+    /// When <c>false</c> (the default), the drive is fire-and-forget — the
+    /// response returns 201 immediately and the architect crew runs in the
+    /// background. Real-LLM architect runs take many minutes, which would
+    /// otherwise freeze the spawn-button on the UI.
+    /// <see cref="SpawnDependencyScheduler"/> ticks every 15 s and will
+    /// re-drive the spawn if the background task falls over.
     /// </summary>
     private static bool SpawnDriveInline(HttpContext ctx)
     {
         var cfg = ctx.RequestServices.GetService<IConfiguration>();
         var raw = cfg?["Forge:Stories:SpawnDriveInline"];
-        if (string.IsNullOrEmpty(raw)) return true;
-        return bool.TryParse(raw, out var v) ? v : true;
+        if (string.IsNullOrEmpty(raw)) return false;
+        return bool.TryParse(raw, out var v) ? v : false;
     }
 
     public static WebApplication MapStoriesEndpoints(this WebApplication app)
@@ -68,11 +70,21 @@ public static class StoriesEndpoints
         grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
+        grp.MapPost("/{storyId}/spawn/retry", RetrySpawn).WithName("RetryStorySpawn");
+        grp.MapPost("/{storyId}/spawn/dismiss-error", DismissError).WithName("DismissStorySpawnError");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
         grp.MapPost("/{storyId}/spawn/decompose/approve", ApproveDecomposition).WithName("ApproveStoryDecomposition");
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/restart", RestartArtifact).WithName("RestartStoryArtifact");
+        // Phase 42 — manual force-reconcile of workstreams + workitems against the current
+        // implementation-plan.md. The other triggers (per-iter commit, Resume/Restart of the
+        // implementation-plan artifact, scheduler tick) cover automatic cases; this one is for
+        // operator-driven recovery after a manual edit on the plan branch.
+        grp.MapPost("/{storyId}/spawn/reconcile", Reconcile).WithName("ReconcileStorySpawn");
 
         return app;
     }
@@ -267,12 +279,27 @@ public static class StoriesEndpoints
             .ToListAsync();
         var costByWsMap = costByWs.ToDictionary(x => x.TaskId, x => x.Cost, StringComparer.OrdinalIgnoreCase);
 
+        // Unanswered question counts per workstream — batch query, dedupe
+        // in memory to match the DeliverableLoop's CountUnansweredQuestionsAsync.
+        var allQuestions = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => wsIds.Contains(q.WorkItemId))
+            .ToListAsync();
+        var unansweredByWs = allQuestions
+            .GroupBy(q => q.WorkItemId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                      .Select(eg => eg.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+                      .Count(q => string.IsNullOrEmpty(q.Answer)),
+                StringComparer.OrdinalIgnoreCase);
+
         var wsByStatus = workstreams.Select(w =>
         {
             var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
             var wsDeliverables = deliverablesByWs.TryGetValue(w.Id, out var ds) ? ds : new List<DeliverableRow>();
             var latest = wsDeliverables.FirstOrDefault();
             var wsCost = costByWsMap.TryGetValue(w.Id, out var c) ? c : 0m;
+            var wsUnanswered = unansweredByWs.TryGetValue(w.Id, out var uq) ? uq : 0;
             return new
             {
                 id = w.Id,
@@ -294,6 +321,7 @@ public static class StoriesEndpoints
                 commits = w.Commits,
                 ahead = w.Ahead,
                 behind = w.Behind,
+                unansweredQuestionCount = wsUnanswered,
             };
         }).ToArray();
 
@@ -387,6 +415,499 @@ public static class StoriesEndpoints
         if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
         var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
         return Results.Ok(ToContract(refreshed));
+    }
+
+    /// <summary>
+    /// Phase 37 — operator clicks Retry on the workstream banner: clear the
+    /// persisted LastError and immediately re-drive the spawn so the next
+    /// orchestrator tick attempts the failing step again. Used after the
+    /// operator has resolved the underlying cause (rebased the plan branch,
+    /// fixed branch protection, bumped iter cap, etc.).
+    /// </summary>
+    private static async Task<IResult> RetrySpawn(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "spawn-retry", spawn = ToContract(spawn) });
+
+        // Fire-and-forget the re-drive so the HTTP response returns
+        // immediately — DriveAsync runs the full phase pipeline (architect
+        // crew, decomposition, engineer claims, etc.) and can take many
+        // minutes. The operator clicking Retry expects fast feedback; the
+        // background scheduler picks up unfinished work on its 15s tick
+        // anyway. Detach from the request CT so a navigation away doesn't
+        // cancel the orchestrator mid-step.
+        // forceResume=true tells the architect strategy to bypass the
+        // workspace-cache short-circuit so the gen↔eval loop re-iterates
+        // (otherwise the retry would replay the stalled artifact unchanged
+        // and immediately re-fail with the same verdict).
+        if (OrchestratorEnabled(ctx))
+        {
+            var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("forge.retry");
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await orchestrator.DriveAsync(storyId, forceResume: true, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogError(ex, "Retry drive failed for story {StoryId}", storyId);
+                    try
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        var scopedDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                        var row = await scopedDb.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                        if (row is not null)
+                        {
+                            row.LastError = $"retry failed: {ex.Message}";
+                            row.LastErrorAt = DateTimeOffset.UtcNow;
+                            row.UpdatedAt = DateTimeOffset.UtcNow;
+                            await scopedDb.SaveChangesAsync();
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort error persistence
+                    }
+                }
+            });
+        }
+
+        return Results.Ok(ToContract(spawn));
+    }
+
+    /// <summary>
+    /// Dismiss the spawn's persisted error without re-driving. Clears
+    /// <c>LastError</c> / <c>LastErrorAt</c> so the error banner disappears.
+    /// Use when the operator has handled the issue manually (e.g. force-pushed,
+    /// resolved a merge conflict) and doesn't want an automatic retry.
+    /// </summary>
+    private static async Task<IResult> DismissError(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("storySpawn", storyId, "dismissed",
+            new { kind = "spawn-error-dismissed", spawn = ToContract(spawn) });
+
+        return Results.Ok(ToContract(spawn));
+    }
+
+    /// <summary>
+    /// Resume a single plan-doc artifact's gen↔eval loop. Unlike RetrySpawn
+    /// (which re-drives the full phase pipeline), this re-runs ONLY the
+    /// specified doc. Works even when the spawn has advanced past the plan
+    /// phase (e.g. phase=implement) — the doc loop is independent of the
+    /// spawn phase state machine.
+    ///
+    /// Phase 41 — restart-safe. The artifact key is appended to
+    /// <see cref="StorySpawnRow.ResumePendingJson"/> BEFORE the fire-and-forget
+    /// task starts, and removed in the task's finally block. On boot,
+    /// <c>StoryResumeRecoveryService</c> sweeps non-empty entries and re-fires
+    /// the loop so a process kill mid-Resume self-heals.
+    /// </summary>
+    private static async Task<IResult> ResumeArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IStoryArtifactStrategy strategy)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+        if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        // Phase 41 — persist the pending intent before the task starts so a
+        // crash between here and ResumeSingleArtifactAsync's first persisted
+        // event still leaves a recovery marker.
+        AddResumePending(spawn, key);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        _ = Task.Run(() => RunResumeWithCleanupAsync(scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-resumed", storyId, key });
+
+        return Results.Ok(new { storyId, key, status = "resuming" });
+    }
+
+    /// <summary>
+    /// Phase 41 — drive a plan-doc Resume in the background with a finally
+    /// block that always clears the pending marker. Shared by the
+    /// <c>ResumeArtifact</c> endpoint AND the boot-time recovery sweep so the
+    /// cleanup contract is identical.
+    /// </summary>
+    internal static async Task RunResumeWithCleanupAsync(
+        IServiceScopeFactory scopeFactory,
+        IStoryArtifactStrategy strategy,
+        string spawnId,
+        string storyId,
+        string key,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == storyId, ct);
+            if (spawn is null || story is null) return;
+
+            await strategy.ResumeSingleArtifactAsync(spawn, story, key, ct);
+
+            // Phase 42 — when the resumed artifact is implementation-plan.md,
+            // re-reconcile workstreams against the (potentially updated) plan
+            // so the DB + workstreams.json stay in lockstep.
+            if (string.Equals(key, "implementation-plan", StringComparison.OrdinalIgnoreCase))
+            {
+                var reconciler = scope.ServiceProvider.GetService<Forge.Api.Services.Stories.PlanReconciler>();
+                if (reconciler is not null)
+                {
+                    try { await reconciler.ReconcileAsync(spawnId, ct); }
+                    catch (Exception rex) when (rex is not OperationCanceledException)
+                    {
+                        // Reconcile failure should not surface as a Resume failure;
+                        // the scheduler tick will retry shortly.
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            if (row is not null)
+            {
+                row.LastError = $"resume {key} failed: {ex.Message}";
+                row.LastErrorAt = DateTimeOffset.UtcNow;
+                row.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        finally
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, CancellationToken.None);
+                if (row is not null && RemoveResumePending(row, key))
+                {
+                    row.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync(CancellationToken.None);
+                }
+            }
+            catch
+            {
+                // best-effort cleanup; the next boot sweep will skip an
+                // already-completed key when the loop's last verdict is
+                // terminal anyway.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cancel the in-flight gen↔eval loop for a single plan-doc artifact.
+    /// Mirrors POST /api/workstreams/{id}/cancel for coding tasks: kills the
+    /// agent invocation(s) keyed by the synthetic <c>plan-doc:{spawn.Id}:{file}</c>
+    /// workItemId, cancels any TaskQueue rows, flips the WorkItem ExecutionStatus
+    /// out of live/queued, and flips a still-iterating last deliverable to
+    /// stalled. Iterations and transcript history are preserved (use Restart
+    /// to wipe them).
+    /// </summary>
+    private static async Task<IResult> CancelArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // (1) Kill in-flight invocations first so no events land mid-cleanup.
+        var invocationsCancelled = 0;
+        try
+        {
+            invocationsCancelled = await runner.CancelByTaskAsync(workItemId, ctx.RequestAborted);
+        }
+        catch
+        {
+            // Don't let runner failures prevent DB cleanup.
+        }
+
+        // (2) Cancel any queued/active TaskQueue rows (plan-doc loops mostly
+        // run inline in the orchestrator, but defensive cleanup is cheap).
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == workItemId && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (3) Reset WorkItem ExecutionStatus.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId);
+        if (wi is not null && wi.ExecutionStatus is "live" or "queued")
+        {
+            wi.ExecutionStatus = "idle";
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (4) Flip last deliverable from iterate → stalled so the doc UI
+        // shows the loop as halted rather than mid-iteration.
+        var lastDel = (await db.Deliverables
+            .Where(d => d.WorkItemId == workItemId)
+            .ToListAsync())
+            .OrderByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        if (lastDel is not null && lastDel.Verdict == "iterate")
+        {
+            lastDel.Verdict = "stalled";
+        }
+
+        // (5) Drop the resume-pending marker so a process restart doesn't
+        // re-fire the loop the operator just cancelled.
+        if (RemoveResumePending(spawn, key))
+        {
+            spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-cancelled", storyId, key });
+
+        return Results.Ok(new
+        {
+            storyId,
+            key,
+            status = "cancelled",
+            queueRowsCancelled = queueRows.Count,
+            invocationsCancelled,
+        });
+    }
+
+    /// <summary>
+    /// Restart a plan-doc artifact's gen↔eval loop from iter 1. Mirrors
+    /// POST /api/workstreams/{id}/restart for coding tasks: kills in-flight
+    /// invocations, deletes deliverables + transcript events for the
+    /// synthetic workItemId, wipes the cached architect workspace on disk,
+    /// then fire-and-forgets <see cref="RunResumeWithCleanupAsync"/> which
+    /// re-enters <see cref="IStoryArtifactStrategy.ResumeSingleArtifactAsync"/>
+    /// — with no prior deliverables it starts fresh at iter 1.
+    /// </summary>
+    private static async Task<IResult> RestartArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub,
+        IConfiguration config,
+        IStoryArtifactStrategy strategy)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+        if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // (1) Kill in-flight invocations first so the cleanup below isn't
+        // racing with new events.
+        try { await runner.CancelByTaskAsync(workItemId, ctx.RequestAborted); }
+        catch { /* best effort — DB cleanup is the source of truth */ }
+
+        // (2) Delete deliverables + transcript events for this artifact.
+        var deliverables = await db.Deliverables.Where(d => d.WorkItemId == workItemId).ToListAsync();
+        db.Deliverables.RemoveRange(deliverables);
+        var events = await db.TaskTranscriptEvents.Where(e => e.WorkItemId == workItemId).ToListAsync();
+        db.TaskTranscriptEvents.RemoveRange(events);
+
+        // (3) Cancel any queued/active TaskQueue rows.
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == workItemId && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (4) Reset WorkItem ExecutionStatus.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = "idle";
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (5) Persist a resume-pending marker before kicking off the
+        // background task so a process kill mid-restart self-heals via the
+        // boot-time recovery sweep.
+        AddResumePending(spawn, key);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        // (6) Wipe the architect workspace on disk. Matches the path
+        // convention used by CrewStoryArtifactStrategy.PrepareWorkspace
+        // (`storyworkspaces/{spawnSlug}/plan-{key}`); checks both dash and
+        // underscore slug variants for back-compat.
+        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        var stateDir = System.IO.Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var phaseTag = $"plan-{key}";
+        foreach (var slug in new[] { spawn.Id, spawn.Id.Replace('-', '_'), spawn.Id.Replace('_', '-') })
+        {
+            var wsDir = System.IO.Path.Combine(stateDir, "storyworkspaces", slug, phaseTag);
+            if (System.IO.Directory.Exists(wsDir))
+            {
+                try { System.IO.Directory.Delete(wsDir, recursive: true); }
+                catch { /* best effort */ }
+            }
+        }
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-restarted", storyId, key });
+
+        // (7) Fire-and-forget: re-enter the gen↔eval loop. With no prior
+        // deliverables ResumeSingleArtifactAsync starts at iter 1.
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        _ = Task.Run(() => RunResumeWithCleanupAsync(scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
+
+        return Results.Ok(new
+        {
+            storyId,
+            key,
+            status = "restarted",
+            deliverablesCleaned = deliverables.Count,
+            eventsCleaned = events.Count,
+            queueRowsCancelled = queueRows.Count,
+        });
+    }
+
+    /// <summary>
+    /// Phase 42 — force-reconcile workstreams + workitems against the current
+    /// <c>implementation-plan.md</c> on the spawn's plan branch. The other
+    /// triggers (per-iter commit, Resume/Restart of the implementation-plan
+    /// artifact, scheduler tick) cover automatic cases; this endpoint is for
+    /// operator-driven recovery (e.g. after a manual edit on the plan branch
+    /// or a stuck reconciler tick).
+    /// </summary>
+    private static async Task<IResult> Reconcile(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        Forge.Api.Services.Stories.PlanReconciler reconciler)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var report = await reconciler.ReconcileAsync(spawn.Id, ctx.RequestAborted);
+        if (report is null)
+        {
+            return Results.Problem(
+                title: "Reconcile produced no result",
+                detail: "The plan file may not yet be on the plan branch (plan phase not started?).",
+                statusCode: 409);
+        }
+        return Results.Ok(report);
+    }
+
+    /// <summary>
+    /// Phase 41 — append <paramref name="key"/> to the spawn's pending list,
+    /// deduping. Returns the new list so callers can persist after.
+    /// </summary>
+    internal static void AddResumePending(StorySpawnRow spawn, string key)
+    {
+        var list = ParseResumePending(spawn.ResumePendingJson);
+        if (!list.Contains(key, StringComparer.Ordinal)) list.Add(key);
+        spawn.ResumePendingJson = list.Count == 0
+            ? null
+            : JsonSerializer.Serialize(list, JsonOpts);
+    }
+
+    /// <summary>
+    /// Phase 41 — drop <paramref name="key"/> from the spawn's pending list.
+    /// Returns true when a change was made (caller persists), false otherwise.
+    /// </summary>
+    internal static bool RemoveResumePending(StorySpawnRow spawn, string key)
+    {
+        var list = ParseResumePending(spawn.ResumePendingJson);
+        var removed = list.RemoveAll(k => string.Equals(k, key, StringComparison.Ordinal));
+        if (removed == 0) return false;
+        spawn.ResumePendingJson = list.Count == 0
+            ? null
+            : JsonSerializer.Serialize(list, JsonOpts);
+        return true;
+    }
+
+    internal static List<string> ParseResumePending(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json, JsonOpts) ?? new List<string>();
+        }
+        catch
+        {
+            return new List<string>();
+        }
     }
 
     /// <summary>
@@ -800,13 +1321,48 @@ public static class StoriesEndpoints
 
         var safeStoryId = StoryPaths.Safe(storyId);
         var relPath = $"docs/stories/{safeStoryId}/{key.ToLowerInvariant()}.md";
-        var repoRoot = ForgeSeed.FindRepoRoot();
-        var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
 
-        if (File.Exists(fullPath))
+        // Phase 42 — read source priority:
+        //   1. Worktree   — `{repo.CloneRoot}/.worktree/spawn-{sanitizedPlanBranch}/{relPath}`
+        //                   The architect's gen↔eval loop reads + writes here every
+        //                   iteration. This is the LIVE agent state; show it first.
+        //   2. Main       — `{repo.CloneRoot}/{relPath}` after the plan PR merges.
+        //   3. Plan branch — `git show story/.../plan:{relPath}` (pushed but not merged).
+        // Each source returns a distinct `source` field so the UI banner shows the
+        // operator whether they're looking at WIP / shipped / pre-merge content.
+        var repo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            : null;
+        var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
+            ? repo.CloneRoot
+            : ForgeSeed.FindRepoRoot();
+
+        var planBranch = spawn.PlanBranch ?? $"story/{safeStoryId}/plan";
+        var worktreePath = ComputeWorktreePath(cloneRoot, planBranch);
+        var worktreeFilePath = Path.Combine(worktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
+
+        // (1) Worktree — live agent state. Highest priority.
+        if (File.Exists(worktreeFilePath))
         {
-            var content = await File.ReadAllTextAsync(fullPath);
-            var lastModified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
+            var content = await File.ReadAllTextAsync(worktreeFilePath);
+            var lastModified = File.GetLastWriteTimeUtc(worktreeFilePath).ToString("O");
+            return Results.Ok(new
+            {
+                key,
+                path = relPath,
+                content,
+                lastModifiedAt = lastModified,
+                exists = true,
+                source = "worktree",
+            });
+        }
+
+        // (2) Main — committed and merged.
+        var mainPath = Path.Combine(cloneRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(mainPath))
+        {
+            var content = await File.ReadAllTextAsync(mainPath);
+            var lastModified = File.GetLastWriteTimeUtc(mainPath).ToString("O");
             return Results.Ok(new
             {
                 key,
@@ -818,12 +1374,11 @@ public static class StoriesEndpoints
             });
         }
 
-        // File isn't on main yet — check the plan branch (architect crew has
-        // committed but PR not merged). git show returns the file as it
-        // exists on the branch tip without mutating the working tree.
+        // (3) Plan branch — pushed but not merged. `git show` against the
+        // local clone reads the branch tip without mutating the working tree.
         if (!string.IsNullOrEmpty(spawn.PlanBranch))
         {
-            var fromBranch = await TryGitShowAsync(repoRoot, spawn.PlanBranch!, relPath);
+            var fromBranch = await TryGitShowAsync(cloneRoot, spawn.PlanBranch!, relPath);
             if (fromBranch is not null)
             {
                 return Results.Ok(new
@@ -838,8 +1393,6 @@ public static class StoriesEndpoints
             }
         }
 
-        // Not on main, not on plan branch — plan hasn't produced this file
-        // yet. Return exists=false so the UI can render an empty state.
         return Results.Ok(new
         {
             key,
@@ -849,6 +1402,24 @@ public static class StoriesEndpoints
             exists = false,
             source = (string?)null,
         });
+    }
+
+    /// <summary>
+    /// Phase 42 — keep this in sync with <c>RealStoryGitOps.WorktreePath</c> +
+    /// <c>SanitizeBranchSlug</c>. The architect strategy creates the worktree
+    /// at this path; the artifact-content endpoint must read from the same
+    /// path or the UI will show stale committed content while the agent is
+    /// mid-iteration.
+    /// </summary>
+    private static string ComputeWorktreePath(string cloneRoot, string branch)
+    {
+        var sb = new System.Text.StringBuilder(branch.Length);
+        foreach (var c in branch)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+        }
+        var slug = sb.ToString().Trim('-');
+        return Path.Combine(cloneRoot, ".worktree", $"spawn-{slug}");
     }
 
     /// <summary>
@@ -910,6 +1481,10 @@ public static class StoriesEndpoints
             {
                 key,
                 workItemId = (string?)null,
+                status = "pending",
+                maxIterations = 0,
+                generator = (object?)null,
+                evaluator = (object?)null,
                 iterations = Array.Empty<object>(),
                 totalCostUsd = 0.0,
             });
@@ -917,6 +1492,11 @@ public static class StoriesEndpoints
 
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var workItemPoints = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => (int?)w.Points)
+            .FirstOrDefaultAsync();
+        var maxIterations = ScoringConstants.MaxIterationsForPoints(workItemPoints ?? 0);
 
         // SQLite can't ORDER BY DateTimeOffset directly. Order by Iter on the
         // server (cheap index hit) and then re-sort by CreatedAt on the client
@@ -949,12 +1529,147 @@ public static class StoriesEndpoints
             judgeScore = d.JudgeScore,
             judgeNotes = d.JudgeNotes,
             createdAt = d.CreatedAt.ToString("O"),
-        });
+        }).ToList();
+
+        // Status — derived from multiple signals:
+        //   1. ExecutionStatus on the work-item row (authoritative: live/queued)
+        //   2. Recent transcript event (fallback for plan-docs without TaskQueue)
+        //   3. Deliverable verdict history
+        // The old 60s-transcript-gap heuristic caused false "stalled" when the
+        // LLM was in a long tool call. ExecutionStatus is set by the queue
+        // worker and is the ground-truth for "is the runner running".
+        var lastEvent = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(t => t.WorkItemId == workItemId)
+            .OrderByDescending(t => t.Id)
+            .Select(t => new { t.At })
+            .FirstOrDefaultAsync();
+        DateTimeOffset? lastEventAt = lastEvent?.At;
+        var lastDeliverable = rows.LastOrDefault();
+
+        // Check the authoritative execution status from the work-item row.
+        var executionStatus = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => w.ExecutionStatus)
+            .FirstOrDefaultAsync();
+        var isRunnerLive = executionStatus is "live" or "queued";
+
+        // Transcript recency is a secondary signal — only used when the
+        // runner hasn't set execution status (e.g. plan-doc loops that
+        // run inline in the orchestrator, not via TaskQueue).
+        var isRecentEvent = !isRunnerLive
+            && lastEventAt.HasValue
+            && DateTimeOffset.UtcNow - lastEventAt.Value < TimeSpan.FromSeconds(90);
+
+        // Lifecycle (Layer A.1): a doc is only "completed" once its plan PR
+        // is merged. A passing evaluator verdict means the iteration loop
+        // ended — but the doc isn't done until the PR closes. Between pass
+        // and merge the status is "awaiting-pr-review" so the operator sees
+        // the loop is finished but the doc hasn't shipped yet.
+        string status;
+        bool planPrMerged = false;
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var planPr = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId);
+            planPrMerged = string.Equals(planPr?.Col, "merged", StringComparison.OrdinalIgnoreCase);
+        }
+        bool lastWasPass = lastDeliverable is not null
+            && string.Equals(lastDeliverable.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+
+        // Count unanswered open questions — blocks pass and should show as
+        // stalled so the operator knows to answer before resuming.
+        var unansweredQuestions = 0;
+        if (!string.IsNullOrEmpty(workItemId))
+        {
+            // Dedupe by ExternalId — latest row per id wins.
+            var allQ = await db.DeliverableQuestions.AsNoTracking()
+                .Where(q => q.WorkItemId == workItemId)
+                .ToListAsync();
+            var byExtId = allQ.GroupBy(q => q.ExternalId)
+                .Select(g => g.OrderByDescending(q => q.CreatedAt).First());
+            unansweredQuestions = byExtId.Count(q => q.Answer == null);
+        }
+
+        if (isRunnerLive || isRecentEvent) status = "live";
+        else if (lastDeliverable is null) status = "pending";
+        else if (lastWasPass && planPrMerged) status = "completed";
+        else if (lastWasPass) status = "awaiting-pr-review";
+        else if (unansweredQuestions > 0) status = "stalled";
+        else if (lastDeliverable.Verdict != null
+            && (lastDeliverable.Verdict.StartsWith("stalled", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(lastDeliverable.Verdict, "reject", StringComparison.OrdinalIgnoreCase)))
+            status = "stalled";
+        else status = "iterating";
+
+        // Agent info — name + model for the latest gen/eval pair so the doc
+        // tile can render avatars with hover tooltips. Two EF passes: agents
+        // by id, then their crews for the model fallback.
+        object? genInfo = null, evalInfo = null;
+        if (lastDeliverable is not null)
+        {
+            // Resolve the two agent ids individually — clearer than a Contains
+            // pass and avoids EF parameter-extraction quirks with array nulls.
+            var genAgentId = lastDeliverable.GeneratorAgentId;
+            var evalAgentId = lastDeliverable.EvaluatorAgentId;
+            var genAgent = string.IsNullOrEmpty(genAgentId) ? null
+                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId);
+            var evalAgent = string.IsNullOrEmpty(evalAgentId) ? null
+                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId);
+
+            // Resolve crew model fallbacks individually. Mirror exactly the
+            // runtime resolution chain in
+            // CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync so the UI
+            // matches what the runner actually dispatches with:
+            //   generator: agent.GeneratorModel ?? crew.Model
+            //   evaluator: agent.EvaluatorModel ?? crew.EvaluatorModel ?? agent.GeneratorModel ?? crew.Model
+            // The previous fallback collapsed evaluator to crew.Model, which
+            // made a correctly-configured pair (gen=opus / evl=gpt) look
+            // identical in the wizard.
+            async Task<(string? Model, string? EvalModel)> CrewModelsAsync(string? crewId)
+            {
+                if (string.IsNullOrEmpty(crewId)) return (null, null);
+                var row = await db.Crews.AsNoTracking()
+                    .Where(c => c.Id == crewId)
+                    .Select(c => new { c.Model, c.EvaluatorModel })
+                    .FirstOrDefaultAsync();
+                return (row?.Model, row?.EvaluatorModel);
+            }
+
+            if (genAgent is not null)
+            {
+                var (crewModel, _) = await CrewModelsAsync(genAgent.CrewId);
+                genInfo = new
+                {
+                    agentId = genAgent.Id,
+                    name = genAgent.Name,
+                    model = !string.IsNullOrEmpty(genAgent.GeneratorModel) ? genAgent.GeneratorModel : crewModel,
+                };
+            }
+            if (evalAgent is not null)
+            {
+                var (crewModel, crewEvalModel) = await CrewModelsAsync(evalAgent.CrewId);
+                var resolved = !string.IsNullOrEmpty(evalAgent.EvaluatorModel) ? evalAgent.EvaluatorModel
+                    : !string.IsNullOrEmpty(crewEvalModel) ? crewEvalModel
+                    : !string.IsNullOrEmpty(evalAgent.GeneratorModel) ? evalAgent.GeneratorModel
+                    : crewModel;
+                evalInfo = new
+                {
+                    agentId = evalAgent.Id,
+                    name = evalAgent.Name,
+                    model = resolved,
+                };
+            }
+        }
 
         return Results.Ok(new
         {
             key,
             workItemId,
+            status,
+            maxIterations,
+            unansweredQuestions,
+            generator = genInfo,
+            evaluator = evalInfo,
             iterations,
             totalCostUsd = totalCost,
         });
@@ -977,6 +1692,11 @@ public static class StoriesEndpoints
         qaPrId = row.QaPrId,
         createdAt = row.CreatedAt,
         updatedAt = row.UpdatedAt,
+        // Phase 37 — operator-visible failure surfaced on the workstream UI.
+        // Cleared by the orchestrator on the next successful step or by an
+        // explicit POST /api/stories/{storyId}/spawn/retry from the UI.
+        lastError = row.LastError,
+        lastErrorAt = row.LastErrorAt,
     };
 
     private static string SlugFor(string title)

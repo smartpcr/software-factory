@@ -67,6 +67,38 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.FromResult(t.TryGetValue(filePath, out var content) ? content : null);
     }
 
+    /// <summary>
+    /// In tests there's no real repo on disk — return a deterministic synthetic
+    /// path so callers can use it as <c>WorktreePath</c> when stubbing the
+    /// architect strategy. Tests that exercise file I/O against this path
+    /// would still need a real <see cref="RealStoryGitOps"/>; the default
+    /// architect strategy in tests is <c>DeterministicStoryArtifactStrategy</c>
+    /// which doesn't touch git.
+    /// </summary>
+    public Task<string> EnsureWorktreeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        return Task.FromResult($"/tmp/forge-test-worktree/{repo?.Id ?? "_default"}/{branch.Replace('/', '-')}");
+    }
+
+    /// <summary>
+    /// In-memory commit — appends the file content to the branch tree. Mirrors
+    /// the contract of <see cref="CommitFilesAsync"/> but for a single path.
+    /// </summary>
+    public async Task<string> CommitPathInWorktreeAsync(
+        RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default)
+    {
+        // Read the file from the deterministic path the EnsureWorktree call
+        // returned — but in tests the file probably doesn't exist on disk.
+        // Test strategies write directly via CommitFilesAsync. This stub just
+        // touches the in-memory tree with a placeholder so the branch tip
+        // advances and tests asserting "branch had a commit" pass.
+        await this.CommitFilesAsync(
+            repo, branch,
+            new Dictionary<string, string>(StringComparer.Ordinal) { [repoRelativePath] = $"<commit:{message}>" },
+            message, ct);
+        return this.tips.TryGetValue(Key(repo, branch), out var sha) ? sha : string.Empty;
+    }
+
     public Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
         var srcKey = Key(repo, branch);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStateStore } from '@/state/useStateStore';
 import { sampleState } from '@/sampleData';
 import { forgeApi } from '@/api/forgeApi';
@@ -71,6 +71,49 @@ function fmt(v: number): string {
   return v >= 10 ? `$${v.toFixed(0)}` : `$${v.toFixed(2)}`;
 }
 
+// Y-axis tick formatter — collapses thousands/millions so labels stay
+// short ("$1.2k" not "$1200") and the axis column doesn't fight the bars
+// for horizontal space.
+function fmtAxis(v: number): string {
+  if (v === 0) return '$0';
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+  if (v >= 10) return `$${v.toFixed(0)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+// Pick a "nice" Y-axis scale for the spend chart. Targets `segments`
+// equal divisions with a step that's a 1/1.5/2/2.5/3/4/5/7.5/10 × 10ⁿ
+// number, and bumps the step until the ceiling sits at least 5% above
+// the tallest bar so the data resolves visually.
+function niceTicks(maxVal: number, segments: number): { max: number; ticks: number[] } {
+  if (maxVal <= 0) return { max: 1, ticks: [0, 1 / 3, 2 / 3, 1] };
+  const choices = [1, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10];
+  const rawStep = maxVal / segments;
+  const exp = Math.floor(Math.log10(rawStep));
+  const base = Math.pow(10, exp);
+  let idx = choices.findIndex((c) => c >= rawStep / base);
+  if (idx < 0) idx = choices.length - 1;
+  let step = choices[idx] * base;
+  while (step * segments < maxVal * 1.05) {
+    idx++;
+    if (idx >= choices.length) { idx = 0; step = base * 10; break; }
+    step = choices[idx] * base;
+  }
+  const max = step * segments;
+  const ticks: number[] = [];
+  for (let i = 0; i <= segments; i++) ticks.push(step * i);
+  return { max, ticks };
+}
+
+const TEAM_CHIPS: Array<{ key: string; label: string }> = [
+  { key: 'all',  label: 'All' },
+  { key: 'arch', label: 'Architect' },
+  { key: 'eng',  label: 'Engineer' },
+  { key: 'rev',  label: 'Review' },
+  { key: 'qa',   label: 'QA' },
+];
+
 export function CostView() {
   const apiState = useStateStore((s) => s.state);
   const epics: Epic[] = apiState?.epics ?? sampleState.epics;
@@ -81,23 +124,62 @@ export function CostView() {
   // fixtures only when the runner is offline").
   const [summary, setSummary] = useState<CostSummary>(() => buildFallback());
 
+  // Filter state
+  const [teamFilter, setTeamFilter] = useState('all');
+  const [productFilter, setProductFilter] = useState<string[]>([]);
+  const [repoFilter, setRepoFilter] = useState<string[]>([]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const live = await forgeApi.getCostSummary(7);
         if (cancelled) return;
-        // Treat an entirely-empty ledger (no rows yet on a fresh install)
-        // as "real but zero" — show the live shape rather than fallback
-        // fixtures so operators see the truthful state.
         setSummary(live);
       } catch (err) {
-        // Network / 5xx — keep the fallback already in state.
         console.warn('[forge] /api/cost/summary failed, using fallback fixtures', err);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Apply client-side filters to agents
+  const filteredAgents = useMemo(() => {
+    let result = summary.agents;
+    if (teamFilter !== 'all') {
+      result = result.filter((a) => a.role === teamFilter);
+    }
+    if (productFilter.length > 0) {
+      result = result.filter((a) => a.products?.some((p) => productFilter.includes(p)));
+    }
+    if (repoFilter.length > 0) {
+      result = result.filter((a) => a.repos?.some((r) => repoFilter.includes(r)));
+    }
+    return result;
+  }, [summary.agents, teamFilter, productFilter, repoFilter]);
+
+  const hasFilter = teamFilter !== 'all' || productFilter.length > 0 || repoFilter.length > 0;
+
+  // Derive filter options from agent data
+  const teamCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: summary.agents.length };
+    for (const a of summary.agents) {
+      counts[a.role] = (counts[a.role] ?? 0) + 1;
+    }
+    return counts;
+  }, [summary.agents]);
+
+  const productOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of summary.agents) for (const p of a.products ?? []) set.add(p);
+    return [...set].sort();
+  }, [summary.agents]);
+
+  const repoOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of summary.agents) for (const r of a.repos ?? []) set.add(r);
+    return [...set].sort();
+  }, [summary.agents]);
 
   const todayTotal = summary.todayUsd;
   const week7d = summary.week7dUsd;
@@ -105,10 +187,15 @@ export function CostView() {
   const burnRate = summary.days.length > 0 ? week7d / summary.days.length : 0;
   const forecast7d = burnRate * 7;
 
-  const dayMax = useMemo(() => Math.max(
-    dailyCap,
-    ...summary.days.map((d) => d.totalUsd),
-  ) || 1, [summary, dailyCap]);
+  // Scale Y-axis to the actual spend distribution, not the daily cap. The
+  // cap is shown by the right-rail gauge ("Today vs cap") and the Today
+  // stat cell — including it here flattens every bar to a hairline when
+  // realised spend is well below the cap (the common case during ramp-up).
+  const yScale = useMemo(
+    () => niceTicks(Math.max(0, ...summary.days.map((d) => d.totalUsd)), 3),
+    [summary],
+  );
+  const dayMax = yScale.max;
 
   const epicById = useMemo(() => new Map(epics.map((e) => [e.id, e])), [epics]);
 
@@ -131,7 +218,7 @@ export function CostView() {
       .slice(0, 8);
   }, [cards]);
 
-  const totalAgentBurn = summary.agents.reduce((s, a) => s + a.cost7dUsd, 0);
+  const totalAgentBurn = filteredAgents.reduce((s, a) => s + a.cost7dUsd, 0);
   const budgetPct = dailyCap > 0
     ? Math.min(100, Math.round((todayTotal / dailyCap) * 100))
     : 0;
@@ -156,6 +243,50 @@ export function CostView() {
           <button className="btn btn-secondary">Export CSV</button>
           <button className="btn btn-primary">Adjust caps</button>
         </div>
+      </div>
+
+      {/* ── Filter bar ─────────────────────────────────────────────── */}
+      <div className="filter-bar" style={{ paddingBottom: 14 }}>
+        <div className="filter-chips">
+          {TEAM_CHIPS.map((chip) => (
+            <button
+              key={chip.key}
+              className={`filter-chip${teamFilter === chip.key ? ' active' : ''}`}
+              onClick={() => setTeamFilter(chip.key)}
+            >
+              {chip.label}
+              <span className="count">{teamCounts[chip.key] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+
+        {productOptions.length > 0 && (
+          <CostMultiSelect
+            label="Product"
+            options={productOptions.map((p) => ({ value: p, label: p }))}
+            selected={productFilter}
+            onChange={setProductFilter}
+          />
+        )}
+
+        {repoOptions.length > 0 && (
+          <CostMultiSelect
+            label="Repo"
+            options={repoOptions.map((r) => ({ value: r, label: r }))}
+            selected={repoFilter}
+            onChange={setRepoFilter}
+          />
+        )}
+
+        {hasFilter && (
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={() => { setTeamFilter('all'); setProductFilter([]); setRepoFilter([]); }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       <div className="workstreams-stats" style={{ margin: '0 28px 16px' }}>
@@ -190,10 +321,9 @@ export function CostView() {
             </div>
             <div className="cost-chart">
               <div className="cost-chart-yaxis">
-                <span>${dayMax.toFixed(0)}</span>
-                <span>${(dayMax * 0.66).toFixed(0)}</span>
-                <span>${(dayMax * 0.33).toFixed(0)}</span>
-                <span>$0</span>
+                {[...yScale.ticks].reverse().map((t) => (
+                  <span key={t}>{fmtAxis(t)}</span>
+                ))}
               </div>
               <div className="cost-chart-bars">
                 <div className="cost-chart-grid">
@@ -240,7 +370,7 @@ export function CostView() {
           <div className="cost-card">
             <div className="cost-card-head">
               <span className="cost-card-title">Per-agent burn</span>
-              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {summary.agents.length} agents</span>
+              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {filteredAgents.length} agents{hasFilter ? ' (filtered)' : ''}</span>
             </div>
             <table className="burn-table">
               <thead>
@@ -255,7 +385,7 @@ export function CostView() {
                 </tr>
               </thead>
               <tbody>
-                {summary.agents.map((a) => {
+                {filteredAgents.map((a) => {
                   const share = totalAgentBurn > 0 ? (a.cost7dUsd / totalAgentBurn) * 100 : 0;
                   return (
                     <tr key={a.id}>
@@ -410,5 +540,93 @@ function Sparkline({ values }: { values: number[] }) {
         fill={trendUp ? 'var(--success)' : 'var(--danger)'}
       />
     </svg>
+  );
+}
+
+function CostMultiSelect({ label, options, selected, onChange }: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const toggle = (value: string) => {
+    onChange(
+      selected.includes(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value],
+    );
+  };
+
+  const displayLabel = selected.length === 0
+    ? `${label}: All`
+    : `${label}: ${selected.length} selected`;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="filter-select"
+        onClick={() => setOpen(!open)}
+        style={{
+          cursor: 'pointer',
+          background: selected.length > 0 ? 'var(--accent-bg, rgba(79,140,255,0.12))' : undefined,
+          borderColor: selected.length > 0 ? 'var(--accent)' : undefined,
+          minWidth: 120,
+        }}
+      >
+        {displayLabel} ▾
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          zIndex: 100,
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+          padding: '6px 0',
+          minWidth: 180,
+          maxHeight: 240,
+          overflow: 'auto',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+        }}>
+          {options.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '5px 12px',
+                cursor: 'pointer',
+                fontSize: 12,
+                color: 'var(--text-primary)',
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(opt.value)}
+                onChange={() => toggle(opt.value)}
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

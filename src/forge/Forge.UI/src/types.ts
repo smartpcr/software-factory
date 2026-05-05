@@ -213,6 +213,8 @@ export interface PrComment {
   linkedCommitSha?: string | null;
   linkedAgentResponseId?: number | null;
   requiresAttention: boolean;
+  /** Phase 34 — user reaction: 'thumbsup' | 'thumbsdown' | null. */
+  reaction?: string | null;
 }
 
 export interface PrCommentHistory {
@@ -589,6 +591,8 @@ export interface AgentDetail {
   generatorModel?: string | null;
   /** Phase 13e — model when this agent runs as the pair's evaluator. */
   evaluatorModel?: string | null;
+  /** Distinct work items this agent has worked on (from agent_usage ledger). */
+  workItemCount?: number;
 }
 
 /** Phase 13.7 — domain-expert index entry (built-in team caps + sha256 docs). */
@@ -769,6 +773,8 @@ export interface AgentBurn {
   cost7dUsd: number;
   tokens: number;
   spark: number[];
+  repos?: string[];
+  products?: string[];
 }
 
 // ─── Phase 15 — sprint & area path management ──────────────────────────────

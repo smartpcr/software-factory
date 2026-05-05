@@ -54,6 +54,9 @@ public class NullForgeProvider : IForgeProvider
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
         throw Unconfigured();
 
+    public Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
     public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
         throw Unconfigured();
 

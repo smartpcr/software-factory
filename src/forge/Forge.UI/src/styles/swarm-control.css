@@ -306,7 +306,7 @@
   text-decoration: none;
 }
 .swarm-ctrl .crumb:hover { color: var(--sc-text); border-color: var(--sc-border-2); background: var(--sc-surface-2); }
-.swarm-ctrl .crumb.active { color: var(--sc-amber); border-color: var(--sc-amber-d); background: rgba(255,179,71,0.07); }
+.swarm-ctrl .crumb.active { color: var(--sc-amber); border-color: transparent; background: rgba(255,179,71,0.07); }
 .swarm-ctrl .crumb .pre {
   font-family: var(--sc-font-display);
   font-size: 8px; letter-spacing: 0.2em; color: var(--sc-muted); text-transform: uppercase;
@@ -331,6 +331,37 @@
 .swarm-ctrl .nav-btn:hover { color: var(--sc-text); border-color: var(--sc-border-2); }
 .swarm-ctrl .nav-btn.go { color: var(--sc-amber); border-color: var(--sc-amber-d); }
 .swarm-ctrl .nav-btn.go:hover { background: rgba(255,179,71,0.1); }
+
+/* ─── SLIM HEADER ──────────────────────────────────────────────────── */
+.swarm-ctrl .swarm-header-slim {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--sc-border);
+}
+.swarm-ctrl .swarm-header-slim-left { display: flex; flex-direction: column; gap: 2px; }
+.swarm-ctrl .swarm-header-slim-eyebrow {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .swarm-header-slim-title {
+  font-family: var(--sc-font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--sc-text);
+  margin: 0;
+}
+.swarm-ctrl .swarm-header-slim-sub {
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  color: var(--sc-text-dim);
+  letter-spacing: 0.04em;
+}
 
 /* ─── PIPELINE ──────────────────────────────────────────────────────── */
 .swarm-ctrl .pipeline {
@@ -415,7 +446,8 @@
 
 /* ─── INDEX (multi-story landing) ───────────────────────────────────── */
 .swarm-ctrl .index {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   min-height: 0;
 }
@@ -470,7 +502,8 @@
 .swarm-ctrl .index-toolbar .btn:hover { color: var(--sc-text); border-color: var(--sc-border-2); }
 
 .swarm-ctrl .story-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 .swarm-ctrl .story-row {
@@ -765,8 +798,8 @@
 }
 .swarm-ctrl .phase.stalled::before { background: var(--sc-red); box-shadow: 0 0 8px var(--sc-red); animation: sc-pulse 1s infinite; }
 .swarm-ctrl .phase.selected {
-  border-color: var(--sc-amber);
-  box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 18px rgba(255,179,71,0.18);
+  box-shadow: inset 0 -2px 0 var(--sc-amber);
+  background: var(--sc-surface-2);
 }
 
 .swarm-ctrl .phase-hd {
@@ -916,7 +949,7 @@
 .swarm-ctrl .doc-card.merged::before { background: var(--sc-green); box-shadow: 0 0 8px var(--sc-green); }
 .swarm-ctrl .doc-card.review::before { background: var(--sc-magenta); }
 .swarm-ctrl .doc-card.draft::before  { background: var(--sc-amber); }
-.swarm-ctrl .doc-card.selected      { border-color: var(--sc-amber); box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 14px rgba(255,179,71,0.16); }
+.swarm-ctrl .doc-card.selected      { box-shadow: inset 0 -2px 0 var(--sc-amber); background: var(--sc-surface-2); }
 .swarm-ctrl .doc-card .doc-no { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.22em; color: var(--sc-muted); }
 .swarm-ctrl .doc-card .doc-title {
   font-family: var(--sc-font-mono); font-size: 11px; color: var(--sc-text);
@@ -945,6 +978,43 @@
 .swarm-ctrl .doc-card.merged .doc-status { color: var(--sc-green); }
 .swarm-ctrl .doc-card.review .doc-status { color: var(--sc-magenta); }
 .swarm-ctrl .doc-card.draft  .doc-status { color: var(--sc-amber); }
+
+/* Loop status — overrides PR-state colour so the badge reflects the gen↔eval
+   loop state rather than the plan PR. `live` pulses while the agents are
+   actively emitting events. `awaiting-pr-review` is the post-pass state
+   before the plan PR merges. */
+.swarm-ctrl .doc-card .doc-status.doc-status--live              { color: var(--sc-cyan);     border-color: var(--sc-cyan-d, currentColor); animation: sc-blink 1.4s ease-in-out infinite; }
+.swarm-ctrl .doc-card .doc-status.doc-status--iterating         { color: var(--sc-amber);    border-color: var(--sc-amber-d, currentColor); }
+.swarm-ctrl .doc-card .doc-status[class*="awaiting-pr-review"]  { color: var(--sc-magenta);  border-color: var(--sc-magenta-d, currentColor); }
+.swarm-ctrl .doc-card .doc-status.doc-status--completed         { color: var(--sc-green);    border-color: var(--sc-green-d, currentColor); }
+.swarm-ctrl .doc-card .doc-status.doc-status--pending           { color: var(--sc-text-dim); border-color: var(--sc-border); }
+
+/* Agent pair strip on the doc card */
+.swarm-ctrl .doc-card .doc-agents {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px;
+}
+.swarm-ctrl .doc-card .doc-agents-link {
+  font-size: 10px; color: var(--sc-text-dim);
+}
+.swarm-ctrl .doc-card .doc-agent {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  border: 1px solid var(--sc-border-2);
+  border-radius: 50%;
+  background: var(--sc-bg-2);
+  overflow: hidden;
+}
+.swarm-ctrl .doc-card .doc-agent img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.swarm-ctrl .doc-card .doc-agent-mono {
+  font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.04em;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .doc-card .doc-agent--generator { border-color: var(--sc-cyan-d, var(--sc-border-2)); }
+.swarm-ctrl .doc-card .doc-agent--evaluator { border-color: var(--sc-magenta-d, var(--sc-border-2)); }
+.swarm-ctrl .doc-card .doc-agent--empty {
+  width: auto; padding: 0 6px; height: 18px;
+  font-family: var(--sc-font-display); font-size: 9px; color: var(--sc-text-dim);
+}
 
 /* ─── GATE LIST (master, RELEASE mode) ──────────────────────────────── */
 .swarm-ctrl .gate-list { display: grid; gap: 8px; }
@@ -1016,11 +1086,14 @@
 .swarm-ctrl .tab:hover { color: var(--sc-text); }
 .swarm-ctrl .tab.active { color: var(--sc-amber); border-bottom-color: var(--sc-amber); }
 .swarm-ctrl .tab .ct {
+  display: none;
+}
+.swarm-ctrl .tab .ct.ct--badge {
+  display: inline-flex;
   font-size: 8px; letter-spacing: 0.15em;
   padding: 1px 5px;
-  background: var(--sc-bg);
-  border: 1px solid var(--sc-border-2);
-  color: var(--sc-text-dim);
+  border-radius: 8px;
+  margin-left: 4px;
 }
 .swarm-ctrl .tab.active .ct { color: var(--sc-amber); border-color: var(--sc-amber-d); }
 .swarm-ctrl .tab.disabled { color: var(--sc-muted); cursor: not-allowed; }
@@ -1291,16 +1364,17 @@
   border-bottom: 1px solid var(--sc-border);
   margin-bottom: 8px;
 }
-.swarm-ctrl .doc-toc-list {
+.swarm-ctrl .doc-toc-list,
+.swarm-ctrl .doc-toc-tree {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 .swarm-ctrl .doc-toc-item {
   display: grid;
-  grid-template-columns: 40px 1fr;
-  gap: 8px;
-  padding: 7px 14px;
+  grid-template-columns: 14px 36px 1fr;
+  gap: 6px;
+  padding: 5px 10px 5px 14px;
   font-family: var(--sc-font-mono);
   font-size: 11px;
   color: var(--sc-text-dim);
@@ -1314,13 +1388,33 @@
   background: var(--sc-surface-3);
   border-left-color: var(--sc-amber);
 }
+.swarm-ctrl .doc-toc-item .bullet {
+  color: var(--sc-muted);
+  font-size: 9px;
+  text-align: center;
+  line-height: 1;
+}
+.swarm-ctrl .doc-toc-item.active .bullet { color: var(--sc-amber); }
 .swarm-ctrl .doc-toc-item .no {
   color: var(--sc-muted);
   font-size: 10px;
   letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .swarm-ctrl .doc-toc-item.active .no { color: var(--sc-amber-d); }
 .swarm-ctrl .doc-toc-item .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Tree indentation by heading level. L1 is flush, each deeper level adds
+ * ~12px to the left padding so the hierarchy reads as a tree. The H1
+ * ('document title') gets a heavier weight; H4-H6 dim out. */
+.swarm-ctrl .doc-toc-item.L1 { padding-left: 14px; font-weight: 600; color: var(--sc-text); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
+.swarm-ctrl .doc-toc-item.L2 { padding-left: 22px; font-weight: 500; }
+.swarm-ctrl .doc-toc-item.L3 { padding-left: 36px; font-size: 10.5px; }
+.swarm-ctrl .doc-toc-item.L4 { padding-left: 50px; font-size: 10px; color: var(--sc-muted); }
+.swarm-ctrl .doc-toc-item.L5 { padding-left: 62px; font-size: 10px; color: var(--sc-muted); }
+.swarm-ctrl .doc-toc-item.L6 { padding-left: 74px; font-size:  9px; color: var(--sc-muted); }
 
 .swarm-ctrl .doc-body {
   padding: 18px 28px 32px;
@@ -1410,6 +1504,31 @@
   letter-spacing: 0.18em;
   color: var(--sc-amber);
 }
+
+/* Heading-level scaling so the rendered body mirrors the TOC tree. L1 is
+ * the biggest because it's the doc title; L2 (chapter) and L3 (subsection)
+ * step down; L4–L6 are tight subheaders. */
+.swarm-ctrl .doc-section-h--L1 { font-size: 17px; letter-spacing: 0.04em; }
+.swarm-ctrl .doc-section-h--L1 .doc-section-t { letter-spacing: 0.06em; }
+.swarm-ctrl .doc-section-h--L2 { font-size: 14px; }
+.swarm-ctrl .doc-section-h--L3 { font-size: 12px; }
+.swarm-ctrl .doc-section-h--L3 .doc-section-t { letter-spacing: 0.14em; color: var(--sc-text); }
+.swarm-ctrl .doc-section-h--L4,
+.swarm-ctrl .doc-section-h--L5,
+.swarm-ctrl .doc-section-h--L6 {
+  font-size: 11px;
+  margin: 6px 0 6px;
+}
+.swarm-ctrl .doc-section-h--L4 .doc-section-t,
+.swarm-ctrl .doc-section-h--L5 .doc-section-t,
+.swarm-ctrl .doc-section-h--L6 .doc-section-t {
+  letter-spacing: 0.1em; color: var(--sc-text-dim); text-transform: none;
+}
+/* Indent deeper sections so the body mirrors the TOC tree visually. */
+.swarm-ctrl .doc-section--L3 { padding-left: 14px; }
+.swarm-ctrl .doc-section--L4 { padding-left: 28px; }
+.swarm-ctrl .doc-section--L5 { padding-left: 42px; }
+.swarm-ctrl .doc-section--L6 { padding-left: 56px; }
 .swarm-ctrl .doc-p {
   margin: 0 0 10px;
   font-size: 12px;
@@ -1437,6 +1556,113 @@
   white-space: pre;
   overflow-x: auto;
 }
+
+/* Phase 37 — Spawn error banner. Sits above the pipeline strip when the
+ * orchestrator halted on the spawn (architect crew below pass, plan PR merge
+ * conflict, etc.). Operator sees the cause + a Retry button.
+ */
+.swarm-ctrl .spawn-error-banner {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  align-items: center;
+  margin: 8px 0 12px;
+  padding: 12px 18px;
+  background: rgba(255, 80, 80, 0.06);
+  border-left: 3px solid var(--sc-red);
+  border-top: 1px solid var(--sc-red-d, rgba(255, 80, 80, 0.4));
+  border-bottom: 1px solid var(--sc-red-d, rgba(255, 80, 80, 0.4));
+  border-right: 1px solid var(--sc-red-d, rgba(255, 80, 80, 0.4));
+  color: var(--sc-text);
+}
+.swarm-ctrl .spawn-error-banner__icon {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--sc-red); color: var(--sc-bg);
+  font-family: var(--sc-font-display); font-weight: 700;
+}
+.swarm-ctrl .spawn-error-banner__title {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--sc-red);
+}
+.swarm-ctrl .spawn-error-banner__when {
+  color: var(--sc-text-dim); letter-spacing: 0.12em;
+}
+.swarm-ctrl .spawn-error-banner__msg {
+  font-family: var(--sc-font-mono); font-size: 12px;
+  margin-top: 4px; line-height: 1.45;
+  color: var(--sc-text);
+  word-break: break-word;
+}
+.swarm-ctrl .spawn-error-banner__retry {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--sc-red);
+  color: var(--sc-red);
+  cursor: pointer;
+}
+.swarm-ctrl .spawn-error-banner__retry:hover:not(:disabled) {
+  background: var(--sc-red); color: var(--sc-bg);
+}
+.swarm-ctrl .spawn-error-banner__retry:disabled {
+  opacity: 0.5; cursor: default;
+}
+
+/* GFM markdown body inside a doc section — paragraphs, code, lists,
+ * tables, blockquotes, task lists. Tones match the existing .doc-p /
+ * .doc-code / .doc-list styling so a doc looks the same after the switch
+ * to react-markdown + remark-gfm.
+ */
+.swarm-ctrl .doc-md { color: var(--sc-text); font-family: var(--sc-font-mono); font-size: 12px; line-height: 1.55; }
+.swarm-ctrl .doc-md p { margin: 0 0 10px; }
+.swarm-ctrl .doc-md ul,
+.swarm-ctrl .doc-md ol { margin: 0 0 12px; padding-left: 22px; display: grid; gap: 4px; }
+.swarm-ctrl .doc-md li { margin: 0; }
+.swarm-ctrl .doc-md li > p { margin: 0; }
+.swarm-ctrl .doc-md code {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  padding: 1px 4px; border-radius: 3px;
+  background: var(--sc-bg-2); color: var(--sc-amber);
+}
+.swarm-ctrl .doc-md pre {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  padding: 10px 12px; margin: 0 0 12px;
+  background: var(--sc-bg-2); border: 1px solid var(--sc-border);
+  white-space: pre; overflow-x: auto;
+}
+.swarm-ctrl .doc-md pre code { background: transparent; color: inherit; padding: 0; }
+.swarm-ctrl .doc-md strong { font-weight: 600; color: var(--sc-text); }
+.swarm-ctrl .doc-md em { font-style: italic; }
+.swarm-ctrl .doc-md a { color: var(--sc-cyan); text-decoration: underline; }
+.swarm-ctrl .doc-md blockquote {
+  margin: 0 0 12px; padding: 4px 12px;
+  border-left: 2px solid var(--sc-amber);
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .doc-md table {
+  width: 100%; border-collapse: collapse; margin: 0 0 14px;
+  font-size: 11px;
+}
+.swarm-ctrl .doc-md th,
+.swarm-ctrl .doc-md td {
+  border: 1px solid var(--sc-border);
+  padding: 6px 10px; text-align: left; vertical-align: top;
+}
+.swarm-ctrl .doc-md th {
+  background: var(--sc-surface-2);
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .doc-md tr:nth-child(even) td { background: rgba(255,255,255,0.012); }
+.swarm-ctrl .doc-md hr {
+  border: 0; border-top: 1px solid var(--sc-border); margin: 14px 0;
+}
+.swarm-ctrl .doc-md input[type="checkbox"] { margin-right: 6px; }
 
 @media (max-width: 1180px) {
   .swarm-ctrl .doc-pane { grid-template-columns: 200px 1fr; }
@@ -1497,9 +1723,375 @@
 
 .swarm-ctrl .doc-conv {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto auto auto 1fr;
   height: 100%;
   min-height: 0;
+}
+
+/* Pair header — generator + evaluator avatar/name/model + total cost */
+.swarm-ctrl .doc-conv-pair-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+}
+.swarm-ctrl .doc-conv-pair-link {
+  font-size: 14px;
+  color: var(--sc-muted);
+}
+.swarm-ctrl .doc-conv-pair-cost {
+  margin-left: auto;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv-pair-cost b { color: var(--sc-cyan); }
+.swarm-ctrl .doc-conv-iter-cap {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.swarm-ctrl .doc-conv-iter-cap strong {
+  color: var(--sc-text);
+  font-weight: 600;
+}
+
+/* Decomposition view — workstream cards rendered for `doc:decomposition`.
+ * Each card shows title / effort / timeline / description, plus collapsible
+ * acceptance criteria and deliverables. Dep arrows surface the parallel
+ * structure so the operator sees what the engineer crew will pick up first.
+ */
+.swarm-ctrl .decomp-view .doc-body { padding: 18px 22px 30px; }
+.swarm-ctrl .decomp-header { margin-bottom: 18px; }
+.swarm-ctrl .decomp-header__title {
+  font-family: var(--sc-font-display); font-size: 11px;
+  letter-spacing: 0.18em; color: var(--sc-amber);
+  text-transform: uppercase;
+}
+.swarm-ctrl .decomp-header__sub {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim); margin-top: 4px;
+}
+.swarm-ctrl .decomp-header__actions {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 10px;
+}
+.swarm-ctrl .decomp-view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--sc-border);
+  border-radius: 4px; overflow: hidden;
+}
+.swarm-ctrl .decomp-view-toggle__btn {
+  background: transparent; border: 0;
+  padding: 5px 12px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--sc-text-dim); cursor: pointer;
+}
+.swarm-ctrl .decomp-view-toggle__btn + .decomp-view-toggle__btn {
+  border-left: 1px solid var(--sc-border);
+}
+.swarm-ctrl .decomp-view-toggle__btn:hover { color: var(--sc-text); }
+.swarm-ctrl .decomp-view-toggle__btn.is-active {
+  background: var(--sc-amber-d); color: var(--sc-bg);
+}
+.swarm-ctrl .decomp-view-toggle__copy {
+  background: transparent;
+  border: 1px solid var(--sc-border); border-radius: 3px;
+  padding: 4px 10px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--sc-text-dim); cursor: pointer;
+}
+.swarm-ctrl .decomp-view-toggle__copy:hover {
+  color: var(--sc-cyan); border-color: var(--sc-cyan-d);
+}
+.swarm-ctrl .decomp-json {
+  margin: 0;
+  background: var(--sc-surface);
+  border-left: 3px solid var(--sc-amber-d);
+  padding: 14px 16px;
+  border-radius: 4px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  line-height: 1.5; color: var(--sc-text);
+  white-space: pre; overflow: auto;
+  max-height: calc(100vh - 260px);
+}
+.swarm-ctrl .decomp-list {
+  list-style: none; padding: 0; margin: 0;
+  display: grid; gap: 14px;
+}
+.swarm-ctrl .decomp-card {
+  background: var(--sc-surface);
+  border-left: 3px solid var(--sc-cyan-d);
+  padding: 14px 16px;
+  border-radius: 5px;
+  display: grid; gap: 10px;
+}
+.swarm-ctrl .decomp-card:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .decomp-card__hd {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.swarm-ctrl .decomp-card__no {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.18em; color: var(--sc-muted);
+}
+.swarm-ctrl .decomp-card__title {
+  font-family: var(--sc-font-mono); font-size: 13px;
+  color: var(--sc-text); font-weight: 600; flex: 1;
+}
+.swarm-ctrl .decomp-card__effort {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; padding: 2px 8px;
+  border: 1px solid currentColor; text-transform: uppercase;
+}
+.swarm-ctrl .decomp-card__effort--xs       { color: var(--sc-text-dim); }
+.swarm-ctrl .decomp-card__effort--small    { color: var(--sc-green); }
+.swarm-ctrl .decomp-card__effort--medium   { color: var(--sc-cyan); }
+.swarm-ctrl .decomp-card__effort--large    { color: var(--sc-amber); }
+.swarm-ctrl .decomp-card__effort--unknown  { color: var(--sc-muted); }
+.swarm-ctrl .decomp-card__timeline {
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__desc {
+  margin: 0;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  line-height: 1.5; color: var(--sc-text);
+}
+.swarm-ctrl .decomp-card__deps {
+  display: grid; gap: 4px;
+  font-family: var(--sc-font-mono); font-size: 11px;
+}
+.swarm-ctrl .decomp-card__dep-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.swarm-ctrl .decomp-card__dep-label {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__dep-chip {
+  font-size: 11px; padding: 2px 8px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  border-radius: 3px;
+}
+.swarm-ctrl .decomp-card__dep-chip--down {
+  border-color: var(--sc-cyan-d); color: var(--sc-cyan);
+}
+.swarm-ctrl .decomp-card__details {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__details summary {
+  cursor: pointer; padding: 4px 0;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__ac, .swarm-ctrl .decomp-card__deliv {
+  margin: 6px 0 0 18px; padding: 0;
+  display: grid; gap: 4px;
+}
+.swarm-ctrl .decomp-card__ac li { color: var(--sc-text); line-height: 1.45; }
+.swarm-ctrl .decomp-card__deliv li code {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  background: var(--sc-bg-2); padding: 1px 5px;
+  color: var(--sc-amber);
+  border-radius: 2px;
+}
+
+/* Phase 39 (Layer C) — open-questions wizard. Sits between the prompts
+ * panel and the filter tab strip; surfaces structured questions the
+ * generator emitted in `## Open Questions` JSON blocks. Blocking when any
+ * question is unanswered (the verdict gate forces iterate until cleared).
+ */
+.swarm-ctrl .oq-wizard {
+  margin: 8px 18px 0;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-surface);
+  border-radius: 5px;
+}
+.swarm-ctrl .oq-wizard--blocking {
+  border-color: var(--sc-amber-d);
+  background: rgba(255, 179, 71, 0.04);
+}
+.swarm-ctrl .oq-wizard__hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.swarm-ctrl .oq-wizard__chevron { color: var(--sc-text-dim); font-size: 11px; }
+.swarm-ctrl .oq-wizard__title {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.18em; color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard--blocking .oq-wizard__title { color: var(--sc-amber); }
+.swarm-ctrl .oq-wizard__count {
+  margin-left: auto;
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard__count[data-blocking] {
+  color: var(--sc-amber); font-weight: 600;
+}
+.swarm-ctrl .oq-wizard__body {
+  padding: 0 14px 14px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.swarm-ctrl .oq-wizard__pending { display: grid; gap: 12px; margin-top: 4px; }
+.swarm-ctrl .oq-wizard__q {
+  border: 1px solid var(--sc-hairline);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .oq-wizard__q-meta {
+  display: flex; gap: 10px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; color: var(--sc-muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.swarm-ctrl .oq-wizard__q-id { color: var(--sc-amber); }
+.swarm-ctrl .oq-wizard__q-text {
+  font-family: var(--sc-font-mono); font-size: 12px;
+  color: var(--sc-text); margin-bottom: 8px; line-height: 1.45;
+}
+.swarm-ctrl .oq-wizard__q-choices { display: grid; gap: 6px; }
+.swarm-ctrl .oq-wizard__q-choice {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  color: var(--sc-text);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+.swarm-ctrl .oq-wizard__q-choice:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .oq-wizard__q-choice input[type="radio"] {
+  accent-color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__q-other-input {
+  flex: 1;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text);
+  padding: 4px 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+}
+.swarm-ctrl .oq-wizard__q-textarea {
+  width: 100%;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text);
+  padding: 6px 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  resize: vertical;
+}
+.swarm-ctrl .oq-wizard__q-textarea:focus,
+.swarm-ctrl .oq-wizard__q-other-input:focus {
+  outline: none; border-color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 8px;
+}
+.swarm-ctrl .oq-wizard__q-dismiss {
+  margin-left: auto;
+  font-family: var(--sc-font-display); font-size: 8px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__q-dismiss:hover:not(:disabled) {
+  border-color: var(--sc-red);
+  color: var(--sc-red);
+}
+.swarm-ctrl .oq-wizard__q-dismiss:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__dismiss-all {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__dismiss-all:hover:not(:disabled) {
+  border-color: var(--sc-red); color: var(--sc-red);
+}
+.swarm-ctrl .oq-wizard__dismiss-all:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__submit {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 8px 16px;
+  background: var(--sc-amber); color: var(--sc-bg);
+  border: 1px solid var(--sc-amber);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__submit:hover:not(:disabled) {
+  background: var(--sc-bg); color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__submit:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__answered {
+  margin-top: 12px;
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard__answered summary {
+  cursor: pointer;
+  font-family: var(--sc-font-display); letter-spacing: 0.16em;
+  font-size: 9px; text-transform: uppercase;
+  padding: 4px 0;
+}
+.swarm-ctrl .oq-wizard__answered-list { display: grid; gap: 8px; margin-top: 6px; }
+.swarm-ctrl .oq-wizard__answered-row {
+  padding: 6px 10px;
+  border-left: 2px solid var(--sc-green-d);
+  background: rgba(121, 224, 138, 0.04);
+}
+.swarm-ctrl .oq-wizard__q-answer {
+  color: var(--sc-green); font-style: italic;
+  margin-top: 4px;
+}
+
+/* Resume button on the conversation tab pair bar — re-fires the gen↔eval
+ * loop (architect via /spawn/retry, engineer via /work-items/{id}/resume).
+ * Disabled when the loop is currently live OR the work has fully shipped.
+ */
+.swarm-ctrl .doc-conv-resume-btn {
+  margin-left: 12px;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  cursor: pointer;
+  transition: background-color 0.18s, color 0.18s;
+}
+.swarm-ctrl .doc-conv-resume-btn:hover:not(:disabled) {
+  background: var(--sc-amber);
+  color: var(--sc-bg);
+}
+.swarm-ctrl .doc-conv-resume-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--sc-border);
+  color: var(--sc-text-dim);
 }
 .swarm-ctrl .doc-conv-hd {
   display: flex;
@@ -1618,4 +2210,552 @@
   background: transparent;
   border: 0;
   padding: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * SOFT CHROME PASS — drop most internal borders, replace hard separators
+ * with hairline dividers, increase padding, modest border-radius. Keeps
+ * the topbar + pipeline-strip dashboard chrome intact (they define the
+ * "swarm control" aesthetic) and softens the master/detail panels and
+ * the cards inside them. Operator-tested via "view too boxy" feedback.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+.swarm-ctrl {
+  /* Hairline divider — half-strength of --sc-border. Used in place of the
+   * hard 1px solid borders that made the master/detail panels feel
+   * busy. Falls back to --sc-border when the runtime can't compute the
+   * fade (older Chromiums). */
+  --sc-hairline: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] .swarm-ctrl {
+  --sc-hairline: rgba(15, 23, 42, 0.05);
+}
+
+/* Panels — keep the elevation/gradient feel, drop the hard outline,
+ * replace the head separator with a hairline, soften corners. */
+.swarm-ctrl .panel {
+  border: 0;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 1px 0 rgba(0, 0, 0, 0.4);
+}
+.swarm-ctrl .panel-hd {
+  border-bottom: 1px solid var(--sc-hairline);
+  padding: 10px 14px;
+}
+.swarm-ctrl .panel-bd {
+  padding: 14px;
+}
+
+/* Detail panel tabs — drop the heavy `tabs` background bar and harsh
+ * border-bottom; the active tab keeps its 2px amber underline so the
+ * affordance is intact. */
+.swarm-ctrl .tabs {
+  background: transparent;
+  border-bottom: 1px solid var(--sc-hairline);
+}
+
+/* Doc cards — borderless body, keep the colored left rule (status), gain
+ * a soft surface tint + slight rounding. Selected state stays loud. */
+.swarm-ctrl .doc-card {
+  border: 0;
+  border-radius: 5px;
+  padding: 12px 14px 12px 18px;
+  background: var(--sc-surface);
+  transition: background-color 0.18s, box-shadow 0.18s;
+}
+.swarm-ctrl .doc-card:hover {
+  background: var(--sc-surface-2);
+}
+.swarm-ctrl .doc-card.selected {
+  border: 0;
+  box-shadow: inset 0 -2px 0 var(--sc-amber);
+  background: var(--sc-surface-2);
+}
+
+/* Phase cards (impl-mode workstream rows) — same treatment. */
+.swarm-ctrl .phase {
+  border: 0;
+  border-radius: 5px;
+  background: var(--sc-surface);
+  transition: background-color 0.18s;
+}
+.swarm-ctrl .phase:hover { background: var(--sc-surface-2); border-color: transparent; }
+.swarm-ctrl .phase-hd {
+  border-bottom: 1px solid var(--sc-hairline);
+}
+.swarm-ctrl .phase.selected {
+  border: 0;
+  box-shadow: inset 0 -2px 0 var(--sc-amber);
+  background: var(--sc-surface-2);
+}
+
+/* Gate cards (release mode) — soften to match. */
+.swarm-ctrl .gate-card {
+  border: 0;
+  border-radius: 5px;
+  background: var(--sc-surface);
+}
+
+/* Overview pane — replace the hard right divider with a hairline so the
+ * left and right halves don't feel like separate panes. */
+.swarm-ctrl .ov-meta {
+  border-bottom: 1px solid var(--sc-hairline);
+}
+.swarm-ctrl .ov-split-l {
+  border-right: 1px solid var(--sc-hairline);
+}
+
+/* Doc-conversation header bars — same hairline treatment. */
+.swarm-ctrl .doc-conv-pair-bar { border-bottom: 1px solid var(--sc-hairline); }
+
+/* Attention strip (master panel) — softer outline. */
+.swarm-ctrl .attention { border: 0; background: rgba(255, 107, 128, 0.06); border-radius: 5px; }
+.swarm-ctrl .attention-hd { border-bottom: 1px solid var(--sc-hairline); }
+
+/* ─────────────────────────────────────────────────────────────────────
+ * "Quiet Console" hierarchy override — the page was wearing a chip on
+ * every datum. This block strips boxes off secondary metadata and lets
+ * type sizing + hairline dividers carry the rhythm. Same data, much less
+ * visual competition. (Scoped overrides, applied last so they win.)
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* TOPBAR METER STRIP ── strip card chrome, use vertical hairlines. */
+.swarm-ctrl .sc-topbar { padding: 22px 28px 18px; gap: 28px; }
+.swarm-ctrl .meters {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0;
+  align-items: stretch;
+}
+.swarm-ctrl .meter {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--sc-hairline);
+  border-radius: 0;
+  padding: 4px 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  transition: background 120ms ease;
+}
+.swarm-ctrl .meter:first-child { border-left: 0; padding-left: 0; }
+.swarm-ctrl .meter:hover { background: transparent; }
+.swarm-ctrl .meter .k {
+  font-size: 8.5px;
+  letter-spacing: 0.26em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .meter .v {
+  font-family: var(--sc-font-display);
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--sc-text);
+}
+.swarm-ctrl .meter .delta {
+  font-size: 9.5px;
+  color: var(--sc-text-dim);
+  letter-spacing: 0.02em;
+}
+
+/* CLOCK ── lighten so it doesn't fight the title block. */
+.swarm-ctrl .clock { padding-left: 20px; border-left: 1px solid var(--sc-hairline); }
+.swarm-ctrl .clock .now { font-family: var(--sc-font-display); font-size: 22px; line-height: 1; }
+.swarm-ctrl .clock .cap, .swarm-ctrl .clock .uptime { color: var(--sc-muted); }
+
+/* PIPELINE ── kill pill chrome on stage badges; replace with dim mono inline. */
+.swarm-ctrl .pipeline .stage { padding: 18px 22px; gap: 16px; }
+.swarm-ctrl .pipeline .stage-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-top: 8px;
+  align-items: center;
+  row-gap: 4px;
+}
+.swarm-ctrl .pipeline .sb-pill {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  font-family: var(--sc-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  position: relative;
+  padding-right: 10px !important;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+.swarm-ctrl .pipeline .sb-pill::after {
+  content: '·';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--sc-muted);
+}
+.swarm-ctrl .pipeline .sb-pill:last-child { margin-right: 0; padding-right: 0 !important; }
+.swarm-ctrl .pipeline .sb-pill:last-child::after { content: ''; }
+.swarm-ctrl .pipeline .sb-pill.warn { color: var(--sc-amber); }
+.swarm-ctrl .pipeline .sb-pill.stl  { color: var(--sc-red); }
+.swarm-ctrl .pipeline .stage.active .sb-pill { color: var(--sc-text); }
+.swarm-ctrl .pipeline .stage.done .sb-pill   { color: var(--sc-text-dim); opacity: 0.85; }
+.swarm-ctrl .pipeline .num { font-size: 38px; line-height: 1; }
+.swarm-ctrl .pipeline .lbl { font-size: 12px; letter-spacing: 0.22em; }
+.swarm-ctrl .pipeline .val { font-size: 10.5px; margin-top: 4px; color: var(--sc-text-dim); }
+
+/* DOC CARDS ── strict 4-row grid (eyebrow+status / name / sub / metrics).
+ * Drop the doc-meta bordered chips entirely; the metrics row is one tight
+ * mono baseline with tiny eyebrow labels above each value. */
+.swarm-ctrl .doc-card {
+  padding: 14px 14px 12px 18px;
+  gap: 0;
+  display: flex;
+  flex-direction: column;
+}
+.swarm-ctrl .doc-card .doc-card__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.swarm-ctrl .doc-card .doc-card__top .doc-no {
+  font-family: var(--sc-font-display);
+  font-size: 9.5px;
+  letter-spacing: 0.26em;
+  color: var(--sc-muted);
+}
+.swarm-ctrl .doc-card .doc-card__top .doc-status {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  position: static;
+  align-self: baseline;
+}
+.swarm-ctrl .doc-card .doc-card__name {
+  font-family: var(--sc-font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sc-text);
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  margin-bottom: 3px;
+}
+.swarm-ctrl .doc-card .doc-card__sub {
+  font-family: var(--sc-font-mono);
+  font-size: 10.5px;
+  color: var(--sc-text-dim);
+  line-height: 1.45;
+  margin-bottom: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.swarm-ctrl .doc-card .doc-card__metrics {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1;
+}
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell .k {
+  font-family: var(--sc-font-display);
+  font-size: 7.5px;
+  letter-spacing: 0.22em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell .v {
+  font-family: var(--sc-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sc-text);
+  letter-spacing: 0.01em;
+}
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell.score.pass    .v { color: var(--sc-green); }
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell.score.iterate .v { color: var(--sc-amber); }
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell.score.reject  .v { color: var(--sc-red); }
+.swarm-ctrl .doc-card .doc-card__metrics .m-cell.cost          .v { color: var(--sc-cyan); }
+
+/* The card already accents via the left rule (::before) — kill the legacy
+ * doc-meta / doc-status / doc-iter-badges blocks so they don't double-stack. */
+.swarm-ctrl .doc-card .doc-meta,
+.swarm-ctrl .doc-card .doc-iter-badges { display: none; }
+.swarm-ctrl .doc-card .doc-card__metrics .doc-agents { gap: 4px; }
+.swarm-ctrl .doc-card .doc-card__metrics .doc-agent { width: 22px; height: 22px; }
+.swarm-ctrl .doc-card .doc-card__metrics .doc-agents-link { font-size: 10px; opacity: 0.6; margin: 0 2px; }
+
+/* CONVERSATION PAIR-BAR ── two-column flex with hairline separator, no box. */
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--sc-hairline);
+  padding: 14px 16px 14px 4px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__pair {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-link {
+  color: var(--sc-muted);
+  font-size: 11px;
+  margin: 0 2px;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__telemetry {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-shrink: 0;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__telemetry .t-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1;
+  text-align: right;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__telemetry .t-cell .k {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.24em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__telemetry .t-cell .v {
+  font-family: var(--sc-font-mono);
+  font-size: 14px;
+  color: var(--sc-text);
+  letter-spacing: 0.01em;
+  font-weight: 600;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar__telemetry .t-cell .v strong {
+  color: var(--sc-amber);
+  font-weight: 600;
+}
+
+/* Resume button ── ghost style w/ amber accent only on hover. */
+.swarm-ctrl .doc-conv--quiet .doc-conv-resume-btn {
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  border-radius: 3px;
+  padding: 8px 14px;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--sc-text);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-resume-btn:hover:not(:disabled) {
+  border-color: var(--sc-amber);
+  color: var(--sc-amber);
+  background: rgba(255, 179, 71, 0.04);
+}
+.swarm-ctrl .doc-conv--quiet .doc-conv-resume-btn:disabled {
+  border-color: var(--sc-hairline);
+  color: var(--sc-muted);
+  cursor: not-allowed;
+}
+
+/* PROMPTS DRAWER ── flatten the heading; underline-only when expanded. */
+.swarm-ctrl .doc-conv--quiet .live-exec__prompts {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--sc-hairline);
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__prompts-header {
+  padding: 10px 4px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__prompts-header strong {
+  font-family: var(--sc-font-display);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  font-weight: 400;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__prompts-header:hover strong { color: var(--sc-text); }
+.swarm-ctrl .doc-conv--quiet .live-exec__prompts-body {
+  padding: 4px 4px 14px;
+  border: 0;
+}
+
+/* FILTER STRIP ── kill pill backgrounds; use baseline underline-active. */
+.swarm-ctrl .doc-conv--quiet .live-exec__filters {
+  display: flex;
+  gap: 0;
+  padding: 6px 0 0;
+  border: 0;
+  background: transparent;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__filter {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 8px 14px 6px;
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__filter:hover { color: var(--sc-text); }
+.swarm-ctrl .doc-conv--quiet .live-exec__filter.active {
+  color: var(--sc-amber);
+  border-bottom-color: var(--sc-amber);
+}
+
+/* ITER PAGER ── tighten spacing; right-align the "X of N" label. */
+.swarm-ctrl .doc-conv--quiet .live-exec__iter-pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-top: 1px solid var(--sc-hairline);
+  border-bottom: 1px solid var(--sc-hairline);
+  background: transparent;
+}
+.swarm-ctrl .doc-conv--quiet .live-exec__iter-pager-label {
+  margin-left: auto;
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  color: var(--sc-text-dim);
+  letter-spacing: 0.04em;
+}
+
+/* FULLSCREEN-ABLE SECTIONS ── any section can promote itself to viewport
+ * by adding `fs-active`. Keeps the same React subtree mounted (live data
+ * keeps streaming), just repositions it. Esc + button both exit. */
+.swarm-ctrl .fs-able { position: relative; }
+.swarm-ctrl .fs-able.fs-active {
+  position: fixed;
+  inset: 24px 32px;
+  z-index: 1000;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  border-radius: 6px;
+  padding: 32px 36px 28px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  box-shadow: 0 24px 64px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--sc-hairline);
+  animation: sc-fs-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes sc-fs-in {
+  from { opacity: 0; transform: scale(0.985); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Backdrop ── dim the rest of the page when ANY section is full. We can't
+ * reach that state cheaply with a single global flag without lifting state,
+ * so we use a fixed-position pseudo-element scoped under the active node
+ * itself. */
+.swarm-ctrl .fs-able.fs-active::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 11, 16, 0.78);
+  backdrop-filter: blur(2px);
+  z-index: -1;
+}
+
+/* Fullscreen toggle button ── ghost so it disappears in the chrome. */
+.swarm-ctrl .fs-toggle-btn {
+  background: transparent;
+  border: 1px solid var(--sc-hairline);
+  border-radius: 3px;
+  padding: 4px 10px;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.swarm-ctrl .fs-toggle-btn:hover {
+  border-color: var(--sc-amber);
+  color: var(--sc-amber);
+  background: rgba(255, 179, 71, 0.04);
+}
+.swarm-ctrl .fs-toggle-btn--corner {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+}
+.swarm-ctrl .fs-able.fs-active .fs-toggle-btn,
+.swarm-ctrl .fs-able.fs-active .fs-toggle-btn--corner {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 5;
+  border-color: var(--sc-amber);
+  color: var(--sc-amber);
+}
+
+/* When fullscreen, the section's own scroll region needs to fill the
+ * available height. Specific targets that were transcript/list-style
+ * before now flex-grow. */
+.swarm-ctrl .live-exec__transcript.fs-able.fs-active {
+  height: auto;
+  flex: 1 1 auto;
+}
+.swarm-ctrl .live-exec__prompts.fs-able.fs-active .live-exec__prompts-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding-top: 12px;
+}
+.swarm-ctrl .live-exec__prompts.fs-able.fs-active .live-exec__prompt-pre {
+  max-height: none;
+}
+
+/* RESPONSIVE ── reduce meter strip to 2 columns when narrow so it doesn't wrap into chaos. */
+@media (max-width: 1100px) {
+  .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr) !important; }
+  .swarm-ctrl .meter { padding: 4px 12px; }
+  .swarm-ctrl .meter .v { font-size: 22px; }
+}
+@media (max-width: 720px) {
+  .swarm-ctrl .meters { grid-template-columns: repeat(2, 1fr) !important; }
+  .swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar { gap: 12px; }
 }

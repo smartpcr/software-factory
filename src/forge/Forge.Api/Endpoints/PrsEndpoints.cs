@@ -28,6 +28,14 @@ using Microsoft.EntityFrameworkCore;
 public static class PrsEndpoints
 {
     /// <summary>
+    /// Decodes a PR id from a URL path segment. ASP.NET Core does not
+    /// decode <c>%2F</c> in URL paths (security), so scoped ids like
+    /// <c>PR owner/repo#42</c> arrive with the slash still percent-encoded.
+    /// This helper fully unescapes them so DB lookups match.
+    /// </summary>
+    private static string NormalizePrId(string id) => Uri.UnescapeDataString(id);
+
+    /// <summary>
     /// Phase 28.2 — review-comment classifier mirrored from the UI's
     /// <c>isBuildEvent</c> helper. A "review" comment is anything that
     /// isn't a pure ADO system event or a CI bot post — PR Assistant
@@ -75,6 +83,7 @@ public static class PrsEndpoints
         [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
         CancellationToken ct)
     {
+        id = NormalizePrId(id);
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
@@ -137,6 +146,7 @@ public static class PrsEndpoints
     // GET /api/prs/{id} — single PR.
     private static async Task<IResult> Get(string id, ForgeDbContext db)
     {
+        id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
         var open = await db.PrComments
@@ -159,6 +169,7 @@ public static class PrsEndpoints
     // GET /api/prs/{id}/details — extended payload for the detail panel.
     private static async Task<IResult> GetDetails(string id, ForgeDbContext db)
     {
+        id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
         var pr = PrMapper.ToContract(row);
@@ -198,6 +209,7 @@ public static class PrsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -221,6 +233,7 @@ public static class PrsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -255,6 +268,7 @@ public static class PrsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -284,6 +298,7 @@ public static class PrsEndpoints
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -319,6 +334,7 @@ public static class PrsEndpoints
         {
             return Results.Problem(title: "Body is required", statusCode: 400);
         }
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -354,6 +370,7 @@ public static class PrsEndpoints
         {
             return Results.Problem(title: "Body is required", statusCode: 400);
         }
+        id = NormalizePrId(id);
         if (!await db.Prs.AnyAsync(p => p.Id == id)) return NotFound(id);
 
         var provider = PickProvider("github", providers);
@@ -376,6 +393,7 @@ public static class PrsEndpoints
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+        id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
@@ -622,12 +640,77 @@ public static class PrsEndpoints
 
                 using var doc = System.Text.Json.JsonDocument.Parse(body);
                 var prs = new List<Pr>();
+                var scopedRepo = $"{repo.GhOwner}/{repo.GhRepo}";
                 foreach (var pr in doc.RootElement.EnumerateArray())
                 {
-                    prs.Add(GitHubMapper.PrToPr(pr, repo.GhRepo ?? "unknown"));
+                    var mapped = GitHubMapper.PrToPr(pr, repo.GhRepo ?? "unknown");
+                    // Scope the ID to include owner/repo so it matches story-spawn
+                    // format (PR owner/repo#N) and avoids duplicate DB rows.
+                    if (!mapped.Id.Contains('/'))
+                    {
+                        var num = mapped.Id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+                        mapped = mapped with { Id = $"PR {scopedRepo}#{num}" };
+                    }
+                    prs.Add(mapped);
                 }
-                remotePrs = prs;
-                log.LogInformation("PR sync: GitHub returned {Count} PRs", prs.Count);
+
+                // Enrich each PR with stats from the individual detail endpoint.
+                // The list response doesn't include changed_files, commits, etc.
+                var enriched = new Pr[prs.Count];
+                using var ghEnrichSemaphore = new SemaphoreSlim(4);
+                var ghEnrichTasks = prs.Select(async (basePr, idx) =>
+                {
+                    await ghEnrichSemaphore.WaitAsync(ct);
+                    try
+                    {
+                        using var perPrCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        perPrCts.CancelAfter(TimeSpan.FromSeconds(10));
+                        var num = basePr.Id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase);
+                        var hashIdx = num.IndexOf('#');
+                        if (hashIdx >= 0) num = num[(hashIdx + 1)..];
+                        num = num.TrimStart('#');
+                        var detailResp = await client.GetAsync(
+                            $"repos/{scopedRepo}/pulls/{num}", perPrCts.Token);
+                        if (detailResp.IsSuccessStatusCode)
+                        {
+                            using var detailDoc = System.Text.Json.JsonDocument.Parse(
+                                await detailResp.Content.ReadAsStringAsync(perPrCts.Token));
+                            var detail = detailDoc.RootElement;
+                            var files = detail.TryGetProperty("changed_files", out var f) ? f.GetInt32() : basePr.Files;
+                            var commits = detail.TryGetProperty("commits", out var c) ? c.GetInt32() : basePr.Commits;
+                            var additions = detail.TryGetProperty("additions", out var a) ? a.GetInt32() : basePr.Additions;
+                            var deletions = detail.TryGetProperty("deletions", out var d) ? d.GetInt32() : basePr.Deletions;
+                            enriched[idx] = basePr with
+                            {
+                                Files = files,
+                                Commits = commits,
+                                Additions = additions,
+                                Deletions = deletions,
+                            };
+                        }
+                        else
+                        {
+                            enriched[idx] = basePr;
+                        }
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        log.LogWarning("PR sync: GitHub enrichment timed out for {PrId}", basePr.Id);
+                        enriched[idx] = basePr;
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogWarning(ex, "PR sync: GitHub enrichment failed for {PrId}", basePr.Id);
+                        enriched[idx] = basePr;
+                    }
+                    finally
+                    {
+                        ghEnrichSemaphore.Release();
+                    }
+                });
+                await Task.WhenAll(ghEnrichTasks);
+                remotePrs = enriched.ToList();
+                log.LogInformation("PR sync: GitHub returned {Count} PRs (enriched)", prs.Count);
             }
             else
             {
@@ -688,7 +771,32 @@ public static class PrsEndpoints
                     workItemId = candidateWiId;
             }
 
+            // Migrate legacy unscoped GitHub PR IDs (PR #N → PR owner/repo#N).
+            // If the scoped row doesn't exist but the legacy one does, re-point
+            // child rows and replace the legacy PrRow with the new scoped ID.
             var existing = await db.Prs.FirstOrDefaultAsync(p => p.Id == pr.Id, ct);
+            if (existing is null && repo.Kind == "github" && pr.Id.Contains('/'))
+            {
+                var hashIdx = pr.Id.IndexOf('#');
+                if (hashIdx > 0)
+                {
+                    var legacyId = "PR #" + pr.Id[(hashIdx + 1)..];
+                    var legacy = await db.Prs.FirstOrDefaultAsync(p => p.Id == legacyId, ct);
+                    if (legacy is not null)
+                    {
+                        log.LogInformation("PR sync: migrating legacy ID '{LegacyId}' → '{ScopedId}'", legacyId, pr.Id);
+                        // Re-point child rows first.
+                        await db.PrComments.Where(c => c.PrId == legacyId)
+                            .ExecuteUpdateAsync(s => s.SetProperty(c => c.PrId, pr.Id), ct);
+                        await db.Builds.Where(b => b.PrId == legacyId)
+                            .ExecuteUpdateAsync(s => s.SetProperty(b => b.PrId, pr.Id), ct);
+                        // EF Core doesn't allow PK changes — remove the legacy row;
+                        // the upsert below will insert the scoped replacement.
+                        db.Prs.Remove(legacy);
+                        await db.SaveChangesAsync(ct);
+                    }
+                }
+            }
             if (existing is null)
             {
                 db.Prs.Add(new PrRow

@@ -58,20 +58,55 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     /// <summary>One-shot tick — exposed for tests and the admin endpoint.</summary>
     public async Task TickOnceAsync(CancellationToken ct = default)
     {
-        IReadOnlyList<string> activeStoryIds;
+        IReadOnlyList<(string StoryId, string SpawnId)> active;
         using (var scope = this.services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            activeStoryIds = await db.StorySpawns
+            // Include Done-phase spawns: when the QA pass advances the phase
+            // to "done", the WI/ProductStory closure work happens on the
+            // *next* drive (DriveDoneAsync). Filtering them out here would
+            // strand the spawn at done with the work item still active.
+            // DriveDoneAsync short-circuits once the WI state is already
+            // closed, so this remains effectively a one-shot per spawn.
+            active = await db.StorySpawns
                 .AsNoTracking()
-                .Where(s => s.Phase != StorySpawnPhases.Done)
-                .Select(s => s.StoryId)
+                .Select(s => new ValueTuple<string, string>(s.StoryId, s.Id))
                 .ToListAsync(ct);
         }
         var orchestrator = this.services.GetRequiredService<StorySpawnOrchestrator>();
-        foreach (var sid in activeStoryIds)
+        // Phase 42 — reconciler is optional in tests; resolve once per tick.
+        var reconciler = this.services.GetService<PlanReconciler>();
+
+        foreach (var (sid, spawnId) in active)
         {
-            await orchestrator.DriveAsync(sid, ct);
+            try
+            {
+                await orchestrator.DriveAsync(sid, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "DriveAsync failed for spawn {SpawnId} (story {StoryId}); will retry next interval.",
+                    spawnId, sid);
+            }
+
+            // Phase 42 — catch-all reconcile pass. Per-iter commit + Resume/Restart
+            // hooks already cover the active cases; this tick is the safety net
+            // for any signal a hook missed (e.g. an out-of-band edit on the
+            // plan branch the orchestrator didn't see).
+            if (reconciler is not null)
+            {
+                try
+                {
+                    await reconciler.ReconcileAsync(spawnId, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "PlanReconciler tick failed for spawn {SpawnId}; will retry next interval.",
+                        spawnId);
+                }
+            }
         }
     }
 }

@@ -86,6 +86,26 @@ public static class CostEndpoints
             .ToListAsync(ct);
         var dailyCap = caps.Count > 0 ? caps.Sum() : FallbackDailyCapUsd;
 
+        // Work item → repo → product lookups for per-agent filtering.
+        var workItems = await db.WorkItems.AsNoTracking()
+            .Select(w => new { w.Id, w.RepoId })
+            .ToListAsync(ct);
+        var wiRepo = workItems
+            .Where(w => !string.IsNullOrEmpty(w.RepoId))
+            .GroupBy(w => w.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().RepoId!, StringComparer.OrdinalIgnoreCase);
+        var repoRows = await db.Repos.AsNoTracking()
+            .Select(r => new { r.Id, r.ProductId })
+            .ToListAsync(ct);
+        var repoProduct = repoRows
+            .Where(r => !string.IsNullOrEmpty(r.ProductId))
+            .GroupBy(r => r.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().ProductId!, StringComparer.OrdinalIgnoreCase);
+        var productRows = await db.Products.AsNoTracking()
+            .Select(p => new { p.Id, p.Name })
+            .ToListAsync(ct);
+        var productNames = productRows.ToDictionary(p => p.Id, p => p.Name, StringComparer.OrdinalIgnoreCase);
+
         // Day buckets — index 0 is the oldest, index (window-1) is today.
         var dayTotals = new decimal[window];
         var dayByEpic = new Dictionary<string, decimal>[window];
@@ -119,6 +139,7 @@ public static class CostEndpoints
             if (r.StartedAt >= twentyFourAgo) acc.Cost24h += r.CostUsd;
             acc.Tokens += r.InputTokens + r.OutputTokens;
             acc.Spark[dayIdx] += r.CostUsd;
+            if (!string.IsNullOrEmpty(r.TaskId)) acc.TaskIds.Add(r.TaskId);
         }
 
         // Materialise the response. Days flow oldest → today; agents are
@@ -146,6 +167,16 @@ public static class CostEndpoints
                 var (name, role) = agentInfo.TryGetValue(kv.Key, out var info)
                     ? info
                     : (kv.Key, string.Empty);
+                var agentRepos = kv.Value.TaskIds
+                    .Select(t => wiRepo.GetValueOrDefault(t, ""))
+                    .Where(r => !string.IsNullOrEmpty(r))
+                    .Distinct()
+                    .ToList();
+                var agentProducts = agentRepos
+                    .Select(r => repoProduct.GetValueOrDefault(r, ""))
+                    .Where(p => !string.IsNullOrEmpty(p))
+                    .Distinct()
+                    .ToList();
                 return new AgentBurn(
                     Id: kv.Key,
                     Name: name,
@@ -153,7 +184,9 @@ public static class CostEndpoints
                     Cost24hUsd: Round(kv.Value.Cost24h),
                     Cost7dUsd: Round(kv.Value.Cost7d),
                     Tokens: kv.Value.Tokens,
-                    Spark: kv.Value.Spark.Select(Round).ToList());
+                    Spark: kv.Value.Spark.Select(Round).ToList(),
+                    Repos: agentRepos,
+                    Products: agentProducts);
             })
             .OrderByDescending(a => a.Cost7dUsd)
             .ToList();
@@ -178,6 +211,7 @@ public static class CostEndpoints
         public AgentAccumulator(int window)
         {
             this.Spark = new decimal[window];
+            this.TaskIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         public decimal Cost24h { get; set; }
@@ -187,5 +221,7 @@ public static class CostEndpoints
         public long Tokens { get; set; }
 
         public decimal[] Spark { get; }
+
+        public HashSet<string> TaskIds { get; }
     }
 }

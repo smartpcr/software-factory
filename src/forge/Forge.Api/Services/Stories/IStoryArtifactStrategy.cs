@@ -18,9 +18,26 @@ using Forge.Api.Persistence;
 /// </summary>
 public interface IStoryArtifactStrategy
 {
-    /// <summary>Architect's plan-phase artifacts. Returns relative-path → file content.</summary>
+    /// <summary>
+    /// Architect's plan-phase artifacts. Returns relative-path → file content.
+    /// When <paramref name="forceResume"/> is true, the workspace-cache
+    /// short-circuit (which skips the LLM if the file is already on disk)
+    /// is bypassed — used by the spawn-retry endpoint after a non-pass
+    /// verdict so the architect crew re-iterates instead of replaying the
+    /// stalled artifact unchanged.
+    /// </summary>
     Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default);
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default);
+
+    /// <summary>
+    /// Resume a single plan-doc artifact's gen↔eval loop. Unlike
+    /// <see cref="ProducePlanArtifactsAsync"/> (which runs all 4 docs),
+    /// this re-runs only the specified <paramref name="key"/> with
+    /// forceResume semantics (workspace cache bypassed). Used by the
+    /// per-doc Resume button on the conversation tab.
+    /// </summary>
+    Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default);
 
     /// <summary>Architect's decomposition — split the plan into N parallel workstreams.</summary>
     Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
@@ -28,6 +45,14 @@ public interface IStoryArtifactStrategy
 
     /// <summary>Engineer's per-workstream change-set. Returns relative-path → file content.</summary>
     Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
+
+    /// <summary>
+    /// Read cached workspace files for a workstream whose gen/eval loop
+    /// already passed. Used by the orchestrator to commit + open PR without
+    /// re-running the loop.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
 
     /// <summary>Reviewer's comments to post on a workstream PR. Empty = approve.</summary>
@@ -47,7 +72,14 @@ public interface IStoryArtifactStrategy
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
 }
 
-/// <summary>One workstream entry in a decomposition.</summary>
+/// <summary>
+/// One workstream entry in a decomposition. <see cref="PlanAnchor"/> +
+/// <see cref="PlanContentHash"/> (Phase 42) are populated when the entry came
+/// from <c>implementation-plan.md</c>; null on the LLM-only fallback path.
+/// When non-null, <see cref="StorySpawnOrchestrator.PersistDecompositionAsync"/>
+/// uses the anchor to build a stable workstream id so the reconciler can
+/// later find the row.
+/// </summary>
 public sealed record DecompositionWorkstream(
     string Title,
     string Description,
@@ -55,7 +87,9 @@ public sealed record DecompositionWorkstream(
     IReadOnlyList<string> Deps,
     IReadOnlyList<string> Deliverables,
     string Timeline,
-    string EstimatedEffort);
+    string EstimatedEffort,
+    string? PlanAnchor = null,
+    string? PlanContentHash = null);
 
 /// <summary>One review-comment payload the strategy wants posted.</summary>
 public sealed record ReviewComment(string FilePath, int Line, string Body, string Severity);

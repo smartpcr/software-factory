@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { forgeApi } from '@/api/forgeApi';
+import { DecompositionView } from './DecompositionView';
 
 interface Props {
   storyId: string;
@@ -9,8 +12,10 @@ interface Props {
 }
 
 interface Section {
-  no: string;       // '0', '1.0', '2.3' …
+  id: string;       // anchor id (slug)
+  no: string;       // numbering — '0', '1', '1.1', '2.3' …
   title: string;
+  level: number;    // heading level 1..6 (h1..h6)
   bodyMd: string;
 }
 
@@ -44,7 +49,20 @@ interface ArtifactState {
   error: string | null;
 }
 
-export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
+export function DocumentPane(props: Props) {
+  const key = props.docId.startsWith('doc:') ? props.docId.slice(4) : props.docId;
+  // Decomposition is structured workstream JSON, not markdown. Render a
+  // dedicated view so the operator sees parsed workstream cards (title /
+  // effort / deps / deliverables) instead of an empty "loading
+  // decomposition.md" or a raw JSON dump. Splitting into two top-level
+  // components keeps the hook order stable per instance.
+  if (key === 'decomposition') {
+    return <DecompositionView storyId={props.storyId} />;
+  }
+  return <MarkdownDocPane {...props} />;
+}
+
+function MarkdownDocPane({ storyId, docId, planPr, planBranch }: Props) {
   const key = useMemo(() => (docId.startsWith('doc:') ? docId.slice(4) : docId), [docId]);
   const [state, setState] = useState<ArtifactState>({
     loading: true, doc: null, iterations: [], totalCostUsd: 0, error: null,
@@ -83,33 +101,46 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
   const docTitle = useMemo(() => extractTitle(state.doc?.content ?? '') ?? key, [state.doc?.content, key]);
   const latestIter = state.iterations[state.iterations.length - 1] ?? null;
 
-  const [activeNo, setActiveNo] = useState<string>(sections[0]?.no ?? '0');
+  const [activeId, setActiveId] = useState<string>(sections[0]?.id ?? '');
   const bodyRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
 
   useEffect(() => {
-    setActiveNo(sections[0]?.no ?? '0');
+    setActiveId(sections[0]?.id ?? '');
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
   }, [docId]); // reset only when the doc selection changes
 
-  const onTocClick = (no: string) => {
-    setActiveNo(no);
-    const el = sectionRefs.current[no];
+  const onTocClick = (id: string) => {
+    setActiveId(id);
+    const el = sectionRefs.current[id];
     if (el && bodyRef.current) {
       bodyRef.current.scrollTo({ top: el.offsetTop - 8, behavior: 'smooth' });
     }
   };
 
+  // Phase 42 — header meta is a list of (text, tone) so the source pill can
+  // be coloured differently depending on what the operator is reading:
+  //   worktree  → amber  (live agent state, mid-iteration)
+  //   main      → green  (post-merge, shipped)
+  //   branch:*  → cyan   (committed but pre-merge)
   const headerMeta = useMemo(() => {
-    const parts: string[] = [];
-    if (latestIter) parts.push(`ITER ${latestIter.iter}`);
-    if (latestIter) parts.push(`SCORE ${latestIter.score}`);
-    if (state.totalCostUsd > 0) parts.push(`COST $${state.totalCostUsd.toFixed(2)}`);
-    if (state.doc?.source) parts.push(state.doc.source.toUpperCase());
-    if (state.doc?.lastModifiedAt) {
-      parts.push(`UPDATED ${formatAgo(state.doc.lastModifiedAt)}`);
+    type Part = { text: string; tone?: 'live' | 'shipped' | 'pre-merge' };
+    const parts: Part[] = [];
+    if (latestIter) parts.push({ text: `ITER ${latestIter.iter}` });
+    if (latestIter) parts.push({ text: `SCORE ${latestIter.score}` });
+    if (state.totalCostUsd > 0) parts.push({ text: `COST $${state.totalCostUsd.toFixed(2)}` });
+    const src = state.doc?.source ?? null;
+    if (src) {
+      const tone: Part['tone'] = src === 'worktree' ? 'live'
+        : src === 'main' ? 'shipped'
+        : src.startsWith('branch:') ? 'pre-merge'
+        : undefined;
+      parts.push({ text: src === 'worktree' ? '● WORKTREE (live)' : src.toUpperCase(), tone });
     }
-    return parts.join(' · ');
+    if (state.doc?.lastModifiedAt) {
+      parts.push({ text: `UPDATED ${formatAgo(state.doc.lastModifiedAt)}` });
+    }
+    return parts;
   }, [latestIter, state.totalCostUsd, state.doc]);
 
   if (state.loading && !state.doc) {
@@ -124,28 +155,26 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
   const empty = !doc?.exists || sections.length === 0;
 
   return (
-    <div className="doc-pane">
-      <aside className="doc-toc">
-        <div className="doc-toc-hd">▶ TABLE OF CONTENTS</div>
-        {empty ? (
-          <div style={{ padding: '0 14px', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-            <em>no sections yet</em>
-          </div>
-        ) : (
-          <ul className="doc-toc-list">
+    <div className="doc-pane" style={empty ? { gridTemplateColumns: '1fr' } : undefined}>
+      {!empty && (
+        <aside className="doc-toc">
+          <div className="doc-toc-hd">▶ TABLE OF CONTENTS</div>
+          <ul className="doc-toc-tree">
             {sections.map((s) => (
               <li
-                key={s.no}
-                className={`doc-toc-item${s.no === activeNo ? ' active' : ''}`}
-                onClick={() => onTocClick(s.no)}
+                key={s.id}
+                className={`doc-toc-item L${s.level}${s.id === activeId ? ' active' : ''}`}
+                onClick={() => onTocClick(s.id)}
+                title={`H${s.level} · §${s.no} ${s.title}`}
               >
+                <span className="bullet" aria-hidden>{s.level === 1 ? '▌' : s.level === 2 ? '◆' : '·'}</span>
                 <span className="no">§{s.no}</span>
                 <span className="t">{s.title}</span>
               </li>
             ))}
           </ul>
-        )}
-      </aside>
+        </aside>
+      )}
 
       <div className="doc-body" ref={bodyRef}>
         <div className="doc-body-hd">
@@ -162,7 +191,22 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
               </>
             )}
           </div>
-          <div className="doc-body-hd-r">{headerMeta || '—'}</div>
+          <div className="doc-body-hd-r">
+            {headerMeta.length === 0 ? '—' : headerMeta.map((p, i) => (
+              <span key={i}>
+                {i > 0 && <span style={{ color: 'var(--sc-muted)', margin: '0 6px' }}>·</span>}
+                <span style={{
+                  color: p.tone === 'live' ? 'var(--sc-amber)'
+                    : p.tone === 'shipped' ? 'var(--sc-green)'
+                    : p.tone === 'pre-merge' ? 'var(--sc-cyan)'
+                    : undefined,
+                  fontWeight: p.tone ? 600 : undefined,
+                }}>
+                  {p.text}
+                </span>
+              </span>
+            ))}
+          </div>
         </div>
 
         <h1 className="doc-title">{docTitle}</h1>
@@ -186,14 +230,11 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
         ) : (
           sections.map((s) => (
             <section
-              key={s.no}
-              className="doc-section"
-              ref={(el) => { sectionRefs.current[s.no] = el; }}
+              key={s.id}
+              className={`doc-section doc-section--L${s.level}`}
+              ref={(el) => { sectionRefs.current[s.id] = el; }}
             >
-              <h2 className="doc-section-h">
-                <span className="doc-section-no">§ {s.no}</span>
-                <span className="doc-section-t">{s.title.toUpperCase()}</span>
-              </h2>
+              <SectionHeading level={s.level} no={s.no} title={s.title} />
               <SectionBody body={s.bodyMd} />
             </section>
           ))
@@ -203,26 +244,28 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
   );
 }
 
-/** Tiny markdown-ish renderer: paragraphs, fenced code, **bold**, `inline`,
- *  ordered/unordered lists. Good enough for the architect's plan output. */
-function SectionBody({ body }: { body: string }) {
-  const blocks = useMemo(() => splitBlocks(body), [body]);
+function SectionHeading({ level, no, title }: { level: number; no: string; title: string }) {
+  // Render as the matching native heading level so screen readers and the
+  // browser's outliner pick up the document structure correctly. CSS scales
+  // the visual size by .doc-section--L{level}.
+  const Tag = (`h${Math.min(level, 6)}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6');
   return (
-    <>
-      {blocks.map((b, i) => {
-        if (b.kind === 'code') return <pre key={i} className="doc-code">{b.text}</pre>;
-        if (b.kind === 'list') {
-          return (
-            <ul key={i} className="doc-list">
-              {b.items.map((it, j) => (
-                <li key={j} dangerouslySetInnerHTML={{ __html: renderInline(it) }} />
-              ))}
-            </ul>
-          );
-        }
-        return <p key={i} className="doc-p" dangerouslySetInnerHTML={{ __html: renderInline(b.text) }} />;
-      })}
-    </>
+    <Tag className={`doc-section-h doc-section-h--L${level}`}>
+      <span className="doc-section-no">§ {no}</span>
+      <span className="doc-section-t">{level === 1 ? title : title.toUpperCase()}</span>
+    </Tag>
+  );
+}
+
+/** Section body — full GFM markdown (paragraphs, fenced code, lists, tables,
+ *  task lists, strikethrough) via react-markdown + remark-gfm. The
+ *  surrounding <article> handles section heading + numbering; we render only
+ *  the body markdown here. */
+function SectionBody({ body }: { body: string }) {
+  return (
+    <div className="doc-md">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+    </div>
   );
 }
 
@@ -236,101 +279,117 @@ function extractTitle(md: string): string | null {
   return null;
 }
 
+/**
+ * Splits a markdown document into a flat ordered list of sections, one per
+ * heading at any level (h1–h6). The TOC then renders the list as a tree by
+ * indenting each item to its level.
+ *
+ * The document's `# Title` is emitted as the first section (level 1) UNLESS
+ * extractTitle() already pulled it for the page header — in which case we
+ * still want it in the TOC so the reader can scroll back to "the top".
+ *
+ * Heading number extraction handles common patterns:
+ *   `# 1. Foo`, `## 1.2 Bar`, `### 1.2.3 Baz`, `## §1.2 Qux`
+ * If the heading doesn't carry a numeric prefix, we synthesize one from
+ * the running counter at this level (so a doc with no numbering still
+ * shows §1 / §2 in the TOC).
+ */
 function splitMarkdownIntoSections(md: string): Section[] {
   if (!md) return [];
   const lines = md.split('\n');
   const sections: Section[] = [];
-  let current: { no: string; title: string; lines: string[] } | null = null;
 
-  // Skip leading `# Title` and any preface.
-  let started = false;
+  let inFence = false;
+  // Running counters per heading level so a doc with mixed/missing numbering
+  // still gets a stable §x.y.z label. Counters reset per parent.
+  const counters = [0, 0, 0, 0, 0, 0]; // 1-indexed in code, 0-indexed in array
+  // Track the previous heading level so we can reset deeper counters when we
+  // unwind back to a higher level.
+  let prevLevel = 0;
+
   let preface: string[] = [];
+  let started = false;
+  let current: { id: string; no: string; title: string; level: number; lines: string[] } | null = null;
+
+  const slugCounts = new Map<string, number>();
+  const slugify = (s: string): string => {
+    const base = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'sec';
+    const n = (slugCounts.get(base) ?? 0) + 1;
+    slugCounts.set(base, n);
+    return n === 1 ? base : `${base}-${n}`;
+  };
 
   for (const line of lines) {
-    // Start a new section on `## ...` headings.
-    const h2 = /^##\s+(?:(\d+(?:\.\d+)*)\s+)?(.+)$/.exec(line);
-    if (h2) {
-      if (current) sections.push({ no: current.no, title: current.title, bodyMd: current.lines.join('\n') });
-      const num = h2[1] ?? String(sections.length + 1);
-      current = { no: num, title: h2[2].trim(), lines: [] };
+    // Skip headings inside fenced code blocks.
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      if (current) current.lines.push(line);
+      else preface.push(line);
+      continue;
+    }
+    if (inFence) {
+      if (current) current.lines.push(line);
+      else preface.push(line);
+      continue;
+    }
+
+    const h = /^(#{1,6})\s+(?:§?\s*)?(?:(\d+(?:\.\d+)*)[.\s]+)?(.+?)\s*#*\s*$/.exec(line);
+    if (h) {
+      // Close out the previous section.
+      if (current) {
+        sections.push({
+          id: current.id,
+          no: current.no,
+          title: current.title,
+          level: current.level,
+          bodyMd: current.lines.join('\n').trim(),
+        });
+      }
+      const level = h[1].length;
+      const explicitNo = h[2];
+      const title = h[3].trim();
+
+      // Maintain hierarchical counters. If we descended below the previous
+      // level, reset deeper counters. If we went up, leave shallower
+      // counters as-is so siblings keep numbering.
+      if (level > prevLevel) {
+        for (let i = prevLevel; i < level - 1; i++) counters[i] = Math.max(counters[i], 1);
+      }
+      if (level <= prevLevel) {
+        // Reset every level deeper than the new one.
+        for (let i = level; i < counters.length; i++) counters[i] = 0;
+      }
+      counters[level - 1] = (counters[level - 1] || 0) + 1;
+      prevLevel = level;
+
+      const synthNo = counters.slice(0, level).map((n) => n || 1).join('.');
+      const no = explicitNo ?? synthNo;
+      current = { id: slugify(`${no}-${title}`), no, title, level, lines: [] };
       started = true;
       continue;
     }
     if (current) {
       current.lines.push(line);
     } else if (!started) {
-      // Skip the document title line, capture any preface paragraphs.
-      if (line.startsWith('# ')) continue;
       preface.push(line);
     }
   }
-  if (current) sections.push({ no: current.no, title: current.title, bodyMd: current.lines.join('\n') });
-
-  // If the doc has preface text but no `## sections`, surface it as a single
-  // synthetic "Overview" section so the renderer has something to show.
-  if (sections.length === 0 && preface.some((l) => l.trim() !== '')) {
-    return [{ no: '0', title: 'Overview', bodyMd: preface.join('\n').trim() }];
+  if (current) {
+    sections.push({
+      id: current.id,
+      no: current.no,
+      title: current.title,
+      level: current.level,
+      bodyMd: current.lines.join('\n').trim(),
+    });
   }
-  // Or, if there's preface AND sections, prepend it.
-  if (preface.some((l) => l.trim() !== '')) {
-    sections.unshift({ no: '0', title: 'Overview', bodyMd: preface.join('\n').trim() });
+
+  // Preface (text before any heading) → synthetic "Overview" entry.
+  const prefaceText = preface.join('\n').trim();
+  if (prefaceText) {
+    sections.unshift({ id: 'overview', no: '0', title: 'Overview', level: 1, bodyMd: prefaceText });
   }
   return sections;
-}
-
-type Block =
-  | { kind: 'p'; text: string }
-  | { kind: 'code'; text: string }
-  | { kind: 'list'; items: string[] };
-
-function splitBlocks(body: string): Block[] {
-  const out: Block[] = [];
-  const lines = body.split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].startsWith('```')) {
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        buf.push(lines[i]);
-        i++;
-      }
-      i++; // closing fence
-      out.push({ kind: 'code', text: buf.join('\n') });
-      continue;
-    }
-    if (/^\s*[-*+]\s+/.test(lines[i])) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
-        i++;
-      }
-      out.push({ kind: 'list', items });
-      continue;
-    }
-    if (lines[i].trim() === '') {
-      i++;
-      continue;
-    }
-    const buf: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('```') && !/^\s*[-*+]\s+/.test(lines[i])) {
-      buf.push(lines[i]);
-      i++;
-    }
-    out.push({ kind: 'p', text: buf.join('\n') });
-  }
-  return out;
-}
-
-function renderInline(text: string): string {
-  const esc = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-  return esc
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
 }
 
 /* ─── verdict / time helpers ──────────────────────────────────────────── */

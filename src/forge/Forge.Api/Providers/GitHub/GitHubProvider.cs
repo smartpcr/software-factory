@@ -164,7 +164,7 @@ public class GitHubProvider : IForgeProvider
             var prs = new List<Pr>();
             foreach (var pr in doc.RootElement.EnumerateArray())
             {
-                prs.Add(GitHubMapper.PrToPr(pr, this.options.Repo));
+                prs.Add(WithScopedId(GitHubMapper.PrToPr(pr, this.options.Repo), this.options.Repo));
             }
             this.health.MarkSync();
             return prs;
@@ -615,6 +615,31 @@ public class GitHubProvider : IForgeProvider
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
+
+        // 422 from GitHub typically means "A pull request already exists for
+        // this head branch." Search for the existing open PR and return it.
+        if (resp.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync(ct);
+            // GitHub `head` filter requires `owner:branch` format
+            var owner = scopedRepo.Split('/')[0];
+            var headFilter = $"{owner}:{req.Branch}";
+            var searchResp = await client.GetAsync(
+                $"repos/{scopedRepo}/pulls?state=open&head={Uri.EscapeDataString(headFilter)}&per_page=5", ct);
+            if (searchResp.IsSuccessStatusCode)
+            {
+                using var searchDoc = JsonDocument.Parse(await searchResp.Content.ReadAsStringAsync(ct));
+                var prs = searchDoc.RootElement;
+                if (prs.ValueKind == JsonValueKind.Array && prs.GetArrayLength() > 0)
+                {
+                    return WithScopedId(GitHubMapper.PrToPr(prs[0], scopedRepo), scopedRepo);
+                }
+            }
+            throw new HttpRequestException(
+                $"GitHub POST pulls → 422. Body: {errBody}", null,
+                System.Net.HttpStatusCode.UnprocessableEntity);
+        }
+
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         return WithScopedId(GitHubMapper.PrToPr(doc.RootElement, scopedRepo), scopedRepo);
@@ -622,6 +647,21 @@ public class GitHubProvider : IForgeProvider
 
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
         this.PostReviewAsync(id, "APPROVE", body: null, ctx, ct);
+
+    public async Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(id);
+        var payload = JsonSerializer.Serialize(new { state = "closed" });
+        using var msg = new HttpRequestMessage(HttpMethod.Patch, $"repos/{repo}/pulls/{num}")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
 
     public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
         this.PostReviewAsync(id, "REQUEST_CHANGES", body, ctx, ct);
@@ -654,7 +694,20 @@ public class GitHubProvider : IForgeProvider
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
+        // Read the body before throwing — GitHub's 405 / 409 bodies carry the
+        // actual reason (conflicts, failing required checks, branch
+        // protection, draft state, disallowed merge_method). Discarding them
+        // via bare EnsureSuccessStatusCode() collapses every failure to a
+        // generic status-code line in the orchestrator log.
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = string.Empty;
+            try { body = await resp.Content.ReadAsStringAsync(ct); } catch { /* best-effort */ }
+            throw new HttpRequestException(
+                $"GitHub PUT pulls/{num}/merge → {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}",
+                inner: null,
+                statusCode: resp.StatusCode);
+        }
         // Merge POST succeeded — the PR is merged on GitHub. The post-merge
         // GET is a nice-to-have for hydrating the full Pr; if it fails
         // (rate limit, transient 5xx) return a stub with Col=merged so

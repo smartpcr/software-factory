@@ -165,19 +165,33 @@ public class AgentRuntimeTests
     [Fact]
     public void Sandbox_Refuses_Over_Token_Budget()
     {
-        var host = new AgentToolHost();
-        using var session = host.OpenSession(
-            new AgentContext(
-                CrewId: "engineering",
-                Model: "local-stub",
-                SoulMd: string.Empty,
-                WorktreePath: string.Empty,
-                AllowedTools: Array.Empty<string>()),
-            wallClock: TimeSpan.FromMinutes(1),
-            maxTokens: 100);
+        // WorktreePath is required for tool sessions per
+        // memory/feedback_worktree_path_meaning.md (and the explicit
+        // AgentSandboxViolationException in AgentToolHost). Use a temp dir
+        // rather than empty string — this test only exercises the token
+        // budget gate, but the host validates the worktree first.
+        var worktree = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"sandbox-{Guid.NewGuid():N}");
+        System.IO.Directory.CreateDirectory(worktree);
+        try
+        {
+            var host = new AgentToolHost();
+            using var session = host.OpenSession(
+                new AgentContext(
+                    CrewId: "engineering",
+                    Model: "local-stub",
+                    SoulMd: string.Empty,
+                    WorktreePath: worktree,
+                    AllowedTools: Array.Empty<string>()),
+                wallClock: TimeSpan.FromMinutes(1),
+                maxTokens: 100);
 
-        session.RecordTokens(40, 30); // 70 — fine
-        Assert.Throws<AgentBudgetExceededException>(() => session.RecordTokens(50, 50)); // 70 + 100 > 100
+            session.RecordTokens(40, 30); // 70 — fine
+            Assert.Throws<AgentBudgetExceededException>(() => session.RecordTokens(50, 50)); // 70 + 100 > 100
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(worktree, recursive: true); } catch { }
+        }
     }
 
     [Fact]

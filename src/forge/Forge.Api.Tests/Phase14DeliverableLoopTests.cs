@@ -65,8 +65,11 @@ public class Phase14DeliverableLoopTests
             Assert.Equal(95, result.FinalScore);
             Assert.Equal(0.3m, result.TotalCostUsd);
 
+            // The deliverable loop only marks the WI as "active" on a terminal
+            // pass — the post-loop delivery phase moves it through
+            // in-review → resolved once branch+PR succeed (DeliverableLoop.cs:319).
             var wi = await db.WorkItems.FirstAsync(w => w.Id == "wi-pass");
-            Assert.Equal("closed", wi.State);
+            Assert.Equal("active", wi.State);
 
             var rows = await db.Deliverables.Where(d => d.WorkItemId == "wi-pass").ToListAsync();
             Assert.Single(rows);

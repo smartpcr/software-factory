@@ -119,7 +119,10 @@ public class WorkItemsLifecycleTests
         await client.PostAsJsonAsync("/api/work-items", new { id = "STEP-Y",  track = "design", type = "step",  title = "Step Y", parentId = "STAGE-X1" }, JsonOpts);
 
         // Children of PHASE-X = both stages, not the deeper step.
-        var resp = await client.GetAsync("/api/work-items?parentId=PHASE-X");
+        // `productId=all` bypasses the default product scope, which would
+        // otherwise filter out work items with null RepoId (the ones we
+        // just created — the API doesn't auto-attach a repo on create).
+        var resp = await client.GetAsync("/api/work-items?parentId=PHASE-X&productId=all");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         var ids = doc.RootElement.EnumerateArray().Select(e => e.GetProperty("id").GetString()).OrderBy(s => s).ToList();

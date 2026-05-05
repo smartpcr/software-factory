@@ -40,6 +40,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly IAgentRunner runner;
     private readonly TaskChannel taskChannel;
     private readonly IConfiguration config;
+    private readonly IStoryGitOps git;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
     public CrewStoryArtifactStrategy(
@@ -47,47 +48,118 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         IAgentRunner runner,
         TaskChannel taskChannel,
         IConfiguration config,
+        IStoryGitOps git,
         ILogger<CrewStoryArtifactStrategy>? logger = null)
     {
         this.scopeFactory = scopeFactory;
         this.runner = runner;
         this.taskChannel = taskChannel;
         this.config = config;
+        this.git = git;
         this.logger = logger;
     }
 
     // ── Per-phase entry points ───────────────────────────────────────────────
 
-    public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
+    /// <summary>
+    /// Single source of truth for the four plan-doc briefs the architect
+    /// agent receives in its user prompt. Both <see cref="ProducePlanArtifactsAsync"/>
+    /// (full plan run) and <see cref="ResumeSingleArtifactAsync"/> (operator
+    /// re-runs one doc) MUST consume this so the brief stays consistent —
+    /// the two were drifted in 2026-05-04: Resume was sending a one-liner
+    /// brief while the full-run path had been expanded to detail the LIVEDOC
+    /// structure, so a Resume click was producing a doc that didn't match
+    /// the spec. Keying by the URL slug (no <c>.md</c> extension) matches
+    /// the <c>POST /spawn/artifacts/{key}/resume</c> route.
+    /// </summary>
+    internal static Dictionary<string, (string FileName, string Brief, string RepoPath)> BuildPlanDocSpecs(string docDir)
     {
-        // StoryPaths.Safe — story ids may contain `:` (e.g. "code-intelligence:AGENT-MEMORY")
-        // which is illegal in Windows file paths and crashes the commit
-        // step. Must match the orchestrator's gate-check encoding.
+        return new Dictionary<string, (string FileName, string Brief, string RepoPath)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["tech-spec"] = ("tech-spec.md",
+                "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks. Anchor every section in the story description's concrete details.",
+                $"{docDir}/tech-spec.md"),
+
+            ["architecture"] = ("architecture.md",
+                "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
+                $"{docDir}/architecture.md"),
+
+            ["implementation-plan"] = ("implementation-plan.md",
+                """
+                This file is a LIVEDOC — it tracks implementation progress with checkboxes.
+                Operators tick boxes as work lands; the doc is the source of truth for "what's done".
+
+                Structure MUST follow this hierarchy EXACTLY:
+
+                # Implementation Plan — {story title}
+
+                ## Phase N: {phase name}
+
+                ### Stage N.M: {stage name}
+
+                #### Implementation Steps
+                - [ ] Step description (concrete, actionable — one PR-sized unit of work)
+                - [ ] Another step
+                - …
+
+                #### Test Scenarios
+                - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
+                - [ ] Scenario: {name} — …
+
+                Hard requirements (the evaluator will refuse pass if any are violated):
+                - Each Phase MUST contain Stage subsections (`### Stage N.M: …`); no "naked" steps directly under a phase.
+                - Each Stage MUST contain BOTH an `#### Implementation Steps` block AND a `#### Test Scenarios` block.
+                - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. (Spec cap: forge_implementation.md §16.5 Plan-tree validator.)
+                - Each step changes ≤ 20 files in the eventual PR.
+                - Every Implementation Step is a checkbox `- [ ]` (not bullets, not numbered).
+                - Every Test Scenario is a checkbox `- [ ]` (not bullets, not numbered) and is verifiable pass/fail (not subjective).
+                - Include at least 2 test scenarios per Stage.
+                - Order phases so each builds on the previous; call out hard sequencing dependencies and parallel-safe items inline.
+                - Each Implementation Step must be small enough for a single agent iteration to complete.
+                """,
+                $"{docDir}/implementation-plan.md"),
+
+            ["e2e-scenarios"] = ("e2e-scenarios.md",
+                "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
+                $"{docDir}/e2e-scenarios.md"),
+        };
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
+    {
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        // Plan files are independent — fire 4 architect invocations in
-        // parallel (one per file). Wall-clock = max(per-file budget) instead
-        // of sum. Each agent writes into its own per-file workspace so the
-        // SDKs don't fight over a shared cwd.
-        var specs = new (string FileName, string Brief, string RepoPath)[]
-        {
-            ("tech-spec.md",
-             "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks. Anchor every section in the story description's concrete details.",
-             $"{docDir}/tech-spec.md"),
-            ("architecture.md",
-             "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
-             $"{docDir}/architecture.md"),
-            ("implementation-plan.md",
-             "Phased work breakdown an engineer can execute. Order phases so each builds on the previous; call out hard sequencing dependencies and parallel-safe items.",
-             $"{docDir}/implementation-plan.md"),
-            ("e2e-scenarios.md",
-             "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
-             $"{docDir}/e2e-scenarios.md"),
-        };
+        var specs = BuildPlanDocSpecs(docDir).Values.ToArray();
 
-        var tasks = specs.Select(spec => this.ProducePlanFileAsync(spawn, story, spec, budget, ct)).ToArray();
+        // Phase 42 — set up the real git worktree for plan work. All four
+        // architects share this worktree (git refuses two worktrees on one
+        // branch), with per-iter commits serialised by the IStoryGitOps lock.
+        // The agent's working dir is now the actual repo root, so its tools
+        // can read source files / prior docs / etc. — no more isolated
+        // scratch dir + sibling-copy trick.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+
+        // ── Assign different generator agents per doc (round-robin) ────
+        // Load all available architect crew agents so each doc gets a
+        // distinct generator. This improves diversity — four agents writing
+        // in parallel each bring a different perspective, and the evaluator
+        // catches cross-doc inconsistencies (siblings live at their real
+        // repo paths in the shared worktree, so each agent's tools see them).
+        var generatorAgentIds = await this.LoadArchitectRosterAsync(specs.Length, ct);
+
+        var tasks = specs.Select((spec, idx) =>
+            this.ProducePlanFileAsync(
+                spawn, story, spec, budget, forceResume,
+                generatorAgentOverride: generatorAgentIds.Count > idx ? generatorAgentIds[idx] : null,
+                siblingSpecs: specs.Where((_, i) => i != idx).Select(s => s.RepoPath).ToArray(),
+                worktreePath: worktreePath,
+                repo: repo,
+                planBranch: planBranch,
+                ct)).ToArray();
         var results = await Task.WhenAll(tasks);
 
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -98,37 +170,102 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return dict;
     }
 
+    /// <summary>
+    /// Phase 42 — resolve the <see cref="RepoRow"/> for a spawn so we can
+    /// drive the real-repo worktree. Returns null when the spawn isn't
+    /// bound to a repo (legacy / synthetic cases — the strategy then
+    /// falls back to the deterministic-test no-op path that doesn't touch
+    /// git). Logged at warning when null + ProducePlan is called so the
+    /// operator sees why the worktree tab stays empty.
+    /// </summary>
+    private async Task<RepoRow?> LookupRepoAsync(string? repoId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(repoId)) return null;
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        return await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+    }
+
+    /// <summary>
+    /// Loads distinct architect crew agents for round-robin assignment.
+    /// Returns up to <paramref name="count"/> agent IDs from the day-shift
+    /// architect crew, excluding the evaluator default so gen ≠ eval.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadArchitectRosterAsync(int count, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var crew = await db.Crews.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == "crew-arch", ct);
+        if (crew is null) return Array.Empty<string>();
+
+        var evalAgentId = crew.DefaultEvaluatorAgentId;
+
+        // All agents in the architect day crew, excluding the evaluator
+        var agents = await db.Agents.AsNoTracking()
+            .Where(a => a.CrewId == "crew-arch")
+            .OrderBy(a => a.Sort)
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        // Exclude the evaluator so we don't accidentally pair gen=eval
+        if (!string.IsNullOrEmpty(evalAgentId))
+        {
+            agents = agents.Where(a => !string.Equals(a, evalAgentId, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        // Put the crew default generator first, then round-robin the rest
+        var defaultGen = crew.DefaultGeneratorAgentId;
+        if (!string.IsNullOrEmpty(defaultGen))
+        {
+            agents.Remove(defaultGen);
+            agents.Insert(0, defaultGen);
+        }
+
+        return agents.Take(count).ToList();
+    }
+
     private async Task<string> ProducePlanFileAsync(
         StorySpawnRow spawn, WorkItemRow story,
         (string FileName, string Brief, string RepoPath) spec,
-        TimeSpan budget, CancellationToken ct)
+        TimeSpan budget, bool forceResume,
+        string? generatorAgentOverride,
+        string[] siblingSpecs,
+        string worktreePath,
+        RepoRow? repo,
+        string planBranch,
+        CancellationToken ct)
     {
-        // Per-file workspace so 4 parallel SDKs don't share a cwd.
-        var workspace = this.PrepareWorkspace(spawn.Id, $"plan-{Path.GetFileNameWithoutExtension(spec.FileName)}");
-        var diskPath = Path.Combine(workspace, spec.FileName);
+        // Phase 42 — agent's working dir IS the git worktree root. Doc lives
+        // at its real repo path inside the worktree so the agent's tools see
+        // both the doc AND the rest of the codebase (siblings, source files,
+        // prior docs) at their real locations.
+        var diskPath = Path.Combine(worktreePath, spec.RepoPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(diskPath)!);
 
         // Resume case — a previous tick's architect already wrote this file
-        // (typical when commit/push failed and the orchestrator re-ticks).
-        // Skip re-invoking the LLM so we don't burn tokens regenerating
-        // identical content on every retry. To force a fresh run, wipe the
-        // workspace (E:\forge\storyworkspaces\{spawn-id}\plan-{name}\).
-        if (File.Exists(diskPath))
+        // and committed it to the branch. Skip re-invoking the LLM unless
+        // forceResume is set.
+        if (!forceResume && File.Exists(diskPath))
         {
             var existing = await File.ReadAllTextAsync(diskPath, ct);
             if (!string.IsNullOrWhiteSpace(existing))
             {
                 this.logger?.LogInformation(
-                    "Plan file '{File}' cached in workspace ({Bytes} bytes); skipping architect invocation.",
+                    "Plan file '{File}' already in worktree ({Bytes} bytes); skipping architect invocation.",
                     spec.FileName, existing.Length);
                 return existing;
             }
         }
 
-        // Per-doc workItemId so each plan file gets its own deliverables stream
-        // (agent assignment, iter count, score, gen+eval summaries) keyed
-        // independently. Deliverables.WorkItemId is just a string — no
-        // work_items row required. UI looks up via the same id.
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+
+        // Phase 42 — sibling docs live at their real repo paths in the
+        // shared worktree (no copy-into-siblings/ trick anymore). Some may
+        // not exist yet on iter 1 of parallel execution; the agent reads
+        // whichever are present at the time.
+        var siblingPathsList = string.Join("\n", siblingSpecs.Select(p => $"  - `{p}`"));
 
         var generatorPrompt = $$"""
             You are the Architect agent for Forge story `{{spawn.StoryId}}`.
@@ -143,30 +280,92 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {{spawn.StoryPoints}}
 
             ## Your task
-            Produce ONE planning artifact: `{{spec.FileName}}`. It must be a
-            real, production-quality markdown document — not a placeholder,
-            not an outline. Anchor every section on the story description's
-            concrete details.
+            Produce ONE planning artifact at `{{spec.RepoPath}}` (relative to
+            your working directory, which is the repo root). Real,
+            production-quality markdown — not a placeholder, not an outline.
+            Anchor every section on the story description's concrete details.
 
             ### Brief for this file
             {{spec.Brief}}
 
-            ## How to deliver
-            Use your filesystem tools to write a SINGLE file named
-            `{{spec.FileName}}` at the root of your working directory. Do NOT
-            create subdirectories. Do NOT write any other files.
+            ## Repository context — IMPORTANT
+            Your working directory is a git worktree of the actual repo on
+            branch `{{planBranch}}`. You can READ ANY FILE in this repo with
+            your filesystem tools. Use that to:
+              - Read existing source code so the plan reflects what's already
+                there (don't invent module names that don't exist).
+              - Read prior docs under `docs/` for decisions already made.
+              - Reference real package names, component boundaries, and
+                module structure when describing what to build.
+            A plan written in isolation drifts from the codebase. A plan
+            written WITH the codebase under your tools stays anchored.
 
-            End your reply with a `## Iteration Summary` section that lists
-            (a) what you wrote, (b) which parts of the story description it
-            addresses, and (c) any open questions. The orchestrator extracts
-            this section into the per-iteration UI summary.
+            ## Sibling plan documents
+            The other plan docs in this story are written in PARALLEL by
+            sibling architects. They live at:
+            {{siblingPathsList}}
+
+            Read whichever already exist (some may not exist yet on iter 1).
+            Don't duplicate their content — reference shared concepts by
+            name. If you spot an inconsistency, note it in your Iteration
+            Summary so the next iteration of EITHER doc can align.
+
+            ## How to deliver — CRITICAL
+            You MUST invoke your filesystem write tool to save the file at
+            `{{spec.RepoPath}}` (relative to working directory — no leading
+            slash, no extra path components). Content typed in your chat
+            reply is NOT saved — at end of turn the workspace is checked
+            and an empty file fails this iteration with score 0.
+
+            Concretely:
+            1. For large files, prefer incremental edits (edit_file / replace)
+               over rewriting the entire file. Full-file create_file calls on
+               files >5 KB risk hitting output limits and producing empty files.
+               Use create_file for the initial draft; use edit_file for
+               subsequent iterations.
+            2. Verify with your read/view tool that the file is on disk and
+               its byte count matches what you intended.
+            3. ONLY THEN reply with the summary below. Your chat reply is
+               for the summary; the FILE is the deliverable.
+            4. NEVER delete `{{spec.RepoPath}}` — if you need to restructure,
+               edit in place. Deleting the file causes the evaluator to
+               score 0 and the iteration is wasted.
+
+            End your chat reply with a `## Iteration Summary` section that
+            lists (a) the path you wrote to and the byte count, (b) which
+            parts of the story description the file covers, (c) any open
+            questions for the next iteration. The orchestrator extracts
+            this into the per-iteration UI summary.
+
+            ## Open questions — structured (REQUIRED when you have any)
+            If the story description left ambiguity that you had to guess on,
+            do NOT just mention it in prose. Emit a fenced JSON block right
+            after `## Iteration Summary` so the operator can answer via the
+            wizard and the next iteration gets a definitive answer:
+
+            ```json open-questions
+            { "openQuestions": [
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
+                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+            ] }
+            ```
+
+            Rules:
+            - Use `type: "choice"` with explicit `choices` whenever you have
+              2-5 reasonable options the operator can pick from.
+            - Use `type: "open"` only when the answer is genuinely free-form.
+            - Re-emit the same `id` if a previous answer wasn't sufficient.
+            - Omit the block entirely when you have no questions.
+            - The evaluator WILL hold you below pass while any unanswered
+              question exists for this file — surfacing them is how you
+              unblock yourself, not a sign of weakness.
 
             Reply `DONE` after the summary and stop.
             """;
 
         var evaluatorPrompt = $$"""
             You are the Architect-reviewer scoring another architect's draft of
-            `{{spec.FileName}}` for story `{{spawn.StoryId}}`.
+            `{{spec.RepoPath}}` for story `{{spawn.StoryId}}`.
 
             ## Story title
             {{story.Title}}
@@ -177,23 +376,38 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## File brief
             {{spec.Brief}}
 
+            ## Repository context
+            Your working directory is a git worktree of the actual repo on
+            branch `{{planBranch}}`. The draft you're scoring lives at
+            `{{spec.RepoPath}}`. You can also READ source files / prior
+            docs / sibling plan docs to verify the draft anchors to real
+            code structure (vs invented module names).
+
             ## Your job
-            Read the draft at `{{spec.FileName}}` in your working directory
-            using your read-only tools (view / ls / grep). Do NOT modify
-            the file. Score on:
-            - Anchored to the story description (every section grounded in
-              specifics from the operator's prompt — references, constraints,
-              terminology — not generic boilerplate).
+            Read the draft at `{{spec.RepoPath}}` using your read-only tools
+            (view / ls / grep). Do NOT modify the file. Score on:
+            - Anchored to the story description AND to the real repo (no
+              invented packages / modules / files; references resolve).
             - Production-quality markdown (no placeholders, no outline-only
               sections, no "TODO" markers).
             - Coverage of the file's stated brief.
-            - Internal consistency (no contradictions between sections).
+            - Internal consistency (no contradictions between sections,
+              and no contradictions with sibling plan docs that already
+              exist on disk).
 
             Reply with three short sections in this order:
             1. **What improved this iteration** — one bullet list.
             2. **What still needs work** — one bullet list (be specific:
                cite section names + sentences).
             3. **Why this score** — two sentences max.
+
+            ## Open-questions hard gate
+            If the generator surfaced open questions in its
+            `## Open Questions` JSON block AND the operator hasn't answered
+            them yet, you MUST return verdict `iterate` regardless of doc
+            quality. The orchestrator will block pass anyway via the
+            server-side gate, but your verdict needs to match so the
+            iteration history reads correctly.
 
             End with a fenced JSON block:
             ```json
@@ -203,28 +417,195 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
+        // Phase 38 (Layer B.3) — read per-doc points from the real
+        // WorkItemRow created by the orchestrator before this call. Falls
+        // back to story.points/4 (consistent with EnsurePlanDocWorkItemsAsync)
+        // when the row is missing (older spawns until Phase38Migration runs).
+        var docPoints = await this.LookupWorkItemPointsAsync(
+            docWorkItemId, fallback: Math.Max(1, spawn.StoryPoints), ct);
+
         await this.RunGenEvalLoopAsync(
             team: "Architect",
             workItemId: docWorkItemId,
             phaseTag: $"plan:{spec.FileName}",
             generatorPrompt: generatorPrompt,
             evaluatorPrompt: evaluatorPrompt,
-            workspace: workspace,
+            workspace: worktreePath,
             budget: budget,
-            storyPoints: spawn.StoryPoints,
+            storyPoints: docPoints,
+            generatorAgentOverride: generatorAgentOverride,
+            // Phase 41 — revoke shell access. The architect's job is file I/O.
+            disallowedTools: ArchitectDisallowedTools,
+            // Phase 41 — restore from snapshot if the generator destroys the file.
+            protectedFile: diskPath,
+            // Phase 42 — commit the doc per iteration so the Worktree tab
+            // shows real progress. CommitPathInWorktreeAsync is no-op when
+            // content didn't change since last commit. Per-branch lock
+            // serialises concurrent architects against the git index.
+            onIterationCompleted: async (iter, verdict) =>
+            {
+                if (repo is null) return;
+                try
+                {
+                    await this.git.CommitPathInWorktreeAsync(
+                        repo, planBranch, spec.RepoPath,
+                        $"plan({spec.FileName}): iter {iter} ({verdict})", ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "Per-iter commit failed for {File} iter {Iter}; loop continues.",
+                        spec.FileName, iter);
+                }
+
+                // Phase 42 — when the implementation-plan committed, kick the
+                // reconciler so workstream rows + workstreams.json track the
+                // latest plan structure (cancel obsolete, add new, re-prompt
+                // in-flight). Best-effort: a reconcile failure must not break
+                // the gen/eval loop; the scheduler tick will retry shortly.
+                if (string.Equals(spec.FileName, "implementation-plan.md", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        using var rscope = this.scopeFactory.CreateScope();
+                        var reconciler = rscope.ServiceProvider.GetService<PlanReconciler>();
+                        if (reconciler is not null)
+                        {
+                            await reconciler.ReconcileAsync(spawn.Id, ct);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "Per-iter reconcile failed for spawn {SpawnId} iter {Iter}; loop continues.",
+                            spawn.Id, iter);
+                    }
+                }
+            },
             ct: ct);
 
         if (!File.Exists(diskPath))
         {
             throw new InvalidOperationException(
-                $"Architect did not produce '{spec.FileName}'. Workspace: {workspace}");
+                $"Architect did not produce '{spec.RepoPath}'. Worktree: {worktreePath}");
         }
         return await File.ReadAllTextAsync(diskPath, ct);
+    }
+
+    /// <summary>
+    /// Phase 41 — Claude-Code-SDK tool names the architect MUST NOT use when
+    /// producing plan docs. Today: <c>Bash</c> only (the agent has no
+    /// legitimate need for a shell when writing a markdown spec, and
+    /// permitting it produced an observed delete-then-forget-to-rewrite
+    /// failure mode). Reused by all four plan-doc loops; resume calls
+    /// flow through <see cref="ProducePlanFileAsync"/> too.
+    /// </summary>
+    private static readonly string[] ArchitectDisallowedTools = new[] { "Bash" };
+
+    public async Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+    {
+        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var budget = BudgetForPhase(spawn.StoryPoints, "plan");
+
+        var specs = BuildPlanDocSpecs(docDir);
+
+        if (!specs.TryGetValue(key, out var spec))
+        {
+            throw new InvalidOperationException($"Unknown artifact key '{key}'. Expected one of: {string.Join(", ", specs.Keys)}");
+        }
+
+        var siblingPaths = specs.Values
+            .Where(s => !string.Equals(s.FileName, spec.FileName, StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.RepoPath)
+            .ToArray();
+
+        // Assign a stable generator per doc key — uses the roster index
+        // so each doc gets a different agent even on resume. The key index
+        // is deterministic: architecture=0, tech-spec=1, etc.
+        var allKeys = specs.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+        var docIndex = allKeys.IndexOf(key);
+        if (docIndex < 0) docIndex = 0;
+        var roster = await this.LoadArchitectRosterAsync(allKeys.Count, ct);
+        var generatorOverride = roster.Count > docIndex ? roster[docIndex] : null;
+
+        // Phase 42 — same git-worktree plumbing as the full plan run.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+
+        await this.ProducePlanFileAsync(
+            spawn, story, spec, budget, forceResume: true,
+            generatorAgentOverride: generatorOverride,
+            siblingSpecs: siblingPaths,
+            worktreePath: worktreePath,
+            repo: repo,
+            planBranch: planBranch,
+            ct: ct);
     }
 
     public async Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
+        // Phase 42 — derive the decomposition directly from the merged
+        // implementation-plan.md. The plan is the contract; the architect's
+        // earlier "make up 2-6 workstreams" prompt produced output that
+        // could disagree with the plan. Now we read the plan, parse its
+        // Phase/Stage tree, and emit one workstream per Stage. The
+        // PlanReconciler uses the same canonicalisation, so initial decomp
+        // and any later reconcile pass produce identical workstream sets
+        // for the same plan.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
+
+        RepoRow? repo = null;
+        if (!string.IsNullOrEmpty(spawn.RepoId))
+        {
+            using var lookup = this.scopeFactory.CreateScope();
+            var db = lookup.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+        }
+
+        string? planMd = null;
+        if (repo is not null)
+        {
+            try { planMd = await this.git.ReadFileAsync(repo, planBranch, planPath, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "ProduceDecomposition: failed to read {Path} from {Branch}; falling back to LLM-only path.",
+                    planPath, planBranch);
+            }
+        }
+
+        var canonical = PlanParser.Parse(planMd);
+        var stages = canonical.AllStages().ToList();
+
+        if (stages.Count > 0)
+        {
+            // Plan-derived path — deterministic. Each Stage becomes one
+            // workstream; deps stay empty by default (the plan's stated
+            // sequencing is captured in stage ordering, not as cross-stage
+            // dependencies, at v0). The reconciler can only join stages back
+            // to rows when the title matches what the plan parser produced,
+            // so use the canonical name verbatim.
+            return stages.Select(s => new DecompositionWorkstream(
+                Title: s.Name,
+                Description: s.Steps.Count == 0
+                    ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
+                    : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
+                AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
+                Deps: (IReadOnlyList<string>)Array.Empty<string>(),
+                Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
+                Timeline: string.Empty,
+                EstimatedEffort: string.Empty,
+                PlanAnchor: s.Anchor,
+                PlanContentHash: s.ContentHash)).ToList();
+        }
+
+        // Fallback — plan file is missing or unparseable. Keep the original
+        // LLM prompt path so the orchestrator still makes forward progress
+        // (the reconciler will re-align the rows once the plan lands).
         var workspace = this.PrepareWorkspace(spawn.Id, "decompose");
         var prompt = $$"""
             You are the Architect agent decomposing story `{{spawn.StoryId}}`
@@ -301,6 +682,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
         var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+
+        // Look up the work item's description — the operator may have edited
+        // it with more specific requirements (e.g. "use C# not TypeScript").
+        // Falls back to workstream.Summary when no work item row exists.
+        string workItemDescription;
+        using (var scope = this.scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var wi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == workstream.Id, ct);
+            workItemDescription = !string.IsNullOrEmpty(wi?.DescriptionMd)
+                ? wi!.DescriptionMd
+                : workstream.Summary ?? string.Empty;
+        }
+
         var generatorPrompt = $$"""
             You are the Engineer agent implementing workstream `{{workstream.Id}}`
             for story `{{spawn.StoryId}}`.
@@ -315,9 +711,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             **{{workstream.Name}}** — {{workstream.Summary}}
             Branch: `{{workstream.Branch}}`
 
+            ## Detailed requirements
+            {{workItemDescription}}
+
             ## Your task
-            Produce the source-code changes that implement this workstream. Use
-            real implementation — types, methods, tests — not placeholders.
+            Produce the source-code changes that implement this workstream per
+            the detailed requirements above. Use real implementation — types,
+            methods, tests — not placeholders. Follow the language and
+            conventions specified in the requirements; if none are stated,
+            match the repository's primary language.
 
             ## How to deliver
             Use your filesystem tools to write files inside your working
@@ -325,6 +727,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             do not write outside the working directory. You may create
             subdirectories within the working directory if your implementation
             spans multiple files. Reply `DONE` when finished.
+
+            ## Open questions — structured (REQUIRED when you have any)
+            If the workstream brief left ambiguity that forced you to guess
+            (API shape, dependency choice, error-handling convention, naming),
+            emit a fenced JSON block before `DONE` so the operator can answer
+            via the wizard and the next iteration gets a definitive answer:
+
+            ```json open-questions
+            { "openQuestions": [
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
+                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+            ] }
+            ```
+
+            Use `type: "choice"` with explicit options whenever 2-5 sensible
+            answers exist; use `type: "open"` only for free-form. The
+            evaluator will hold you below pass while any unanswered question
+            exists for this workstream.
             """;
 
         var evaluatorPrompt = $$"""
@@ -333,6 +753,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Workstream
             **{{workstream.Name}}** — {{workstream.Summary}}
+
+            ## Detailed requirements
+            {{workItemDescription}}
 
             ## Story
             {{spawn.StoryTitle}}
@@ -346,10 +769,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Score on:
             - Real implementation vs placeholder/scaffolding (types, methods,
               tests must be substantive).
+            - Adherence to the detailed requirements above (language, contracts,
+              naming conventions, deliverables specified).
             - Coverage of the workstream's stated goals + acceptance criteria.
             - Internal consistency with the story description and the merged
               planning artifacts on `main` (architecture.md / implementation-plan.md).
             - Obvious bugs, missing error paths, untested edge cases.
+
+            ## Open-questions hard gate
+            If the engineer surfaced open questions in their
+            `## Open Questions` JSON block AND the operator hasn't answered
+            them yet, you MUST score below pass and return verdict `iterate`.
+            Server-side gate enforces this regardless; your verdict needs to
+            match so the iteration history reads correctly.
 
             End with a fenced JSON block:
             ```json
@@ -359,6 +791,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
+        // Phase 38 (Layer B.3) — read per-workstream points from the real
+        // WorkItemRow inserted by DriveDecomposeAsync. Falls back to the
+        // story-level points when the row is missing (legacy spawns).
+        var wsPoints = await this.LookupWorkItemPointsAsync(
+            workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
+
         await this.RunGenEvalLoopAsync(
             team: "Engineer",
             workItemId: workstream.Id,
@@ -367,7 +805,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorPrompt: evaluatorPrompt,
             workspace: workspace,
             budget: BudgetForPhase(spawn.StoryPoints, "impl"),
-            storyPoints: spawn.StoryPoints,
+            storyPoints: wsPoints,
             ct: ct);
 
         var files = ReadAllFiles(workspace);
@@ -583,10 +1021,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private string PrepareWorkspace(string spawnId, string phaseTag)
     {
         var stateDir = ResolveStateDir(this.config);
-        var slug = SlugForFs(spawnId);
-        var path = Path.Combine(stateDir, "storyworkspaces", slug, phaseTag);
-        Directory.CreateDirectory(path);
-        return path;
+
+        // Check both slug conventions — older workspaces may use dashes
+        // (Slug) while newer code uses underscores (SlugForFs). Prefer the
+        // existing directory to avoid duplicating workspaces.
+        var slugUnderscore = SlugForFs(spawnId);
+        var slugDash = Slug(spawnId);
+        var pathUnderscore = Path.Combine(stateDir, "storyworkspaces", slugUnderscore, phaseTag);
+        var pathDash = Path.Combine(stateDir, "storyworkspaces", slugDash, phaseTag);
+
+        if (Directory.Exists(pathDash)) return pathDash;
+        if (Directory.Exists(pathUnderscore)) return pathUnderscore;
+
+        // Neither exists — create with the dash convention (matches existing data)
+        Directory.CreateDirectory(pathDash);
+        return pathDash;
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
+    {
+        var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
+        var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (!Directory.Exists(workspace)) return dict;
+
+        foreach (var file in Directory.EnumerateFiles(workspace, "*", SearchOption.AllDirectories))
+        {
+            // Skip siblings/ directory (cross-doc context copies)
+            if (file.Contains(Path.DirectorySeparatorChar + "siblings" + Path.DirectorySeparatorChar)) continue;
+            var rel = Path.GetRelativePath(workspace, file).Replace('\\', '/');
+            var content = await File.ReadAllTextAsync(file, ct);
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                dict[$"{repoPrefix}/{rel}"] = content;
+            }
+        }
+
+        this.logger?.LogInformation(
+            "Read {Count} cached files from workspace for workstream {WsId}.",
+            dict.Count, workstream.Id);
+
+        return dict;
     }
 
     private static string ResolveStateDir(IConfiguration config)
@@ -613,20 +1090,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     internal static TimeSpan BudgetForPhase(int points, string phaseTag)
     {
-        var baseSeconds = Math.Max(120.0, points * 30.0);
-        // phaseTag examples: "plan", "plan:tech-spec.md", "decompose",
-        //                    "impl:ws-...", "review:ws-...:r0", "review-fix:ws-...",
-        //                    "qa-features", "qa-steps:ws-..."
+        // Base budget scales with story points: 60s per point, floor 180s.
+        var baseSeconds = Math.Max(180.0, points * 60.0);
         var prefix = phaseTag.Split(':', 2)[0];
         var multiplier = prefix switch
         {
-            "plan" => 1.0,           // per-file budget when run in parallel
+            "plan" => 1.0,
             "decompose" => 0.7,
-            "impl" => 1.5,           // engineering writes more code than planning
-            "review" => 0.5,         // reviewer skim
-            "review-fix" => 0.5,
-            "qa-features" => 0.8,
-            "qa-steps" => 0.7,
+            "impl" => 2.0,
+            "review" => 1.0,
+            "review-fix" => 1.0,
+            "qa-features" => 1.0,
+            "qa-steps" => 0.8,
             _ => 1.0,
         };
         return TimeSpan.FromSeconds(baseSeconds * multiplier);
@@ -652,7 +1127,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string workspace,
         TimeSpan? budget,
         int storyPoints,
-        CancellationToken ct)
+        string? generatorAgentOverride = null,
+        // Phase 41 — Claude-Code tool names to revoke for this invocation
+        // (forwarded to the CLI as `--disallowedTools`). Architect plan-doc
+        // generators pass `["Bash"]` so an agent can't `Remove-Item` its
+        // own artifact mid-turn.
+        IReadOnlyList<string>? disallowedTools = null,
+        // Phase 41 — single artifact to snapshot before each generator turn
+        // and restore from snapshot if the agent loses it. Catches the
+        // "delete-then-forget-to-rewrite" failure mode regardless of which
+        // tool was used to delete (defense in depth alongside disallowedTools).
+        string? protectedFile = null,
+        // Phase 42 — invoked after each iteration's deliverable row is
+        // persisted. Used by the architect plan path to commit the doc per
+        // iteration so the Worktree tab shows real progress. Args are
+        // (iter, verdict). Best-effort — exceptions log but don't break
+        // the loop. Null = no per-iter side effects (engineer crews don't
+        // need this; their CommitFilesAsync runs once at the end).
+        Func<int, string, Task>? onIterationCompleted = null,
+        CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
         using var scope = this.scopeFactory.CreateScope();
@@ -664,8 +1157,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ?? throw new InvalidOperationException(
                 $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
 
+        // When a generator override is specified, temporarily set it on
+        // the crew so ResolveAgentRunConfigAsync picks it up.
+        if (!string.IsNullOrEmpty(generatorAgentOverride))
+        {
+            crew.DefaultGeneratorAgentId = generatorAgentOverride;
+        }
+
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
             db, crew, useEvaluatorRole: false, workspace, budget, ct);
+
+        // Phase 41 — apply per-loop tool restrictions (Bash revoked for
+        // architect plan-doc loops). Records are immutable; layer the field
+        // on with `with`.
+        if (disallowedTools is { Count: > 0 })
+        {
+            genContext = genContext with { DisallowedTools = disallowedTools };
+        }
 
         // Evaluator is best-effort — when crew has no evaluator wiring, the
         // loop's null delegate path returns an auto-pass score so we still
@@ -686,11 +1194,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 evalAgentId = eId;
                 evalContext = eCtx;
                 evalCrewId = evalCrew.Id;
+                if (disallowedTools is { Count: > 0 })
+                {
+                    evalContext = evalContext with { DisallowedTools = disallowedTools };
+                }
             }
             catch
             {
                 // Crew has no evaluator agent / model. Loop will auto-pass.
             }
+        }
+
+        // Pair-diversity gate (forge_implementation.md Phase 13e).
+        // The generator and evaluator MUST run on different models so the
+        // evaluator catches blind spots the generator's training distribution
+        // can't see. If both resolve to the same model, refuse to dispatch
+        // and surface the misconfiguration on the spawn — silent same-model
+        // pairs were producing pass-stamped subpar work that no second eye
+        // ever caught.
+        if (evalContext is not null
+            && !string.IsNullOrEmpty(genContext.Model)
+            && !string.IsNullOrEmpty(evalContext.Model)
+            && string.Equals(genContext.Model, evalContext.Model, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Pair-diversity rule violated: generator and evaluator both resolved to model '{genContext.Model}'. " +
+                $"Generator: agent={genAgentId} crew={crew.Id}. Evaluator: agent={evalAgentId} crew={evalCrewId}. " +
+                $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model — typically gpt-5.5/sonnet against an opus generator.");
         }
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
@@ -711,6 +1241,41 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var iterPrompt = iter == 1
                 ? generatorPrompt
                 : $"{generatorPrompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+
+            // Phase 41 — snapshot the protected file before invoking the
+            // generator so an agent that deletes it mid-turn (observed:
+            // architect ran `Remove-Item tech-spec.md` then forgot to write
+            // it back) gets restored from the prior iteration's content.
+            // Also snapshot on iter 1 so we have a baseline if the generator
+            // nukes the seed file.
+            string? snapshotPath = null;
+            long snapshotSize = 0;
+            if (!string.IsNullOrEmpty(protectedFile) && File.Exists(protectedFile))
+            {
+                snapshotPath = protectedFile + ".iter-snapshot.bak";
+                try
+                {
+                    File.Copy(protectedFile, snapshotPath, overwrite: true);
+                    snapshotSize = new FileInfo(snapshotPath).Length;
+                }
+                catch { snapshotPath = null; }
+            }
+
+            // task.prompt — same shape CrewQueueWorker emits, so the live-exec /
+            // doc-conv view's latestPrompt extraction works against plan-doc
+            // workItemIds the same way it does against work-item runs.
+            await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+            {
+                agentId = genAgentId,
+                crewId = crew.Id,
+                systemPrompt = string.IsNullOrEmpty(genContext.SoulMd) ? (string?)null : genContext.SoulMd,
+                userPrompt = iterPrompt,
+                model = genContext.Model,
+                backend = genBackendStr,
+                invokeMode = genInvokeStr,
+                role = "generator",
+                iter,
+            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
             var invocation = await this.runner.StartAsync(workItemId, genAgentId, iterPrompt, genContext, iterCt);
             var output = new StringBuilder();
@@ -738,6 +1303,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
             }
+
+            // Phase 41 — restore the protected file from snapshot if the
+            // generator destroyed it (deleted OR emptied/truncated). A file
+            // that shrinks to <10% of the snapshot size is treated as
+            // truncated — the generator's "rewrite completely" pattern often
+            // hits tool-output limits, leaving an empty or stub file.
+            if (!string.IsNullOrEmpty(protectedFile) && !string.IsNullOrEmpty(snapshotPath) && File.Exists(snapshotPath))
+            {
+                var needsRestore = false;
+                string reason;
+                if (!File.Exists(protectedFile))
+                {
+                    needsRestore = true;
+                    reason = "generator-destroyed-artifact";
+                }
+                else
+                {
+                    var currentSize = new FileInfo(protectedFile).Length;
+                    // Truncation guard: if the snapshot was meaningful (>100 bytes)
+                    // and the current file is <10% of that, restore the snapshot.
+                    if (snapshotSize > 100 && currentSize < snapshotSize / 10)
+                    {
+                        needsRestore = true;
+                        reason = "generator-truncated-artifact";
+                    }
+                    else
+                    {
+                        reason = "";
+                    }
+                }
+
+                if (needsRestore)
+                {
+                    try
+                    {
+                        File.Copy(snapshotPath, protectedFile, overwrite: true);
+                        await this.taskChannel.EmitAsync(workItemId, "task.recovery", new
+                        {
+                            iter,
+                            reason,
+                            file = Path.GetFileName(protectedFile),
+                            snapshotBytes = snapshotSize,
+                            note = reason == "generator-truncated-artifact"
+                                ? $"Agent truncated the artifact to near-zero bytes (snapshot was {snapshotSize:N0}B). Restored from previous iteration's snapshot before evaluator scoring."
+                                : "Agent deleted the artifact mid-turn and didn't rewrite it. Restored from previous iteration's snapshot before evaluator scoring.",
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    catch
+                    {
+                        // best-effort; if the restore fails the evaluator
+                        // will score 0 on a missing file as it does today.
+                    }
+                }
+                try { File.Delete(snapshotPath); } catch { /* best-effort */ }
+            }
+
             return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
         }
 
@@ -751,6 +1372,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     "{\"score\":95,\"verdict\":\"pass\",\"notes\":\"No evaluator configured; auto-pass.\"}",
                     0m);
             }
+
+            await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+            {
+                agentId = evalAgentId,
+                crewId = evalCrewId,
+                systemPrompt = string.IsNullOrEmpty(evalContext.SoulMd) ? (string?)null : evalContext.SoulMd,
+                userPrompt = evaluatorPrompt,
+                model = evalContext.Model,
+                backend = evalContext.Backend.ToString().ToLowerInvariant(),
+                invokeMode = evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                role = "evaluator",
+                iter,
+            }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
             var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContext, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
@@ -777,6 +1412,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
             }
+
+            // Phase 42 — fire the per-iter post-completion hook AFTER the
+            // evaluator has produced its text. The file's on disk; the
+            // architect plan path uses this to commit the doc per iter.
+            // Best-effort — exceptions bubble up but the surrounding
+            // try/catch wrapper at the call site keeps the loop alive.
+            if (onIterationCompleted is not null)
+            {
+                try { await onIterationCompleted(iter, "post-eval"); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "onIterationCompleted callback threw at iter {Iter} for {WorkItemId}; loop continues.",
+                        iter, workItemId);
+                }
+            }
+
             return new EvaluatorRunOutput(output.ToString(), cost, inTok, outTok);
         }
 
@@ -791,10 +1443,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             EvaluatorCrewId: evalCrewId,
             WorkItemPoints: storyPoints), ct);
 
-        if (string.Equals(result.FinalVerdict, "reject", StringComparison.OrdinalIgnoreCase))
+        // The plan PR ships unattended (no human gate), so anything short of
+        // a passing verdict is shipping subpar work. Throw on every non-pass
+        // terminal verdict (iterate / stalled / stalled-budget / reject); the
+        // caller (StorySpawnOrchestrator.DrivePlanAsync) records the failure
+        // on the spawn so the operator sees why the lifecycle halted.
+        if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Gen-eval loop for {phaseTag} ended with verdict=reject after {result.Iterations} iterations (final score {result.FinalScore}).");
+                $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened — bump max-iterations or restart the architect crew.");
         }
     }
 
@@ -835,9 +1492,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
         var soul = string.Empty;
-        if (!string.IsNullOrEmpty(agent?.SoulPath) && File.Exists(agent!.SoulPath))
+        var resolvedSoul1 = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+        if (!string.IsNullOrEmpty(resolvedSoul1))
         {
-            try { soul = await File.ReadAllTextAsync(agent!.SoulPath, ct); }
+            try { soul = await File.ReadAllTextAsync(resolvedSoul1, ct); }
             catch { /* best effort */ }
         }
 
@@ -891,9 +1549,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
         var soul = string.Empty;
-        if (!string.IsNullOrEmpty(agent?.SoulPath) && File.Exists(agent!.SoulPath))
+        var resolvedSoul2 = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+        if (!string.IsNullOrEmpty(resolvedSoul2))
         {
-            try { soul = await File.ReadAllTextAsync(agent!.SoulPath, ct); }
+            try { soul = await File.ReadAllTextAsync(resolvedSoul2, ct); }
             catch { /* best effort */ }
         }
 
@@ -1013,5 +1672,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         public int? Line { get; set; }
         public string? Body { get; set; }
         public string? Severity { get; set; }
+    }
+
+    /// <summary>
+    /// Phase 38 (Layer B.3) — fetch the WorkItem.Points value the gen↔eval
+    /// loop should size its iteration budget against. Returns
+    /// <paramref name="fallback"/> when the row hasn't been inserted yet
+    /// (legacy spawns that predate <c>EnsurePlanDocWorkItemsAsync</c> /
+    /// <c>Phase38Migration</c>).
+    /// </summary>
+    private async Task<int> LookupWorkItemPointsAsync(string workItemId, int fallback, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var pts = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => (int?)w.Points)
+            .FirstOrDefaultAsync(ct);
+        return pts is > 0 ? pts.Value : Math.Max(1, fallback);
     }
 }

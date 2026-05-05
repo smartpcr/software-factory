@@ -66,6 +66,11 @@ export interface StorySpawn {
   qaPrId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Phase 37 — operator-visible failure surfaced on the workstream banner.
+   *  Cleared by the orchestrator on the next successful step or by an
+   *  explicit POST /api/stories/{storyId}/spawn/retry. */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
 }
 
 export interface StorySpawnWorkstreamSummary {
@@ -90,6 +95,8 @@ export interface StorySpawnWorkstreamSummary {
   commits?: number;
   ahead?: number;
   behind?: number;
+  /** Unanswered open questions blocking pass — 0 when no questions exist. */
+  unansweredQuestionCount?: number;
 }
 
 export interface StorySpawnDetail {
@@ -396,6 +403,98 @@ export interface BuildValidationRun {
   errorMessage?: string | null;
 }
 
+// ── Performance scorecard types ──────────────────────────────────────
+
+export type ReviewWindow = 'trailing20' | 'mtd' | 'lastMonth';
+export type PromotionVerdict = 'promote' | 'hold' | 'watch' | 'demote' | 'lead-pending';
+
+export interface ScoreDims {
+  correctness: number;
+  quality: number;
+  tests: number;
+  scope: number;
+  risk: number;
+}
+
+export interface AgentScorecard {
+  agentId: string;
+  name: string;
+  team: 'Architect' | 'Engineer' | 'Review' | 'QA';
+  crew: string;
+  crewId: string;
+  level: number;
+  title: string;
+  hourlyUsd: number;
+  throughput: number;
+  passRate: number;
+  avgScore: number;
+  iterP50: number;
+  iterP90: number;
+  rejectRate: number;
+  disputeRate: number;
+  stalledRate: number;
+  utilization: number;
+  costPerPass: number;
+  scoreSpark: number[];
+  dims: ScoreDims;
+  promotionEta: number | null;
+  demotionRisk: boolean;
+  verdict: PromotionVerdict;
+  verdictNote: string;
+  lastPromotedAt: string | null;
+  nextEligibleAt: string;
+  monthlyAvg: number[];
+  monthlyMonths: string[];
+  repos: string[];
+  products: string[];
+}
+
+export interface PromotionDecision {
+  agentId: string;
+  name: string;
+  team: AgentScorecard['team'];
+  fromLevel: number;
+  fromTitle: string;
+  toLevel: number;
+  toTitle: string;
+  windowAvg: number;
+  windowSize: number;
+  rejectsInWindow: number;
+  cooldownDaysRemaining: number;
+  signedOff: boolean;
+  signedOffBy: string | null;
+  rationale: string[];
+  risks: string[];
+  nominatedAt: string;
+}
+
+export interface MonthlySnapshot {
+  month: string;
+  agents: number;
+  avgScore: number;
+  promotions: number;
+  demotions: number;
+  payrollUsd: number;
+  spendUsd: number;
+  passRate: number;
+  rejectRate: number;
+  locked: boolean;
+}
+
+export interface PerformanceFilterOptions {
+  products: Array<{ id: string; name: string }>;
+  repos: Array<{ id: string; productId: string }>;
+  teams: string[];
+}
+
+export interface PerformanceScorecardsResponse {
+  window: string;
+  scorecards: AgentScorecard[];
+  promotionDecisions: PromotionDecision[];
+  monthlySnapshots: MonthlySnapshot[];
+  filterOptions: PerformanceFilterOptions;
+}
+
 export const forgeApi = {
   async getState(): Promise<ForgeState> {
     if (useLocalSeed()) {
@@ -577,6 +676,16 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/prs/{prId}/comments/{id}/react — toggle thumbsup/thumbsdown. */
+  async reactToPrComment(prId: string, commentId: number, reaction: 'thumbsup' | 'thumbsdown'):
+    Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}/react`, {
+      method: 'POST',
+      body: JSON.stringify({ reaction }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   // -- Phase 27 — build sync endpoints --------------------------------------
 
   /** GET /api/prs/{prId}/builds — list builds for a PR newest-first. */
@@ -669,6 +778,22 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/workstreams/{id}/restart — nuke and restart from scratch. */
+  async restartWorkstream(id: string): Promise<{ id: string; status: string; deliverablesCleaned: number }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/restart`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/workstreams/{id}/cancel — stop the running gen/eval loop. */
+  async cancelWorkstream(id: string): Promise<{ id: string; status: string; queueRowsCancelled: number }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** GET /api/audit. */
   async listAudit(take = 200): Promise<AuditEntry[]> {
     return fetchJson<AuditEntry[]>(`/api/audit?take=${take}`);
@@ -741,9 +866,21 @@ export const forgeApi = {
     });
   },
 
-  /** DELETE /api/workstreams/{id}?force=true. */
-  async deleteWorkstream(id: string, force = false): Promise<void> {
-    await fetchJson<void>(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
+  /**
+   * DELETE /api/workstreams/{id}?force=true — cascading delete. Removes the
+   * workstream row, the synthesized work-item, all deliverables /
+   * transcripts / queue rows / dep edges / agent assignments / board card,
+   * plus the on-disk gen↔eval workspace, the worktree mount, and the local
+   * git branch. Returns `{ id, status, counts }` so the caller can surface
+   * what got removed. The server returns 422 if the workstream has open
+   * PRs and `force` is false.
+   */
+  async deleteWorkstream(id: string, force = false): Promise<{
+    id: string;
+    status: string;
+    counts: Record<string, number>;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -778,6 +915,61 @@ export const forgeApi = {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/phase`, {
       method: 'PATCH',
       body: JSON.stringify({ targetPhase }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/retry — clear the persisted spawn LastError
+   *  and re-drive the orchestrator immediately. Operator clicks this from the
+   *  workstream-view error banner after resolving the underlying cause
+   *  (rebased plan branch, fixed branch protection, etc.). */
+  async retryStorySpawn(storyId: string): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async dismissStorySpawnError(storyId: string): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/dismiss-error`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/resume — resume a single doc's gen↔eval loop. */
+  async resumeStoryArtifact(storyId: string, key: string): Promise<{ storyId: string; key: string; status: string }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/resume`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/cancel — stop the running gen↔eval loop for a single doc. */
+  async cancelStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    status: string;
+    queueRowsCancelled: number;
+    invocationsCancelled: number;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/restart — wipe iterations + transcript and re-enter the loop at iter 1. */
+  async restartStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    status: string;
+    deliverablesCleaned: number;
+    eventsCleaned: number;
+    queueRowsCancelled: number;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/restart`, {
+      method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
@@ -832,6 +1024,15 @@ export const forgeApi = {
   async getStoryArtifactIterations(storyId: string, key: string): Promise<{
     key: string;
     workItemId: string | null;
+    /** Derived lifecycle: live (events still flowing) → iterating (last
+     *  verdict !pass) → awaiting-pr-review (verdict=pass but plan PR not
+     *  merged yet) → completed (PR merged) | pending (no iterations yet). */
+    status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
+    maxIterations: number;
+    /** Latest generator agent name + model, null until first iteration lands. */
+    generator: { agentId: string; name: string; model: string | null } | null;
+    /** Latest evaluator agent name + model, null until first iteration lands. */
+    evaluator: { agentId: string; name: string; model: string | null } | null;
     iterations: Array<{
       id: number;
       iter: number;
@@ -1696,6 +1897,25 @@ export const forgeApi = {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript${qs ? `?${qs}` : ''}`);
   },
 
+  /**
+   * GET /api/work-items/{id}/transcript/{eventId} — full untruncated event
+   * payload. The bulk transcript stream truncates large string fields
+   * (systemPrompt / userPrompt / tool results) to 320 chars per field; this
+   * endpoint backs the "Show full prompt" affordance the UI surfaces when
+   * a truncation marker appears in the inline preview.
+   */
+  async getWorkItemTranscriptEvent(workItemId: string, eventId: number | string): Promise<{
+    id: number;
+    workItemId: string;
+    kind: string;
+    agentId: string | null;
+    crewId: string | null;
+    payload: Record<string, unknown>;
+    at: string;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript/${encodeURIComponent(String(eventId))}`);
+  },
+
   async clearWorkItemTranscript(workItemId: string): Promise<{ deleted: number }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript`, {
       method: 'DELETE',
@@ -1771,12 +1991,67 @@ export const forgeApi = {
     });
   },
 
+  /** GET /api/work-items/{id}/questions — list deduped questions for the
+   *  conversation-tab open-questions wizard. Phase 39 (Layer C). */
+  async listQuestions(workItemId: string): Promise<{
+    workItemId: string;
+    items: Array<{
+      id: number;
+      externalId: string;
+      iter: number;
+      text: string;
+      kind: 'choice' | 'open';
+      choices: string[];
+      answer: string | null;
+      answeredAt: string | null;
+      answeredBy: string | null;
+    }>;
+    unansweredCount: number;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions`);
+  },
+
+  /** POST /api/work-items/{id}/questions/answer — submit operator answers.
+   *  Server records them, the next iteration's prompt prepends a `## Operator
+   *  answers` block, and the verdict-gate releases pass when none remain. */
+  async answerQuestions(
+    workItemId: string,
+    answers: Array<{ externalId: string; answer: string }>,
+  ): Promise<{ workItemId: string; unansweredCount: number }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/work-items/{id}/questions/dismiss — mark questions as
+   *  "(dismissed by operator)" so they stop blocking the verdict gate
+   *  without forcing the operator to write a real answer. Used for legacy
+   *  prose questions that aren't usefully answerable. */
+  async dismissQuestions(
+    workItemId: string,
+    externalIds: string[],
+  ): Promise<{ workItemId: string; unansweredCount: number }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({ externalIds }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   async clearAgentAssignment(workItemId: string, reason?: string): Promise<void> {
     await fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/assigned-agent`, {
       method: 'DELETE',
       body: reason ? JSON.stringify({ reason }) : undefined,
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  // -- Performance scorecards -------------------------------------------
+
+  async getPerformanceScorecards(window: ReviewWindow = 'trailing20'): Promise<PerformanceScorecardsResponse> {
+    return fetchJson<PerformanceScorecardsResponse>(`/api/performance/scorecards?window=${window}`);
   },
 };
 

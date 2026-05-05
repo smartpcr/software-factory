@@ -157,6 +157,23 @@ builder.Services.AddSwaggerGen(options =>
 // SignalR.
 builder.Services.AddSignalR();
 
+// Background-services kill switch. Tests set FORGE_TEST_GUARDRAIL=1 in the
+// test factory's constructor (which runs BEFORE WebApplicationBuilder
+// hits this line). When set, hosted services like CrewQueueWorker /
+// ProviderSyncService / WorkItemSyncJob / BuildSyncJob / AutoMergeWatcher /
+// etc. are REGISTERED in DI (tests can resolve them and call RunOnceAsync
+// deterministically) but DO NOT auto-start. This stops them from racing
+// with test setup — they used to wake up on the seeded atlas-platform
+// repo and write sync runs / build artifact rows that broke ~300
+// unrelated tests. Prod leaves the env var unset so all services start.
+//
+// We deliberately read the env var (set in the test factory ctor) rather
+// than `builder.Configuration["Forge:Background:Disabled"]`. The factory's
+// in-memory config source isn't merged into IConfiguration until Build()
+// runs — but AddHostedService is called BEFORE Build(), so a config-based
+// flag would always read its default (false) at registration time.
+var enableBackground = Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") != "1";
+
 // Git worktree service.
 builder.Services.Configure<GitWorktreeOptions>(builder.Configuration.GetSection(GitWorktreeOptions.SectionName));
 builder.Services.AddSingleton<IGitWorktreeService, GitWorktreeService>();
@@ -182,14 +199,18 @@ builder.Services.AddSingleton<IGitHubMilestoneService, GitHubMilestoneService>()
 builder.Services.AddSingleton<WebhookActivity>();
 builder.Services.AddScoped<ProviderCache>();
 builder.Services.AddSingleton<ProviderSyncService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
 // Phase 12.4 — work item sync. Singleton so the in-memory per-repo throttle
 // dictionary survives across requests; uses IServiceScopeFactory internally
 // to resolve a fresh ForgeDbContext per sync call.
 builder.Services.AddSingleton<WorkItemSyncService>();
 
-// Phase 23 — scheduled work-item sync job (20-min cadence).
-builder.Services.AddHostedService<Forge.Api.Services.WorkItemSyncJob>();
+// Phase 23 — scheduled work-item sync job (20-min cadence). Singleton
+// registration is unconditional so tests can resolve it directly via
+// `IServiceProvider.GetRequiredService<WorkItemSyncJob>()`; the
+// AddHostedService wrapper is gated so it doesn't auto-start in test mode.
+builder.Services.AddSingleton<Forge.Api.Services.WorkItemSyncJob>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorkItemSyncJob>());
 
 // Phase 6 — write-side: human-gate, auto-merge watcher, audit + idempotency, user context.
 builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
@@ -206,19 +227,19 @@ builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Servic
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).
 builder.Services.AddSingleton<Forge.Api.Services.WorktreeChangeFeed>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorktreeChangeFeed>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorktreeChangeFeed>());
 // Phase 16.3 — auto-delegation hosted service (lead → crew, ≤10 s p95).
 builder.Services.AddSingleton<Forge.Api.Services.LeadAutoDispatcher>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.LeadAutoDispatcher>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.LeadAutoDispatcher>());
 // Phase 17.2 — task queue service. Scoped so it shares the request's DbContext.
 builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Services.TaskQueueService>();
 // Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
 // Phase 29 — async build validation worker.
 builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
 builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildValidationWorker>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildValidationWorker>());
 // Phase 24 — PR state & comment sync sweep.
 builder.Services.AddSingleton<Forge.Api.Services.ForgeMetrics>();
 builder.Services.AddHttpClient(Forge.Api.Services.AdoPrCommentSyncClient.ClientName);
@@ -226,7 +247,7 @@ builder.Services.AddHttpClient(Forge.Api.Services.GitHubPrCommentSyncClient.Clie
 builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api.Services.AdoPrCommentSyncClient>();
 builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api.Services.GitHubPrCommentSyncClient>();
 builder.Services.AddSingleton<Forge.Api.Services.PrSyncJob>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PrSyncJob>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PrSyncJob>());
 
 // forge_implementation.md Phase 27 — build sync, failure parser, artifact expander.
 builder.Services.AddHttpClient(Forge.Api.Providers.Ado.AdoBuildSyncRunner.ClientName);
@@ -237,9 +258,9 @@ builder.Services.AddSingleton<Forge.Api.Services.IBuildSyncRunner, Forge.Api.Pro
 builder.Services.AddSingleton<Forge.Api.Services.BuildArtifactExpander>();
 builder.Services.AddSingleton<Forge.Api.Services.BuildFailureParser>();
 builder.Services.AddSingleton<Forge.Api.Services.BuildSyncJob>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildSyncJob>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildSyncJob>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 
 // forge_implementation.md Phase 28 — story-driven spawn orchestrator + deps scheduler.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>();
@@ -254,7 +275,17 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.ProviderStoryProviderOps>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
+// Phase 42 — keeps WorkstreamRow/WorkItemRow in lockstep with implementation-plan.md.
+builder.Services.AddSingleton<Forge.Api.Services.Stories.PlanReconciler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
+
+// Phase 41 — boot-time sweep that re-fires plan-doc Resume loops killed by
+// a previous process exit. Reads StorySpawnRow.ResumePendingJson and re-fires
+// the gen↔eval loop for each unfinished key. Registered as a singleton so
+// integration tests can resolve it and call SweepAsync deterministically;
+// only auto-started when enableBackground (production runtime).
+builder.Services.AddSingleton<Forge.Api.Services.Stories.StoryResumeRecoveryService>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.StoryResumeRecoveryService>());
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
@@ -279,6 +310,13 @@ builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOpt
 builder.Services.AddSingleton<ISoulService, SoulService>();
 builder.Services.AddHttpClient(AgentRunnerDispatcher.ClientName);
 builder.Services.AddSingleton<CopilotServerManager>();
+// CopilotServerManager registered as a hosted service unconditionally —
+// its StartAsync is a no-op (the CLI server starts lazily on first use)
+// but its StopAsync owns disposing the spawned `copilot.exe` child. Without
+// hosted-service registration, host shutdown skips StopAsync, the child
+// process leaks, and a later GC-driven Process callback hits a disposed
+// HasExited check that crashes the test host. The dispose path runs whether
+// or not the CLI server was ever started, so the test gate doesn't apply.
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
 builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
@@ -308,6 +346,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
     await db.Database.EnsureCreatedAsync();
+    // Phase 42 must run BEFORE any migration that issues an EF query against
+    // workstreams / work_items. EF's SELECT lists every mapped column on
+    // WorkstreamRow / WorkItemRow — including the Phase 42 additions — so an
+    // existing DB without those columns throws SQLITE 'no such column' as
+    // soon as e.g. Phase 38's backfill calls db.WorkItems.ToListAsync().
+    // The migration's pragma probe is a no-op when the columns already exist
+    // (fresh DB created by EnsureCreatedAsync), so running it first is safe.
+    await Phase42Migration.ApplyAsync(db);
     // Phase 8.2 — additive schema upgrade for existing dev DBs that pre-date Phase 8.
     await Phase8Migration.ApplyAsync(db);
     // Phase 11.4 — agent_usage cost ledger.
@@ -358,6 +404,28 @@ using (var scope = app.Services.CreateScope())
     await Phase34Migration.ApplyAsync(db);
     // Phase 35 — decouple crews from products (null out ProductId).
     await Phase35Migration.ApplyAsync(db);
+    // Phase 36 — add Reaction column to pr_comments.
+    await Phase36Migration.ApplyAsync(db);
+    // Phase 37 — add LastError + LastErrorAt columns to story_spawns so the
+    // orchestrator can persist failure reasons and the UI can surface them.
+    await Phase37Migration.ApplyAsync(db);
+    // Phase 38 — backfill WorkItemRow rows for legacy plan-doc and
+    // workstream ids so DeliverableLoop.PointsToMaxIter has a real
+    // wi.Points to read from.
+    await Phase38Migration.ApplyAsync(db);
+    // Phase 39 — create the deliverable_questions table for the
+    // open-questions wizard.
+    await Phase39Migration.ApplyAsync(db);
+    // Phase 40 — backfill WorkItemRow rows for legacy story ids so the
+    // ParentId on plan-docs / workstreams resolves to a real parent.
+    await Phase40Migration.ApplyAsync(db);
+    // Phase 41 — ResumePendingJson column on story_spawns so a plan-doc
+    // Resume kicked off via /spawn/artifacts/{key}/resume survives a
+    // process restart (StoryResumeRecoveryService re-fires unfinished keys).
+    await Phase41Migration.ApplyAsync(db);
+    // Phase 42 already ran at the top of this scope (must precede the EF
+    // queries in Phase 38 / Phase 40 that select all WorkItem / Workstream
+    // columns including the new PlanAnchor / PlanContentHash).
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");
@@ -381,6 +449,16 @@ using (var scope = app.Services.CreateScope())
     // even after past test pollution flipped fields like crew-eng.Shift.
     // The pass is idempotent: a clean DB sees zero writes.
     await ForgeSeed.EnsureCrewCatalogAsync(db);
+    // Test factory seeds default product+repo into an otherwise empty per-
+    // instance DB so test fixtures find the baseline reference rows. Safe
+    // here because Forge:Background:Disabled=true keeps the prod sync /
+    // build / merge hosted services from auto-starting and racing on the
+    // seeded rows. Prod skips this — operators have their own product /
+    // repo committed in forge.db.
+    if (Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") == "1")
+    {
+        await ForgeSeed.EnsureDefaultProductAndRepoAsync(db);
+    }
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
@@ -543,6 +621,7 @@ app.MapPrCommentsEndpoints();
 app.MapBuildsEndpoints();
 // Phase 11 — /cost dashboard rollup.
 app.MapCostEndpoints();
+app.MapPerformanceEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

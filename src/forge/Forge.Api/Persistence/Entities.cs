@@ -175,6 +175,23 @@ public class WorkstreamRow
     /// architect's decomposition.
     /// </summary>
     public string? StorySpawnId { get; set; }
+
+    /// <summary>
+    /// Phase 42 — stable slug derived from the originating Stage in
+    /// <c>implementation-plan.md</c> (e.g. <c>phase-2/stage-1-add-cancel-button</c>).
+    /// The reconciler joins persisted workstreams to plan stages by this anchor;
+    /// renames preserve the anchor, deletions drop it. Null on legacy / pre-reconciler
+    /// rows — the reconciler leaves those alone.
+    /// </summary>
+    public string? PlanAnchor { get; set; }
+
+    /// <summary>
+    /// Phase 42 — SHA-256 of the Stage's body in <c>implementation-plan.md</c>
+    /// at the moment the workstream was last reconciled. A change here with the
+    /// same <see cref="PlanAnchor"/> means "same stage, scope edited" — the
+    /// reconciler updates Summary + re-prompts engineers on open PRs.
+    /// </summary>
+    public string? PlanContentHash { get; set; }
 }
 
 public class WsEventRow
@@ -332,6 +349,9 @@ public class PrCommentRow
     public long? LinkedAgentResponseId { get; set; }
 
     public bool RequiresAttention { get; set; }
+
+    /// <summary>Phase 34 — user reaction: null, "thumbsup", or "thumbsdown".</summary>
+    public string? Reaction { get; set; }
 }
 
 /// <summary>Phase 24 — append-only audit per comment state transition.</summary>
@@ -816,6 +836,50 @@ public class DeliverableRow
     public int? JudgeScore { get; set; }
 
     public string? JudgeNotes { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 39 (Layer C) — open questions extracted from a generator's
+/// `## Open Questions` JSON block. Operator answers them via the
+/// conversation-tab wizard; answers are prepended to the next iteration's
+/// user prompt and the evaluator's pass verdict is overridden to `iterate`
+/// while any rows for this work item have <see cref="Answer"/> = null.
+///
+/// One row per (workItemId, externalId, iter) — the architect can re-emit a
+/// question in a later iteration if the original answer wasn't sufficient,
+/// and we keep the history. The "what's still unanswered" query dedupes by
+/// externalId taking the most-recent row.
+/// </summary>
+public class DeliverableQuestionRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Plain-text id from the generator's JSON block ("q1", "auth-method", etc.). Stable across iters.</summary>
+    public string ExternalId { get; set; } = string.Empty;
+
+    /// <summary>Workstream id or synthetic plan-doc id (matches <see cref="DeliverableRow.WorkItemId"/>).</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>Iteration that emitted this question (1-based, matches Deliverables.Iter).</summary>
+    public int Iter { get; set; }
+
+    /// <summary>Question text shown to the operator.</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>One of: <c>choice</c> (radio) | <c>open</c> (free-text).</summary>
+    public string Kind { get; set; } = "open";
+
+    /// <summary>JSON array of options when <see cref="Kind"/>=choice. Null/empty for open questions.</summary>
+    public string? ChoicesJson { get; set; }
+
+    /// <summary>Operator-supplied answer. Null = still unanswered (blocks pass verdict).</summary>
+    public string? Answer { get; set; }
+
+    public DateTimeOffset? AnsweredAt { get; set; }
+
+    public string? AnsweredBy { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -1427,6 +1491,21 @@ public class WorkItemRow
     /// satisfy.
     /// </summary>
     public int CommentResponseStallCount { get; set; }
+
+    /// <summary>
+    /// Phase 42 — stable slug from the originating Implementation Step in
+    /// <c>implementation-plan.md</c> (e.g. <c>phase-2/stage-1/step-3</c>). Joins
+    /// step-level work items back to the plan so the reconciler can detect
+    /// added / removed / re-parented steps. Null on legacy rows.
+    /// </summary>
+    public string? PlanAnchor { get; set; }
+
+    /// <summary>
+    /// Phase 42 — SHA-256 of the Step's body at last reconcile. Mirrors
+    /// <see cref="WorkstreamRow.PlanContentHash"/>; lets the reconciler
+    /// distinguish "step text changed" from "step moved/renamed".
+    /// </summary>
+    public string? PlanContentHash { get; set; }
 }
 
 /// <summary>
@@ -2004,6 +2083,27 @@ public class StorySpawnRow
 
     /// <summary>Story points carried over from the originating story for sprint planning.</summary>
     public int StoryPoints { get; set; }
+
+    /// <summary>
+    /// Operator-visible error message captured the last time the orchestrator
+    /// failed to drive this spawn forward (architect crew below pass, plan PR
+    /// merge conflict, decomposition empty, etc.). Null while healthy. Cleared
+    /// when the failing step succeeds or the operator clicks Retry from the
+    /// workstream view.
+    /// </summary>
+    public string? LastError { get; set; }
+
+    /// <summary>Timestamp paired with <see cref="LastError"/>; null when error is null.</summary>
+    public DateTimeOffset? LastErrorAt { get; set; }
+
+    /// <summary>
+    /// Phase 41 — JSON array of plan-doc artifact keys whose gen↔eval Resume
+    /// loop is currently in flight. Set by <c>ResumeArtifact</c> before the
+    /// fire-and-forget Task.Run starts, cleared in the task's finally block.
+    /// On boot, <c>StoryResumeRecoveryService</c> sweeps non-empty entries and
+    /// re-fires the loop so a process kill mid-Resume self-heals.
+    /// </summary>
+    public string? ResumePendingJson { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

@@ -321,7 +321,7 @@ public static class ForgeSeed
     /// <c>atlas-platform</c> repo if they don't yet exist. Used both by the
     /// boot path and by Phase 8.3 backfill against pre-existing dev DBs.
     /// </summary>
-    private static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
+    public static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
     {
         var changed = false;
 
@@ -346,7 +346,7 @@ public static class ForgeSeed
             {
                 Id = DefaultRepoId,
                 Sort = 0,
-               
+                ProductId = DefaultProductId,
                 Kind = "ado",
                 RemoteUrl = "https://dev.azure.com/atlas/atlas-platform/_git/atlas-platform",
                 DisplayName = "atlas-platform",
@@ -543,6 +543,44 @@ public static class ForgeSeed
             dir = dir.Parent;
         }
         return Directory.GetCurrentDirectory();
+    }
+
+    /// <summary>
+    /// Resolve an agent's soul.md path. If the stored <paramref name="dbSoulPath"/>
+    /// exists on disk, use it directly. Otherwise, extract the character ID
+    /// (parent folder name) and re-resolve under the current repo root's
+    /// <c>agents/{charId}/soul.md</c>. This handles cross-machine deploys
+    /// where the absolute path saved in the DB points to the original machine's
+    /// repo checkout.
+    /// </summary>
+    internal static string? ResolveSoulPath(string? dbSoulPath)
+    {
+        if (string.IsNullOrEmpty(dbSoulPath))
+        {
+            return null;
+        }
+
+        if (File.Exists(dbSoulPath))
+        {
+            return dbSoulPath;
+        }
+
+        // Fallback: extract the character ID from the path (the parent folder
+        // of soul.md, e.g. "…/agents/NZ/soul.md" → "NZ") and resolve under
+        // the current repo root.
+        var fileName = Path.GetFileName(dbSoulPath);
+        var parentDir = Path.GetDirectoryName(dbSoulPath);
+        var charId = !string.IsNullOrEmpty(parentDir) ? Path.GetFileName(parentDir) : null;
+        if (!string.IsNullOrEmpty(charId) && string.Equals(fileName, "soul.md", StringComparison.OrdinalIgnoreCase))
+        {
+            var resolved = Path.Combine(FindRepoRoot(), "agents", charId, "soul.md");
+            if (File.Exists(resolved))
+            {
+                return resolved;
+            }
+        }
+
+        return null;
     }
 
     private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)

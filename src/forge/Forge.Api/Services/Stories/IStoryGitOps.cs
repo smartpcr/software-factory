@@ -37,4 +37,24 @@ public interface IStoryGitOps
 
     /// <summary>Merges <paramref name="branch"/> into <paramref name="baseBranch"/>; tests just copy the tree.</summary>
     Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>
+    /// and return its absolute disk path. Use as the agent's working
+    /// directory when running plan / coding tasks so the agent's tools see
+    /// the actual repo layout instead of an isolated scratch dir. Idempotent;
+    /// concurrent callers within the same process get the same path.
+    /// </summary>
+    Task<string> EnsureWorktreeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 42 — stage one repo-relative path in <paramref name="branch"/>'s
+    /// worktree and commit. Used by per-iteration plan-doc commits so the
+    /// Worktree tab shows real history. Serialized per-branch so concurrent
+    /// architect agents don't race the git index. Returns the new HEAD sha
+    /// (or empty when there was nothing to commit — the file content was
+    /// identical to what's already on the branch).
+    /// </summary>
+    Task<string> CommitPathInWorktreeAsync(
+        RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default);
 }

@@ -58,51 +58,73 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             _ => (null, null),
         };
 
-        var prContract = await provider.CreatePullRequestAsync(
-            new NewPullRequestRequest(
-                Branch: req.Branch,
-                BaseBranch: req.BaseBranch,
-                Title: req.Title,
-                Body: req.Body,
-                Draft: false,
-                RepositoryName: repoName,
-                ProjectName: projectName),
-            ProviderCallContext.Anonymous,
-            ct);
-
-        // Mirror the real PR into PrRow so the UI / sync jobs see it.
-        if (await db.Prs.FirstOrDefaultAsync(p => p.Id == prContract.Id, ct) is null)
+        string prId;
+        try
         {
-            db.Prs.Add(new PrRow
+            var prContract = await provider.CreatePullRequestAsync(
+                new NewPullRequestRequest(
+                    Branch: req.Branch,
+                    BaseBranch: req.BaseBranch,
+                    Title: req.Title,
+                    Body: req.Body,
+                    Draft: false,
+                    RepositoryName: repoName,
+                    ProjectName: projectName),
+                ProviderCallContext.Anonymous,
+                ct);
+            prId = prContract.Id;
+
+            // Mirror the real PR into PrRow so the UI / sync jobs see it.
+            if (await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct) is null)
             {
-                Id = prContract.Id,
-                RepoId = req.Repo.Id,
-                Col = "review",
-                Title = prContract.Title,
-                Branch = req.Branch,
-                Base = req.BaseBranch,
-                Workstream = req.Workstream ?? string.Empty,
-                Epic = req.Epic ?? string.Empty,
-                EpicColor = string.Empty,
-                AuthorJson = "{}",
-                Description = req.Body,
-                CreatedAt = DateTimeOffset.UtcNow.ToString("O"),
-                UpdatedAt = DateTimeOffset.UtcNow.ToString("O"),
-                IsActive = true,
-                LastSyncStatus = "idle",
-                Provider = req.Repo.Kind,
-                WorkItemId = req.WorkItemId,
-            });
-            await db.SaveChangesAsync(ct);
+                db.Prs.Add(new PrRow
+                {
+                    Id = prId,
+                    RepoId = req.Repo.Id,
+                    Col = "review",
+                    Title = prContract.Title,
+                    Branch = req.Branch,
+                    Base = req.BaseBranch,
+                    Workstream = req.Workstream ?? string.Empty,
+                    Epic = req.Epic ?? string.Empty,
+                    EpicColor = string.Empty,
+                    AuthorJson = "{}",
+                    Description = req.Body,
+                    CreatedAt = DateTimeOffset.UtcNow.ToString("O"),
+                    UpdatedAt = DateTimeOffset.UtcNow.ToString("O"),
+                    IsActive = true,
+                    LastSyncStatus = "idle",
+                    Provider = req.Repo.Kind,
+                    WorkItemId = req.WorkItemId,
+                    WebUrl = prContract.WebUrl,
+                });
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity)
+        {
+            // 422 typically means a PR already exists for this head branch.
+            // Find the existing PR in the DB or create a placeholder.
+            var existing = await db.Prs.FirstOrDefaultAsync(
+                p => p.Branch == req.Branch && p.IsActive, ct);
+            if (existing is not null)
+            {
+                prId = existing.Id;
+            }
+            else
+            {
+                // No existing PR in DB — re-throw, the error is something else
+                throw;
+            }
         }
         if (hub is not null)
         {
             await hub.Clients.All.SendAsync("pr.changed",
-                new { kind = "opened", source = "story-spawn", id = prContract.Id }, ct);
+                new { kind = "opened", source = "story-spawn", id = prId }, ct);
         }
         this.logger?.LogInformation("Story PR opened via {Kind}: {PrId} ({Branch} → {Base})",
-            req.Repo.Kind, prContract.Id, req.Branch, req.BaseBranch);
-        return prContract.Id;
+            req.Repo.Kind, prId, req.Branch, req.BaseBranch);
+        return prId;
     }
 
     public async Task MergePrAsync(string prId, CancellationToken ct = default)

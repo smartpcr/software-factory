@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>
@@ -203,8 +204,23 @@ public class ProductsEndpointsTests
     public async Task ProductScope_Header_Filters_Workstreams()
     {
         using var factory = new ForgeWebApplicationFactory();
+        // The prototype-data seed used to provide 8 workstreams attached to
+        // the default `atlas` product. That seed is gone; insert one
+        // workstream here so the "all" branch has something to find.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+            {
+                Id = "ws-product-scope-test",
+                RepoId = Forge.Api.Persistence.ForgeSeed.DefaultRepoId,
+                Name = "Product scope test", Branch = "ws/product-scope",
+                Epic = "EPIC-024", Status = "active",
+            });
+            await db.SaveChangesAsync();
+        }
+
         using var client = factory.CreateClient();
-        // The seeded workstreams are all backfilled to product 'atlas'.
         // Asking for an unknown product should yield zero workstreams.
         client.DefaultRequestHeaders.Add("X-Forge-Product-Id", "no-such-product");
         var resp = await client.GetAsync("/api/workstreams");

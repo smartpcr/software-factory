@@ -32,7 +32,7 @@ using Forge.Api.Services.Stories;
 public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
 {
     public Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
         var dir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var techSpec = new StringBuilder()
@@ -101,6 +101,27 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         return Task.FromResult<IReadOnlyDictionary<string, string>>(dict);
     }
 
+    public Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+    {
+        // Deterministic strategy has no gen↔eval loop — record an observable
+        // signal so integration tests can assert "the recovery service called
+        // through" without running real agents. Each call appends to a static
+        // dictionary keyed by spawnId+key; tests inspect Resumed.Snapshot()
+        // and clear it before the next setup.
+        var bucket = $"{spawn.Id}:{key}";
+        Resumed.AddOrUpdate(bucket, 1, (_, n) => n + 1);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Test hook — counter of <see cref="ResumeSingleArtifactAsync"/> invocations
+    /// keyed by <c>{spawnId}:{key}</c>. Reset between tests via <see cref="Reset"/>.
+    /// </summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> Resumed = new();
+
+    public static void Reset() => Resumed.Clear();
+
     public Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
@@ -147,6 +168,13 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
             .ToString();
         return Task.FromResult<IReadOnlyDictionary<string, string>>(
             new Dictionary<string, string>(StringComparer.Ordinal) { [path] = body });
+    }
+
+    public Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
+    {
+        // Deterministic strategy has no workspace — return same content as ProduceWorkstreamChangesAsync.
+        return this.ProduceWorkstreamChangesAsync(spawn, workstream, ct);
     }
 
     public Task<IReadOnlyList<ReviewComment>> ProduceReviewCommentsAsync(

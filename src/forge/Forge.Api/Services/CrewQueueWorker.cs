@@ -124,6 +124,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // post-boot call from doing work; log so the second-caller is identifiable.
     private int bootRecoveryLatch;
 
+    // Tracks the fire-and-forget agent Task.Runs spawned in SweepClaimsAsync.
+    // StopAsync awaits these (with a short timeout) before letting the DI
+    // container dispose the scope factory — without this, an agent task that
+    // outlives its parent host throws ObjectDisposedException reaching for a
+    // disposed IServiceScope, which crashes the test host process even though
+    // the unobserved-task handler calls SetObserved(). Bounded so a stuck
+    // agent (real LLM call hung on the network) can't deadlock shutdown.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> runningAgentTasks = new();
+
     private readonly WorktreeChangeFeed worktreeFeed;
 
     public CrewQueueWorker(
@@ -168,6 +177,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         if (this.loop is not null)
         {
             try { await this.loop; } catch { /* shutdown */ }
+        }
+
+        // Drain in-flight fire-and-forget agent tasks before allowing the
+        // DI container to dispose our dependencies. Bounded at 5s so a
+        // genuinely-stuck agent (real LLM call, hung HTTP) can't deadlock
+        // shutdown. In-process tests with the local-stub backend finish
+        // in <1s so this rarely waits the full timeout.
+        var inflight = this.runningAgentTasks.Keys.ToArray();
+        if (inflight.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAny(
+                    Task.WhenAll(inflight),
+                    Task.Delay(TimeSpan.FromSeconds(5), cancellationToken));
+            }
+            catch { /* swallow — we tried */ }
         }
     }
 
@@ -642,6 +668,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     agents,
                     team = crewTeam,
                     crewId,
+                    // The paired-crew end-to-end test asserts the evaluator
+                    // crew id is recorded on the work item (Phase 16 — both
+                    // sides of the pair are visible in the assignment row).
+                    evaluatorCrewId = evaluatorCrew?.Id,
                     role = "generator",
                     assignedAt = now.ToString("o"),
                     assignedBy = "queue-worker",
@@ -688,7 +718,37 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None));
+            //
+            // Wrap in a try/catch swallowing ObjectDisposedException so test
+            // host shutdown (factory.Dispose) racing with a still-running
+            // agent doesn't crash the test process. Production hosts run
+            // forever; this is a no-op there.
+            var agentTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Host shutdown raced with agent — service provider /
+                    // DbContext disposed mid-flight. Nothing to do.
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Same as above (some EF / DI paths surface as InvalidOperationException
+                    // rather than ObjectDisposedException).
+                }
+            });
+            // Register so StopAsync can drain in-flight agents before
+            // the DI scope is disposed. Self-deregister on completion to
+            // bound memory growth in long-running production hosts.
+            this.runningAgentTasks.TryAdd(agentTask, 0);
+            _ = agentTask.ContinueWith(
+                t => this.runningAgentTasks.TryRemove(t, out _),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
         return (claimed, skips);
     }
@@ -738,10 +798,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             // Soul.md — always loaded when the agent has a SoulPath; the
             // skip-soul-prompt flag was removed (no caller ever set it).
+            // ResolveSoulPath handles cross-machine deploy fallback.
             var soulMd = "";
-            if (!string.IsNullOrEmpty(agent?.SoulPath))
+            var resolvedSoulPath = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+            if (!string.IsNullOrEmpty(resolvedSoulPath))
             {
-                try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
+                try { soulMd = await File.ReadAllTextAsync(resolvedSoulPath, ct); }
                 catch { /* best effort */ }
             }
 
@@ -1129,11 +1191,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // pick up the latest one *since the last deliverable* so stale
             // notes from earlier pauses don't leak into the current run, and
             // prepend it to the user prompt so the generator sees it first.
-            var lastDelivAt = await db.Deliverables.AsNoTracking()
+            // SQLite can't ORDER BY DateTimeOffset; use Id (monotonic by
+            // insertion) and re-read CreatedAt client-side.
+            var lastDelivAt = (await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == workItemId)
-                .OrderByDescending(d => d.CreatedAt)
-                .Select(d => (DateTimeOffset?)d.CreatedAt)
-                .FirstOrDefaultAsync(ct);
+                .OrderByDescending(d => d.Id)
+                .Select(d => new { d.CreatedAt })
+                .FirstOrDefaultAsync(ct))?.CreatedAt;
             var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
                 .Where(e => e.WorkItemId == workItemId && e.Kind == "task.operator-note"
                     && (lastDelivAt == null || e.At > lastDelivAt))
@@ -1386,6 +1450,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         + "- Reply-only deliverables (zero git commits, only post_pr_comment_reply calls) ARE\n"
                         + "  valid when every failure point is genuinely non-code. They can score ≥ 90.\n"
                         + "- The build re-runs naturally on push — the runner does NOT manually re-trigger.\n";
+                }
+
+                // Pair-diversity gate (forge_implementation.md Phase 13e).
+                // Generator + evaluator MUST run on different models so the
+                // evaluator catches blind spots the generator's training
+                // distribution can't see. Throw before dispatch so a bad
+                // crew config surfaces as a task.failed event the operator
+                // can diagnose, instead of silently shipping pass-stamped
+                // subpar work that no second eye ever caught.
+                if (!string.IsNullOrEmpty(model)
+                    && !string.IsNullOrEmpty(evalModel)
+                    && string.Equals(model, evalModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"Pair-diversity rule violated: generator and evaluator both resolved to model '{model}'. " +
+                        $"Generator: agent={agentId} crew={crewId}. Evaluator: agent={evaluatorAgentId} crew={evaluatorCrewId}. " +
+                        $"Set the evaluator crew's EvaluatorModel (or evaluator agent's EvaluatorModel override) to a different model.");
                 }
 
                 // Evaluator stays read-only across kinds; no post_pr_comment_reply
@@ -2361,10 +2442,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             return $"Work item: {workItemTitle}\n\nThis task asked you to address PR comments, but no PR is linked to this work item.";
         }
 
-        var openComments = await db.PrComments.AsNoTracking()
+        // SQLite can't ORDER BY DateTimeOffset; materialize then sort.
+        var openComments = (await db.PrComments.AsNoTracking()
             .Where(c => c.PrId == pr.Id && c.RequiresAttention)
+            .ToListAsync(ct))
             .OrderBy(c => c.CreatedAt)
-            .ToListAsync(ct);
+            .ToList();
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Work item: {workItemTitle}");

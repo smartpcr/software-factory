@@ -65,7 +65,17 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private readonly ILogger<AgentRunnerDispatcher> log;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
-    private readonly ConcurrentDictionary<string, CancellationTokenSource> active = new();
+
+    /// <summary>
+    /// Active invocations keyed by invocation id. The tuple carries the
+    /// <c>taskId</c> (a.k.a. workItemId — what the caller passed to
+    /// <see cref="StartAsync"/>) so <see cref="CancelByTaskAsync"/> can
+    /// cancel every invocation tied to a given work item / workstream
+    /// without the caller having to know the invocation id.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ActiveInvocation> active = new();
+
+    private sealed record ActiveInvocation(string TaskId, CancellationTokenSource Cts);
 
     public AgentRunnerDispatcher(
         IHttpClientFactory http,
@@ -92,7 +102,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     {
         var invocationId = Guid.NewGuid().ToString("N");
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        this.active[invocationId] = linked;
+        this.active[invocationId] = new ActiveInvocation(taskId, linked);
         this.agentStates[agentId] = AgentState.Working;
 
         // Normalize model ID for the chosen backend. Crews store Anthropic
@@ -125,11 +135,37 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
     public Task CancelAsync(string invocationId, CancellationToken ct)
     {
-        if (this.active.TryRemove(invocationId, out var cts))
+        if (this.active.TryRemove(invocationId, out var entry))
         {
-            cts.Cancel();
+            entry.Cts.Cancel();
         }
         return Task.CompletedTask;
+    }
+
+    public Task<int> CancelByTaskAsync(string taskId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(taskId)) return Task.FromResult(0);
+
+        var matches = this.active
+            .Where(kv => string.Equals(kv.Value.TaskId, taskId, StringComparison.Ordinal))
+            .Select(kv => kv.Key)
+            .ToList();
+
+        var cancelled = 0;
+        foreach (var invocationId in matches)
+        {
+            if (this.active.TryRemove(invocationId, out var entry))
+            {
+                try { entry.Cts.Cancel(); cancelled++; }
+                catch (ObjectDisposedException) { /* already torn down */ }
+            }
+        }
+        if (cancelled > 0)
+        {
+            this.log.LogInformation(
+                "Cancelled {Count} active invocation(s) for task {TaskId}.", cancelled, taskId);
+        }
+        return Task.FromResult(cancelled);
     }
 
     public Task PauseAsync(string agentId, CancellationToken ct)
@@ -162,7 +198,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         finally
         {
             this.agentStates[agentId] = AgentState.Idle;
-            if (this.active.TryRemove(invocationId, out var cts)) cts.Dispose();
+            if (this.active.TryRemove(invocationId, out var entry)) entry.Cts.Dispose();
         }
     }
 
@@ -354,7 +390,6 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var psi = new ProcessStartInfo
         {
             FileName = cliPath,
-            Arguments = $"--print --model {context.Model}",
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -362,6 +397,19 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             CreateNoWindow = true,
             WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
         };
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(context.Model);
+
+        // Phase 41 — pass --disallowedTools when the caller has decided this
+        // agent must NOT have certain tools (e.g. revoke Bash for the
+        // architect plan-doc loop after observing the agent shell out to
+        // `Remove-Item tech-spec.md` mid-iteration and never rewrite it).
+        if (context.DisallowedTools is { Count: > 0 } disallowed)
+        {
+            psi.ArgumentList.Add("--disallowedTools");
+            psi.ArgumentList.Add(string.Join(",", disallowed));
+        }
 
         await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
         {

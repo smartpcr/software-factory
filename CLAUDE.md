@@ -6,6 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IMPORTANT: At the start of each Claude Code session, you MUST read all referenced documentation files listed below before proceeding with any tasks.**
 
+## Operational Rules
+
+**NEVER restart Forge.Api or any other running service without explicit user permission, every time.**
+
+This includes:
+- `scripts\run-forge-ui.ps1` (any flag — `-ServerOnly`, `-Rebuild`, `-Stop`, no flag, etc.)
+- `dotnet run --project src/forge/Forge.Api/Forge.Api.csproj`
+- `Stop-Process` / `taskkill` against `Forge.Api` or `dotnet` processes hosting it
+- Any other restart path (IDE launch profile, Docker compose, etc.)
+
+**Why:** Forge.Api hosts long-running agent loops; an unannounced restart kills in-flight LLM invocations and queue work. The user wants to choose the restart moment.
+
+**How to apply:**
+- After backend edits: state that a restart is needed, list the changes that require it, then **wait for the user to say "go ahead" / "approve" / equivalent** before invoking the script.
+- Compile-checking via `dotnet build` is fine (it doesn't restart the running process; the file-lock copy errors are expected and harmless).
+- Front-end (Vite) changes are safe to leave for HMR — no restart needed.
+- "Approval to restart" is per-restart. Approval given for one restart does NOT carry forward; ask each subsequent time.
+
 ## Project Overview
 
 Workflow is a C# .NET 8.0 solution for processing Event Tracing for Windows (ETW) and Windows Event Log (EVTX) files, with automated ingestion into Azure Data Explorer (Kusto). The project also includes ExecutionEngine and ProgressTree libraries for workflow orchestration. All projects use BDD-style testing with Reqnroll (SpecFlow successor) and MSTest.

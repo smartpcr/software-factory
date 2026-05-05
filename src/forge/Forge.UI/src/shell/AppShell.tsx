@@ -11,6 +11,7 @@ import { useProductFavicon } from '@/products/useProductFavicon';
 import { logView } from '@/telemetry';
 import { GlobalAgentEditor } from '@/agents/AgentEditModal';
 import { useForgeHub } from '@/realtime/useForgeHub';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 
 // Maps each route to the breadcrumb labels the prototype shows in the topbar.
 const breadcrumbs: Record<string, { section: string; current: string }> = {
@@ -52,6 +53,8 @@ export function AppShell() {
       <KeyboardMap />
       {/* Phase 13f — global agent-edit popup, opened from anywhere via openAgent(id). */}
       <GlobalAgentEditor />
+      {/* Global confirm dialog — replaces window.confirm. Awaited via useConfirmStore.ask(...). */}
+      <ConfirmDialog />
     </div>
   );
 }

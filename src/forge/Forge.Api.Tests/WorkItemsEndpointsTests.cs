@@ -22,20 +22,10 @@ public class WorkItemsEndpointsTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    [Fact]
-    public async Task ListWorkItems_Includes_Cards_Backfill()
-    {
-        // ForgeSeed.BackfillWorkItemsFromCardsAsync mirrors every existing
-        // CardRow into a WorkItemRow. The seed plants 23 cards, so we should
-        // see exactly that many work items on a fresh DB.
-        using var factory = new ForgeWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var resp = await client.GetAsync("/api/work-items?pageSize=500");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.True(doc.RootElement.GetArrayLength() >= 20, $"expected ≥20 backfilled, got {doc.RootElement.GetArrayLength()}");
-    }
+    // Removed: ListWorkItems_Includes_Cards_Backfill — depended on
+    // ForgeSeed.BackfillWorkItemsFromCardsAsync running at boot to mirror
+    // the 23-row prototype-card seed into work_items. Both the seed and
+    // the backfill call were retired; nothing useful left to assert.
 
     [Fact]
     public async Task CreateWorkItem_Persists_With_Defaults_And_Returns_201()
@@ -261,8 +251,11 @@ public class WorkItemsEndpointsTests
             id = "PH-EP", track = "dev", type = "epic", title = "Dev epic",
         }, JsonOpts);
 
-        var design = await client.GetAsync("/api/work-items?track=design");
-        var devEpics = await client.GetAsync("/api/work-items?track=dev&type=epic");
+        // productId=all bypasses the default product scope, which would
+        // otherwise filter out work items with null RepoId (the test creates
+        // them via API without specifying repoId).
+        var design = await client.GetAsync("/api/work-items?track=design&productId=all");
+        var devEpics = await client.GetAsync("/api/work-items?track=dev&type=epic&productId=all");
         Assert.Equal(HttpStatusCode.OK, design.StatusCode);
         Assert.Equal(HttpStatusCode.OK, devEpics.StatusCode);
         var designDoc = JsonDocument.Parse(await design.Content.ReadAsStringAsync());
@@ -287,7 +280,7 @@ public class WorkItemsEndpointsTests
             id = "Q-B", track = "dev", type = "task", title = "Wire telemetry",
         }, JsonOpts);
 
-        var resp = await client.GetAsync("/api/work-items?q=scrape");
+        var resp = await client.GetAsync("/api/work-items?q=scrape&productId=all");
         var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.Contains(doc.RootElement.EnumerateArray(), e => e.GetProperty("id").GetString() == "Q-A");
         Assert.DoesNotContain(doc.RootElement.EnumerateArray(), e => e.GetProperty("id").GetString() == "Q-B");

@@ -119,6 +119,22 @@ public sealed class DeliverableLoop : IDeliverableLoop
     private readonly ForgeDbContext db;
     private readonly TaskChannel? channel;
 
+    /// <summary>
+    /// Phase 38 (Layer A.3) — map a work item's story points to a per-loop
+    /// iteration cap. Bigger work earns more attempts before the loop
+    /// stalls; tiny work still gets a 5-iter floor so the gen↔eval pair has
+    /// breathing room to converge on subtle docs. Falls back to
+    /// <see cref="ScoringConstants.MaxIterations"/> for points &lt;= 0 (e.g.
+    /// legacy synthetic workItemIds with no work-item row). Exposed as
+    /// <c>public static</c> so call sites + tests can reference the same
+    /// mapping without duplicating the table.
+    /// </summary>
+    /// <summary>5 iterations per story point. 1pt=5, 8pt=40, 13pt=65.</summary>
+    public const int IterationsPerPoint = 5;
+
+    public static int PointsToMaxIter(int points) =>
+        points <= 0 ? ScoringConstants.MaxIterations : points * IterationsPerPoint;
+
     public DeliverableLoop(ForgeDbContext db) : this(db, channel: null) { }
 
     /// <summary>
@@ -158,7 +174,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var pinnedEvaluator = request.EvaluatorAgentId;
         var evalCrewId = request.EvaluatorCrewId ?? request.CrewId;
 
-        var maxIter = request.MaxIterations ?? ScoringConstants.MaxIterations;
+        // Phase 38 (Layer A.3): when the caller didn't pin MaxIterations,
+        // derive the cap from the work item's points so a 1-point doc gets a
+        // tight 3-iter budget while a 13-point delivery gets up to 15. This
+        // matches the operator intuition that bigger work earns more
+        // attempts before stalling. PATCH /api/work-items/{id}/execution
+        // (Q20.2) still wins via MaxIterOverride on the queue row, which
+        // the loop reads each iteration below.
+        var maxIter = request.MaxIterations ?? PointsToMaxIter(request.WorkItemPoints);
 
         // Resume support — when boot-recovery puts a half-finished work item
         // back on the queue, the agent invocation re-enters this loop. Seed
@@ -233,8 +256,18 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 evaluatorAgentId = pinnedEvaluator,
             }, ct);
 
+            // Phase 39 (Layer C) — prepend operator-answered questions to
+            // the notes-for-next so the generator sees the resolved answers
+            // before any iteration-chain feedback. The block is appended as
+            // a `## Operator answers` section the generator can quote
+            // directly into the doc/code.
+            var answersBlock = await BuildOperatorAnswersBlockAsync(this.db, request.WorkItemId, ct);
+            var iterPrelude = string.IsNullOrEmpty(answersBlock)
+                ? notesForNext
+                : answersBlock + (string.IsNullOrEmpty(notesForNext) ? string.Empty : "\n\n" + notesForNext);
+
             // (a) generator
-            var gen = await request.Generator(iter, notesForNext, ct);
+            var gen = await request.Generator(iter, iterPrelude, ct);
             await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, ct);
 
             // (b) evaluator
@@ -270,7 +303,53 @@ public sealed class DeliverableLoop : IDeliverableLoop
             await this.db.SaveChangesAsync(ct);
             rowIds.Add(row.Id);
 
+            // Phase 39 (Layer C) — extract structured open questions from the
+            // generator's output and persist any new ones. We then read the
+            // full unanswered set so the verdict gate below can override
+            // pass→iterate. Re-emitted ids in a later iter become new rows so
+            // the history is preserved; the wizard dedupes on externalId.
+            var newQuestions = OpenQuestionsExtractor.Extract(gen.OutputText);
+            if (newQuestions.Count > 0)
+            {
+                foreach (var q in newQuestions)
+                {
+                    this.db.DeliverableQuestions.Add(new DeliverableQuestionRow
+                    {
+                        WorkItemId = request.WorkItemId,
+                        ExternalId = q.ExternalId,
+                        Iter = iter,
+                        Text = q.Text,
+                        Kind = q.Kind,
+                        ChoicesJson = q.Choices is { Count: > 0 } ? JsonSerializer.Serialize(q.Choices) : null,
+                        Answer = null,
+                        AnsweredAt = null,
+                        AnsweredBy = null,
+                        CreatedAt = DateTimeOffset.UtcNow,
+                    });
+                }
+                await this.db.SaveChangesAsync(ct);
+            }
+
+            // Compute "currently unanswered for this work item" as a hard
+            // gate on the pass verdict. We dedupe by ExternalId taking the
+            // most-recent row so an answered question that wasn't re-emitted
+            // doesn't keep blocking. Any externalId whose latest row has
+            // Answer=null counts as unanswered.
+            var unansweredCount = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
+
             verdict = lastScore.Verdict;
+            // Hard gate: pass with unanswered questions → demote to iterate
+            // and tack a note onto the evaluator's notes so the next
+            // iteration's chain includes the reason.
+            if (verdict == "pass" && unansweredCount > 0)
+            {
+                verdict = "iterate";
+                row.Verdict = verdict;
+                var blockNote = $"BLOCKED: {unansweredCount} open question{(unansweredCount == 1 ? string.Empty : "s")} unanswered — operator must answer via the conversation-tab wizard before pass is allowed.";
+                row.Notes = string.IsNullOrEmpty(row.Notes) ? blockNote : row.Notes + "\n\n" + blockNote;
+                lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
+                await this.db.SaveChangesAsync(ct);
+            }
             priorChain.Add((iter, lastScore.Score, verdict, lastScore.Notes));
             notesForNext = FormatPriorChain(priorChain);
 
@@ -283,6 +362,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 generatorCostUsd = gen.CostUsd,
                 evaluatorCostUsd = eval.CostUsd,
                 totalCostUsd = totalCost,
+                unansweredQuestions = unansweredCount,
             }, ct);
 
             // (e) terminal pass → mark active (delivery phase will set
@@ -328,6 +408,60 @@ public sealed class DeliverableLoop : IDeliverableLoop
         await this.EmitAsync(request.WorkItemId, "task.iteration.stalled", new { iter, score = lastScore?.Score ?? 0 }, ct);
 
         return new DeliverableLoopResult(verdict, iter, lastScore?.Score ?? 0, rowIds, totalCost);
+    }
+
+    /// <summary>
+    /// Phase 39 (Layer C) — render every answered question for a work item
+    /// as a `## Operator answers` block prepended to the next iteration's
+    /// generator prompt. Dedupes by ExternalId taking the most-recent
+    /// answered row so a re-answered question carries the latest value.
+    /// Returns empty string when no answers exist (caller skips the
+    /// prepend).
+    /// </summary>
+    public static async Task<string> BuildOperatorAnswersBlockAsync(
+        ForgeDbContext db, string workItemId, CancellationToken ct)
+    {
+        var rows = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => q.WorkItemId == workItemId && q.Answer != null && q.Answer != string.Empty)
+            .ToListAsync(ct);
+        if (rows.Count == 0) return string.Empty;
+        var latestPerId = rows
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+            .OrderBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("## Operator answers (apply these in this iteration)");
+        foreach (var q in latestPerId)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"- **{q.ExternalId}**: {q.Text}");
+            sb.AppendLine($"  → {q.Answer}");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Phase 39 (Layer C) — count <see cref="DeliverableQuestionRow"/> ids
+    /// that are still unanswered for a work item. Dedupe by ExternalId
+    /// taking the most-recent row so an externalId whose latest emission
+    /// has Answer=null counts as "still blocking" even if an older row for
+    /// the same id was answered. Used to override pass→iterate verdicts.
+    /// </summary>
+    public static async Task<int> CountUnansweredQuestionsAsync(
+        ForgeDbContext db, string workItemId, CancellationToken ct)
+    {
+        // SQLite can't ORDER BY DateTimeOffset; pull rows for this work
+        // item, group + dedupe in memory.
+        var rows = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => q.WorkItemId == workItemId)
+            .ToListAsync(ct);
+        if (rows.Count == 0) return 0;
+        var latestPerId = rows
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+            .ToList();
+        return latestPerId.Count(q => string.IsNullOrEmpty(q.Answer));
     }
 
     /// <summary>

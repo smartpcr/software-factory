@@ -178,11 +178,31 @@ function Wait-ForPort {
 
 # ── Start Server (detached) ──────────────────────────────────────────────
 if ($targetServer) {
+    # Launch Forge.Api.exe directly instead of `dotnet run`. The `dotnet run`
+    # wrapper stays alive forwarding stdio between itself and the spawned exe,
+    # which keeps inherited handles open and blocks any parent that waits on
+    # the process tree (e.g. msys/git-bash, some CI runners — interactive
+    # Windows Terminal allocates a fresh console so it doesn't hit this).
+    # The leaf exe has no stdio-forwarding behaviour, so the launcher detaches
+    # cleanly for every caller.
+    $serverExe = Join-Path $RepoRoot 'src\forge\Forge.Api\bin\Debug\net8.0\win-x64\Forge.Api.exe'
+
+    # Ensure the binary is up-to-date. -Rebuild already handled this above;
+    # otherwise do an incremental compile (no-op when nothing changed).
+    if (-not $Rebuild) {
+        Write-Host "🔨 Ensuring Forge.Api is built..." -ForegroundColor Gray
+        dotnet build $ServerProj -c Debug --nologo --verbosity quiet | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Server build failed" }
+    }
+    if (-not (Test-Path $serverExe)) {
+        throw "Forge.Api.exe not found at $serverExe — build output path may have changed."
+    }
+
     Write-Host "🚀 Starting Forge.Api on http://localhost:$ApiPort ..." -ForegroundColor Yellow
     $serverLog = Join-Path $RepoRoot 'forge-server-stdout.log'
     $serverErr = Join-Path $RepoRoot 'forge-server-stderr.log'
-    Start-Process -FilePath "dotnet" `
-        -ArgumentList "run","--project",$ServerProj,"--no-launch-profile","--","--environment","Development" `
+    Start-Process -FilePath $serverExe `
+        -ArgumentList "--environment","Development" `
         -WorkingDirectory $RepoRoot `
         -RedirectStandardOutput $serverLog `
         -RedirectStandardError $serverErr `

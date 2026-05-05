@@ -36,7 +36,11 @@ public class AgentSoulAndBudgetTests
         var ids = doc.RootElement.EnumerateArray().Select(e => e.GetProperty("id").GetString()).ToList();
         Assert.Contains("E4", ids);
         Assert.Contains("R3", ids);
-        Assert.Contains("XD", ids);
+        // XD removed from this assertion: the operator placeholder ("XD" =
+        // Xiaodong) is not in agents/allocation.json, so EnsureSeedAgentsAsync
+        // skips it. Q2 is checked in its place — another canonical seeded
+        // agent in the QA crew.
+        Assert.Contains("Q2", ids);
     }
 
     [Fact]
