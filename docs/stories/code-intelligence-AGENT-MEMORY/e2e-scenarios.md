@@ -1,810 +1,1213 @@
 # Agent Memory — End-to-End Scenarios
 
-> Story: **code-intelligence:AGENT-MEMORY**
+> **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
 > Build graph-based agent memory on top-down repo structure and call-chain
 > context so that agents can learn from prior interactions and construct
 > richer, more accurate context over time.
 >
-> Reference taxonomy: [Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory)
-> — Memory Extraction → Storage → Retrieval → Evolution.
+> **Companion documents** (written in parallel — referenced by name, not duplicated):
+> - [`architecture.md`](architecture.md) — canonical authority for vocabulary, data model, edge taxonomy, scoring weights.
+> - [`tech-spec.md`](tech-spec.md) — problem statement, constraints, risks, success criteria.
+> - [`implementation-plan.md`](implementation-plan.md) — phased work items and deliverables.
+>
+> When this document and `architecture.md` disagree on naming or thresholds,
+> `architecture.md` governs. This document owns Gherkin acceptance scenarios.
+>
+> **Sibling-doc divergence status:** This document addresses all 10
+> divergence items catalogued in `architecture.md` §8.3 (E2E-1 through
+> E2E-10) and mirrored in `tech-spec.md` §12.6. The corrections are:
+> E2E-1/2/3/4 (presentation aliases) replaced with canonical `CALLS` edges;
+> E2E-5/8 (out-of-scope scenarios) removed; E2E-6 (unqualified IDs) replaced
+> with canonical `"/{relativePath}::{qualifiedName}"` format; E2E-7 (`ext::`
+> double-colon) corrected to single-colon `ext:` prefix; E2E-9 (conflict errors)
+> rewritten as write-serialization test; E2E-10 (single `content` field)
+> split into separate `Title` and `Body` parameters per `architecture.md` §5.3.
+> Architecture.md §8.4 confirms all 10 items are resolved.
+>
+> **Canonical vocabulary quick-reference** (from `architecture.md` §2, §5):
+> - **Layers:** `structural`, `call_chain`, `semantic`, `expertise`
+> - **Code-derived edges:** `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`
+> - **Memory-only edges:** `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`
+> - **Retired names (do NOT use):** `CALLED_BY` → reverse traversal of `CALLS`; `IMPORTS` → `DEPENDS_ON`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`; single `Content` field on ExpertiseEntry → separate `Title` + `Body` fields
+> - **Node ID format:** `"/{relativePath}::{qualifiedName}"` for symbols (leading `/` always present), `"/{relativePath}"` for file/package/workspace nodes, `"/"` for repo root, `"ext:{package}:{qualifiedName}"` for External boundary stubs (no leading `/`), `"expertise:{kind}:{hash8}"` for expertise nodes (hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId)). All in-repo node IDs start with `/`; External and expertise IDs do not.
+> - **ExpertiseEntry fields:** `Id`, `Kind` (Pattern|Pitfall|Preference|Insight), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` ("exact"|"subtree"), `Confidence` (0.0–1.0), `Archived` (bool, default false), `SourceAgent`, `Evidence` (optional citations), `Embedding` (float[]? from Title + " " + Body), `ContentHash` (SHA-256 of Title + Body — for dedup); note: ExpertiseEntry is NOT a HypergraphNode — it has its own table, not a Metadata dict
+> - **RecordExpertiseAsync signature:** `(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — per architecture.md §5.3
+> - **RestoreArchivedExpertiseAsync signature:** `(expertiseId, restoredConfidence = 0.5)` — per architecture.md §5.3
+> - **ArchiveExpertiseAsync:** on `IMemoryGraphStore` — sets `archived = true`, called by DecayService when Confidence < ArchiveConfidenceFloor (0.1)
+> - **Scoring weights:** structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10
+> - **Token budget:** default 8,000; ceiling 32,000
+> - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`. **External boundary nodes are the exception** — they have no `VersionRange` (NULL `since_index`) and are always included in temporal queries (architecture.md §4.3).
+> - **API types:** `RetrievalRequest` (QueryText, SeedNodeIds, Mode, TokenBudget, AtCommitIndex, Weights); `RetrievalResult` (Nodes, ContextMarkdown, TokensUsed, ModesExecuted, Diagnostics); `ScoredMemoryNode` (Node, CompositeScore, StructuralScore, SemanticScore, CentralityScore, RecencyScore, ExpertiseScore); `SyncResult` (FilesChanged, NodesAdded, NodesRetired, EdgesAdded, EdgesRetired, ExpertiseDecayed, Duration); `MemoryGraphStatistics` (from `GetMemoryStatisticsAsync`)
+> - **MCP tools:** `memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`
+>
+> **Fixture repository:** All scenarios use the actual `src/ast/` subtree of this
+> repository as the fixture, unless explicitly noted. MVP languages are **C#** and
+> **PowerShell** (via existing `Ast.Csharp` and `Ast.PowerShell` parsers).
 
 ---
 
-## Feature 1: Repository Structure Graph Construction
+## Feature 1: Structural Layer — Repository Structure Graph Construction
 
-Extracts a hierarchical knowledge graph from a repository's top-down
-directory / module / package / file / symbol structure.
-
-### Scenario 1.1 — Build repo-structure graph for a typical project
-
-```gherkin
-Feature: Repository Structure Graph Construction
-
-  Scenario: Ingest a multi-language repository and produce a structure graph
-    Given a repository with the following layout:
-      | path                          | language   |
-      | src/auth/login.ts             | TypeScript |
-      | src/auth/token.ts             | TypeScript |
-      | src/api/routes.py             | Python     |
-      | lib/utils/hash.go             | Go         |
-    When the memory extraction pipeline processes the repository root
-    Then a directed acyclic graph is produced with nodes:
-      | node_id          | kind       | parent          |
-      | /                | repo       |                 |
-      | /src             | directory  | /               |
-      | /src/auth        | module     | /src            |
-      | /src/auth/login  | file       | /src/auth       |
-      | /src/auth/token  | file       | /src/auth       |
-      | /src/api         | module     | /src            |
-      | /src/api/routes  | file       | /src/api        |
-      | /lib/utils       | module     | /               |
-      | /lib/utils/hash  | file       | /lib/utils      |
-    And each file node contains extracted symbol children (functions, classes, exports)
-    And the graph includes a metadata envelope with:
-      | field              | value          |
-      | repo_commit_sha    | <HEAD SHA>     |
-      | extraction_time    | <ISO 8601>     |
-      | languages_detected | TypeScript, Python, Go |
-```
-
-### Scenario 1.2 — Symbol-level extraction within files
+Extracts the top-down containment hierarchy from the repository into the
+Structural layer: Repo → Workspace → Package → Module → Class → Function,
+connected by `CONTAINS` and `DEPENDS_ON` edges (per `architecture.md` §2.1,
+§2.2). The `Workspace` level is present only in monorepo layouts; in
+single-workspace repos like this one it is absent and the Repo root contains
+Packages directly.
 
 ```gherkin
-  Scenario: Extract symbols from a source file
-    Given a TypeScript file "src/auth/login.ts" containing:
-      """
-      export class AuthService {
-        login(user: string, pass: string): Token { ... }
-        private validate(user: string): boolean { ... }
-      }
-      export function createSession(token: Token): Session { ... }
-      """
+Feature: Structural Layer — Repository Structure Graph Construction
+
+  Background:
+    Given the repository root is the working directory (the repo root)
+    And the extraction scope is "src/ast/" (a subtree within the repo root)
+    And the extraction pipeline is configured with languages ["C#", "PowerShell"]
+    And HEAD commit "abc1234" has been registered with commit_index 1
+    # Node IDs use paths relative to the repo root (always prefixed with "/"),
+    # e.g., "/src/ast/Ast.Core". The Repo root node itself has Id = "/".
+
+  Scenario: 1.1 — Ingest src/ast/ and produce structural layer graph
+    When the extraction pipeline processes the repository root
+    Then the graph contains a Repo root node with Id "/" and NodeType "Repo"
+    # Workspace nodes are absent: this repo has no monorepo layout with separate
+    # workspace directories (e.g., /packages/frontend/, /packages/backend/).
+    # Packages are directly under the Repo root. (architecture.md §4.2:
+    # "Monorepo child; absent in single-package repos" — and here, packages
+    # share a flat layout without an intermediate Workspace level.)
+    And no Workspace nodes exist in the graph
+    And Package nodes exist for each non-test .csproj, including:
+      | node_id                   | NodeType | Metadata.MemoryLayer |
+      | /src/ast/Ast.Core         | Package  | structural           |
+      | /src/ast/Ast.Csharp       | Package  | structural           |
+      | /src/ast/Ast.PowerShell   | Package  | structural           |
+      | /src/ast/Ast.Embedding    | Package  | structural           |
+      | /src/ast/Ast.GraphDb      | Package  | structural           |
+      | /src/ast/Ast.Query        | Package  | structural           |
+      | /src/ast/Ast.VectorDb     | Package  | structural           |
+      | /src/ast/Ast.Lsp          | Package  | structural           |
+      | /src/ast/Ast.Cli          | Package  | structural           |
+      | /src/ast/CodeIntelligence | Package  | structural           |
+    And each Package node is connected to "/" via a CONTAINS edge:
+      | edge SemanticRelation | Roles.parent | Roles.child             |
+      | CONTAINS              | /            | /src/ast/Ast.Core       |
+      | CONTAINS              | /            | /src/ast/Ast.Csharp     |
+    And every in-repo node carries VersionRange with SinceIndex = 1 and UntilIndex = null
+    # External boundary nodes (NodeType = "External") have no VersionRange —
+    # they are timeless stubs always included in temporal queries (architecture.md §4.3)
+    And every edge carries Metadata["SemanticRelation"] matching its canonical name
+
+  Scenario: 1.2 — Symbol-level extraction from real C# source files
+    Given the file "src/ast/Ast.Core/HypergraphModels.cs" exists in the repository
     When the extraction pipeline processes the file
     Then the graph contains symbol nodes:
-      | symbol_id                        | kind     | visibility |
-      | /src/auth/login::AuthService     | class    | export     |
-      | /src/auth/login::AuthService.login    | method   | public     |
-      | /src/auth/login::AuthService.validate | method   | private    |
-      | /src/auth/login::createSession   | function | export     |
-    And each symbol node stores its line range, signature, and doc-comment if present
-```
+      | node_id                                              | NodeType  | Language |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode | Class     | C#       |
+      | /src/ast/Ast.Core/HypergraphModels.cs::Hyperedge      | Class     | C#       |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText | Method | C# |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText | Method | C# |
+      # Note: HyperedgeType is an enum — the C# extractor assigns NodeType "enum"
+      # to enum definitions, which the StructureBuilder normalizes to the canonical
+      # hierarchy. Enums are not listed here because the scenario focuses on Class
+      # and Method nodes in the containment hierarchy.
+    And the HypergraphNode class node is connected to its method nodes via CONTAINS edges with Roles:
+      | Roles.parent                                           | Roles.child                                                                    |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText         |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText |
+    And the Module node "/src/ast/Ast.Core/HypergraphModels.cs" CONTAINS the class nodes
+    And each symbol node has LineStart and LineEnd set to non-zero values
+    # GetEmbeddingText is at line 93; GetEnhancedEmbeddingText is at line 120 of HypergraphModels.cs
 
-### Scenario 1.3 — Edge: repository with no parseable source files
+  Scenario: 1.3 — DEPENDS_ON edges from C# using directives
+    Given "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs" contains:
+      """
+      using Ast.Core;
+      using Microsoft.CodeAnalysis;
+      using Microsoft.CodeAnalysis.CSharp;
+      """
+    When the extraction pipeline processes the file
+    Then a DEPENDS_ON edge is created for the in-repo import:
+      | SemanticRelation | Roles.importer                              | Roles.imported         |
+      | DEPENDS_ON       | /src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | /src/ast/Ast.Core  |
+    # External imports produce External boundary stub nodes (architecture.md §4.2, §4.4)
+    # DEPENDS_ON from a using directive creates a package-level External stub node
+    And an External boundary node is created:
+      | node_id                                  | NodeType | Metadata.MemoryLayer |
+      | ext:Microsoft.CodeAnalysis:*             | External | call_chain           |
+    And the External node has no ContentHash, no VersionRange, and no Embedding
+    And a DEPENDS_ON edge connects the module to the External boundary node
 
-```gherkin
-  Scenario: Repository contains only non-code files
-    Given a repository containing only:
+  Scenario: 1.4 — C# source extraction in Ast.PowerShell package
+    Given the file "src/ast/Ast.PowerShell/PowerShellAstParser.cs" exists
+    And it contains class PowerShellAstParser with methods ParseFile, ParseCode, ParseRepository
+    When the extraction pipeline processes the file as C# source
+    Then the graph contains a Module node "/src/ast/Ast.PowerShell/PowerShellAstParser.cs"
+    And symbol nodes are created:
+      | node_id                                                                       | NodeType |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser            | Class    |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseFile  | Method |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Method |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Method |
+    And the Module node is linked to Package "/src/ast/Ast.PowerShell" via CONTAINS
+    # External dependency System.Management.Automation produces an External stub node
+    And an External boundary node "ext:System.Management.Automation:*" is created
+    And the External node has NodeType "External" and no embedding
+
+  Scenario: 1.5 — Monorepo layout produces Workspace nodes
+    Given a monorepo with this directory structure:
+      | path                        | marker_file      |
+      | /packages/frontend          | package.json     |
+      | /packages/backend           | backend.csproj   |
+    When the extraction pipeline processes the repository root
+    Then the graph contains Workspace nodes:
+      | node_id              | NodeType  | Metadata.MemoryLayer |
+      | /packages/frontend   | Workspace | structural           |
+      | /packages/backend    | Workspace | structural           |
+    And the Repo root "/" contains each Workspace via CONTAINS edges
+    And each Workspace contains its Package nodes via CONTAINS edges
+    # Hierarchy: Repo → Workspace → Package → Module → Class → Function
+
+  Scenario: 1.6 — Repository with no parseable source files
+    Given a test directory containing only:
       | path           |
       | README.md      |
       | LICENSE        |
-      | .gitignore     |
-      | data/input.csv |
+    When the extraction pipeline processes the directory
+    Then the graph contains only the Repo root node "/"
+    And no Workspace, Package, Module, or Class nodes are created
+    And a diagnostic is emitted with severity "warning" and message containing
+      "No parseable source files detected"
+
+  Scenario: 1.7 — Partial parse failure produces partial graph
+    Given a repository with 20 C# source files
+    And 2 files contain syntax errors that prevent Roslyn AST construction
     When the extraction pipeline processes the repository
-    Then a structure graph is produced containing directory nodes only
-    And no symbol nodes are created
-    And a diagnostic is emitted:
-      | severity | message                                      |
-      | warning  | No parseable source files detected in repository |
+    Then the graph contains Module nodes for all 20 files
+    And the 2 failed files produce Module nodes but no Class or Function children
+    And the 18 successful files have Class and Function children
+    And the ExtractionResult reports:
+      | field         | value      |
+      | NodesCreated  | >= 20      |
+      | Errors        | length = 2 |
+    # ExtractionResult.Errors lists the 2 parse failures (architecture.md §5.4)
+
+  Scenario: 1.8 — HyperedgeType enum values map to CONTAINS edges
+    Given the extraction pipeline encounters a ClassDefinition HyperedgeType
+    When the edge is stored in the structural layer
+    Then the edge's Metadata["SemanticRelation"] is set to "CONTAINS"
+    And the edge's Metadata["OriginalEdgeType"] is set to "ClassDefinition"
+    And the edge's EdgeType is the original HyperedgeType (not MemoryRelation)
+    # Code-derived edges preserve their original HyperedgeType (architecture.md §4.6)
 ```
 
-### Scenario 1.4 — Edge: circular module dependencies
+---
+
+## Feature 2: Call-Chain Layer — Call Graph Extraction
+
+Builds the Call-Chain layer with `CALLS`, `EXTENDS`, `IMPLEMENTS`, and
+`REFERENCES` edges between symbol nodes (per `architecture.md` §2.2).
+All edges carry `Metadata["SemanticRelation"]` as the primary filter
+and `Metadata["Confidence"]` (1.0 for direct calls, 0.5–0.7 for dynamic dispatch).
 
 ```gherkin
-  Scenario: Modules with circular import dependencies
-    Given file "a.py" imports from "b.py"
-    And file "b.py" imports from "a.py"
+Feature: Call-Chain Layer — Call Graph Extraction
+
+  Background:
+    Given the repository root is the working directory
+    And the extraction scope is "src/ast/"
+    And the structural layer graph has been built at commit_index 1
+
+  Scenario: 2.1 — Direct method invocations produce CALLS edges
+    Given "src/ast/Ast.Embedding/CodeEmbeddingService.cs" contains method
+      GenerateNodeEmbeddingsAsync which calls IEmbeddingGenerator.GenerateBatchEmbeddingsAsync
+    When the call-chain analyzer processes the file
+    Then a CALLS edge is created:
+      | SemanticRelation | Roles.caller | Roles.callee |
+      | CALLS | /src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync | /src/ast/Ast.Embedding/IEmbeddingGenerator.cs::IEmbeddingGenerator.GenerateBatchEmbeddingsAsync |
+    And the edge Metadata["Confidence"] = 1.0
+    And the edge Metadata["MemoryLayer"] = "call_chain"
+    And the edge Metadata["OriginalEdgeType"] = "MethodInvocation"
+
+  Scenario: 2.2 — Transitive call chain across files
+    Given this call chain exists in the src/ast/ codebase:
+      | caller_file                                    | caller_method                           | callee_method                                      |
+      | src/ast/Ast.Core/RepositoryProcessor.cs        | RepositoryProcessor.Process             | CSharpHyperedgeExtractor.Extract (via CSharpExtractor delegate) |
+      | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.Extract        | CSharpHyperedgeExtractor.ProcessMember             |
+      # RepositoryProcessor.Process calls this.ProcessCSharpFile (line 72),
+      # which invokes this.CSharpExtractor delegate (line 148), resolving to
+      # CSharpHyperedgeExtractor.Extract. Extract iterates members and calls
+      # this.ProcessMember(member) at line 104.
+    When the retrieval engine resolves the call chain from RepositoryProcessor.Process with depth 2
+    Then the result contains at least one GraphPath of length 2
+    And each intermediate node carries its FilePath and Metadata["QualifiedName"]
+
+  Scenario: 2.3 — Polymorphic call produces CALLS edges with reduced confidence
+    Given interface IGraphStore in "src/ast/Ast.GraphDb/IGraphStore.cs"
+      declares method CreateNodesAsync (line 34)
+    And class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs" implements IGraphStore
+    And GraphQueryService in "src/ast/Ast.GraphDb/GraphQueryService.cs" calls
+      this.graphStore.CreateNodesAsync(...) at line 42, where graphStore is typed as IGraphStore
+    When the call-chain analyzer processes GraphQueryService.IndexHypergraphAsync
+    Then CALLS edges are created to each known implementor of CreateNodesAsync:
+      | SemanticRelation | Roles.caller                                                                                | Roles.callee                                                              | Confidence |
+      | CALLS            | /src/ast/Ast.GraphDb/GraphQueryService.cs::GraphQueryService.IndexHypergraphAsync              | /src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodesAsync  | 0.5        |
+    And each edge has Metadata["Confidence"] between 0.5 and 0.7
+    # Polymorphic dispatch is indicated by the reduced Confidence value
+    # (direct calls have Confidence = 1.0; dynamic dispatch = 0.5–0.7)
+    # GraphQueryService.IndexHypergraphAsync is the real method — it calls
+    # this.graphStore.CreateNodesAsync() and this.graphStore.CreateEdgesAsync()
+    # via the IGraphStore interface (lines 42–43 of GraphQueryService.cs)
+
+  Scenario: 2.4 — EXTENDS and IMPLEMENTS edges from class hierarchy
+    Given class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs"
+      implements interface IGraphStore in "src/ast/Ast.GraphDb/IGraphStore.cs"
+    When the call-chain analyzer processes "src/ast/Ast.GraphDb/"
+    Then an IMPLEMENTS edge is created:
+      | SemanticRelation | Roles.implementor | Roles.interface |
+      | IMPLEMENTS | /src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore | /src/ast/Ast.GraphDb/IGraphStore.cs::IGraphStore |
+    And the edge uses HyperedgeType.Implements (code-derived, not MemoryRelation)
+    And Metadata["SemanticRelation"] = "IMPLEMENTS"
+
+  Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
+    Given a PowerShell test fixture file "test-fixtures/invoke-csharp.ps1" contains:
+      """
+      $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
+      $processor.Process()
+      """
+    # Note: scripts/dev.ps1 in this repo is a UI dev launcher; this scenario
+    # uses a synthetic fixture to exercise the CrossLanguageMethodCall path.
+    And the C# class RepositoryProcessor exists at
+      "src/ast/Ast.Core/RepositoryProcessor.cs" with method Process
     When the extraction pipeline processes both files
-    Then both files appear in the structure graph
-    And a bidirectional dependency edge is recorded between the modules
-    And a diagnostic is emitted:
-      | severity | message                                  |
-      | info     | Circular dependency detected: a.py ↔ b.py |
-```
+    Then a CrossLanguageMethodCall edge is created:
+      | SemanticRelation | Roles.caller                                                  | Roles.callee                                                          |
+      | CALLS            | /test-fixtures/invoke-csharp.ps1::<ScriptBlock>.Process       | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process |
+    And the caller node has Language = "PowerShell" and the callee has Language = "C#"
+    And the edge has Metadata["OriginalEdgeType"] = "CrossLanguageMethodCall"
+    And the edge's IsCrossLanguage property returns true
+    # Per Hyperedge.IsCrossLanguage: Languages.Distinct().Count() > 1
+    And the edge's Languages list contains both "PowerShell" and "C#"
 
-### Scenario 1.5 — Edge: monorepo with multiple ecosystems
+  Scenario: 2.6 — Recursive call does not cause infinite expansion
+    Given a function calls itself recursively
+    When the call-chain analyzer processes the function
+    Then exactly one self-referencing CALLS edge is created
+      with the same node ID in both Roles.caller and Roles.callee
+    And the analyzer terminates without stack overflow
 
-```gherkin
-  Scenario: Monorepo with independent sub-projects
-    Given a repository with:
-      | path                        | ecosystem |
-      | frontend/package.json       | npm       |
-      | backend/requirements.txt    | pip       |
-      | infra/go.mod                | go        |
-    When the extraction pipeline processes the repository root
-    Then separate sub-graphs are created per ecosystem root
-    And a top-level repo node links to each ecosystem sub-graph
-    And cross-ecosystem edges are not inferred unless explicit imports exist
-```
-
-### Scenario 1.6 — Edge: partial parse failure produces partial graph
-
-```gherkin
-  Scenario: Some source files fail to parse
-    Given a repository with 100 source files
-    And 3 files contain syntax errors that prevent AST construction
-    When the extraction pipeline processes the repository
-    Then a structure graph is produced containing the 97 successfully parsed files
-    And the 3 failed files appear as file nodes with a "parse_failed" status
-    And a diagnostic report lists each failure with file path, line, and error message
-    And the graph metadata includes:
-      | field             | value |
-      | files_attempted   | 100   |
-      | files_succeeded   | 97    |
-      | files_failed      | 3     |
+  Scenario: 2.7 — External dependency calls create External boundary nodes
+    Given CodeEmbeddingService calls methods from Microsoft.Extensions.Logging.ILogger
+    When the call-chain analyzer processes the file
+    Then an External boundary node is created:
+      | node_id                                                   | NodeType | Metadata.MemoryLayer |
+      | ext:Microsoft.Extensions.Logging:ILogger.LogInformation   | External | call_chain           |
+    And a CALLS edge connects the caller to the External node:
+      | SemanticRelation | Roles.caller                                                           | Roles.callee                                                    |
+      | CALLS            | /src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync | ext:Microsoft.Extensions.Logging:ILogger.LogInformation |
+    # External boundary nodes are stubs: no embedding, no VersionRange (architecture.md §4.2, §4.3)
+    And the External node has no ContentHash and no VersionRange
+    And the External node is never extracted or embedded
 ```
 
 ---
 
-## Feature 2: Call-Chain Context Extraction
+## Feature 3: Semantic Layer — Embedding & Similarity
 
-Builds a call graph capturing caller → callee relationships within and
-across files so that agents can trace execution context.
-
-### Scenario 2.1 — Single entry-point call graph
-
-```gherkin
-Feature: Call-Chain Context Extraction
-
-  Scenario: Build call graph from a single entry-point function
-    Given function "handleRequest" in "src/api/routes.py" calls:
-      | callee                  | location            |
-      | authenticate            | src/auth/login.ts   |
-      | fetchUserProfile        | src/user/profile.ts |
-      | sendResponse            | src/api/response.ts |
-    When the call-chain extractor processes "handleRequest" as entry point
-    Then the call graph contains directed edges:
-      | from            | to                | edge_type      |
-      | handleRequest   | authenticate      | direct_call    |
-      | handleRequest   | fetchUserProfile  | direct_call    |
-      | handleRequest   | sendResponse      | direct_call    |
-    And each edge records the call site (file, line, column)
-```
-
-### Scenario 2.2 — Cross-file transitive call chain
+Computes embeddings for code nodes via the existing `Ast.Embedding.IEmbeddingGenerator`
+interface and creates `SIMILAR_TO` edges when cosine similarity exceeds
+`SimilarityThreshold` (0.85, per `architecture.md` §2.4). Memory-only edges
+use `HyperedgeType.MemoryRelation` with the true relation in `Metadata["SemanticRelation"]`.
 
 ```gherkin
-  Scenario: Resolve transitive call chains across files
-    Given "main.ts" calls "processOrder" in "order.ts"
-    And "processOrder" calls "validatePayment" in "payment.ts"
-    And "validatePayment" calls "chargeCard" in "billing.ts"
-    When the call-chain extractor resolves the full graph from "main.ts"
-    Then the transitive call chain is:
-      | depth | caller          | callee          |
-      | 0     | main            | processOrder    |
-      | 1     | processOrder    | validatePayment |
-      | 2     | validatePayment | chargeCard      |
-    And each node carries its file path, signature, and summary
-```
+Feature: Semantic Layer — Embedding and Similarity
 
-### Scenario 2.3 — Edge: dynamic dispatch / polymorphic calls
+  Background:
+    Given the structural and call-chain layers are populated for "src/ast/"
+    And the embedding model is "nomic-embed-text" (per architecture.md §1.3)
 
-```gherkin
-  Scenario: Polymorphic method call produces multiple candidate edges
-    Given interface "Storage" is implemented by "DiskStorage" and "S3Storage"
-    And function "backup" calls "storage.write()" where storage is typed as "Storage"
-    When the call-chain extractor processes "backup"
-    Then the call graph contains ambiguous edges:
-      | from   | to                 | edge_type   | confidence |
-      | backup | DiskStorage.write  | polymorphic | 0.5        |
-      | backup | S3Storage.write    | polymorphic | 0.5        |
-    And the edges are annotated with "requires_runtime_resolution"
-```
+  Scenario: 3.1 — Code nodes receive embeddings at extraction time
+    When the semantic indexer processes all Function and Class nodes
+    Then every code node has Metadata["Embedding"] set to a non-null float[]
+    And Metadata["EmbeddingModel"] = "nomic-embed-text" on each node
+    And the embedding text is generated via HypergraphNode.GetEmbeddingText()
+      or GetEnhancedEmbeddingText() when LSP enrichment is available
 
-### Scenario 2.4 — Edge: external dependency boundary nodes
+  Scenario: 3.2 — SIMILAR_TO edges created above threshold
+    Given two Function nodes with cosine similarity 0.91 (above SimilarityThreshold 0.85)
+    When the semantic indexer computes pairwise similarity
+    Then a SIMILAR_TO edge is created:
+      | EdgeType       | SemanticRelation | Metadata.SimilarityScore | Metadata.MemoryLayer |
+      | MemoryRelation | SIMILAR_TO       | 0.91                     | semantic             |
+    And the edge has exactly 2 NodeIds with Roles "node_a" and "node_b"
 
-```gherkin
-  Scenario: Calls into third-party libraries create boundary nodes
-    Given function "encrypt" calls "crypto.createCipheriv" from Node.js stdlib
-    And function "encrypt" calls "aws.KMS.encrypt" from "@aws-sdk/client-kms"
-    When the call-chain extractor processes "encrypt"
-    Then boundary nodes are created:
-      | node_id                       | kind     | source   |
-      | ext::crypto.createCipheriv    | boundary | stdlib   |
-      | ext::aws.KMS.encrypt          | boundary | npm:@aws-sdk/client-kms |
-    And no further graph expansion occurs beyond boundary nodes
-```
+  Scenario: 3.3 — Below-threshold pairs do NOT create edges
+    Given two Function nodes with cosine similarity 0.72 (below SimilarityThreshold 0.85)
+    When the semantic indexer computes pairwise similarity
+    Then no SIMILAR_TO edge is created between them
 
-### Scenario 2.5 — Edge: recursive call chains
+  Scenario: 3.4 — SemanticSearch retrieval returns ranked results
+    Given the vector index has been built for all code nodes
+    When the agent calls IMemoryRetrievalEngine.RetrieveAsync with:
+      | field          | value                                   |
+      | QueryText      | extract hypergraph from C# code         |
+      | Mode           | SemanticSearch                          |
+      | TokenBudget    | 4000                                    |
+    Then the RetrievalResult.Nodes contains ranked ScoredMemoryNode entries
+    And the top 5 results include at least one node from the Ast.Csharp package
+    # Embedding similarity is non-deterministic across model versions;
+    # the assertion verifies that semantically relevant results (Ast.Csharp
+    # contains extraction logic) appear in the top results, not exact rank.
+    And each ScoredMemoryNode has SemanticScore between 0.0 and 1.0
+    And RetrievalResult.ModesExecuted contains SemanticSearch
 
-```gherkin
-  Scenario: Recursive function does not cause infinite graph expansion
-    Given function "traverse" calls itself recursively
-    And "traverse" also calls "visit"
-    When the call-chain extractor processes "traverse"
-    Then the graph contains a self-referencing edge:
-      | from     | to       | edge_type |
-      | traverse | traverse | recursive |
-      | traverse | visit    | direct_call |
-    And the extractor terminates without stack overflow or infinite loop
-```
-
-### Scenario 2.6 — Edge: symbol ambiguity (duplicate names, re-exports)
-
-```gherkin
-  Scenario: Two modules define the same symbol name
-    Given "src/utils/format.ts" exports function "format"
-    And "src/logging/format.ts" exports function "format"
-    And "src/api/handler.ts" imports "format" from "src/utils/format.ts"
-    When the call-chain extractor resolves calls in "handler.ts"
-    Then the edge targets "src/utils/format.ts::format" specifically
-    And "src/logging/format.ts::format" is not incorrectly linked
-    And the graph records fully-qualified symbol identifiers to prevent ambiguity
-```
-
-### Scenario 2.7 — Edge: cross-service / RPC boundaries
-
-```gherkin
-  Scenario: Call chain crosses a service boundary via HTTP/RPC
-    Given function "placeOrder" in "order-service/handler.ts" makes an HTTP call to
-      "POST /api/payments" served by "payment-service/controller.ts::createPayment"
-    When the call-chain extractor processes "placeOrder"
-    Then a cross-service edge is created:
-      | from       | to             | edge_type    | protocol |
-      | placeOrder | createPayment  | service_call | HTTP     |
-    And the edge is annotated with the API route and HTTP method
-    And the target is resolved only if the payment-service is within the same repo
+  Scenario: 3.5 — Embedding model version tracked per node
+    Given a node was embedded with model "nomic-embed-text"
+    When the embedding model is upgraded to a different model
+    Then re-embedding sets Metadata["EmbeddingModel"] to the new model name
+    And retrieval filters to current model version to avoid comparing
+      vectors from different embedding spaces
 ```
 
 ---
 
-## Feature 3: Knowledge Graph Storage
+## Feature 4: Expertise Layer — Agent Learning & Write-Back
 
-Persists the extracted memory graph with hierarchical summaries and
-temporal versioning.
-
-### Scenario 3.1 — Persist graph to storage backend
-
-```gherkin
-Feature: Knowledge Graph Storage
-
-  Scenario: Store the extracted graph after initial ingestion
-    Given a fully extracted structure + call-chain graph for commit "abc123"
-    When the storage layer persists the graph
-    Then the graph is retrievable by repository ID and commit SHA
-    And the stored representation includes:
-      | component         | count |
-      | structure_nodes   | 342   |
-      | symbol_nodes      | 1287  |
-      | call_edges        | 2910  |
-      | hierarchy_edges   | 342   |
-    And a storage receipt is returned with graph_id and byte size
-```
-
-### Scenario 3.2 — Hierarchical memory summaries
+Agents record expertise (Pattern, Pitfall, Preference, Insight) as typed
+Expertise-layer nodes linked to code targets via `APPLIES_TO` edges.
+The Evolution Engine manages write-back, consolidation, and decay
+(per `architecture.md` §3.5 and §5.3).
 
 ```gherkin
-  Scenario: Generate multi-level summaries for the knowledge graph
-    Given a stored graph for repository "my-app"
-    When hierarchical summarization is triggered
-    Then summaries are generated at each level:
-      | level        | example_node     | summary_contains                |
-      | repo         | /                | "TypeScript web app with auth"  |
-      | module       | /src/auth        | "Authentication and session mgmt" |
-      | file         | /src/auth/login  | "Login flow with JWT tokens"    |
-      | symbol       | AuthService      | "Handles user authentication"   |
-    And each summary is stored as a property on the corresponding node
-    And summaries are bounded to a maximum token length per level:
-      | level  | max_tokens |
-      | repo   | 500        |
-      | module | 200        |
-      | file   | 100        |
-      | symbol | 50         |
-```
+Feature: Expertise Layer — Agent Learning and Write-Back
 
-### Scenario 3.3 — Temporal versioning across commits
+  Background:
+    Given the memory graph is populated for "src/ast/" at commit_index 5
+    And the agent session ID is "copilot-session-42"
 
-```gherkin
-  Scenario: Store graph snapshots per commit for temporal queries
-    Given graphs have been stored for commits:
-      | commit  | timestamp           |
-      | abc123  | 2026-04-01T10:00:00 |
-      | def456  | 2026-04-15T14:30:00 |
-      | ghi789  | 2026-05-01T09:00:00 |
-    When a temporal query requests the graph state at "2026-04-20"
-    Then the graph for commit "def456" is returned (most recent before date)
-    And the response includes the temporal context:
-      | field          | value               |
-      | resolved_commit| def456              |
-      | exact_match    | false               |
-      | query_date     | 2026-04-20          |
-```
+  Scenario: 4.1 — Record a Pitfall expertise entry
+    # RecordExpertiseAsync signature per architecture.md §5.3:
+    #   (targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)
+    When the agent calls IEvolutionEngine.RecordExpertiseAsync with:
+      | field        | value                                                                                          |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                                          |
+      | Kind         | Pitfall                                                                                        |
+      | Title        | Fragile null-handling in Metadata access                                                       |
+      | Body         | Accessing Metadata dictionary keys without null-check causes NullReferenceException — always use TryGetValue or null-conditional |
+      | SourceAgent  | copilot-session-42                                                                             |
+    Then a new ExpertiseEntry is persisted in the expertise table with:
+      | field        | value                                                          |
+      | Id           | expertise:pitfall:<hash8>                                      |
+      | Kind         | Pitfall                                                        |
+      | Title        | Fragile null-handling in Metadata access                       |
+      | Confidence   | 1.0                                                            |
+      | SourceAgent  | copilot-session-42                                             |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode          |
+    # hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId) per architecture.md §4.2
+    And an APPLIES_TO edge is created:
+      | EdgeType       | SemanticRelation | Roles.expertise              | Roles.target                                           |
+      | MemoryRelation | APPLIES_TO       | expertise:pitfall:<hash8>    | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  |
+    And the ExpertiseEntry's embedding is computed from Title + " " + Body
+    And an audit_log entry is written with operation "record_expertise"
 
-### Scenario 3.4 — Edge: concurrent writes from multiple agents
+  Scenario: 4.2 — Record a Pattern expertise entry
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                                           |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                           |
+      | Kind         | Pattern                                                                         |
+      | Title        | Composition-over-inheritance wrapper pattern                                    |
+      | Body         | MemoryNode wraps HypergraphNode via Inner property, not inheritance — preserves backward compatibility while adding memory-layer metadata |
+      | SourceAgent  | copilot-session-42                                                              |
+    Then a Pattern ExpertiseEntry is created with Kind = Pattern and Confidence = 1.0
 
-```gherkin
-  Scenario: Two agents attempt to write overlapping graph regions
-    Given agent-A is storing an updated call graph for module "/src/auth"
-    And agent-B is simultaneously storing an updated call graph for module "/src/auth"
-    When both writes are submitted concurrently
-    Then one write succeeds and the other receives a conflict error
-    And the conflict error includes the conflicting node IDs and a retry hint
-    And no partial or corrupted graph state is persisted
-```
+  Scenario: 4.3 — Record Preference and Insight expertise entries
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                              |
+      | TargetNodeId | /                                                                  |
+      | Kind         | Preference                                                         |
+      | Title        | Always use this. qualifier for instance members                    |
+      | Body         | Per .editorconfig, all C# instance members must use this. qualifier — fields, properties, methods, and events |
+      | SourceAgent  | copilot-session-42                                                 |
+    Then a Preference ExpertiseEntry is created with Confidence = 1.0
+    And the APPLIES_TO edge targets the repo root "/"
+    # Preferences at the repo root apply to all code in the repository
+    When the agent also calls RecordExpertiseAsync with:
+      | field        | value                                                                                        |
+      | TargetNodeId | /src/ast/CodeIntelligence                                                                    |
+      | Kind         | Insight                                                                                      |
+      | Title        | CodeIntelligence analyzers are independent and composable                                    |
+      | Body         | Each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently — no shared state between analyzer instances |
+      | SourceAgent  | copilot-session-42                                                                           |
+    Then an Insight ExpertiseEntry is created with TargetNodeId = "/src/ast/CodeIntelligence"
+    And both entries have separate APPLIES_TO edges and distinct expertise IDs
 
-### Scenario 3.5 — Edge: storage quota exceeded
+  Scenario: 4.4 — Similar expertise detected at write-time schedules consolidation
+    Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with
+      Title "Metadata access may throw KeyNotFoundException"
+      and Body "Accessing HypergraphNode.Metadata keys directly without checking existence risks KeyNotFoundException at runtime"
+    And it targets "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    When the agent records a new Pitfall with
+      Title "Fragile null-handling in Metadata access"
+      and Body "Null-deref in HypergraphNode.Metadata access — similar underlying issue to missing-key exceptions"
+    And the cosine similarity between old and new expertise > SimilarityThreshold (0.85)
+    Then the new ExpertiseEntry is created with its own APPLIES_TO edge
+    And a consolidation is scheduled for the next ConsolidateAsync run
+    # DERIVED_FROM edges are NOT created at write-time — they are produced
+    # by ConsolidateAsync during consolidation (architecture.md §2.2, §6.5)
 
-```gherkin
-  Scenario: Graph storage exceeds configured quota
-    Given the storage backend has a 500 MB quota for this repository
-    And the current stored graph occupies 490 MB
-    And a new graph version requires 20 MB additional storage
-    When the storage layer attempts to persist the new version
-    Then the write is rejected with a quota-exceeded error
-    And a suggestion is returned to run memory consolidation or increase quota
-    And the previous graph version remains intact and queryable
-```
+  Scenario: 4.5 — Expertise with invalid target node is rejected
+    When the agent calls RecordExpertiseAsync with targetNodeId = "/nonexistent/path::Foo"
+    Then the call fails with a validation error indicating the target node does not exist
+    And no ExpertiseEntry is created
+    And no audit_log entry is written
 
-### Scenario 3.6 — Edge: sensitive content exclusion
+  Scenario: 4.6 — Restore an archived expertise entry
+    Given an ExpertiseEntry "expertise:pitfall:ab12cd34" with Archived = true
+      and Confidence = 0.05 (below ArchiveConfidenceFloor 0.1)
+      targeting "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    When the agent calls IEvolutionEngine.RestoreArchivedExpertiseAsync with:
+      | field              | value                        |
+      | expertiseId        | expertise:pitfall:ab12cd34   |
+      | restoredConfidence | 0.5                          |
+    Then the ExpertiseEntry has Archived = false and Confidence = 0.5
+    And subsequent GetExpertiseForNodeAsync for HypergraphNode returns it
+    And an audit_log entry records operation "restore_expertise"
+    # Per architecture.md §5.3: RestoreArchivedExpertiseAsync(expertiseId, restoredConfidence = 0.5)
 
-```gherkin
-  Scenario: Secrets and credentials are excluded from the graph
-    Given a repository contains:
-      | path                | content_type      |
-      | .env                | environment vars  |
-      | config/secrets.yaml | API keys          |
-      | src/app.ts          | application code  |
-    And a ".memoryignore" or ".gitignore" pattern excludes ".env" and "secrets.yaml"
-    When the extraction pipeline processes the repository
-    Then no nodes are created for ".env" or "config/secrets.yaml"
-    And no symbol nodes contain secret values (API keys, tokens, passwords)
-    And string literals matching secret patterns are redacted in stored summaries
-    And the extraction report confirms:
-      | field           | value |
-      | files_excluded  | 2     |
-      | secrets_redacted| true  |
-```
-
----
-
-## Feature 4: Context Retrieval from Memory
-
-Queries the knowledge graph to return ranked, token-budgeted context
-packs for agent consumption.
-
-### Scenario 4.1 — Query by symbol name returns subgraph with call context
-
-```gherkin
-Feature: Context Retrieval from Memory
-
-  Scenario: Retrieve context for a known symbol
-    Given a stored graph containing symbol "AuthService.login" with:
-      | relationship  | target                  |
-      | calls         | TokenStore.create       |
-      | calls         | UserRepo.findByEmail    |
-      | called_by     | LoginController.handle  |
-    When the retrieval engine receives query: symbol="AuthService.login", depth=1
-    Then the result includes:
-      | node                       | included | reason       |
-      | AuthService.login          | yes      | query target |
-      | TokenStore.create          | yes      | 1-hop callee |
-      | UserRepo.findByEmail       | yes      | 1-hop callee |
-      | LoginController.handle     | yes      | 1-hop caller |
-    And each node carries its source snippet, file path, and summary
-```
-
-### Scenario 4.2 — Natural-language intent query returns ranked results
-
-```gherkin
-  Scenario: Query by natural-language intent
-    Given a stored graph with summaries for 1,287 symbol nodes
-    When the retrieval engine receives query: intent="How does user authentication work?"
-    Then the result is a ranked list of nodes:
-      | rank | node                    | relevance_score |
-      | 1    | AuthService.login       | 0.95            |
-      | 2    | AuthService.validate    | 0.88            |
-      | 3    | TokenStore.create       | 0.82            |
-    And the ranking is based on summary embedding similarity
-    And at most top-K results are returned (default K=10)
-    And each result includes a confidence score between 0.0 and 1.0
-```
-
-### Scenario 4.3 — Multi-hop transitive traversal
-
-```gherkin
-  Scenario: Retrieve transitive callers of a function
-    Given function "chargeCard" is called by "validatePayment"
-    And "validatePayment" is called by "processOrder"
-    And "processOrder" is called by "handleCheckout"
-    When the retrieval engine receives query: symbol="chargeCard", direction="callers", depth=3
-    Then the result contains the full call chain:
-      | depth | node             |
-      | 0     | chargeCard       |
-      | 1     | validatePayment  |
-      | 2     | processOrder     |
-      | 3     | handleCheckout   |
-```
-
-### Scenario 4.4 — Token-budgeted context assembly
-
-```gherkin
-  Scenario: Assemble a context pack within a token budget
-    Given 25 relevant nodes are retrieved for query "authentication flow"
-    And the full context of all 25 nodes would consume 12,000 tokens
-    And the agent's token budget for context is 4,000 tokens
-    When the context assembler builds the context pack
-    Then it includes nodes in priority order:
-      | priority | criteria                          |
-      | 1        | direct query matches              |
-      | 2        | 1-hop call-chain neighbors        |
-      | 3        | module-level summaries            |
-      | 4        | repo-level summary                |
-    And the total token count of the assembled pack is ≤ 4,000
-    And truncated nodes are replaced with their summary (not omitted entirely)
-    And the pack includes a provenance header listing included node IDs and confidence scores
-```
-
-### Scenario 4.5 — Edge: query returns no matches
-
-```gherkin
-  Scenario: No relevant nodes found for a query
-    Given a stored graph for a Python backend project
-    When the retrieval engine receives query: intent="iOS SwiftUI view layout"
-    Then the result set is empty
-    And the response includes:
-      | field          | value                                    |
-      | matches        | 0                                        |
-      | suggestion     | "No relevant code found in this repository" |
-      | closest_topics | ["API routes", "database models"]        |
-```
-
-### Scenario 4.6 — Edge: result explosion (too many matches)
-
-```gherkin
-  Scenario: Query matches an excessively large portion of the graph
-    Given a query for symbol "logger" which is called by 500+ functions
-    When the retrieval engine processes the query
-    Then results are capped at the configured maximum (default: 50 nodes)
-    And the response includes:
-      | field           | value                                |
-      | total_matches   | 523                                  |
-      | returned        | 50                                   |
-      | truncated       | true                                 |
-      | truncation_hint | "Narrow query with module scope or caller filter" |
-```
-
-### Scenario 4.7 — Edge: stale memory references deleted code
-
-```gherkin
-  Scenario: Retrieved memory references code that has been deleted
-    Given the stored graph was built at commit "abc123"
-    And function "legacyAuth" existed at "abc123" but was deleted in "def456"
-    And the current working tree is at commit "def456"
-    When the retrieval engine returns "legacyAuth" as a result
-    Then the node is annotated with:
-      | field          | value                              |
-      | staleness      | deleted                            |
-      | last_seen_at   | abc123                             |
-      | confidence     | 0.2 (reduced from original score)  |
-    And stale nodes are ranked below non-stale nodes in the result set
-```
-
-### Scenario 4.8 — Edge: provenance and confidence tracking
-
-```gherkin
-  Scenario: Each retrieved node includes provenance metadata
-    Given the retrieval engine returns 5 nodes for a query
-    Then each node in the response includes:
-      | field              | description                                       |
-      | source_commit      | commit SHA where the node was last extracted        |
-      | extraction_method  | "ast_parse" or "llm_inferred" or "heuristic"       |
-      | confidence         | 0.0–1.0 score based on extraction reliability       |
-      | last_validated     | timestamp of last validation against source         |
-    And nodes with confidence < 0.3 carry a "low_confidence" warning
+  Scenario: 4.7 — Expertise with scope "subtree" applies to all structural children
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                                  |
+      | TargetNodeId | /src/ast/Ast.Core                                                      |
+      | Kind         | Preference                                                             |
+      | Title        | Use this. qualifier for all instance members                           |
+      | Body         | Per .editorconfig, all C# instance members in Ast.Core must use this. qualifier |
+      | SourceAgent  | copilot-session-42                                                     |
+      | Scope        | subtree                                                                |
+    Then the ExpertiseEntry is created with Scope = "subtree" and Confidence = 1.0
+    And the APPLIES_TO edge targets "/src/ast/Ast.Core"
+    When ExpertiseRecall retrieves expertise for any child of /src/ast/Ast.Core:
+      e.g., /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode
+    Then the subtree-scoped Preference is included in the results
+    # Scope "subtree" means the expertise applies to the target node AND all
+    # its structural children (architecture.md §4.2). Scope "exact" (the default)
+    # means it applies only to the target node itself.
 ```
 
 ---
 
-## Feature 5: Memory Evolution and Learning
+## Feature 5: Temporal Versioning — Point-in-Time Queries
 
-Updates the knowledge graph incrementally as the codebase changes and
-incorporates agent task-outcome feedback to strengthen useful pathways.
-
-### Scenario 5.1 — Incremental update after a commit
-
-```gherkin
-Feature: Memory Evolution and Learning
-
-  Scenario: Update graph incrementally after a small commit
-    Given a stored graph at commit "abc123" with 1,287 symbol nodes
-    And commit "def456" modifies 3 files and adds 1 new file
-    When the incremental update pipeline processes the diff between "abc123" and "def456"
-    Then only the 4 affected files are re-extracted
-    And the graph is updated in-place:
-      | operation       | count |
-      | nodes_added     | 12    |
-      | nodes_modified  | 8     |
-      | nodes_removed   | 2     |
-      | edges_updated   | 15    |
-    And the graph's commit SHA is advanced to "def456"
-    And unaffected regions of the graph are unchanged
-```
-
-### Scenario 5.2 — Memory consolidation
+Every node and edge carries a `VersionRange` with commit SHA + monotonic
+`commit_index` — **except External boundary nodes**, which are timeless stubs
+with no `VersionRange` (NULL `since_index` / `until_index`) and are always
+included in temporal queries (per `architecture.md` §4.3). Edges to/from
+External nodes ARE versioned normally. Tombstoned entities have `Until` set
+but remain queryable for history.
 
 ```gherkin
-  Scenario: Consolidate redundant and low-value nodes
-    Given the graph has accumulated 50 snapshots over 3 months
-    And 200 nodes reference symbols that were created and deleted within that period
-    And 30 pairs of nodes are near-duplicates (e.g., renamed but semantically identical)
-    When memory consolidation runs
-    Then transient nodes (created and deleted within window) are archived
-    And near-duplicate node pairs are merged, preserving the most recent identity
-    And frequently-accessed edges have their weight increased
-    And the consolidated graph is smaller:
-      | metric          | before | after |
-      | total_nodes     | 5,000  | 4,750 |
-      | total_edges     | 12,000 | 11,400|
-    And an audit log records every merge and archive operation
-```
+Feature: Temporal Versioning — Point-in-Time Queries
 
-### Scenario 5.3 — Agent learns from task outcomes (feedback loop)
+  Background:
+    Given the following commits have been registered:
+      | commit_sha | commit_index | parent_sha |
+      | aaa1111    | 1            | null       |
+      | bbb2222    | 2            | aaa1111    |
+      | ccc3333    | 3            | bbb2222    |
+    And the graph was built at commit_index 1
 
-```gherkin
-  Scenario: Successful task outcome reinforces memory pathways
-    Given an agent completed a coding task using context from nodes:
-      | node_id               | was_useful |
-      | AuthService.login     | true       |
-      | TokenStore.create     | true       |
-      | Logger.info           | false      |
-    When the agent reports task success with per-node usefulness feedback
-    Then edge weights are updated:
-      | edge                                    | weight_change |
-      | AuthService.login → TokenStore.create   | +0.1          |
-      | query("auth") → AuthService.login       | +0.1          |
-      | query("auth") → Logger.info             | -0.05         |
-    And future queries for similar intents will rank AuthService.login higher
-    And Logger.info will be deprioritized for auth-related queries
-```
+  Scenario: 5.1 — New nodes carry correct VersionRange
+    When a Class node is created during extraction at commit "aaa1111"
+    Then the node's VersionRange is:
+      | Since   | SinceIndex | Until | UntilIndex |
+      | aaa1111 | 1          | null  | null       |
 
-### Scenario 5.4 — Agent avoids prior mistakes on retry
+  Scenario: 5.2 — Deleted symbol is tombstoned, not removed
+    Given a Function node "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.OldMethod"
+      exists with SinceIndex = 1
+    When the method is deleted in commit "bbb2222" (commit_index 2)
+    Then the node's VersionRange.Until = "bbb2222" and UntilIndex = 2
+    And the node is NOT physically deleted from the store
+    And querying the node via GetNodesByLayerAsync at atCommitIndex = 1 returns it
+    And querying the node via GetNodesByLayerAsync at atCommitIndex = 3 does not return it
 
-```gherkin
-  Scenario: Prior failure is stored and explicitly avoided on retry
-    Given an agent previously attempted task "fix login timeout" and failed
-    And the failure was attributed to using deprecated method "OldAuth.connect"
-    And this failure record is stored in the memory graph as a negative exemplar
-    When the agent receives a similar task "fix authentication timeout"
-    Then the retrieval engine returns "OldAuth.connect" with:
-      | field            | value                                |
-      | prior_outcome    | failure                              |
-      | failure_reason   | "deprecated method, use NewAuth.connect" |
-      | recommendation   | avoid                                |
-    And the agent's context pack includes "NewAuth.connect" instead
-```
+  Scenario: 5.3 — Point-in-time query filters by commit_index range
+    Given 3 nodes exist:
+      | node_id | SinceIndex | UntilIndex |
+      | A       | 1          | null       |
+      | B       | 1          | 2          |
+      | C       | 2          | null       |
+    When querying at commit_index 2
+    Then the result includes nodes A and C
+    And excludes node B (tombstoned at index 2: UntilIndex > target required)
 
-### Scenario 5.5 — Edge: large refactor invalidates significant graph portion
+  Scenario: 5.4 — Edges tombstoned when source node is tombstoned
+    Given a CALLS edge from node X to node Y, both created at SinceIndex 1
+    When node X is tombstoned at commit_index 3
+    Then the CALLS edge also receives UntilIndex = 3
+    And future queries at commit_index >= 3 do not see the edge
 
-```gherkin
-  Scenario: Major refactor invalidates a large portion of the graph
-    Given a stored graph with 5,000 nodes
-    And a refactor commit renames the "src/auth" module to "src/identity"
-    And moves 40 files and renames 200 symbols
-    When the incremental update pipeline processes the refactor diff
-    Then the pipeline detects a large-scale structural change (>10% of nodes affected)
-    And it performs a targeted re-extraction of the affected subtree
-    And rename lineage is preserved:
-      | old_id                   | new_id                       | lineage_type |
-      | /src/auth/login::login   | /src/identity/login::login   | renamed      |
-    And historical queries referencing old paths resolve to new paths via lineage
-```
-
-### Scenario 5.6 — Edge: branch divergence
-
-```gherkin
-  Scenario: Memory built on one branch is queried from a different branch
-    Given the memory graph was built from branch "main" at commit "abc123"
-    And the agent is working on branch "feature/new-auth" which diverged 20 commits ago
-    When the agent queries memory for "AuthService"
-    Then the retrieval engine detects branch divergence
-    And the response includes:
-      | field              | value                                        |
-      | branch_source      | main                                         |
-      | branch_current     | feature/new-auth                             |
-      | divergence_commits | 20                                           |
-      | staleness_risk     | medium                                       |
-    And results from files modified on the feature branch are flagged as potentially stale
-```
-
-### Scenario 5.7 — Edge: rename/move preserves temporal identity
-
-```gherkin
-  Scenario: File rename preserves memory continuity
-    Given file "src/helpers/auth.ts" is renamed to "src/services/authentication.ts"
-    And the function signatures inside are unchanged
-    When the incremental update processes the rename
-    Then the old file node is marked as "moved"
-    And a lineage edge links old path to new path
-    And all prior retrieval history (access counts, usefulness scores) transfers to the new node
-    And queries using the old path transparently resolve to the new path
+  Scenario: 5.5 — External boundary nodes are always included in temporal queries
+    Given an External boundary node "ext:Microsoft.CodeAnalysis:SyntaxTree" with:
+      | field        | value    |
+      | NodeType     | External |
+      | since_index  | NULL     |
+      | until_index  | NULL     |
+    # External nodes have no VersionRange — they are timeless stubs (architecture.md §4.3)
+    When querying nodes at commit_index 1
+    Then the External node IS included in the result
+    When querying nodes at commit_index 999
+    Then the External node IS still included in the result
+    # The temporal filter for nodes uses:
+    #   WHERE (since_index IS NULL /* External → always included */
+    #          OR (since_index <= @target AND (until_index IS NULL OR until_index > @target)))
+    # Edges TO External nodes ARE versioned normally — their VersionRange tracks
+    # when the in-repo reference was first/last seen (architecture.md §4.3)
+    And edges pointing to the External node carry their own VersionRange
+    And those edges ARE filtered by commit_index normally
 ```
 
 ---
 
-## Feature 6: Agent Context Construction (End-to-End)
+## Feature 6: Hybrid Retrieval — Context Construction
 
-Validates the full pipeline from task intake → memory retrieval →
-context assembly → agent output, proving the memory system makes agents
-measurably more effective.
-
-### Scenario 6.1 — Agent uses memory to produce contextually-rich output
+The Retrieval Engine accepts a natural-language query, plans retrieval mode(s),
+traverses the graph, ranks results using the 5-signal model, and assembles a
+token-budgeted context block (per `architecture.md` §3.3–3.4).
 
 ```gherkin
-Feature: Agent Context Construction
+Feature: Hybrid Retrieval — Context Construction
 
-  Scenario: Agent retrieves memory and uses it for a coding task
-    Given a stored memory graph for repository "my-app"
-    And the agent receives task: "Add rate limiting to the login endpoint"
-    When the agent queries memory with intent derived from the task
-    Then the context pack returned includes:
-      | node                       | relevance |
-      | LoginController.handle     | high      |
-      | AuthService.login          | high      |
-      | RateLimiter (if exists)    | high      |
-      | /src/api (module summary)  | medium    |
-    And the context pack total token count is within the configured budget
-    And the agent uses this context to produce a code change
-    And the code change references the correct file paths and function signatures
-```
+  Background:
+    Given the full memory graph is populated for "src/ast/" at commit_index 5
+    And expertise nodes have been recorded for Ast.Core and Ast.Csharp packages
+    And the embedding model is "nomic-embed-text"
 
-### Scenario 6.2 — Second attempt improves via accumulated memory
+  Scenario: 6.1 — Hybrid retrieval with default token budget
+    When the agent calls IMemoryRetrievalEngine.RetrieveAsync with:
+      | field          | value                                              |
+      | QueryText      | How does C# code extraction work in the AST stack? |
+      | TokenBudget    | 8000                                               |
+      | Mode           | Hybrid                                             |
+    Then the RetrievalResult contains:
+      | field            | assertion                                |
+      | ContextMarkdown  | contains "## Structure"                  |
+      | ContextMarkdown  | contains "## Call Graph"                 |
+      | ContextMarkdown  | contains "## Related Code"               |
+      | ContextMarkdown  | contains "## Known Expertise"            |
+      | TokensUsed       | <= 8000                                  |
+      | ModesExecuted    | contains Hybrid                          |
+      | Nodes            | length > 0                               |
+    And Nodes reference ScoredMemoryNode entries from Ast.Csharp and Ast.Core packages
 
-```gherkin
-  Scenario: Agent's second attempt at a similar task leverages prior memory
-    Given the agent previously completed task "add caching to user profile endpoint"
-    And the memory graph recorded which nodes were useful and the task succeeded
-    When the agent receives a new task "add caching to order history endpoint"
-    Then the retrieval engine identifies structural similarity to the prior task
-    And the context pack includes:
-      | source              | content                                 |
-      | prior_task_memory   | successful caching pattern from profile  |
-      | current_code        | order history endpoint symbols           |
-    And the agent's output reuses the validated caching pattern
-    And measurable improvement is observed:
-      | metric                    | without_memory | with_memory |
-      | relevant_files_found      | 3 of 5         | 5 of 5      |
-      | correct_import_statements | 2 of 4         | 4 of 4      |
-```
+  Scenario: 6.2 — StructuralDrill retrieval mode
+    When the agent calls RetrieveAsync with Mode = StructuralDrill and
+      SeedNodeIds = ["/src/ast/Ast.Core"]
+    Then the ContextMarkdown lists the containment hierarchy of Ast.Core:
+      Package → Module files → Class → Function
+    And only CONTAINS and DEPENDS_ON edges are traversed
+    And ModesExecuted contains StructuralDrill
 
-### Scenario 6.3 — Edge: cold start with no prior memory
+  Scenario: 6.3 — CallTrace retrieval mode
+    When the agent calls RetrieveAsync with Mode = CallTrace and
+      QueryText = "RepositoryProcessor.Process"
+    Then the ContextMarkdown includes callers and callees of RepositoryProcessor.Process
+    And the traversal follows CALLS edges up to MaxDepth 3
+    And ModesExecuted contains CallTrace
 
-```gherkin
-  Scenario: Agent operates on a repository with no prior memory
-    Given repository "new-project" has never been ingested
-    And the agent receives task: "Fix the broken unit test in auth module"
-    When the agent attempts to query memory
-    Then the memory system returns:
-      | field       | value                                      |
-      | status      | cold_start                                 |
-      | suggestion  | "Triggering initial repository ingestion"  |
-    And the system initiates background graph extraction
-    And the agent falls back to direct file-system exploration for the current task
-    And once ingestion completes, subsequent queries return graph-based results
-```
+  Scenario: 6.4 — ExpertiseRecall retrieval mode
+    Given a Pitfall expertise node applies to HypergraphNode
+    When the agent calls RetrieveAsync with Mode = ExpertiseRecall and
+      SeedNodeIds = ["/src/ast/Ast.Core"]
+    Then the ContextMarkdown's "## Known Expertise" section contains the Pitfall
+    And the expertise entry shows its Confidence value
+    And ModesExecuted contains ExpertiseRecall
 
-### Scenario 6.4 — Edge: memory transfer from structurally similar repo
+  Scenario: 6.5 — Token budget enforced with hierarchy compression
+    When the agent calls RetrieveAsync with TokenBudget = 500
+    Then the RetrievalResult.TokensUsed <= 500
+    And parent summaries replace child details (HiAgent pattern)
+    And the ContextMarkdown still has the four standard sections
 
-```gherkin
-  Scenario: Agent leverages memory from a structurally similar repository
-    Given repository "service-A" has rich memory built over 6 months
-    And repository "service-B" is a new repo using the same framework and patterns
-    And service-B has been ingested but has minimal task history
-    When the agent working on service-B queries for "authentication middleware"
-    Then the retrieval engine identifies structural similarity with service-A
-    And the response includes cross-repo suggestions:
-      | source_repo | node                         | transferability |
-      | service-A   | AuthMiddleware.handle        | high            |
-      | service-A   | middleware/auth.ts (pattern) | high            |
-    And cross-repo results are clearly labeled and ranked below local results
-    And the agent can opt in to use the transferred pattern
-```
+  Scenario: 6.6 — Token budget above ceiling is clamped
+    When the agent calls RetrieveAsync with TokenBudget = 50000
+    Then the effective budget is clamped to TokenBudgetCeiling = 32000
+    And the RetrievalResult.TokensUsed <= 32000
 
----
+  Scenario: 6.7 — Scoring weights applied during ranking
+    When the ranker computes the fused score for a candidate node
+    Then the score formula is:
+      score = 0.30 × structural_proximity
+            + 0.25 × semantic_similarity
+            + 0.20 × centrality
+            + 0.15 × recency
+            + 0.10 × expertise_signal
+    And each signal is normalized to [0, 1]
+    And structural_proximity is inverse BFS distance from seed
+    And centrality is normalized PageRank from CALLS fan-in
+    And recency is 1.0 − (HEAD_idx − node_sinceIdx) / max_distance
+    And expertise_signal is max Confidence of APPLIES_TO edges targeting the node
 
-## Feature 7: Performance and Scale
+  Scenario: 6.8 — Deduplication: same code span from multiple paths emitted once
+    Given a node is reachable via both CALLS and SIMILAR_TO paths
+    When the context assembler formats the result
+    Then the node's code snippet appears exactly once in the ContextMarkdown
+    And the Nodes list includes the node only once despite multiple reach paths
 
-Validates that memory operations remain bounded and responsive at
-production-scale repository sizes.
-
-### Scenario 7.1 — Large repository initial ingestion
-
-```gherkin
-Feature: Performance and Scale
-
-  Scenario: Ingest a large repository within acceptable time bounds
-    Given a repository with:
-      | metric          | value   |
-      | total_files     | 50,000  |
-      | source_files    | 35,000  |
-      | total_symbols   | 200,000 |
-      | lines_of_code   | 5M      |
-    When the extraction pipeline processes the repository
-    Then the ingestion completes within the configured timeout (e.g., 30 minutes)
-    And progress is reported incrementally (files processed / total)
-    And the resulting graph is queryable immediately upon completion
-```
-
-### Scenario 7.2 — Incremental update on large repository
-
-```gherkin
-  Scenario: Small commit triggers fast incremental update on a large repo
-    Given a stored graph for a 50,000-file repository
-    And a new commit modifies 5 files
-    When the incremental update pipeline processes the commit
-    Then the update completes in under 30 seconds
-    And only the 5 modified files and their direct dependents are re-processed
-    And the graph is consistent after the update
-```
-
-### Scenario 7.3 — Retrieval latency on large graph
-
-```gherkin
-  Scenario: Retrieval remains fast on a large knowledge graph
-    Given a stored graph with 200,000 nodes and 500,000 edges
-    When a symbol query with depth=2 is executed
-    Then the query returns results in under 2 seconds (p95)
-    And the result set is bounded to the configured maximum (default: 50 nodes)
-    When a natural-language intent query is executed
-    Then the query returns ranked results in under 5 seconds (p95)
-```
-
-### Scenario 7.4 — Concurrent agent access
-
-```gherkin
-  Scenario: Multiple agents query the same graph concurrently
-    Given a stored graph for repository "shared-service"
-    And 10 agents simultaneously submit retrieval queries
-    When all queries are processed
-    Then all 10 queries return correct results
-    And no query exceeds 2x the single-agent latency threshold
-    And no data corruption or inconsistency occurs in the graph
+  Scenario: 6.9 — Query with AtCommitIndex returns historical state
+    When the agent calls RetrieveAsync with AtCommitIndex = 1 (matching "aaa1111")
+    Then the retrieval engine filters using commit_index 1
+    And only nodes/edges with SinceIndex <= 1 and (UntilIndex is null OR UntilIndex > 1) are included
 ```
 
 ---
 
-## Appendix: Scenario Traceability Matrix
+## Feature 7: Incremental Sync — Keeping the Graph Current
 
-| Feature | Scenario | Story Aspect Covered | Memory Taxonomy Phase |
-|---------|----------|---------------------|-----------------------|
-| 1.1 | Repo structure graph | top-down repo structure | Extraction |
-| 1.2 | Symbol-level extraction | repo structure, call-chain prep | Extraction |
-| 1.3 | No parseable files | edge: degenerate repo | Extraction |
-| 1.4 | Circular dependencies | edge: complex repos | Extraction |
-| 1.5 | Monorepo ecosystems | edge: real-world scale | Extraction |
-| 1.6 | Partial parse failure | edge: robustness | Extraction |
-| 2.1 | Single entry-point call graph | call-chain context | Extraction |
-| 2.2 | Transitive call chain | call-chain context | Extraction |
-| 2.3 | Polymorphic dispatch | edge: ambiguous calls | Extraction |
-| 2.4 | External dependencies | edge: boundary nodes | Extraction |
-| 2.5 | Recursive calls | edge: infinite loops | Extraction |
-| 2.6 | Symbol ambiguity | edge: duplicate names | Extraction |
-| 2.7 | Cross-service RPC | edge: service boundaries | Extraction |
-| 3.1 | Persist graph | graph storage | Storage |
-| 3.2 | Hierarchical summaries | expertise / top-down structure | Storage |
-| 3.3 | Temporal versioning | memory evolution | Storage |
-| 3.4 | Concurrent writes | edge: multi-agent | Storage |
-| 3.5 | Quota exceeded | edge: resource limits | Storage |
-| 3.6 | Sensitive content | edge: security | Storage |
-| 4.1 | Symbol query | context construction | Retrieval |
-| 4.2 | NL intent query | agent gets smarter | Retrieval |
-| 4.3 | Multi-hop traversal | call-chain context | Retrieval |
-| 4.4 | Token-budgeted assembly | context construction | Retrieval |
-| 4.5 | No matches | edge: empty results | Retrieval |
-| 4.6 | Result explosion | edge: over-broad query | Retrieval |
-| 4.7 | Stale memory | edge: deleted code | Retrieval |
-| 4.8 | Provenance tracking | confidence / trust | Retrieval |
-| 5.1 | Incremental update | agent learns, memory evolves | Evolution |
-| 5.2 | Consolidation | memory evolution | Evolution |
-| 5.3 | Feedback loop | agent learns / gets smarter | Evolution |
-| 5.4 | Avoid prior mistakes | agent learns / gets smarter | Evolution |
-| 5.5 | Large refactor | edge: structural upheaval | Evolution |
-| 5.6 | Branch divergence | edge: multi-branch | Evolution |
-| 5.7 | Rename lineage | edge: temporal identity | Evolution |
-| 6.1 | Context-rich output | construct context, agent smarter | End-to-End |
-| 6.2 | Improved second attempt | agent learns / gets smarter | End-to-End |
-| 6.3 | Cold start | edge: no prior memory | End-to-End |
-| 6.4 | Cross-repo transfer | edge: transfer learning | End-to-End |
-| 7.1 | Large repo ingestion | scale: extraction | Performance |
-| 7.2 | Incremental on large repo | scale: evolution | Performance |
-| 7.3 | Retrieval latency | scale: retrieval | Performance |
-| 7.4 | Concurrent access | scale: multi-agent | Performance |
+On commit or file-save, the Incremental Sync component re-extracts only
+changed files and propagates invalidation to downstream edges
+(per `architecture.md` §3.6). Performance target: < 2 s for single-file
+change on repos ≤ 500K LOC (per `tech-spec.md` HC2).
+
+```gherkin
+Feature: Incremental Sync — Keeping the Graph Current
+
+  Background:
+    Given the graph is populated at commit_index 5 for "src/ast/"
+
+  Scenario: 7.1 — Single-file change triggers incremental re-extraction
+    Given the developer modifies "src/ast/Ast.Core/RepositoryProcessor.cs"
+    And commits the change as commit "ddd4444" (commit_index 6)
+    When IIncrementalSync.ApplyDiffAsync processes "ddd4444"
+    Then only RepositoryProcessor.cs is re-extracted (not the full repo)
+    And modified nodes get new VersionRange.Since = "ddd4444", SinceIndex = 6
+    And the old versions of those nodes get UntilIndex = 6
+    And the SyncResult reports NodesAdded > 0 and NodesRetired > 0
+    And the sync completes in < 2 seconds
+
+  Scenario: 7.2 — Method signature change marks downstream CALLS edges as Stale
+    Given method RepositoryProcessor.Process has signature change in commit "ddd4444"
+    And 3 CALLS edges target RepositoryProcessor.Process
+    When incremental sync processes the commit
+    Then all 3 downstream CALLS edges have Metadata["Stale"] = true
+    And the edges remain in the graph (not tombstoned) pending re-confirmation
+
+  Scenario: 7.3 — File deletion tombstones all contained nodes
+    Given file "src/ast/Ast.Core/OldHelper.cs" with 2 Class nodes and 5 Function nodes
+    When the file is deleted in commit "eee5555" (commit_index 7)
+    Then the Module node and all 7 contained symbol nodes receive UntilIndex = 7
+    And all CONTAINS edges from the Module receive UntilIndex = 7
+    And all CALLS edges referencing any of those 7 nodes receive UntilIndex = 7
+
+  Scenario: 7.4 — ContentHash detects meaningful vs. whitespace-only changes
+    Given a file's ContentHash changes due to adding a blank line
+    When incremental sync computes the diff
+    Then the Module node's ContentHash is updated
+    But symbol nodes whose own ContentHash did not change are NOT re-extracted
+    And expertise targeting unchanged symbols receives MinorDecayFactor (0.9)
+      instead of StaleDecayFactor (0.5)
+
+  Scenario: 7.5 — Debounce prevents rapid-fire re-extraction
+    Given IncrementalSyncDebounceMs = 1000 (per architecture.md §2.4)
+    When 5 file-save events occur within 500ms
+    Then only 1 extraction run is triggered after the debounce window
+    And all 5 changed files are processed in a single batch
+
+  Scenario: 7.6 — Diff affecting > 50 files triggers bounded reconcile
+    Given a commit renames a namespace affecting 60 files
+    When incremental sync processes the commit
+    Then a bounded reconcile pass runs on the affected subtrees
+    And rename tracking updates node IDs to reflect new paths
+    And old-path nodes are tombstoned with UntilIndex = current commit_index
+```
+
+---
+
+## Feature 8: Evolution Engine — Consolidation & Decay
+
+Post-session consolidation merges overlapping expertise, decays stale
+entries, and generates community summaries (per `architecture.md` §3.5).
+
+```gherkin
+Feature: Evolution Engine — Consolidation and Decay
+
+  Background:
+    Given the graph at commit_index 10 with multiple ExpertiseEntry records
+
+  Scenario: 8.1 — Consolidation merges overlapping expertise via SUPERSEDES and DERIVED_FROM
+    Given 3 Pitfall ExpertiseEntry records about "null handling in Metadata access":
+      | Id                         | Confidence | SourceAgent          |
+      | expertise:pitfall:aa11bb22 | 0.8        | copilot-session-10   |
+      | expertise:pitfall:cc33dd44 | 0.9        | copilot-session-15   |
+      | expertise:pitfall:ee55ff66 | 1.0        | copilot-session-20   |
+    When IEvolutionEngine.ConsolidateAsync runs
+    Then 1 merged ExpertiseEntry is produced
+    And SUPERSEDES edges are created from merged to originals:
+      | SemanticRelation | Roles.newer                   | Roles.older                   |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
+    And DERIVED_FROM edges are created from merged to sources (provenance):
+      | SemanticRelation | Roles.derived                 | Roles.source                  |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
+    # Per architecture.md §6.5: consolidation produces both SUPERSEDES and DERIVED_FROM edges
+    And the ConsolidationResult shows:
+      | field       | value |
+      | Merged      | 3     |
+      | Superseded  | 3     |
+
+  Scenario: 8.2 — Time-based decay with centrality boost
+    Given an ExpertiseEntry with current Confidence = 1.0 created 1095 days ago
+    And no prior event-driven decay has been applied
+    And the target code node has normalized_pagerank = 0.6
+    When DecayStaleExpertiseAsync runs time-based decay
+    Then the raw decayed confidence is:
+      1.0 × 2^(−1095 / 1095) × (1.0 + 0.5 × 0.6) = 0.5 × 1.3 = 0.65
+    And the result is clamped to [0.0, min(current_confidence, 1.0)]
+    # Centrality boost slows decay (important nodes decay slower) but
+    # never increases confidence above its current value or above 1.0.
+    # At age=0: 1.0 × 1.0 × 1.3 = 1.3 → clamped to 1.0 (no increase).
+    And the final decayed confidence is 0.65 (already below 1.0, no clamping needed)
+    And the ExpertiseEntry remains active (0.65 > ArchiveConfidenceFloor 0.1)
+    # Time-based decay formula per architecture.md §3.5:
+    #   decayed_confidence = min(current_confidence, current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost)
+    #   centrality_boost = 1.0 + CentralityBoostFactor(0.5) × normalized_pagerank
+
+  Scenario: 8.3 — Event-based decay on major code change
+    Given an ExpertiseEntry with Confidence = 0.8
+    And its APPLIES_TO target's ContentHash changes (major change, not whitespace)
+    When IncrementalSync detects the ContentHash change during ApplyDiffAsync
+    Then the ExpertiseEntry Confidence becomes 0.8 × StaleDecayFactor (0.5) = 0.4
+    And the ExpertiseEntry remains active (0.4 > ArchiveConfidenceFloor 0.1)
+    # Event-driven decay is applied immediately at sync time (architecture.md §3.5)
+
+  Scenario: 8.4 — Event-based decay on minor change
+    Given an ExpertiseEntry with Confidence = 0.3
+    And its target has a whitespace-only ContentHash change
+    When IncrementalSync detects the minor ContentHash change during ApplyDiffAsync
+    Then the ExpertiseEntry Confidence becomes 0.3 × MinorDecayFactor (0.9) = 0.27
+    And the ExpertiseEntry remains active (0.27 > ArchiveConfidenceFloor 0.1)
+    # Whitespace/comment-only changes apply MinorDecayFactor instead of StaleDecayFactor
+
+  Scenario: 8.5 — Expertise below ArchiveConfidenceFloor is soft-deleted
+    Given an ExpertiseEntry with Confidence = 0.08 (below ArchiveConfidenceFloor 0.1)
+    When DecayStaleExpertiseAsync runs
+    Then the ExpertiseEntry is soft-deleted (archived = true in the expertise table)
+    And it no longer appears in default ExpertiseRecall results
+    But it remains in the expertise table and can be found via explicit archived queries
+    # Per architecture.md §3.5: "retained in storage with archived = true, excluded from retrieval"
+
+  Scenario: 8.6 — Community summarization produces Topic nodes
+    When DetectCommunitiesAsync runs community detection (Louvain) on CALLS/SIMILAR_TO edges
+    Then Topic nodes are created for each detected community with LLM-generated summary_prose
+    And each Topic node has NodeType = "Topic" and Metadata["MemoryLayer"] = "semantic"
+    And BELONGS_TO_CLUSTER edges link member nodes to their Topic node:
+      | EdgeType       | SemanticRelation      | Metadata.MemoryLayer |
+      | MemoryRelation | BELONGS_TO_CLUSTER    | semantic             |
+```
+
+---
+
+## Feature 9: Cross-Session Learning — Memory Compounds Over Time
+
+Verifies the end-to-end lifecycle where expertise accumulates across
+agent sessions, decays with code changes, and surfaces in future retrievals
+(per `architecture.md` §6.5).
+
+```gherkin
+Feature: Cross-Session Learning — Memory Compounds Over Time
+
+  Scenario: 9.1 — Full lifecycle: onboard → learn → sync → recall
+    # Session 1: Onboard and discover
+    Given a fresh repository with the src/ast/ subtree
+    When IExtractionPipeline.ExtractAsync onboards the repo at commit_index 1
+    Then the graph has Structural and Call-Chain layers populated
+    And 0 expertise entries exist in the expertise table
+
+    # Session 2: Agent learns a pattern
+    When agent "copilot-session-A" completes a task in Ast.Core
+    And calls RecordExpertiseAsync with kind = Pattern,
+      title = "Composition wrappers for backward compatibility",
+      body = "MemoryNode wraps HypergraphNode via Inner property to add memory-layer metadata without breaking existing consumers",
+      and targetNodeId = "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    Then 1 ExpertiseEntry exists with Confidence = 1.0
+
+    # Session 3: Another agent retrieves and learns more
+    When agent "copilot-session-B" queries for context about HypergraphNode
+    Then the Hybrid retrieval includes the Pattern in "## Known Expertise"
+    When "copilot-session-B" calls RecordExpertiseAsync with kind = Insight,
+      title = "GetEnhancedEmbeddingText includes source code up to 2000 chars",
+      body = "When LSP enrichment is available, GetEnhancedEmbeddingText appends up to 2000 chars from Metadata[SourceCode] — see lines 175–178 of HypergraphModels.cs",
+      and targetNodeId = "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
+    Then 2 ExpertiseEntry records exist
+
+    # Code change triggers decay
+    When the developer refactors HypergraphNode in commit "fff6666" (commit_index 10)
+    And incremental sync processes the commit
+    Then the Pattern's Confidence is decayed by StaleDecayFactor (0.5) to 0.5
+    And the Insight is decayed similarly because its target changed
+
+    # Session 4: Next agent sees decayed but still-active expertise
+    When agent "copilot-session-C" queries for HypergraphNode context
+    Then both ExpertiseEntry records appear with their decayed Confidence values
+    And the Context Assembler injects "⚠ stale — target code changed" marker
+
+  Scenario: 9.2 — Cross-branch expertise visibility
+    Given agent "session-feature" records a Pitfall on branch "feature/refactor"
+      applying to "/src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process"
+    When agent "session-main" queries on branch "main"
+    Then the Pitfall is visible (expertise is globally visible per tech-spec D3)
+    And if the target's ContentHash differs between branches,
+      the Context Assembler marks the expertise as "⚠ stale — target code changed"
+
+  Scenario: 9.3 — 10 sessions produce >= 5 retrievable expertise entries
+    Given 10 agent sessions each call RecordExpertiseAsync at least once
+      across different code targets in src/ast/
+    When the Evolution Engine has run consolidation after session 10
+    Then at least 5 ExpertiseEntry records with Confidence > 0.7 exist
+    And ExpertiseRecall retrieval surfaces them ranked by Confidence
+    # Success criterion from tech-spec §10: "After 10 agent sessions, ≥ 5 expertise nodes with confidence > 0.7"
+```
+
+---
+
+## Feature 10: MCP Tool Interface — External Agent Integration
+
+Agents interact with the memory graph via 5 MCP tools defined in
+`architecture.md` §3.8: `memory_query`, `memory_status`,
+`memory_record_expertise`, `memory_sync`, `memory_consolidate`.
+All tool handler logic lives in `Ast.Memory/Mcp/`; `Ast.Cli` only adds
+a `config.AddBranch("memory", ...)` route.
+
+```gherkin
+Feature: MCP Tool Interface — External Agent Integration
+
+  Background:
+    Given the memory graph is populated for "src/ast/"
+    And the MCP server is running with 5 registered tools:
+      | tool_name                | maps_to                                    |
+      | memory_query             | IMemoryRetrievalEngine.RetrieveAsync()      |
+      | memory_status            | IMemoryGraphStore.GetMemoryStatisticsAsync() |
+      | memory_record_expertise  | IEvolutionEngine.RecordExpertiseAsync()     |
+      | memory_sync              | IIncrementalSync.ApplyDiffAsync()           |
+      | memory_consolidate       | IEvolutionEngine.ConsolidateAsync()         |
+
+  Scenario: 10.1 — memory_query returns token-budgeted context (Hybrid mode)
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_query",
+        "arguments": {
+          "queryText": "How does hypergraph extraction work?",
+          "seedNodeIds": ["/src/ast/Ast.Csharp"],
+          "tokenBudget": 4000,
+          "mode": "Hybrid"
+        }
+      }
+      """
+    Then the MCP response has content[0].type = "text"
+    And content[0].text contains "## Structure" and "## Call Graph"
+    And metadata.tokensUsed <= 4000
+    And metadata.modesExecuted contains "Hybrid"
+
+  Scenario: 10.2 — memory_query with CallTrace mode traces callers/callees
+    # memory_query supports all RetrievalMode values via the "mode" argument
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_query",
+        "arguments": {
+          "queryText": "/src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync",
+          "mode": "CallTrace",
+          "tokenBudget": 4000
+        }
+      }
+      """
+    Then the response content includes the "## Call Graph" section
+    And the call graph lists callees of GenerateNodeEmbeddingsAsync
+    And metadata.modesExecuted contains "CallTrace"
+
+  Scenario: 10.3 — memory_query with SemanticSearch mode returns similar nodes
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_query",
+        "arguments": {
+          "queryText": "parse C# abstract syntax tree",
+          "mode": "SemanticSearch",
+          "tokenBudget": 4000
+        }
+      }
+      """
+    Then the response content includes the "## Related Code" section
+    And results are ranked by semantic similarity
+    And metadata.modesExecuted contains "SemanticSearch"
+
+  Scenario: 10.4 — memory_record_expertise writes expertise and returns ID
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_record_expertise",
+        "arguments": {
+          "targetNodeId": "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText",
+          "kind": "pitfall",
+          "title": "LSP enrichment may leak secrets via embedding input",
+          "body": "When LSP enrichment is enabled, up to 2000 chars of source code appear in embedding input via Metadata[SourceCode] (line 175). This may leak secrets if not filtered.",
+          "sourceAgent": "copilot-session-99"
+        }
+      }
+      """
+    Then the response metadata.expertiseId matches pattern "expertise:pitfall:<hash8>"
+    And the expertise node is retrievable via ExpertiseRecall
+    And an audit_log entry records the operation
+
+  Scenario: 10.5 — memory_status returns graph statistics
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_status",
+        "arguments": {}
+      }
+      """
+    Then the response maps to MemoryGraphStatistics (from IMemoryGraphStore.GetMemoryStatisticsAsync)
+    And the response includes per-layer node and edge counts for:
+      structural, call_chain, semantic, expertise
+    And the response includes total expertise entry count (>= 0)
+    And the response includes last sync commit information
+    # The MemoryGraphStatistics type is returned by GetMemoryStatisticsAsync (architecture.md §5.1)
+
+  Scenario: 10.6 — memory_sync triggers incremental graph update
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_sync",
+        "arguments": {
+          "repoRoot": "src/ast/",
+          "fromCommit": "aaa1111",
+          "toCommit": "bbb2222"
+        }
+      }
+      """
+    Then the response maps to SyncResult (from IIncrementalSync.ApplyDiffAsync) with fields:
+      | field              | type     |
+      | FilesChanged       | int      |
+      | NodesAdded         | int      |
+      | NodesRetired       | int      |
+      | EdgesAdded         | int      |
+      | EdgesRetired       | int      |
+      | ExpertiseDecayed   | int      |
+      | Duration           | timespan |
+    # SyncResult is defined in architecture.md §5.4
+    And only files changed between the two commits are re-extracted
+
+  Scenario: 10.7 — memory_consolidate merges overlapping expertise
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_consolidate",
+        "arguments": {}
+      }
+      """
+    Then the response reports merged count and superseded count
+    And SUPERSEDES and DERIVED_FROM edges are created for merged entries
+    # Per architecture.md §6.5: consolidation produces both edge types
+
+  Scenario: 10.8 — memory_query with tokenBudget exceeding ceiling
+    When an MCP client sends memory_query with tokenBudget = 50000
+    Then the effective budget is clamped to TokenBudgetCeiling = 32000
+    And metadata.tokensUsed <= 32000
+
+  Scenario: 10.9 — memory_record_expertise with missing required field
+    When an MCP client sends memory_record_expertise without "title" field
+    Then the MCP response is an error with a validation message
+    And no expertise node is created
+    # Required fields per architecture.md §5.3: targetNodeId, kind, title, body, sourceAgent
+
+  Scenario: 10.10 — memory_record_expertise with nonexistent target node
+    When an MCP client sends memory_record_expertise with
+      targetNodeId = "/nonexistent/path::Foo"
+    Then the MCP response is an error indicating the target node does not exist
+    And no expertise node is created
+```
+
+---
+
+## Feature 11: Backward Compatibility — Existing Tests Unbroken
+
+The memory layer extends `Ast.Core` via composition wrappers and `Metadata`
+dictionaries. No changes to `HypergraphNode` or `Hyperedge` class signatures.
+One additive `HyperedgeType.MemoryRelation` enum value. Existing tests must
+pass unmodified (per `tech-spec.md` HC8, success criterion in §10).
+
+```gherkin
+Feature: Backward Compatibility — Existing Tests Unbroken
+
+  Scenario: 11.1 — All existing Ast.Core tests pass after adding MemoryRelation
+    Given the HyperedgeType enum has a new value MemoryRelation appended
+    When dotnet test runs on Ast.Core.UnitTests
+    Then all tests pass with 0 failures
+    And no test references or depends on specific HyperedgeType enum count
+
+  Scenario: 11.2 — MemoryNode composition wrapper does not alter HypergraphNode
+    Given MemoryNode wraps HypergraphNode via an Inner property (composition)
+    When existing code creates a HypergraphNode with standard properties
+    Then the HypergraphNode behaves identically with or without Ast.Memory referenced
+    And MemoryNode.Inner returns the original HypergraphNode unmodified
+    And MemoryNode provides typed accessors:
+      MemoryLayer (from Metadata["MemoryLayer"]),
+      Version (VersionRange? — composed from Metadata["SinceCommit"], Metadata["SinceIndex"],
+        Metadata["UntilCommit"], Metadata["UntilIndex"]; null for External nodes),
+      and ContentHash (from Metadata["ContentHash"])
+
+  Scenario: 11.3 — Existing IGraphStore implementations accept memory edges
+    Given Neo4jGraphStore implements IGraphStore.CreateEdgeAsync
+    When a Hyperedge with EdgeType = MemoryRelation is passed to CreateEdgeAsync
+    Then the edge is stored successfully (MemoryRelation is a valid HyperedgeType)
+    And existing IGraphStore methods work unchanged for non-memory edges
+
+  Scenario: 11.4 — Full test suite regression check (13 test projects + Ast.Benchmark build)
+    When dotnet test runs on all 13 existing test projects:
+      | project                          | kind        |
+      | Ast.Core.UnitTests               | unit        |
+      | Ast.Csharp.UnitTests             | unit        |
+      | Ast.PowerShell.UnitTests         | unit        |
+      | Ast.Embedding.UnitTests          | unit        |
+      | Ast.GraphDb.UnitTests            | unit        |
+      | Ast.Query.UnitTests              | unit        |
+      | Ast.VectorDb.UnitTests           | unit        |
+      | Ast.Lsp.UnitTests                | unit        |
+      | CodeIntelligence.UnitTests       | unit        |
+      | Ast.E2E.IntegrationTests         | integration |
+      | Ast.GraphDb.IntegrationTests     | integration |
+      | Ast.IntegrationTests             | integration |
+      | Ast.Lsp.IntegrationTests         | integration |
+    Then all tests pass with 0 failures
+    And the total test count matches or exceeds the pre-memory-layer baseline
+    # Per tech-spec §10 success criterion: "0 failures in existing Ast.* and
+    # CodeIntelligence tests (across 13 test projects) after memory layer integration"
+    # Additionally verify that Ast.Benchmark (not a test project — uses BenchmarkDotNet)
+    # at "src/ast/Ast.Benchmark/Ast.Benchmark.csproj" compiles cleanly:
+    And dotnet build succeeds for Ast.Benchmark which references Ast.Core types
+    # Ast.Benchmark contains ExtractionBenchmarks, QueryBenchmarks, and
+    # IngestionBenchmarks — it must compile against the updated Ast.Core
+    # with the additive HyperedgeType.MemoryRelation enum value.
+```
+
+---
+
+## Feature 12: Performance & Storage — Non-Functional Requirements
+
+Validates latency SLOs, storage budgets, and concurrency behavior
+(per `tech-spec.md` HC1–HC5 and success criteria §10).
+
+```gherkin
+Feature: Performance and Storage — Non-Functional Requirements
+
+  Scenario: 12.1 — Context construction latency p95 < 500ms
+    Given a graph with 50,000 nodes (SQLite backend, single machine)
+    When 100 Hybrid retrieval queries are executed
+    Then the p95 latency is below 500 milliseconds
+    And no retrieval query contacts a cloud API, remote service, or the internet (per tech-spec HC5)
+    # The single local Ollama call (http://localhost:11434) for query embedding is permitted
+
+  Scenario: 12.2 — Incremental sync latency < 2s for single file
+    Given a repository with 500K LOC
+    When a single file is changed and sync runs
+    Then the sync completes in under 2 seconds (per tech-spec HC2)
+
+  Scenario: 12.3 — Active graph storage < 500 MB for 100K files
+    Given a repository with 100,000 source files fully extracted
+    And 30 days of simulated annotation workload
+    Then the active graph (excluding cold archive) fits in < 500 MB
+
+  Scenario: 12.4 — SQLite WAL mode handles concurrent reads
+    Given 2 agents reading from the same SQLite graph simultaneously
+    When both execute RetrieveAsync at the same time
+    Then both queries succeed without deadlock or corruption
+    And writes are serialized via in-process mutex (not optimistic concurrency)
+
+  Scenario: 12.5 — Retrieval uses pre-computed embeddings for code nodes
+    When a retrieval query executes with Mode = Hybrid
+    Then code-node embeddings are NOT recomputed — they were pre-computed at extraction time
+    # At query time, IEmbeddingGenerator.GenerateEmbeddingAsync IS called once
+    # to embed the query text (per architecture.md §3.3 step 2, §5.2 Ranker).
+    # This single local Ollama call is the only embedding operation during retrieval.
+    # If IEmbeddingGenerator is unavailable, semantic search is skipped and the
+    # remaining modes (structural, call-chain, expertise) proceed (architecture.md §3.3).
+    And the query text is embedded via one IEmbeddingGenerator.GenerateEmbeddingAsync call
+    And that call goes to the local Ollama service (per tech-spec HC5)
+
+  Scenario: 12.6 — Audit trail completeness
+    Given a sequence of operations: onboard, sync, record expertise, consolidate
+    When the audit_log table is queried
+    Then all 4 operations appear in chronological order
+    And each entry has session_id, timestamp, operation type, and detail JSON
+    # Per tech-spec HC7
+```
+
+---
+
+## Feature 13: Graph Schema Integrity — Edge and Metadata Validation
+
+Validates that stored graph data conforms to the canonical schema:
+correct `SemanticRelation` values, proper hyperedge shape, and
+curated metadata keys (per `architecture.md` §2.2, §4.5, §4.6).
+
+```gherkin
+Feature: Graph Schema Integrity — Edge and Metadata Validation
+
+  Scenario: 13.1 — All edges carry SemanticRelation metadata
+    Given the graph has been populated for "src/ast/"
+    When all edges are enumerated
+    Then every edge has Metadata["SemanticRelation"] set to one of:
+      CONTAINS, DEPENDS_ON, CALLS, EXTENDS, IMPLEMENTS, REFERENCES,
+      SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM
+
+  Scenario: 13.2 — Hyperedge shape: binary relationships have exactly 2 NodeIds
+    Given a CALLS edge between two function nodes
+    Then the edge has exactly 2 entries in NodeIds
+    And Roles maps each NodeId to its semantic role ("caller", "callee")
+    # Per architecture.md §4.6: hyperedge with 2 NodeIds for binary relationships
+
+  Scenario: 13.3 — Memory-only edges use HyperedgeType.MemoryRelation
+    Given a SIMILAR_TO edge in the semantic layer
+    Then the edge's EdgeType = MemoryRelation
+    And Metadata["SemanticRelation"] = "SIMILAR_TO"
+    And Metadata["MemoryLayer"] = "semantic"
+
+  Scenario: 13.4 — Code-derived edges preserve original HyperedgeType
+    Given a CALLS edge derived from a MethodInvocation
+    Then the edge's EdgeType = MethodInvocation (not MemoryRelation)
+    And Metadata["SemanticRelation"] = "CALLS"
+    And Metadata["OriginalEdgeType"] = "MethodInvocation"
+
+  Scenario: 13.5 — AnnotationKeyRegistry validates well-known Metadata keys on code nodes
+    Given a HypergraphNode with Metadata keys:
+      | key          | valid |
+      | MemoryLayer  | yes   |
+      | ContentHash  | yes   |
+      | ext:custom   | yes   |
+      | badkey       | warning |
+    When the node is validated against AnnotationKeyRegistry
+    Then "MemoryLayer" and "ContentHash" pass validation (registered keys)
+    And "ext:custom" is stored with no warning (ext: prefix is the allowed extension mechanism)
+    And "badkey" produces a validation warning (unregistered key without ext: prefix)
+    # Per architecture.md §4.5: Agent-authored extension keys use the ext: prefix.
+    # Keys without ext: prefix that are not in the registry produce a validation warning.
+    # ExpertiseEntry has its own typed fields — not a Metadata dictionary.
+
+  Scenario: 13.6 — Node ID format follows canonical convention
+    Given nodes extracted from "src/ast/Ast.Core/HypergraphModels.cs"
+    Then the Module node ID is "/src/ast/Ast.Core/HypergraphModels.cs"
+    And the Class node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    And the Function node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText"
+    And the repo root node ID is "/"
+    # All in-repo node IDs start with "/" (the repo root). Format:
+    #   "/{relativePath}::{qualifiedName}" for symbols
+    #   "/{relativePath}" for files, packages, workspaces
+    #   "/" for repo root
+    # External stubs use "ext:{package}:{qualifiedName}" (no leading /)
+    # Expertise IDs use "expertise:{kind}:{hash8}" (no leading /)
+    And an External stub ID like "ext:Microsoft.CodeAnalysis:SyntaxTree" has no leading "/"
+    And an expertise ID like "expertise:pitfall:ab12cd34" has no leading "/"
+```
