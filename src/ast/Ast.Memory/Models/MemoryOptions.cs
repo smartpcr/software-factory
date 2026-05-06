@@ -25,4 +25,6 @@ public class MemoryOptions
     public string? Neo4jUri { get; set; }
     public string? QdrantEndpoint { get; set; }
     public string? ConsolidationModelName { get; set; }
+
+    public ScoringWeights Weights { get; set; } = new();
 }

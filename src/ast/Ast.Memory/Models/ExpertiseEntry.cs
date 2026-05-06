@@ -21,13 +21,17 @@ public sealed class ExpertiseEntry
     public string TargetNodeId { get; init; } = string.Empty;
     public string Scope { get; init; } = "exact";
     public double Confidence { get; set; } = 1.0;
+
     public bool Archived { get; set; }
     public string SourceAgent { get; init; } = string.Empty;
     public IReadOnlyList<Citation> Evidence { get; init; } = [];
     public float[]? Embedding { get; set; }
-    public string ContentHash { get; init; } = string.Empty;
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>
     /// Generates a content-addressable ID from the entry's content.
