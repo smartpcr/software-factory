@@ -7,6 +7,8 @@ import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
+import { usePrsStore } from '@/state/usePrsStore';
+import { useBoardStore } from '@/state/useBoardStore';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -68,6 +70,17 @@ export function SideBar() {
     () => workItems.filter((i) => i.state === 'active' || i.state === 'proposed').length,
     [workItems],
   );
+
+  // Live badge counts for Plan & Design, Workstreams, and Pull Requests.
+  const boardCards = useBoardStore((s) => s.cards);
+  const boardCardCount = boardCards.length;
+  const allPrs = usePrsStore((s) => s.prs);
+  const prOpenCount = useMemo(() => allPrs.filter((p) => p.col !== 'merged' && (p.col as string) !== 'abandoned').length, [allPrs]);
+  const prNeedApprovalCount = useMemo(
+    () => allPrs.filter((p) => p.col !== 'merged' && p.humanGate).length,
+    [allPrs],
+  );
+  const wsCount = allWorkstreams.length;
 
   // Phase 9 — sidebar foot user widget opens UserMenu (same popover the TopBar
   // avatar uses). Important when no provider is connected — the placeholder
@@ -150,7 +163,7 @@ export function SideBar() {
               <span className="label">Plan & Design</span>
               <span className="sub">Sprint 14 · day 6/10</span>
             </div>
-            <span className="badge">38</span>
+            <span className="badge">{boardCardCount}</span>
             <span className="tooltip">Plan & Design</span>
           </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/work-items">
@@ -187,16 +200,16 @@ export function SideBar() {
               <span className="label">Workstreams</span>
               <span className="sub">{wsActiveCount} active · {wsConflictCount} conflict{wsConflictCount === 1 ? '' : 's'}</span>
             </div>
-            <span className="badge">8</span>
+            <span className="badge">{wsCount}</span>
             <span className="tooltip">Workstreams</span>
           </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/prs">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="3.5" r="1.5" stroke="currentColor" strokeWidth="1.3" /><circle cx="4" cy="12.5" r="1.5" stroke="currentColor" strokeWidth="1.3" /><circle cx="12" cy="12.5" r="1.5" stroke="currentColor" strokeWidth="1.3" /><line x1="4" y1="5" x2="4" y2="11" stroke="currentColor" strokeWidth="1.3" /><path d="M12 11 V 7 a 3 3 0 0 0 -3 -3 H 5.5" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>
             <div className="label-block">
               <span className="label">Pull Requests</span>
-              <span className="sub">2 need approval</span>
+              <span className="sub">{prNeedApprovalCount} need approval</span>
             </div>
-            <span className="badge alert">2</span>
+            <span className="badge alert">{prOpenCount}</span>
             <span className="tooltip">Pull Requests</span>
           </NavLink>
           <NavLink className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`} to="/audit">

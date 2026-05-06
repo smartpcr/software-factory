@@ -1824,7 +1824,7 @@ State transitions that do NOT touch AssignedAgent:
 
 - [x] **23.7** **Endpoints — extension of existing Phase 12.10 surface**:
   - `POST /api/repos/{id}/sync-work-items` body `{ ignoreThrottle?: bool, kind?: 'full'|'delta'|'auto' }` — manual trigger. `kind='full'` clears `LastSyncAt` first so the next run uses the initial window.
-  - `GET /api/repos/{id}/sync-work-items/runs?limit=20` — paginated `work_item_sync_runs` history.
+  - `GET /api/repos/{id}/sync-work-items/runs?limit=50` — paginated `work_item_sync_runs` history. Server caps `limit` at 50 (default 50) — this is a "recent runs" view, not an export.
   - `GET /api/repos/{id}/sync-work-items/status` — `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince, queueDepth?, etaMinutes? }` for the dashboard widget.
   - `PATCH /api/repos/{id}` accepts `areaPaths: string[]` and `agentReadyDefaultTeam: string?` for inline edit.
 
@@ -1976,7 +1976,8 @@ State transitions that do NOT touch AssignedAgent:
   - [x] `POST_SyncWorkItems_No_Auth_Returns_401` — missing `X-Forge-User` header → 401.
   - [x] `GET_SyncWorkItemsRuns_Returns_Paginated_History` — `GET /api/repos/{id}/sync-work-items/runs` returns `work_item_sync_runs` rows.
   - [x] `GET_SyncWorkItemsRuns_Limit_Parameter_Honored` — `?limit=3` returns 3 rows. *(`Phase23EndpointExtraTests.Get_SyncWorkItems_Runs_Honours_Limit_Parameter`.)*
-  - [x] `GET_SyncWorkItemsRuns_Default_Limit_Is_20` — omit `limit` → max 20 rows.
+  - [x] `GET_SyncWorkItemsRuns_Default_Limit_Is_50` — omit `limit` → max 50 rows. _(Server cap reduced from 100 → 50 + default from 20 → 50; sync history is a recent-runs view.)_
+  - [x] `Get_SyncWorkItems_Runs_Clamps_Limit_Above_50` — `?limit=999` clamps to max 50 rows.
   - [x] `GET_SyncWorkItemsStatus_Returns_Status_Object` — `GET /api/repos/{id}/sync-work-items/status` returns `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince }`.
   - [x] `PATCH_Repo_Accepts_AreaPaths_Array` — `PATCH /api/repos/{id}` with `{ areaPaths: ["A\\B", "C\\D"] }` persists to `AreaPathsJson`.
   - [x] `PATCH_Repo_Accepts_AgentReadyDefaultTeam` — `PATCH /api/repos/{id}` with `{ agentReadyDefaultTeam: "Platform" }` persists to `AgentReadyDefaultTeam`.

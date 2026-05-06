@@ -309,13 +309,35 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         if (mergeCode != 0)
         {
-            // Merge conflict — abort and report.
+            // Merge conflict — abort the clean merge, then retry with -X ours
+            // to auto-resolve conflicts by keeping the current branch's
+            // (agent's) changes. The PR source branch represents intentional
+            // work; the upstream side is background drift.
             this.logger?.LogWarning(
-                "MergeUpstreamIntoBranchAsync: merge of origin/{Upstream} into {Branch} failed with conflicts. "
-                + "stdout={StdOut} stderr={StdErr}",
-                upstreamBranch, branch, mergeOut, mergeErr);
+                "MergeUpstreamIntoBranchAsync: clean merge of origin/{Upstream} into {Branch} had conflicts; "
+                + "retrying with -X ours to keep source-branch changes.",
+                upstreamBranch, branch);
             await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
-            return false;
+
+            var (oursCode, oursOut, oursErr) = await this.RunGitCaptureAsync(
+                wtPath, ct,
+                "-c", "user.email=forge-merger@local",
+                "-c", "user.name=Forge",
+                "merge", "--no-edit", "-X", "ours", $"origin/{upstreamBranch}");
+
+            if (oursCode != 0)
+            {
+                this.logger?.LogError(
+                    "MergeUpstreamIntoBranchAsync: -X ours merge also failed for origin/{Upstream} into {Branch}. "
+                    + "stdout={StdOut} stderr={StdErr}",
+                    upstreamBranch, branch, oursOut, oursErr);
+                await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+                return false;
+            }
+
+            this.logger?.LogInformation(
+                "MergeUpstreamIntoBranchAsync: resolved conflicts with -X ours for origin/{Upstream} into {Branch}.",
+                upstreamBranch, branch);
         }
 
         // Push the merged result.

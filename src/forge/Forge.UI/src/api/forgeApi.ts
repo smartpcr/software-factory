@@ -34,11 +34,14 @@ import type {
   SavedPrefix,
   SoulPayload,
   SprintDiscoveryRequest,
+  SyncRunItem,
+  SyncRunItemDetail,
   TaskQueueEntry,
   CrewQueueStats,
   TimelineResponse,
   UserSettings,
   Workstream,
+  WorkItemSyncRun,
 } from '@/types';
 import { sampleState } from '@/sampleData';
 import type {
@@ -250,6 +253,8 @@ interface ProblemDetails {
   title?: string;
   status?: number;
   detail?: string;
+  // Allow server-side `extensions` to flow through (e.g. {conflict: true, hint}).
+  [key: string]: unknown;
 }
 
 export class ForgeApiError extends Error {
@@ -802,9 +807,15 @@ export const forgeApi = {
     });
   },
 
-  /** POST /api/prs/{id}/merge. */
-  async mergePr(id: string): Promise<Pr> {
-    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge`, {
+  /**
+   * POST /api/prs/{id}/merge.
+   * On a real merge conflict the server returns 409 with `{conflict: true, hint}`.
+   * Pass `force: true` to opt into the destructive `-X ours` auto-resolve path
+   * (keeps source-branch changes, discards upstream-side hunks).
+   */
+  async mergePr(id: string, opts?: { force?: boolean }): Promise<Pr> {
+    const qs = opts?.force ? '?force=true' : '';
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge${qs}`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -1418,6 +1429,62 @@ export const forgeApi = {
     return fetchJson<{ deleted: number }>(
       `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs`,
       { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } },
+    );
+  },
+
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs — paginated sync-history.
+   * Server caps `limit` at 50 (default 50). `target` filters to work-item
+   * (`wi`) or PR (`pr`) runs; omit for all kinds.
+   *
+   * `signal` lets callers cancel the request from a useEffect cleanup so
+   * unmount/re-render doesn't leave a stale fetch in flight (which can
+   * surface as a `TypeError: Failed to fetch` in the browser when the
+   * dev-server proxy / page-context goes away mid-request).
+   */
+  async listSyncRuns(
+    repoId: string,
+    opts: { limit?: number; target?: 'wi' | 'pr'; signal?: AbortSignal } = {},
+  ): Promise<WorkItemSyncRun[]> {
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.max(1, Math.min(50, opts.limit ?? 50))));
+    if (opts.target) params.set('target', opts.target);
+    return fetchJson<WorkItemSyncRun[]>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs?${params.toString()}`,
+      { signal: opts.signal },
+    );
+  },
+
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs/{runId}/items — per-item
+   * detail rows for one sync run (Phase 25). `signal` supports clean
+   * cancellation from a useEffect cleanup.
+   */
+  async listSyncRunItems(
+    repoId: string,
+    runId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<SyncRunItem[]> {
+    return fetchJson<SyncRunItem[]>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items`,
+      { signal: opts.signal },
+    );
+  },
+
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs/{runId}/items/{kind}/{entityId}/detail —
+   * Phase 25 follow-up; rich detail payload for the click-through popup.
+   */
+  async getSyncRunItemDetail(
+    repoId: string,
+    runId: string,
+    entityKind: string,
+    entityId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<SyncRunItemDetail> {
+    return fetchJson<SyncRunItemDetail>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(entityKind)}/${encodeURIComponent(entityId)}/detail`,
+      { signal: opts.signal },
     );
   },
 
