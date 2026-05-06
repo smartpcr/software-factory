@@ -7,9 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Curated constants for all well-known Metadata dictionary keys
-/// used by MemoryNode, MemoryEdge, and related types.
-/// Per architecture.md §4.5.
+/// Curated metadata key constants for memory graph nodes and edges.
 /// </summary>
 public static class MemoryMetadataKeys
 {
@@ -26,11 +24,9 @@ public static class MemoryMetadataKeys
     public const string OriginalEdgeType = "OriginalEdgeType";
     public const string Confidence = "Confidence";
     public const string Stale = "Stale";
-    public const string SourceCode = "SourceCode";
     public const string QualifiedName = "QualifiedName";
     public const string LastTouched = "LastTouched";
     public const string Embedding = "Embedding";
     public const string EmbeddingModel = "EmbeddingModel";
-    public const string EmbeddingStatus = "EmbeddingStatus";
     public const string Package = "Package";
 }

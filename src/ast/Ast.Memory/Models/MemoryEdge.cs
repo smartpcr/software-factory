@@ -9,36 +9,23 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> providing
-/// strongly-typed accessors for memory-layer edge metadata.
-/// Per architecture.md §4.1 — uses composition, NOT inheritance.
+/// Composition wrapper around <see cref="Hyperedge"/> with memory-layer accessors.
 /// </summary>
 public class MemoryEdge
 {
-    /// <summary>The underlying hyperedge.</summary>
-    public Hyperedge Inner { get; }
-
-    /// <summary>
-    /// Temporal version range for this edge. Per architecture.md §4.1.
-    /// Null for edges without version metadata (e.g. External boundary edges).
-    /// </summary>
-    public VersionRange? Version { get; }
-
     public MemoryEdge(Hyperedge inner, VersionRange version)
     {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = version ?? throw new ArgumentNullException(nameof(version));
+        this.Inner = inner;
+        this.Version = version;
     }
 
-    public MemoryEdge(Hyperedge inner)
-    {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata);
-    }
+    public Hyperedge Inner { get; }
 
-    /// <summary>Semantic relation type from metadata (e.g. "APPLIES_TO", "CALLS").</summary>
-    public string? SemanticRelation => MetadataHelper.GetOptionalString(this.Inner.Metadata, MemoryMetadataKeys.SemanticRelation);
+    public VersionRange Version { get; }
 
-    /// <summary>Memory layer from metadata.</summary>
-    public string? MemoryLayer => MetadataHelper.GetOptionalString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
+    public string SemanticRelation =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
+
+    public string MemoryLayer =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
 }

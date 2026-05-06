@@ -10,108 +10,46 @@ using System.Security.Cryptography;
 using System.Text;
 
 /// <summary>
-/// Agent-learned expertise attached to a graph node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node attached to a code element.
 /// </summary>
 public class ExpertiseEntry
 {
-    /// <summary>
-    /// Deterministic ID in the format "expertise:{kind}:{hash8}".
-    /// </summary>
-    public string Id { get; }
+    public string Id { get; set; } = string.Empty;
 
-    public ExpertiseKind Kind { get; }
-    public string Title { get; }
-    public string Body { get; }
-    public string TargetNodeId { get; }
+    public ExpertiseKind Kind { get; set; }
 
-    private string scope = "exact";
+    public string Title { get; set; } = string.Empty;
 
-    public string Scope
-    {
-        get => this.scope;
-        init
-        {
-            if (value is not ("exact" or "subtree"))
-            {
-                throw new ArgumentException($"Scope must be \"exact\" or \"subtree\", got \"{value}\".", nameof(this.Scope));
-            }
+    public string Body { get; set; } = string.Empty;
 
-            this.scope = value;
-        }
-    }
+    public string TargetNodeId { get; set; } = string.Empty;
 
-    private double confidence = 1.0;
+    public string Scope { get; set; } = "exact";
 
-    public double Confidence
-    {
-        get => this.confidence;
-        init
-        {
-            if (value < 0.0 || value > 1.0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(this.Confidence), value, "Confidence must be between 0.0 and 1.0.");
-            }
+    public double Confidence { get; set; } = 1.0;
 
-            this.confidence = value;
-        }
-    }
+    public bool Archived { get; set; }
 
-    public bool Archived { get; init; }
-    public string SourceAgent { get; }
-    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
-    public float[]? Embedding { get; init; }
+    public string SourceAgent { get; set; } = string.Empty;
 
-    /// <summary>SHA-256 hex of Title + Body + TargetNodeId (per architecture.md §4.2, A-18).</summary>
-    public string ContentHash { get; }
+    public IReadOnlyList<Citation> Evidence { get; set; } = Array.Empty<Citation>();
 
-    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
-    public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public float[]? Embedding { get; set; }
 
-    public ExpertiseEntry(ExpertiseKind kind, string title, string body, string targetNodeId, string sourceAgent)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(title);
-        ArgumentException.ThrowIfNullOrEmpty(body);
-        ArgumentException.ThrowIfNullOrEmpty(targetNodeId);
-        ArgumentException.ThrowIfNullOrEmpty(sourceAgent);
+    public string ContentHash { get; set; } = string.Empty;
 
-        this.Kind = kind;
-        this.Title = title;
-        this.Body = body;
-        this.TargetNodeId = targetNodeId;
-        this.SourceAgent = sourceAgent;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-        var idHash = ComputeHash8(title + body + targetNodeId);
-        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{idHash}";
-        this.ContentHash = ComputeFullHash(title + body + targetNodeId);
-    }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>
-    /// Creates a copy with updated confidence and timestamp.
+    /// Generates the canonical ID for this expertise entry.
     /// </summary>
-    public ExpertiseEntry WithConfidence(double newConfidence)
+    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
     {
-        return new ExpertiseEntry(this.Kind, this.Title, this.Body, this.TargetNodeId, this.SourceAgent)
-        {
-            Confidence = Math.Clamp(newConfidence, 0.0, 1.0),
-            Archived = this.Archived,
-            Evidence = this.Evidence,
-            Embedding = this.Embedding,
-            Scope = this.Scope,
-            CreatedAt = this.CreatedAt,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        };
-    }
-
-    private static string ComputeHash8(string input)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(bytes)[..8].ToLowerInvariant();
-    }
-
-    private static string ComputeFullHash(string input)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(bytes).ToLowerInvariant();
+        var input = title + body + targetNodeId;
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        var hash8 = Convert.ToHexString(hash)[..8].ToLowerInvariant();
+        return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
     }
 }
