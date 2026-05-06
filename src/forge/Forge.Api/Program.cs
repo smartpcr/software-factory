@@ -507,21 +507,31 @@ using (var scope = app.Services.CreateScope())
                 .LogInformation("Boot backfill enabled AutoMerge on {Count} PR row(s) inheriting from their parent story spawn.", touched);
         }
     }
-    // Repair pass: reset LastSyncAt on every active non-merged PR so the
-    // first PrSyncJob tick (10s after startup) is forced to re-probe them.
-    // Without this, the cadence gate (default 7200s) skips recently-synced
-    // rows even when their upstream state has changed since last tick — the
-    // common "PR completed in ADO but Forge still shows REVIEW" symptom.
+    // Repair pass: force PrSyncJob to re-probe every non-merged PR on its
+    // first tick (10s after startup). Two conditions are normalised:
+    //   1. IsActive=true, Col!=merged — the common case. Reset LastSyncAt so
+    //      the cadence gate (default 7200s) doesn't filter recently-synced
+    //      rows whose upstream state has since changed.
+    //   2. IsActive=false, Col!=merged — orphaned rows from a half-applied
+    //      sync (e.g. IsActive flipped before Col, or an explicit endpoint
+    //      cleared IsActive without finishing). Re-flag them active +
+    //      LastSyncStatus=idle so the sweep picks them up.
     {
         var stalePrs = await db.Prs
-            .Where(p => p.IsActive && p.Col != "merged")
+            .Where(p => p.Col != "merged")
             .ToListAsync();
-        if (stalePrs.Count > 0)
+        var touched = 0;
+        foreach (var p in stalePrs)
         {
-            foreach (var p in stalePrs) p.LastSyncAt = null;
+            if (p.LastSyncAt is not null) { p.LastSyncAt = null; touched++; }
+            if (!p.IsActive) { p.IsActive = true; touched++; }
+            if (p.LastSyncStatus == "running") { p.LastSyncStatus = "idle"; touched++; }
+        }
+        if (touched > 0)
+        {
             await db.SaveChangesAsync();
             scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("PrSyncBootRefresh")
-                .LogInformation("Boot reset LastSyncAt on {Count} active PR(s) so PrSyncJob's next sweep re-probes upstream state.", stalePrs.Count);
+                .LogInformation("Boot normalised {Count} PR row(s) so PrSyncJob's next sweep re-probes upstream state.", stalePrs.Count);
         }
     }
     // Startup config: enforce canonical model/quota/evaluator-model on

@@ -6,8 +6,8 @@
 
 namespace Ast.Memory.Models;
 
-using System;
-using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
 /// An agent-authored knowledge entry attached to a code node.

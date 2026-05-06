@@ -6,9 +6,6 @@
 
 namespace Ast.Memory.Interfaces;
 
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
@@ -104,9 +101,6 @@ public interface IMemoryGraphStore : IGraphStore
         double minConfidence,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Upserts an expertise entry.
-    /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken);
