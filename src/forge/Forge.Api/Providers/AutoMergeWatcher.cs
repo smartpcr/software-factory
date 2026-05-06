@@ -6,8 +6,10 @@
 
 namespace Forge.Api.Providers;
 
+using Forge.Api.Contracts;
 using Forge.Api.Domain;
 using Forge.Api.Persistence;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.SignalR;
 using Forge.Api.Realtime;
 using Microsoft.EntityFrameworkCore;
@@ -80,36 +82,105 @@ public class AutoMergeWatcher : BackgroundService
                 var pr = PrMapper.ToContract(row);
                 var decision = this.gate.Evaluate(pr);
                 if (decision.Required) continue;
-                if (pr.Conflicts) continue;
                 if (pr.Build?.Status is not null && pr.Build.Status != "passing") continue;
                 if (pr.Review?.Verdict is "changes" or "pending") continue;
+                // Conflicts are NOT a skip when AutoMerge is on — the story
+                // owner pre-authorised destructive resolution, so we let the
+                // -X ours path try when the provider rejects with a conflict.
 
-                // Pick a provider that owns the workstream/branch — we don't
-                // track that mapping yet, so we try GitHub first then ADO.
-                var provider = providers.FirstOrDefault(p => p.IsConfigured && p.Kind == "github")
-                    ?? providers.FirstOrDefault(p => p.IsConfigured && p.Kind == "ado");
+                // Pick the provider from the PR's own provider field (was
+                // hard-coded github→ado fallback, which broke ADO-only
+                // multi-repo deployments).
+                var providerKind = !string.IsNullOrEmpty(row.Provider) ? row.Provider : "github";
+                var provider = providers.FirstOrDefault(p => p.Kind == providerKind && p.IsConfigured);
                 if (provider is null)
                 {
-                    this.logger.LogDebug("forge.auto-merge.skipped pr={Pr} reason=no-configured-provider", pr.Id);
+                    this.logger.LogDebug(
+                        "forge.auto-merge.skipped pr={Pr} reason=no-configured-provider kind={Kind}",
+                        pr.Id, providerKind);
                     continue;
                 }
 
+                // Per-PR repo coords so AdoProvider doesn't fall back to the
+                // global Forge:Ado:Repository in multi-repo deployments.
+                var repo = !string.IsNullOrEmpty(row.RepoId)
+                    ? await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct)
+                    : null;
+                var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
+                var callCtx = new ProviderCallContext(
+                    UserId: null,
+                    UserPat: null,
+                    IdempotencyKey: null,
+                    RepositoryName: repoName,
+                    ProjectName: projectName);
+
+                // PROACTIVE FLOW (matches the human-driven endpoint): rebase
+                // the source branch onto base locally first (always with
+                // force=true since AutoMerge is the operator's standing
+                // pre-authorisation), push, then ask ADO to complete.
+                if (!string.IsNullOrEmpty(row.Branch) && !string.IsNullOrEmpty(row.Base))
+                {
+                    try
+                    {
+                        var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
+                        var rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, force: true, ct);
+                        if (!rebaseOk)
+                        {
+                            this.logger.LogWarning(
+                                "forge.auto-merge.rebase.failed pr={Pr} — leaving AutoMerge=true to retry next tick",
+                                pr.Id);
+                            continue;
+                        }
+                    }
+                    catch (Exception rebaseEx)
+                    {
+                        this.logger.LogWarning(rebaseEx, "forge.auto-merge.rebase.error pr={Pr}", pr.Id);
+                        continue;
+                    }
+                }
+
+                Pr? merged = null;
                 try
                 {
-                    var merged = await provider.MergePullRequestAsync(pr.Id, ProviderCallContext.Anonymous, ct);
-                    var fresh = await db.Prs.FirstOrDefaultAsync(p => p.Id == row.Id, ct);
-                    if (fresh is not null)
-                    {
-                        fresh.Col = "merged";
-                        fresh.AutoMerge = false;
-                        await db.SaveChangesAsync(ct);
-                    }
-                    this.logger.LogInformation("forge.auto-merge.merged pr={Pr} provider={Provider}", pr.Id, provider.Kind);
-                    await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", source = "auto-merge", pr = merged }, ct);
+                    merged = await provider.MergePullRequestAsync(pr.Id, callCtx, ct);
                 }
                 catch (Exception ex)
                 {
-                    this.logger.LogWarning(ex, "forge.auto-merge.failed pr={Pr}", pr.Id);
+                    this.logger.LogWarning(ex, "forge.auto-merge.complete.failed pr={Pr}", pr.Id);
+                    continue;
+                }
+
+                if (merged is null) continue;
+
+                // Trust the provider response — only flip Col=merged when
+                // upstream actually reports the PR as completed. Otherwise
+                // the watcher would lie when ADO returns 200 with status
+                // still 'active' (queued merge / branch-policy reject).
+                if (!string.Equals(merged.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    this.logger.LogInformation(
+                        "forge.auto-merge.deferred pr={Pr} reason=provider-returned-col={Col}",
+                        pr.Id, merged.Col);
+                    continue;
+                }
+
+                var fresh = await db.Prs.FirstOrDefaultAsync(p => p.Id == row.Id, ct);
+                IReadOnlyList<string> advancedWsIds = Array.Empty<string>();
+                if (fresh is not null)
+                {
+                    fresh.Col = "merged";
+                    fresh.AutoMerge = false;
+                    advancedWsIds = await WorkstreamMergeAdvancer
+                        .AdvanceForMergedPrAsync(db, fresh.Id, ct);
+                    await db.SaveChangesAsync(ct);
+                }
+                this.logger.LogInformation("forge.auto-merge.merged pr={Pr} provider={Provider}", pr.Id, provider.Kind);
+                await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", source = "auto-merge", pr = merged }, ct);
+                if (advancedWsIds.Count > 0)
+                {
+                    await hub.Clients.All.SendAsync(
+                        "story-spawn.changed",
+                        new { kind = "ws-completed", prId = fresh!.Id, workstreamIds = advancedWsIds }, ct);
                 }
             }
         }

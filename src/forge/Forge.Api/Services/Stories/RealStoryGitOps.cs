@@ -275,6 +275,90 @@ public sealed class RealStoryGitOps : IStoryGitOps
         await this.GitAsync(wtPath, ct, "push", "--force-with-lease", "origin", baseBranch);
     }
 
+    /// <inheritdoc/>
+    public async Task<bool> MergeUpstreamIntoBranchAsync(
+        RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        // Ensure the worktree is up to date.
+        await this.EnsureWorktreeAsync(root, wtPath, branch, branch, ct);
+        await this.GitAsync(wtPath, ct, "fetch", "origin", upstreamBranch);
+        await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+        await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+
+        // Check if upstream is already an ancestor — nothing to merge.
+        var (mbCode, _, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "merge-base", "--is-ancestor", $"origin/{upstreamBranch}", "HEAD");
+        if (mbCode == 0)
+        {
+            this.logger?.LogInformation(
+                "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}, skipping.",
+                upstreamBranch, branch);
+            return true;
+        }
+
+        // Attempt a normal merge from upstream.
+        var (mergeCode, mergeOut, mergeErr) = await this.RunGitCaptureAsync(
+            wtPath, ct,
+            "-c", "user.email=forge-merger@local",
+            "-c", "user.name=Forge",
+            "merge", "--no-edit", $"origin/{upstreamBranch}");
+
+        if (mergeCode != 0)
+        {
+            await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+
+            if (!force)
+            {
+                this.logger?.LogInformation(
+                    "MergeUpstreamIntoBranchAsync: clean merge of origin/{Upstream} into {Branch} had conflicts; "
+                    + "force=false so surfacing the conflict to the caller without -X ours.",
+                    upstreamBranch, branch);
+                return false;
+            }
+
+            // Merge conflict + force=true → auto-resolve with -X ours by
+            // keeping the source branch's (agent's) changes. The PR source
+            // branch represents intentional work; the upstream side is
+            // background drift. Destructive — only run when the caller has
+            // explicit authorisation (force=true / story-level AutoMerge).
+            this.logger?.LogWarning(
+                "MergeUpstreamIntoBranchAsync: clean merge of origin/{Upstream} into {Branch} had conflicts; "
+                + "force=true so retrying with -X ours.",
+                upstreamBranch, branch);
+
+            var (oursCode, oursOut, oursErr) = await this.RunGitCaptureAsync(
+                wtPath, ct,
+                "-c", "user.email=forge-merger@local",
+                "-c", "user.name=Forge",
+                "merge", "--no-edit", "-X", "ours", $"origin/{upstreamBranch}");
+
+            if (oursCode != 0)
+            {
+                this.logger?.LogError(
+                    "MergeUpstreamIntoBranchAsync: -X ours merge also failed for origin/{Upstream} into {Branch}. "
+                    + "stdout={StdOut} stderr={StdErr}",
+                    upstreamBranch, branch, oursOut, oursErr);
+                await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+                return false;
+            }
+
+            this.logger?.LogInformation(
+                "MergeUpstreamIntoBranchAsync: resolved conflicts with -X ours for origin/{Upstream} into {Branch}.",
+                upstreamBranch, branch);
+        }
+
+        // Push the merged result.
+        await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+        this.logger?.LogInformation(
+            "MergeUpstreamIntoBranchAsync: merged origin/{Upstream} into {Branch} and pushed.",
+            upstreamBranch, branch);
+        return true;
+    }
+
     public async Task<string> EnsureWorktreeAsync(
         RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
@@ -387,6 +471,158 @@ public sealed class RealStoryGitOps : IStoryGitOps
         {
             gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Phase 45 follow-up — list repo-relative paths of files the agent
+    /// modified inside <paramref name="worktreePath"/>. Combines two
+    /// sources so we don't lose changes regardless of how the agent
+    /// chose to "save its work":
+    /// <list type="number">
+    /// <item><c>git status --porcelain -z</c> — files the agent edited
+    /// but didn't commit (the expected/intended path).</item>
+    /// <item><c>git diff --name-only origin/{branch}..HEAD</c> — files
+    /// touched by commits the agent made itself via its <c>bash</c> /
+    /// <c>run_command</c> tool but that haven't been pushed yet.
+    /// Observed 2026-05-05 when the engineer prompt mentioned
+    /// <c>dotnet build</c> and the agent inferred it was free to run
+    /// <c>git add -A &amp;&amp; git commit</c> too. Treating those as
+    /// "no changes" was a false negative that halted impl phases.</item>
+    /// </list>
+    /// Skips deletions (the orchestrator's <see cref="CommitFilesAsync"/>
+    /// dict contract can't express them) and path-traversal entries.
+    /// Returns an empty list when the worktree is clean AND the local
+    /// branch matches origin (or the upstream ref doesn't exist yet).
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetChangedFilesAsync(
+        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
+            return Array.Empty<string>();
+
+        // Use HashSet so a path that appears in BOTH (e.g. agent committed
+        // file X then edited it again post-commit) only shows up once.
+        var paths = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<string>();
+
+        // ── 1) Uncommitted changes ──────────────────────────────────────
+        // `-uall` (== `--untracked-files=all`) is critical: without it git
+        // collapses untracked files inside a brand-new directory into the
+        // directory's own entry (e.g. `?? xraft-core/`). The strategy then
+        // calls File.Exists on the directory path, which returns false,
+        // and the agent's source files vanish from the dict — observed
+        // 2026-05-05 on the from-scratch xraft repo where the engineer
+        // wrote a full Cargo workspace but the resulting PR had zero
+        // commits because every file lived under a fresh top-level dir.
+        var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "status", "--porcelain", "-uall", "-z");
+        if (statusCode == 0 && !string.IsNullOrEmpty(statusOut))
+        {
+            // -z output: NUL-delimited records of `XY path` (renames are
+            // `R  newpath\0oldpath`). Walk char-by-char; skip the prefix
+            // byte pair + space so we extract just the path.
+            var entries = statusOut.Split('\0');
+            for (int i = 0; i < entries.Length; i++)
+            {
+                var entry = entries[i];
+                if (entry.Length < 4) continue;
+                var status = entry.Substring(0, 2);
+                var path = entry.Substring(3);
+                if (status[0] == 'D' || status[1] == 'D') continue;
+                if (status[0] == 'R' || status[0] == 'C')
+                {
+                    if (i + 1 < entries.Length) i++;
+                }
+                if (string.IsNullOrEmpty(path)) continue;
+                if (path.Contains("..", StringComparison.Ordinal)) continue;
+                var norm = path.Replace('\\', '/');
+                // Skip well-known build-artifact directories. .gitignore
+                // is the proper place to handle this, but a from-scratch
+                // workstream often hasn't authored one yet, and we don't
+                // want a 100-MB Rust `target/` dir or a `node_modules/`
+                // tree showing up on the PR. Conservative list — only
+                // dirs whose entire purpose is generated/cached output.
+                if (IsBuildArtifactPath(norm)) continue;
+                if (paths.Add(norm)) ordered.Add(norm);
+            }
+        }
+
+        // ── 2) Local commits ahead of origin/{branch} ───────────────────
+        // Resolve the branch from the worktree itself (no signature
+        // change needed at the IStoryGitOps level). If the worktree is
+        // detached or origin/{branch} doesn't exist yet (very-first
+        // workstream commit before the initial push), fall back to
+        // returning just the uncommitted set.
+        var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
+        if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut)) return ordered;
+        var branch = branchOut.Trim();
+        if (branch == "HEAD") return ordered; // detached
+
+        var (refCode, _, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "rev-parse", "--verify", $"refs/remotes/origin/{branch}");
+        if (refCode != 0) return ordered; // upstream ref missing — nothing to diff against
+
+        var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "diff", "--name-only", "-z", $"origin/{branch}..HEAD");
+        if (diffCode != 0 || string.IsNullOrEmpty(diffOut)) return ordered;
+
+        foreach (var entry in diffOut.Split('\0'))
+        {
+            if (string.IsNullOrEmpty(entry)) continue;
+            if (entry.Contains("..", StringComparison.Ordinal)) continue;
+            var norm = entry.Replace('\\', '/');
+            if (IsBuildArtifactPath(norm)) continue;
+            if (paths.Add(norm)) ordered.Add(norm);
+        }
+
+        return ordered;
+    }
+
+    /// <summary>
+    /// True for paths under directories whose contents are by convention
+    /// generated/cached (Rust <c>target/</c>, Node <c>node_modules/</c>,
+    /// .NET <c>obj/</c>, Python <c>__pycache__/</c>, etc.). Used as a
+    /// fallback when the workstream hasn't authored a <c>.gitignore</c>
+    /// yet (typical for from-scratch repos). Conservative — only matches
+    /// directories whose entire purpose is throwaway output, never a
+    /// directory that might legitimately hold source.
+    /// </summary>
+    private static bool IsBuildArtifactPath(string repoRelativePath)
+    {
+        if (string.IsNullOrEmpty(repoRelativePath)) return false;
+        // Anchor on path-segment boundaries so e.g. `src/target_resolver.rs`
+        // is NOT matched by the `target/` rule. The path is normalised to
+        // forward slashes by callers.
+        var p = repoRelativePath.Replace('\\', '/');
+        ReadOnlySpan<string> dirs =
+        [
+            "target/",            // Rust
+            "node_modules/",      // Node
+            "__pycache__/",       // Python bytecode
+            ".pytest_cache/",     // Pytest
+            ".mypy_cache/",       // mypy
+            ".ruff_cache/",       // ruff
+            ".tox/",              // tox
+            ".venv/",             // Python virtualenv
+            "venv/",              // Python virtualenv (alt)
+            "obj/",               // .NET intermediate
+            ".gradle/",           // Gradle cache
+            ".idea/",             // JetBrains
+            ".vs/",               // Visual Studio cache
+            ".cache/",            // generic
+            "dist/",              // common JS bundler output
+            ".next/",             // Next.js
+            ".nuxt/",             // Nuxt
+            ".turbo/",            // Turborepo
+            ".parcel-cache/",     // Parcel
+        ];
+        foreach (var dir in dirs)
+        {
+            if (p.StartsWith(dir, StringComparison.Ordinal)) return true;
+            if (p.Contains("/" + dir, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

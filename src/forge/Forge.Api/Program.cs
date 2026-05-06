@@ -421,6 +421,7 @@ using (var scope = app.Services.CreateScope())
     // mapped entity. Skipping either would crash with "no such column".
     await Phase43Migration.ApplyAsync(db);
     await Phase45Migration.ApplyAsync(db);
+    await Phase46Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
@@ -482,6 +483,47 @@ using (var scope = app.Services.CreateScope())
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
+    // Repair pass: any workstream stuck on review/merging whose PR is
+    // already merged gets snapped to "complete". Backfills rows merged
+    // before WorkstreamMergeAdvancer was wired into the merge paths.
+    {
+        var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(db);
+        if (advanced > 0)
+        {
+            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("WorkstreamMergeAdvancer")
+                .LogInformation("Boot backfill advanced {Count} workstream(s) to complete on already-merged PRs.", advanced);
+        }
+    }
+    // Repair pass: any active PR whose parent story spawn has AutoMerge=true
+    // but whose PrRow.AutoMerge=false gets the flag flipped on. Repairs PRs
+    // created before SpawnAutoMergeResolver was wired into every PR-creation
+    // path; without this, existing PRs sit on Col=review forever because
+    // AutoMergeWatcher only iterates `WHERE AutoMerge=true`.
+    {
+        var touched = await Forge.Api.Services.Stories.SpawnAutoMergeResolver.BackfillPrsAsync(db);
+        if (touched > 0)
+        {
+            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("SpawnAutoMergeResolver")
+                .LogInformation("Boot backfill enabled AutoMerge on {Count} PR row(s) inheriting from their parent story spawn.", touched);
+        }
+    }
+    // Repair pass: reset LastSyncAt on every active non-merged PR so the
+    // first PrSyncJob tick (10s after startup) is forced to re-probe them.
+    // Without this, the cadence gate (default 7200s) skips recently-synced
+    // rows even when their upstream state has changed since last tick — the
+    // common "PR completed in ADO but Forge still shows REVIEW" symptom.
+    {
+        var stalePrs = await db.Prs
+            .Where(p => p.IsActive && p.Col != "merged")
+            .ToListAsync();
+        if (stalePrs.Count > 0)
+        {
+            foreach (var p in stalePrs) p.LastSyncAt = null;
+            await db.SaveChangesAsync();
+            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("PrSyncBootRefresh")
+                .LogInformation("Boot reset LastSyncAt on {Count} active PR(s) so PrSyncJob's next sweep re-probes upstream state.", stalePrs.Count);
+        }
+    }
     // Startup config: enforce canonical model/quota/evaluator-model on
     // all 8 crews and guarantee each day/night shift has ≥ 2 members.
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");

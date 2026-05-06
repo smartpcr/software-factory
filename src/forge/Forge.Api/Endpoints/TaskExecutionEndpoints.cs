@@ -475,13 +475,48 @@ public static class TaskExecutionEndpoints
                 catch { /* ignore */ }
             }
 
-            // Convention fallback: E:\forge\{repoId}\.worktree\ws-{workItemId}
-            if (string.IsNullOrEmpty(wtPath) && wi is not null && !string.IsNullOrEmpty(wi.RepoId))
+            // Convention fallback: {cloneRoot}\.worktree\spawn-{sanitizedBranch}
+            // Matches RealStoryGitOps.WorktreePath which uses `spawn-` prefix
+            // with the sanitized branch slug.
+            if (string.IsNullOrEmpty(wtPath))
             {
-                var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
-                    .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
-                if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot))
-                    wtPath = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{id}");
+                // Try the workstream's branch first (coding tasks), then
+                // fall back to the work item's branch (legacy path).
+                string? branch = null;
+                string? repoId = wi?.RepoId;
+                var wsRow = await db.Workstreams.AsNoTracking()
+                    .FirstOrDefaultAsync(w => w.Id == id, ct);
+                if (wsRow is not null)
+                {
+                    branch = wsRow.Branch;
+                    repoId ??= wsRow.RepoId;
+                }
+                branch ??= wsRow?.Branch;
+
+                if (!string.IsNullOrEmpty(repoId))
+                {
+                    var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
+                        .FirstOrDefaultAsync(r => r.Id == repoId, ct);
+                    if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot))
+                    {
+                        // Story-spawn convention (RealStoryGitOps): spawn-{sanitizedBranch}
+                        if (!string.IsNullOrEmpty(branch))
+                        {
+                            var sanitized = SanitizeBranchSlug(branch);
+                            var candidate = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{sanitized}");
+                            if (Directory.Exists(candidate))
+                                wtPath = candidate;
+                        }
+                        // CrewQueueWorker convention: ws-{sanitizedId}
+                        if (string.IsNullOrEmpty(wtPath))
+                        {
+                            var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+                            var candidate2 = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{sanitizedId}");
+                            if (Directory.Exists(candidate2))
+                                wtPath = candidate2;
+                        }
+                    }
+                }
             }
 
             if (!string.IsNullOrEmpty(wtPath) && Directory.Exists(wtPath))
@@ -506,6 +541,13 @@ public static class TaskExecutionEndpoints
                 catch { /* best-effort */ }
             }
         }
+
+        // Time budget: derive from work-item points + phase tag. Coding tasks
+        // use "impl"; plan-doc tasks supply their own budgetSeconds via the
+        // per-doc iterations endpoint, but we surface the same field here so
+        // the workstream conversation tab can render "timeout Xm" consistently.
+        var phaseTag = "impl";
+        var budgetSeconds = (int)CrewStoryArtifactStrategy.BudgetForPhase(wi?.Points ?? 0, phaseTag).TotalSeconds;
 
         // Iteration counter + score: derived from the chronologically latest deliverable.
         var currentIter = current?.Iter ?? 0;
@@ -583,7 +625,8 @@ public static class TaskExecutionEndpoints
             // header reads "iter N of {pts*5}" instead of always "of 5".
             // The runtime PATCH override on the queue row still wins.
             MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
-            TranscriptTotalCount: transcriptTotalCount);
+            TranscriptTotalCount: transcriptTotalCount,
+            BudgetSeconds: budgetSeconds);
 
         return Results.Ok(snap);
     }

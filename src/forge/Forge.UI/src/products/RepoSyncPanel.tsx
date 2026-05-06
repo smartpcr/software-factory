@@ -6,7 +6,7 @@
 // inspect history + errors in one place.
 // -----------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Repo, WorkItemSyncRun, SyncRunItem, SyncRunItemDetail } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
@@ -127,6 +127,37 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Refs for cancelling in-flight history requests so unmount /
+  // re-render / repo-switch never leaves a dangling fetch that can
+  // surface as a `TypeError: Failed to fetch` when the dev-server proxy
+  // or page context goes away mid-request.
+  const historyAbortRef = useRef<AbortController | null>(null);
+  // Bumped on every history-load attempt so manual refreshes after a
+  // sync trigger can ignore their own response if a newer load started.
+  const historyReqIdRef = useRef(0);
+
+  const loadHistory = useCallback(async () => {
+    historyAbortRef.current?.abort();
+    const ac = new AbortController();
+    historyAbortRef.current = ac;
+    const reqId = ++historyReqIdRef.current;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const rs = await forgeApi.listSyncRuns(repo.id, { limit: 50, signal: ac.signal });
+      if (historyReqIdRef.current === reqId) setRuns(rs);
+    } catch (e) {
+      // Ignore aborts — those are intentional cleanup, not user-facing.
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      if (e instanceof Error && e.name === 'AbortError') return;
+      if (historyReqIdRef.current === reqId) {
+        setHistoryError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (historyReqIdRef.current === reqId) setHistoryLoading(false);
+    }
+  }, [repo.id]);
+
   // Sync in progress
   const [syncing, setSyncing] = useState(false);
 
@@ -179,19 +210,15 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     saveFilters(repo.id, 'pr', prFilters);
   }, [open, repo.id, prFilters]);
 
-  // Load history when tab switches to history
+  // Load history when tab switches to history. Aborts any in-flight
+  // request from a previous render via the shared loadHistory helper.
   useEffect(() => {
     if (!open || tab !== 'history') return;
-    let cancelled = false;
-    setHistoryLoading(true);
-    setHistoryError(null);
-    fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=50`)
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((rs: WorkItemSyncRun[]) => { if (!cancelled) setRuns(rs); })
-      .catch((e: Error) => { if (!cancelled) setHistoryError(e.message); })
-      .finally(() => { if (!cancelled) setHistoryLoading(false); });
-    return () => { cancelled = true; };
-  }, [open, tab, repo.id]);
+    void loadHistory();
+    return () => {
+      historyAbortRef.current?.abort();
+    };
+  }, [open, tab, loadHistory]);
 
   // Keyboard + scroll lock
   useEffect(() => {
@@ -262,12 +289,11 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     try {
       await forgeApi.syncRepoWorkItems(repo.id, { kind: wiFilters.syncKind });
       toast(`Work item sync started (${wiFilters.syncKind})`, 'success');
-      // Refresh history if on that tab
+      // Refresh history if on that tab — loadHistory aborts any prior
+      // request and ignores stale responses.
       if (tab === 'history') {
         setRuns(null);
-        const rs = await fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=50`)
-          .then((r) => r.json());
-        setRuns(rs);
+        await loadHistory();
       }
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Sync failed', 'danger');
@@ -291,10 +317,7 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
       toast(`PR sync completed · ${summary}`, 'success');
       // Refresh history so the new pr-manual entry appears immediately.
       setRuns(null);
-      fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=50`)
-        .then((r) => r.ok ? r.json() : [])
-        .then((rs: WorkItemSyncRun[]) => setRuns(rs))
-        .catch(() => {});
+      void loadHistory();
     } catch (e) {
       toast(e instanceof Error ? e.message : 'PR sync failed', 'danger');
     } finally {
@@ -516,6 +539,7 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
               loading={historyLoading}
               error={historyError}
               repoId={repo.id}
+              onRetry={loadHistory}
             />
           )}
         </div>
@@ -875,11 +899,13 @@ function HistoryTab({
   error,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   repoId: _repoId,
+  onRetry,
 }: {
   runs: WorkItemSyncRun[] | null;
   loading: boolean;
   error: string | null;
   repoId: string;
+  onRetry?: () => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -909,8 +935,33 @@ function HistoryTab({
           border: '1px solid var(--danger-border)',
           color: 'var(--danger)',
           fontSize: 12,
+          display: 'grid',
+          gap: 8,
         }}>
-          Failed to load history: {error}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span>Could not load sync history.</span>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={() => { void onRetry(); }}
+                disabled={loading}
+                style={{
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  background: 'transparent',
+                  border: '1px solid var(--danger-border)',
+                  borderRadius: 'var(--radius-xs)',
+                  color: 'var(--danger)',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', wordBreak: 'break-word' }}>
+            {error}
+          </div>
         </div>
       )}
 
@@ -1099,12 +1150,15 @@ function SyncRunItemList({ repoId, runId }: { repoId: string; runId: string }) {
   const [openItem, setOpenItem] = useState<SyncRunItem | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items`)
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((data: SyncRunItem[]) => { if (!cancelled) setItems(data); })
-      .catch((e: Error) => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; };
+    const ac = new AbortController();
+    forgeApi.listSyncRunItems(repoId, runId, { signal: ac.signal })
+      .then((data) => setItems(data))
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => { ac.abort(); };
   }, [repoId, runId]);
 
   if (error) {
@@ -1250,16 +1304,17 @@ function SyncRunItemDetailPopup({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const ac = new AbortController();
     setDetail(null);
     setError(null);
-    fetch(
-      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(item.entityKind)}/${encodeURIComponent(item.entityId)}/detail`,
-    )
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((data: SyncRunItemDetail) => { if (!cancelled) setDetail(data); })
-      .catch((e: Error) => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; };
+    forgeApi.getSyncRunItemDetail(repoId, runId, item.entityKind, item.entityId, { signal: ac.signal })
+      .then((data) => setDetail(data))
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => { ac.abort(); };
   }, [repoId, runId, item.entityKind, item.entityId]);
 
   useEffect(() => {
