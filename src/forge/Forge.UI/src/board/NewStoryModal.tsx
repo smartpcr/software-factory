@@ -21,6 +21,9 @@ export function NewStoryModal({ open, onClose }: Props) {
   // Phase 45 — operator's default base branch for spawns produced from
   // this story. Empty input → "main".
   const [baseBranch, setBaseBranch] = useState<string>('');
+  // Phase 46 — auto-merge PRs against base branch. Honoured for any base
+  // (including main); the operator arms it deliberately.
+  const [autoMerge, setAutoMerge] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -33,6 +36,7 @@ export function NewStoryModal({ open, onClose }: Props) {
     setDescription('');
     setPoints('5');
     setBaseBranch('');
+    setAutoMerge(false);
     setBusy(false);
     setErr(null);
     setFiles([]);
@@ -70,6 +74,8 @@ export function NewStoryModal({ open, onClose }: Props) {
         uploadIds,
         // Phase 45 — empty / unset means the server uses the default ("main").
         baseBranch: trimmedBase.length > 0 ? trimmedBase : undefined,
+        // Phase 46 — auto-merge applies for any base including main.
+        autoMerge,
       });
       useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
       if (result.branchWarnings && result.branchWarnings.length > 0) {
@@ -177,6 +183,19 @@ export function NewStoryModal({ open, onClose }: Props) {
               Default base branch for spawns produced from this story.
               Non-default values are created from <code>main</code> immediately
               in every repo of the product.
+            </span>
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={autoMerge}
+              onChange={(e) => setAutoMerge(e.target.checked)}
+              disabled={busy}
+            />
+            <span style={labelStyle}>Auto-merge PRs against base branch</span>
+            <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+              Agent will automatically create and merge PRs (any base, including main).
             </span>
           </label>
 

@@ -52,6 +52,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
   // Empty input = default "main"; non-default values are branched from main
   // by the orchestrator on first drive.
   const [baseBranch, setBaseBranch] = useState('');
+  // Phase 46 — auto-merge PRs against base branch.
+  const [autoMerge, setAutoMerge] = useState(false);
 
   // Load stories + repos when the modal opens.
   useEffect(() => {
@@ -65,6 +67,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setFiles([]);
     setUploadIds([]);
     setBaseBranch('');
+    setAutoMerge(false);
 
     let cancelled = false;
     setLoading(true);
@@ -107,6 +110,10 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setSelected(s);
     // Auto-select repo when there's exactly one in this product.
     setRepoId(repos.length === 1 ? repos[0].id : null);
+    // Phase 46 — inherit autoMerge from the story default.
+    setAutoMerge(s.autoMerge ?? false);
+    // Phase 45 — inherit baseBranch from the story default.
+    setBaseBranch(s.baseBranch && s.baseBranch !== 'main' ? s.baseBranch : '');
     setStep('confirm');
   }
 
@@ -128,6 +135,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         repoId ?? null,
         ids.length > 0 ? ids : undefined,
         trimmedBase.length > 0 ? trimmedBase : undefined,
+        autoMerge,
       );
       setBusy(false);
       onSpawned?.(selected.id);
@@ -262,6 +270,19 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                 <code>main</code> automatically.
               </span>
             </Field>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={autoMerge}
+                  onChange={(e) => setAutoMerge(e.target.checked)}
+                />
+                Auto-merge PRs against base branch
+              </label>
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                Agent will automatically merge PRs after review passes (any base, including main).
+              </span>
+            </div>
             <Field label="Reference documents (optional)">
               <div style={{ display: 'grid', gap: 6 }}>
                 <input

@@ -75,6 +75,16 @@ public class ProductStoryRow
     /// runs against it.
     /// </summary>
     public string BaseBranch { get; set; } = "main";
+
+    /// <summary>
+    /// Phase 46 — when <c>true</c>, agents may auto-create a PR against the
+    /// base branch and merge it after the task completes. Carried through
+    /// to <see cref="StorySpawnRow.AutoMerge"/> on spawn. Honoured for any
+    /// base, including <c>"main"</c>; the operator arms the flag
+    /// deliberately and <c>AutoMergeWatcher</c> still applies build / human
+    /// gate / review checks before merging.
+    /// </summary>
+    public bool AutoMerge { get; set; }
 }
 
 public class CardRow
@@ -2172,6 +2182,17 @@ public class StorySpawnRow
     /// Architect agents read these before producing plan docs.
     /// </summary>
     public string? AttachmentsJson { get; set; }
+
+    /// <summary>
+    /// Phase 46 — when <c>true</c>, the orchestrator sets
+    /// <see cref="PrRow.AutoMerge"/> on every PR it opens so
+    /// <c>AutoMergeWatcher</c> auto-merges them after build + review gates
+    /// pass. Also carried through to workstream work items so engineer
+    /// agents know their task PRs will be merged automatically. Honoured
+    /// for any base, including <c>"main"</c>; the operator arms the flag
+    /// deliberately.
+    /// </summary>
+    public bool AutoMerge { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

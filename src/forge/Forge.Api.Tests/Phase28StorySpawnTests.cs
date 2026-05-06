@@ -861,6 +861,83 @@ public class Phase28StorySpawnTests
         finally { f.Dispose(); }
     }
 
+    /// <summary>
+    /// 28.6 — Regression: a workstream stuck at status='review' must auto-advance
+    /// to 'complete' when its PR row reaches the terminal merged cache state.
+    /// This covers external merges (PR closed via the upstream GitHub / ADO UI)
+    /// observed by <see cref="Forge.Api.Services.PrSyncJob"/>, not just the
+    /// orchestrator's own ApproveAndMergeAsync flow.
+    /// <para>
+    /// Without this fast-path, the only "review → merging → complete" path was
+    /// the local approve+merge flow inside <c>DriveReviewAsync</c>; externally
+    /// merged PRs left the workstream pinned at 'review' indefinitely
+    /// (observed 2026-05-05: 7 workstreams stuck in HIGH-MEM-CONSUMPTION).
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Review_External_Merge_Advances_Workstream_To_Complete()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-50042", "external-merge");
+            await SpawnAsync(c, "WI-50042");
+            await SetPlanPrAsync(f, "WI-50042", "pr-plan-42", "merged");
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
+            await c.PostAsJsonAsync("/api/stories/WI-50042/spawn/decompose", new
+            {
+                workstreams = new[] { new { title = "ws1" } },
+            }, JsonOpts);
+            await c.PostAsync("/api/stories/WI-50042/spawn/decompose/approve", null);
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "implement" }, options: JsonOpts));
+
+            // Seed: ws is at 'review' with a PR id; the PR row is already
+            // in the terminal merged cache state (PrSyncJob would set this
+            // when the upstream PR is closed/completed).
+            const string wsId = "ws-wi-50042-ws1";
+            const string prId = "pr-ws1-42";
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
+                ws.Status = "review";
+                ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
+                db.Prs.Add(new PrRow
+                {
+                    Id = prId,
+                    Col = "merged",
+                    IsActive = false,
+                    Branch = ws.Branch,
+                    Base = "main",
+                    Title = $"[impl] {ws.Name}",
+                    Workstream = wsId,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "review" }, options: JsonOpts));
+
+            // Drive once — DriveReviewAsync's external-merge fast-path should
+            // advance the workstream from 'review' straight to 'complete'.
+            using (var scope = f.Services.CreateScope())
+            {
+                var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync("WI-50042");
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+                Assert.Equal("complete", reload.Status);
+            }
+        }
+        finally { f.Dispose(); }
+    }
+
     // -----------------------------------------------------------------------
     // 28.7 — QA phase
     // -----------------------------------------------------------------------
@@ -912,6 +989,125 @@ public class Phase28StorySpawnTests
             await db.SaveChangesAsync();
             var reloaded = await db.StorySpawns.AsNoTracking().FirstAsync(x => x.StoryId == "WI-50051");
             Assert.Equal("story/WI-50051/qa", reloaded.QaBranch);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Phase 46 — autoMerge=true must persist on the spawn row even when
+    /// the base branch is "main". The original Phase 46 implementation
+    /// force-cleared autoMerge for main targets; that gate has been removed
+    /// so the operator can opt into auto-merging directly to main.
+    /// </summary>
+    [Fact]
+    public async Task Spawn_Persists_AutoMerge_True_When_BaseBranch_Is_Main()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-50046-am-main", "auto-merge to main");
+            // Explicit baseBranch=main + autoMerge=true via the spawn request body.
+            var resp = await c.PostAsJsonAsync("/api/stories/WI-50046-am-main/spawn",
+                new { baseBranch = "main", autoMerge = true }, JsonOpts);
+            Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+
+            using var scope = f.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-50046-am-main");
+            Assert.Equal("main", spawn.BaseBranch);
+            Assert.True(spawn.AutoMerge,
+                "Spawn AutoMerge must persist as true even when base is 'main'.");
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Phase 46 — the orchestrator's <c>AutoMergeOf</c> helper drives every
+    /// PR-creation site's <c>PrRow.AutoMerge</c> flag. Verifying via the
+    /// spawn-create path is sufficient because every PR-open call site
+    /// passes <c>AutoMergeOf(spawn)</c> verbatim into the provider request.
+    /// This test seeds a spawn with <c>BaseBranch=main</c> +
+    /// <c>AutoMerge=true</c> and asserts the orchestrator's plan-PR opener
+    /// surfaces <c>AutoMerge=true</c> on the resulting <c>PrRow</c>.
+    /// </summary>
+    [Fact]
+    public async Task Spawn_With_AutoMerge_On_Main_Plan_Pr_Has_AutoMerge_True()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-50047-am-pr", "auto-merge plan PR to main");
+            await c.PostAsJsonAsync("/api/stories/WI-50047-am-pr/spawn",
+                new { baseBranch = "main", autoMerge = true }, JsonOpts);
+
+            using var scope = f.Services.CreateScope();
+            var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            await orchestrator.DriveAsync("WI-50047-am-pr");
+
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-50047-am-pr");
+            Assert.False(string.IsNullOrEmpty(spawn.PlanPrId),
+                "Plan PR should have been opened by the orchestrator drive.");
+            var planPr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == spawn.PlanPrId);
+            Assert.True(planPr.AutoMerge,
+                "Plan PR must inherit AutoMerge=true even when targeting 'main'.");
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Phase 46 — patching a story to set baseBranch back to "main" must
+    /// preserve a previously-set autoMerge=true (no auto-clear). Operator
+    /// stays in control of the flag.
+    /// </summary>
+    [Fact]
+    public async Task Patch_Story_BaseBranch_To_Main_Preserves_AutoMerge_True()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            // Seed a product so we can create a story under it.
+            const string productId = "p-am-main";
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                if (!await db.Products.AnyAsync(p => p.Id == productId))
+                {
+                    db.Products.Add(new ProductRow { Id = productId, Name = "AM main product", Sort = 99 });
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            // Create a story with autoMerge=true + base=feature/x.
+            var createResp = await c.PostAsJsonAsync(
+                $"/api/products/{productId}/stories",
+                new { name = "story-am", baseBranch = "feature/x", autoMerge = true },
+                JsonOpts);
+            Assert.True(createResp.IsSuccessStatusCode, await createResp.Content.ReadAsStringAsync());
+            var created = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync());
+            var storyId = created.RootElement.GetProperty("story").GetProperty("id").GetString()!;
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var ps = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Id == storyId);
+                Assert.True(ps.AutoMerge, "Initial autoMerge=true must persist on feature branch.");
+            }
+
+            // PATCH base back to "main" without sending autoMerge — must NOT auto-clear.
+            var patchResp = await c.PatchAsync(
+                $"/api/products/{productId}/stories/{storyId}",
+                JsonContent.Create(new { baseBranch = "main" }, options: JsonOpts));
+            Assert.True(patchResp.IsSuccessStatusCode, await patchResp.Content.ReadAsStringAsync());
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var reloaded = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Id == storyId);
+                Assert.Equal("main", reloaded.BaseBranch);
+                Assert.True(reloaded.AutoMerge,
+                    "AutoMerge must be preserved when base reverts to 'main' (no auto-clear).");
+            }
         }
         finally { f.Dispose(); }
     }

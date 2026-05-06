@@ -210,6 +210,13 @@ public sealed class StorySpawnOrchestrator
         string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
     /// <summary>
+    /// Phase 46 — return whether the spawn has auto-merge enabled. Honoured
+    /// for any base, including <c>"main"</c>; the operator is responsible
+    /// for arming the flag deliberately.
+    /// </summary>
+    private static bool AutoMergeOf(StorySpawnRow spawn) => spawn.AutoMerge;
+
+    /// <summary>
     /// Phase 45 — make sure the spawn's base branch exists, branched from
     /// <c>main</c>. No-op when the base is <c>main</c> itself or when the
     /// branch is already present in the repo. Called at the very start of
@@ -288,6 +295,10 @@ public sealed class StorySpawnOrchestrator
                 // Open PR only if not yet opened
                 if (string.IsNullOrEmpty(spawn.PlanPrId))
                 {
+                    // Phase 46 — merge latest from main into the plan branch
+                    // before creating the PR. Always enforced.
+                    await this.git.MergeUpstreamIntoBranchAsync(repo, planBranch, "main", ct: ct);
+
                     var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                         Branch: planBranch,
                         BaseBranch: baseBranch,
@@ -296,7 +307,8 @@ public sealed class StorySpawnOrchestrator
                         Repo: repo,
                         WorkItemId: story.Id,
                         Workstream: null,
-                        Epic: spawn.StoryId), ct);
+                        Epic: spawn.StoryId,
+                        AutoMerge: AutoMergeOf(spawn)), ct);
 
                     var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                     spawnRow.PlanBranch = planBranch;
@@ -673,7 +685,12 @@ public sealed class StorySpawnOrchestrator
         if (workstreams.Count == 0) return false;
 
         var deps = await db.WorkstreamDeps.ToListAsync(ct);
-        var changed = false;
+
+        // ── Phase 1: sequential claim — fast, DB-safe ─────────────────────
+        // Assign agents, set status="active", ensure branch for every ready
+        // workstream. Each claim is persisted immediately so concurrent ticks
+        // see the updated status and don't double-claim.
+        var readyList = new List<(WorkstreamRow ws, string baseBranch)>();
         foreach (var w in workstreams)
         {
             // Already merged into review queue — skip.
@@ -700,75 +717,231 @@ public sealed class StorySpawnOrchestrator
             // mirrors this resolution internally). Falls back to the
             // legacy single-agent allocation row when the crew table has
             // no engineer crew configured.
-            var assignedAgents = await ResolveImplPairAsync(db, this.allocation, ct);
-            w.AgentsJson = JsonSerializer.Serialize(assignedAgents);
-            w.Status = "active";
-            await db.SaveChangesAsync(ct);
+            if (w.Status != "active")
+            {
+                var assignedAgents = await ResolveImplPairAsync(db, this.allocation, ct);
+                w.AgentsJson = JsonSerializer.Serialize(assignedAgents);
+                w.Status = "active";
+            }
 
-            // Branch + commit + PR. Branch is rooted at the spawn's chosen
-            // base branch so the diff against the PR target is the workstream's
-            // changes only.
-            // If the workstream row carries a stale Base (e.g. from a
-            // pre-Phase-45 row, or before the operator changed the spawn
-            // base mid-flight), bring it forward here so the persisted row
-            // stays consistent with what we actually opened the PR against.
+            // If the workstream row carries a stale Base, bring it forward.
             if (!string.Equals(w.Base, baseBranch, StringComparison.Ordinal))
             {
                 w.Base = baseBranch;
             }
+            await db.SaveChangesAsync(ct);
             await this.git.EnsureBranchAsync(repo, w.Branch, baseBranch, ct);
 
-            // Check if the gen/eval loop already passed for this workstream.
-            // If so, skip re-running the loop and use the cached workspace
-            // files. Without this check, DriveImplementAsync re-enters the
-            // full loop from scratch on every orchestrator tick because the
-            // DeliverableLoop resume logic skips "pass" verdicts.
-            var lastDel = (await db.Deliverables.AsNoTracking()
-                    .Where(d => d.WorkItemId == w.Id)
-                    .ToListAsync(ct))
-                .OrderByDescending(d => d.CreatedAt)
-                .FirstOrDefault();
-            IReadOnlyDictionary<string, string> files;
-            if (lastDel is not null && string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
-            {
-                // Already passed — read files from the cached workspace
-                // instead of re-running the loop.
-                this.logger?.LogInformation(
-                    "Workstream {WsId} already passed (iter {Iter}, score {Score}). Skipping gen/eval, using cached workspace.",
-                    w.Id, lastDel.Iter, lastDel.Score);
-                files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
-            }
-            else
-            {
-                files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
-            }
-
-            if (files.Count > 0)
-            {
-                await this.git.CommitFilesAsync(repo, w.Branch, files,
-                    $"impl({w.Id}): {w.Name}", ct);
-            }
-
-            var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
-                Branch: w.Branch,
-                BaseBranch: baseBranch,
-                Title: $"[impl] {w.Name}",
-                Body: $"Implementation of `{w.Id}` for story `{GitSafe(spawn.StoryId)}`.",
-                Repo: repo,
-                WorkItemId: spawn.StoryId,
-                Workstream: w.Id,
-                Epic: spawn.StoryId), ct);
-
-            var prsList = ParseStringList(w.PrsJson);
-            if (!prsList.Contains(prId)) prsList.Add(prId);
-            w.PrsJson = JsonSerializer.Serialize(prsList);
-            w.Status = "review";
-            await db.SaveChangesAsync(ct);
-
-            await EmitChange(hub, "ws-pr-opened", spawn, ct);
-            changed = true;
+            readyList.Add((w, baseBranch));
         }
-        return changed;
+        if (readyList.Count == 0) return false;
+
+        // ── Phase 2: parallel execution — gen↔eval + commit + PR ──────────
+        // Each workstream runs in its own Task so multiple agents work
+        // concurrently. Each task uses a fresh DbContext scope for its final
+        // status update (the original `db` context is not thread-safe).
+        // Bounded to 4 concurrent workstreams to avoid overloading agents.
+        var changedFlag = 0;
+        var semaphore = new SemaphoreSlim(4);
+        var tasks = readyList.Select(item => Task.Run(async () =>
+        {
+            await semaphore.WaitAsync(ct);
+            try
+            {
+                var (w, bb) = item;
+                await this.DriveOneWorkstreamImplAsync(spawn, w, repo, bb, hub, ct);
+                Interlocked.Exchange(ref changedFlag, 1);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Process shutdown — let it propagate naturally.
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Workstream {WsId} impl failed; will retry next tick.",
+                    item.ws.Id);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+        return changedFlag != 0;
+    }
+
+    /// <summary>
+    /// Execute the gen↔eval loop, commit, and open PR for a single workstream.
+    /// Designed to run in parallel across workstreams — uses its own
+    /// <see cref="ForgeDbContext"/> scope for DB writes and re-checks
+    /// workstream status before finalizing (guards against cancel/restart
+    /// that may have fired mid-loop).
+    /// </summary>
+    private async Task DriveOneWorkstreamImplAsync(
+        StorySpawnRow spawn, WorkstreamRow w, RepoRow? repo,
+        string baseBranch, IHubContext<ForgeHub>? hub, CancellationToken ct)
+    {
+        // Check if the gen/eval loop already passed for this workstream.
+        // Use a fresh scope so we don't race the original DbContext.
+        using var scope = this.services.CreateScope();
+        var db2 = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var lastDel = (await db2.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == w.Id)
+                .ToListAsync(ct))
+            .OrderByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        IReadOnlyDictionary<string, string> files;
+        if (lastDel is not null && string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+        {
+            this.logger?.LogInformation(
+                "Workstream {WsId} already passed (iter {Iter}, score {Score}). Skipping gen/eval, using cached workspace.",
+                w.Id, lastDel.Iter, lastDel.Score);
+            files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
+        }
+        else
+        {
+            files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
+        }
+
+        // Re-check status: operator may have cancelled mid-loop.
+        var freshRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+        if (freshRow is null || freshRow.Status is "cancelled")
+        {
+            this.logger?.LogInformation(
+                "Workstream {WsId} was cancelled during gen/eval; skipping commit + PR.", w.Id);
+            return;
+        }
+
+        if (files.Count > 0)
+        {
+            await this.git.CommitFilesAsync(repo, w.Branch, files,
+                $"impl({w.Id}): {w.Name}", ct);
+        }
+
+        // Phase 46 — merge latest from main into the workstream branch
+        // before creating the PR. Always enforced.
+        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, "main", ct: ct);
+
+        // Build rich PR description from the last deliverable, matching the
+        // format used by CrewQueueWorker for regular work-item PRs:
+        // title, score, iterations, generator/evaluator names, what changed,
+        // evaluator review notes.
+        var prTitle = $"[impl] {w.Name}";
+        var prBody = $"Implementation of `{w.Id}` for story `{GitSafe(spawn.StoryId)}`.";
+
+        // Re-read the latest deliverable after the gen↔eval loop so we
+        // capture the pass verdict (the loop may have created new rows).
+        var finalDel = (await db2.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == w.Id)
+                .ToListAsync(ct))
+            .OrderByDescending(d => d.CreatedAt)
+            .ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+
+        if (finalDel is not null)
+        {
+            var genSummary = finalDel.GeneratorSummary ?? string.Empty;
+            var evalNotes = finalDel.Notes ?? string.Empty;
+            var score = finalDel.Score;
+            var iter = finalDel.Iter;
+
+            // Extract "## Change Summary" section if present.
+            var summaryIdx = genSummary.IndexOf("## Change Summary", StringComparison.OrdinalIgnoreCase);
+            if (summaryIdx >= 0)
+            {
+                genSummary = genSummary[(summaryIdx + "## Change Summary".Length)..].Trim();
+                var nextHeading = genSummary.IndexOf("\n## ", StringComparison.Ordinal);
+                if (nextHeading > 0) genSummary = genSummary[..nextHeading].Trim();
+            }
+            if (genSummary.Length > 800) genSummary = genSummary[..800] + "...";
+
+            // Resolve agent display names.
+            var genAgentId = finalDel.GeneratorAgentId;
+            var evalAgentId = finalDel.EvaluatorAgentId;
+            var genAgent = !string.IsNullOrEmpty(genAgentId)
+                ? await db2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId, ct) : null;
+            var evalAgent = !string.IsNullOrEmpty(evalAgentId)
+                ? await db2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId, ct) : null;
+            var genName = genAgent?.Name ?? genAgentId ?? "unknown";
+            var evalName = evalAgent?.Name ?? evalAgentId;
+
+            // Resolve models from crew config.
+            string? genModel = null, evalModel = null;
+            var genCrew = !string.IsNullOrEmpty(finalDel.CrewId)
+                ? await db2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == finalDel.CrewId, ct) : null;
+            if (genCrew is not null)
+            {
+                genModel = genAgent?.GeneratorModel ?? genCrew.Model;
+                var evalCrew = !string.IsNullOrEmpty(genCrew.PairedWithCrewId)
+                    ? await db2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == genCrew.PairedWithCrewId, ct) : null;
+                evalModel = evalAgent?.EvaluatorModel ?? evalCrew?.EvaluatorModel ?? evalCrew?.Model;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"## {prTitle}");
+            sb.AppendLine();
+            sb.AppendLine($"**Story:** {spawn.StoryId}");
+            sb.AppendLine($"**Score:** {score} | **Iterations:** {iter}");
+            sb.AppendLine();
+            sb.Append($"🤖 **Generator:** {genName}");
+            if (!string.IsNullOrEmpty(genModel)) sb.Append($" (`{genModel}`)");
+            if (!string.IsNullOrEmpty(evalName))
+            {
+                sb.Append($" | 🤖 **Evaluator:** {evalName}");
+                if (!string.IsNullOrEmpty(evalModel)) sb.Append($" (`{evalModel}`)");
+            }
+            sb.AppendLine();
+            sb.AppendLine();
+
+            sb.AppendLine("### What changed");
+            sb.AppendLine();
+            sb.AppendLine(!string.IsNullOrWhiteSpace(genSummary) ? genSummary : "_No change summary provided._");
+            sb.AppendLine();
+
+            if (!string.IsNullOrEmpty(evalName))
+            {
+                sb.AppendLine("### Evaluator Review");
+                sb.AppendLine();
+                if (!string.IsNullOrWhiteSpace(evalNotes))
+                {
+                    var notes = evalNotes.Length > 800 ? evalNotes[..800] + "..." : evalNotes;
+                    sb.AppendLine(notes);
+                }
+                else
+                {
+                    sb.AppendLine("_No review comment provided._");
+                }
+            }
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine("*Auto-generated by Forge.*");
+
+            prBody = sb.ToString();
+            if (prBody.Length > 3900)
+                prBody = prBody[..3900] + "\n\n…_(truncated — full details in evaluator notes)_";
+        }
+
+        var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
+            Branch: w.Branch,
+            BaseBranch: baseBranch,
+            Title: prTitle,
+            Body: prBody,
+            Repo: repo,
+            WorkItemId: spawn.StoryId,
+            Workstream: w.Id,
+            Epic: spawn.StoryId,
+            AutoMerge: AutoMergeOf(spawn)), ct);
+
+        var prsList = ParseStringList(freshRow.PrsJson);
+        if (!prsList.Contains(prId)) prsList.Add(prId);
+        freshRow.PrsJson = JsonSerializer.Serialize(prsList);
+        freshRow.Status = "review";
+        await db2.SaveChangesAsync(ct);
+
+        await EmitChange(hub, "ws-pr-opened", spawn, ct);
     }
 
     // ── review ───────────────────────────────────────────────────────────────
@@ -783,10 +956,55 @@ public sealed class StorySpawnOrchestrator
         var changed = false;
         foreach (var w in workstreams)
         {
+            // Promote "merging" workstreams to "complete" once the PR is
+            // actually merged (Col == "merged" in the PR row). Without this,
+            // workstreams stay stuck at "merging" because the only "complete"
+            // transition existed in the QA phase.
+            if (w.Status == "merging")
+            {
+                var mergingPrs = ParseStringList(w.PrsJson);
+                if (mergingPrs.Count > 0)
+                {
+                    var prRow = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == mergingPrs[0], ct);
+                    if (prRow is not null && string.Equals(prRow.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                    {
+                        w.Status = "complete";
+                        await db.SaveChangesAsync(ct);
+                        changed = true;
+                        this.logger?.LogInformation(
+                            "Workstream {WsId} PR {PrId} merged — advanced to complete.",
+                            w.Id, mergingPrs[0]);
+                        await EmitChange(hub, "ws-complete", spawn, ct);
+                    }
+                }
+                continue;
+            }
+
             if (w.Status != "review") continue;
             var prs = ParseStringList(w.PrsJson);
             if (prs.Count == 0) continue;
             var prId = prs[0];
+
+            // External-merge fast-path: if the PR row reached the terminal
+            // "merged" cache state (PrSyncJob maps upstream "completed" /
+            // "abandoned" to Col=="merged" with IsActive=false), advance
+            // straight to "complete". Without this, a workstream whose PR
+            // was merged via the upstream UI (GitHub / ADO) instead of the
+            // orchestrator's own ApproveAndMergeAsync flow stays stuck at
+            // "review" forever, because the only path that sets "merging"
+            // is the local approve+merge flow below.
+            var prRowAtReview = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == prId, ct);
+            if (prRowAtReview is not null && string.Equals(prRowAtReview.Col, "merged", StringComparison.OrdinalIgnoreCase))
+            {
+                w.Status = "complete";
+                await db.SaveChangesAsync(ct);
+                changed = true;
+                this.logger?.LogInformation(
+                    "Workstream {WsId} PR {PrId} reached terminal merged state — advanced from review to complete.",
+                    w.Id, prId);
+                await EmitChange(hub, "ws-complete", spawn, ct);
+                continue;
+            }
 
             // Round 0 → post comments. Engineer fixes immediately. Round 1 → approve & merge.
             // We track rounds via comment count: 0 comments yet = round 0.
@@ -862,6 +1080,10 @@ public sealed class StorySpawnOrchestrator
             await this.git.CommitFilesAsync(repo, qaBranch, files,
                 $"qa: feature files for story {GitSafe(spawn.StoryId)}", ct);
 
+            // Phase 46 — merge latest from main into the QA branch
+            // before creating the PR. Always enforced.
+            await this.git.MergeUpstreamIntoBranchAsync(repo, qaBranch, "main", ct: ct);
+
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: qaBranch,
                 BaseBranch: baseBranch,
@@ -870,7 +1092,8 @@ public sealed class StorySpawnOrchestrator
                 Repo: repo,
                 WorkItemId: spawn.StoryId,
                 Workstream: null,
-                Epic: spawn.StoryId), ct);
+                Epic: spawn.StoryId,
+                AutoMerge: AutoMergeOf(spawn)), ct);
 
             var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
             spawnRow.QaBranch = qaBranch;
@@ -905,6 +1128,9 @@ public sealed class StorySpawnOrchestrator
             await this.git.CommitFilesAsync(repo, stepBranch, files,
                 $"qa-steps({w.Id}): step definitions", ct);
 
+            // Phase 46 — merge latest from main before creating the PR.
+            await this.git.MergeUpstreamIntoBranchAsync(repo, stepBranch, "main", ct: ct);
+
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: stepBranch,
                 BaseBranch: baseBranch,
@@ -913,7 +1139,8 @@ public sealed class StorySpawnOrchestrator
                 Repo: repo,
                 WorkItemId: spawn.StoryId,
                 Workstream: w.Id,
-                Epic: spawn.StoryId), ct);
+                Epic: spawn.StoryId,
+                AutoMerge: AutoMergeOf(spawn)), ct);
 
             // Approve + merge.
             var qaId = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
