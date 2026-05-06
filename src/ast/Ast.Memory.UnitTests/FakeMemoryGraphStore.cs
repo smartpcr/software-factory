@@ -25,8 +25,15 @@ internal sealed class FakeMemoryGraphStore : IMemoryGraphStore
 
     public string Name => "FakeMemoryGraphStore";
 
+    public bool ShouldFailOnUpsertEdge { get; set; }
+
     public Task UpsertEdgeAsync(Hyperedge edge, VersionRange version, CancellationToken ct)
     {
+        if (this.ShouldFailOnUpsertEdge)
+        {
+            throw new InvalidOperationException("Simulated persistence failure");
+        }
+
         this.UpsertedEdges.Add((edge, version));
         return Task.CompletedTask;
     }
