@@ -219,7 +219,7 @@ export function StoryDetailPanel({ storyId }: Props) {
                 />
               </div>
             </div>
-            {story && (story.baseBranch || 'main') !== 'main' && (
+            {story && (
               <div className="detail-meta-cell" style={{ marginTop: 8 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                   <input
@@ -236,7 +236,7 @@ export function StoryDetailPanel({ storyId }: Props) {
                   {savingField === 'autoMerge' && <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>saving…</span>}
                 </label>
                 <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginLeft: 24, display: 'block' }}>
-                  Agent will automatically create and merge PRs. Merge conflicts are resolved automatically.
+                  Agent will automatically create and merge PRs (any base, including main). Merge conflicts are resolved automatically.
                 </span>
               </div>
             )}

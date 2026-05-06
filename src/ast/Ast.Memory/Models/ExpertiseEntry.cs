@@ -6,32 +6,44 @@
 
 namespace Ast.Memory.Models;
 
-using System;
-using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
-/// An agent-authored knowledge entry attached to a code node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node attached to a code element.
 /// </summary>
 public class ExpertiseEntry
 {
-    public required string Id { get; init; }
-    public required ExpertiseKind Kind { get; init; }
-    public required string Title { get; init; }
-    public required string Body { get; init; }
-    public required string TargetNodeId { get; init; }
-    public string Scope { get; init; } = "exact";
+    public string Id { get; set; } = string.Empty;
+
+    public ExpertiseKind Kind { get; set; }
+
+    public string Title { get; set; } = string.Empty;
+
+    public string Body { get; set; } = string.Empty;
+
+    public string TargetNodeId { get; set; } = string.Empty;
+
+    public string Scope { get; set; } = "exact";
+
     public double Confidence { get; set; } = 1.0;
+
     public bool Archived { get; set; }
-    public string? SourceAgent { get; init; }
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+
+    public string SourceAgent { get; set; } = string.Empty;
+
+    public IReadOnlyList<Citation> Evidence { get; set; } = Array.Empty<Citation>();
+
     public float[]? Embedding { get; set; }
-    public string ContentHash { get; init; } = string.Empty;
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public string ContentHash { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>
-    /// Generates a deterministic ID from kind, title, body, and target node.
+    /// Generates the canonical ID for this expertise entry.
     /// </summary>
     public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
     {
