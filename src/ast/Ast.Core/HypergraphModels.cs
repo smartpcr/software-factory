@@ -67,8 +67,7 @@ public enum HyperedgeType
     CrossLanguageTypeReference,
     CrossLanguageMethodCall,
 
-    // Memory layer (all memory-only edges share this type;
-    // the specific semantic relation lives in Metadata["SemanticRelation"])
+    // Memory layer
     MemoryRelation
 }
 

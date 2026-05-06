@@ -11,18 +11,15 @@ using Ast.GraphDb;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Extended graph store for the agent memory layer.
-/// Extends the base <see cref="IGraphStore"/> with expertise lifecycle,
-/// layer-filtered queries, temporal support, and audit logging
-/// per architecture.md §5.1.
+/// Persistence contract for the agent memory hypergraph.
+/// Extends <see cref="IGraphStore"/> with memory-specific operations
+/// for versioned nodes/edges, expertise, auditing, and statistics.
+/// Per architecture.md §5.1 — signatures match the canonical spec exactly.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
-    // ── Layer-filtered queries with temporal support ──
+    // ── Canonical §5.1 — Layer-filtered queries with temporal support ───
 
-    /// <summary>
-    /// Gets nodes filtered by memory layer with optional temporal snapshot.
-    /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
@@ -40,11 +37,15 @@ public interface IMemoryGraphStore : IGraphStore
         int limit = 100,
         CancellationToken ct = default);
 
-    // ── Temporal-aware upsert and retirement ──
+    // ── Canonical §5.1 — Temporal-aware upsert and retirement ──────────
 
     /// <summary>
-    /// Upserts a node with version range tracking.
-    /// Serializes writes via SemaphoreSlim(1,1) for SQLite or ACID transactions for Neo4j.
+    /// Temporal-aware upsert: creates or updates a node with the given version range.
+    /// If a node with the same ID already exists, the store atomically closes the
+    /// previous active version (sets its <c>UntilIndex = version.SinceIndex</c>)
+    /// and activates the new version. This preserves temporal history per §4.3
+    /// without cascading edge retirement — edges reference the logical node ID
+    /// and remain valid for the successor version.
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
@@ -52,7 +53,10 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken ct = default);
 
     /// <summary>
-    /// Retires a node at a specific commit index, cascading to connected edges.
+    /// Retires a node AND cascades retirement to all connected edges.
+    /// Used when a node is permanently removed (e.g., deleted file, removed symbol).
+    /// Sets UntilIndex on the node and all edges connected to it.
+    /// Per architecture.md §5.1.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
@@ -75,20 +79,13 @@ public interface IMemoryGraphStore : IGraphStore
         IDictionary<string, object?> updates,
         CancellationToken ct = default);
 
-    // ── Expertise CRUD ──
+    // ── Canonical §5.1 — Expertise CRUD ─────────────────────────────────
 
-    /// <summary>
-    /// Gets all non-archived expertise entries for a target node.
-    /// The minConfidence threshold is evaluated against stored confidence.
-    /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
         CancellationToken ct = default);
 
-    /// <summary>
-    /// Inserts or updates an expertise entry.
-    /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken ct = default);
@@ -108,11 +105,8 @@ public interface IMemoryGraphStore : IGraphStore
         int limit = 50,
         CancellationToken ct = default);
 
-    // ── Statistics and audit ──
+    // ── Canonical §5.1 — Statistics and audit ───────────────────────────
 
-    /// <summary>
-    /// Gets memory-specific graph statistics (node/edge counts by layer).
-    /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken ct = default);
 
@@ -124,4 +118,5 @@ public interface IMemoryGraphStore : IGraphStore
         string operation,
         object detail,
         CancellationToken ct = default);
+
 }

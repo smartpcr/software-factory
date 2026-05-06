@@ -7,25 +7,20 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Kind of expertise entry recorded by agents.
+/// Classifies the kind of expertise an agent has learned.
+/// Per architecture.md §2.1.
 /// </summary>
 public enum ExpertiseKind
 {
-    /// <summary>A reusable design pattern or best practice.</summary>
     Pattern,
-
-    /// <summary>A known pitfall or anti-pattern to avoid.</summary>
     Pitfall,
-
-    /// <summary>An operator or team preference.</summary>
     Preference,
-
-    /// <summary>A general architectural or behavioral insight.</summary>
     Insight
 }
 
 /// <summary>
-/// Retrieval mode for querying the memory graph.
+/// Determines how memory is retrieved from the graph.
+/// Per architecture.md §5.3.
 /// </summary>
 public enum RetrievalMode
 {
@@ -46,7 +41,8 @@ public enum RetrievalMode
 }
 
 /// <summary>
-/// Storage backend for the memory graph.
+/// Backend storage engine for memory persistence.
+/// Per architecture.md §2.1.
 /// </summary>
 public enum MemoryBackend
 {
@@ -55,4 +51,15 @@ public enum MemoryBackend
 
     /// <summary>Neo4j graph database.</summary>
     Neo4j
+}
+
+/// <summary>
+/// Status of a file in a git diff.
+/// </summary>
+public enum FileChangeStatus
+{
+    Added,
+    Modified,
+    Deleted,
+    Renamed
 }

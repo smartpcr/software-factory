@@ -7,7 +7,8 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Evidence citation linking expertise to a specific code location.
+/// Evidence citation for an expertise entry.
+/// Per architecture.md §4.2.
 /// </summary>
 /// <param name="NodeId">The ID of the referenced code node.</param>
 /// <param name="CommitSha">Optional commit SHA for temporal anchoring.</param>

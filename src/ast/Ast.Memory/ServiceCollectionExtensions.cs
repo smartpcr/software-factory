@@ -6,47 +6,52 @@
 
 namespace Ast.Memory;
 
-using Ast.Memory.Evolution;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Microsoft.Extensions.Configuration;
+using Ast.Memory.Sync;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 /// <summary>
-/// DI registration for the Ast.Memory consolidation services.
+/// DI registration for the Ast.Memory subsystem including
+/// IncrementalSync, CommitRegistry, and GitDiffDriver.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="IGraphWriteLock"/> (singleton) and
-    /// <see cref="ConsolidationService"/> (singleton) into the DI container.
-    /// Binds <see cref="MemoryOptions"/> from the "AgentMemory" configuration section.
+    /// Registers IncrementalSync and its dependencies.
+    /// Callers must register <see cref="IMemoryGraphStore"/>,
+    /// <see cref="IExtractionPipeline"/>, <see cref="IEvolutionEngine"/>,
+    /// <c>IEmbeddingGenerator</c> (from Ast.Embedding),
+    /// and <c>IVectorStore</c> (from Ast.VectorDb) in their own DI setup.
+    /// <see cref="ICommitRegistry"/> is registered as <see cref="InMemoryCommitRegistry"/>
+    /// by default; callers should replace it with a durable implementation
+    /// backed by the <c>commits</c> table (§3.2.3) for production.
+    /// Registers <see cref="DefaultSemanticIndexer"/> as the production
+    /// <see cref="ISemanticIndexer"/> implementation that generates embeddings
+    /// via <c>IEmbeddingGenerator</c>, stores vectors in <c>IVectorStore</c>,
+    /// and manages SIMILAR_TO edges per architecture.md §3.1, §5.4.
     /// </summary>
-    /// <param name="services">The service collection.</param>
-    /// <param name="configuration">Application configuration root.</param>
-    /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddMemoryEvolution(
-        this IServiceCollection services,
-        IConfiguration configuration)
+    public static IServiceCollection AddIncrementalSync(this IServiceCollection services)
     {
-        services.Configure<MemoryOptions>(configuration.GetSection("AgentMemory"));
-        services.AddSingleton<IGraphWriteLock, GraphWriteLock>();
-        services.AddSingleton<ConsolidationService>();
-        services.AddHttpClient("OllamaConsolidation");
+        // Ensure MemoryOptions is available via IOptions<MemoryOptions>.
+        // Configure with defaults; callers can override via services.Configure<MemoryOptions>().
+        services.AddOptions<MemoryOptions>();
+        services.TryAddSingleton<ICommitRegistry, InMemoryCommitRegistry>();
+        services.AddSingleton<GitDiffDriver>();
+        services.AddSingleton<ISemanticIndexer, DefaultSemanticIndexer>();
+        services.AddSingleton<IIncrementalSync, IncrementalSync>();
         return services;
     }
 
     /// <summary>
-    /// Registers consolidation services without configuration binding (for testing).
-    /// Assumes <see cref="MemoryOptions"/> is already registered.
+    /// Registers IncrementalSync with custom <see cref="MemoryOptions"/>.
     /// </summary>
-    /// <param name="services">The service collection.</param>
-    /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddMemoryEvolution(this IServiceCollection services)
+    public static IServiceCollection AddIncrementalSync(
+        this IServiceCollection services,
+        Action<MemoryOptions> configureOptions)
     {
-        services.AddSingleton<IGraphWriteLock, GraphWriteLock>();
-        services.AddSingleton<ConsolidationService>();
-        services.AddHttpClient("OllamaConsolidation");
-        return services;
+        services.Configure(configureOptions);
+        return services.AddIncrementalSync();
     }
 }

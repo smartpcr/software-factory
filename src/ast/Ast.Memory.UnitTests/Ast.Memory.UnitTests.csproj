@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <IsTestProject>true</IsTestProject>
+    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
+    <AssemblyName>Ast.Memory.UnitTests</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
@@ -10,11 +12,10 @@
     <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
     <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
     <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
+    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
   </ItemGroup>
 
 </Project>

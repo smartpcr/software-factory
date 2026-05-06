@@ -7,37 +7,21 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Statistics about the memory graph by layer.
+/// Aggregate statistics for the memory graph.
 /// </summary>
 public class MemoryGraphStatistics
 {
-    /// <summary>
-    /// Gets or sets the total node count.
-    /// </summary>
-    public int TotalNodes { get; set; }
+    public IReadOnlyDictionary<string, LayerStatistics> LayerStats { get; init; } =
+        new Dictionary<string, LayerStatistics>();
 
-    /// <summary>
-    /// Gets or sets the total edge count.
-    /// </summary>
-    public int TotalEdges { get; set; }
-
-    /// <summary>
-    /// Gets or sets the active expertise entry count.
-    /// </summary>
-    public int ActiveExpertiseCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets the archived expertise entry count.
-    /// </summary>
-    public int ArchivedExpertiseCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets node counts by layer.
-    /// </summary>
-    public Dictionary<string, int> NodeCountsByLayer { get; set; } = [];
-
-    /// <summary>
-    /// Gets or sets edge counts by semantic relation.
-    /// </summary>
-    public Dictionary<string, int> EdgeCountsByRelation { get; set; } = [];
+    public int TotalNodes { get; init; }
+    public int TotalEdges { get; init; }
+    public int TotalExpertiseEntries { get; init; }
+    public int ArchivedExpertiseEntries { get; init; }
+    public DateTimeOffset? LastUpdated { get; init; }
 }
+
+/// <summary>
+/// Node and edge counts for a single memory layer.
+/// </summary>
+public record LayerStatistics(int NodeCount, int EdgeCount);

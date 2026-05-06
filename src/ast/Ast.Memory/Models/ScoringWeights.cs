@@ -7,11 +7,16 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Weights for the 5-signal retrieval ranker. Sum must equal 1.00.
+/// Weight distribution for memory-node relevance scoring.
+/// Defaults sum to 1.00 per architecture.md §2.4.
 /// </summary>
-public record ScoringWeights(
-    double Structural = 0.30,
-    double Semantic = 0.25,
-    double Centrality = 0.20,
-    double Recency = 0.15,
-    double Expertise = 0.10);
+public record ScoringWeights
+{
+    public double Structural { get; init; } = 0.30;
+    public double Semantic { get; init; } = 0.25;
+    public double Centrality { get; init; } = 0.20;
+    public double Recency { get; init; } = 0.15;
+    public double Expertise { get; init; } = 0.10;
+
+    public double Sum => this.Structural + this.Semantic + this.Centrality + this.Recency + this.Expertise;
+}
