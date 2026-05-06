@@ -7,10 +7,18 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Temporal version range tracking when a node/edge existed in the codebase.
+/// Represents a temporal version range for a node or edge in the memory graph.
+/// Tracks the commit index range during which the entity is/was active.
 /// </summary>
 public record VersionRange(
-    string? Since,
-    int? SinceIndex,
-    string? Until,
-    int? UntilIndex);
+    string SinceCommit,
+    int SinceIndex,
+    string? UntilCommit = null,
+    int? UntilIndex = null)
+{
+    /// <summary>
+    /// Creates a version range starting at the given commit with no end (still active).
+    /// </summary>
+    public static VersionRange Since(string commitSha, int commitIndex) =>
+        new(commitSha, commitIndex);
+}

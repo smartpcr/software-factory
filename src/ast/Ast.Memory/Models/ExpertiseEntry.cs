@@ -6,59 +6,60 @@
 
 namespace Ast.Memory.Models;
 
-using System.Security.Cryptography;
-using System.Text;
+using System;
+using System.Collections.Generic;
 
 /// <summary>
-/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
+/// Agent-authored knowledge node — per architecture.md §4.2.
+/// These are <b>not</b> <c>HypergraphNode</c> instances; they have their own
+/// dedicated table (<c>expertise</c>) because their fields (<c>Confidence</c>,
+/// <c>Archived</c>, <c>Embedding</c>, <c>SourceAgent</c>) are core data.
+/// <para>
+/// ID format: <c>expertise:{kind}:{hash8}</c> where <c>hash8</c> is the first 8
+/// characters of <c>SHA-256(Title + Body + TargetNodeId)</c>.
+/// </para>
 /// </summary>
 public sealed class ExpertiseEntry
 {
-    public ExpertiseEntry(
-        ExpertiseKind kind,
-        string title,
-        string body,
-        string targetNodeId,
-        string sourceAgent,
-        string scope = "exact",
-        double confidence = 1.0,
-        IReadOnlyList<Citation>? evidence = null)
-    {
-        this.Kind = kind;
-        this.Title = title ?? throw new ArgumentNullException(nameof(title));
-        this.Body = body ?? throw new ArgumentNullException(nameof(body));
-        this.TargetNodeId = targetNodeId ?? throw new ArgumentNullException(nameof(targetNodeId));
-        this.SourceAgent = sourceAgent ?? throw new ArgumentNullException(nameof(sourceAgent));
-        this.Scope = scope is "exact" or "subtree" ? scope : throw new ArgumentException("Scope must be 'exact' or 'subtree'.", nameof(scope));
-        this.Confidence = Math.Clamp(confidence, 0.0, 1.0);
-        this.Evidence = evidence ?? Array.Empty<Citation>();
-        this.ContentHash = ComputeHash(title, body, targetNodeId);
-        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{this.ContentHash[..8]}";
-        this.CreatedAt = DateTime.UtcNow;
-        this.UpdatedAt = this.CreatedAt;
-    }
+    /// <summary>Unique ID — format: <c>expertise:{kind}:{hash8}</c>.</summary>
+    public string Id { get; set; } = string.Empty;
 
-    /// <summary>Deterministic ID: expertise:{kind}:{hash8}.</summary>
-    public string Id { get; init; }
+    /// <summary>Kind of expertise.</summary>
+    public ExpertiseKind Kind { get; set; } = ExpertiseKind.Insight;
 
-    public ExpertiseKind Kind { get; init; }
-    public string Title { get; init; }
-    public string Body { get; init; }
-    public string TargetNodeId { get; init; }
-    public string Scope { get; init; }
-    public double Confidence { get; set; }
+    /// <summary>Headline.</summary>
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>Detailed description.</summary>
+    public string Body { get; set; } = string.Empty;
+
+    /// <summary>Code node this applies to.</summary>
+    public string TargetNodeId { get; set; } = string.Empty;
+
+    /// <summary>Scope: <c>"exact"</c> (default) or <c>"subtree"</c>.</summary>
+    public string Scope { get; set; } = "exact";
+
+    /// <summary>Confidence score (0.0–1.0).</summary>
+    public double Confidence { get; set; } = 1.0;
+
+    /// <summary>Whether this entry has been archived (soft-deleted).</summary>
     public bool Archived { get; set; }
-    public string SourceAgent { get; init; }
-    public IReadOnlyList<Citation> Evidence { get; init; }
-    public float[]? Embedding { get; set; }
-    public string ContentHash { get; init; }
-    public DateTime CreatedAt { get; init; }
-    public DateTime UpdatedAt { get; set; }
 
-    private static string ComputeHash(string title, string body, string targetNodeId)
-    {
-        var input = $"{title}{body}{targetNodeId}";
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
+    /// <summary>Agent that authored this entry.</summary>
+    public string SourceAgent { get; set; } = string.Empty;
+
+    /// <summary>Supporting references.</summary>
+    public IReadOnlyList<Citation> Evidence { get; set; } = Array.Empty<Citation>();
+
+    /// <summary>Embedding vector of <c>Title + " " + Body</c>.</summary>
+    public float[]? Embedding { get; set; }
+
+    /// <summary>SHA-256(Title + Body + TargetNodeId) for content-addressable dedup.</summary>
+    public string ContentHash { get; set; } = string.Empty;
+
+    /// <summary>Timestamp when this entry was created.</summary>
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>Timestamp when this entry was last modified.</summary>
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

@@ -6,117 +6,116 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Persistence contract for the memory graph, extending <see cref="IGraphStore"/>
-/// with temporal queries, expertise CRUD, and audit logging.
+/// Memory-aware graph store that extends <see cref="IGraphStore"/> with
+/// temporal versioning, layer-filtered queries, and expertise CRUD.
+/// Per architecture.md §5.1 — implementations: SqliteGraphStore (local),
+/// Neo4jMemoryGraphStore (team).
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
     /// <summary>
-    /// Gets nodes filtered by memory layer with optional temporal and node-type filters.
+    /// Gets nodes filtered by memory layer with optional temporal snapshot.
     /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
         NodeFilter? filter = null,
         int limit = 100,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Gets edges filtered by semantic relation with optional layer and temporal filters.
+    /// Gets edges filtered by semantic relation with optional layer and temporal snapshot.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
         string? memoryLayer = null,
         int? atCommitIndex = null,
         int limit = 100,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Inserts or updates a node with temporal version range.
+    /// Upserts a node with temporal version information.
+    /// Serializes writes via SemaphoreSlim(1,1) (SQLite) or ACID transactions (Neo4j).
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Inserts or updates an edge.
-    /// </summary>
-    Task UpsertEdgeAsync(
-        Hyperedge edge,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Retires a node by setting its UntilIndex.
+    /// Retires a node (and its connected edges) at the given commit index.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Retires an edge by setting its UntilIndex.
+    /// Retires an edge at the given commit index.
     /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Updates metadata on an existing edge.
+    /// Updates metadata fields on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
-        IDictionary<string, object?> metadata,
-        CancellationToken cancellationToken = default);
+        IDictionary<string, object?> updates,
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Gets non-archived expertise entries targeting a node, filtered by minimum confidence.
+    /// Gets expertise entries for a target node, excluding archived entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Inserts or updates an expertise entry.
+    /// Upserts an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Archives an expertise entry (soft-delete).
+    /// Archives (soft-deletes) an expertise entry.
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Gets archived expertise entries, optionally filtered by target node.
+    /// Gets archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default);
+        int limit = 50,
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Gets per-layer statistics for the memory graph.
+    /// Gets memory-layer-aware statistics.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 
     /// <summary>
-    /// Records a mutation in the audit log.
+    /// Records an audit log entry.
     /// </summary>
     Task LogAuditAsync(
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
 }

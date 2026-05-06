@@ -7,6 +7,9 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// A supporting reference for an expertise entry.
+/// Supporting reference for an expertise entry — per architecture.md §4.2.
 /// </summary>
+/// <param name="NodeId">The ID of the referenced code node.</param>
+/// <param name="CommitSha">Optional commit SHA where evidence was observed.</param>
+/// <param name="Snippet">Optional code snippet as evidence.</param>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
