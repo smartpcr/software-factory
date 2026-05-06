@@ -6,16 +6,13 @@
 
 namespace Ast.Memory.Models;
 
-using System.Collections.Generic;
-
 /// <summary>
-/// Aggregate statistics for the memory graph.
+/// Per-layer node and edge counts for the memory graph.
 /// </summary>
 public class MemoryGraphStatistics
 {
-    public Dictionary<string, long> NodeCountByLayer { get; init; } = [];
-    public Dictionary<string, long> EdgeCountByLayer { get; init; } = [];
-    public Dictionary<string, long> EdgeCountBySemanticRelation { get; init; } = [];
+    public Dictionary<string, long> NodesByLayer { get; init; } = [];
+    public Dictionary<string, long> EdgesByLayer { get; init; } = [];
     public long TotalNodes { get; init; }
     public long TotalEdges { get; init; }
     public long TotalExpertise { get; init; }

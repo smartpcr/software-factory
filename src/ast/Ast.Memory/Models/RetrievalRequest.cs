@@ -6,56 +6,38 @@
 
 namespace Ast.Memory.Models;
 
-using System;
-using System.Collections.Generic;
-
 /// <summary>
-/// Request model for the memory retrieval engine (architecture.md §5.2).
-/// Describes what to retrieve, how to retrieve it, and the token budget constraint.
+/// Request for memory retrieval.
 /// </summary>
-/// <param name="QueryText">Free-text query describing what the agent is looking for.</param>
-/// <param name="SeedNodeIds">Seed node IDs for structural/call-trace traversal.</param>
-/// <param name="Mode">Retrieval mode. Defaults to Hybrid (automatic selection).</param>
-/// <param name="TokenBudget">Max tokens for context window. Clamped to [1, 32000]. Default: 8000.</param>
-/// <param name="AtCommitIndex">Optional commit index for temporal filtering.</param>
-/// <param name="Weights">Optional custom scoring weights for the 5-signal ranker.</param>
-public record RetrievalRequest(
-    string? QueryText = null,
-    IReadOnlyList<string>? SeedNodeIds = null,
-    RetrievalMode Mode = RetrievalMode.Hybrid,
-    int TokenBudget = RetrievalRequest.DefaultTokenBudget,
-    int? AtCommitIndex = null,
-    ScoringWeights? Weights = null)
+public class RetrievalRequest
 {
     /// <summary>
-    /// Maximum allowed token budget. Requests exceeding this ceiling are clamped.
+    /// Free-text query describing what to retrieve.
     /// </summary>
-    public const int TokenBudgetCeiling = 32_000;
+    public string? QueryText { get; init; }
 
     /// <summary>
-    /// Minimum allowed token budget.
+    /// Seed node IDs for structural/call-trace traversal.
     /// </summary>
-    public const int TokenBudgetFloor = 1;
+    public IReadOnlyList<string> SeedNodeIds { get; init; } = [];
 
     /// <summary>
-    /// Default token budget when none is specified.
+    /// Retrieval mode. Default is Hybrid.
     /// </summary>
-    public const int DefaultTokenBudget = 8_000;
+    public RetrievalMode Mode { get; init; } = RetrievalMode.Hybrid;
 
     /// <summary>
-    /// Maximum number of tokens for the assembled context window.
-    /// Clamped to [<see cref="TokenBudgetFloor"/>, <see cref="TokenBudgetCeiling"/>].
+    /// Token budget for the response. Clamped to [1, TokenBudgetCeiling].
     /// </summary>
-    public int TokenBudget { get; init; } =
-        Math.Clamp(TokenBudget, TokenBudgetFloor, TokenBudgetCeiling);
+    public int TokenBudget { get; init; } = 8000;
 
     /// <summary>
-    /// Returns true if <see cref="QueryText"/> is non-null and non-whitespace.
+    /// Optional commit index for temporal filtering.
     /// </summary>
-    public bool HasQueryText => !string.IsNullOrWhiteSpace(this.QueryText);
+    public int? AtCommitIndex { get; init; }
 
     /// <summary>
-    /// Returns true if <see cref="SeedNodeIds"/> contains at least one entry.
+    /// Optional scoring weight overrides.
     /// </summary>
-    public bool HasSeedNodes => this.SeedNodeIds is { Count: > 0 };
+    public ScoringWeights? Weights { get; init; }
 }

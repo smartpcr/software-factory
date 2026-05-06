@@ -9,45 +9,68 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> providing
-/// strongly-typed accessors for memory-layer edge metadata.
-/// Per architecture.md §4.1 — uses composition, NOT inheritance.
-/// Accepts both code-derived edges (original HyperedgeType) and
-/// memory-only edges (HyperedgeType.MemoryRelation).
+/// Composition wrapper around <see cref="Hyperedge"/> adding memory-specific accessors.
 /// </summary>
-public class MemoryEdge
+public sealed class MemoryEdge
 {
-    /// <summary>The underlying hyperedge.</summary>
+    public MemoryEdge(Hyperedge inner, VersionRange? version = null)
+    {
+        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        this.Version = version ?? TryExtractVersionRange(inner);
+    }
+
+    /// <summary>
+    /// The underlying hyperedge.
+    /// </summary>
     public Hyperedge Inner { get; }
 
     /// <summary>
-    /// Temporal version range for this edge. Per architecture.md §4.1.
+    /// The canonical semantic relation name (e.g., "CONTAINS", "CALLS").
     /// </summary>
-    public VersionRange Version { get; }
+    public string SemanticRelation =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var v) && v is string s
+            ? s
+            : string.Empty;
 
     /// <summary>
-    /// Creates a MemoryEdge from the underlying hyperedge and an explicit version range.
+    /// The memory layer this edge belongs to.
     /// </summary>
-    public MemoryEdge(Hyperedge inner, VersionRange version)
-    {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = version ?? throw new ArgumentNullException(nameof(version));
-    }
+    public string MemoryLayer =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) && v is string s
+            ? s
+            : string.Empty;
 
     /// <summary>
-    /// Creates a MemoryEdge by wrapping a Hyperedge and extracting VersionRange
-    /// from its Metadata dictionary.
+    /// Temporal version range.
     /// </summary>
-    public MemoryEdge(Hyperedge inner)
+    public VersionRange? Version { get; }
+
+    /// <summary>
+    /// Checks whether this edge is active at the given commit index.
+    /// </summary>
+    public bool IsActiveAt(int commitIndex) =>
+        this.Version?.IsActiveAt(commitIndex) ?? true;
+
+    private static VersionRange? TryExtractVersionRange(Hyperedge edge)
     {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata)
-            ?? new VersionRange(null, null, null, null);
+        if (!edge.Metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sinceCommitObj)
+            || sinceCommitObj is not string sinceCommit)
+        {
+            return null;
+        }
+
+        var sinceIndex = edge.Metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var si)
+            ? Convert.ToInt32(si)
+            : 0;
+
+        var untilCommit = edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var uc)
+            ? uc as string
+            : null;
+
+        int? untilIndex = edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) && ui != null
+            ? Convert.ToInt32(ui)
+            : null;
+
+        return new VersionRange(sinceCommit, sinceIndex, untilCommit, untilIndex);
     }
-
-    /// <summary>Semantic relation type from metadata (e.g. "CALLS", "EXTENDS").</summary>
-    public string SemanticRelation => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.SemanticRelation);
-
-    /// <summary>Memory layer from metadata.</summary>
-    public string MemoryLayer => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
 }

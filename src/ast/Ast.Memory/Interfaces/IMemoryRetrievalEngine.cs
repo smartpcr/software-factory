@@ -6,25 +6,18 @@
 
 namespace Ast.Memory.Interfaces;
 
-using System.Threading;
-using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Core retrieval interface for the agent memory system.
-/// Given a query, returns a ranked set of graph nodes within a token budget,
-/// assembled into a deterministic Markdown context for the agent's prompt.
+/// Orchestrates hybrid context retrieval from the memory graph.
 /// </summary>
 public interface IMemoryRetrievalEngine
 {
     /// <summary>
-    /// Retrieves memory nodes matching the request, scores them using the 5-signal
-    /// weighted model, applies budget constraints, and assembles context Markdown.
+    /// Retrieves context from the memory graph based on the request parameters.
+    /// Orchestrates: plan → per-mode traversal/search → rank → budget → assemble.
     /// </summary>
-    /// <param name="request">Retrieval parameters including query text, seed nodes, mode, and budget.</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <returns>Ranked nodes, assembled context, and diagnostics.</returns>
     Task<RetrievalResult> RetrieveAsync(
         RetrievalRequest request,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken = default);
 }
