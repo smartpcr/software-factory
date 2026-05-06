@@ -37,3 +37,20 @@ public enum MemoryBackend
     Sqlite,
     Neo4j
 }
+
+/// <summary>
+/// Status of a file change detected by the file system watcher.
+/// Explicit status avoids inferring deleted/renamed from File.Exists.
+/// </summary>
+public enum FileChangeStatus
+{
+    Modified,
+    Created,
+    Deleted,
+    Renamed
+}
+
+/// <summary>
+/// A file change entry with explicit status, used by the debounced batch processor.
+/// </summary>
+public record FileChangeEntry(string Path, FileChangeStatus Status);
