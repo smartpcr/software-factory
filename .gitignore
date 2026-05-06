@@ -194,3 +194,8 @@ forge.env
 
 .worktree/
 .tmp-build/
+
+# .NET build artifacts
+**/bin/
+**/obj/
+**/TestResults/
