@@ -34,7 +34,15 @@ public sealed record PrSyncSnapshot(
     string CanonicalState,
     string? UpstreamUpdatedAt,
     IReadOnlyList<PrSyncComment> Comments,
-    bool CommentsFetched);
+    bool CommentsFetched,
+    /// <summary>Number of files changed in the PR (from provider detail). Null when not fetched.</summary>
+    int? Files = null,
+    /// <summary>Number of commits in the PR. Null when not fetched.</summary>
+    int? Commits = null,
+    /// <summary>Lines added. Null when not fetched.</summary>
+    int? Additions = null,
+    /// <summary>Lines deleted. Null when not fetched.</summary>
+    int? Deletions = null);
 
 /// <summary>Phase 24 — provider-neutral comment shape for upsert.</summary>
 public sealed record PrSyncComment(

@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Repo, WorkItemSyncRun } from '@/types';
+import { forgeApi } from '@/api/forgeApi';
 import { syncKindDisplay } from '@/products/syncKindDisplay';
 
 const STATUS_COLOR: Record<NonNullable<Repo['lastSyncStatus']>, string> = {
@@ -125,12 +126,15 @@ function RepoSyncDrawer({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=20`)
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((rs: WorkItemSyncRun[]) => { if (!cancelled) setRuns(rs); })
-      .catch((e: Error) => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; };
+    const ac = new AbortController();
+    forgeApi.listSyncRuns(repo.id, { limit: 20, signal: ac.signal })
+      .then((rs) => setRuns(rs))
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => { ac.abort(); };
   }, [repo.id]);
 
   // Esc-to-close + body-scroll lock while open.
