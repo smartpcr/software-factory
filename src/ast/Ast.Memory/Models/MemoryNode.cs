@@ -9,53 +9,33 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> adding memory-layer accessors.
+/// Composition wrapper around <see cref="HypergraphNode"/> providing
+/// strongly-typed accessors for memory-layer metadata.
+/// Per architecture.md §4.1, §4.3 — uses composition, NOT inheritance.
 /// </summary>
-public sealed class MemoryNode
+public class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version = null)
-    {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = version ?? ExtractVersionFromMetadata(inner);
-    }
-
     /// <summary>The underlying hypergraph node.</summary>
     public HypergraphNode Inner { get; }
 
-    /// <summary>Memory layer tag.</summary>
-    public string MemoryLayer =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) && v is string s
-            ? s
-            : string.Empty;
-
-    /// <summary>Node type (Class, Method, etc.).</summary>
-    public string NodeKind => this.Inner.NodeType;
-
-    /// <summary>Content hash for change detection.</summary>
-    public string? ContentHash =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? v as string : null;
-
-    /// <summary>Temporal version range. Null for External boundary nodes.</summary>
+    /// <summary>
+    /// Temporal version range. Null when no temporal metadata is present,
+    /// which is expected for External boundary nodes (timeless per architecture.md §4.3).
+    /// </summary>
     public VersionRange? Version { get; }
 
-    private static VersionRange? ExtractVersionFromMetadata(HypergraphNode node)
+    public MemoryNode(HypergraphNode inner)
     {
-        var hasSince = node.Metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sinceObj);
-        var hasSinceIdx = node.Metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var sinceIdxObj);
-
-        if (!hasSince && !hasSinceIdx)
-        {
-            return null;
-        }
-
-        var since = sinceObj as string;
-        int? sinceIndex = sinceIdxObj is int si ? si : null;
-
-        node.Metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var untilObj);
-        node.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var untilIdxObj);
-        var until = untilObj as string;
-        int? untilIndex = untilIdxObj is int ui ? ui : null;
-
-        return new VersionRange(since, sinceIndex, until, untilIndex);
+        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata);
     }
+
+    /// <summary>Memory layer from metadata (e.g. "structural", "semantic").</summary>
+    public string MemoryLayer => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
+
+    /// <summary>Node kind forwarded from the inner node's NodeType.</summary>
+    public string NodeKind => this.Inner.NodeType;
+
+    /// <summary>Content hash from metadata.</summary>
+    public string ContentHash => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.ContentHash);
 }

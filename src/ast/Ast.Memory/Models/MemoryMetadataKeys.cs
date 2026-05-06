@@ -7,7 +7,8 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Constants for curated Metadata key names used across the memory layer.
+/// Curated constants for all well-known Metadata dictionary keys
+/// used by MemoryNode, MemoryEdge, and related types.
 /// Per architecture.md §4.5.
 /// </summary>
 public static class MemoryMetadataKeys
