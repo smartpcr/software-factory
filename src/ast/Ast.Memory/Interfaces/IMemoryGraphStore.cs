@@ -27,6 +27,9 @@ public interface IMemoryGraphStore : IGraphStore
         int limit = 100,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Gets edges filtered by semantic relation and optional memory layer.
+    /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
         string? memoryLayer = null,
@@ -60,11 +63,17 @@ public interface IMemoryGraphStore : IGraphStore
         int untilCommitIndex,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Retires an edge at a specific commit index.
+    /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Updates metadata on an existing edge.
+    /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
         IDictionary<string, object?> updates,
@@ -81,10 +90,16 @@ public interface IMemoryGraphStore : IGraphStore
         ExpertiseEntry entry,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Archives (soft-deletes) an expertise entry.
+    /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Gets archived expertise entries, optionally filtered by target node.
+    /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId = null,
         int limit = 50,
@@ -95,6 +110,9 @@ public interface IMemoryGraphStore : IGraphStore
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Logs an audit trail entry.
+    /// </summary>
     Task LogAuditAsync(
         string sessionId,
         string operation,

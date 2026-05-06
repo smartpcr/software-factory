@@ -10,4 +10,7 @@ namespace Ast.Memory.Models;
 /// Evidence citation for an expertise entry.
 /// Per architecture.md §4.2.
 /// </summary>
+/// <param name="NodeId">The ID of the referenced code node.</param>
+/// <param name="CommitSha">Optional commit SHA for temporal anchoring.</param>
+/// <param name="Snippet">Optional code snippet as evidence.</param>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);

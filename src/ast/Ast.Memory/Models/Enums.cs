@@ -24,10 +24,19 @@ public enum ExpertiseKind
 /// </summary>
 public enum RetrievalMode
 {
+    /// <summary>Walk structural containment hierarchy.</summary>
     StructuralDrill,
+
+    /// <summary>Follow call-chain edges.</summary>
     CallTrace,
+
+    /// <summary>Embedding-based similarity search.</summary>
     SemanticSearch,
+
+    /// <summary>Recall expertise entries.</summary>
     ExpertiseRecall,
+
+    /// <summary>Combine all modes with weighted scoring.</summary>
     Hybrid
 }
 
@@ -37,7 +46,10 @@ public enum RetrievalMode
 /// </summary>
 public enum MemoryBackend
 {
+    /// <summary>SQLite with FTS5 and sqlite-vss.</summary>
     Sqlite,
+
+    /// <summary>Neo4j graph database.</summary>
     Neo4j
 }
 
