@@ -6,66 +6,47 @@
 
 namespace Ast.Memory.Models;
 
+using System;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
+
 /// <summary>
-/// Agent-authored knowledge nodes. These are not HypergraphNode instances — they
-/// have their own dedicated table because their fields (Confidence, Archived,
-/// Embedding, SourceAgent) are core data, not incidental metadata.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node linked to code via APPLIES_TO edges.
 /// </summary>
 public sealed class ExpertiseEntry
 {
-    /// <summary>Format: "expertise:{kind}:{hash8}".</summary>
-    public required string Id { get; init; }
-
-    public required ExpertiseKind Kind { get; init; }
-
-    /// <summary>Headline.</summary>
-    public required string Title { get; init; }
-
-    /// <summary>Detailed description.</summary>
-    public required string Body { get; init; }
-
-    /// <summary>Code node this applies to.</summary>
-    public required string TargetNodeId { get; init; }
-
-    /// <summary>"exact" (default) or "subtree".</summary>
+    public string Id { get; init; } = string.Empty;
+    public ExpertiseKind Kind { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string Body { get; init; } = string.Empty;
+    public string TargetNodeId { get; init; } = string.Empty;
     public string Scope { get; init; } = "exact";
-
-    /// <summary>0.0–1.0, default 1.0.</summary>
     public double Confidence { get; set; } = 1.0;
-
-    /// <summary>Default false; set by DecayService.</summary>
     public bool Archived { get; set; }
-
-    /// <summary>Agent that authored this entry.</summary>
-    public required string SourceAgent { get; init; }
-
-    /// <summary>Supporting references.</summary>
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
-
-    /// <summary>Vector of Title + " " + Body.</summary>
+    public string SourceAgent { get; init; } = string.Empty;
+    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
     public float[]? Embedding { get; set; }
-
-    /// <summary>SHA-256(Title + Body + TargetNodeId).</summary>
-    public required string ContentHash { get; init; }
-
+    public string ContentHash { get; init; } = string.Empty;
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
-
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
-}
 
-/// <summary>
-/// Supporting reference for an expertise entry.
-/// </summary>
-public record Citation(string NodeId, string? CommitSha, string? Snippet);
+    /// <summary>
+    /// Computes a content-addressable hash for deduplication.
+    /// </summary>
+    public static string ComputeContentHash(string title, string body, string targetNodeId)
+    {
+        var input = title + body + targetNodeId;
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    }
 
-/// <summary>
-/// Kind of expertise entry.
-/// </summary>
-public enum ExpertiseKind
-{
-    Pattern,
-    Pitfall,
-    Preference,
-    Insight
+    /// <summary>
+    /// Generates the canonical expertise ID from kind and content hash.
+    /// </summary>
+    public static string GenerateId(ExpertiseKind kind, string contentHash)
+    {
+        var hash8 = contentHash[..8];
+        return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
+    }
 }

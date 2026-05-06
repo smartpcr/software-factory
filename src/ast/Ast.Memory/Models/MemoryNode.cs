@@ -9,10 +9,7 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> adding
-/// memory-specific accessors. Does not subclass — avoids coupling
-/// agent memory semantics to the code-analysis type hierarchy.
-/// Per architecture.md §4.1.
+/// Composition wrapper around <see cref="HypergraphNode"/> adding memory-specific accessors.
 /// </summary>
 public sealed class MemoryNode
 {
@@ -24,40 +21,12 @@ public sealed class MemoryNode
 
     public HypergraphNode Inner { get; }
 
-    /// <summary>Home layer from Metadata["MemoryLayer"].</summary>
-    public string MemoryLayer => (string)(this.Inner.Metadata["MemoryLayer"] ?? "structural");
+    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
 
-    /// <summary>Delegates to Inner.NodeType.</summary>
     public string NodeKind => this.Inner.NodeType;
 
-    /// <summary>Content hash for change detection.</summary>
-    public string? ContentHash => this.Inner.Metadata.TryGetValue("ContentHash", out var v)
-        ? (string?)v : null;
+    public string? ContentHash =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? (string?)v : null;
 
-    /// <summary>Nullable — null for External boundary nodes (timeless stubs).</summary>
     public VersionRange? Version { get; }
-}
-
-/// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> adding
-/// memory-specific accessors.
-/// Per architecture.md §4.1.
-/// </summary>
-public sealed class MemoryEdge
-{
-    public MemoryEdge(Hyperedge inner, VersionRange version)
-    {
-        this.Inner = inner;
-        this.Version = version;
-    }
-
-    public Hyperedge Inner { get; }
-
-    /// <summary>Semantic relation from Metadata["SemanticRelation"].</summary>
-    public string SemanticRelation => (string)(this.Inner.Metadata["SemanticRelation"] ?? string.Empty);
-
-    /// <summary>Home layer from Metadata["MemoryLayer"].</summary>
-    public string MemoryLayer => (string)(this.Inner.Metadata["MemoryLayer"] ?? string.Empty);
-
-    public VersionRange Version { get; }
 }
