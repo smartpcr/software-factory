@@ -1,19 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
+    <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
-    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
-    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
   </ItemGroup>
 
   <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
+    <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
   </ItemGroup>
 
 </Project>

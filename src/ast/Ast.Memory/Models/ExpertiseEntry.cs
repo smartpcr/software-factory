@@ -10,43 +10,145 @@ using System.Security.Cryptography;
 using System.Text;
 
 /// <summary>
-/// Agent-authored knowledge node. Not a HypergraphNode — has its own dedicated table.
+/// Agent-learned expertise attached to a graph node.
+/// Per architecture.md §4.2.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
-    public string Id { get; init; } = string.Empty;
-    public ExpertiseKind Kind { get; init; }
-    public string Title { get; init; } = string.Empty;
-    public string Body { get; init; } = string.Empty;
-    public string TargetNodeId { get; init; } = string.Empty;
-    public string Scope { get; init; } = "exact";
-    public double Confidence { get; set; } = 1.0;
-    public bool Archived { get; set; }
-    public string SourceAgent { get; init; } = string.Empty;
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
-    public float[]? Embedding { get; set; }
-    public string ContentHash { get; init; } = string.Empty;
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>
+    /// Deterministic ID in the format "expertise:{kind}:{hash8}".
+    /// Hash is the first 8 hex characters of SHA-256(Title + Body + TargetNodeId).
+    /// </summary>
+    public string Id { get; }
+
+    public ExpertiseKind Kind { get; }
+    public string Title { get; }
+    public string Body { get; }
+    public string TargetNodeId { get; }
+
+    private string scope = "exact";
 
     /// <summary>
-    /// Generates a content-addressable ID from the entry's content.
+    /// Scope: must be "exact" or "subtree". Default is "exact".
     /// </summary>
-    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
+    public string Scope
     {
-        var input = title + body + targetNodeId;
-        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        var hash8 = Convert.ToHexString(hashBytes)[..8].ToLowerInvariant();
-        return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
+        get => this.scope;
+        init
+        {
+            if (value is not ("exact" or "subtree"))
+            {
+                throw new ArgumentException($"Scope must be \"exact\" or \"subtree\", got \"{value}\".", nameof(this.Scope));
+            }
+
+            this.scope = value;
+        }
+    }
+
+    private double confidence = 1.0;
+    private bool archived;
+
+    /// <summary>
+    /// Confidence score in [0.0, 1.0]. Default is 1.0.
+    /// This is the stored (event-adjusted) confidence — modified only
+    /// by event-driven decay. Time-based decay computes effective_confidence
+    /// on read and never persists it.
+    /// </summary>
+    public double Confidence
+    {
+        get => this.confidence;
+        init
+        {
+            if (value < 0.0 || value > 1.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(this.Confidence), value, "Confidence must be between 0.0 and 1.0.");
+            }
+
+            this.confidence = value;
+        }
+    }
+
+    public bool Archived
+    {
+        get => this.archived;
+        init => this.archived = value;
     }
 
     /// <summary>
-    /// Generates the content hash from title, body, and target node ID.
+    /// Applies an event-driven decay factor to the stored confidence.
+    /// Per architecture.md §3.5.1(a), this permanently reduces
+    /// <see cref="Confidence"/> by the given multiplicative factor.
     /// </summary>
-    public static string ComputeContentHash(string title, string body, string targetNodeId)
+    internal void ApplyEventDecay(double factor)
     {
-        var input = title + body + targetNodeId;
-        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+        if (factor < 0.0 || factor > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(factor), factor, "Decay factor must be between 0.0 and 1.0.");
+        }
+
+        this.confidence = Math.Max(0.0, this.confidence * factor);
+    }
+
+    /// <summary>
+    /// Marks this entry as archived (soft-delete).
+    /// </summary>
+    internal void MarkArchived()
+    {
+        this.archived = true;
+    }
+    public string SourceAgent { get; }
+    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
+    public float[]? Embedding { get; init; }
+
+    /// <summary>SHA-256 hex of Title + Body (for change detection).</summary>
+    public string ContentHash { get; }
+
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    public ExpertiseEntry(ExpertiseKind kind, string title, string body, string targetNodeId, string sourceAgent)
+    {
+        if (string.IsNullOrEmpty(title))
+        {
+            throw new ArgumentException("Title cannot be null or empty.", nameof(title));
+        }
+
+        if (string.IsNullOrEmpty(body))
+        {
+            throw new ArgumentException("Body cannot be null or empty.", nameof(body));
+        }
+
+        if (string.IsNullOrEmpty(targetNodeId))
+        {
+            throw new ArgumentException("TargetNodeId cannot be null or empty.", nameof(targetNodeId));
+        }
+
+        if (string.IsNullOrEmpty(sourceAgent))
+        {
+            throw new ArgumentException("SourceAgent cannot be null or empty.", nameof(sourceAgent));
+        }
+
+        this.Kind = kind;
+        this.Title = title;
+        this.Body = body;
+        this.TargetNodeId = targetNodeId;
+        this.SourceAgent = sourceAgent;
+
+        var idHash = ComputeHash8(title + body + targetNodeId);
+        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{idHash}";
+
+        this.ContentHash = ComputeFullHash(title + body + targetNodeId);
+    }
+
+    private static string ComputeHash8(string input)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes)[..8].ToLowerInvariant();
+    }
+
+    private static string ComputeFullHash(string input)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 }

@@ -7,7 +7,9 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Well-known metadata key constants for the memory graph.
+/// Curated constants for all well-known Metadata dictionary keys
+/// used by MemoryNode, MemoryEdge, and related types.
+/// Per architecture.md §4.5.
 /// </summary>
 public static class MemoryMetadataKeys
 {
@@ -28,34 +30,6 @@ public static class MemoryMetadataKeys
     public const string LastTouched = "LastTouched";
     public const string Embedding = "Embedding";
     public const string EmbeddingModel = "EmbeddingModel";
+    public const string EmbeddingStatus = "EmbeddingStatus";
     public const string Package = "Package";
-}
-
-/// <summary>
-/// Canonical semantic relation names used in edge metadata.
-/// </summary>
-public static class SemanticRelations
-{
-    public const string Contains = "CONTAINS";
-    public const string DependsOn = "DEPENDS_ON";
-    public const string Calls = "CALLS";
-    public const string Extends = "EXTENDS";
-    public const string Implements = "IMPLEMENTS";
-    public const string References = "REFERENCES";
-    public const string SimilarTo = "SIMILAR_TO";
-    public const string BelongsToCluster = "BELONGS_TO_CLUSTER";
-    public const string AppliesTo = "APPLIES_TO";
-    public const string Supersedes = "SUPERSEDES";
-    public const string DerivedFrom = "DERIVED_FROM";
-}
-
-/// <summary>
-/// Memory layer tag values.
-/// </summary>
-public static class MemoryLayers
-{
-    public const string Structural = "structural";
-    public const string CallChain = "call_chain";
-    public const string Semantic = "semantic";
-    public const string Expertise = "expertise";
 }

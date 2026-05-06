@@ -9,68 +9,58 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> adding memory-specific accessors.
+/// Composition wrapper around <see cref="Hyperedge"/> providing
+/// strongly-typed accessors for memory-layer edge metadata.
+/// Per architecture.md §4.1 — uses composition, NOT inheritance.
 /// </summary>
-public sealed class MemoryEdge
+public class MemoryEdge
 {
-    public MemoryEdge(Hyperedge inner, VersionRange? version = null)
-    {
-        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this.Version = version ?? TryExtractVersionRange(inner);
-    }
-
-    /// <summary>
-    /// The underlying hyperedge.
-    /// </summary>
+    /// <summary>The underlying hyperedge.</summary>
     public Hyperedge Inner { get; }
 
     /// <summary>
-    /// The canonical semantic relation name (e.g., "CONTAINS", "CALLS").
+    /// Temporal version range for this edge. Per architecture.md §4.1.
     /// </summary>
-    public string SemanticRelation =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var v) && v is string s
-            ? s
-            : string.Empty;
+    public VersionRange Version { get; }
 
     /// <summary>
-    /// The memory layer this edge belongs to.
+    /// Creates a MemoryEdge from the underlying hyperedge and an explicit version range.
     /// </summary>
-    public string MemoryLayer =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) && v is string s
-            ? s
-            : string.Empty;
-
-    /// <summary>
-    /// Temporal version range.
-    /// </summary>
-    public VersionRange? Version { get; }
-
-    /// <summary>
-    /// Checks whether this edge is active at the given commit index.
-    /// </summary>
-    public bool IsActiveAt(int commitIndex) =>
-        this.Version?.IsActiveAt(commitIndex) ?? true;
-
-    private static VersionRange? TryExtractVersionRange(Hyperedge edge)
+    public MemoryEdge(Hyperedge inner, VersionRange version)
     {
-        if (!edge.Metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sinceCommitObj)
-            || sinceCommitObj is not string sinceCommit)
+        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        ValidateEdgeType(inner);
+        this.Version = version ?? throw new ArgumentNullException(nameof(version));
+    }
+
+    /// <summary>
+    /// Creates a MemoryEdge by wrapping a Hyperedge and extracting VersionRange
+    /// from its Metadata dictionary (SinceCommit, SinceIndex, UntilCommit, UntilIndex).
+    /// When temporal metadata is absent, Version defaults to an empty range.
+    /// Throws <see cref="InvalidOperationException"/> when temporal metadata is malformed.
+    /// Throws <see cref="ArgumentException"/> if the edge type is not <see cref="HyperedgeType.MemoryRelation"/>.
+    /// </summary>
+    public MemoryEdge(Hyperedge inner)
+    {
+        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        ValidateEdgeType(inner);
+        this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata)
+            ?? new VersionRange(null, null, null, null);
+    }
+
+    /// <summary>Semantic relation type from metadata (e.g. "APPLIES_TO", "CALLS").</summary>
+    public string SemanticRelation => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.SemanticRelation);
+
+    /// <summary>Memory layer from metadata.</summary>
+    public string MemoryLayer => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
+
+    private static void ValidateEdgeType(Hyperedge inner)
+    {
+        if (inner.EdgeType != HyperedgeType.MemoryRelation)
         {
-            return null;
+            throw new ArgumentException(
+                $"MemoryEdge requires EdgeType MemoryRelation, got {inner.EdgeType}.",
+                nameof(inner));
         }
-
-        var sinceIndex = edge.Metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var si)
-            ? Convert.ToInt32(si)
-            : 0;
-
-        var untilCommit = edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var uc)
-            ? uc as string
-            : null;
-
-        int? untilIndex = edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) && ui != null
-            ? Convert.ToInt32(ui)
-            : null;
-
-        return new VersionRange(sinceCommit, sinceIndex, untilCommit, untilIndex);
     }
 }
