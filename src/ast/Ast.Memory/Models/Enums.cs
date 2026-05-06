@@ -37,7 +37,7 @@ public enum RetrievalMode
 }
 
 /// <summary>
-/// Backend storage options for the memory graph.
+/// Supported memory graph storage backends.
 /// </summary>
 public enum MemoryBackend
 {

@@ -1126,7 +1126,12 @@ function PrCard({ prId }: { prId: string }) {
         {pr.webUrl && (
           <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
             style={{ marginLeft: 'auto', fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
-            Open in {pr.id.startsWith('PR-') || pr.id.startsWith('PR ') ? 'ADO' : 'GitHub'} ↗
+            {/* GitHub PR ids look like "PR owner/repo#42" (contain '/'),
+                ADO is "PR #15634971". The previous heuristic checked
+                only the "PR " prefix, which both formats share, so every
+                GitHub PR was mis-labelled "ADO". Fall through to webUrl
+                as the secondary signal for safety. */}
+            Open in {(pr.id.includes('/') || pr.webUrl.includes('github.com')) ? 'GitHub' : 'ADO'} ↗
           </a>
         )}
         {pr.col !== 'merged' && (

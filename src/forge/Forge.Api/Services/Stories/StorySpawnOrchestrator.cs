@@ -210,12 +210,11 @@ public sealed class StorySpawnOrchestrator
         string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
     /// <summary>
-    /// Phase 46 — return whether the spawn has auto-merge enabled. Only
-    /// effective when the base branch is not <c>"main"</c>; always returns
-    /// <c>false</c> for main-targeting spawns.
+    /// Phase 46 — return whether the spawn has auto-merge enabled. Honoured
+    /// for any base, including <c>"main"</c>; the operator is responsible
+    /// for arming the flag deliberately.
     /// </summary>
-    private static bool AutoMergeOf(StorySpawnRow spawn) =>
-        spawn.AutoMerge && !string.Equals(BaseBranchOf(spawn), "main", StringComparison.Ordinal);
+    private static bool AutoMergeOf(StorySpawnRow spawn) => spawn.AutoMerge;
 
     /// <summary>
     /// Phase 45 — make sure the spawn's base branch exists, branched from

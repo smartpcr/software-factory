@@ -14,7 +14,7 @@ using System.Text;
 /// they have their own dedicated storage because their fields (Confidence,
 /// Archived, Embedding, SourceAgent) are core data, not incidental metadata.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     /// <summary>
     /// Unique identifier in the format "expertise:{kind}:{hash8}".
@@ -91,7 +91,7 @@ public sealed class ExpertiseEntry
     /// <summary>
     /// Generates the content hash for deduplication: SHA-256(Title + Body + TargetNodeId).
     /// </summary>
-    public static string ComputeContentHash(string title, string body, string targetNodeId)
+    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
     {
         var input = title + body + targetNodeId;
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
