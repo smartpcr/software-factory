@@ -11,9 +11,4 @@
     <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
-  </ItemGroup>
-
 </Project>

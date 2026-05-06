@@ -14,6 +14,7 @@ public static class MemoryMetadataKeys
     public const string MemoryLayer = "MemoryLayer";
     public const string SemanticRelation = "SemanticRelation";
     public const string ContentHash = "ContentHash";
+    public const string FileContentHash = "FileContentHash";
     public const string SinceCommit = "SinceCommit";
     public const string SinceIndex = "SinceIndex";
     public const string UntilCommit = "UntilCommit";
