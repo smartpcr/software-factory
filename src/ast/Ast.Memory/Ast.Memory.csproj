@@ -2,27 +2,24 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <RootNamespace>Ast.Memory</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
-    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
-    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
-    <ProjectReference Include="..\Ast.Query\Ast.Query.csproj" />
-    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
-    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-    <PackageReference Include="Microsoft.Extensions.Options" />
-    <PackageReference Include="Spectre.Console" />
-    <PackageReference Include="Spectre.Console.Cli" />
-    <PackageReference Include="System.Text.Json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
   </ItemGroup>
 
 </Project>
