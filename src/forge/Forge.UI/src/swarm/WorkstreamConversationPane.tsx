@@ -124,6 +124,7 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
 
   const currentIteration = snapshot?.currentIteration ?? (summaryIters.length > 0 ? summaryIters[summaryIters.length - 1].iter : 0);
   const maxIterations = snapshot?.maxIterations ?? 0;
+  const budgetSeconds = snapshot?.budgetSeconds ?? 0;
 
   // Empty state — workstream hasn't started, or live store is still loading.
   if ((!snapshot && live?.loading !== false) && transcript.length === 0) {
@@ -217,6 +218,11 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           {maxIterations > 0 && (
             <span style={{ marginLeft: 'auto', fontFamily: 'var(--sc-font-display, monospace)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim, #8d94a3)' }}>
               iter <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{currentIteration}</strong> of <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{maxIterations}</strong>
+              {budgetSeconds > 0 && (
+                <span style={{ marginLeft: 8, color: 'var(--sc-text-dim, #8d94a3)' }}>
+                  · timeout <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{budgetSeconds >= 60 ? `${Math.floor(budgetSeconds / 60)}m` : `${budgetSeconds}s`}</strong>
+                </span>
+              )}
             </span>
           )}
         </nav>

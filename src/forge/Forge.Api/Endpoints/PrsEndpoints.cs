@@ -14,6 +14,7 @@ using Forge.Api.Providers;
 using Forge.Api.Providers.Ado;
 using Forge.Api.Providers.GitHub;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -115,6 +116,43 @@ public static class PrsEndpoints
     private static IForgeProvider? PickProvider(string preferred, IEnumerable<IForgeProvider> providers) =>
         providers.FirstOrDefault(p => p.Kind == preferred && p.IsConfigured)
         ?? providers.FirstOrDefault(p => p.IsConfigured);
+
+    /// <summary>
+    /// Resolve <c>(provider, callContext)</c> for a write call against an
+    /// existing PR row. The provider is picked by <c>row.Provider</c> (not
+    /// hard-coded), and the call context carries the PR's per-repo
+    /// <c>RepositoryName</c>/<c>ProjectName</c> so AdoProvider's
+    /// <c>ResolveCallCoords</c> doesn't fall back to global config in
+    /// multi-repo deployments.
+    /// </summary>
+    private static async Task<(IForgeProvider? Provider, ProviderCallContext Ctx, IResult? Error)>
+        ResolvePrCallContextAsync(
+            ForgeDbContext db,
+            IUserContext user,
+            IEnumerable<IForgeProvider> providers,
+            PrRow row,
+            CancellationToken ct = default)
+    {
+        var providerKind = !string.IsNullOrEmpty(row.Provider) ? row.Provider : "github";
+        var provider = PickProvider(providerKind, providers);
+        if (provider is null)
+        {
+            return (null, ProviderCallContext.Anonymous,
+                Results.Problem(title: $"No provider configured for '{providerKind}'", statusCode: 400));
+        }
+        RepoRow? repo = null;
+        if (!string.IsNullOrEmpty(row.RepoId))
+        {
+            repo = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
+        }
+        var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
+        var ctx = user.ForProvider(provider.Kind) with
+        {
+            RepositoryName = repoName,
+            ProjectName = projectName,
+        };
+        return (provider, ctx, null);
+    }
 
     // GET /api/prs — list with cached state, optionally scoped to a product (Phase 8.9).
     private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
@@ -238,11 +276,13 @@ public static class PrsEndpoints
         if (row is null) return NotFound(id);
 
         // Best-effort provider trigger; cached state always flips so the UI animates.
-        var provider = PickProvider("github", providers);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        // Treat "no provider" as soft-fail here so the cached state still flips
+        // (the original semantics of this endpoint were best-effort).
         BuildStatus? trigger = null;
-        if (provider is not null)
+        if (provider is not null && providerErr is null)
         {
-            try { trigger = await provider.TriggerBuildAsync(row.Branch, user.ForProvider(provider.Kind)); }
+            try { trigger = await provider.TriggerBuildAsync(row.Branch, callCtx); }
             catch (Exception ex) { return Results.Problem(title: "Provider rerun failed", detail: ex.Message, statusCode: 502); }
         }
         var newBuild = trigger ?? new BuildStatus("running", "rerun queued", 0, null);
@@ -272,11 +312,11 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var provider = PickProvider("github", providers);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
         BuildStatus? cancel = null;
-        if (provider is not null)
+        if (provider is not null && providerErr is null)
         {
-            try { cancel = await provider.CancelBuildAsync(row.Branch, user.ForProvider(provider.Kind)); }
+            try { cancel = await provider.CancelBuildAsync(row.Branch, callCtx); }
             catch (Exception ex) { return Results.Problem(title: "Provider cancel failed", detail: ex.Message, statusCode: 502); }
         }
         var newBuild = cancel ?? new BuildStatus("queued", "cancelled by user", 0, null);
@@ -302,9 +342,9 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var provider = PickProvider("github", providers);
-        if (provider is null) return Results.Problem(title: "No provider configured", statusCode: 400);
-        try { await provider.ApprovePullRequestAsync(id, user.ForProvider(provider.Kind)); }
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        if (providerErr is not null) return providerErr;
+        try { await provider!.ApprovePullRequestAsync(id, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider approve failed", detail: ex.Message, statusCode: 502); }
 
         row.ReviewJson = CardMapper.Serialize(new ReviewVerdict(
@@ -338,9 +378,9 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var provider = PickProvider("github", providers);
-        if (provider is null) return Results.Problem(title: "No provider configured", statusCode: 400);
-        try { await provider.RequestChangesOnPullRequestAsync(id, req.Body, user.ForProvider(provider.Kind)); }
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        if (providerErr is not null) return providerErr;
+        try { await provider!.RequestChangesOnPullRequestAsync(id, req.Body, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider request-changes failed", detail: ex.Message, statusCode: 502); }
 
         row.ReviewJson = CardMapper.Serialize(new ReviewVerdict(
@@ -371,11 +411,12 @@ public static class PrsEndpoints
             return Results.Problem(title: "Body is required", statusCode: 400);
         }
         id = NormalizePrId(id);
-        if (!await db.Prs.AnyAsync(p => p.Id == id)) return NotFound(id);
+        var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
+        if (row is null) return NotFound(id);
 
-        var provider = PickProvider("github", providers);
-        if (provider is null) return Results.Problem(title: "No provider configured", statusCode: 400);
-        try { await provider.CommentOnPullRequestAsync(id, req.Body, user.ForProvider(provider.Kind)); }
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        if (providerErr is not null) return providerErr;
+        try { await provider!.CommentOnPullRequestAsync(id, req.Body, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider comment failed", detail: ex.Message, statusCode: 502); }
 
         await hub.Clients.All.SendAsync("pr.commented", new { id, by = user.UserId });
@@ -383,19 +424,43 @@ public static class PrsEndpoints
     }
 
     // POST /api/prs/{id}/merge — Phase 6.5/6.8 explicit-merge path (auto-merge has its own watcher).
+    // Picks the correct provider (ADO or GitHub) from the PR row.
+    // On a real merge conflict, returns 409 by default so the user can resolve
+    // upstream. Pass <c>?force=true</c> to opt into the destructive
+    // <c>git merge -X ours</c> auto-resolve (keeps source-branch changes,
+    // discards upstream-side changes on each conflicting hunk).
     private static async Task<IResult> Merge(
         HttpContext ctx, string id,
         ForgeDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHumanGateEvaluator gate,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        IStoryGitOps git,
+        [FromQuery] bool? force = null)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
         id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
+
+        // When ?force is omitted, inherit from the PR's AutoMerge flag
+        // (which propagated from story → spawn → PR at create time). The
+        // story owner enabling AutoMerge is a standing pre-authorisation
+        // for destructive -X ours resolution, so a manual click on an
+        // AutoMerge=true PR shouldn't have to navigate a second confirm.
+        // Explicit ?force=false in the URL still overrides this.
+        // Fallback: when row.AutoMerge=false (e.g. PR was created via a
+        // path that didn't propagate the flag, or row was imported by the
+        // upstream sync), walk up the work-item parent chain to the spawn
+        // and inherit the story-level flag from there.
+        var effectiveAutoMerge = row.AutoMerge;
+        if (!effectiveAutoMerge)
+        {
+            effectiveAutoMerge = await SpawnAutoMergeResolver.ResolveAsync(db, row.WorkItemId);
+        }
+        var effectiveForce = force ?? effectiveAutoMerge;
 
         var pr = PrMapper.ToContract(row);
         var decision = gate.Evaluate(pr);
@@ -404,16 +469,95 @@ public static class PrsEndpoints
             return Results.Json(new { requireConfirm = true, title = "Human gate", detail = decision.Reason }, statusCode: 422);
         }
 
-        var provider = PickProvider("github", providers);
-        if (provider is null) return Results.Problem(title: "No provider configured", statusCode: 400);
+        // Pick the correct provider from the PR's provider field (ado or github)
+        // and carry the PR's per-repo coords so AdoProvider doesn't fall back
+        // to the global Forge:Ado:Repository config in multi-repo deployments.
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        if (providerErr is not null) return providerErr;
+
+        // PROACTIVE FLOW (new order):
+        //   1. Rebase the PR's source branch onto the latest base in the local
+        //      worktree, resolving conflicts inline (or surfacing them when
+        //      force=false). Push the result.
+        //   2. Then ask the provider to complete — this is now an
+        //      already-resolved squash, so it can't fail with a conflict.
+        //
+        // The previous reactive flow ("ask ADO first, fall back to local on
+        // conflict") had two failure modes that this avoids:
+        //   - ADO returning 200 OK with status=active + mergeStatus=conflicts
+        //     (autoComplete accepted but git merge dies later).
+        //   - The PR's source branch never reflecting the actually-merged
+        //     state, so reviewers see a different diff than what landed.
+        if (!string.IsNullOrEmpty(row.Branch) && !string.IsNullOrEmpty(row.Base))
+        {
+            bool rebaseOk;
+            try
+            {
+                rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, effectiveForce, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Local rebase failed", detail: ex.Message, statusCode: 502);
+            }
+            if (!rebaseOk)
+            {
+                // Either a conflict (force=false) or -X ours itself failed.
+                // Treat both as a 409 — surfacing lets the user decide
+                // (resolve upstream, retry with force, or invoke an agent).
+                return Results.Problem(
+                    title: "Merge conflict — resolve upstream and retry",
+                    detail: effectiveForce
+                        ? "Local -X ours resolution failed; the source branch couldn't be reconciled with the base. Inspect the PR upstream."
+                        : "Source branch is behind the base and conflicts with it. Resolve in the provider UI, retry with ?force=true to take source-branch changes (-X ours), or enable AutoMerge on the parent story.",
+                    statusCode: 409,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["conflict"] = true,
+                        ["hint"] = "Stories with AutoMerge=true automatically use force=true.",
+                    });
+            }
+        }
+
         Pr merged;
-        try { merged = await provider.MergePullRequestAsync(id, user.ForProvider(provider.Kind)); }
-        catch (Exception ex) { return Results.Problem(title: "Provider merge failed", detail: ex.Message, statusCode: 502); }
+        try
+        {
+            merged = await provider!.MergePullRequestAsync(id, callCtx);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(title: "Provider complete failed after local rebase", detail: ex.Message, statusCode: 502);
+        }
+
+        // Provider returned without throwing. After a successful local
+        // rebase, ADO should report Col=merged. If it doesn't, the merge
+        // is queued behind branch policies — return 202 so the UI shows a
+        // queued-success toast and PrSyncJob reconciles to Col=merged when
+        // ADO finishes the squash.
+        if (!string.Equals(merged.Col, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Json(
+                new
+                {
+                    queued = true,
+                    pr = merged,
+                    detail = "Merge accepted by provider — pending branch policies / required validations. Will complete automatically once they pass.",
+                },
+                statusCode: 202);
+        }
 
         row.Col = "merged";
         row.AutoMerge = false;
+
+        var advancedWorkstreamIds = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, id);
+
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", pr = merged });
+        if (advancedWorkstreamIds.Count > 0)
+        {
+            await hub.Clients.All.SendAsync(
+                "story-spawn.changed",
+                new { kind = "ws-completed", prId = id, workstreamIds = advancedWorkstreamIds });
+        }
         return Results.Ok(merged);
     }
 
