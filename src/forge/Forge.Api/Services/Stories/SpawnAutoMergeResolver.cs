@@ -56,4 +56,57 @@ public static class SpawnAutoMergeResolver
         }
         return false;
     }
+
+    /// <summary>
+    /// Boot-time backfill: for every active PR whose parent spawn has
+    /// <c>AutoMerge=true</c>, set <c>PrRow.AutoMerge=true</c>. Repairs PRs
+    /// created before the propagation chain was wired through every PR-creation
+    /// path; without this, existing rows sit on Col=review forever because
+    /// <c>AutoMergeWatcher</c> only iterates <c>WHERE AutoMerge=true</c>.
+    /// Returns the count of rows touched.
+    /// </summary>
+    public static async Task<int> BackfillPrsAsync(ForgeDbContext db, CancellationToken ct = default)
+    {
+        // Build a set of story ids whose spawn has AutoMerge=true.
+        var autoMergeStoryIds = await db.StorySpawns
+            .AsNoTracking()
+            .Where(s => s.AutoMerge)
+            .Select(s => s.StoryId)
+            .ToListAsync(ct);
+        if (autoMergeStoryIds.Count == 0) return 0;
+
+        var autoMergeSet = new HashSet<string>(autoMergeStoryIds, StringComparer.Ordinal);
+
+        // Pull every still-active PR whose AutoMerge isn't set yet.
+        var candidates = await db.Prs
+            .Where(p => p.IsActive && !p.AutoMerge && p.WorkItemId != null)
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return 0;
+
+        var touched = 0;
+        foreach (var pr in candidates)
+        {
+            // Walk parent chain, but using the cached set to avoid re-loading
+            // story spawns per PR.
+            var current = pr.WorkItemId;
+            for (var depth = 0; depth < MaxParentDepth && !string.IsNullOrEmpty(current); depth++)
+            {
+                if (autoMergeSet.Contains(current))
+                {
+                    pr.AutoMerge = true;
+                    touched++;
+                    break;
+                }
+                var parent = await db.WorkItems
+                    .AsNoTracking()
+                    .Where(w => w.Id == current)
+                    .Select(w => w.ParentId)
+                    .FirstOrDefaultAsync(ct);
+                if (string.IsNullOrEmpty(parent) || parent == current) break;
+                current = parent;
+            }
+        }
+        if (touched > 0) await db.SaveChangesAsync(ct);
+        return touched;
+    }
 }

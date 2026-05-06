@@ -168,8 +168,9 @@ public static class StateEndpoints
                 Description = (req.Description ?? string.Empty).Trim(),
                 Points = points,
                 BaseBranch = baseBranch,
-                // Phase 46 — auto-merge is only effective when base != main.
-                AutoMerge = (req.AutoMerge ?? false) && !string.Equals(baseBranch, "main", StringComparison.Ordinal),
+                // Phase 46 — auto-merge is honoured for any base, including "main".
+                // The operator is responsible for arming the flag deliberately.
+                AutoMerge = req.AutoMerge ?? false,
             };
 
             // Phase 43 — resolve pre-uploaded attachments.

@@ -224,10 +224,10 @@ public static class StoriesEndpoints
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
             BaseBranch = baseBranch,
-            // Phase 46 — auto-merge. Explicit SpawnRequest override > story
-            // default. Server enforces false when baseBranch is "main".
-            AutoMerge = (req?.AutoMerge ?? defaultAutoMergeFromStory)
-                && !string.Equals(baseBranch, "main", StringComparison.Ordinal),
+            // Auto-merge inheritance: explicit SpawnRequest override > story
+            // default. The flag is honoured for any base (including "main") —
+            // the operator is responsible for arming it intentionally.
+            AutoMerge = req?.AutoMerge ?? defaultAutoMergeFromStory,
             // Branch must use the sanitized id — `:` is illegal in Windows
             // worktree paths and crashes the orchestrator on commit.
             PlanBranch = $"story/{safeStoryId}/plan",
