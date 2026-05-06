@@ -21,8 +21,8 @@ export function NewStoryModal({ open, onClose }: Props) {
   // Phase 45 — operator's default base branch for spawns produced from
   // this story. Empty input → "main".
   const [baseBranch, setBaseBranch] = useState<string>('');
-  // Phase 46 — auto-merge PRs against base branch. Only available when
-  // baseBranch != "main".
+  // Phase 46 — auto-merge PRs against base branch. Honoured for any base
+  // (including main); the operator arms it deliberately.
   const [autoMerge, setAutoMerge] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -67,7 +67,6 @@ export function NewStoryModal({ open, onClose }: Props) {
         uploadIds = [result.uploadId];
       }
       const trimmedBase = baseBranch.trim();
-      const isNonMainBase = trimmedBase.length > 0 && trimmedBase !== 'main';
       const result = await forgeApi.createProductStory(activeProductId, {
         name: cleanName,
         description: description.trim(),
@@ -75,8 +74,8 @@ export function NewStoryModal({ open, onClose }: Props) {
         uploadIds,
         // Phase 45 — empty / unset means the server uses the default ("main").
         baseBranch: trimmedBase.length > 0 ? trimmedBase : undefined,
-        // Phase 46 — only send autoMerge when base is non-main.
-        autoMerge: isNonMainBase ? autoMerge : undefined,
+        // Phase 46 — auto-merge applies for any base including main.
+        autoMerge,
       });
       useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
       if (result.branchWarnings && result.branchWarnings.length > 0) {
@@ -187,20 +186,18 @@ export function NewStoryModal({ open, onClose }: Props) {
             </span>
           </label>
 
-          {baseBranch.trim().length > 0 && baseBranch.trim() !== 'main' && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={autoMerge}
-                onChange={(e) => setAutoMerge(e.target.checked)}
-                disabled={busy}
-              />
-              <span style={labelStyle}>Auto-merge PRs against base branch</span>
-              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-                Agent will automatically create and merge PRs.
-              </span>
-            </label>
-          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={autoMerge}
+              onChange={(e) => setAutoMerge(e.target.checked)}
+              disabled={busy}
+            />
+            <span style={labelStyle}>Auto-merge PRs against base branch</span>
+            <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+              Agent will automatically create and merge PRs (any base, including main).
+            </span>
+          </label>
 
           <div style={{ display: 'grid', gap: 5 }}>
             <span style={labelStyle}>Reference documents (optional)</span>

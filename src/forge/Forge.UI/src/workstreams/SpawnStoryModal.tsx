@@ -130,13 +130,12 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         setUploadIds(ids);
       }
       const trimmedBase = baseBranch.trim();
-      const isNonMainBase = trimmedBase.length > 0 && trimmedBase !== 'main';
       await forgeApi.spawnStory(
         selected.id,
         repoId ?? null,
         ids.length > 0 ? ids : undefined,
         trimmedBase.length > 0 ? trimmedBase : undefined,
-        isNonMainBase ? autoMerge : undefined,
+        autoMerge,
       );
       setBusy(false);
       onSpawned?.(selected.id);
@@ -271,21 +270,19 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                 <code>main</code> automatically.
               </span>
             </Field>
-            {baseBranch.trim().length > 0 && baseBranch.trim() !== 'main' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
-                  <input
-                    type="checkbox"
-                    checked={autoMerge}
-                    onChange={(e) => setAutoMerge(e.target.checked)}
-                  />
-                  Auto-merge PRs against base branch
-                </label>
-                <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-                  Agent will automatically merge PRs after review passes.
-                </span>
-              </div>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={autoMerge}
+                  onChange={(e) => setAutoMerge(e.target.checked)}
+                />
+                Auto-merge PRs against base branch
+              </label>
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                Agent will automatically merge PRs after review passes (any base, including main).
+              </span>
+            </div>
             <Field label="Reference documents (optional)">
               <div style={{ display: 'grid', gap: 6 }}>
                 <input

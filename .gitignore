@@ -2,6 +2,10 @@
 **/Node_modules/
 **/dist/
 
+# .NET build artifacts
+**/bin/
+**/obj/
+
 # VSMSBuild generated files in CoreXT
 *.projhash*
 *.slnhash*
@@ -84,6 +88,10 @@ project.lock.json
 project.fragment.lock.json
 artifacts/
 **/Properties/launchSettings.json
+
+# .NET build output
+**/bin/
+**/obj/
 
 *_i.c
 *_p.c
@@ -194,3 +202,8 @@ forge.env
 
 .worktree/
 .tmp-build/
+
+# .NET build artifacts
+**/bin/
+**/obj/
+**/TestResults/

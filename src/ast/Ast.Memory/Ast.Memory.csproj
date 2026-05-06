@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
+    <RootNamespace>Ast.Memory</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
