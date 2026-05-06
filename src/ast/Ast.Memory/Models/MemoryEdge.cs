@@ -13,7 +13,7 @@ using Ast.Core;
 /// strongly-typed accessors for memory-layer edge metadata.
 /// Per architecture.md §4.1 — uses composition, NOT inheritance.
 /// </summary>
-public class MemoryEdge
+public sealed class MemoryEdge
 {
     /// <summary>The underlying hyperedge.</summary>
     public Hyperedge Inner { get; }

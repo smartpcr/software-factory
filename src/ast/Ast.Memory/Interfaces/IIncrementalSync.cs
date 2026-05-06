@@ -12,7 +12,7 @@ using Ast.Memory.Models;
 /// Keeps the memory graph current without full re-extraction.
 /// Per architecture.md §3.6, §5.5.
 /// </summary>
-public interface IIncrementalSync
+public interface IIncrementalSync : IDisposable
 {
     /// <summary>
     /// Computes git diff between two commits and updates the graph:
@@ -24,4 +24,17 @@ public interface IIncrementalSync
         string fromCommit,
         string toCommit,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Starts a FileSystemWatcher on the repository root.
+    /// Watches for file saves (.cs, .ps1, .psm1, .psd1) with
+    /// <see cref="MemoryOptions.IncrementalSyncDebounceMs"/> debounce.
+    /// See architecture.md §3.6.
+    /// </summary>
+    void StartFileWatcher(string repoRoot);
+
+    /// <summary>
+    /// Stops the file system watcher if running.
+    /// </summary>
+    void StopFileWatcher();
 }
