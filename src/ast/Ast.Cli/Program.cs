@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 using Ast.Cli.Commands;
+using Ast.Memory.Cli;
 using Spectre.Console.Cli;
 
 var app = new CommandApp();
@@ -42,6 +43,8 @@ app.Configure(config =>
         .WithDescription("Show statistics about a hypergraph or database")
         .WithExample("stats", "graph.json")
         .WithExample("stats", "--neo4j", "bolt://localhost:7687");
+
+    config.AddBranch("memory", MemoryCommandModule.RegisterCommands);
 });
 
 return app.Run(args);
