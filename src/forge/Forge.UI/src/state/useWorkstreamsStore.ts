@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { Workstream } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from './useToastStore';
-import { sampleState } from '@/sampleData';
 
 export type WorkstreamFilter = 'all' | 'active' | 'merging' | 'conflicts' | 'idle';
 
@@ -34,7 +33,11 @@ interface WorkstreamsState {
 }
 
 export const useWorkstreamsStore = create<WorkstreamsState>((set, get) => ({
-  workstreams: sampleState.workstreams,
+  // Start empty — populated by load() from /api/workstreams (scoped to the
+  // active product). Previously seeded with sampleState.workstreams, which
+  // leaked stale demo rows into the SideBar badge whenever a page didn't
+  // call load() (e.g. SwarmIndexView).
+  workstreams: [],
   loading: false,
   error: null,
   filter: 'all',

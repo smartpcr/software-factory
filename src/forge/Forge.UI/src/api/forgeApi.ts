@@ -912,18 +912,14 @@ export const forgeApi = {
     });
   },
 
-  /** GET /api/workstreams. */
+  /** GET /api/workstreams. Scoped to the active product via the
+   *  `X-Forge-Product-Id` header. Returns the API result verbatim — no
+   *  sample-data fallback so failures surface to the operator instead of
+   *  being papered over with stale demo rows. The opt-in `?seed=local`
+   *  query param still exposes sample data for screenshots / demos. */
   async getWorkstreams(): Promise<Workstream[]> {
     if (useLocalSeed()) return sampleState.workstreams;
-    try {
-      return await fetchJson<Workstream[]>('/api/workstreams');
-    } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn('[forge] /api/workstreams failed, using local sample data', err);
-        return sampleState.workstreams;
-      }
-      throw err;
-    }
+    return fetchJson<Workstream[]>('/api/workstreams');
   },
 
   /** POST /api/workstreams. */
@@ -1877,6 +1873,19 @@ export const forgeApi = {
       body: JSON.stringify(body),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /**
+   * GET /api/work-items/{id}/workstream-link — returns null when the work
+   * item isn't tied to a story spawn (ad-hoc / external item).
+   */
+  async getWorkItemWorkstreamLink(id: string): Promise<{ storyId: string; workstreamId: string; spawnId: string } | null> {
+    try {
+      return await fetchJson(`/api/work-items/${encodeURIComponent(id)}/workstream-link`);
+    } catch (e) {
+      if (e instanceof ForgeApiError && e.status === 404) return null;
+      throw e;
+    }
   },
 
   /** PATCH /api/work-items/{id} — opt-in If-Match for the conflict policy. */

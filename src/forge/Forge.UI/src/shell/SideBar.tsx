@@ -22,16 +22,24 @@ export function SideBar() {
   const loadRepos = useProductsStore((s) => s.loadReposFor);
   const me = useCurrentUser();
   const allWorkstreams = useWorkstreamsStore((s) => s.workstreams);
-  const allWsWorkItems = useWorkItemsStore((s) => s.items);
-  const wsActiveCount = useMemo(() => {
-    return allWorkstreams.filter((w) => {
-      if (w.status !== 'active' && w.status !== 'review') return false;
-      // Exclude workstreams with zero activity
-      if (w.commits === 0 && w.ahead === 0 && w.prs.length === 0
-        && !allWsWorkItems.some((wi) => w.cards.includes(wi.id) && wi.executionStatus === 'live')) return false;
-      return true;
-    }).length;
-  }, [allWorkstreams, allWsWorkItems]);
+  const loadWorkstreams = useWorkstreamsStore((s) => s.load);
+  // Hydrate the workstreams store at sidebar mount and whenever the active
+  // product changes — without this the badge shows whatever the store was
+  // last set to (or [] before any page that calls load() has been visited).
+  // /api/workstreams scopes by the X-Forge-Product-Id header so reloading on
+  // product change keeps the count honest.
+  useEffect(() => { void loadWorkstreams(); }, [loadWorkstreams, activeProductId]);
+  // "Active" subtitle — any workstream the orchestrator (or the legacy
+  // Phase 6 path) has claimed but not yet completed. Status alone is the
+  // signal: the orchestrator flips the row to "active" exactly when an
+  // engineer pair starts iterating, then to "review" while a PR is open.
+  // The previous "must have commits / ahead / PRs / live workitem" filter
+  // dropped story-spawn-driven workstreams whose first commit hadn't
+  // landed yet, hiding work that was actually in flight.
+  const wsActiveCount = useMemo(
+    () => allWorkstreams.filter((w) => w.status === 'active' || w.status === 'review').length,
+    [allWorkstreams],
+  );
   const wsConflictCount = useMemo(() => allWorkstreams.filter((w) => w.conflicts > 0).length, [allWorkstreams]);
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
