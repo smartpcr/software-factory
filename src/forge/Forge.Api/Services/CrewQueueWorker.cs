@@ -2053,8 +2053,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     // Phase 25 — upsert a local PrRow so the work-item card shows the
                     // PR badge immediately (before the periodic PR sync discovers it).
+                    // Phase 46 — inherit the parent story's AutoMerge flag so a
+                    // story-level "auto-merge me through" pre-authorisation
+                    // propagates to every PR opened for any task in the story.
                     try
                     {
+                        var inheritedAutoMerge = await Forge.Api.Services.Stories.SpawnAutoMergeResolver
+                            .ResolveAsync(db, workItemId, ct);
                         var existingPr = await db.Prs.FirstOrDefaultAsync(p => p.Id == pr.Id, ct);
                         if (existingPr is null)
                         {
@@ -2071,6 +2076,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                                 LastSyncStatus = "idle",
                                 WebUrl = pr.WebUrl,
                                 Provider = wiRepo?.Kind,
+                                AutoMerge = inheritedAutoMerge,
                                 UpdatedAt = DateTimeOffset.UtcNow.ToString("o"),
                             });
                         }
@@ -2078,6 +2084,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         {
                             existingPr.WorkItemId ??= workItemId;
                             existingPr.WebUrl ??= pr.WebUrl;
+                            // Backfill AutoMerge on a row that pre-existed
+                            // before the resolver was wired — only when
+                            // inheriting "true" so we don't clobber an
+                            // explicit user-set false.
+                            if (inheritedAutoMerge && !existingPr.AutoMerge)
+                            {
+                                existingPr.AutoMerge = true;
+                            }
                         }
                         await db.SaveChangesAsync(ct);
                     }

@@ -61,7 +61,15 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
 
     public async Task<PrSyncSnapshot> FetchAsync(PrRow pr, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(pr.ProviderRef))
+        // ProviderRef may be null for story-spawn PRs where the orchestrator
+        // stores the ADO number only in the Id field (e.g. "PR #15630125").
+        // Fall back to extracting digits from pr.Id.
+        var providerRef = pr.ProviderRef;
+        if (string.IsNullOrEmpty(providerRef))
+        {
+            providerRef = new string(pr.Id.Where(char.IsDigit).ToArray());
+        }
+        if (string.IsNullOrEmpty(providerRef))
         {
             return new PrSyncSnapshot(pr.Col, pr.LastUpstreamUpdatedAt, Array.Empty<PrSyncComment>(), false);
         }
@@ -76,8 +84,8 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         }
 
         // Provider ref may have come in as "PR #123" / "#123" / "123" — normalise to digits.
-        var num = new string(pr.ProviderRef.Where(char.IsDigit).ToArray());
-        if (string.IsNullOrEmpty(num)) num = pr.ProviderRef;
+        var num = new string(providerRef.Where(char.IsDigit).ToArray());
+        if (string.IsNullOrEmpty(num)) num = providerRef;
 
         using var http = await this.NewClientAsync(orgUrl, ct);
         var prResp = await http.GetAsync(
@@ -196,7 +204,44 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
             }
         }
 
-        return new PrSyncSnapshot(canonical, lastUpdated, comments, true);
+        return new PrSyncSnapshot(canonical, lastUpdated, comments, true,
+            Files: await this.FetchFileCountAsync(http, project, repo, num, ct));
+    }
+
+    /// <summary>
+    /// Best-effort fetch of the file count from the PR iterations/changes endpoint.
+    /// Also populates commits from the commits endpoint. Returns null on any failure.
+    /// </summary>
+    private async Task<int?> FetchFileCountAsync(
+        HttpClient http, string project, string repo, string prNum, CancellationToken ct)
+    {
+        try
+        {
+            // ADO: GET pullRequests/{id}/iterations to count commits, then
+            // GET pullRequests/{id}/iterations/{last}/changes for file count.
+            var iterResp = await http.GetAsync(
+                $"{Uri.EscapeDataString(project)}/_apis/git/repositories/{Uri.EscapeDataString(repo)}/pullRequests/{Uri.EscapeDataString(prNum)}/iterations?api-version=7.0",
+                ct);
+            if (!iterResp.IsSuccessStatusCode) return null;
+            using var iterDoc = JsonDocument.Parse(await iterResp.Content.ReadAsStringAsync(ct));
+            var iters = iterDoc.RootElement.GetProperty("value");
+            if (iters.GetArrayLength() == 0) return null;
+            var lastIter = iters[iters.GetArrayLength() - 1];
+            var iterId = lastIter.GetProperty("id").GetInt32();
+
+            var changesResp = await http.GetAsync(
+                $"{Uri.EscapeDataString(project)}/_apis/git/repositories/{Uri.EscapeDataString(repo)}/pullRequests/{Uri.EscapeDataString(prNum)}/iterations/{iterId}/changes?api-version=7.0&$top=1000",
+                ct);
+            if (!changesResp.IsSuccessStatusCode) return null;
+            using var changesDoc = JsonDocument.Parse(await changesResp.Content.ReadAsStringAsync(ct));
+            if (changesDoc.RootElement.TryGetProperty("changeEntries", out var entries) && entries.ValueKind == JsonValueKind.Array)
+                return entries.GetArrayLength();
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
