@@ -29,7 +29,9 @@ public sealed record ProductStory(
     int Points,
     object[]? Attachments = null,
     /// <summary>Phase 45 — default base branch carried into every spawn produced from this story. Defaults to "main".</summary>
-    string BaseBranch = "main");
+    string BaseBranch = "main",
+    /// <summary>Phase 46 — when true and BaseBranch != "main", agents auto-merge PRs against the base branch.</summary>
+    bool AutoMerge = false);
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).
@@ -1117,7 +1119,9 @@ public sealed record TaskExecutionSnapshot(
     /// <summary>Phase 20 — effective max iterations (override or default constant).</summary>
     int MaxIterations = 5,
     /// <summary>Total number of transcript events for this work item (supports paging).</summary>
-    int TranscriptTotalCount = 0);
+    int TranscriptTotalCount = 0,
+    /// <summary>Time budget for this task in seconds (derived from story points × phase multiplier).</summary>
+    int BudgetSeconds = 0);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

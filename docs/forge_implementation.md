@@ -4798,6 +4798,66 @@ Implementation details:
 - **No multi-base spawn.** A spawn has exactly one base branch; per-workstream base override is out of scope.
 - ~~**Story-level PATCH does NOT replay merged PRs.**~~ **Revised after operator feedback (2026-05-05): story-level PATCH now runs the same full retarget flow as `PATCH /api/stories/{id}/spawn/base-branch` when a spawn exists**, because operators expect "I changed my base branch, all my open PRs should target the new branch" without having to discover a second endpoint.
 
+### Engineer agent edits real repo files in place (no sandbox prefix)
+
+Operator hit a "sloppy agent" pattern on 2026-05-05: workstream `HttpMetricsHandler — Stop Body Buffering` had iter 1 generator complete a full session (claimed *DONE* with code edits + passing tests in its summary) but evaluator scored 86 / iterate, and iter 2 repeated the same dance without converging. Root cause was structural — `ProduceWorkstreamChangesAsync` set the engineer agent's working directory to a scratch sandbox at `{stateDir}/storyworkspaces/{spawnId}/impl-{wsSlug}/` and then re-keyed every file path under `src/.story-artifacts/{storyId}/{wsId}/` before the orchestrator committed. The agent could only scaffold new files in the sandbox; it could never edit existing repo files (like the actual `HttpMetricsHandler.cs`). So the agent did real work in the broader filesystem (where its tools could see the repo), claimed completion, dutifully tried to "copy results to the workspace directory" — and only a partial mirror landed where the evaluator could read it.
+
+Compare the architect path (`ProducePlanArtifactsAsync` line ~150): plan-doc agents already work directly in the plan branch's git worktree; their writes land at real paths and commit cleanly. Workstream agents needed the same treatment.
+
+Fix shipping in this revision:
+
+- **Workspace = workstream branch's git worktree.** `ProduceWorkstreamChangesAsync` now calls `git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch)` and uses that path as the agent's working directory. Edits land at real repo paths inside the worktree.
+- **Drop the `repoPrefix` rewrite.** Files commit at the relative path the agent wrote (e.g. `Microsoft.Update.Common.Diagnostics/HttpMetricsHandler.cs`), not under `src/.story-artifacts/...`.
+- **Detect changed files via `git status`, not recursive enumeration.** `IStoryGitOps.GetChangedFilesAsync(repo, worktreePath)` parses `git status --porcelain -z` output and returns repo-relative paths of added/modified/renamed files (skips deletions because `CommitFilesAsync`'s dict contract can't represent them). The strategy reads each one back from disk and returns the dict to the orchestrator, which `CommitFilesAsync` re-materialises (idempotent — same content) and commits.
+- **Updated engineer prompt.** Tells the agent: *"Your working directory IS a git worktree of the actual repo, on branch `ws/...`. You can READ AND WRITE ANY FILE. Edit existing source files in place at their real repo paths. Do NOT scaffold a sandbox copy under `src/.story-artifacts/`."*
+- **`ReadCachedWorkstreamFilesAsync` follows the same pattern** so a verdict=pass workstream re-entered after restart reads from the worktree's uncommitted changes (not the dead sandbox path) and the orchestrator finishes the commit.
+
+This unblocks the entire impl phase for stories whose workstreams need to *modify* existing repo content — which is most real engineering work, not just scaffolding.
+
+### Engineer agent: 30-second per-spawn timeout was killing every iter
+
+The worktree fix above turned out to be necessary but not sufficient. Operator inspected `E:/forge/update/.worktree/spawn-ws-...` after deploying it and found `git status` clean across 124 iters, with the workstream branch's HEAD untouched since the merged PR that opened it. The agent was getting cancelled mid-tool-call and never reaching a write.
+
+Root cause: `SpawnDependencyScheduler.TickOnceAsync` wrapped each `orchestrator.DriveAsync(spawnId, ct)` in a 30-second linked CTS, intended as a "don't let one slow spawn starve the others" safety. With 5 active spawns, ticks took ~150 seconds (the 2.5-min reflog cadence the operator observed) AND every impl-phase agent invocation was cancelled at 30s — long before it could even read enough files to know where to start editing. Doc/architect work occasionally squeezed a write into 30s because each plan doc has a single known target path baked into the prompt; engineer work never could because the path-discovery + edit cycle simply doesn't fit.
+
+Fix:
+
+- **Drop the per-spawn 30s CTS in `SpawnDependencyScheduler.TickOnceAsync`.** Agents now run to their own `AgentContext.WallClockBudget` (`BudgetForPhase` already enforces a sane per-phase cap — 6 min for impl on a 1-pt workstream, scaling with story points). Concurrent ticks for the same spawn serialise on the per-branch lock in `RealStoryGitOps`, so the worktree never sees two writers.
+- **Fan out spawns inside a tick via `Task.WhenAll` with one task per spawn.** A fast spawn no longer waits behind a slow neighbour; a stuck spawn no longer stretches the tick into minutes. Each task wraps its own try/catch so one spawn's exception doesn't poison the others.
+
+### Engineer agent: bake target file paths into the impl prompt
+
+Even with the timeout fix, the engineer still spends precious wall budget walking the tree to find the files the workstream's brief refers to. Plan/doc agents don't have this problem because their prompt names a single target path (`{spec.RepoPath}`); engineer agents were left to discover targets in a multi-thousand-file enterprise repo via `ls` and `grep`.
+
+Fix in `ProduceWorkstreamChangesAsync`:
+
+- **Two-pass target extraction**, run once per impl iter before invoking the engineer:
+    1. `ExtractTargetPaths` — regex over `{workItemDescription, workstream.Summary, planStageBody}` for backtick-wrapped or bare paths with known code-file extensions (`.cs`, `.ts`, `.py`, `.go`, etc.). Sanitises (forward slashes, no `..`, no absolute paths, skip `docs/stories/...` doc-context paths). Cheap, deterministic, usually enough for well-decomposed stages whose plan body already names the files to touch.
+    2. `DiscoverEngineerTargetsAsync` — fallback when (1) finds nothing. Runs a short read-only architect agent (90s budget) on the same `{summary, brief, stage}` prose; the agent writes `targets.json` to a sandbox; we deserialise + re-sanitise. One extra LLM call per workstream's first iter, dwarfed by the 6+ minutes of engineer time it saves.
+- `ReadPlanStageBodyAsync` resolves `WorkstreamRow.PlanAnchor` (e.g. `phase-2/stage-1`) inside the merged `implementation-plan.md` so the relevant stage's body — not the whole plan — feeds extraction and discovery.
+- **`## Target files (start here)` section in the engineer prompt.** Renders the resolved targets as a bullet list. When both passes yield nothing, the section explains so the agent still has clear marching orders rather than silently empty context.
+- **Bash / `run_command` mentioned explicitly.** SDK invocations of `crew-eng` already have shell tools available (no `DisallowedTools` is forwarded), but the prior prompt only suggested `ls`, `grep`, `view`. The new prompt directs the agent to `grep -r 'symbol' src/` via shell and to run `dotnet build`/`dotnet test` to verify edits.
+
+Targets are advisory — the engineer still edits any file the implementation legitimately needs — but converting "explore a 1000-file repo from scratch" into "open these N files first" is what fits inside the per-iter wall budget.
+
+### Engineer agent: tolerate self-committed work; forbid `git commit` going forward
+
+Within minutes of restart with the timeout + targets fixes, the HIGH-MEM-CONSUMPTION HttpMetricsHandler workstream surfaced a new false-negative: evaluator scored 95 (pass), but `ProduceWorkstreamChangesAsync` then threw "Engineer produced no file changes" anyway. Reflog on the worktree had the smoking gun:
+
+```
+604ea1f1e HEAD@{13:00:25}: commit: HttpMetricsHandler: stop body buffering to prevent LOH pressure
+165bc5c0e HEAD@{12:46:35}: checkout: ...
+```
+
+The engineer agent had run `git add -A && git commit -m "…"` itself via its `bash` / `run_command` tool — encouraged, in part, by the new prompt mentioning `dotnet build` / `dotnet test` (which framed "the shell is yours to use"). Once the agent committed, `git status --porcelain` returned clean, our check decided the agent had produced nothing, and the orchestrator halted with the agent's actual work stranded as a local-only commit.
+
+Fix:
+
+- **`RealStoryGitOps.GetChangedFilesAsync` now combines two sources:** uncommitted changes from `git status --porcelain -z` AND committed-but-unpushed changes from `git diff --name-only -z origin/{branch}..HEAD`. The branch is resolved from the worktree itself via `git rev-parse --abbrev-ref HEAD` so the `IStoryGitOps` signature stays unchanged. Falls back gracefully when the worktree is detached or `origin/{branch}` doesn't exist yet (very-first commit case). Result: agent self-commits flow through `CommitFilesAsync` → `PushWithAutoRecoverAsync` and land on origin like normal uncommitted edits would.
+- **Engineer prompt explicitly forbids `git add`/`git commit`/`git push`/`git stash`/`git reset`.** Keeps the loop predictable for everyone (operators reading the worktree tab, evaluator reading file mtimes, future fixers debugging diff sources). Read-only git commands (`git log`, `git diff`, `git blame`) remain available because the agent legitimately uses them to understand existing code.
+
+Together, (1) recovers the in-flight HIGH-MEM-CONSUMPTION iter on retry (the agent's local commit is still on disk, the new code path picks it up and pushes it), and (2) prevents the recurrence by making "let Forge do the git plumbing" an explicit instruction rather than an implicit assumption.
+
 ### ADO repo identifier — canonical, not display name
 
 Operator hit `TF401019: Git repository 'update' does not exist` when ACCEPT auto-opened a PR against ADO. Root cause: `ProviderStoryProviderOps.OpenPrAsync` was passing `Repo.DisplayName` ("update" — operator's friendly alias) as the ADO repo identifier. ADO's PR REST API needs the canonical slug from the remote URL (`https://msazure.visualstudio.com/One/_git/ASZ-UpdateService` → `ASZ-UpdateService`).

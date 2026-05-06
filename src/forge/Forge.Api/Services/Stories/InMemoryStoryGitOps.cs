@@ -118,6 +118,17 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         => Task.CompletedTask;
 
     /// <summary>
+    /// Phase 45 follow-up — in-memory test stub returns an empty list since
+    /// the test deterministic strategy doesn't write to a real worktree on
+    /// disk. Tests that exercise the workstream impl flow either bind their
+    /// own IStoryGitOps or accept the empty-changes path (which the
+    /// orchestrator treats as "no commit needed" — fine for tests).
+    /// </summary>
+    public Task<IReadOnlyList<string>> GetChangedFilesAsync(
+        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
+    /// <summary>
     /// Phase 45 — fast-forward the in-memory base branch to the upstream tip.
     /// Tests rely on the base branch carrying every artifact already merged
     /// into <paramref name="upstreamBranch"/>, so we copy the upstream tree
@@ -138,6 +149,27 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         foreach (var (path, body) in src) dst[path] = body;
         this.tips[dstKey] = ShaOf(dst, $"rebase {baseBranch} onto {upstreamBranch}");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Phase 46 — merge upstream into a feature branch. In-memory: copy all
+    /// upstream entries into the feature tree (like a successful merge).
+    /// Always returns <c>true</c> (tests never simulate conflicts here).
+    /// </summary>
+    public Task<bool> MergeUpstreamIntoBranchAsync(
+        RepoRow? repo, string branch, string upstreamBranch, CancellationToken ct = default)
+    {
+        var srcKey = Key(repo, upstreamBranch);
+        var dstKey = Key(repo, branch);
+        if (!this.trees.TryGetValue(srcKey, out var src)) return Task.FromResult(true);
+        if (!this.trees.TryGetValue(dstKey, out var dst))
+        {
+            dst = new Dictionary<string, string>(StringComparer.Ordinal);
+            this.trees[dstKey] = dst;
+        }
+        foreach (var (path, body) in src) dst.TryAdd(path, body);
+        this.tips[dstKey] = ShaOf(dst, $"merge {upstreamBranch} into {branch}");
+        return Task.FromResult(true);
     }
 
     private static string Key(RepoRow? repo, string branch) =>

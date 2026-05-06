@@ -100,6 +100,8 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
                     Provider = req.Repo.Kind,
                     WorkItemId = req.WorkItemId,
                     WebUrl = prContract.WebUrl,
+                    // Phase 46 — carry the spawn-level auto-merge policy.
+                    AutoMerge = req.AutoMerge,
                 });
                 await db.SaveChangesAsync(ct);
             }

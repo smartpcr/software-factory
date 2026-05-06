@@ -168,6 +168,8 @@ public static class StateEndpoints
                 Description = (req.Description ?? string.Empty).Trim(),
                 Points = points,
                 BaseBranch = baseBranch,
+                // Phase 46 — auto-merge is only effective when base != main.
+                AutoMerge = (req.AutoMerge ?? false) && !string.Equals(baseBranch, "main", StringComparison.Ordinal),
             };
 
             // Phase 43 — resolve pre-uploaded attachments.
@@ -301,6 +303,57 @@ public static class StateEndpoints
                 {
                     row.BaseBranch = trimmed;
                     newBaseBranch = trimmed;
+                }
+            }
+
+            // Phase 46 — auto-merge flag. Server enforces false when base
+            // branch is "main". When the flag changes, propagate to the
+            // spawn and all still-open PRs so AutoMergeWatcher picks them up
+            // (or stops picking them up).
+            if (req.AutoMerge is { } reqAutoMerge)
+            {
+                var effectiveBase = newBaseBranch ?? row.BaseBranch ?? "main";
+                var effective = reqAutoMerge && !string.Equals(effectiveBase, "main", StringComparison.Ordinal);
+                if (row.AutoMerge != effective)
+                {
+                    row.AutoMerge = effective;
+
+                    var spawnAm = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                    if (spawnAm is not null && spawnAm.AutoMerge != effective)
+                    {
+                        spawnAm.AutoMerge = effective;
+                        spawnAm.UpdatedAt = DateTimeOffset.UtcNow;
+
+                        // Update all still-open PRs belonging to this spawn.
+                        var spawnPrIds = new List<string>();
+                        if (!string.IsNullOrEmpty(spawnAm.PlanPrId)) spawnPrIds.Add(spawnAm.PlanPrId);
+                        if (!string.IsNullOrEmpty(spawnAm.QaPrId)) spawnPrIds.Add(spawnAm.QaPrId);
+                        var wsRows = await db.Workstreams.Where(w => w.StorySpawnId == spawnAm.Id).ToListAsync();
+                        foreach (var ws in wsRows)
+                        {
+                            var wsPrs = string.IsNullOrEmpty(ws.PrsJson)
+                                ? new List<string>()
+                                : System.Text.Json.JsonSerializer.Deserialize<List<string>>(ws.PrsJson) ?? new();
+                            spawnPrIds.AddRange(wsPrs);
+                        }
+                        if (spawnPrIds.Count > 0)
+                        {
+                            var openPrs = await db.Prs.Where(p => spawnPrIds.Contains(p.Id) && p.Col != "merged" && p.Col != "abandoned").ToListAsync();
+                            foreach (var pr in openPrs) pr.AutoMerge = effective;
+                        }
+                    }
+                }
+            }
+            // Phase 46 — when baseBranch reverts to "main", clear auto-merge.
+            else if (newBaseBranch is not null && string.Equals(newBaseBranch, "main", StringComparison.Ordinal) && row.AutoMerge)
+            {
+                row.AutoMerge = false;
+
+                var spawnAmClear = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                if (spawnAmClear is not null && spawnAmClear.AutoMerge)
+                {
+                    spawnAmClear.AutoMerge = false;
+                    spawnAmClear.UpdatedAt = DateTimeOffset.UtcNow;
                 }
             }
 
@@ -451,7 +504,9 @@ public static class StateEndpoints
         int? Points = null,
         IReadOnlyList<string>? UploadIds = null,
         /// <summary>Phase 45 — default base branch for spawns produced from this story. Empty / missing = "main".</summary>
-        string? BaseBranch = null);
+        string? BaseBranch = null,
+        /// <summary>Phase 46 — auto-merge PRs against the base branch. Only effective when BaseBranch != "main".</summary>
+        bool? AutoMerge = null);
 
     public sealed record PatchStoryRequest(
         string? Name = null,
@@ -462,7 +517,9 @@ public static class StateEndpoints
         /// <summary>Phase 43 — file names to remove from AttachmentsJson.</summary>
         IReadOnlyList<string>? RemoveFileNames = null,
         /// <summary>Phase 45 — change the story's default base branch. When the new value is non-"main" the server creates the branch in every repo of the product immediately.</summary>
-        string? BaseBranch = null);
+        string? BaseBranch = null,
+        /// <summary>Phase 46 — toggle auto-merge. Only effective when BaseBranch != "main".</summary>
+        bool? AutoMerge = null);
 
     private static ProductStory MapStory(ProductStoryRow r) => new(
         r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"),
@@ -470,7 +527,8 @@ public static class StateEndpoints
         string.IsNullOrEmpty(r.AttachmentsJson)
             ? null
             : System.Text.Json.JsonSerializer.Deserialize<object[]>(r.AttachmentsJson),
-        string.IsNullOrEmpty(r.BaseBranch) ? "main" : r.BaseBranch);
+        string.IsNullOrEmpty(r.BaseBranch) ? "main" : r.BaseBranch,
+        r.AutoMerge);
 
     /// <summary>
     /// Phase 45 — create <paramref name="baseBranch"/> branched from

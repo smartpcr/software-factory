@@ -421,6 +421,7 @@ using (var scope = app.Services.CreateScope())
     // mapped entity. Skipping either would crash with "no such column".
     await Phase43Migration.ApplyAsync(db);
     await Phase45Migration.ApplyAsync(db);
+    await Phase46Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

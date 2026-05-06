@@ -58,6 +58,9 @@ export interface ProductStory {
    *  the server to create that branch in every repo of the product
    *  immediately. */
   baseBranch: string;
+  /** Phase 46 — when true and baseBranch != "main", agents auto-merge PRs
+   *  against the base branch. */
+  autoMerge?: boolean;
 }
 
 export interface Card {

@@ -63,6 +63,9 @@ export interface StorySpawn {
    *  (plan, workstream, QA, step-def). Defaults to "main". When non-default
    *  the orchestrator branches it from main on first drive. */
   baseBranch: string;
+  /** Phase 46 — when true and baseBranch != "main", agents auto-merge PRs
+   *  against the base branch. */
+  autoMerge?: boolean;
   planBranch: string | null;
   planPrId: string | null;
   decompositionJson: string | null;
@@ -551,7 +554,7 @@ export const forgeApi = {
    *  when a non-default base branch is set. The client normalises both shapes. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string },
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean },
   ): Promise<{ story: ProductStory; branchWarnings?: string[] }> {
     const resp = await fetchJson<ProductStory | { story: ProductStory; branchWarnings: string[] }>(
       `/api/products/${encodeURIComponent(productId)}/stories`,
@@ -575,7 +578,7 @@ export const forgeApi = {
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string },
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean },
   ): Promise<{
     story: ProductStory;
     branchWarnings?: string[];
@@ -937,6 +940,7 @@ export const forgeApi = {
     repoId?: string | null,
     uploadIds?: string[],
     baseBranch?: string,
+    autoMerge?: boolean,
   ): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn`, {
       method: 'POST',
@@ -946,6 +950,8 @@ export const forgeApi = {
         // Phase 45 — operator-chosen target branch. Server treats null /
         // missing as "main" so existing callers stay compatible.
         baseBranch: baseBranch ?? undefined,
+        // Phase 46 — auto-merge PRs. Server enforces false when base is main.
+        autoMerge: autoMerge ?? undefined,
       }),
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -1138,6 +1144,7 @@ export const forgeApi = {
      *  merged yet) → completed (PR merged) | pending (no iterations yet). */
     status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
     maxIterations: number;
+    budgetSeconds: number;
     /** Latest generator agent name + model, null until first iteration lands. */
     generator: { agentId: string; name: string; model: string | null } | null;
     /** Latest evaluator agent name + model, null until first iteration lands. */
