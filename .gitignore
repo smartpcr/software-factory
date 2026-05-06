@@ -2,6 +2,10 @@
 **/Node_modules/
 **/dist/
 
+# .NET build artifacts
+**/bin/
+**/obj/
+
 # VSMSBuild generated files in CoreXT
 *.projhash*
 *.slnhash*
