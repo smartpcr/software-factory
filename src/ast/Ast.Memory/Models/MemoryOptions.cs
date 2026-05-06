@@ -86,15 +86,16 @@ public class MemoryOptions
     /// </summary>
     public string? ConsolidationModelName { get; set; }
 
-    public ScoringWeights Weights { get; set; } = new();
-}
+    /// <summary>
+    /// File extensions watched by the file-system watcher.
+    /// Default: .cs, .ps1, .psm1, .psd1
+    /// </summary>
+    public IReadOnlyList<string> WatchedExtensions { get; set; } = [".cs", ".ps1", ".psm1", ".psd1"];
 
-/// <summary>
-/// Scoring weights for composite retrieval ranking. Must sum to 1.00.
-/// </summary>
-public record ScoringWeights(
-    double Structural = 0.30,
-    double Semantic = 0.25,
-    double Centrality = 0.20,
-    double Recency = 0.15,
-    double Expertise = 0.10);
+    /// <summary>
+    /// Root path of the repository to watch. Used by the hosted service
+    /// (<see cref="Ast.Memory.Sync.FileWatcherHostedService"/>) to
+    /// start the file-system watcher automatically.
+    /// </summary>
+    public string? RepoRoot { get; set; }
+}
