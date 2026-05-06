@@ -983,4 +983,41 @@ public class Phase23EndpointExtraTests
         var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal(3, body.GetArrayLength());
     }
+
+    [Fact]
+    public async Task Get_SyncWorkItems_Runs_Clamps_Limit_Above_50()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using var c = f.CreateClient();
+        c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var product = await db.Products.FirstAsync();
+        db.Repos.Add(new RepoRow
+        {
+            Id = "clamp-repo", ProductId = product.Id, Kind = "ado",
+            DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
+        });
+        // Seed 75 rows so the unclamped query would return more than 50 if
+        // the cap regressed.
+        for (var i = 0; i < 75; i++)
+        {
+            db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
+            {
+                Id = $"sr-clamp-{i:D2}", RepoId = "clamp-repo", Kind = "manual",
+                StartedAt = DateTimeOffset.UtcNow.AddMinutes(-i).ToString("o"),
+                FinishedAt = DateTimeOffset.UtcNow.AddMinutes(-i).ToString("o"),
+                CompletedSuccessfully = true,
+            });
+        }
+        await db.SaveChangesAsync();
+
+        // Sync history is intentionally a "recent runs" view and capped at
+        // 50 server-side. A request for 999 must clamp to 50.
+        var resp = await c.GetAsync("/api/repos/clamp-repo/sync-work-items/runs?limit=999");
+        Assert.True(resp.IsSuccessStatusCode);
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(50, body.GetArrayLength());
+    }
 }
