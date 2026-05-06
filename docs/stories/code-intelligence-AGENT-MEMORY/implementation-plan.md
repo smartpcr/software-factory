@@ -206,14 +206,14 @@
 ### Stage 3.3: BudgetController and ContextAssembler
 
 #### Implementation Steps
-- [ ] Create `src/ast/Ast.Memory/Context/BudgetController.cs` — takes ranked `List<ScoredMemoryNode>` and token budget (default 8000, ceiling 32000); when budget is tight, collapses child nodes into parent summaries (HiAgent pattern per architecture.md §3.4); deduplicates same code span reached via multiple paths
-- [ ] Create `src/ast/Ast.Memory/Context/ContextAssembler.cs` — transforms trimmed ranked nodes into deterministic Markdown with sections: `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` (architecture.md §3.4)
-- [ ] Implement token counting using a tokenizer (tiktoken or equivalent); respect `TokenBudgetDefault` (8000) and `TokenBudgetCeiling` (32000)
+- [x] Create `src/ast/Ast.Memory/Context/BudgetController.cs` — takes ranked `List<ScoredMemoryNode>` and token budget (default 8000, ceiling 32000); when budget is tight, collapses child nodes into parent summaries (HiAgent pattern per architecture.md §3.4); deduplicates same code span reached via multiple paths
+- [x] Create `src/ast/Ast.Memory/Context/ContextAssembler.cs` — transforms trimmed ranked nodes into deterministic Markdown with sections: `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` (architecture.md §3.4)
+- [x] Implement token counting using a tokenizer (tiktoken or equivalent); respect `TokenBudgetDefault` (8000) and `TokenBudgetCeiling` (32000)
 
 #### Test Scenarios
-- [ ] Scenario: Budget enforcement — Given 50 ranked nodes totaling 16000 tokens and budget 8000, When `BudgetController` runs, Then output tokens ≤ 8000 and highest-scored nodes are retained
-- [ ] Scenario: HiAgent collapse — Given 10 child function nodes under a parent class and budget 2000, When `BudgetController` runs, Then children are collapsed into parent summary and output tokens ≤ 2000
-- [ ] Scenario: Context Markdown sections — Given ranked nodes spanning all 4 layers, When `ContextAssembler` produces output, Then the Markdown contains exactly the sections `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` in that order
+- [x] Scenario: Budget enforcement — Given 50 ranked nodes totaling 16000 tokens and budget 8000, When `BudgetController` runs, Then output tokens ≤ 8000 and highest-scored nodes are retained
+- [x] Scenario: HiAgent collapse — Given 10 child function nodes under a parent class and budget 2000, When `BudgetController` runs, Then children are collapsed into parent summary and output tokens ≤ 2000
+- [x] Scenario: Context Markdown sections — Given ranked nodes spanning all 4 layers, When `ContextAssembler` produces output, Then the Markdown contains exactly the sections `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` in that order
 
 ### Stage 3.4: MemoryRetrievalEngine Integration
 

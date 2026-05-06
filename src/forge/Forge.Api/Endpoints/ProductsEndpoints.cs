@@ -946,7 +946,10 @@ public static class ProductsEndpoints
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
-        var max = Math.Clamp(limit ?? 20, 1, 100);
+        // Sync history is a "recent runs" view — not an export. Cap at 50
+        // (default and max) so the drawer/table never has to render more
+        // than a screenful and the response stays small/fast.
+        var max = Math.Clamp(limit ?? 50, 1, 50);
         var query = db.WorkItemSyncRuns.Where(r => r.RepoId == id);
 
         // Filter by target: "wi" = work-item runs, "pr" = PR runs.
