@@ -9,7 +9,7 @@ interface Props {
   storyId: string;
 }
 
-type EditableField = 'name' | 'description' | 'points' | 'status' | 'baseBranch';
+type EditableField = 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge';
 
 export function StoryDetailPanel({ storyId }: Props) {
   const activeProductId = useProductsStore((s) => s.activeProductId);
@@ -44,7 +44,7 @@ export function StoryDetailPanel({ storyId }: Props) {
   const totalPts = useMemo(() => storyCards.reduce((s, c) => s + c.pts, 0), [storyCards]);
   const doneCards = useMemo(() => storyCards.filter((c) => c.col === 'done'), [storyCards]);
 
-  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status' | 'baseBranch'>>) {
+  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge'>>) {
     if (!story) return;
     setSavingField(field);
     try {
@@ -57,6 +57,8 @@ export function StoryDetailPanel({ storyId }: Props) {
         // the unchanged value would still pass through validation but is
         // wasted bandwidth and would re-emit the "branch created" toast.
         baseBranch: patch.baseBranch,
+        // Phase 46 — only send autoMerge when this edit changes it.
+        autoMerge: patch.autoMerge,
       });
       setStory(result.story);
       // Phase 45 — surface auto-create-branch + spawn-retarget result.
@@ -217,6 +219,27 @@ export function StoryDetailPanel({ storyId }: Props) {
                 />
               </div>
             </div>
+            {story && (story.baseBranch || 'main') !== 'main' && (
+              <div className="detail-meta-cell" style={{ marginTop: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={story.autoMerge ?? false}
+                    disabled={savingField === 'autoMerge'}
+                    onChange={(e) => {
+                      void persist('autoMerge', { autoMerge: e.target.checked });
+                    }}
+                  />
+                  <span className="detail-meta-label" style={{ margin: 0 }}>
+                    Auto-merge PRs against base branch
+                  </span>
+                  {savingField === 'autoMerge' && <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>saving…</span>}
+                </label>
+                <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginLeft: 24, display: 'block' }}>
+                  Agent will automatically create and merge PRs. Merge conflicts are resolved automatically.
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

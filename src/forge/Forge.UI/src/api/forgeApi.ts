@@ -5,6 +5,7 @@ import type {
   ColumnId,
   CostSummary,
   Crew,
+  CrewConcurrencySummary,
   CrewHistoryEntry,
   CrewPayroll,
   CrewSalary,
@@ -34,11 +35,14 @@ import type {
   SavedPrefix,
   SoulPayload,
   SprintDiscoveryRequest,
+  SyncRunItem,
+  SyncRunItemDetail,
   TaskQueueEntry,
   CrewQueueStats,
   TimelineResponse,
   UserSettings,
   Workstream,
+  WorkItemSyncRun,
 } from '@/types';
 import { sampleState } from '@/sampleData';
 import type {
@@ -63,6 +67,9 @@ export interface StorySpawn {
    *  (plan, workstream, QA, step-def). Defaults to "main". When non-default
    *  the orchestrator branches it from main on first drive. */
   baseBranch: string;
+  /** Phase 46 — when true and baseBranch != "main", agents auto-merge PRs
+   *  against the base branch. */
+  autoMerge?: boolean;
   planBranch: string | null;
   planPrId: string | null;
   decompositionJson: string | null;
@@ -247,6 +254,8 @@ interface ProblemDetails {
   title?: string;
   status?: number;
   detail?: string;
+  // Allow server-side `extensions` to flow through (e.g. {conflict: true, hint}).
+  [key: string]: unknown;
 }
 
 export class ForgeApiError extends Error {
@@ -551,7 +560,7 @@ export const forgeApi = {
    *  when a non-default base branch is set. The client normalises both shapes. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string },
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean },
   ): Promise<{ story: ProductStory; branchWarnings?: string[] }> {
     const resp = await fetchJson<ProductStory | { story: ProductStory; branchWarnings: string[] }>(
       `/api/products/${encodeURIComponent(productId)}/stories`,
@@ -575,7 +584,7 @@ export const forgeApi = {
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string },
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean },
   ): Promise<{
     story: ProductStory;
     branchWarnings?: string[];
@@ -799,12 +808,46 @@ export const forgeApi = {
     });
   },
 
-  /** POST /api/prs/{id}/merge. */
-  async mergePr(id: string): Promise<Pr> {
-    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge`, {
+  /**
+   * POST /api/prs/{id}/merge.
+   * On a real merge conflict the server returns 409 with `{conflict: true, hint}`.
+   * Pass `force: true` to opt into the destructive `-X ours` auto-resolve path
+   * (keeps source-branch changes, discards upstream-side hunks).
+   * Returns `{pr, queued}`. When `queued=true` ADO accepted the merge but is
+   * waiting on branch policies / required validations — Col stays on review
+   * locally and PrSyncJob reconciles it once ADO completes the squash.
+   */
+  async mergePr(id: string, opts?: { force?: boolean }): Promise<{ pr: Pr; queued: boolean; detail?: string }> {
+    const qs = opts?.force ? '?force=true' : '';
+    const url = `${baseUrl}/api/prs/${encodeURIComponent(id)}/merge${qs}`;
+    const productId = getActiveProductId();
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'X-Forge-User': writerHeader() },
+      headers: {
+        Accept: 'application/json',
+        'X-Forge-User': writerHeader(),
+        ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+      },
     });
+    if (!res.ok) {
+      let problem: ProblemDetails | null = null;
+      const ct = res.headers.get('content-type') ?? '';
+      if (ct.includes('json')) {
+        try {
+          problem = (await res.json()) as ProblemDetails;
+        } catch {
+          // fall through
+        }
+      }
+      const detail = problem?.detail ?? problem?.title ?? res.statusText;
+      throw new ForgeApiError(res.status, problem, `merge ${id}: ${res.status} ${detail}`);
+    }
+    if (res.status === 202) {
+      const body = (await res.json()) as { queued: boolean; pr: Pr; detail?: string };
+      return { pr: body.pr, queued: true, detail: body.detail };
+    }
+    const pr = (await res.json()) as Pr;
+    return { pr, queued: false };
   },
 
   /** POST /api/workstreams/{id}/pr — Phase 6.4. */
@@ -937,6 +980,7 @@ export const forgeApi = {
     repoId?: string | null,
     uploadIds?: string[],
     baseBranch?: string,
+    autoMerge?: boolean,
   ): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn`, {
       method: 'POST',
@@ -946,6 +990,8 @@ export const forgeApi = {
         // Phase 45 — operator-chosen target branch. Server treats null /
         // missing as "main" so existing callers stay compatible.
         baseBranch: baseBranch ?? undefined,
+        // Phase 46 — auto-merge PRs. Server enforces false when base is main.
+        autoMerge: autoMerge ?? undefined,
       }),
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -1138,6 +1184,7 @@ export const forgeApi = {
      *  merged yet) → completed (PR merged) | pending (no iterations yet). */
     status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
     maxIterations: number;
+    budgetSeconds: number;
     /** Latest generator agent name + model, null until first iteration lands. */
     generator: { agentId: string; name: string; model: string | null } | null;
     /** Latest evaluator agent name + model, null until first iteration lands. */
@@ -1414,6 +1461,62 @@ export const forgeApi = {
     );
   },
 
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs — paginated sync-history.
+   * Server caps `limit` at 50 (default 50). `target` filters to work-item
+   * (`wi`) or PR (`pr`) runs; omit for all kinds.
+   *
+   * `signal` lets callers cancel the request from a useEffect cleanup so
+   * unmount/re-render doesn't leave a stale fetch in flight (which can
+   * surface as a `TypeError: Failed to fetch` in the browser when the
+   * dev-server proxy / page-context goes away mid-request).
+   */
+  async listSyncRuns(
+    repoId: string,
+    opts: { limit?: number; target?: 'wi' | 'pr'; signal?: AbortSignal } = {},
+  ): Promise<WorkItemSyncRun[]> {
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.max(1, Math.min(50, opts.limit ?? 50))));
+    if (opts.target) params.set('target', opts.target);
+    return fetchJson<WorkItemSyncRun[]>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs?${params.toString()}`,
+      { signal: opts.signal },
+    );
+  },
+
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs/{runId}/items — per-item
+   * detail rows for one sync run (Phase 25). `signal` supports clean
+   * cancellation from a useEffect cleanup.
+   */
+  async listSyncRunItems(
+    repoId: string,
+    runId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<SyncRunItem[]> {
+    return fetchJson<SyncRunItem[]>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items`,
+      { signal: opts.signal },
+    );
+  },
+
+  /**
+   * GET /api/repos/{id}/sync-work-items/runs/{runId}/items/{kind}/{entityId}/detail —
+   * Phase 25 follow-up; rich detail payload for the click-through popup.
+   */
+  async getSyncRunItemDetail(
+    repoId: string,
+    runId: string,
+    entityKind: string,
+    entityId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<SyncRunItemDetail> {
+    return fetchJson<SyncRunItemDetail>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(entityKind)}/${encodeURIComponent(entityId)}/detail`,
+      { signal: opts.signal },
+    );
+  },
+
   /** GET /api/crews. */
   async listCrews(): Promise<Crew[]> {
     return fetchJson<Crew[]>('/api/crews');
@@ -1615,6 +1718,16 @@ export const forgeApi = {
   /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */
   async getSalaryTodayTotal(): Promise<SalaryTodaySummary> {
     return fetchJson<SalaryTodaySummary>('/api/crews/salary/today');
+  },
+
+  /**
+   * GET /api/crews/concurrency — TopBar "ACTIVE n/cap" chip payload.
+   * Counts open agent_claims rows joined with agents.CrewId so the
+   * chip reflects story-spawn-driven activity, not just the legacy
+   * task_queue picked-up state.
+   */
+  async getCrewConcurrency(): Promise<CrewConcurrencySummary> {
+    return fetchJson<CrewConcurrencySummary>('/api/crews/concurrency');
   },
 
   /** GET /api/cost/summary — Phase 11 `/cost` dashboard rollup. */

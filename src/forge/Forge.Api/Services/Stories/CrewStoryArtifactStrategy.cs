@@ -745,8 +745,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
-        var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
-        var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+        // Phase 45 follow-up — engineer agent works directly in the
+        // workstream branch's git worktree (not a scratch sandbox under
+        // src/.story-artifacts/). This lets the agent edit existing repo
+        // files in place, run real builds against the actual codebase, and
+        // have its changes commit at their real repo paths. Mirrors the
+        // plan-doc strategy's setup at line ~150.
+        //
+        // The previous design used a scratch dir + a `src/.story-artifacts/{spawn}/{ws}/`
+        // path-rewrite, which made it impossible for the agent to fix
+        // existing code (it could only scaffold new files in a sandbox).
+        // Operator hit this on 2026-05-05: agent claimed "DONE" with code
+        // changes + passing tests, evaluator scored 86 because the changes
+        // never made it back to real repo paths.
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct);
 
         // Look up the work item's description — the operator may have edited
         // it with more specific requirements (e.g. "use C# not TypeScript").
@@ -762,6 +776,50 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 : workstream.Summary ?? string.Empty;
         }
 
+        // Phase 45 follow-up — bake target file paths into the prompt so the
+        // engineer doesn't have to discover them in a multi-thousand-file
+        // enterprise repo before running out of wall budget.
+        //
+        // Two passes:
+        //   1) regex-extract paths from the workstream brief + summary +
+        //      relevant section of the merged implementation-plan.md
+        //      (cheap, deterministic, usually enough for well-decomposed
+        //      stages whose plan body already names the files to touch).
+        //   2) if (1) yields nothing, fall back to a small read-only
+        //      architect agent that reads the same context and writes a
+        //      targets.json — DiscoverEngineerTargetsAsync. One extra LLM
+        //      call before the engineer iter, but vastly faster than
+        //      letting the engineer flail through ls/grep for 6 minutes.
+        //
+        // Targets are advisory — the engineer can edit other files when the
+        // implementation legitimately needs them — but giving it a concrete
+        // starting set converts "explore a 1000-file repo" into "open these
+        // files and start editing", which fits inside the per-iter budget.
+        var planStageBody = await this.ReadPlanStageBodyAsync(spawn, workstream, ct);
+        var targetsFromText = ExtractTargetPaths(
+            workItemDescription,
+            workstream.Summary,
+            planStageBody);
+        IReadOnlyList<string> targets = targetsFromText;
+        if (targets.Count == 0)
+        {
+            try
+            {
+                targets = await this.DiscoverEngineerTargetsAsync(
+                    spawn, workstream, workItemDescription, planStageBody, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "DiscoverEngineerTargetsAsync failed for workstream {WsId}; engineer will run without target hints.",
+                    workstream.Id);
+                targets = Array.Empty<string>();
+            }
+        }
+        var targetsBlock = targets.Count == 0
+            ? "_No specific targets identified — locate the relevant files via `grep`/`ls` against the workstream summary above before editing._"
+            : string.Join("\n", targets.Select(t => $"- `{t}`"));
+
         var generatorPrompt = $$"""
             You are the Engineer agent implementing workstream `{{workstream.Id}}`
             for story `{{spawn.StoryId}}`.
@@ -774,24 +832,77 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Workstream
             **{{workstream.Name}}** — {{workstream.Summary}}
-            Branch: `{{workstream.Branch}}`
+            Branch: `{{workstream.Branch}}` (branched from `{{baseBranch}}`)
 
             ## Detailed requirements
             {{workItemDescription}}
 
+            ## Target files (start here)
+            These are the repo-relative paths the workstream's brief and the
+            implementation-plan stage explicitly call out. Open them first;
+            only branch out to other files when the implementation genuinely
+            requires it.
+
+            {{targetsBlock}}
+
+            ## Repository context — IMPORTANT
+            Your working directory IS a git worktree of the actual repo, on
+            branch `{{workstream.Branch}}`. You can READ AND WRITE ANY FILE in
+            this repo using your filesystem tools, AND you have a real shell
+            via `bash` / `run_command`. To implement this workstream:
+              - **Edit existing source files in place** at the target paths
+                listed above. If the workstream is "Stop body buffering in
+                HttpMetricsHandler", open `HttpMetricsHandler.cs` and modify
+                it directly — do not scaffold a parallel copy.
+              - Read the merged plan artifacts under
+                `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/` for context
+                (architecture / tech-spec / implementation-plan / e2e-scenarios).
+              - Use `grep -r 'symbol' src/` (via your shell) to locate
+                additional files when the targets list isn't sufficient —
+                this is far faster than walking the tree with `ls`.
+              - Add new files only when the implementation genuinely needs
+                a new file (e.g. a new test class, a new helper).
+              - Run real builds (`dotnet build {project}.csproj`) and tests
+                (`dotnet test {testproj}.csproj`) against the actual project
+                files via your shell to verify your changes.
+
+            DO NOT scaffold a sandbox copy under `src/.story-artifacts/` —
+            the previous version of this prompt did that and the changes
+            never landed against the real codebase. Edit real files at
+            their real paths.
+
+            ## Don't run git yourself
+            DO NOT run `git add`, `git commit`, `git push`, `git stash`,
+            `git reset`, or any other git command that mutates state.
+            Forge stages, commits, and pushes your changes for you after
+            the evaluator scores the work. Just leave your edits as
+            uncommitted changes in the worktree — that's all Forge needs.
+            (You may use read-only git commands like `git log`, `git diff`,
+            `git blame` if they help you understand existing code.)
+
+            ## Add a `.gitignore` if this is a from-scratch project
+            If this workstream is bootstrapping a new project (creating
+            `Cargo.toml` / `package.json` / `pyproject.toml` / `*.csproj`
+            in a previously empty repo), also write a `.gitignore` at the
+            repo root covering the toolchain's generated output (e.g.
+            `target/` for Rust, `node_modules/` and `dist/` for Node,
+            `bin/` and `obj/` for .NET, `__pycache__/` and `.venv/` for
+            Python). Forge skips a small builtin list of known artifact
+            dirs as a safety net, but a real `.gitignore` is the source
+            of truth and keeps the PR diff focused on real source.
+
             ## Your task
             Produce the source-code changes that implement this workstream per
             the detailed requirements above. Use real implementation — types,
-            methods, tests — not placeholders. Follow the language and
-            conventions specified in the requirements; if none are stated,
-            match the repository's primary language.
+            methods, tests — not placeholders. Follow the repository's
+            existing conventions, naming, and project layout.
 
             ## How to deliver
-            Use your filesystem tools to write files inside your working
-            directory. Use relative paths only; do not use absolute paths and
-            do not write outside the working directory. You may create
-            subdirectories within the working directory if your implementation
-            spans multiple files. Reply `DONE` when finished.
+            Edit and create files in place inside your working directory
+            (which is the git worktree root). Forge picks up every changed
+            file via `git status` after you finish, so you don't need to
+            "copy results to a workspace" — there is no separate workspace.
+            Reply `DONE` when finished.
 
             ## Open questions — structured (REQUIRED when you have any)
             If the workstream brief left ambiguity that forced you to guess
@@ -873,17 +984,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             storyPoints: wsPoints,
             ct: ct);
 
-        var files = ReadAllFiles(workspace);
-        if (files.Count == 0)
+        // Phase 45 follow-up — collect only files the agent actually changed
+        // in the worktree (via `git status --porcelain`), not every file in
+        // the repo. Read each one back from disk; return the dict keyed by
+        // its REAL repo-relative path. The orchestrator's `CommitFilesAsync`
+        // re-materialises the same content (idempotent since files already
+        // live in the worktree) and produces a single commit.
+        var changedPaths = await this.git.GetChangedFilesAsync(repo, workspace, ct);
+        if (changedPaths.Count == 0)
         {
             throw new InvalidOperationException(
-                $"Engineer produced no files for workstream {workstream.Id}. Workspace: {workspace}");
+                $"Engineer produced no file changes for workstream {workstream.Id}. Worktree: {workspace}. " +
+                $"The agent finished without editing any files in place — check the transcript for tool-call activity.");
         }
-        // Re-key relative paths under the repo prefix the orchestrator commits.
-        return files.ToDictionary(
-            kv => $"{repoPrefix}/{kv.Key}",
-            kv => kv.Value,
-            StringComparer.Ordinal);
+        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var rel in changedPaths)
+        {
+            var diskPath = Path.Combine(workspace, rel.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(diskPath)) continue; // staged-but-deleted edge case
+            dict[rel] = await File.ReadAllTextAsync(diskPath, ct);
+        }
+        if (dict.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Engineer changed {changedPaths.Count} path(s) but none were readable for workstream {workstream.Id}.");
+        }
+        return dict;
     }
 
     public async Task<IReadOnlyList<ReviewComment>> ProduceReviewCommentsAsync(
@@ -1106,26 +1232,52 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
-        var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
-        var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+        // Phase 45 follow-up — same fix as ProduceWorkstreamChangesAsync.
+        // The "cached workspace" is now the workstream's git worktree on
+        // the workstream branch; cached files are uncommitted changes
+        // sitting in that worktree from a prior gen-eval pass that already
+        // hit verdict=pass but the orchestrator didn't get to commit before
+        // a restart. We read those uncommitted changes via git, not via
+        // a raw recursive enumeration of the worktree (which would return
+        // the entire repo).
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        if (!Directory.Exists(workspace)) return dict;
-
-        foreach (var file in Directory.EnumerateFiles(workspace, "*", SearchOption.AllDirectories))
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        if (repo is null)
         {
-            // Skip siblings/ directory (cross-doc context copies)
-            if (file.Contains(Path.DirectorySeparatorChar + "siblings" + Path.DirectorySeparatorChar)) continue;
-            var rel = Path.GetRelativePath(workspace, file).Replace('\\', '/');
-            var content = await File.ReadAllTextAsync(file, ct);
-            if (!string.IsNullOrWhiteSpace(content))
-            {
-                dict[$"{repoPrefix}/{rel}"] = content;
-            }
+            this.logger?.LogWarning(
+                "ReadCachedWorkstreamFilesAsync: no repo for spawn {SpawnId}; returning empty.", spawn.Id);
+            return dict;
+        }
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+
+        // EnsureWorktreeAsync is idempotent — if the worktree already
+        // exists from the earlier producer pass, returns its path
+        // unchanged. If it doesn't (e.g. operator wiped .worktree/ between
+        // ticks), this re-creates it from origin/{branch} which means
+        // changes the agent left uncommitted are gone — handled below.
+        string workspace;
+        try
+        {
+            workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "ReadCachedWorkstreamFilesAsync: could not ensure worktree for {Branch}; returning empty.",
+                workstream.Branch);
+            return dict;
+        }
+
+        var changedPaths = await this.git.GetChangedFilesAsync(repo, workspace, ct);
+        foreach (var rel in changedPaths)
+        {
+            var diskPath = Path.Combine(workspace, rel.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(diskPath)) continue;
+            dict[rel] = await File.ReadAllTextAsync(diskPath, ct);
         }
 
         this.logger?.LogInformation(
-            "Read {Count} cached files from workspace for workstream {WsId}.",
+            "Read {Count} uncommitted change(s) from worktree for workstream {WsId}.",
             dict.Count, workstream.Id);
 
         return dict;
@@ -1738,6 +1890,182 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException(
                 $"Agent {agentId} (team {team}) failed during phase '{phaseTag}': {failure}");
         }
+    }
+
+    // ── Engineer-target discovery (Phase 45 follow-up) ───────────────────────
+
+    /// <summary>
+    /// Matches paths the architect typically embeds in plan/workstream prose:
+    /// either a backtick-wrapped path (`Foo/Bar.cs`) or a bare path with at
+    /// least one separator and a known code-file extension. Restricting to
+    /// known extensions filters out URL fragments, stack-trace tails, and
+    /// generic "src/" mentions; requiring a separator rules out single
+    /// identifiers like `IDistributedCache` that aren't paths.
+    /// </summary>
+    private static readonly Regex TargetPathRegex = new(
+        @"`(?<bt>[A-Za-z0-9_./\\-]+\.(?:cs|csproj|sln|ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|kt|cpp|h|hpp|fs|fsproj|xml|ps1|sh|sql))`"
+        + @"|(?<bare>(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+[/\\])+[A-Za-z0-9_.-]+\.(?:cs|csproj|sln|ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|kt|cpp|h|hpp|fs|fsproj|xml|ps1|sh|sql))",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Extract repo-relative file paths out of free-form architect/operator
+    /// prose. Deduplicates, normalises to forward slashes, and skips paths
+    /// that are obviously bogus (start with a slash, contain `..`, exceed
+    /// 200 chars). Order is preserved so the engineer reads the most
+    /// prominent file first.
+    /// </summary>
+    private static IReadOnlyList<string> ExtractTargetPaths(params string?[] sources)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<string>();
+        foreach (var source in sources)
+        {
+            if (string.IsNullOrEmpty(source)) continue;
+            foreach (Match m in TargetPathRegex.Matches(source))
+            {
+                var raw = m.Groups["bt"].Success ? m.Groups["bt"].Value : m.Groups["bare"].Value;
+                var path = raw.Replace('\\', '/').Trim();
+                if (path.Length == 0 || path.Length > 200) continue;
+                if (path.StartsWith('/')) continue;
+                if (path.Contains("..", StringComparison.Ordinal)) continue;
+                // Skip docs/stories/... — that's the plan-doc context, not
+                // a code edit target.
+                if (path.StartsWith("docs/stories/", StringComparison.OrdinalIgnoreCase)) continue;
+                if (seen.Add(path)) ordered.Add(path);
+            }
+        }
+        return ordered;
+    }
+
+    /// <summary>
+    /// Read the section of the merged <c>implementation-plan.md</c> that
+    /// corresponds to this workstream's <see cref="WorkstreamRow.PlanAnchor"/>
+    /// (e.g. <c>phase-2/stage-1</c>). Returns the raw markdown for that
+    /// stage so target-path extraction can mine it for path mentions.
+    /// Returns empty string when the plan can't be read or the anchor
+    /// can't be located — the caller falls back to text-only extraction
+    /// and then to the discovery agent.
+    /// </summary>
+    private async Task<string> ReadPlanStageBodyAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workstream.PlanAnchor)) return string.Empty;
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
+        string? planMd;
+        try
+        {
+            planMd = await this.git.ReadFileAsync(repo, planBranch, planPath, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogDebug(ex,
+                "Could not read implementation-plan.md for workstream {WsId}; skipping plan-stage extraction.",
+                workstream.Id);
+            return string.Empty;
+        }
+        if (string.IsNullOrEmpty(planMd)) return string.Empty;
+
+        // Stage anchors are written as `<a id="phase-X/stage-Y"></a>` (or
+        // `{#phase-X/stage-Y}` Markdown attribute). Locate the first
+        // occurrence; the stage body runs until the next anchor or end of
+        // file. Best-effort — if the anchor format differs, we just return
+        // empty and the discovery agent picks up.
+        var anchor = workstream.PlanAnchor;
+        var startIdx = planMd.IndexOf(anchor, StringComparison.OrdinalIgnoreCase);
+        if (startIdx < 0) return string.Empty;
+        // Find the next anchor (any phase-N/stage-M) after our match;
+        // truncate body to that point so we don't bleed into the next stage.
+        var nextAnchorMatch = Regex.Match(
+            planMd[(startIdx + anchor.Length)..],
+            @"phase-\d+/stage-\d+",
+            RegexOptions.IgnoreCase);
+        var endIdx = nextAnchorMatch.Success
+            ? startIdx + anchor.Length + nextAnchorMatch.Index
+            : planMd.Length;
+        return planMd.Substring(startIdx, endIdx - startIdx);
+    }
+
+    /// <summary>
+    /// Fallback when regex extraction yields no targets: run a short
+    /// read-only architect-style agent that mines the workstream brief +
+    /// plan stage for the file paths the engineer should touch first.
+    /// Mirrors the <c>ProduceWorkstreamsAsync</c> sandbox pattern — agent
+    /// writes <c>targets.json</c>, we deserialise + return. Single LLM
+    /// call with a tight 90-second budget so it doesn't itself eat the
+    /// engineer's wall clock.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DiscoverEngineerTargetsAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream,
+        string workItemDescription, string planStageBody, CancellationToken ct)
+    {
+        var workspace = this.PrepareWorkspace(spawn.Id, $"discover-{Slug(workstream.Id)}");
+        var prompt = $$"""
+            You are an Architect helper enumerating the source files an
+            engineer should edit to implement workstream `{{workstream.Id}}`
+            for story `{{spawn.StoryId}}`.
+
+            ## Workstream
+            **{{workstream.Name}}** — {{workstream.Summary}}
+
+            ## Detailed requirements
+            {{workItemDescription}}
+
+            ## Implementation-plan stage (verbatim)
+            {{NonEmpty(planStageBody, "_(plan stage not available)_")}}
+
+            ## Your task
+            Return the repo-relative file paths the engineer should open
+            first to deliver this workstream. Prefer paths the brief or
+            plan stage names directly. Do NOT browse the repo, do NOT open
+            files — operate purely from the prose above. Pick at most 8
+            paths; quality over quantity.
+
+            ## How to deliver
+            Use your filesystem tools to write a SINGLE file named
+            `targets.json` inside your working directory. Content must be
+            valid JSON conforming to:
+
+            { "targets": ["path/one.cs", "path/two.cs"] }
+
+            Reply `DONE` after writing the file. No other files, no
+            subdirectories, no commentary.
+            """;
+
+        await this.InvokeAsync("Architect", spawn.Id, $"discover-targets:{workstream.Id}", prompt, workspace,
+            TimeSpan.FromSeconds(90), ct);
+
+        var diskPath = Path.Combine(workspace, "targets.json");
+        if (!File.Exists(diskPath))
+        {
+            this.logger?.LogInformation(
+                "Discovery agent for {WsId} did not write targets.json; engineer runs without hints.",
+                workstream.Id);
+            return Array.Empty<string>();
+        }
+        var json = await File.ReadAllTextAsync(diskPath, ct);
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<DiscoveryTargetsJson>(json, JsonOpts);
+            if (parsed?.Targets is null) return Array.Empty<string>();
+            // Re-run the same sanitiser ExtractTargetPaths uses so a
+            // hallucinated `/etc/passwd` or `..` traversal can't leak
+            // through.
+            return ExtractTargetPaths(string.Join('\n', parsed.Targets.Select(t => $"`{t}`")));
+        }
+        catch (JsonException ex)
+        {
+            this.logger?.LogWarning(ex,
+                "Discovery agent for {WsId} produced unparseable targets.json; engineer runs without hints.",
+                workstream.Id);
+            return Array.Empty<string>();
+        }
+    }
+
+    private sealed class DiscoveryTargetsJson
+    {
+        public List<string>? Targets { get; set; }
     }
 
     // ── Filesystem helpers ───────────────────────────────────────────────────

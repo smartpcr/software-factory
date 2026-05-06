@@ -15,7 +15,7 @@ interface ToastState {
 }
 
 let nextId = 1;
-const TTL_MS = 2400; // matches the prototype's setTimeout in showToast.
+const TTL_MS = 5000;
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],

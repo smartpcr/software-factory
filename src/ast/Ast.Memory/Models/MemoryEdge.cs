@@ -1,0 +1,29 @@
+// -----------------------------------------------------------------------
+// <copyright file="MemoryEdge.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Ast.Memory.Models;
+
+using Ast.Core;
+
+/// <summary>
+/// Composition wrapper around <see cref="Hyperedge"/> adding memory-specific accessors.
+/// </summary>
+public sealed class MemoryEdge
+{
+    public MemoryEdge(Hyperedge inner, VersionRange version)
+    {
+        this.Inner = inner;
+        this.Version = version;
+    }
+
+    public Hyperedge Inner { get; }
+
+    public string SemanticRelation => (string)this.Inner.Metadata[MemoryMetadataKeys.SemanticRelation]!;
+
+    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
+
+    public VersionRange Version { get; }
+}
