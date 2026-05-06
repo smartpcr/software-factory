@@ -8,7 +8,6 @@ namespace Ast.Memory.Models;
 
 /// <summary>
 /// Shared helper for extracting <see cref="VersionRange"/> from metadata dictionaries.
-/// Used by both <see cref="MemoryNode"/> and <see cref="MemoryEdge"/>.
 /// </summary>
 internal static class VersionRangeHelper
 {
@@ -31,12 +30,12 @@ internal static class VersionRangeHelper
             return null;
         }
 
-        string? since = hasSinceCommit ? sinceObj!.ToString() : null;
-        int? sinceIndex = hasSinceIndex ? ParseInt(sinceIndexObj!) : null;
-        string? until = hasUntilCommit ? untilObj!.ToString() : null;
+        string sinceCommit = sinceObj!.ToString()!;
+        int sinceIndex = ParseInt(sinceIndexObj!);
+        string? untilCommit = hasUntilCommit ? untilObj!.ToString() : null;
         int? untilIndex = hasUntilIndex ? ParseInt(untilIndexObj!) : null;
 
-        return new VersionRange(since, sinceIndex, until, untilIndex);
+        return new VersionRange(sinceCommit, sinceIndex, untilCommit, untilIndex);
     }
 
     private static int ParseInt(object value)

@@ -18,6 +18,7 @@
     <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
     <ProjectReference Include="..\Ast.Query\Ast.Query.csproj" />
     <ProjectReference Include="..\Ast.Lsp\Ast.Lsp.csproj" />
+    <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
   </ItemGroup>
 
   <ItemGroup>
