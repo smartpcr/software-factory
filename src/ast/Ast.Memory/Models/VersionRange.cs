@@ -7,11 +7,14 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Tracks the temporal validity window of a memory entity.
+/// Temporal version range for nodes and edges in the memory graph.
+/// Uses dual-axis time — monotonic commit indices for ordering, plus
+/// wall-clock timestamps available via join to the commits table.
 /// Per architecture.md §4.3.
-/// <para>
-/// <see cref="SinceIndex"/> is nullable to support External boundary nodes
-/// (timeless nodes that are always included in temporal queries).
-/// </para>
 /// </summary>
-public record VersionRange(string? Since, int? SinceIndex, string? Until, int? UntilIndex);
+public record VersionRange(
+    string SinceCommit,
+    int SinceIndex,
+    string? UntilCommit = null,
+    int? UntilIndex = null
+);
