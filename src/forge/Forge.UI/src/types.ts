@@ -58,6 +58,9 @@ export interface ProductStory {
    *  the server to create that branch in every repo of the product
    *  immediately. */
   baseBranch: string;
+  /** Phase 46 — when true and baseBranch != "main", agents auto-merge PRs
+   *  against the base branch. */
+  autoMerge?: boolean;
 }
 
 export interface Card {
@@ -751,6 +754,28 @@ export interface SalaryTodaySummary {
 export interface PayrollTodaySummary {
   totalUsd: number;
   crewCount: number;
+}
+
+/** Per-crew slot utilisation entry inside {@link CrewConcurrencySummary}. */
+export interface CrewConcurrencyEntry {
+  id: string;
+  name: string;
+  active: number;
+  cap: number;
+}
+
+/**
+ * TopBar "ACTIVE n/cap" chip payload — server-side rollup of open
+ * `agent_claims` rows grouped by `agents.CrewId`. Replaces the
+ * client-side `task_queue` picked-up scan, which missed every
+ * story-spawn-driven engineer iteration (those dispatch through
+ * `CrewStoryArtifactStrategy` directly and never enqueue).
+ */
+export interface CrewConcurrencySummary {
+  active: number;
+  cap: number;
+  overCrews: string[];
+  perCrew: CrewConcurrencyEntry[];
 }
 
 /**

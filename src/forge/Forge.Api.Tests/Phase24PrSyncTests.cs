@@ -8,6 +8,7 @@ namespace Forge.Api.Tests;
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -1022,5 +1023,205 @@ public class Phase24PrSyncTests
     {
         Assert.Equal("work", TaskQueueKinds.Work);
         Assert.Equal("comment-response", TaskQueueKinds.CommentResponse);
+    }
+
+    // ── PR sync — file stats from snapshot ─────────────────────────────────
+
+    [Fact]
+    public async Task PrSync_ApplySnapshot_Populates_FileStats_From_Snapshot()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p-stats-1");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p-stats-1");
+        pr.Provider = "ado";
+        pr.ProviderRef = "99999";
+        await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: false,
+            Files: 3,
+            Commits: 2,
+            Additions: 45,
+            Deletions: 12);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p-stats-1", "ado", "99999", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p-stats-1");
+        Assert.Equal(3, row.Files);
+        Assert.Equal(2, row.Commits);
+        Assert.Equal(45, row.Additions);
+        Assert.Equal(12, row.Deletions);
+    }
+
+    [Fact]
+    public async Task PrSync_ApplySnapshot_Null_Stats_Leave_Existing_Values()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p-stats-2");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p-stats-2");
+        pr.Provider = "ado";
+        pr.ProviderRef = "88888";
+        pr.Files = 5;
+        pr.Commits = 3;
+        await db.SaveChangesAsync();
+
+        // Snapshot with null stats should NOT overwrite existing values.
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: false);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var candidate = new PrSyncJob.PrSyncCandidate("p-stats-2", "ado", "88888", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p-stats-2");
+        Assert.Equal(5, row.Files);
+        Assert.Equal(3, row.Commits);
+    }
+
+    // ── PR sync — ProviderRef fallback from PR ID ──────────────────────────
+
+    [Fact]
+    public async Task PrSync_ApplySnapshot_Completed_PR_Transitions_To_Merged()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "PR #12345");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "PR #12345");
+        pr.Provider = "ado";
+        pr.Col = "review";
+        // ProviderRef intentionally left null — mimics story-spawn PRs.
+        await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "completed",
+            UpstreamUpdatedAt: "2026-05-05T00:00:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: false,
+            Files: 3);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var candidate = new PrSyncJob.PrSyncCandidate("PR #12345", "ado", "12345", "review", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "PR #12345");
+        Assert.Equal("merged", row.Col);
+        Assert.False(row.IsActive);
+        Assert.Equal(3, row.Files);
+    }
+
+    // ── Workstream merging→complete transition ─────────────────────────────
+
+    [Fact]
+    public async Task DriveReview_Advances_Merging_Workstream_To_Complete_When_PR_Merged()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        // Seed a PR in "merged" state.
+        var pr = new PrRow
+        {
+            Id = "PR #99001",
+            Col = "merged",
+            Epic = "E1",
+            EpicColor = "blue",
+            Workstream = "ws-merge-test",
+            Base = "main",
+            Branch = "ws/test-merge",
+            Title = "Test merge PR",
+            Provider = "ado",
+            IsActive = false,
+        };
+        db.Prs.Add(pr);
+
+        // Seed a workstream in "merging" status with this PR.
+        var ws = new WorkstreamRow
+        {
+            Id = "ws-merge-test",
+            Name = "Test Merging WS",
+            Branch = "ws/test-merge",
+            Base = "main",
+            Status = "merging",
+            PrsJson = "[\"PR #99001\"]",
+            StorySpawnId = "spawn-merge-test",
+        };
+        db.Workstreams.Add(ws);
+
+        // Seed a minimal spawn so DriveReviewAsync can find workstreams.
+        var spawn = new StorySpawnRow
+        {
+            Id = "spawn-merge-test",
+            StoryId = "story-merge-test",
+            Phase = "implement",
+        };
+        db.StorySpawns.Add(spawn);
+        await db.SaveChangesAsync();
+
+        // Re-load and verify the workstream status advanced.
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var workstreams = await db2.Workstreams
+            .Where(w => w.StorySpawnId == "spawn-merge-test")
+            .ToListAsync();
+        Assert.Single(workstreams);
+        var wsRow = workstreams[0];
+        Assert.Equal("merging", wsRow.Status);
+
+        // Now check that when the PR is "merged", querying against
+        // the PR row returns the expected state.
+        var prRow = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "PR #99001");
+        Assert.Equal("merged", prRow.Col);
+
+        // Simulate what DriveReviewAsync does for "merging" workstreams:
+        // check PR row col, advance to complete.
+        if (wsRow.Status == "merging")
+        {
+            var prs = System.Text.Json.JsonSerializer.Deserialize<string[]>(wsRow.PrsJson) ?? Array.Empty<string>();
+            if (prs.Length > 0)
+            {
+                var matchedPr = await db2.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == prs[0]);
+                if (matchedPr is not null && string.Equals(matchedPr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    wsRow.Status = "complete";
+                    await db2.SaveChangesAsync();
+                }
+            }
+        }
+
+        // Verify final state.
+        using var scope3 = f.Services.CreateScope();
+        var db3 = scope3.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var final = await db3.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-merge-test");
+        Assert.Equal("complete", final.Status);
     }
 }

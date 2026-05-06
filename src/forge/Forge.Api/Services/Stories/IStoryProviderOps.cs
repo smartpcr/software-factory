@@ -53,4 +53,6 @@ public sealed record StoryPrRequest(
     RepoRow? Repo,
     string? WorkItemId,
     string? Workstream,
-    string? Epic);
+    string? Epic,
+    /// <summary>Phase 46 — when true, <see cref="PrRow.AutoMerge"/> is set on the created PR so <c>AutoMergeWatcher</c> picks it up.</summary>
+    bool AutoMerge = false);
