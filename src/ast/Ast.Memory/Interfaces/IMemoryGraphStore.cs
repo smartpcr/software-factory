@@ -6,21 +6,20 @@
 
 namespace Ast.Memory.Interfaces;
 
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Extended graph store interface for memory-layer operations.
+/// Extended graph store for the memory layer. Adds temporal queries,
+/// expertise CRUD, and audit logging on top of the base IGraphStore.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
+        NodeFilter? filter = null,
         int limit = 100,
         CancellationToken ct = default);
 
@@ -54,6 +53,18 @@ public interface IMemoryGraphStore : IGraphStore
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
+        CancellationToken ct = default);
+
+    Task<ExpertiseEntry?> GetExpertiseByIdAsync(
+        string expertiseId,
+        CancellationToken ct = default);
+
+    Task<ExpertiseEntry?> GetExpertiseByContentHashAsync(
+        string contentHash,
+        CancellationToken ct = default);
+
+    Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(
+        int limit = 1000,
         CancellationToken ct = default);
 
     Task UpsertExpertiseAsync(

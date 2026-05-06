@@ -7,18 +7,25 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Types of expertise knowledge that agents can record.
+/// Kinds of expertise entries that agents can record.
 /// </summary>
 public enum ExpertiseKind
 {
+    /// <summary>A recurring design or implementation pattern worth reusing.</summary>
     Pattern,
+
+    /// <summary>A known hazard, footgun, or fragile assumption.</summary>
     Pitfall,
+
+    /// <summary>A team or codebase convention / style preference.</summary>
     Preference,
+
+    /// <summary>A general insight or observation about code behavior.</summary>
     Insight
 }
 
 /// <summary>
-/// Retrieval modes for memory queries.
+/// Retrieval modes for the memory retrieval engine.
 /// </summary>
 public enum RetrievalMode
 {
