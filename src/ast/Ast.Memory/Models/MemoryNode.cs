@@ -13,7 +13,7 @@ using Ast.Core;
 /// semantics without inheriting from the code-analysis type.
 /// Per architecture.md §4.1 — composition, not inheritance.
 /// </summary>
-public class MemoryNode
+public sealed class MemoryNode
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="MemoryNode"/> class.

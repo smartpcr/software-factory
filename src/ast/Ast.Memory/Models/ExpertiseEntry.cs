@@ -6,50 +6,29 @@
 
 namespace Ast.Memory.Models;
 
-using System.Security.Cryptography;
-using System.Text;
+/// <summary>
+/// Agent-authored knowledge node. Not a HypergraphNode — has its own
+/// dedicated table with domain-specific columns. See architecture.md §4.2.
+/// </summary>
+public sealed class ExpertiseEntry
+{
+    public string Id { get; init; } = string.Empty;
+    public ExpertiseKind Kind { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string Body { get; init; } = string.Empty;
+    public string TargetNodeId { get; init; } = string.Empty;
+    public string Scope { get; init; } = "exact";
+    public double Confidence { get; set; } = 1.0;
+    public bool Archived { get; set; }
+    public string SourceAgent { get; init; } = string.Empty;
+    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+    public float[]? Embedding { get; set; }
+    public string ContentHash { get; init; } = string.Empty;
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; set; }
+}
 
 /// <summary>
-/// Agent-authored knowledge node attached to a code element.
+/// Supporting reference for an expertise entry.
 /// </summary>
-public class ExpertiseEntry
-{
-    public string Id { get; set; } = string.Empty;
-
-    public ExpertiseKind Kind { get; set; }
-
-    public string Title { get; set; } = string.Empty;
-
-    public string Body { get; set; } = string.Empty;
-
-    public string TargetNodeId { get; set; } = string.Empty;
-
-    public string Scope { get; set; } = "exact";
-
-    public double Confidence { get; set; } = 1.0;
-
-    public bool Archived { get; set; }
-
-    public string SourceAgent { get; set; } = string.Empty;
-
-    public IReadOnlyList<Citation> Evidence { get; set; } = Array.Empty<Citation>();
-
-    public float[]? Embedding { get; set; }
-
-    public string ContentHash { get; set; } = string.Empty;
-
-    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
-
-    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
-
-    /// <summary>
-    /// Generates the canonical ID for this expertise entry.
-    /// </summary>
-    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
-    {
-        var input = title + body + targetNodeId;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        var hash8 = Convert.ToHexString(hash)[..8].ToLowerInvariant();
-        return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
-    }
-}
+public record Citation(string NodeId, string? CommitSha, string? Snippet);

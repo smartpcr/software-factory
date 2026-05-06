@@ -7,21 +7,14 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Statistics about the memory graph, broken down by layer.
+/// Per-layer node/edge counts for the memory graph.
 /// </summary>
 public class MemoryGraphStatistics
 {
-    public int TotalNodes { get; set; }
-
-    public int TotalEdges { get; set; }
-
-    public int TotalExpertise { get; set; }
-
-    public Dictionary<string, int> NodesByLayer { get; set; } = new();
-
-    public Dictionary<string, int> EdgesByLayer { get; set; } = new();
-
-    public Dictionary<string, int> ExpertiseByKind { get; set; } = new();
-
-    public int ArchivedExpertise { get; set; }
+    public long TotalNodes { get; set; }
+    public long TotalEdges { get; set; }
+    public long TotalExpertise { get; set; }
+    public Dictionary<string, long> NodesByLayer { get; set; } = [];
+    public Dictionary<string, long> EdgesByLayer { get; set; } = [];
+    public Dictionary<string, long> NodesByType { get; set; } = [];
 }
