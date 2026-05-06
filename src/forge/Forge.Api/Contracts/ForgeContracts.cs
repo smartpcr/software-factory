@@ -29,7 +29,9 @@ public sealed record ProductStory(
     int Points,
     object[]? Attachments = null,
     /// <summary>Phase 45 — default base branch carried into every spawn produced from this story. Defaults to "main".</summary>
-    string BaseBranch = "main");
+    string BaseBranch = "main",
+    /// <summary>Phase 46 — when true and BaseBranch != "main", agents auto-merge PRs against the base branch.</summary>
+    bool AutoMerge = false);
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).
@@ -599,6 +601,30 @@ public sealed record CrewSalary(
 public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 
 /// <summary>
+/// TopBar concurrency chip payload — per-crew slot utilisation rolled up
+/// into a single fetch. <c>Active</c> is sourced from
+/// <see cref="Forge.Api.Persistence.AgentClaimRow"/> rows where
+/// <c>ReleasedAt IS NULL</c>: that's the durable "agent is busy right now"
+/// signal, set by <c>AgentSlotService.TryClaimAsync</c> when an agent
+/// starts work and cleared on release. The legacy <c>task_queue</c>
+/// picked-up state was an unreliable source — story-spawn-driven engineer
+/// iterations dispatch through <c>CrewStoryArtifactStrategy</c> directly
+/// and never enqueue, so the chip stayed at <c>0/cap</c> even when a
+/// dozen workstreams were mid-flight.
+/// </summary>
+public sealed record CrewConcurrencySummary(
+    int Active,
+    int Cap,
+    IReadOnlyList<string> OverCrews,
+    IReadOnlyList<CrewConcurrencyEntry> PerCrew);
+
+public sealed record CrewConcurrencyEntry(
+    string Id,
+    string Name,
+    int Active,
+    int Cap);
+
+/// <summary>
 /// Phase 14.11 — TopBar payroll chip aggregator. Replaces the client-side
 /// fan-out (one /payroll request per crew) with a single server-side SUM.
 /// </summary>
@@ -1117,7 +1143,9 @@ public sealed record TaskExecutionSnapshot(
     /// <summary>Phase 20 — effective max iterations (override or default constant).</summary>
     int MaxIterations = 5,
     /// <summary>Total number of transcript events for this work item (supports paging).</summary>
-    int TranscriptTotalCount = 0);
+    int TranscriptTotalCount = 0,
+    /// <summary>Time budget for this task in seconds (derived from story points × phase multiplier).</summary>
+    int BudgetSeconds = 0);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

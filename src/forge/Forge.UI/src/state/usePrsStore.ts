@@ -153,9 +153,13 @@ export const usePrsStore = create<PrsState>((set, get) => ({
 
   merge: async (id) => {
     try {
-      const pr = await forgeApi.mergePr(id);
+      const { pr, queued, detail } = await forgeApi.mergePr(id);
       get().upsertFromRealtime(pr);
-      useToastStore.getState().show(`${id} merged`, 'success');
+      if (queued) {
+        useToastStore.getState().show(detail ?? `${id} merge queued`, 'info');
+      } else {
+        useToastStore.getState().show(`${id} merged`, 'success');
+      }
     } catch (err) {
       useToastStore.getState().show(err instanceof Error ? err.message : 'Merge failed', 'danger');
     }

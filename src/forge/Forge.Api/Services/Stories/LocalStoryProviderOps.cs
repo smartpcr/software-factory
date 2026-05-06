@@ -63,6 +63,8 @@ public sealed class LocalStoryProviderOps : IStoryProviderOps
                 LastSyncStatus = "idle",
                 Provider = req.Repo?.Kind,
                 WorkItemId = req.WorkItemId,
+                // Phase 46 — carry the spawn-level auto-merge policy.
+                AutoMerge = req.AutoMerge,
             };
             db.Prs.Add(pr);
             await db.SaveChangesAsync(ct);
