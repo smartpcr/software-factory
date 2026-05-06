@@ -34,6 +34,7 @@ public static class CrewsEndpoints
         grp.MapGet("/{id}/budget", GetBudget).WithName("GetCrewBudget");
         grp.MapGet("/{id}/salary", GetSalary).WithName("GetCrewSalary");
         grp.MapGet("/salary/today", GetSalaryTodayTotal).WithName("GetSalaryTodayTotal");
+        grp.MapGet("/concurrency", GetConcurrency).WithName("GetCrewConcurrency");
 
         // Phase 13.3 — lead-routing (pair-aware).
         grp.MapPost("/{id}/assign", Assign).WithName("AssignCrewTask");
@@ -128,6 +129,73 @@ public static class CrewsEndpoints
         // Phase 44 — active agent count from durable claims, not transient usage rows.
         var active = await db.AgentClaims.CountAsync(c => c.ReleasedAt == null, ct);
         return Results.Ok(new Forge.Api.Contracts.SalaryTodaySummary(Round(total), active));
+    }
+
+    /// <summary>
+    /// TopBar "ACTIVE n/cap" chip payload. Counts open agent_claims rows
+    /// (ReleasedAt IS NULL) joined with agents.CrewId so the per-crew over-cap
+    /// signal still works after the modern story-spawn pipeline replaced the
+    /// task_queue picked-up path. <see cref="CrewConcurrencySummary"/> for
+    /// the full rationale.
+    /// </summary>
+    private static async Task<IResult> GetConcurrency(ForgeDbContext db, CancellationToken ct)
+    {
+        var crews = await db.Crews.AsNoTracking()
+            .Select(c => new { c.Id, c.Name, c.MaxConcurrent })
+            .ToListAsync(ct);
+
+        // Open claims joined with agent → crew. Agents without a CrewId or
+        // whose row was deleted are folded into a synthetic "(unassigned)"
+        // bucket so the global Active total stays honest even when an agent
+        // has drifted off its crew.
+        var openClaimAgents = await db.AgentClaims.AsNoTracking()
+            .Where(c => c.ReleasedAt == null)
+            .Select(c => c.AgentId)
+            .ToListAsync(ct);
+
+        var agentCrews = await db.Agents.AsNoTracking()
+            .Where(a => openClaimAgents.Contains(a.Id))
+            .Select(a => new { a.Id, a.CrewId })
+            .ToListAsync(ct);
+        var agentToCrew = agentCrews.ToDictionary(a => a.Id, a => a.CrewId, StringComparer.OrdinalIgnoreCase);
+
+        var perCrewActive = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var aid in openClaimAgents)
+        {
+            var crewId = agentToCrew.TryGetValue(aid, out var c) ? c : null;
+            var key = string.IsNullOrEmpty(crewId) ? "(unassigned)" : crewId;
+            perCrewActive[key] = perCrewActive.GetValueOrDefault(key) + 1;
+        }
+
+        var entries = new List<Forge.Api.Contracts.CrewConcurrencyEntry>(crews.Count);
+        var overCrews = new List<string>();
+        var totalActive = 0;
+        var totalCap = 0;
+        foreach (var c in crews)
+        {
+            var cap = c.MaxConcurrent;
+            var active = perCrewActive.TryGetValue(c.Id, out var a) ? a : 0;
+            entries.Add(new Forge.Api.Contracts.CrewConcurrencyEntry(c.Id, c.Name, active, cap));
+            totalActive += active;
+            totalCap += cap;
+            if (cap > 0 && active >= cap)
+            {
+                overCrews.Add(c.Name);
+            }
+        }
+        // Surface unassigned-agent bucket so the global total reconciles with
+        // SUM(open agent_claims). Cap=0 → never flagged as over.
+        if (perCrewActive.TryGetValue("(unassigned)", out var unassigned) && unassigned > 0)
+        {
+            entries.Add(new Forge.Api.Contracts.CrewConcurrencyEntry("(unassigned)", "(unassigned)", unassigned, 0));
+            totalActive += unassigned;
+        }
+
+        return Results.Ok(new Forge.Api.Contracts.CrewConcurrencySummary(
+            Active: totalActive,
+            Cap: totalCap,
+            OverCrews: overCrews,
+            PerCrew: entries));
     }
 
     private static decimal Round(decimal v) => Math.Round(v, 6);

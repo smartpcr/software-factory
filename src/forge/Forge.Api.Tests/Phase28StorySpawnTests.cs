@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Forge.Api.Persistence;
+using Forge.Api.Services.Stories;
 using Forge.Api.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -350,6 +351,40 @@ public class Phase28StorySpawnTests
             Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
             var body = await resp.Content.ReadAsStringAsync();
             Assert.Contains("Plan PR must be merged", body);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Regression: DrivePlanAsync must skip ProducePlanArtifactsAsync and
+    /// auto-advance to decompose when the plan PR is already merged. Before
+    /// this fix, a long-running gen-eval retry blocked phase progression
+    /// indefinitely because ProducePlanArtifactsAsync never returned while
+    /// the scheduler kept re-entering Step 1.
+    /// </summary>
+    [Fact]
+    public async Task Drive_Advances_To_Decompose_When_Plan_Pr_Already_Merged()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-60004-merged", "Auto-advance on merged PR");
+            await SpawnAsync(c, "WI-60004-merged");
+            await SetPlanPrAsync(f, "WI-60004-merged", "pr-merged-1", "merged");
+
+            // Verify precondition: still at plan phase with a merged PR.
+            var before = await GetSpawnAsync(f, "WI-60004-merged");
+            Assert.Equal(StorySpawnPhases.Plan, before!.Phase);
+            Assert.Equal("pr-merged-1", before.PlanPrId);
+
+            // Drive the orchestrator — should auto-advance without blocking.
+            using var scope = f.Services.CreateScope();
+            var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            await orchestrator.DriveAsync("WI-60004-merged");
+
+            // Phase must have advanced past plan.
+            var after = await GetSpawnAsync(f, "WI-60004-merged");
+            Assert.NotEqual(StorySpawnPhases.Plan, after!.Phase);
         }
         finally { f.Dispose(); }
     }
@@ -822,6 +857,83 @@ public class Phase28StorySpawnTests
             var ok = await c.PatchAsync("/api/stories/WI-50041/spawn/phase",
                 JsonContent.Create(new { targetPhase = "qa" }, options: JsonOpts));
             Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// 28.6 — Regression: a workstream stuck at status='review' must auto-advance
+    /// to 'complete' when its PR row reaches the terminal merged cache state.
+    /// This covers external merges (PR closed via the upstream GitHub / ADO UI)
+    /// observed by <see cref="Forge.Api.Services.PrSyncJob"/>, not just the
+    /// orchestrator's own ApproveAndMergeAsync flow.
+    /// <para>
+    /// Without this fast-path, the only "review → merging → complete" path was
+    /// the local approve+merge flow inside <c>DriveReviewAsync</c>; externally
+    /// merged PRs left the workstream pinned at 'review' indefinitely
+    /// (observed 2026-05-05: 7 workstreams stuck in HIGH-MEM-CONSUMPTION).
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Review_External_Merge_Advances_Workstream_To_Complete()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-50042", "external-merge");
+            await SpawnAsync(c, "WI-50042");
+            await SetPlanPrAsync(f, "WI-50042", "pr-plan-42", "merged");
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
+            await c.PostAsJsonAsync("/api/stories/WI-50042/spawn/decompose", new
+            {
+                workstreams = new[] { new { title = "ws1" } },
+            }, JsonOpts);
+            await c.PostAsync("/api/stories/WI-50042/spawn/decompose/approve", null);
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "implement" }, options: JsonOpts));
+
+            // Seed: ws is at 'review' with a PR id; the PR row is already
+            // in the terminal merged cache state (PrSyncJob would set this
+            // when the upstream PR is closed/completed).
+            const string wsId = "ws-wi-50042-ws1";
+            const string prId = "pr-ws1-42";
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
+                ws.Status = "review";
+                ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
+                db.Prs.Add(new PrRow
+                {
+                    Id = prId,
+                    Col = "merged",
+                    IsActive = false,
+                    Branch = ws.Branch,
+                    Base = "main",
+                    Title = $"[impl] {ws.Name}",
+                    Workstream = wsId,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
+                JsonContent.Create(new { targetPhase = "review" }, options: JsonOpts));
+
+            // Drive once — DriveReviewAsync's external-merge fast-path should
+            // advance the workstream from 'review' straight to 'complete'.
+            using (var scope = f.Services.CreateScope())
+            {
+                var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync("WI-50042");
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+                Assert.Equal("complete", reload.Status);
+            }
         }
         finally { f.Dispose(); }
     }

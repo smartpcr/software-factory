@@ -77,23 +77,45 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         // Phase 42 — reconciler is optional in tests; resolve once per tick.
         var reconciler = this.services.GetService<PlanReconciler>();
 
-        foreach (var (sid, spawnId) in active)
+        // Phase 45 follow-up — drive spawns in parallel and let each one's
+        // own AgentContext.WallClockBudget enforce the per-iter cap.
+        //
+        // Why: the previous design wrapped each DriveAsync in a 30-second
+        // CancellationTokenSource, intending to keep one slow spawn from
+        // starving the others. With 5 active spawns the cumulative tick
+        // took ~150 seconds AND, more critically, every impl-phase agent
+        // got cancelled at 30s — long before it could read a few files
+        // and land an edit. That cancellation was the proximate reason
+        // engineer iters never produced any commits (operator confirmed
+        // 2026-05-05 by inspecting the worktree's clean `git status`
+        // across 124 iters of trying).
+        //
+        // Fan-out to Task.WhenAll lets a fast spawn finish quickly without
+        // waiting in line behind a slow neighbour. Per-spawn cancellation
+        // is now the responsibility of the strategy: BudgetForPhase /
+        // AgentContext.WallClockBudget bound any single agent invocation,
+        // and concurrent ticks for the same spawn serialise on the
+        // RealStoryGitOps branchLocks before they touch git, so the
+        // worktree never gets two writers. Errors are caught per-task so
+        // one spawn's exception doesn't poison the others.
+        var driveTasks = active.Select(item => Task.Run(async () =>
         {
+            var (sid, spawnId) = item;
             try
             {
                 await orchestrator.DriveAsync(sid, ct);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Process shutdown — propagate by returning silently.
+            }
+            catch (Exception ex)
             {
                 this.logger?.LogWarning(ex,
                     "DriveAsync failed for spawn {SpawnId} (story {StoryId}); will retry next interval.",
                     spawnId, sid);
             }
 
-            // Phase 42 — catch-all reconcile pass. Per-iter commit + Resume/Restart
-            // hooks already cover the active cases; this tick is the safety net
-            // for any signal a hook missed (e.g. an out-of-band edit on the
-            // plan branch the orchestrator didn't see).
             if (reconciler is not null)
             {
                 try
@@ -107,6 +129,8 @@ public sealed class SpawnDependencyScheduler : BackgroundService
                         spawnId);
                 }
             }
-        }
+        }, ct)).ToArray();
+
+        await Task.WhenAll(driveTasks);
     }
 }

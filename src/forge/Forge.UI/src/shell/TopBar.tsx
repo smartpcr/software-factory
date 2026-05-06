@@ -59,33 +59,29 @@ export function TopBar({ section, current }: TopBarProps) {
     return () => { cancelled = true; window.clearInterval(id); };
   }, [isPO]);
 
-  // Phase 21 — concurrency chip: active-vs-capacity per crew. Refreshes
-  // alongside spend/payroll so the operator sees warnings without extra clicks.
+  // TopBar concurrency chip: open agent claims vs total crew capacity.
+  // Sourced from /api/crews/concurrency, which counts agent_claims rows
+  // (ReleasedAt IS NULL) per crew. The legacy client-side calculation
+  // scanned task_queue picked-up rows, but story-spawn-driven engineer
+  // iterations dispatch through CrewStoryArtifactStrategy directly and
+  // never enqueue — so the chip stayed at 0/cap even when a dozen
+  // workstreams were mid-flight. Refresh every 30 s so the operator
+  // sees mid-iteration claim activity (claims open for tens of seconds
+  // to a few minutes per gen/eval cycle).
   const [concurrency, setConcurrency] = useState<{ active: number; cap: number; overCrews: string[] } | null>(null);
   useEffect(() => {
     if (!isPO) return;
     let cancelled = false;
     const tick = () => {
-      Promise.all([forgeApi.listCrews(), forgeApi.listQueue()])
-        .then(([cs, q]) => {
+      forgeApi.getCrewConcurrency()
+        .then((c) => {
           if (cancelled) return;
-          let totalActive = 0;
-          let totalCap = 0;
-          const overCrews: string[] = [];
-          for (const c of cs) {
-            const cap = c.maxConcurrent ?? 0;
-            const active = (q as Array<{ routedToCrewId?: string; state: string }>)
-              .filter((r) => r.routedToCrewId === c.id && r.state === 'picked-up').length;
-            totalActive += active;
-            totalCap += cap;
-            if (cap > 0 && active >= cap) overCrews.push(c.name);
-          }
-          setConcurrency({ active: totalActive, cap: totalCap, overCrews });
+          setConcurrency({ active: c.active, cap: c.cap, overCrews: c.overCrews });
         })
         .catch(() => { /* keep last */ });
     };
     tick();
-    const id = window.setInterval(tick, 300_000);
+    const id = window.setInterval(tick, 30_000);
     return () => { cancelled = true; window.clearInterval(id); };
   }, [isPO]);
 

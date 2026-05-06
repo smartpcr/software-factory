@@ -99,7 +99,7 @@ public static class StoriesEndpoints
         return app;
     }
 
-    public sealed record SpawnRequest(string? RepoId, IReadOnlyList<string>? UploadIds = null, string? BaseBranch = null);
+    public sealed record SpawnRequest(string? RepoId, IReadOnlyList<string>? UploadIds = null, string? BaseBranch = null, bool? AutoMerge = null);
 
     public sealed record ChangeBaseBranchRequest(string BaseBranch);
 
@@ -155,6 +155,8 @@ public static class StoriesEndpoints
         // Phase 45 — when SpawnRequest.BaseBranch is omitted, fall back to
         // the story's default. Spawn-side override still wins when set.
         string? defaultBaseBranchFromStory = null;
+        // Phase 46 — auto-merge default from the story.
+        bool defaultAutoMergeFromStory = false;
 
         var ps = await db.ProductStories.AsNoTracking().FirstOrDefaultAsync(s => s.Id == storyId);
         string? storyAttachmentsJson = null;
@@ -165,6 +167,7 @@ public static class StoriesEndpoints
             points = ps.Points;
             storyAttachmentsJson = ps.AttachmentsJson;
             defaultBaseBranchFromStory = string.IsNullOrEmpty(ps.BaseBranch) ? null : ps.BaseBranch;
+            defaultAutoMergeFromStory = ps.AutoMerge;
             // ProductStoryRow is product-scoped, not repo-scoped; caller must
             // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
         }
@@ -221,6 +224,10 @@ public static class StoriesEndpoints
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
             BaseBranch = baseBranch,
+            // Auto-merge inheritance: explicit SpawnRequest override > story
+            // default. The flag is honoured for any base (including "main") —
+            // the operator is responsible for arming it intentionally.
+            AutoMerge = req?.AutoMerge ?? defaultAutoMergeFromStory,
             // Branch must use the sanitized id — `:` is illegal in Windows
             // worktree paths and crashes the orchestrator on commit.
             PlanBranch = $"story/{safeStoryId}/plan",
@@ -2180,9 +2187,9 @@ public static class StoriesEndpoints
             unansweredQuestions = byExtId.Count(q => q.Answer == null);
         }
 
-        if (isRunnerLive || isRecentEvent) status = "live";
+        if (lastWasPass && planPrMerged) status = "completed";
+        else if (isRunnerLive || isRecentEvent) status = "live";
         else if (lastDeliverable is null) status = "pending";
-        else if (lastWasPass && planPrMerged) status = "completed";
         else if (lastWasPass) status = "awaiting-pr-review";
         else if (unansweredQuestions > 0) status = "stalled";
         else if (lastDeliverable.Verdict != null
@@ -2279,6 +2286,8 @@ public static class StoriesEndpoints
         // empty-string fallback covers rows persisted before Phase 45's
         // backfill ran; the orchestrator treats those as "main" as well.
         baseBranch = string.IsNullOrEmpty(row.BaseBranch) ? "main" : row.BaseBranch,
+        // Phase 46 — auto-merge flag.
+        autoMerge = row.AutoMerge,
         planBranch = row.PlanBranch,
         planPrId = row.PlanPrId,
         decompositionJson = row.DecompositionJson,
