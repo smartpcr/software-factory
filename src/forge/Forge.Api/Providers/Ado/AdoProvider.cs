@@ -469,79 +469,96 @@ public class AdoProvider : IForgeProvider
         // confirm which source commit they're merging so a concurrent push
         // can't sneak content in. Fetch the current PR first, pull
         // `lastMergeSourceCommit.commitId` out of the GET response, then
-        // pass it back in the PATCH payload. Returns 404 → bubble up so the
-        // caller sees a clean error, not a confusing merge failure.
-        string? lastMergeSourceCommit = null;
-        using (var probe = await client.GetAsync(prUrl, ct))
+        // pass it back in the PATCH payload.
+        //
+        // Stale-commit retry — when our local rebase pushed a new tip, ADO's
+        // PR cache may not have caught up. The PATCH then 409s with
+        // `GitPullRequestStaleException` (TF401192). Re-probe and retry up to
+        // a small cap; ADO usually catches up within one beat.
+        const int MaxAttempts = 3;
+        for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            this.health.RecordResponse(probe);
-            if (probe.StatusCode == HttpStatusCode.NotFound)
+            string? lastMergeSourceCommit = null;
+            JsonDocument? probeDoc = null;
+            using (var probe = await client.GetAsync(prUrl, ct))
             {
-                throw new HttpRequestException(
-                    $"ADO PR merge failed (404): pull request {num} not found at {project}/_apis/git/repositories/{repo}.");
-            }
-            if (!probe.IsSuccessStatusCode)
-            {
-                var probeBody = await probe.Content.ReadAsStringAsync(ct);
-                throw new HttpRequestException(
-                    $"ADO PR merge precheck failed ({(int)probe.StatusCode}) at {prUrl}: {probeBody}");
-            }
-            using var probeDoc = JsonDocument.Parse(await probe.Content.ReadAsStringAsync(ct));
-            // Detect already-completed PR — ADO returns the PR with status
-            // "completed" / "abandoned" and would 400 our PATCH with a
-            // confusing message; surface a clean "already merged" instead.
-            if (probeDoc.RootElement.TryGetProperty("status", out var statusEl)
-                && statusEl.ValueKind == JsonValueKind.String)
-            {
-                var statusStr = statusEl.GetString();
-                if (string.Equals(statusStr, "completed", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Already merged upstream — return the current state to
-                    // the caller as if our merge succeeded. PrSyncJob will
-                    // reconcile the local Col → "merged" on the next tick.
-                    return AdoMapper.ToPr(probeDoc.RootElement, project);
-                }
-                if (string.Equals(statusStr, "abandoned", StringComparison.OrdinalIgnoreCase))
+                this.health.RecordResponse(probe);
+                if (probe.StatusCode == HttpStatusCode.NotFound)
                 {
                     throw new HttpRequestException(
-                        $"ADO PR merge refused: PR {num} is in 'abandoned' state. Reopen it on ADO before retrying.");
+                        $"ADO PR merge failed (404): pull request {num} not found at {project}/_apis/git/repositories/{repo}.");
+                }
+                if (!probe.IsSuccessStatusCode)
+                {
+                    var probeBody = await probe.Content.ReadAsStringAsync(ct);
+                    throw new HttpRequestException(
+                        $"ADO PR merge precheck failed ({(int)probe.StatusCode}) at {prUrl}: {probeBody}");
+                }
+                probeDoc = JsonDocument.Parse(await probe.Content.ReadAsStringAsync(ct));
+                if (probeDoc.RootElement.TryGetProperty("status", out var statusEl)
+                    && statusEl.ValueKind == JsonValueKind.String)
+                {
+                    var statusStr = statusEl.GetString();
+                    if (string.Equals(statusStr, "completed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var snapshot = AdoMapper.ToPr(probeDoc.RootElement, project);
+                        probeDoc.Dispose();
+                        return snapshot;
+                    }
+                    if (string.Equals(statusStr, "abandoned", StringComparison.OrdinalIgnoreCase))
+                    {
+                        probeDoc.Dispose();
+                        throw new HttpRequestException(
+                            $"ADO PR merge refused: PR {num} is in 'abandoned' state. Reopen it on ADO before retrying.");
+                    }
+                }
+                if (probeDoc.RootElement.TryGetProperty("lastMergeSourceCommit", out var srcEl)
+                    && srcEl.ValueKind == JsonValueKind.Object
+                    && srcEl.TryGetProperty("commitId", out var commitEl)
+                    && commitEl.ValueKind == JsonValueKind.String)
+                {
+                    lastMergeSourceCommit = commitEl.GetString();
                 }
             }
-            if (probeDoc.RootElement.TryGetProperty("lastMergeSourceCommit", out var srcEl)
-                && srcEl.ValueKind == JsonValueKind.Object
-                && srcEl.TryGetProperty("commitId", out var commitEl)
-                && commitEl.ValueKind == JsonValueKind.String)
+
+            using (probeDoc)
             {
-                lastMergeSourceCommit = commitEl.GetString();
+                var payload = JsonSerializer.Serialize(new
+                {
+                    status = "completed",
+                    lastMergeSourceCommit = string.IsNullOrEmpty(lastMergeSourceCommit)
+                        ? (object?)null
+                        : new { commitId = lastMergeSourceCommit },
+                    completionOptions = new { mergeStrategy = "squash", deleteSourceBranch = false },
+                });
+                using var msg = new HttpRequestMessage(new HttpMethod("PATCH"), prUrl)
+                {
+                    Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+                };
+                var resp = await client.SendAsync(msg, ct);
+                this.health.RecordResponse(resp);
+                var responseBody = await resp.Content.ReadAsStringAsync(ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(responseBody);
+                    return AdoMapper.ToPr(doc.RootElement, project);
+                }
+                // Stale-commit race: re-probe the PR, capture the fresh
+                // lastMergeSourceCommit, and retry the PATCH.
+                var isStale = (int)resp.StatusCode == 409
+                    && (responseBody.Contains("GitPullRequestStaleException", StringComparison.Ordinal)
+                        || responseBody.Contains("TF401192", StringComparison.Ordinal));
+                if (isStale && attempt < MaxAttempts)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(750 * attempt), ct);
+                    continue;
+                }
+                throw new HttpRequestException(
+                    $"ADO PR merge failed ({(int)resp.StatusCode}) at {prUrl}: {responseBody}");
             }
         }
-
-        // Merge by transitioning the PR to "completed" with a squash merge.
-        // Pass lastMergeSourceCommit as an OBJECT containing the commitId —
-        // that's the shape ADO expects (mirrors the GET response shape it
-        // returned a moment ago).
-        var payload = JsonSerializer.Serialize(new
-        {
-            status = "completed",
-            lastMergeSourceCommit = string.IsNullOrEmpty(lastMergeSourceCommit)
-                ? (object?)null
-                : new { commitId = lastMergeSourceCommit },
-            completionOptions = new { mergeStrategy = "squash", deleteSourceBranch = false },
-        });
-        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"), prUrl)
-        {
-            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
-        };
-        var resp = await client.SendAsync(msg, ct);
-        this.health.RecordResponse(resp);
-        var responseBody = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"ADO PR merge failed ({(int)resp.StatusCode}) at {prUrl}: {responseBody}");
-        }
-        using var doc = JsonDocument.Parse(responseBody);
-        return AdoMapper.ToPr(doc.RootElement, project);
+        throw new HttpRequestException(
+            $"ADO PR merge failed: exhausted {MaxAttempts} attempts on stale-commit retry for {prUrl}.");
     }
 
     public async Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
