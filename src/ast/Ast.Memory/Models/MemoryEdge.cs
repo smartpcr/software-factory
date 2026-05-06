@@ -15,7 +15,7 @@ using Ast.Core;
 /// Accepts both code-derived edges (original HyperedgeType) and
 /// memory-only edges (HyperedgeType.MemoryRelation).
 /// </summary>
-public class MemoryEdge
+public sealed class MemoryEdge
 {
     /// <summary>The underlying hyperedge.</summary>
     public Hyperedge Inner { get; }

@@ -13,7 +13,7 @@ using Ast.Core;
 /// strongly-typed accessors for memory-layer metadata.
 /// Per architecture.md §4.1, §4.3 — uses composition, NOT inheritance.
 /// </summary>
-public class MemoryNode
+public sealed class MemoryNode
 {
     /// <summary>The underlying hypergraph node.</summary>
     public HypergraphNode Inner { get; }

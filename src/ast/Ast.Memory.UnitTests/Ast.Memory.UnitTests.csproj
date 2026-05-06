@@ -21,9 +21,4 @@
     <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
-  </ItemGroup>
-
 </Project>
