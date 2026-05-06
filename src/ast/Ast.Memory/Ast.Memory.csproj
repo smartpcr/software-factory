@@ -2,16 +2,16 @@
 
   <PropertyGroup>
     <IsPackable>true</IsPackable>
-    <RootNamespace>Ast.Memory</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
-    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
-    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
-    <ProjectReference Include="..\Ast.Query\Ast.Query.csproj" />
     <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
     <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
   </ItemGroup>
 
