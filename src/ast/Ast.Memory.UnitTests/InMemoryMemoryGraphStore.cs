@@ -177,6 +177,7 @@ internal sealed class InMemoryMemoryGraphStore : IMemoryGraphStore
             TotalNodes = this.nodes.Count,
             TotalEdges = this.edges.Count
         });
+    }
 
     public Task CreateIndexesAsync(CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
