@@ -990,13 +990,74 @@ function PrCard({ prId }: { prId: string }) {
   const [comments, setComments] = useState<PrComment[]>([]);
   const [commentsErr, setCommentsErr] = useState<string | null>(null);
   const [builds, setBuilds] = useState<Build[]>([]);
+  const [merging, setMerging] = useState(false);
+  const showToast = useToastStore((s) => s.show);
 
   useEffect(() => {
     let cancelled = false;
-    forgeApi.getPrDetails(prId).then((d) => { if (!cancelled) setData(d); }).catch(() => { if (!cancelled) setErr(true); });
-    forgeApi.listPrBuilds(prId, { limit: 5 }).then((d) => { if (!cancelled) setBuilds(d.items); }).catch(() => {});
-    return () => { cancelled = true; };
+    async function load() {
+      try {
+        const d = await forgeApi.getPrDetails(prId);
+        if (!cancelled) setData(d);
+      } catch { if (!cancelled) setErr(true); }
+      try {
+        const b = await forgeApi.listPrBuilds(prId, { limit: 5 });
+        if (!cancelled) setBuilds(b.items);
+      } catch { /* ignore */ }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [prId]);
+
+  async function handleMerge() {
+    const ok = await useConfirmStore.getState().ask({
+      title: `Merge PR ${prId}?`,
+      body: 'This will merge the PR into its base branch. If there are conflicts, Forge will surface them so you can resolve in the provider UI.',
+      tone: 'warn',
+      confirmLabel: '⛙ Merge',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    setMerging(true);
+    try {
+      await runMerge(false);
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  async function runMerge(force: boolean) {
+    try {
+      const { queued, detail } = await forgeApi.mergePr(prId, { force });
+      if (queued) {
+        showToast(detail ?? `PR ${prId} merge queued by provider.`, 'info');
+      } else {
+        showToast(`PR ${prId} merged successfully.`, 'success');
+      }
+      const d = await forgeApi.getPrDetails(prId);
+      setData(d);
+    } catch (e) {
+      // 409 with conflict=true → offer the destructive force-merge as a
+      // second confirm so the user knows what they're agreeing to.
+      if (e instanceof ForgeApiError && e.status === 409 && e.problem?.conflict === true) {
+        const goForce = await useConfirmStore.getState().ask({
+          title: `Merge conflict on PR ${prId}`,
+          body:
+            (typeof e.problem?.hint === 'string' ? e.problem.hint + '\n\n' : '') +
+            'Force-merge will take the source branch\'s version on every conflicting hunk and discard upstream-side changes (-X ours). This is destructive — prefer resolving in the provider UI.',
+          tone: 'danger',
+          confirmLabel: '⚠ Force-merge (-X ours)',
+          cancelLabel: 'Open in provider',
+        });
+        if (goForce) {
+          await runMerge(true);
+        }
+        return;
+      }
+      showToast(e instanceof Error ? e.message : 'Merge failed', 'danger');
+    }
+  }
 
   const refreshComments = async () => {
     try {
@@ -1067,6 +1128,27 @@ function PrCard({ prId }: { prId: string }) {
             style={{ marginLeft: 'auto', fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
             Open in {pr.id.startsWith('PR-') || pr.id.startsWith('PR ') ? 'ADO' : 'GitHub'} ↗
           </a>
+        )}
+        {pr.col !== 'merged' && (
+          <button
+            type="button"
+            disabled={merging}
+            onClick={() => void handleMerge()}
+            style={{
+              marginLeft: pr.webUrl ? 8 : 'auto',
+              fontSize: 10, padding: '2px 10px',
+              background: 'transparent',
+              border: '1px solid #4ec9b0',
+              borderRadius: 3,
+              color: '#4ec9b0',
+              cursor: merging ? 'wait' : 'pointer',
+              fontFamily: 'var(--sc-font-display, monospace)',
+              letterSpacing: '0.1em',
+              opacity: merging ? 0.5 : 1,
+            }}
+          >
+            {merging ? '⏳ Merging…' : '⛙ MERGE'}
+          </button>
         )}
       </div>
 
