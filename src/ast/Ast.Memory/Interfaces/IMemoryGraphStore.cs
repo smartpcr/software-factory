@@ -11,7 +11,8 @@ using Ast.GraphDb;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Extended graph store with memory-layer, temporal, and expertise operations.
+/// Extends IGraphStore with memory-layer temporal queries, expertise CRUD,
+/// and audit logging. See architecture.md §5.1.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
