@@ -37,6 +37,12 @@ public class NodeFilter
     /// Gets or sets the scope to filter by.
     /// </summary>
     public string? Scope { get; set; }
+
+    /// <summary>
+    /// When true, includes retired (temporally closed) nodes in results.
+    /// Default is false — only active nodes are returned.
+    /// </summary>
+    public bool IncludeRetired { get; set; }
 }
 
 /// <summary>
