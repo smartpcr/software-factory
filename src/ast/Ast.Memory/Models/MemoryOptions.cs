@@ -7,93 +7,84 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Central configuration for the agent memory subsystem.
-/// All defaults come from architecture.md §2.4.
-/// Designed for use with <c>IOptions&lt;MemoryOptions&gt;</c>.
+/// Configuration options for the agent memory system.
+/// All constants from architecture.md §2.4.
 /// </summary>
 public class MemoryOptions
 {
-    // ── Similarity / Decay ──────────────────────────────────────────────
-
-    /// <summary>Cosine-similarity threshold for semantic deduplication.</summary>
+    /// <summary>
+    /// Gets or sets the cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.
+    /// </summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Multiplicative factor applied when a node is stale (no longer in HEAD).</summary>
+    /// <summary>
+    /// Gets or sets the confidence multiplier on substantive code change.
+    /// </summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Multiplicative factor applied for minor (whitespace-only) changes.</summary>
+    /// <summary>
+    /// Gets or sets the confidence multiplier on whitespace/comment-only change.
+    /// </summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Confidence floor below which expertise entries are auto-archived.</summary>
+    /// <summary>
+    /// Gets or sets the soft-delete threshold for expertise entries.
+    /// </summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
 
-    /// <summary>Half-life in days for time-based confidence decay (≈3 years).</summary>
+    /// <summary>
+    /// Gets or sets the time-based decay half-life in days (3 years).
+    /// </summary>
     public int DecayHalfLifeDays { get; set; } = 1095;
 
-    // ── Token Budgets ───────────────────────────────────────────────────
+    /// <summary>
+    /// Gets or sets the default per-query token budget.
+    /// </summary>
+    public int TokenBudgetDefault { get; set; } = 8000;
 
-    /// <summary>Default token budget for context retrieval.</summary>
-    public int TokenBudgetDefault { get; set; } = 8_000;
+    /// <summary>
+    /// Gets or sets the maximum allowed token budget.
+    /// </summary>
+    public int TokenBudgetCeiling { get; set; } = 32000;
 
-    /// <summary>Hard ceiling on token budget regardless of caller request.</summary>
-    public int TokenBudgetCeiling { get; set; } = 32_000;
+    /// <summary>
+    /// Gets or sets the file-system watcher debounce in milliseconds.
+    /// </summary>
+    public int IncrementalSyncDebounceMs { get; set; } = 1000;
 
-    // ── Sync ────────────────────────────────────────────────────────────
-
-    /// <summary>Debounce interval in milliseconds for incremental sync.</summary>
-    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
-
-    // ── Scoring ─────────────────────────────────────────────────────────
-
-    /// <summary>Additive boost applied to nodes with high centrality.</summary>
+    /// <summary>
+    /// Gets or sets the PageRank multiplier for decay slowdown (range 1.0–1.5).
+    /// </summary>
     public double CentralityBoostFactor { get; set; } = 0.5;
 
-    /// <summary>Scoring weight distribution for relevance ranking.</summary>
-    public ScoringWeights Scoring { get; set; } = new();
+    /// <summary>
+    /// Gets or sets the storage backend.
+    /// </summary>
+    public MemoryBackend Backend { get; set; }
 
-    // ── Consolidation ───────────────────────────────────────────────────
-
-    /// <summary>Maximum number of merges per consolidation run.</summary>
-    public int MaxMergesPerRun { get; set; } = 50;
-
-    // ── Vector Collection ───────────────────────────────────────────────
-
-    /// <summary>Name of the vector collection for expertise embeddings.</summary>
-    public string ExpertiseVectorCollection { get; set; } = "memory_expertise";
-
-    // ── Backend ─────────────────────────────────────────────────────────
-
-    /// <summary>Graph storage backend.</summary>
-    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
-
-    /// <summary>File path for the SQLite database (used when Backend is Sqlite).</summary>
+    /// <summary>
+    /// Gets or sets the SQLite database path.
+    /// </summary>
     public string? SqlitePath { get; set; }
 
-    /// <summary>Connection URI for Neo4j (used when Backend is Neo4j).</summary>
+    /// <summary>
+    /// Gets or sets the Neo4j connection URI.
+    /// </summary>
     public string? Neo4jUri { get; set; }
 
-    /// <summary>Endpoint for Qdrant vector store.</summary>
+    /// <summary>
+    /// Gets or sets the Qdrant endpoint.
+    /// </summary>
     public string? QdrantEndpoint { get; set; }
 
     /// <summary>
-    /// Model name for the Ollama LLM used by ConsolidationService and
-    /// DetectCommunitiesAsync.
+    /// Gets or sets the model name for the Ollama LLM used by ConsolidationService.
+    /// Operator-configured; no hardcoded default since the model depends on deployment.
     /// </summary>
     public string? ConsolidationModelName { get; set; }
-}
 
-/// <summary>
-/// Scoring weight distribution for relevance ranking (§5.2).
-/// Weights should sum to 1.0.
-/// </summary>
-public record ScoringWeights(
-    double Structural = 0.30,
-    double Semantic = 0.25,
-    double Centrality = 0.20,
-    double Recency = 0.15,
-    double Expertise = 0.10
-)
-{
-    /// <summary>Parameterless constructor with defaults.</summary>
-    public ScoringWeights() : this(0.30, 0.25, 0.20, 0.15, 0.10) { }
+    /// <summary>
+    /// Gets or sets the Ollama HTTP endpoint for LLM generation.
+    /// </summary>
+    public string OllamaEndpoint { get; set; } = "http://localhost:11434";
 }

@@ -7,40 +7,52 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Kinds of expertise entries that agents can record.
+/// Kind of expertise entry recorded by agents.
 /// </summary>
 public enum ExpertiseKind
 {
-    /// <summary>A recurring design or implementation pattern worth reusing.</summary>
+    /// <summary>A reusable design pattern or best practice.</summary>
     Pattern,
 
-    /// <summary>A known hazard, footgun, or fragile assumption.</summary>
+    /// <summary>A known pitfall or anti-pattern to avoid.</summary>
     Pitfall,
 
-    /// <summary>A team or codebase convention / style preference.</summary>
+    /// <summary>An operator or team preference.</summary>
     Preference,
 
-    /// <summary>A general insight or observation about code behavior.</summary>
+    /// <summary>A general architectural or behavioral insight.</summary>
     Insight
 }
 
 /// <summary>
-/// Retrieval modes for the memory retrieval engine.
+/// Retrieval mode for querying the memory graph.
 /// </summary>
 public enum RetrievalMode
 {
+    /// <summary>Walk structural containment hierarchy.</summary>
     StructuralDrill,
+
+    /// <summary>Follow call-chain edges.</summary>
     CallTrace,
+
+    /// <summary>Embedding-based similarity search.</summary>
     SemanticSearch,
+
+    /// <summary>Recall expertise entries.</summary>
     ExpertiseRecall,
+
+    /// <summary>Combine all modes with weighted scoring.</summary>
     Hybrid
 }
 
 /// <summary>
-/// Backend storage options for the memory graph.
+/// Storage backend for the memory graph.
 /// </summary>
 public enum MemoryBackend
 {
+    /// <summary>SQLite with FTS5 and sqlite-vss.</summary>
     Sqlite,
+
+    /// <summary>Neo4j graph database.</summary>
     Neo4j
 }

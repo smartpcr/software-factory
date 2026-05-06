@@ -10,86 +10,82 @@ using System.Security.Cryptography;
 using System.Text;
 
 /// <summary>
-/// Agent-authored knowledge node. These are not HypergraphNode instances —
-/// they have their own dedicated storage because their fields (Confidence,
-/// Archived, Embedding, SourceAgent) are core data, not incidental metadata.
+/// An expertise node representing agent-authored knowledge about code.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     /// <summary>
-    /// Unique identifier in the format "expertise:{kind}:{hash8}".
-    /// Content-addressable for deduplication.
+    /// Gets the unique identifier in format "expertise:{kind}:{hash8}".
     /// </summary>
-    public string Id { get; init; } = string.Empty;
+    public required string Id { get; init; }
 
     /// <summary>
-    /// The kind of expertise (Pattern, Pitfall, Preference, Insight).
+    /// Gets the kind of expertise.
     /// </summary>
-    public ExpertiseKind Kind { get; init; }
+    public required ExpertiseKind Kind { get; init; }
 
     /// <summary>
-    /// Headline of the expertise entry.
+    /// Gets the headline title.
     /// </summary>
-    public string Title { get; init; } = string.Empty;
+    public required string Title { get; init; }
 
     /// <summary>
-    /// Detailed description of the expertise.
+    /// Gets the detailed description.
     /// </summary>
-    public string Body { get; init; } = string.Empty;
+    public required string Body { get; init; }
 
     /// <summary>
-    /// The code node this expertise applies to.
+    /// Gets the ID of the code node this expertise applies to.
     /// </summary>
-    public string TargetNodeId { get; init; } = string.Empty;
+    public required string TargetNodeId { get; init; }
 
     /// <summary>
-    /// Scope of applicability: "exact" (default) or "subtree".
+    /// Gets the scope: "exact" (single node) or "subtree" (node and descendants).
     /// </summary>
     public string Scope { get; init; } = "exact";
 
     /// <summary>
-    /// Confidence level from 0.0 to 1.0. Default 1.0.
-    /// Modified by event-driven decay (code changes).
+    /// Gets or sets the confidence score (0.0–1.0).
     /// </summary>
     public double Confidence { get; set; } = 1.0;
 
     /// <summary>
-    /// Whether this entry has been archived (soft-deleted by decay).
+    /// Gets or sets whether this entry is archived (soft-deleted).
     /// </summary>
     public bool Archived { get; set; }
 
     /// <summary>
-    /// The agent session that authored this entry.
+    /// Gets the agent session that created this entry.
     /// </summary>
-    public string SourceAgent { get; init; } = string.Empty;
+    public required string SourceAgent { get; init; }
 
     /// <summary>
-    /// Supporting references for this expertise.
+    /// Gets the evidence citations supporting this expertise.
     /// </summary>
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+    public IReadOnlyList<Citation>? Evidence { get; init; }
 
     /// <summary>
-    /// Embedding vector of "Title + ' ' + Body".
+    /// Gets or sets the embedding vector for similarity search.
     /// </summary>
     public float[]? Embedding { get; set; }
 
     /// <summary>
-    /// SHA-256 of Title + Body + TargetNodeId for deduplication.
+    /// Gets the SHA-256 content hash of Title+Body for deduplication.
     /// </summary>
-    public string ContentHash { get; init; } = string.Empty;
+    public required string ContentHash { get; init; }
 
     /// <summary>
-    /// When this entry was first created.
+    /// Gets the creation timestamp.
     /// </summary>
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
-    /// When this entry was last updated.
+    /// Gets or sets the last update timestamp.
     /// </summary>
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// Generates the content hash for deduplication: SHA-256(Title + Body + TargetNodeId).
+    /// Generates the content hash for deduplication.
     /// </summary>
     public static string ComputeContentHash(string title, string body, string targetNodeId)
     {
@@ -99,13 +95,11 @@ public sealed class ExpertiseEntry
     }
 
     /// <summary>
-    /// Generates the expertise ID: "expertise:{kind}:{hash8}" where hash8 is the
-    /// first 8 characters of SHA-256(Title + Body + TargetNodeId).
+    /// Generates the ID for an expertise entry.
     /// </summary>
-    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
+    public static string GenerateId(ExpertiseKind kind, string contentHash)
     {
-        var hash = ComputeContentHash(title, body, targetNodeId);
-        var hash8 = hash[..8];
+        var hash8 = contentHash[..8];
         return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
     }
 }

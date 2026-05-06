@@ -7,12 +7,14 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Temporal version range for a node or edge in the memory graph.
-/// Uses dual-axis time: monotonic commit indices for ordering,
-/// plus wall-clock timestamps available via join to the commits table.
+/// Commit-index range for temporal node/edge versioning.
 /// </summary>
+/// <param name="SinceCommit">Git commit SHA at which this entity was introduced.</param>
+/// <param name="SinceIndex">Monotonic commit index at which this entity was introduced.</param>
+/// <param name="UntilCommit">Git commit SHA at which this entity was retired (null = still active).</param>
+/// <param name="UntilIndex">Commit index at which this entity was retired (null = still active).</param>
 public record VersionRange(
-    string Since,
+    string SinceCommit,
     int SinceIndex,
-    string? Until,
-    int? UntilIndex);
+    string? UntilCommit = null,
+    int? UntilIndex = null);
