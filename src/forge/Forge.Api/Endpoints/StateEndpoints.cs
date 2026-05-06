@@ -307,14 +307,13 @@ public static class StateEndpoints
                 }
             }
 
-            // Phase 46 — auto-merge flag. Server enforces false when base
-            // branch is "main". When the flag changes, propagate to the
-            // spawn and all still-open PRs so AutoMergeWatcher picks them up
-            // (or stops picking them up).
+            // Phase 46 — auto-merge flag. Honoured for any base (including
+            // "main"). When the flag changes, propagate to the spawn and
+            // all still-open PRs so AutoMergeWatcher picks them up (or stops
+            // picking them up).
             if (req.AutoMerge is { } reqAutoMerge)
             {
-                var effectiveBase = newBaseBranch ?? row.BaseBranch ?? "main";
-                var effective = reqAutoMerge && !string.Equals(effectiveBase, "main", StringComparison.Ordinal);
+                var effective = reqAutoMerge;
                 if (row.AutoMerge != effective)
                 {
                     row.AutoMerge = effective;
@@ -343,18 +342,6 @@ public static class StateEndpoints
                             foreach (var pr in openPrs) pr.AutoMerge = effective;
                         }
                     }
-                }
-            }
-            // Phase 46 — when baseBranch reverts to "main", clear auto-merge.
-            else if (newBaseBranch is not null && string.Equals(newBaseBranch, "main", StringComparison.Ordinal) && row.AutoMerge)
-            {
-                row.AutoMerge = false;
-
-                var spawnAmClear = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
-                if (spawnAmClear is not null && spawnAmClear.AutoMerge)
-                {
-                    spawnAmClear.AutoMerge = false;
-                    spawnAmClear.UpdatedAt = DateTimeOffset.UtcNow;
                 }
             }
 

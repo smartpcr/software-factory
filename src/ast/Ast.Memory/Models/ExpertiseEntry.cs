@@ -14,7 +14,7 @@ using System.Text;
 /// <summary>
 /// Agent-authored knowledge node linked to code via APPLIES_TO edges.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     public string Id { get; init; } = string.Empty;
     public ExpertiseKind Kind { get; init; }

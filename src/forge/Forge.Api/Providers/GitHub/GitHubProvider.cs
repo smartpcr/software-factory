@@ -687,6 +687,19 @@ public class GitHubProvider : IForgeProvider
         this.RequireConfigured();
         var client = await this.NewClientAsync(ctx, ct);
         var (repo, num) = this.ResolvePrCoords(id);
+
+        // Already-merged short-circuit. When a human merged the PR via
+        // GitHub's UI between Forge syncs, the PUT below would return 405
+        // ("Pull Request is not mergeable" — they're confusingly using
+        // it for already-merged). Probe state first; if merged_at is set,
+        // return the current PR as if our merge succeeded so the caller
+        // (PrSyncJob / merge endpoint) reconciles Col=merged.
+        var existing = await this.GetPullRequestAsync(id, ct);
+        if (existing is not null && string.Equals(existing.Col, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            return existing;
+        }
+
         var payload = JsonSerializer.Serialize(new { merge_method = "squash" });
         using var msg = new HttpRequestMessage(HttpMethod.Put, $"repos/{repo}/pulls/{num}/merge")
         {
@@ -703,6 +716,17 @@ public class GitHubProvider : IForgeProvider
         {
             var body = string.Empty;
             try { body = await resp.Content.ReadAsStringAsync(ct); } catch { /* best-effort */ }
+            // Defensive: GitHub sometimes 405s with "already merged" wording
+            // when the PR was completed mid-flight. Re-probe; if it's now
+            // merged, treat the call as successful.
+            if ((int)resp.StatusCode == 405)
+            {
+                var probe = await this.GetPullRequestAsync(id, ct);
+                if (probe is not null && string.Equals(probe.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    return probe;
+                }
+            }
             throw new HttpRequestException(
                 $"GitHub PUT pulls/{num}/merge → {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}",
                 inner: null,

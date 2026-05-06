@@ -11,7 +11,7 @@ using Ast.Core;
 /// <summary>
 /// Composition wrapper around <see cref="HypergraphNode"/> adding memory-specific accessors.
 /// </summary>
-public sealed class MemoryNode
+public class MemoryNode
 {
     public MemoryNode(HypergraphNode inner, VersionRange? version = null)
     {
