@@ -82,6 +82,59 @@ public class AgentSalaryAndLedgerTests
         Assert.Equal(0, doc.RootElement.GetProperty("activeAgents").GetInt32());
     }
 
+    /// <summary>
+    /// /api/crews/concurrency must reflect open agent_claims rows (the
+    /// modern story-spawn signal), not just task_queue picked-up state.
+    /// Regression for the TopBar "ACTIVE 0/cap" bug observed 2026-05-05:
+    /// 22 workstreams in flight via CrewStoryArtifactStrategy, but the
+    /// chip stayed at 0 because that path never enqueues to task_queue.
+    /// </summary>
+    [Fact]
+    public async Task GetCrewConcurrency_Counts_Open_Agent_Claims_Per_Crew()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            // Pin agent → crew explicitly so the test doesn't depend on the
+            // shifting prototypeAlias mapping in ForgeSeed.
+            var e4 = await db.Agents.FirstOrDefaultAsync(a => a.Id == "E4");
+            var e7 = await db.Agents.FirstOrDefaultAsync(a => a.Id == "E7");
+            if (e4 is not null) e4.CrewId = "crew-eng";
+            if (e7 is not null) e7.CrewId = "crew-eng";
+            // Seed: two open eng claims + one closed (released) eng claim
+            // + one open claim on an agent without a CrewId (unassigned bucket).
+            db.AgentClaims.AddRange(
+                new AgentClaimRow { AgentId = "E4", WorkItemId = "ws-1", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null },
+                new AgentClaimRow { AgentId = "E7", WorkItemId = "ws-1", Role = "evaluator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null },
+                new AgentClaimRow { AgentId = "E4", WorkItemId = "ws-old", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow.AddHours(-2), ReleasedAt = DateTimeOffset.UtcNow.AddHours(-1) },
+                new AgentClaimRow { AgentId = "ZZ-orphan", WorkItemId = "ws-2", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        var resp = await client.GetAsync("/api/crews/concurrency");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+
+        // 2 open eng claims + 1 unassigned = 3 total active.
+        Assert.Equal(3, root.GetProperty("active").GetInt32());
+        // Cap is the seeded sum across all crews — it must be > 0.
+        Assert.True(root.GetProperty("cap").GetInt32() > 0);
+
+        var perCrew = root.GetProperty("perCrew").EnumerateArray().ToList();
+        var eng = perCrew.Single(e => e.GetProperty("id").GetString() == "crew-eng");
+        Assert.Equal(2, eng.GetProperty("active").GetInt32());
+        Assert.True(eng.GetProperty("cap").GetInt32() > 0);
+
+        // Unassigned bucket is appended only when an open claim has no crew.
+        var unassigned = perCrew.SingleOrDefault(e => e.GetProperty("id").GetString() == "(unassigned)");
+        Assert.NotEqual(default, unassigned);
+        Assert.Equal(1, unassigned.GetProperty("active").GetInt32());
+        Assert.Equal(0, unassigned.GetProperty("cap").GetInt32());
+    }
+
     [Fact]
     public async Task CostLedger_Records_Correct_Cost_For_Priced_Crew()
     {

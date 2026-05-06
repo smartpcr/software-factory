@@ -1531,12 +1531,34 @@ public class Phase23EndpointTests
     }
 
     [Fact]
-    public async Task GET_SyncWorkItemsRuns_Default_Limit_Is_20()
+    public async Task GET_SyncWorkItemsRuns_Default_Limit_Is_50()
     {
         using var factory = new ForgeWebApplicationFactory();
+
+        // Seed 60 rows so we can verify the server caps the response at the
+        // 50-row default when no `limit` is supplied (Phase 23.7 contract).
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            for (int i = 0; i < 60; i++)
+            {
+                db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
+                {
+                    Id = $"sr-default-{i}",
+                    RepoId = "atlas-platform",
+                    Kind = "delta",
+                    StartedAt = DateTimeOffset.UtcNow.AddMinutes(-i).ToString("o"),
+                    CompletedSuccessfully = true,
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
         using var client = factory.CreateClient();
         var resp = await client.GetAsync("/api/repos/atlas-platform/sync-work-items/runs");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(50, doc.RootElement.GetArrayLength());
     }
 
     [Fact]
