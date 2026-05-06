@@ -7,7 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Statistics about the memory graph, broken down by layer.
+/// Per-layer node/edge counts for the memory graph.
 /// </summary>
 public class MemoryGraphStatistics
 {
