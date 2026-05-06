@@ -310,8 +310,12 @@ public sealed class PrSyncJob : BackgroundService
         // Non-terminal "open" PRs keep whatever column the list-sync put them in
         // (typically "review"); writing "open" would push them off the board
         // because no UI column matches that string.
+        // Recovery case: when upstream is open but local Col is wrongly stuck
+        // at "merged" (e.g., from a prior false-merged state), snap it back to
+        // "review" so the PR re-appears on the board with the merge button.
         var newCol = newState switch
         {
+            "open" when string.Equals(oldState, "merged", StringComparison.OrdinalIgnoreCase) => "review",
             "open" => oldState,                // preserve "review" / "build" / "implementation"
             "completed" => "merged",
             "abandoned" => "merged",           // no abandoned column; IsActive=false filters it out below
@@ -368,7 +372,26 @@ public sealed class PrSyncJob : BackgroundService
             await this.hub.Clients.All.SendAsync("pr.closed", new { prId = candidate.PrId, state = newState }, ct);
         }
 
+        // When sync detects the upstream "completed" transition, advance any
+        // workstream stuck on review/merging — the orchestrator's own
+        // promotion only handles workstreams it itself flipped to merging,
+        // so an externally-merged PR otherwise leaves the phase-board chip
+        // frozen at REVIEW.
+        IReadOnlyList<string> advancedWsIds = Array.Empty<string>();
+        if (colChanged && string.Equals(newCol, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            advancedWsIds = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer
+                .AdvanceForMergedPrAsync(db, candidate.PrId, ct);
+        }
+
         await db.SaveChangesAsync(ct);
+
+        if (advancedWsIds.Count > 0)
+        {
+            await this.hub.Clients.All.SendAsync(
+                "story-spawn.changed",
+                new { kind = "ws-completed", prId = candidate.PrId, workstreamIds = advancedWsIds }, ct);
+        }
 
         // Phase 45 follow-up — when PrSyncJob observes upstream "completed"
         // (= Forge "merged") for the first time, fire the plan-PR-merge

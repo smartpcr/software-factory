@@ -58,8 +58,14 @@ public interface IStoryGitOps
     /// unresolvable conflicts. Production runs <c>git merge --no-edit
     /// origin/{upstream}</c> in the branch's worktree. Tests merge the in-memory
     /// branch pointers.
+    /// <para>
+    /// When <paramref name="force"/> is true (default), conflicts are
+    /// auto-resolved with <c>-X ours</c> (keep source-side hunks, discard
+    /// upstream-side). When false, the function aborts the merge on conflict
+    /// and returns false so the caller can surface a 409 to the user.
+    /// </para>
     /// </summary>
-    Task<bool> MergeUpstreamIntoBranchAsync(RepoRow? repo, string branch, string upstreamBranch, CancellationToken ct = default);
+    Task<bool> MergeUpstreamIntoBranchAsync(RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default);
 
     /// <summary>
     /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>

@@ -5,6 +5,7 @@ import type {
   ColumnId,
   CostSummary,
   Crew,
+  CrewConcurrencySummary,
   CrewHistoryEntry,
   CrewPayroll,
   CrewSalary,
@@ -812,13 +813,41 @@ export const forgeApi = {
    * On a real merge conflict the server returns 409 with `{conflict: true, hint}`.
    * Pass `force: true` to opt into the destructive `-X ours` auto-resolve path
    * (keeps source-branch changes, discards upstream-side hunks).
+   * Returns `{pr, queued}`. When `queued=true` ADO accepted the merge but is
+   * waiting on branch policies / required validations — Col stays on review
+   * locally and PrSyncJob reconciles it once ADO completes the squash.
    */
-  async mergePr(id: string, opts?: { force?: boolean }): Promise<Pr> {
+  async mergePr(id: string, opts?: { force?: boolean }): Promise<{ pr: Pr; queued: boolean; detail?: string }> {
     const qs = opts?.force ? '?force=true' : '';
-    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge${qs}`, {
+    const url = `${baseUrl}/api/prs/${encodeURIComponent(id)}/merge${qs}`;
+    const productId = getActiveProductId();
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'X-Forge-User': writerHeader() },
+      headers: {
+        Accept: 'application/json',
+        'X-Forge-User': writerHeader(),
+        ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+      },
     });
+    if (!res.ok) {
+      let problem: ProblemDetails | null = null;
+      const ct = res.headers.get('content-type') ?? '';
+      if (ct.includes('json')) {
+        try {
+          problem = (await res.json()) as ProblemDetails;
+        } catch {
+          // fall through
+        }
+      }
+      const detail = problem?.detail ?? problem?.title ?? res.statusText;
+      throw new ForgeApiError(res.status, problem, `merge ${id}: ${res.status} ${detail}`);
+    }
+    if (res.status === 202) {
+      const body = (await res.json()) as { queued: boolean; pr: Pr; detail?: string };
+      return { pr: body.pr, queued: true, detail: body.detail };
+    }
+    const pr = (await res.json()) as Pr;
+    return { pr, queued: false };
   },
 
   /** POST /api/workstreams/{id}/pr — Phase 6.4. */
@@ -1689,6 +1718,16 @@ export const forgeApi = {
   /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */
   async getSalaryTodayTotal(): Promise<SalaryTodaySummary> {
     return fetchJson<SalaryTodaySummary>('/api/crews/salary/today');
+  },
+
+  /**
+   * GET /api/crews/concurrency — TopBar "ACTIVE n/cap" chip payload.
+   * Counts open agent_claims rows joined with agents.CrewId so the
+   * chip reflects story-spawn-driven activity, not just the legacy
+   * task_queue picked-up state.
+   */
+  async getCrewConcurrency(): Promise<CrewConcurrencySummary> {
+    return fetchJson<CrewConcurrencySummary>('/api/crews/concurrency');
   },
 
   /** GET /api/cost/summary — Phase 11 `/cost` dashboard rollup. */

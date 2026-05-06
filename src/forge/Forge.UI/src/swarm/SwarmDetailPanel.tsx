@@ -1029,8 +1029,12 @@ function PrCard({ prId }: { prId: string }) {
 
   async function runMerge(force: boolean) {
     try {
-      await forgeApi.mergePr(prId, { force });
-      showToast(`PR ${prId} merged successfully.`, 'success');
+      const { queued, detail } = await forgeApi.mergePr(prId, { force });
+      if (queued) {
+        showToast(detail ?? `PR ${prId} merge queued by provider.`, 'info');
+      } else {
+        showToast(`PR ${prId} merged successfully.`, 'success');
+      }
       const d = await forgeApi.getPrDetails(prId);
       setData(d);
     } catch (e) {

@@ -298,7 +298,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     // Phase 46 — merge latest from main into the plan branch
                     // before creating the PR. Always enforced.
-                    await this.git.MergeUpstreamIntoBranchAsync(repo, planBranch, "main", ct);
+                    await this.git.MergeUpstreamIntoBranchAsync(repo, planBranch, "main", ct: ct);
 
                     var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                         Branch: planBranch,
@@ -824,7 +824,7 @@ public sealed class StorySpawnOrchestrator
 
         // Phase 46 — merge latest from main into the workstream branch
         // before creating the PR. Always enforced.
-        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, "main", ct);
+        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, "main", ct: ct);
 
         // Build rich PR description from the last deliverable, matching the
         // format used by CrewQueueWorker for regular work-item PRs:
@@ -1083,7 +1083,7 @@ public sealed class StorySpawnOrchestrator
 
             // Phase 46 — merge latest from main into the QA branch
             // before creating the PR. Always enforced.
-            await this.git.MergeUpstreamIntoBranchAsync(repo, qaBranch, "main", ct);
+            await this.git.MergeUpstreamIntoBranchAsync(repo, qaBranch, "main", ct: ct);
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: qaBranch,
@@ -1130,7 +1130,7 @@ public sealed class StorySpawnOrchestrator
                 $"qa-steps({w.Id}): step definitions", ct);
 
             // Phase 46 — merge latest from main before creating the PR.
-            await this.git.MergeUpstreamIntoBranchAsync(repo, stepBranch, "main", ct);
+            await this.git.MergeUpstreamIntoBranchAsync(repo, stepBranch, "main", ct: ct);
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: stepBranch,

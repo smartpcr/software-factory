@@ -431,19 +431,36 @@ public static class PrsEndpoints
     // discards upstream-side changes on each conflicting hunk).
     private static async Task<IResult> Merge(
         HttpContext ctx, string id,
-        [FromQuery] bool force,
         ForgeDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHumanGateEvaluator gate,
         IHubContext<ForgeHub> hub,
-        IStoryGitOps git)
+        IStoryGitOps git,
+        [FromQuery] bool? force = null)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
         id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
+
+        // When ?force is omitted, inherit from the PR's AutoMerge flag
+        // (which propagated from story → spawn → PR at create time). The
+        // story owner enabling AutoMerge is a standing pre-authorisation
+        // for destructive -X ours resolution, so a manual click on an
+        // AutoMerge=true PR shouldn't have to navigate a second confirm.
+        // Explicit ?force=false in the URL still overrides this.
+        // Fallback: when row.AutoMerge=false (e.g. PR was created via a
+        // path that didn't propagate the flag, or row was imported by the
+        // upstream sync), walk up the work-item parent chain to the spawn
+        // and inherit the story-level flag from there.
+        var effectiveAutoMerge = row.AutoMerge;
+        if (!effectiveAutoMerge)
+        {
+            effectiveAutoMerge = await SpawnAutoMergeResolver.ResolveAsync(db, row.WorkItemId);
+        }
+        var effectiveForce = force ?? effectiveAutoMerge;
 
         var pr = PrMapper.ToContract(row);
         var decision = gate.Evaluate(pr);
@@ -458,6 +475,49 @@ public static class PrsEndpoints
         var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
         if (providerErr is not null) return providerErr;
 
+        // PROACTIVE FLOW (new order):
+        //   1. Rebase the PR's source branch onto the latest base in the local
+        //      worktree, resolving conflicts inline (or surfacing them when
+        //      force=false). Push the result.
+        //   2. Then ask the provider to complete — this is now an
+        //      already-resolved squash, so it can't fail with a conflict.
+        //
+        // The previous reactive flow ("ask ADO first, fall back to local on
+        // conflict") had two failure modes that this avoids:
+        //   - ADO returning 200 OK with status=active + mergeStatus=conflicts
+        //     (autoComplete accepted but git merge dies later).
+        //   - The PR's source branch never reflecting the actually-merged
+        //     state, so reviewers see a different diff than what landed.
+        if (!string.IsNullOrEmpty(row.Branch) && !string.IsNullOrEmpty(row.Base))
+        {
+            bool rebaseOk;
+            try
+            {
+                rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, effectiveForce, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Local rebase failed", detail: ex.Message, statusCode: 502);
+            }
+            if (!rebaseOk)
+            {
+                // Either a conflict (force=false) or -X ours itself failed.
+                // Treat both as a 409 — surfacing lets the user decide
+                // (resolve upstream, retry with force, or invoke an agent).
+                return Results.Problem(
+                    title: "Merge conflict — resolve upstream and retry",
+                    detail: effectiveForce
+                        ? "Local -X ours resolution failed; the source branch couldn't be reconciled with the base. Inspect the PR upstream."
+                        : "Source branch is behind the base and conflicts with it. Resolve in the provider UI, retry with ?force=true to take source-branch changes (-X ours), or enable AutoMerge on the parent story.",
+                    statusCode: 409,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["conflict"] = true,
+                        ["hint"] = "Stories with AutoMerge=true automatically use force=true.",
+                    });
+            }
+        }
+
         Pr merged;
         try
         {
@@ -465,79 +525,30 @@ public static class PrsEndpoints
         }
         catch (Exception ex)
         {
-            // Real merge-conflict signals only — the previous predicate also
-            // matched the literal word "merge", which appears in every ADO
-            // error string ("ADO PR merge failed (...)"), causing the
-            // destructive auto-resolve path to fire on unrelated 4xx errors.
-            var isConflict = LooksLikeConflict(ex.Message);
-            if (!isConflict)
-            {
-                return Results.Problem(title: "Provider merge failed", detail: ex.Message, statusCode: 502);
-            }
-
-            if (!force)
-            {
-                // Surface the conflict; let the user resolve in ADO/GitHub
-                // rather than silently discarding upstream changes.
-                return Results.Problem(
-                    title: "Merge conflict — resolve upstream and retry",
-                    detail: ex.Message,
-                    statusCode: 409,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["conflict"] = true,
-                        ["hint"] = "Resolve the conflict in the provider UI, or retry with ?force=true to take source-branch changes (-X ours).",
-                    });
-            }
-
-            try
-            {
-                var resolved = await TryResolveConflictsAsync(db, git, row, CancellationToken.None);
-                if (!resolved)
-                    return Results.Problem(title: "Merge conflict — automatic resolution failed", detail: ex.Message, statusCode: 409);
-
-                // Retry provider merge after resolving conflicts locally.
-                merged = await provider!.MergePullRequestAsync(id, callCtx);
-            }
-            catch (Exception retryEx)
-            {
-                return Results.Problem(title: "Merge failed after conflict resolution", detail: retryEx.Message, statusCode: 502);
-            }
+            return Results.Problem(title: "Provider complete failed after local rebase", detail: ex.Message, statusCode: 502);
         }
 
-        // Trust the provider's returned PR state — flipping Col=merged
-        // unconditionally would lie when ADO returns 200 with status still
-        // "active" (queued merge, branch-policy reject, etc.).
+        // Provider returned without throwing. After a successful local
+        // rebase, ADO should report Col=merged. If it doesn't, the merge
+        // is queued behind branch policies — return 202 so the UI shows a
+        // queued-success toast and PrSyncJob reconciles to Col=merged when
+        // ADO finishes the squash.
         if (!string.Equals(merged.Col, "merged", StringComparison.OrdinalIgnoreCase))
         {
-            return Results.Problem(
-                title: "Merge call returned but PR is not yet completed upstream",
-                detail: $"Provider returned col='{merged.Col}'. Refresh and retry, or check the provider UI for branch-policy / pending validations.",
-                statusCode: 502);
+            return Results.Json(
+                new
+                {
+                    queued = true,
+                    pr = merged,
+                    detail = "Merge accepted by provider — pending branch policies / required validations. Will complete automatically once they pass.",
+                },
+                statusCode: 202);
         }
 
         row.Col = "merged";
         row.AutoMerge = false;
 
-        // Phase 28 — when a human clicks Merge, advance any workstream that
-        // references this PR. The StorySpawnOrchestrator's DriveReviewAsync
-        // only promotes "merging → complete" and assumes it was the one
-        // that flipped "review → merging" via ApproveAndMergeAsync. A
-        // human-driven merge bypasses that flow, so without this the
-        // workstream stays stuck at "review" forever and the phase-board
-        // chip never advances.
-        var advancedWorkstreamIds = new List<string>();
-        var candidates = await db.Workstreams
-            .Where(w => w.PrsJson.Contains(id) && (w.Status == "review" || w.Status == "merging"))
-            .ToListAsync();
-        foreach (var w in candidates)
-        {
-            // Confirm exact match against the PrsJson array (the LIKE filter
-            // can match substrings of larger ids).
-            if (!WorkstreamReferencesPr(w.PrsJson, id)) continue;
-            w.Status = "complete";
-            advancedWorkstreamIds.Add(w.Id);
-        }
+        var advancedWorkstreamIds = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, id);
 
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", pr = merged });
@@ -548,66 +559,6 @@ public static class PrsEndpoints
                 new { kind = "ws-completed", prId = id, workstreamIds = advancedWorkstreamIds });
         }
         return Results.Ok(merged);
-    }
-
-    /// <summary>
-    /// Narrow conflict detector. The provider exception message must contain
-    /// an actual conflict signal — the literal word "merge" appears in every
-    /// ADO error message ("ADO PR merge failed (...)") and the previous
-    /// predicate matched it, firing the destructive -X ours path on
-    /// unrelated 4xx errors (404 wrong-repo, 405 method-not-allowed,
-    /// 403 PAT, 401 auth, etc.).
-    /// </summary>
-    private static bool LooksLikeConflict(string message)
-    {
-        if (string.IsNullOrEmpty(message)) return false;
-        // ADO: "Cannot complete pull request because there are merge conflicts."
-        // GitHub: "Pull Request is not mergeable" / "merge conflict"
-        return message.Contains("conflict", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("not mergeable", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("GitPullRequestNotMergeable", StringComparison.Ordinal);
-    }
-
-    private static bool WorkstreamReferencesPr(string prsJson, string prId)
-    {
-        if (string.IsNullOrEmpty(prsJson)) return false;
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(prsJson);
-            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return false;
-            foreach (var el in doc.RootElement.EnumerateArray())
-            {
-                if (el.ValueKind == System.Text.Json.JsonValueKind.String
-                    && string.Equals(el.GetString(), prId, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-        }
-        catch { /* malformed JSON — skip */ }
-        return false;
-    }
-
-    /// <summary>
-    /// Resolve merge conflicts by merging base branch into the PR source branch
-    /// locally. Uses the source branch's version for all conflicts (--ours strategy)
-    /// since the PR represents intentional changes.
-    /// </summary>
-    private static async Task<bool> TryResolveConflictsAsync(
-        ForgeDbContext db, IStoryGitOps git, PrRow pr, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(pr.Branch) || string.IsNullOrEmpty(pr.Base)) return false;
-
-        // Look up the repo to get the clone root.
-        var repo = !string.IsNullOrEmpty(pr.RepoId)
-            ? await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct)
-            : null;
-
-        // Fall back to the first repo if the PR doesn't have a RepoId.
-        repo ??= await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(ct);
-        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return false;
-
-        return await git.MergeUpstreamIntoBranchAsync(repo, pr.Branch, pr.Base, ct);
     }
 
     // Phase 6.7 — synthetic log tail. Phase R replaces this with provider log streaming.

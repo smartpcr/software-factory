@@ -601,6 +601,30 @@ public sealed record CrewSalary(
 public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 
 /// <summary>
+/// TopBar concurrency chip payload — per-crew slot utilisation rolled up
+/// into a single fetch. <c>Active</c> is sourced from
+/// <see cref="Forge.Api.Persistence.AgentClaimRow"/> rows where
+/// <c>ReleasedAt IS NULL</c>: that's the durable "agent is busy right now"
+/// signal, set by <c>AgentSlotService.TryClaimAsync</c> when an agent
+/// starts work and cleared on release. The legacy <c>task_queue</c>
+/// picked-up state was an unreliable source — story-spawn-driven engineer
+/// iterations dispatch through <c>CrewStoryArtifactStrategy</c> directly
+/// and never enqueue, so the chip stayed at <c>0/cap</c> even when a
+/// dozen workstreams were mid-flight.
+/// </summary>
+public sealed record CrewConcurrencySummary(
+    int Active,
+    int Cap,
+    IReadOnlyList<string> OverCrews,
+    IReadOnlyList<CrewConcurrencyEntry> PerCrew);
+
+public sealed record CrewConcurrencyEntry(
+    string Id,
+    string Name,
+    int Active,
+    int Cap);
+
+/// <summary>
 /// Phase 14.11 — TopBar payroll chip aggregator. Replaces the client-side
 /// fan-out (one /payroll request per crew) with a single server-side SUM.
 /// </summary>

@@ -157,7 +157,7 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     /// Always returns <c>true</c> (tests never simulate conflicts here).
     /// </summary>
     public Task<bool> MergeUpstreamIntoBranchAsync(
-        RepoRow? repo, string branch, string upstreamBranch, CancellationToken ct = default)
+        RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default)
     {
         var srcKey = Key(repo, upstreamBranch);
         var dstKey = Key(repo, branch);

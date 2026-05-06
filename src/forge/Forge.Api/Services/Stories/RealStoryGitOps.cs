@@ -277,7 +277,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     /// <inheritdoc/>
     public async Task<bool> MergeUpstreamIntoBranchAsync(
-        RepoRow? repo, string branch, string upstreamBranch, CancellationToken ct = default)
+        RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);
         var sanitized = SanitizeBranchSlug(branch);
@@ -309,15 +309,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         if (mergeCode != 0)
         {
-            // Merge conflict — abort the clean merge, then retry with -X ours
-            // to auto-resolve conflicts by keeping the current branch's
-            // (agent's) changes. The PR source branch represents intentional
-            // work; the upstream side is background drift.
+            await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+
+            if (!force)
+            {
+                this.logger?.LogInformation(
+                    "MergeUpstreamIntoBranchAsync: clean merge of origin/{Upstream} into {Branch} had conflicts; "
+                    + "force=false so surfacing the conflict to the caller without -X ours.",
+                    upstreamBranch, branch);
+                return false;
+            }
+
+            // Merge conflict + force=true → auto-resolve with -X ours by
+            // keeping the source branch's (agent's) changes. The PR source
+            // branch represents intentional work; the upstream side is
+            // background drift. Destructive — only run when the caller has
+            // explicit authorisation (force=true / story-level AutoMerge).
             this.logger?.LogWarning(
                 "MergeUpstreamIntoBranchAsync: clean merge of origin/{Upstream} into {Branch} had conflicts; "
-                + "retrying with -X ours to keep source-branch changes.",
+                + "force=true so retrying with -X ours.",
                 upstreamBranch, branch);
-            await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
 
             var (oursCode, oursOut, oursErr) = await this.RunGitCaptureAsync(
                 wtPath, ct,

@@ -756,6 +756,28 @@ export interface PayrollTodaySummary {
   crewCount: number;
 }
 
+/** Per-crew slot utilisation entry inside {@link CrewConcurrencySummary}. */
+export interface CrewConcurrencyEntry {
+  id: string;
+  name: string;
+  active: number;
+  cap: number;
+}
+
+/**
+ * TopBar "ACTIVE n/cap" chip payload — server-side rollup of open
+ * `agent_claims` rows grouped by `agents.CrewId`. Replaces the
+ * client-side `task_queue` picked-up scan, which missed every
+ * story-spawn-driven engineer iteration (those dispatch through
+ * `CrewStoryArtifactStrategy` directly and never enqueue).
+ */
+export interface CrewConcurrencySummary {
+  active: number;
+  cap: number;
+  overCrews: string[];
+  perCrew: CrewConcurrencyEntry[];
+}
+
 /**
  * Phase 11 — `/cost` dashboard rollup. Aggregates the last `days` (default 7)
  * of `agent_usage` rows by day × epic × agent so the cost view can render

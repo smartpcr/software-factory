@@ -483,6 +483,17 @@ using (var scope = app.Services.CreateScope())
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
+    // Repair pass: any workstream stuck on review/merging whose PR is
+    // already merged gets snapped to "complete". Backfills rows merged
+    // before WorkstreamMergeAdvancer was wired into the merge paths.
+    {
+        var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(db);
+        if (advanced > 0)
+        {
+            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("WorkstreamMergeAdvancer")
+                .LogInformation("Boot backfill advanced {Count} workstream(s) to complete on already-merged PRs.", advanced);
+        }
+    }
     // Startup config: enforce canonical model/quota/evaluator-model on
     // all 8 crews and guarantee each day/night shift has ≥ 2 members.
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
