@@ -16,7 +16,7 @@ using Ast.Core;
 /// </summary>
 public sealed class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version = null)
+    public MemoryNode(HypergraphNode inner, VersionRange? version)
     {
         this.Inner = inner;
         this.Version = version;
