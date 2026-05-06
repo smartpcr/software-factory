@@ -67,8 +67,8 @@ export interface StorySpawn {
    *  (plan, workstream, QA, step-def). Defaults to "main". When non-default
    *  the orchestrator branches it from main on first drive. */
   baseBranch: string;
-  /** Phase 46 — when true and baseBranch != "main", agents auto-merge PRs
-   *  against the base branch. */
+  /** Phase 46 — when true, agents auto-merge PRs against the base branch.
+   *  Honoured for any base (including "main"); operator-armed. */
   autoMerge?: boolean;
   planBranch: string | null;
   planPrId: string | null;
@@ -990,7 +990,7 @@ export const forgeApi = {
         // Phase 45 — operator-chosen target branch. Server treats null /
         // missing as "main" so existing callers stay compatible.
         baseBranch: baseBranch ?? undefined,
-        // Phase 46 — auto-merge PRs. Server enforces false when base is main.
+        // Phase 46 — auto-merge PRs. Honoured for any base, including main.
         autoMerge: autoMerge ?? undefined,
       }),
       headers: { 'X-Forge-User': writerHeader() },

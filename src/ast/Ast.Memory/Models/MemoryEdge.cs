@@ -9,9 +9,9 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> adding memory-specific accessors.
+/// Composition wrapper around <see cref="Hyperedge"/> with memory-layer accessors.
 /// </summary>
-public sealed class MemoryEdge
+public class MemoryEdge
 {
     public MemoryEdge(Hyperedge inner, VersionRange version)
     {
@@ -21,9 +21,11 @@ public sealed class MemoryEdge
 
     public Hyperedge Inner { get; }
 
-    public string SemanticRelation => (string)this.Inner.Metadata[MemoryMetadataKeys.SemanticRelation]!;
-
-    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
-
     public VersionRange Version { get; }
+
+    public string SemanticRelation =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
+
+    public string MemoryLayer =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
 }

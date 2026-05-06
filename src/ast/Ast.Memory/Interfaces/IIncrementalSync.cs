@@ -6,12 +6,10 @@
 
 namespace Ast.Memory.Interfaces;
 
-using System.Threading;
-using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Incremental sync engine for keeping the memory graph up-to-date with VCS changes.
+/// Sync service that applies git diffs to the memory graph.
 /// </summary>
 public interface IIncrementalSync
 {

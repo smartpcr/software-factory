@@ -7,8 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Constants for all curated Metadata dictionary keys used by the memory layer.
-/// Prevents typo-induced bugs and enables IDE autocomplete.
+/// Curated metadata key constants for memory graph nodes and edges.
 /// </summary>
 public static class MemoryMetadataKeys
 {

@@ -9,9 +9,9 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> adding memory-specific accessors.
+/// Composition wrapper around <see cref="HypergraphNode"/> with memory-layer accessors.
 /// </summary>
-public sealed class MemoryNode
+public class MemoryNode
 {
     public MemoryNode(HypergraphNode inner, VersionRange? version = null)
     {
@@ -21,12 +21,13 @@ public sealed class MemoryNode
 
     public HypergraphNode Inner { get; }
 
-    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
+    public VersionRange? Version { get; }
+
+    public string MemoryLayer =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
 
     public string NodeKind => this.Inner.NodeType;
 
-    public string? ContentHash =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? (string?)v : null;
-
-    public VersionRange? Version { get; }
+    public string ContentHash =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
 }
