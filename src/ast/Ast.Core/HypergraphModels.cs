@@ -65,7 +65,10 @@ public enum HyperedgeType
 
     // Cross-language
     CrossLanguageTypeReference,
-    CrossLanguageMethodCall
+    CrossLanguageMethodCall,
+
+    // Memory layer (architecture §4.6)
+    MemoryRelation
 }
 
 /// <summary>
