@@ -7,7 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Result of an incremental sync operation.
+/// Result of an incremental sync operation. See architecture.md §5.5.
 /// </summary>
 public record SyncResult(
     int FilesChanged,

@@ -6,19 +6,16 @@
 
 namespace Ast.Memory.Interfaces;
 
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Orchestrates the extraction pipeline: StructureBuilder → CallChainAnalyzer → SemanticIndexer.
-/// Per architecture §5.4.
+/// Extraction pipeline for transforming source code into the memory graph.
+/// See architecture.md §5.4.
 /// </summary>
 public interface IExtractionPipeline
 {
     /// <summary>
-    /// Full extraction from repo root.
+    /// Full extraction from repo root (or scoped subtree).
     /// </summary>
     Task<ExtractionResult> ExtractAsync(
         string repoRoot,
@@ -26,7 +23,7 @@ public interface IExtractionPipeline
         CancellationToken ct = default);
 
     /// <summary>
-    /// Incremental extraction of specific changed files.
+    /// Incremental extraction of specific files (used by IncrementalSync).
     /// </summary>
     Task<ExtractionResult> ExtractFilesAsync(
         string repoRoot,
