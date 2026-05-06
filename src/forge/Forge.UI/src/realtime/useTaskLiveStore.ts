@@ -85,6 +85,7 @@ export interface TaskExecutionSnapshot {
   executionStatus?: string;
   trialCount?: number;
   maxIterations?: number;
+  budgetSeconds?: number;
   transcriptTotalCount?: number;
 }
 

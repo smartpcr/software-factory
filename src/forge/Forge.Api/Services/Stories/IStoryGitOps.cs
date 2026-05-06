@@ -50,6 +50,24 @@ public interface IStoryGitOps
     Task RebaseBaseBranchAsync(RepoRow? repo, string baseBranch, string upstreamBranch, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 46 — merge latest from <paramref name="upstreamBranch"/> (typically
+    /// <c>"main"</c>) into the feature/worktree <paramref name="branch"/> before
+    /// creating a PR. This ensures the PR source branch contains the latest
+    /// upstream changes and reduces merge conflicts. Returns <c>true</c> when the
+    /// merge succeeded (including the no-op case); <c>false</c> when there were
+    /// unresolvable conflicts. Production runs <c>git merge --no-edit
+    /// origin/{upstream}</c> in the branch's worktree. Tests merge the in-memory
+    /// branch pointers.
+    /// <para>
+    /// When <paramref name="force"/> is true (default), conflicts are
+    /// auto-resolved with <c>-X ours</c> (keep source-side hunks, discard
+    /// upstream-side). When false, the function aborts the merge on conflict
+    /// and returns false so the caller can surface a 409 to the user.
+    /// </para>
+    /// </summary>
+    Task<bool> MergeUpstreamIntoBranchAsync(RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>
     /// and return its absolute disk path. Use as the agent's working
     /// directory when running plan / coding tasks so the agent's tools see
@@ -75,4 +93,17 @@ public interface IStoryGitOps
     /// commits are included. No-op when nothing to push.
     /// </summary>
     Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 45 follow-up — list repo-relative paths of files the agent
+    /// touched in <paramref name="worktreePath"/> but hasn't yet committed.
+    /// Includes added / modified / renamed paths (parsed from
+    /// <c>git status --porcelain</c>); deleted paths are omitted because the
+    /// orchestrator's <see cref="CommitFilesAsync"/> dictionary contract
+    /// can't represent deletions today. Used by the workstream impl
+    /// strategy after the engineer agent edits files in place inside the
+    /// worktree, so the orchestrator gets a real-path list to commit
+    /// without needing to scan the entire repo.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetChangedFilesAsync(RepoRow? repo, string worktreePath, CancellationToken ct = default);
 }

@@ -100,6 +100,12 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
                     Provider = req.Repo.Kind,
                     WorkItemId = req.WorkItemId,
                     WebUrl = prContract.WebUrl,
+                    // Extract the numeric provider ref from the canonical ID
+                    // ("PR #15630125" → "15630125") so the sync client can
+                    // fetch state + stats from ADO.
+                    ProviderRef = new string(prId.Where(char.IsDigit).ToArray()),
+                    // Phase 46 — carry the spawn-level auto-merge policy.
+                    AutoMerge = req.AutoMerge,
                 });
                 await db.SaveChangesAsync(ct);
             }

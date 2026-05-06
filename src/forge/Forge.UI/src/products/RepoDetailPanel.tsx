@@ -218,12 +218,19 @@ function SyncHistoryTab({ repo, kind, onClearReady }: { repo: Repo; kind: 'wi' |
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const ac = new AbortController();
     setLoading(true);
-    fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=20&target=${kind}`)
-      .then((r) => r.ok ? r.json() : [])
-      .then((data: WorkItemSyncRun[]) => setRuns(Array.isArray(data) ? data : []))
-      .catch(() => setRuns([]))
-      .finally(() => setLoading(false));
+    forgeApi.listSyncRuns(repo.id, { limit: 20, target: kind, signal: ac.signal })
+      .then((data) => setRuns(Array.isArray(data) ? data : []))
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setRuns([]);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
+      });
+    return () => { ac.abort(); };
   }, [repo.id, kind]);
 
   // Register clear callback — use ref to avoid re-render loops.

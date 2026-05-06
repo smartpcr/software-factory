@@ -103,6 +103,39 @@ public sealed class PrSyncJob : BackgroundService
                 .Select(p => new PrSyncCandidate(p.Id, p.Provider, p.ProviderRef, p.Col, p.WorkItemId, p.RepoId, p.LastSyncAt))
                 .ToListAsync(ct);
 
+            // Backfill ProviderRef for ADO PRs that have it missing (story-spawn
+            // PRs created before the fix stored "PR #12345" in Id but left
+            // ProviderRef null). This is a one-time migration that runs during
+            // the periodic sweep.
+            var needBackfill = candidates.Where(c =>
+                string.IsNullOrEmpty(c.ProviderRef) &&
+                string.Equals(c.Provider, "ado", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (needBackfill.Count > 0)
+            {
+                var backfillDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                foreach (var c in needBackfill)
+                {
+                    var digits = new string(c.PrId.Where(char.IsDigit).ToArray());
+                    if (string.IsNullOrEmpty(digits)) continue;
+                    var row = await backfillDb.Prs.FirstOrDefaultAsync(p => p.Id == c.PrId, ct);
+                    if (row is not null && string.IsNullOrEmpty(row.ProviderRef))
+                    {
+                        row.ProviderRef = digits;
+                    }
+                }
+                await backfillDb.SaveChangesAsync(ct);
+                // Re-read candidates with updated ProviderRef.
+                candidates = await db.Prs
+                    .AsNoTracking()
+                    .Where(p => p.IsActive &&
+                        (p.LastSyncStatus == "idle" ||
+                         p.LastSyncStatus == "failed" ||
+                         (p.LastSyncStatus == "running" && p.IsRunningSince != null && string.Compare(p.IsRunningSince, staleThreshold) < 0)))
+                    .OrderBy(p => p.LastSyncAt ?? string.Empty)
+                    .Select(p => new PrSyncCandidate(p.Id, p.Provider, p.ProviderRef, p.Col, p.WorkItemId, p.RepoId, p.LastSyncAt))
+                    .ToListAsync(ct);
+            }
+
             // Phase 34 — per-repo cadence override. A repo's PrSyncIntervalSeconds
             // (when set) gates how often *each* of its PRs is re-synced. Stale
             // 'running' rows already passed the staleThreshold check above and
@@ -182,12 +215,23 @@ public sealed class PrSyncJob : BackgroundService
         using (var scope = this.scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            candidate = await db.Prs.AsNoTracking()
-                .Where(p => p.Id == prId)
-                .Select(p => new PrSyncCandidate(p.Id, p.Provider, p.ProviderRef, p.Col, p.WorkItemId, p.RepoId))
-                .FirstOrDefaultAsync(ct);
+            var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+            if (pr is null) return;
+
+            // Backfill ProviderRef if missing (story-spawn PRs created before
+            // the fix stored "PR #12345" in Id but left ProviderRef null).
+            if (string.IsNullOrEmpty(pr.ProviderRef))
+            {
+                var digits = new string(prId.Where(char.IsDigit).ToArray());
+                if (!string.IsNullOrEmpty(digits))
+                {
+                    pr.ProviderRef = digits;
+                    await db.SaveChangesAsync(ct);
+                }
+            }
+
+            candidate = new PrSyncCandidate(pr.Id, pr.Provider, pr.ProviderRef, pr.Col, pr.WorkItemId, pr.RepoId);
         }
-        if (candidate is null) return;
         await this.RunSyncAsync(candidate, ct);
     }
 
@@ -266,8 +310,12 @@ public sealed class PrSyncJob : BackgroundService
         // Non-terminal "open" PRs keep whatever column the list-sync put them in
         // (typically "review"); writing "open" would push them off the board
         // because no UI column matches that string.
+        // Recovery case: when upstream is open but local Col is wrongly stuck
+        // at "merged" (e.g., from a prior false-merged state), snap it back to
+        // "review" so the PR re-appears on the board with the merge button.
         var newCol = newState switch
         {
+            "open" when string.Equals(oldState, "merged", StringComparison.OrdinalIgnoreCase) => "review",
             "open" => oldState,                // preserve "review" / "build" / "implementation"
             "completed" => "merged",
             "abandoned" => "merged",           // no abandoned column; IsActive=false filters it out below
@@ -303,6 +351,12 @@ public sealed class PrSyncJob : BackgroundService
         prRow.LastSyncStatus = "idle";
         prRow.LastSyncError = null;
         prRow.IsRunningSince = null;
+
+        // Apply file/commit stats from the snapshot when available.
+        if (snapshot.Files.HasValue) prRow.Files = snapshot.Files.Value;
+        if (snapshot.Commits.HasValue) prRow.Commits = snapshot.Commits.Value;
+        if (snapshot.Additions.HasValue) prRow.Additions = snapshot.Additions.Value;
+        if (snapshot.Deletions.HasValue) prRow.Deletions = snapshot.Deletions.Value;
         if (!string.IsNullOrEmpty(snapshot.UpstreamUpdatedAt))
         {
             prRow.LastUpstreamUpdatedAt = snapshot.UpstreamUpdatedAt;
@@ -318,7 +372,26 @@ public sealed class PrSyncJob : BackgroundService
             await this.hub.Clients.All.SendAsync("pr.closed", new { prId = candidate.PrId, state = newState }, ct);
         }
 
+        // When sync detects the upstream "completed" transition, advance any
+        // workstream stuck on review/merging — the orchestrator's own
+        // promotion only handles workstreams it itself flipped to merging,
+        // so an externally-merged PR otherwise leaves the phase-board chip
+        // frozen at REVIEW.
+        IReadOnlyList<string> advancedWsIds = Array.Empty<string>();
+        if (colChanged && string.Equals(newCol, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            advancedWsIds = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer
+                .AdvanceForMergedPrAsync(db, candidate.PrId, ct);
+        }
+
         await db.SaveChangesAsync(ct);
+
+        if (advancedWsIds.Count > 0)
+        {
+            await this.hub.Clients.All.SendAsync(
+                "story-spawn.changed",
+                new { kind = "ws-completed", prId = candidate.PrId, workstreamIds = advancedWsIds }, ct);
+        }
 
         // Phase 45 follow-up — when PrSyncJob observes upstream "completed"
         // (= Forge "merged") for the first time, fire the plan-PR-merge
