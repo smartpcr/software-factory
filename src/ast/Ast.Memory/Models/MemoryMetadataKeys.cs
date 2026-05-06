@@ -7,8 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Well-known metadata key names used in <see cref="Ast.Core.HypergraphNode.Metadata"/>
-/// and <see cref="Ast.Core.Hyperedge.Metadata"/> dictionaries for memory-layer entries.
+/// Curated metadata key constants for memory graph nodes and edges.
 /// </summary>
 public static class MemoryMetadataKeys
 {
