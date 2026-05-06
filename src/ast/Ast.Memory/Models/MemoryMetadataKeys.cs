@@ -7,8 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Well-known metadata key names used in <see cref="Ast.Core.HypergraphNode.Metadata"/>
-/// and <see cref="Ast.Core.Hyperedge.Metadata"/> dictionaries for memory-layer entries.
+/// Well-known metadata dictionary key constants for memory-layer nodes and edges.
 /// </summary>
 public static class MemoryMetadataKeys
 {
@@ -29,5 +28,6 @@ public static class MemoryMetadataKeys
     public const string LastTouched = "LastTouched";
     public const string Embedding = "Embedding";
     public const string EmbeddingModel = "EmbeddingModel";
+    public const string EmbeddingStatus = "EmbeddingStatus";
     public const string Package = "Package";
 }

@@ -6,86 +6,56 @@
 
 namespace Ast.Memory.Models;
 
-using System;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> that provides
-/// strongly-typed accessors for memory-layer metadata and temporal versioning.
-/// Uses composition (not inheritance) per architecture.md §4.1.
+/// Composition wrapper around <see cref="HypergraphNode"/> adding memory-layer accessors.
 /// </summary>
-public class MemoryNode
+public sealed class MemoryNode
 {
-    /// <summary>
-    /// Initializes a new instance of the <see cref="MemoryNode"/> class.
-    /// </summary>
-    /// <param name="inner">The underlying hypergraph node.</param>
-    public MemoryNode(HypergraphNode inner)
+    public MemoryNode(HypergraphNode inner, VersionRange? version = null)
     {
         this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        this.Version = version ?? ExtractVersionFromMetadata(inner);
     }
 
-    /// <summary>
-    /// The underlying hypergraph node.
-    /// </summary>
+    /// <summary>The underlying hypergraph node.</summary>
     public HypergraphNode Inner { get; }
 
-    /// <summary>
-    /// The memory layer this node belongs to (structural, semantic, expertise, external).
-    /// </summary>
-    public string? MemoryLayer => this.GetMetadataString(MemoryMetadataKeys.MemoryLayer);
+    /// <summary>Memory layer tag.</summary>
+    public string MemoryLayer =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) && v is string s
+            ? s
+            : string.Empty;
 
-    /// <summary>
-    /// The kind of node (class, method, file, namespace, etc.).
-    /// Delegates to <see cref="HypergraphNode.NodeType"/>.
-    /// </summary>
+    /// <summary>Node type (Class, Method, etc.).</summary>
     public string NodeKind => this.Inner.NodeType;
 
-    /// <summary>
-    /// SHA-256 content hash for deduplication and change detection.
-    /// </summary>
-    public string? ContentHash => this.GetMetadataString(MemoryMetadataKeys.ContentHash);
+    /// <summary>Content hash for change detection.</summary>
+    public string? ContentHash =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? v as string : null;
 
-    /// <summary>
-    /// Temporal version range. Null for External boundary nodes which are timeless.
-    /// </summary>
-    public VersionRange? Version
+    /// <summary>Temporal version range. Null for External boundary nodes.</summary>
+    public VersionRange? Version { get; }
+
+    private static VersionRange? ExtractVersionFromMetadata(HypergraphNode node)
     {
-        get
-        {
-            var since = this.GetMetadataString(MemoryMetadataKeys.SinceCommit);
-            var sinceIdx = this.GetMetadataInt(MemoryMetadataKeys.SinceIndex);
-            if (since == null || sinceIdx == null)
-            {
-                return null;
-            }
+        var hasSince = node.Metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sinceObj);
+        var hasSinceIdx = node.Metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var sinceIdxObj);
 
-            return new VersionRange(
-                since,
-                sinceIdx.Value,
-                this.GetMetadataString(MemoryMetadataKeys.UntilCommit),
-                this.GetMetadataInt(MemoryMetadataKeys.UntilIndex));
-        }
-    }
-
-    private string? GetMetadataString(string key)
-    {
-        return this.Inner.Metadata.TryGetValue(key, out var val) && val is string s ? s : null;
-    }
-
-    private int? GetMetadataInt(string key)
-    {
-        if (!this.Inner.Metadata.TryGetValue(key, out var val))
+        if (!hasSince && !hasSinceIdx)
         {
             return null;
         }
 
-        return val switch
-        {
-            int i => i,
-            long l => (int)l,
-            string s when int.TryParse(s, out var parsed) => parsed,
-            _ => null
-        };
+        var since = sinceObj as string;
+        int? sinceIndex = sinceIdxObj is int si ? si : null;
+
+        node.Metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var untilObj);
+        node.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var untilIdxObj);
+        var until = untilObj as string;
+        int? untilIndex = untilIdxObj is int ui ? ui : null;
+
+        return new VersionRange(since, sinceIndex, until, untilIndex);
     }
 }
