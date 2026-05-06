@@ -10,9 +10,6 @@
     <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
     <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
     <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
-    <ProjectReference Include="..\Ast.Cli\Ast.Cli.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

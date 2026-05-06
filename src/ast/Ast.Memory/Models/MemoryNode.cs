@@ -9,11 +9,12 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> with memory-layer accessors.
+/// Composition wrapper around HypergraphNode adding memory-specific accessors.
+/// Uses composition, never inheritance. See architecture.md §4.1.
 /// </summary>
-public class MemoryNode
+public sealed class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version = null)
+    public MemoryNode(HypergraphNode inner, VersionRange? version)
     {
         this.Inner = inner;
         this.Version = version;
@@ -21,13 +22,15 @@ public class MemoryNode
 
     public HypergraphNode Inner { get; }
 
-    public VersionRange? Version { get; }
-
-    public string MemoryLayer =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
+    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
 
     public string NodeKind => this.Inner.NodeType;
 
-    public string ContentHash =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? v?.ToString() ?? string.Empty : string.Empty;
+    public string? ContentHash =>
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? (string?)v : null;
+
+    /// <summary>
+    /// Nullable — null for External boundary nodes (timeless stubs).
+    /// </summary>
+    public VersionRange? Version { get; }
 }
