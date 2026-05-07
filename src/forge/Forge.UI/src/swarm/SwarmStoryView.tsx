@@ -149,16 +149,36 @@ export function SwarmStoryView() {
           </div>
           {selection.kind === 'phase' && selection.id && (() => {
             const ws = detail.workstreams.find((w) => w.id === selection.id);
-            if (!ws?.lastActiveAt) return null;
-            const ms = Date.now() - Date.parse(ws.lastActiveAt);
-            const sec = Math.floor(ms / 1000);
-            const min = Math.floor(sec / 60);
-            const hr  = Math.floor(min / 60);
-            const uptime = hr > 0 ? `${hr}h ${min % 60}m` : min > 0 ? `${min}m ${sec % 60}s` : `${sec}s`;
+            const ms = ws?.lastActiveAt ? Date.now() - Date.parse(ws.lastActiveAt) : null;
+            const uptime = ms !== null ? (() => {
+              const sec = Math.floor(ms / 1000);
+              const min = Math.floor(sec / 60);
+              const hr  = Math.floor(min / 60);
+              return hr > 0 ? `${hr}h ${min % 60}m` : min > 0 ? `${min}m ${sec % 60}s` : `${sec}s`;
+            })() : null;
             return (
               <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', textAlign: 'right' }}>
-                <span style={{ color: 'var(--sc-muted)' }}>UPTIME</span><br />
-                <span style={{ color: 'var(--sc-text)', fontSize: 14 }}>{uptime}</span>
+                <a
+                  href={`/work-items?focus=${encodeURIComponent(selection.id)}`}
+                  style={{
+                    fontSize: 10,
+                    color: '#569cd6',
+                    textDecoration: 'none',
+                    letterSpacing: '0.12em',
+                    display: 'inline-block',
+                    marginBottom: 6,
+                  }}
+                  title="Open this work item in the Work Items view"
+                >
+                  ↗ VIEW WORK ITEM
+                </a>
+                {uptime !== null && (
+                  <>
+                    <br />
+                    <span style={{ color: 'var(--sc-muted)' }}>UPTIME</span><br />
+                    <span style={{ color: 'var(--sc-text)', fontSize: 14 }}>{uptime}</span>
+                  </>
+                )}
               </div>
             );
           })()}
