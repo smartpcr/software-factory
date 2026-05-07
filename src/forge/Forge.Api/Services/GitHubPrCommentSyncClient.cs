@@ -89,11 +89,35 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         var canonical = PrSyncJob.MapUpstreamState("github", providerState);
         var prUpdatedAt = prDoc.RootElement.TryGetProperty("updated_at", out var ua) ? ua.GetString() : null;
 
+        // Capture base + source branch so the local PrRow.Base / .Branch
+        // don't go stale when the operator retargets the PR on GitHub.
+        // Without this, the merge endpoint's pre-rebase fetches the wrong
+        // base, the local merge succeeds against a stale target, and the
+        // PUT pulls/N/merge keeps 405-ing because GitHub's mergeable check
+        // runs against the current base.
+        string? baseRef = null;
+        string? headRef = null;
+        if (prDoc.RootElement.TryGetProperty("base", out var baseEl)
+            && baseEl.ValueKind == JsonValueKind.Object
+            && baseEl.TryGetProperty("ref", out var baseRefEl)
+            && baseRefEl.ValueKind == JsonValueKind.String)
+        {
+            baseRef = baseRefEl.GetString();
+        }
+        if (prDoc.RootElement.TryGetProperty("head", out var headEl)
+            && headEl.ValueKind == JsonValueKind.Object
+            && headEl.TryGetProperty("ref", out var headRefEl)
+            && headRefEl.ValueKind == JsonValueKind.String)
+        {
+            headRef = headRefEl.GetString();
+        }
+
         // Skip the comment fetch entirely when nothing has changed.
         if (!string.IsNullOrEmpty(pr.LastUpstreamUpdatedAt)
             && string.Equals(prUpdatedAt, pr.LastUpstreamUpdatedAt, StringComparison.Ordinal))
         {
-            return new PrSyncSnapshot(canonical, prUpdatedAt, Array.Empty<PrSyncComment>(), false);
+            return new PrSyncSnapshot(canonical, prUpdatedAt, Array.Empty<PrSyncComment>(), false,
+                BaseBranch: baseRef, SourceBranch: headRef);
         }
 
         var since = string.IsNullOrEmpty(pr.LastUpstreamUpdatedAt) ? null : pr.LastUpstreamUpdatedAt;
@@ -131,7 +155,8 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
             this.logger.LogDebug(ex, "GitHub reviewThreads GraphQL probe failed; thread resolution skipped");
         }
 
-        return new PrSyncSnapshot(canonical, prUpdatedAt, byId.Values.ToList(), true);
+        return new PrSyncSnapshot(canonical, prUpdatedAt, byId.Values.ToList(), true,
+            BaseBranch: baseRef, SourceBranch: headRef);
     }
 
     private static async Task<List<PrSyncComment>> FetchReviewCommentsAsync(
