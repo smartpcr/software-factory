@@ -969,7 +969,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         // Phase 38 (Layer B.3) — read per-workstream points from the real
         // WorkItemRow inserted by DriveDecomposeAsync. Falls back to the
-        // story-level points when the row is missing (legacy spawns).
+        // story-level points when the row is missing (legacy spawns). Use
+        // the same wsPoints for BOTH iter cap and wall-clock budget so a
+        // points bump on the workstream's WI propagates to the agent's hard
+        // timeout, not just the iter cap.
         var wsPoints = await this.LookupWorkItemPointsAsync(
             workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
@@ -980,7 +983,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             generatorPrompt: generatorPrompt,
             evaluatorPrompt: evaluatorPrompt,
             workspace: workspace,
-            budget: BudgetForPhase(spawn.StoryPoints, "impl"),
+            budget: BudgetForPhase(wsPoints, "impl"),
             storyPoints: wsPoints,
             ct: ct);
 

@@ -42,7 +42,19 @@ public sealed record PrSyncSnapshot(
     /// <summary>Lines added. Null when not fetched.</summary>
     int? Additions = null,
     /// <summary>Lines deleted. Null when not fetched.</summary>
-    int? Deletions = null);
+    int? Deletions = null,
+    /// <summary>
+    /// Current upstream base branch (e.g. "main"). Null when not fetched.
+    /// Critical: when an operator retargets a PR on the provider side
+    /// (e.g. from "feature/X" to "main"), the local row's Base goes stale
+    /// and the merge endpoint's pre-rebase pulls from the wrong upstream
+    /// branch — the provider then keeps rejecting the merge with a stale
+    /// conflict message. ApplySnapshotAsync writes this back to PrRow.Base
+    /// to keep the two views aligned.
+    /// </summary>
+    string? BaseBranch = null,
+    /// <summary>Current upstream source branch. Null when not fetched.</summary>
+    string? SourceBranch = null);
 
 /// <summary>Phase 24 — provider-neutral comment shape for upsert.</summary>
 public sealed record PrSyncComment(
