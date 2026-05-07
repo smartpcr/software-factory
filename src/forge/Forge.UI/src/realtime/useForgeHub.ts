@@ -7,6 +7,7 @@ import { usePrLogStore } from '@/state/usePrLogStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useSprintsStore } from '@/state/useSprintsStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
@@ -85,6 +86,22 @@ async function ensureConnected() {
       if (!payload?.storyId) return;
       // Bump a tick on the spawn store so subscribed components re-fetch.
       useSpawnStore.getState().bump(payload.storyId);
+      // Re-pull the workstreams slice on the kinds that mutate the
+      // workstream table — `decomposed` adds new rows, the orchestrator
+      // PR/merge transitions flip status (planning → active → review →
+      // complete). The sidebar badge subscribes to this store so the
+      // count stays live without polling. Other kinds (plan-pr-opened,
+      // qa-pr-merged, spawn-error, decomposition-approved) don't touch
+      // the workstreams table; skip the reload to avoid extra fetches.
+      if (
+        payload.kind === 'decomposed' ||
+        payload.kind === 'ws-pr-opened' ||
+        payload.kind === 'ws-complete' ||
+        payload.kind === 'done' ||
+        payload.kind === 'story-closed'
+      ) {
+        void useWorkstreamsStore.getState().load();
+      }
       if (payload.kind === 'plan-pr-opened') {
         useToastStore.getState().show(`Story ${payload.storyId}: plan PR opened`, 'info');
       } else if (payload.kind === 'decomposed') {

@@ -688,17 +688,11 @@ public class GitHubProvider : IForgeProvider
         var client = await this.NewClientAsync(ctx, ct);
         var (repo, num) = this.ResolvePrCoords(id);
 
-        // Already-merged short-circuit. When a human merged the PR via
-        // GitHub's UI between Forge syncs, the PUT below would return 405
-        // ("Pull Request is not mergeable" — they're confusingly using
-        // it for already-merged). Probe state first; if merged_at is set,
-        // return the current PR as if our merge succeeded so the caller
-        // (PrSyncJob / merge endpoint) reconciles Col=merged.
-        var existing = await this.GetPullRequestAsync(id, ct);
-        if (existing is not null && string.Equals(existing.Col, "merged", StringComparison.OrdinalIgnoreCase))
-        {
-            return existing;
-        }
+        // Skip the upfront state probe. With AutoMerge fanout across many
+        // workstream PRs, the watcher fires every 15s and an extra GET per
+        // PR per tick burns the GitHub 5000/hr rate limit. The PUT below
+        // already 405s with "Pull Request is already merged" or
+        // "...merge conflicts" body — that's enough signal without a probe.
 
         var payload = JsonSerializer.Serialize(new { merge_method = "squash" });
         using var msg = new HttpRequestMessage(HttpMethod.Put, $"repos/{repo}/pulls/{num}/merge")
@@ -709,36 +703,33 @@ public class GitHubProvider : IForgeProvider
         this.health.RecordResponse(resp);
         // Read the body before throwing — GitHub's 405 / 409 bodies carry the
         // actual reason (conflicts, failing required checks, branch
-        // protection, draft state, disallowed merge_method). Discarding them
-        // via bare EnsureSuccessStatusCode() collapses every failure to a
-        // generic status-code line in the orchestrator log.
+        // protection, draft state, disallowed merge_method, or
+        // already-merged). Discarding them via bare EnsureSuccessStatusCode()
+        // collapses every failure to a generic status-code line in the log.
         if (!resp.IsSuccessStatusCode)
         {
             var body = string.Empty;
             try { body = await resp.Content.ReadAsStringAsync(ct); } catch { /* best-effort */ }
-            // Defensive: GitHub sometimes 405s with "already merged" wording
-            // when the PR was completed mid-flight. Re-probe; if it's now
-            // merged, treat the call as successful.
-            if ((int)resp.StatusCode == 405)
+            // 405 + "already merged" wording → treat as success without
+            // burning another GET probe (which is what blew the rate limit).
+            if ((int)resp.StatusCode == 405
+                && body.Contains("already merged", StringComparison.OrdinalIgnoreCase))
             {
-                var probe = await this.GetPullRequestAsync(id, ct);
-                if (probe is not null && string.Equals(probe.Col, "merged", StringComparison.OrdinalIgnoreCase))
-                {
-                    return probe;
-                }
+                return new Pr(
+                    Id: id, Col: "merged", Epic: repo, EpicColor: repo,
+                    Workstream: string.Empty, Base: string.Empty, Branch: string.Empty,
+                    Title: string.Empty, Author: new Agent("XX", "human", "unknown"),
+                    Additions: 0, Deletions: 0, Files: 0, Commits: 0, Age: "—",
+                    Build: null, Review: null, Conflicts: false, HumanGate: false);
             }
             throw new HttpRequestException(
                 $"GitHub PUT pulls/{num}/merge → {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}",
                 inner: null,
                 statusCode: resp.StatusCode);
         }
-        // Merge POST succeeded — the PR is merged on GitHub. The post-merge
-        // GET is a nice-to-have for hydrating the full Pr; if it fails
-        // (rate limit, transient 5xx) return a stub with Col=merged so
-        // callers that already treat the merge as successful (e.g. the
-        // story orchestrator) aren't tricked into rolling back.
-        var fresh = await this.GetPullRequestAsync(id, ct);
-        return fresh ?? new Pr(
+        // Merge PUT succeeded. Return a stub with Col=merged without an
+        // extra GET — PrSyncJob hydrates remaining fields on its next tick.
+        return new Pr(
             Id: id, Col: "merged", Epic: repo, EpicColor: repo,
             Workstream: string.Empty, Base: string.Empty, Branch: string.Empty,
             Title: string.Empty, Author: new Agent("XX", "human", "unknown"),
