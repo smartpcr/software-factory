@@ -110,4 +110,72 @@ public class GitHubMapperTests
         Assert.True(pr.HumanGate);
         Assert.NotNull(pr.GateReason);
     }
+
+    [Fact]
+    public void PrToPr_Mergeable_False_Flags_Conflicts()
+    {
+        const string json = """
+        {
+          "number": 11, "title": "merge me", "state": "open",
+          "head": { "ref": "ws/x" }, "base": { "ref": "main" },
+          "user": { "login": "x" },
+          "additions": 1, "deletions": 0, "changed_files": 1, "commits": 1,
+          "labels": [],
+          "mergeable": false
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+        var pr = GitHubMapper.PrToPr(doc.RootElement, "ms/forge");
+        Assert.True(pr.Conflicts);
+    }
+
+    [Fact]
+    public void PrToPr_Mergeable_State_Dirty_Flags_Conflicts_When_Mergeable_Null()
+    {
+        // GitHub computes `mergeable` (bool) and `mergeable_state` (string)
+        // on independent cadences. Operators see "Merge conflicts" in the
+        // GitHub web UI when `mergeable_state == "dirty"` even while
+        // `mergeable` is still null. The mapper must recognise that signal
+        // so cached PR rows reflect the conflict.
+        const string json = """
+        {
+          "number": 12, "title": "stale mergeable", "state": "open",
+          "head": { "ref": "ws/x" }, "base": { "ref": "main" },
+          "user": { "login": "x" },
+          "additions": 1, "deletions": 0, "changed_files": 1, "commits": 1,
+          "labels": [],
+          "mergeable": null,
+          "mergeable_state": "dirty"
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+        var pr = GitHubMapper.PrToPr(doc.RootElement, "ms/forge");
+        Assert.True(pr.Conflicts);
+    }
+
+    [Theory]
+    [InlineData("clean")]
+    [InlineData("blocked")]
+    [InlineData("behind")]
+    [InlineData("draft")]
+    [InlineData("unknown")]
+    public void PrToPr_Mergeable_State_Non_Dirty_Does_Not_Flag_Conflicts(string mergeableState)
+    {
+        // Only `dirty` means actual merge conflicts. `behind`, `blocked`,
+        // `clean`, `draft`, `unknown` all have other meanings and must not
+        // raise the conflict flag.
+        var json = $$"""
+        {
+          "number": 13, "title": "non-dirty", "state": "open",
+          "head": { "ref": "ws/x" }, "base": { "ref": "main" },
+          "user": { "login": "x" },
+          "additions": 1, "deletions": 0, "changed_files": 1, "commits": 1,
+          "labels": [],
+          "mergeable_state": "{{mergeableState}}"
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+        var pr = GitHubMapper.PrToPr(doc.RootElement, "ms/forge");
+        Assert.False(pr.Conflicts);
+    }
 }

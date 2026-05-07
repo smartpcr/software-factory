@@ -5,7 +5,6 @@ import { useBoardStore } from '@/state/useBoardStore';
 import { usePrsStore } from '@/state/usePrsStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useToastStore } from '@/state/useToastStore';
-import { sampleState } from '@/sampleData';
 import { useThemeStore } from '@/state/useThemeStore';
 import { logAction } from '@/telemetry';
 
@@ -63,7 +62,11 @@ export function CommandPalette() {
   }, [open]);
 
   const items = useMemo<CommandItem[]>(() => {
-    const wsList = workstreams.length > 0 ? workstreams : sampleState.workstreams;
+    // Use real workstreams from the store. When the store is empty (initial
+    // load not yet completed, or no workstreams in the active product) the
+    // palette simply offers no per-workstream entries — better than
+    // surfacing demo rows the user can't actually open.
+    const wsList = workstreams;
     const result: CommandItem[] = [
       { id: 'view:overview',    group: 'view', label: 'Go to Overview',     hint: '/',            run: () => navigate('/') },
       { id: 'view:plan',        group: 'view', label: 'Go to Plan & Design', hint: '/plan',       run: () => navigate('/plan') },

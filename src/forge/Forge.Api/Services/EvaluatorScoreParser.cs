@@ -161,7 +161,16 @@ public static class EvaluatorScoreParser
         Verdict: "iterate",
         ModelVerdict: null,
         VerdictMismatch: false,
-        Notes: string.Empty,
+        // Surface the parse error in Notes so the next iteration's generator
+        // sees *why* feedback was empty. Without this, the generator gets
+        // `(no notes)` in its prior-chain, panics, and triggers the "try a
+        // fundamentally different strategy" branch — destroying good work
+        // because the evaluator stuttered. Marking it explicitly tells the
+        // generator: evaluator pipeline fault, NOT a work-quality signal.
+        Notes: $"[evaluator output could not be parsed: {reason}] "
+            + "This is a pipeline fault, not feedback on your work. "
+            + "Do NOT rewrite your prior work in response. Re-run your "
+            + "build / tests once and wait for the next evaluator turn.",
         ParseFailed: true,
         ParseError: reason);
 }
