@@ -237,10 +237,18 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
         // Local row first so the comment id is stable for downstream callers.
+        // ProviderCommentId must be unique per PR — the provider's
+        // CommentOnPullRequestAsync API returns no id, so we mint a
+        // "pending:{guid}" placeholder. PrSyncJob will later sync the real
+        // upstream comment as a separate row keyed by its provider id; the
+        // pending row remains as the local audit trail of the agent's
+        // request and is not reconciled with the upstream copy because
+        // there's no reliable matching key (CommentOnPullRequestAsync
+        // doesn't echo back the created comment id).
         var row = new PrCommentRow
         {
             PrId = prId,
-            ProviderCommentId = string.Empty,
+            ProviderCommentId = $"pending:{Guid.NewGuid():N}",
             ThreadId = string.Empty,
             AuthorId = authorAgentId,
             AuthorKind = "agent",

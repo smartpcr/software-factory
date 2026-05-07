@@ -143,8 +143,45 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
     );
   }
 
+  const verdictLooksStalled = lastDeliverable !== null
+    && (lastDeliverable.verdict === 'stalled' || lastDeliverable.verdict === 'reject');
+  const stalledNotes = lastDeliverable?.notes?.trim() ?? '';
+
   return (
     <div className="doc-conv">
+      {verdictLooksStalled && !isLive && (
+        <div
+          role="alert"
+          style={{
+            border: '1px solid var(--sc-red, #ff6b80)',
+            background: 'rgba(255,107,128,0.06)',
+            color: 'var(--sc-red, #ff6b80)',
+            padding: '6px 10px',
+            fontSize: 11,
+            fontFamily: 'var(--sc-font-mono, monospace)',
+            marginBottom: 8,
+            borderRadius: 3,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ letterSpacing: '0.12em' }}>⚠ STALLED</strong>
+          {' — iter '}<strong>{lastDeliverable!.iter}</strong>
+          {maxIterations > 0 ? ` of ${maxIterations}` : ''}
+          {' reached without pass · last score '}<strong>{lastDeliverable!.score}</strong>
+          {stalledNotes && (
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 10.5,
+                color: 'var(--sc-text-dim, #8d94a3)',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {stalledNotes.length > 280 ? stalledNotes.slice(0, 280) + '…' : stalledNotes}
+            </div>
+          )}
+        </div>
+      )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {FILTERS.map((f) => (
           <button
