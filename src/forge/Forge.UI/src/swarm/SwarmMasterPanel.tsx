@@ -1,7 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnWorkstreamSummary } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import { avatarFor } from '@/agentAvatar';
+import {
+  useWorkstreamsStore,
+  PHASE_STATUS_FILTER_KEYS,
+  type PhaseStatusFilterKey,
+} from '@/state/useWorkstreamsStore';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
 export interface Selection {
@@ -77,12 +82,65 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const blocked = ws.filter((w) => w.status === 'blocked');
   const attention = [...stalled, ...blocked];
 
+  // Phase-board status filter — operator narrows which phase rows render.
+  // Counts shown on chips are derived from the unfiltered list so the
+  // operator always sees the full picture even when the filter is on.
+  const phaseStatusFilter = useWorkstreamsStore((s) => s.phaseStatusFilter);
+  const togglePhaseStatusFilter = useWorkstreamsStore((s) => s.togglePhaseStatusFilter);
+  const setPhaseStatusFilter = useWorkstreamsStore((s) => s.setPhaseStatusFilter);
+  const wsCountByStatus = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const w of ws) counts[w.status] = (counts[w.status] ?? 0) + 1;
+    return counts;
+  }, [ws]);
+  const effectiveFilter = phaseStatusFilter.length === 0
+    ? PHASE_STATUS_FILTER_KEYS
+    : phaseStatusFilter;
+  const visibleWs = useMemo(
+    () => ws.filter((w) => (effectiveFilter as readonly string[]).includes(w.status)),
+    [ws, effectiveFilter],
+  );
+  const isAllSelected = phaseStatusFilter.length === 0
+    || phaseStatusFilter.length === PHASE_STATUS_FILTER_KEYS.length;
+
   return (
     <section className="panel">
       <div className="panel-hd">
         <CollapseBtn collapsed={collapsed} onToggle={onToggleCollapsed} />
         <span>▌ PHASE BOARD · WORKSTREAMS</span>
-        <span className="ix">{ws.length} ROWS · CLICK TO DRILL</span>
+        <span className="ix">
+          {visibleWs.length === ws.length
+            ? `${ws.length} ROWS · CLICK TO DRILL`
+            : `${visibleWs.length} / ${ws.length} ROWS · FILTERED`}
+        </span>
+      </div>
+      <div className="phase-status-filter" role="toolbar" aria-label="Filter phases by status">
+        <button
+          type="button"
+          className={`phase-status-chip${isAllSelected ? ' active' : ''}`}
+          onClick={() => setPhaseStatusFilter([...PHASE_STATUS_FILTER_KEYS])}
+          title="Show all statuses"
+        >
+          <span className="lbl">all</span>
+          <span className="count">{ws.length}</span>
+        </button>
+        {PHASE_STATUS_FILTER_KEYS.map((status) => {
+          const count = wsCountByStatus[status] ?? 0;
+          const checked = !isAllSelected && phaseStatusFilter.includes(status);
+          return (
+            <button
+              key={status}
+              type="button"
+              className={`phase-status-chip status-${status}${checked ? ' active' : ''}`}
+              disabled={count === 0}
+              onClick={() => togglePhaseStatusFilter(status as PhaseStatusFilterKey)}
+              title={`${count} workstream${count === 1 ? '' : 's'} in '${status}'`}
+            >
+              <span className="lbl">{status}</span>
+              <span className="count">{count}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="panel-bd">
         {attention.length > 0 && (
@@ -113,9 +171,17 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
               Once decomposition lands, each workstream renders here as one phase card.
             </div>
           </div>
+        ) : visibleWs.length === 0 ? (
+          <div className="mode-stub">
+            <div className="lbl">▌ NO MATCHES</div>
+            <div className="sub">
+              No workstreams match the current status filter. Click <b>all</b> above
+              to clear it.
+            </div>
+          </div>
         ) : (
           <div className="phase-board">
-            {ws.map((w, i) => (
+            {visibleWs.map((w, i) => (
               <PhaseCard
                 key={w.id}
                 ws={w}
@@ -150,6 +216,8 @@ function PhaseCard({ ws, index, selected, onSelect }: PhaseCardProps) {
     <div
       className={`phase ${phaseCls}${selected ? ' selected' : ''}`}
       onClick={onSelect}
+      data-sc-tooltip={`${ws.name}\n${ws.status}${ws.branch ? ` · ${ws.branch}` : ''}`}
+      data-sc-tooltip-pos="bottom"
     >
       <div className="phase-hd">
         <span className="phase-no">PHASE <b>{String(index + 1).padStart(2, '0')}</b></span>

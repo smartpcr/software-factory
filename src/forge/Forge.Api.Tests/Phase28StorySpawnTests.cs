@@ -1540,4 +1540,59 @@ public class Phase28StorySpawnTests
         }
         finally { f.Dispose(); }
     }
+
+    /// <summary>
+    /// Regression: posting two review comments on the same PR via the
+    /// provider-backed <see cref="IStoryProviderOps"/> must not violate the
+    /// <c>UNIQUE (PrId, ProviderCommentId)</c> index. Previously
+    /// <see cref="ProviderStoryProviderOps.PostPrCommentAsync"/> set
+    /// <c>ProviderCommentId = string.Empty</c> for every row, so the second
+    /// comment on a PR halted the orchestrator with SQLite Error 19. Now
+    /// each row gets a unique <c>pending:{guid}</c> placeholder.
+    /// </summary>
+    [Fact]
+    public async Task ProviderStoryProviderOps_Post_Two_Comments_On_Same_Pr_Persists_Both()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        // Seed a PR row that will own the comments. Provider is left null so
+        // PostPrCommentAsync's "best-effort upstream" branch short-circuits
+        // and the test only exercises the local-row insert path.
+        const string prId = "PR-comment-dup-test";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            db.Prs.Add(new PrRow
+            {
+                Id = prId,
+                Col = "review",
+                Title = "test pr for comment dedup",
+                Branch = "ws/comment-dup",
+                Base = "main",
+                Workstream = "ws-comment-dup",
+                Provider = null,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var ops = new ProviderStoryProviderOps(
+            factory.Services,
+            new Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderStoryProviderOps>());
+
+        var first = await ops.PostPrCommentAsync(prId, "src/foo.cs", 12, "consider null check", "rev-1");
+        var second = await ops.PostPrCommentAsync(prId, "src/foo.cs", 13, "rename for clarity", "rev-1");
+
+        Assert.NotEqual(0, first);
+        Assert.NotEqual(0, second);
+        Assert.NotEqual(first, second);
+
+        using var verify = factory.Services.CreateScope();
+        var db2 = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var rows = await db2.PrComments.AsNoTracking()
+            .Where(c => c.PrId == prId)
+            .OrderBy(c => c.Id)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.StartsWith("pending:", r.ProviderCommentId));
+        Assert.NotEqual(rows[0].ProviderCommentId, rows[1].ProviderCommentId);
+    }
 }
