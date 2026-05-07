@@ -294,6 +294,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
             wtPath, ct, "merge-base", "--is-ancestor", $"origin/{upstreamBranch}", "HEAD");
         if (mbCode == 0)
         {
+            if (force)
+            {
+                // Caller (force-merge / story AutoMerge) wants this PR
+                // merged regardless of provider-side stale-mergeable
+                // cache. Source is already a descendant of upstream so
+                // the tree is fine, but the provider may still report
+                // "merge conflicts" from a stale cache. Create an empty
+                // commit + push so the provider sees a NEW source SHA
+                // and recomputes mergeable. Empty commits get squashed
+                // away on PR completion, so they don't pollute base
+                // history.
+                await this.RunGitCaptureAsync(
+                    wtPath, ct,
+                    "-c", "user.email=forge-merger@local",
+                    "-c", "user.name=Forge",
+                    "commit", "--allow-empty", "-m",
+                    $"forge: nudge mergeable on {branch} (origin/{upstreamBranch} already ancestor)");
+                await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+                this.logger?.LogInformation(
+                    "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}; pushed empty commit to nudge provider mergeable.",
+                    upstreamBranch, branch);
+                return true;
+            }
             this.logger?.LogInformation(
                 "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}, skipping.",
                 upstreamBranch, branch);
