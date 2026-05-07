@@ -242,8 +242,18 @@ public static class GitHubMapper
         var files = pr.TryGetProperty("changed_files", out var f) ? f.GetInt32() : 0;
         var commits = pr.TryGetProperty("commits", out var c) ? c.GetInt32() : 0;
 
-        var conflicts = pr.TryGetProperty("mergeable", out var mer)
-            && mer.ValueKind == JsonValueKind.False;
+        // Phase R — conflict signal. GitHub returns `mergeable: null` while
+        // it computes mergeability and `true`/`false` once known. The
+        // `mergeable_state` string is computed on a different cadence and
+        // is the authoritative "dirty" (= merge conflicts) signal even
+        // when `mergeable` is still null. Recognise both so a stale
+        // `mergeable: null` doesn't mask a real conflict that GitHub has
+        // already flagged via `mergeable_state`.
+        var conflicts = (pr.TryGetProperty("mergeable", out var mer)
+                && mer.ValueKind == JsonValueKind.False)
+            || (pr.TryGetProperty("mergeable_state", out var ms)
+                && ms.ValueKind == JsonValueKind.String
+                && string.Equals(ms.GetString(), "dirty", StringComparison.OrdinalIgnoreCase));
 
         var labels = ExtractLabelNames(pr);
         var humanGate = labels.Contains("needs-human-review", StringComparer.OrdinalIgnoreCase)
