@@ -40,8 +40,73 @@ public static class WorkItemsEndpoints
         grp.MapPost("/sync/{repoId}", Sync).WithName("SyncWorkItems");
         grp.MapPost("/{id}/resync", Resync).WithName("ResyncWorkItem");
         grp.MapPost("/{id}/create-pr", CreatePr).WithName("CreateWorkItemPr");
+        grp.MapGet("/{id}/workstream-link", GetWorkstreamLink).WithName("GetWorkItemWorkstreamLink");
 
         return app;
+    }
+
+    /// <summary>
+    /// Resolve a work item to its parent workstream + story spawn so the UI
+    /// can deep-link from the work-items view back to the workstream view.
+    /// Resolution: (1) check for a WorkstreamRow whose Id matches the work
+    /// item or whose PrsJson references it; (2) walk the WorkItemRow.ParentId
+    /// chain looking for a parent that's also a workstream. Returns 404 when
+    /// the work item doesn't belong to any spawn (ad-hoc / external items).
+    /// </summary>
+    private static async Task<IResult> GetWorkstreamLink(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(id)) return Results.NotFound();
+
+        // Pass (b): direct workstream match (workstream id == work item id)
+        // OR PrsJson contains a PR linked to this work item.
+        var direct = await db.Workstreams
+            .AsNoTracking()
+            .FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (direct is null)
+        {
+            // Search workstreams whose PrsJson contains a PR with this WorkItemId.
+            var prRow = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.WorkItemId == id, ct);
+            if (prRow is not null)
+            {
+                direct = await db.Workstreams.AsNoTracking()
+                    .FirstOrDefaultAsync(w => w.PrsJson.Contains(prRow.Id), ct);
+            }
+        }
+
+        // Pass (a): walk ParentId chain. Cap depth to avoid runaway loops.
+        if (direct is null)
+        {
+            var current = id;
+            for (var depth = 0; depth < 16 && !string.IsNullOrEmpty(current); depth++)
+            {
+                var parent = await db.WorkItems.AsNoTracking()
+                    .Where(w => w.Id == current)
+                    .Select(w => w.ParentId)
+                    .FirstOrDefaultAsync(ct);
+                if (string.IsNullOrEmpty(parent) || parent == current) break;
+                var ws = await db.Workstreams.AsNoTracking().FirstOrDefaultAsync(w => w.Id == parent, ct);
+                if (ws is not null) { direct = ws; break; }
+                current = parent;
+            }
+        }
+
+        if (direct is null) return Results.NotFound();
+        if (string.IsNullOrEmpty(direct.StorySpawnId)) return Results.NotFound();
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == direct.StorySpawnId, ct);
+        if (spawn is null) return Results.NotFound();
+
+        return Results.Ok(new
+        {
+            storyId = spawn.StoryId,
+            workstreamId = direct.Id,
+            spawnId = spawn.Id,
+        });
     }
 
     // ----- SYNC (Phase 12.4 / 12.10) -------------------------------------
@@ -386,10 +451,14 @@ public static class WorkItemsEndpoints
             }
         }
         if (req.ClearAssignedTo == true) row.AssignedToJson = null;
+        var pointsChanged = false;
+        var newPoints = row.Points;
         if (req.Points is int p)
         {
             if (p < 0) return Results.Problem(title: "Points must be ≥ 0", statusCode: 400);
+            pointsChanged = row.Points != p;
             row.Points = p;
+            newPoints = p;
         }
         if (req.Priority is not null)
         {
@@ -434,6 +503,24 @@ public static class WorkItemsEndpoints
 
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.RemoteRevision = NewRevision();
+
+        // Cascade: points are the user's "size of work" knob, and the
+        // deliverable loop's iteration cap derives directly from points
+        // (`DeliverableLoop.PointsToMaxIter`). When the operator bumps points
+        // on a stalled work item, also bump MaxIterOverride on every open
+        // queue row so the running loop's next tick sees the new cap.
+        if (pointsChanged)
+        {
+            var newCap = Forge.Api.Services.DeliverableLoop.PointsToMaxIter(newPoints);
+            var openQueueRows = await db.TaskQueue
+                .Where(q => q.WorkItemId == row.Id && q.State != "completed")
+                .ToListAsync(ct);
+            foreach (var q in openQueueRows)
+            {
+                q.MaxIterOverride = newCap;
+            }
+        }
+
         await db.SaveChangesAsync(ct);
 
         var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
