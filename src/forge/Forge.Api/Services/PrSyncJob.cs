@@ -357,6 +357,30 @@ public sealed class PrSyncJob : BackgroundService
         if (snapshot.Commits.HasValue) prRow.Commits = snapshot.Commits.Value;
         if (snapshot.Additions.HasValue) prRow.Additions = snapshot.Additions.Value;
         if (snapshot.Deletions.HasValue) prRow.Deletions = snapshot.Deletions.Value;
+
+        // Catch operator retargeting: when the upstream PR's base or source
+        // branch has changed (e.g. user retargeted from feature/X to main),
+        // align the local row so the merge endpoint's pre-rebase fetches
+        // the *current* base. Stale Base was the actual root cause of the
+        // never-merging xraft#3 case — every merge attempt pulled from the
+        // wrong upstream branch and the provider kept rejecting because
+        // the source still hadn't merged main.
+        if (!string.IsNullOrEmpty(snapshot.BaseBranch)
+            && !string.Equals(prRow.Base, snapshot.BaseBranch, StringComparison.Ordinal))
+        {
+            this.logger.LogInformation(
+                "PrSyncJob: PR {PrId} base retargeted upstream: {OldBase} → {NewBase}",
+                candidate.PrId, prRow.Base, snapshot.BaseBranch);
+            prRow.Base = snapshot.BaseBranch;
+        }
+        if (!string.IsNullOrEmpty(snapshot.SourceBranch)
+            && !string.Equals(prRow.Branch, snapshot.SourceBranch, StringComparison.Ordinal))
+        {
+            this.logger.LogInformation(
+                "PrSyncJob: PR {PrId} source branch changed upstream: {OldBranch} → {NewBranch}",
+                candidate.PrId, prRow.Branch, snapshot.SourceBranch);
+            prRow.Branch = snapshot.SourceBranch;
+        }
         if (!string.IsNullOrEmpty(snapshot.UpstreamUpdatedAt))
         {
             prRow.LastUpstreamUpdatedAt = snapshot.UpstreamUpdatedAt;

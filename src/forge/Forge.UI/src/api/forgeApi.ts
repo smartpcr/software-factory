@@ -810,7 +810,14 @@ export const forgeApi = {
 
   /**
    * POST /api/prs/{id}/merge.
-   * On a real merge conflict the server returns 409 with `{conflict: true, hint}`.
+   * On a real merge conflict the server returns 409 with
+   * `{conflict: true, resolution, hint}`. The `resolution` field is one of:
+   *   - "force-available": force has not yet been attempted; the UI may
+   *     offer the destructive `-X ours` auto-resolve.
+   *   - "manual-required": Forge already attempted the destructive
+   *     auto-resolve (either via inherited AutoMerge or `?force=true`) and
+   *     the provider still rejects the merge. The operator must resolve in
+   *     the provider UI; the UI should redirect, not re-prompt for force.
    * Pass `force: true` to opt into the destructive `-X ours` auto-resolve path
    * (keeps source-branch changes, discards upstream-side hunks).
    * Returns `{pr, queued}`. When `queued=true` ADO accepted the merge but is
@@ -912,18 +919,14 @@ export const forgeApi = {
     });
   },
 
-  /** GET /api/workstreams. */
+  /** GET /api/workstreams. Scoped to the active product via the
+   *  `X-Forge-Product-Id` header. Returns the API result verbatim — no
+   *  sample-data fallback so failures surface to the operator instead of
+   *  being papered over with stale demo rows. The opt-in `?seed=local`
+   *  query param still exposes sample data for screenshots / demos. */
   async getWorkstreams(): Promise<Workstream[]> {
     if (useLocalSeed()) return sampleState.workstreams;
-    try {
-      return await fetchJson<Workstream[]>('/api/workstreams');
-    } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn('[forge] /api/workstreams failed, using local sample data', err);
-        return sampleState.workstreams;
-      }
-      throw err;
-    }
+    return fetchJson<Workstream[]>('/api/workstreams');
   },
 
   /** POST /api/workstreams. */
@@ -1879,6 +1882,19 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * GET /api/work-items/{id}/workstream-link — returns null when the work
+   * item isn't tied to a story spawn (ad-hoc / external item).
+   */
+  async getWorkItemWorkstreamLink(id: string): Promise<{ storyId: string; workstreamId: string; spawnId: string } | null> {
+    try {
+      return await fetchJson(`/api/work-items/${encodeURIComponent(id)}/workstream-link`);
+    } catch (e) {
+      if (e instanceof ForgeApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+
   /** PATCH /api/work-items/{id} — opt-in If-Match for the conflict policy. */
   async patchWorkItem(id: string, body: WorkItemPatchBody, ifMatch?: string | null): Promise<WorkItem> {
     const headers: Record<string, string> = { 'X-Forge-User': writerHeader() };
@@ -1928,6 +1944,19 @@ export const forgeApi = {
     return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}/resync`, {
       method: 'POST',
       body: JSON.stringify({}),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * POST /api/prs/{id}/resync — force-refresh a single PR's state + comments
+   * + commit/file stats from the provider. Hits PrSyncJob.RunSyncForAsync
+   * directly so the row catches up immediately without waiting for the
+   * 2 hr cadence.
+   */
+  async resyncPr(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/resync`, {
+      method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

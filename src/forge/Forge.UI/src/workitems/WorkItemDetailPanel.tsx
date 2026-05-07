@@ -353,6 +353,7 @@ export function WorkItemDetailPanel({ item }: Props) {
         >
           ▶ Live Execution
         </button>
+        <WorkstreamLinkButton workItemId={item.id} />
         <button
           className="btn btn-secondary"
           style={{ fontSize: 12 }}
@@ -693,6 +694,55 @@ export function WorkItemDetailPanel({ item }: Props) {
 }
 
 // ---- inline-edit sub-components ----------------------------------------
+
+/**
+ * Resolves the work item's parent workstream + spawn via the backend
+ * resolver, then renders a deep-link to the workstream view with the
+ * workstream pre-selected and the conversation tab active. Hidden when
+ * the work item isn't tied to a story spawn (404 from the resolver).
+ */
+function WorkstreamLinkButton({ workItemId }: { workItemId: string }) {
+  const navigate = useNavigate();
+  const [link, setLink] = useState<{ storyId: string; workstreamId: string } | null>(null);
+  const [resolved, setResolved] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolved(false);
+    setLink(null);
+    void (async () => {
+      try {
+        const r = await forgeApi.getWorkItemWorkstreamLink(workItemId);
+        if (!cancelled) {
+          setLink(r);
+          setResolved(true);
+        }
+      } catch {
+        if (!cancelled) setResolved(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workItemId]);
+
+  if (!resolved || !link) return null;
+
+  // mode=impl puts the swarm view in "Impl ⇄ Review" mode (the stage where
+  // the engineer crew runs the gen↔eval loop), so the operator lands on
+  // the conversation tab with RESUME ready to click.
+  const target = `/workstreams/${encodeURIComponent(link.storyId)}`
+    + `?master=open&mode=impl&sel=phase&selId=${encodeURIComponent(link.workstreamId)}&tab=conv`;
+
+  return (
+    <button
+      className="btn btn-secondary"
+      style={{ fontSize: 12 }}
+      onClick={() => navigate(target)}
+      title="Open this work item's workstream view (conversation tab)"
+    >
+      ◇ Workstream
+    </button>
+  );
+}
 
 function StateSelect({ value, onChange }: { value: WorkItemState; onChange: (s: WorkItemState) => void }) {
   return (
