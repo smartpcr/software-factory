@@ -810,7 +810,14 @@ export const forgeApi = {
 
   /**
    * POST /api/prs/{id}/merge.
-   * On a real merge conflict the server returns 409 with `{conflict: true, hint}`.
+   * On a real merge conflict the server returns 409 with
+   * `{conflict: true, resolution, hint}`. The `resolution` field is one of:
+   *   - "force-available": force has not yet been attempted; the UI may
+   *     offer the destructive `-X ours` auto-resolve.
+   *   - "manual-required": Forge already attempted the destructive
+   *     auto-resolve (either via inherited AutoMerge or `?force=true`) and
+   *     the provider still rejects the merge. The operator must resolve in
+   *     the provider UI; the UI should redirect, not re-prompt for force.
    * Pass `force: true` to opt into the destructive `-X ours` auto-resolve path
    * (keeps source-branch changes, discards upstream-side hunks).
    * Returns `{pr, queued}`. When `queued=true` ADO accepted the merge but is
@@ -1937,6 +1944,19 @@ export const forgeApi = {
     return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}/resync`, {
       method: 'POST',
       body: JSON.stringify({}),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * POST /api/prs/{id}/resync — force-refresh a single PR's state + comments
+   * + commit/file stats from the provider. Hits PrSyncJob.RunSyncForAsync
+   * directly so the row catches up immediately without waiting for the
+   * 2 hr cadence.
+   */
+  async resyncPr(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/resync`, {
+      method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

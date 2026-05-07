@@ -88,6 +88,7 @@ export function SideBar() {
     () => allPrs.filter((p) => p.col !== 'merged' && p.humanGate).length,
     [allPrs],
   );
+
   const wsCount = allWorkstreams.length;
 
   // Phase 9 — sidebar foot user widget opens UserMenu (same popover the TopBar
