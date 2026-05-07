@@ -1012,7 +1012,7 @@ function PrCard({ prId }: { prId: string }) {
 
   async function handleMerge() {
     const ok = await useConfirmStore.getState().ask({
-      title: `Merge PR ${prId}?`,
+      title: `Merge ${prId}?`,
       body: 'This will merge the PR into its base branch. If there are conflicts, Forge will surface them so you can resolve in the provider UI.',
       tone: 'warn',
       confirmLabel: '⛙ Merge',
@@ -1031,24 +1031,59 @@ function PrCard({ prId }: { prId: string }) {
     try {
       const { queued, detail } = await forgeApi.mergePr(prId, { force });
       if (queued) {
-        showToast(detail ?? `PR ${prId} merge queued by provider.`, 'info');
+        showToast(detail ?? `${prId} merge queued by provider.`, 'info');
       } else {
-        showToast(`PR ${prId} merged successfully.`, 'success');
+        showToast(`${prId} merged successfully.`, 'success');
       }
       const d = await forgeApi.getPrDetails(prId);
       setData(d);
     } catch (e) {
-      // 409 with conflict=true → offer the destructive force-merge as a
-      // second confirm so the user knows what they're agreeing to.
+      // 409 with conflict=true → branch on `resolution` so the operator
+      // sees the right next step:
+      //   - "force-available": local rebase / first provider PUT failed
+      //     and force has not been attempted; offer the destructive
+      //     -X ours auto-resolve as a confirm.
+      //   - "manual-required": Forge already attempted the destructive
+      //     auto-resolve (either via inherited AutoMerge or an explicit
+      //     ?force=true) and the provider still rejects the merge.
+      //     There's no auto path left — redirect the operator to the
+      //     provider UI to resolve manually.
       if (e instanceof ForgeApiError && e.status === 409 && e.problem?.conflict === true) {
+        const resolution = typeof e.problem?.resolution === 'string' ? e.problem.resolution : 'force-available';
+        const webUrl = data?.pr.webUrl;
+        const hint = typeof e.problem?.hint === 'string' ? e.problem.hint : null;
+        const detail = typeof e.problem?.detail === 'string' ? e.problem.detail : null;
+
+        if (resolution === 'manual-required') {
+          // Confirm = "Open in provider" (actually opens the URL); cancel = close.
+          // Falls back to a plain "Close" confirm when no provider URL is known.
+          const openProvider = await useConfirmStore.getState().ask({
+            title: `Merge conflict on ${prId} — manual resolution required`,
+            body:
+              (detail ? detail + '\n\n' : '') +
+              (hint ?? 'Resolve the conflict in the provider UI (web editor or fetch + merge locally with manual resolution, then push), then retry the merge here.'),
+            tone: 'danger',
+            confirmLabel: webUrl ? 'Open in provider ↗' : 'OK',
+            cancelLabel: 'Close',
+          });
+          if (openProvider && webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
+          return;
+        }
+
+        // resolution === 'force-available' (default).
         const goForce = await useConfirmStore.getState().ask({
-          title: `Merge conflict on PR ${prId}`,
+          title: `Merge conflict on ${prId}`,
           body:
-            (typeof e.problem?.hint === 'string' ? e.problem.hint + '\n\n' : '') +
+            (hint ? hint + '\n\n' : '') +
             'Force-merge will take the source branch\'s version on every conflicting hunk and discard upstream-side changes (-X ours). This is destructive — prefer resolving in the provider UI.',
           tone: 'danger',
           confirmLabel: '⚠ Force-merge (-X ours)',
-          cancelLabel: 'Open in provider',
+          // The previous label "Open in provider" was misleading: clicking
+          // cancel did nothing. Operators who want the provider UI use the
+          // dedicated "Open in <provider> ↗" link in the PR header.
+          cancelLabel: 'Cancel',
         });
         if (goForce) {
           await runMerge(true);
@@ -1123,38 +1158,39 @@ function PrCard({ prId }: { prId: string }) {
         <span style={{ color: '#f44747' }}>−{pr.deletions}</span>
         <span>{comments.length} comment{comments.length === 1 ? '' : 's'}</span>
         {reviewers.length > 0 && <span>reviewers: {reviewers.join(', ')}</span>}
-        {pr.webUrl && (
-          <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
-            style={{ marginLeft: 'auto', fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
-            {/* GitHub PR ids look like "PR owner/repo#42" (contain '/'),
-                ADO is "PR #15634971". The previous heuristic checked
-                only the "PR " prefix, which both formats share, so every
-                GitHub PR was mis-labelled "ADO". Fall through to webUrl
-                as the secondary signal for safety. */}
-            Open in {(pr.id.includes('/') || pr.webUrl.includes('github.com')) ? 'GitHub' : 'ADO'} ↗
-          </a>
-        )}
-        {pr.col !== 'merged' && (
-          <button
-            type="button"
-            disabled={merging}
-            onClick={() => void handleMerge()}
-            style={{
-              marginLeft: pr.webUrl ? 8 : 'auto',
-              fontSize: 10, padding: '2px 10px',
-              background: 'transparent',
-              border: '1px solid #4ec9b0',
-              borderRadius: 3,
-              color: '#4ec9b0',
-              cursor: merging ? 'wait' : 'pointer',
-              fontFamily: 'var(--sc-font-display, monospace)',
-              letterSpacing: '0.1em',
-              opacity: merging ? 0.5 : 1,
-            }}
-          >
-            {merging ? '⏳ Merging…' : '⛙ MERGE'}
-          </button>
-        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {pr.webUrl && (
+            <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
+              {/* GitHub PR ids look like "PR owner/repo#42" (contain '/'),
+                  ADO is "PR #15634971". The previous heuristic checked
+                  only the "PR " prefix, which both formats share, so every
+                  GitHub PR was mis-labelled "ADO". Fall through to webUrl
+                  as the secondary signal for safety. */}
+              Open in {(pr.id.includes('/') || pr.webUrl.includes('github.com')) ? 'GitHub' : 'ADO'} ↗
+            </a>
+          )}
+          {pr.col !== 'merged' && (
+            <button
+              type="button"
+              disabled={merging}
+              onClick={() => void handleMerge()}
+              style={{
+                fontSize: 10, padding: '2px 10px',
+                background: 'transparent',
+                border: '1px solid #4ec9b0',
+                borderRadius: 3,
+                color: '#4ec9b0',
+                cursor: merging ? 'wait' : 'pointer',
+                fontFamily: 'var(--sc-font-display, monospace)',
+                letterSpacing: '0.1em',
+                opacity: merging ? 0.5 : 1,
+              }}
+            >
+              {merging ? '⏳ Merging…' : '⛙ MERGE'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Description ─────────────────────────────────────────────── */}

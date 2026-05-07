@@ -359,6 +359,46 @@ public static class StoriesEndpoints
                       .Count(q => string.IsNullOrEmpty(q.Answer)),
                 StringComparer.OrdinalIgnoreCase);
 
+        // Detect "loop is re-running right now" so the stalled override
+        // below can clear when an iteration is in flight. Two signals,
+        // either one keeps the workstream out of stalled:
+        //   1. The work-item's ExecutionStatus = "live"/"queued" — what the
+        //      UI's LIVE chip in the conversation tab reads. The orchestrator's
+        //      impl loop sets this to "live" while running gen↔eval.
+        //   2. An open TaskQueueRow exists — covers the queue-driven flows
+        //      (review-fix, comment-response, build-fix) that bypass the
+        //      direct orchestrator path.
+        // Pull the relevant subset and do the live-state check in memory so
+        // a stray casing / whitespace difference doesn't make a live work
+        // item silently look idle. EF's translated `=` against SQLite is
+        // case-sensitive; comparing with OrdinalIgnoreCase here avoids that
+        // class of bug.
+        var wiExecRows = await db.WorkItems
+            .AsNoTracking()
+            .Where(wi => wsIds.Contains(wi.Id))
+            .Select(wi => new { wi.Id, wi.ExecutionStatus })
+            .ToListAsync();
+        var liveExecWiIds = wiExecRows
+            .Where(r => string.Equals(r.ExecutionStatus, "live", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(r.ExecutionStatus, "queued", StringComparison.OrdinalIgnoreCase))
+            .Select(r => r.Id)
+            .ToList();
+        var queueRows = await db.TaskQueue
+            .AsNoTracking()
+            .Where(q => wsIds.Contains(q.WorkItemId))
+            .Select(q => new { q.WorkItemId, q.State })
+            .ToListAsync();
+        var openQueueWsIds = queueRows
+            .Where(q => !string.Equals(q.State, "completed", StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(q.State, "cancelled", StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(q.State, "reassigned", StringComparison.OrdinalIgnoreCase))
+            .Select(q => q.WorkItemId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var liveWsIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in liveExecWiIds) liveWsIds.Add(id);
+        foreach (var id in openQueueWsIds) liveWsIds.Add(id);
+
         var wsByStatus = workstreams.Select(w =>
         {
             var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
@@ -366,12 +406,36 @@ public static class StoriesEndpoints
             var latest = wsDeliverables.FirstOrDefault();
             var wsCost = costByWsMap.TryGetValue(w.Id, out var c) ? c : 0m;
             var wsUnanswered = unansweredByWs.TryGetValue(w.Id, out var uq) ? uq : 0;
+
+            // Override the workstream's persisted Status to "stalled" when
+            // its latest deliverable hit the iter cap with verdict="stalled"
+            // (DeliverableLoop.cs:400). The persisted Status stays at the
+            // last lifecycle state ("active" / "review" / etc.) — without
+            // this override the UI shows the workstream as still iterating
+            // when the loop has actually given up. Don't override if:
+            //   - the workstream already shipped (review/merging/complete/...)
+            //   - the operator kicked a new iteration (open queue row exists)
+            //     so the loop is currently running — the stalled state is
+            //     historical, not current.
+            string baseStatus = w.Status;
+            var latestVerdictIsStalled = latest is not null
+                && latest.Verdict is not null
+                && (latest.Verdict.StartsWith("stalled", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(latest.Verdict, "reject", StringComparison.OrdinalIgnoreCase));
+            var isCurrentlyLive = liveWsIds.Contains(w.Id);
+            if (latestVerdictIsStalled
+                && !isCurrentlyLive
+                && baseStatus is not ("review" or "merging" or "complete" or "cancelled" or "historic"))
+            {
+                baseStatus = "stalled";
+            }
+
             return new
             {
                 id = w.Id,
                 name = w.Name,
                 branch = w.Branch,
-                status = ResolveWorkstreamStatus(w.Id, w.Status, deps, workstreams, db),
+                status = ResolveWorkstreamStatus(w.Id, baseStatus, deps, workstreams, db),
                 cards = StoriesJsonHelpers.Deserialize(w.CardsJson),
                 prs = StoriesJsonHelpers.Deserialize(w.PrsJson),
                 deps = deps.Where(d => d.WorkstreamId == w.Id).Select(d => d.DependsOnId).ToArray(),
