@@ -275,6 +275,30 @@ public sealed class DeliverableLoop : IDeliverableLoop
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
             await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, ct);
 
+            // 2026-05-07 — when the parser falls back to score 0 / iterate,
+            // emit a transcript event carrying the exact AssistantText that
+            // was parsed (capped at 8 KB). The fallback Notes already names
+            // the parse error, but the operator can't reproduce a fix from
+            // the row alone — they need to see the literal bytes the parser
+            // saw. This event closes the gap between "parse failed" and
+            // "what did the model emit" without spamming the row.
+            if (lastScore.ParseFailed)
+            {
+                const int CaptureLimit = 8192;
+                var captured = eval.AssistantText ?? string.Empty;
+                var truncated = captured.Length > CaptureLimit;
+                if (truncated) captured = captured[..CaptureLimit];
+                await this.EmitAsync(request.WorkItemId, "task.eval.parse-failed", new
+                {
+                    iter,
+                    parseError = lastScore.ParseError,
+                    assistantTextLength = eval.AssistantText?.Length ?? 0,
+                    assistantText = captured,
+                    truncated,
+                    evaluatorAgentId = pinnedEvaluator,
+                }, ct);
+            }
+
             totalCost += gen.CostUsd + eval.CostUsd;
 
             // (c) persist one row per iteration. The summary is the
