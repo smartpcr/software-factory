@@ -6,66 +6,105 @@
 
 namespace Ast.Memory;
 
+using Ast.GraphDb;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Ast.Memory.Services;
+using Ast.Memory.Sync;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// Extension methods to register memory subsystem services in a DI container.
+/// Extension methods to register Agent Memory services in the DI container.
+/// Wires up the <see cref="IIncrementalSync"/> with file-system watcher as
+/// a hosted service, <see cref="IExtractionPipeline"/> (Roslyn-based),
+/// <see cref="IFileSyncStateStore"/> (SQLite-backed), and
+/// <see cref="IMemoryGraphStore"/> (SQLite-backed by default per operator
+/// decision). See architecture.md §5.5.
 /// </summary>
 public static class MemoryServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers all memory-layer services using the default in-memory graph store.
+    /// Registers the Agent Memory incremental sync services including:
+    /// <list type="bullet">
+    ///   <item><see cref="IExtractionPipeline"/> → <see cref="RoslynExtractionPipeline"/></item>
+    ///   <item><see cref="IFileSyncStateStore"/> → <see cref="SqliteFileSyncStateStore"/></item>
+    ///   <item><see cref="IMemoryGraphStore"/> → <see cref="SqliteMemoryGraphStore"/> (default)</item>
+    ///   <item><see cref="IIncrementalSync"/> → <see cref="IncrementalSync"/></item>
+    ///   <item><see cref="FileWatcherHostedService"/> (hosted service)</item>
+    /// </list>
+    /// Callers may register a custom <see cref="IMemoryGraphStore"/> before calling
+    /// this method to override the default SQLite store.
     /// </summary>
-    public static IServiceCollection AddMemoryServices(this IServiceCollection services)
+    public static IServiceCollection AddAgentMemorySync(
+        this IServiceCollection services,
+        Action<MemoryOptions>? configureOptions = null)
     {
-        services.AddSingleton<IMemoryGraphStore, InMemoryMemoryGraphStore>();
-        return services.AddCoreMemoryServices();
-    }
-
-    /// <summary>
-    /// Registers all memory-layer services with a custom store path for the in-memory store.
-    /// </summary>
-    public static IServiceCollection AddMemoryServices(this IServiceCollection services, string storePath)
-    {
-        services.AddSingleton<IMemoryGraphStore>(_ => new InMemoryMemoryGraphStore(storePath));
-        return services.AddCoreMemoryServices();
-    }
-
-    /// <summary>
-    /// Registers all memory-layer services using the graph store backend
-    /// selected by <see cref="MemoryOptions.Backend"/>.
-    /// Note: Stage 6.2 uses a JSON-backed file store for all backends to keep
-    /// the CLI self-contained. SQLite/Neo4j backends are planned for future stages.
-    /// </summary>
-    public static IServiceCollection AddMemoryServices(this IServiceCollection services, MemoryOptions options)
-    {
-        // Stage 6.2: JSON file-backed store for all backends (self-contained CLI).
-        // Future stages will add SqliteGraphStore and Neo4jMemoryGraphStore implementations.
-        var storePath = options.Backend switch
+        // Ensure options infrastructure is available
+        services.AddOptions<MemoryOptions>();
+        if (configureOptions != null)
         {
-            MemoryBackend.Neo4j => options.Neo4jUri ?? "memory-graph.json",
-            _ => options.SqlitePath ?? "memory-graph.json",
-        };
-        services.AddSingleton<IMemoryGraphStore>(_ => new InMemoryMemoryGraphStore(storePath));
+            services.Configure(configureOptions);
+        }
 
-        return services.AddCoreMemoryServices();
-    }
+        // Ensure logging is resolvable (ILogger<T> needed by IncrementalSync, RoslynExtractionPipeline)
+        services.AddLogging();
 
-    private static IServiceCollection AddCoreMemoryServices(this IServiceCollection services)
-    {
-        services.AddSingleton<IExtractionPipeline, DefaultExtractionPipeline>();
-        services.AddSingleton<IMemoryRetrievalEngine, DefaultMemoryRetrievalEngine>();
-        services.AddSingleton<IIncrementalSync>(sp =>
-            new DefaultIncrementalSync(
-                sp.GetRequiredService<IMemoryGraphStore>(),
-                sp.GetRequiredService<IExtractionPipeline>()));
-        services.AddSingleton<IEvolutionEngine>(sp =>
-            new DefaultEvolutionEngine(
-                sp.GetRequiredService<IMemoryGraphStore>(),
-                sp.GetService<Ast.Embedding.IEmbeddingGenerator>()));
+        services.AddSingleton<IExtractionPipeline, RoslynExtractionPipeline>();
+
+        // SQLite-backed sync state store by default (operator decision: persists
+        // ContentHash across restarts). Falls back to in-memory if no SQLite path.
+        services.AddSingleton<IFileSyncStateStore>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MemoryOptions>>().Value;
+            var dbPath = opts.SqlitePath;
+            if (string.IsNullOrWhiteSpace(dbPath))
+            {
+                dbPath = Path.Combine(
+                    opts.RepoRoot ?? Path.GetTempPath(),
+                    ".agent-memory",
+                    "sync_state.db");
+            }
+
+            return new SqliteFileSyncStateStore(dbPath);
+        });
+
+        // SQLite-backed graph store by default (operator decision: retains graph
+        // state across restarts). Register one concrete instance exposed through
+        // both IMemoryGraphStore and IGraphStore interfaces.
+        // TryAdd respects any previously registered custom store.
+        services.TryAddSingleton<SqliteMemoryGraphStore>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MemoryOptions>>().Value;
+            var dbPath = opts.SqlitePath;
+            if (string.IsNullOrWhiteSpace(dbPath))
+            {
+                dbPath = Path.Combine(
+                    opts.RepoRoot ?? Path.GetTempPath(),
+                    ".agent-memory",
+                    "memory_graph.db");
+            }
+            else
+            {
+                // Use a sibling file for the graph store if a sync state path was given
+                var dir = Path.GetDirectoryName(dbPath) ?? Path.GetTempPath();
+                dbPath = Path.Combine(dir, "memory_graph.db");
+            }
+
+            return new SqliteMemoryGraphStore(dbPath);
+        });
+        services.TryAddSingleton<IMemoryGraphStore>(sp => sp.GetRequiredService<SqliteMemoryGraphStore>());
+        services.TryAddSingleton<IGraphStore>(sp => sp.GetRequiredService<SqliteMemoryGraphStore>());
+
+        services.AddSingleton<IIncrementalSync, IncrementalSync>();
+
+        // Register NullSemanticReIndexer as fallback ONLY if no real implementation
+        // has been registered. Consumers can register a real ISemanticReIndexer
+        // BEFORE calling AddAgentMemorySync and TryAdd will not override it.
+        services.TryAddSingleton<ISemanticReIndexer, NullSemanticReIndexer>();
+
+        services.AddHostedService<FileWatcherHostedService>();
+
         return services;
     }
 }

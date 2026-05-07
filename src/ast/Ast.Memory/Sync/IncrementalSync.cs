@@ -7,6 +7,7 @@
 namespace Ast.Memory.Sync;
 
 using System.Diagnostics;
+using System.Security.Cryptography;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Interfaces;
@@ -15,1157 +16,1653 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Keeps the memory graph current without full re-extraction.
-/// Implements the incremental sync flow from architecture.md §3.6, §5.5.
-/// Dependencies per §5.5: IExtractionPipeline, IMemoryGraphStore, IEvolutionEngine.
-/// Also depends on ISemanticIndexer for re-embedding changed nodes (§3.6 step 9)
-/// and ICommitRegistry for durable commit index allocation (§3.2.3).
+/// Implements <see cref="IIncrementalSync"/> with both git-diff-based and
+/// FileSystemWatcher-based triggers. The same upsert/retire/decay core logic
+/// (<see cref="SyncFilesAsync(FileChangeEntry[], string, int, CancellationToken)"/>)
+/// is shared by <see cref="ApplyDiffAsync"/> and the file-system watcher.
+/// See architecture.md §3.6 and §5.5.
 ///
-/// Thread safety: ApplyDiffAsync is serialized via SemaphoreSlim to prevent
-/// concurrent graph mutations. Edge versioning: changed edges are retired and
-/// a new edge with the same deterministic ID is created (CreateEdgeAsync
-/// overwrites the retired entry). Cross-file edge ownership uses role-based
-/// heuristics (caller/source/parent/importer). Extraction exceptions are
-/// tracked in SyncResult.ExtractionErrors so callers can detect missed updates;
-/// zero-node extraction retires all existing nodes (file became empty).
+/// ContentHash skip checks both <see cref="IFileSyncStateStore"/> (last-synced
+/// per-file SHA-256 hashes) and existing graph node <c>FileContentHash</c> to avoid
+/// redundant re-extraction on unchanged content.
 /// </summary>
-public class IncrementalSync : IIncrementalSync
+public sealed class IncrementalSync : IIncrementalSync
 {
-    private readonly SemaphoreSlim syncLock = new(1, 1);
-    private readonly IMemoryGraphStore graphStore;
-    private readonly ICommitRegistry commitRegistry;
     private readonly IExtractionPipeline extractionPipeline;
-    private readonly IEvolutionEngine evolutionEngine;
-    private readonly ISemanticIndexer semanticIndexer;
-    private readonly GitDiffDriver diffDriver;
-    private readonly MemoryOptions options;
+    private readonly IMemoryGraphStore graphStore;
+    private readonly IFileSyncStateStore fileSyncState;
+    private readonly ISemanticReIndexer? semanticReIndexer;
     private readonly ILogger<IncrementalSync> logger;
+    private readonly MemoryOptions options;
+
+    private string? repoRoot;
+    private FileSystemWatcher? watcher;
+    private Timer? debounceTimer;
+    private readonly object syncLock = new();
+    private readonly Dictionary<string, FileChangeStatus> pendingChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim batchSemaphore = new(1, 1);
+    private int commitIndex;
+    private bool disposed;
+
+    /// <summary>Session ID for audit logging.</summary>
+    private readonly string sessionId = $"sync-{Guid.NewGuid():N}";
+
+    /// <summary>Maximum retries for reading locked files during hash computation.</summary>
+    private const int MaxHashRetries = 4;
+
+    private static readonly int[] HashRetryDelaysMs = [100, 250, 500, 1000];
+
+    /// <summary>
+    /// Gets the current commit index used for versioning nodes/edges.
+    /// Exposed for testing.
+    /// </summary>
+    public int CurrentCommitIndex => this.commitIndex;
+
+    /// <summary>
+    /// Raised after a debounced batch has been processed. Used by tests.
+    /// </summary>
+    public event EventHandler<BatchProcessedEventArgs>? BatchProcessed;
 
     public IncrementalSync(
-        IMemoryGraphStore graphStore,
-        ICommitRegistry commitRegistry,
         IExtractionPipeline extractionPipeline,
-        IEvolutionEngine evolutionEngine,
-        ISemanticIndexer semanticIndexer,
-        GitDiffDriver diffDriver,
+        IMemoryGraphStore graphStore,
+        IFileSyncStateStore fileSyncState,
+        ILogger<IncrementalSync> logger,
         IOptions<MemoryOptions> options,
-        ILogger<IncrementalSync> logger)
+        ISemanticReIndexer? semanticReIndexer = null)
     {
-        this.graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
-        this.commitRegistry = commitRegistry ?? throw new ArgumentNullException(nameof(commitRegistry));
-        this.extractionPipeline = extractionPipeline ?? throw new ArgumentNullException(nameof(extractionPipeline));
-        this.evolutionEngine = evolutionEngine ?? throw new ArgumentNullException(nameof(evolutionEngine));
-        this.semanticIndexer = semanticIndexer ?? throw new ArgumentNullException(nameof(semanticIndexer));
-        this.diffDriver = diffDriver ?? throw new ArgumentNullException(nameof(diffDriver));
-        this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.extractionPipeline = extractionPipeline;
+        this.graphStore = graphStore;
+        this.fileSyncState = fileSyncState;
+        this.semanticReIndexer = semanticReIndexer;
+        this.logger = logger;
+        this.options = options.Value;
+        this.commitIndex = 0;
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Constructor overload accepting explicit repoRoot and initialCommitIndex
+    /// for testing scenarios.
+    /// </summary>
+    public IncrementalSync(
+        string repoRoot,
+        IExtractionPipeline extractionPipeline,
+        IMemoryGraphStore graphStore,
+        IFileSyncStateStore fileSyncState,
+        ILogger<IncrementalSync> logger,
+        IOptions<MemoryOptions> options,
+        int initialCommitIndex = 0,
+        ISemanticReIndexer? semanticReIndexer = null)
+        : this(extractionPipeline, graphStore, fileSyncState, logger, options, semanticReIndexer)
+    {
+        this.repoRoot = repoRoot;
+        this.commitIndex = initialCommitIndex;
+    }
+
+    /// <inheritdoc/>
     public async Task<SyncResult> ApplyDiffAsync(
         string repoRoot,
         string fromCommit,
         string toCommit,
         CancellationToken ct = default)
     {
-        // Serialize all ApplyDiff mutations to prevent concurrent graph writes.
-        await this.syncLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        this.repoRoot = repoRoot;
+
+        // Get changed files from git diff --name-status with explicit status
+        var changeEntries = await GetGitDiffEntriesAsync(repoRoot, fromCommit, toCommit, ct)
+            .ConfigureAwait(false);
+
+        // Filter to watched extensions (apply per-path, not per-entry,
+        // so extension-changing renames still handle both old and new path)
+        var watched = new HashSet<string>(this.options.WatchedExtensions, StringComparer.OrdinalIgnoreCase);
+        var filteredEntries = changeEntries
+            .Where(e => watched.Contains(Path.GetExtension(e.Path)))
+            .ToArray();
+
+        if (filteredEntries.Length == 0)
         {
-            return await this.ApplyDiffCoreAsync(repoRoot, fromCommit, toCommit, ct).ConfigureAwait(false);
+            return new SyncResult(0, 0, 0, 0, 0, 0, TimeSpan.Zero);
         }
-        finally
-        {
-            this.syncLock.Release();
-        }
+
+        var newIndex = Interlocked.Increment(ref this.commitIndex);
+        return await this.SyncFilesAsync(filteredEntries, toCommit, newIndex, ct)
+            .ConfigureAwait(false);
     }
 
-    private async Task<SyncResult> ApplyDiffCoreAsync(
+    /// <summary>
+    /// Parses git diff --name-status output (NUL-delimited for safety) to
+    /// get the list of changed file paths with explicit status codes.
+    /// Handles Added, Modified, Deleted, Renamed, and Copied status codes.
+    /// </summary>
+    internal static async Task<FileChangeEntry[]> GetGitDiffEntriesAsync(
         string repoRoot,
         string fromCommit,
         string toCommit,
-        CancellationToken ct)
+        CancellationToken ct = default)
     {
-        var stopwatch = Stopwatch.StartNew();
-        this.logger.LogInformation("Starting incremental sync from {From} to {To}", fromCommit, toCommit);
-
-        // (1) Compute changed file set — per architecture.md §3.9: git diff failure
-        //     returns SyncResult with zero changes and no mutations.
-        IReadOnlyList<FileChange> changes;
-        try
+        var psi = new System.Diagnostics.ProcessStartInfo
         {
-            changes = await this.diffDriver.GetChangedFilesAsync(repoRoot, fromCommit, toCommit, ct).ConfigureAwait(false);
+            FileName = "git",
+            WorkingDirectory = repoRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("diff");
+        psi.ArgumentList.Add("--name-status");
+        psi.ArgumentList.Add("-z");
+        psi.ArgumentList.Add("-M");
+        psi.ArgumentList.Add(fromCommit);
+        psi.ArgumentList.Add(toCommit);
+        psi.ArgumentList.Add("--");
+
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
+        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+
+        if (proc.ExitCode != 0)
+        {
+            return [];
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        // Parse NUL-delimited output: status\0path\0 (or status\0oldpath\0newpath\0 for renames)
+        var parts = stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        var entries = new List<FileChangeEntry>();
+        var i = 0;
+        while (i < parts.Length)
         {
-            this.logger.LogWarning(ex, "git diff failed between {From} and {To} — returning zero-change SyncResult per §3.9", fromCommit, toCommit);
-            return EmptyResult(stopwatch.Elapsed);
-        }
-
-        if (changes.Count == 0)
-        {
-            this.logger.LogInformation("No file changes detected between {From} and {To}", fromCommit, toCommit);
-            return EmptyResult(stopwatch.Elapsed);
-        }
-
-        // (2) Register toCommit in the durable commits table via ICommitRegistry (§3.2.3, §4.3).
-        //     Returns a monotonic commit_index that anchors all VersionRange values.
-        var toCommitIndex = await this.commitRegistry.RegisterCommitAsync(toCommit, null, ct).ConfigureAwait(false);
-
-        int filesProcessed = 0;
-        int nodesAdded = 0;
-        int nodesRetired = 0;
-        int edgesAdded = 0;
-        int edgesRetired = 0;
-        int expertiseDecayed = 0;
-        var changedNodes = new List<HypergraphNode>();
-        var extractionErrors = new List<string>();
-
-        // (3) Process each file by status
-        foreach (var change in changes)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            switch (change.Status)
+            var status = parts[i];
+            if (status.Length == 0)
             {
-                case FileChangeStatus.Added:
-                {
-                    var r = await this.ProcessAddedFileAsync(
-                        repoRoot, change.Path, toCommit, toCommitIndex, changedNodes, extractionErrors, ct).ConfigureAwait(false);
-                    filesProcessed++;
-                    nodesAdded += r.NodesAdded;
-                    edgesAdded += r.EdgesAdded;
-                    break;
-                }
+                i++;
+                continue;
+            }
 
-                case FileChangeStatus.Modified:
-                {
-                    var r = await this.ProcessModifiedFileAsync(
-                        repoRoot, change.Path, toCommit, toCommitIndex, changedNodes, extractionErrors, ct).ConfigureAwait(false);
-                    filesProcessed++;
-                    nodesAdded += r.NodesAdded;
-                    nodesRetired += r.NodesRetired;
-                    edgesAdded += r.EdgesAdded;
-                    edgesRetired += r.EdgesRetired;
-                    expertiseDecayed += r.ExpertiseDecayed;
-                    break;
-                }
+            var code = status[0];
+            switch (code)
+            {
+                case 'R':
+                    // Rename: old path → Deleted, new path → Created
+                    if (i + 2 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 1].Replace('\\', '/'), FileChangeStatus.Deleted));
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 2].Replace('\\', '/'), FileChangeStatus.Created));
+                        i += 3;
+                    }
+                    else
+                    {
+                        i++;
+                    }
 
-                case FileChangeStatus.Deleted:
-                {
-                    var (nr, er) = await this.ProcessDeletedFileAsync(
-                        change.Path, toCommitIndex, ct).ConfigureAwait(false);
-                    filesProcessed++;
-                    nodesRetired += nr;
-                    edgesRetired += er;
                     break;
-                }
+                case 'C':
+                    // Copy: only new path is Created; old path is NOT deleted
+                    if (i + 2 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 2].Replace('\\', '/'), FileChangeStatus.Created));
+                        i += 3;
+                    }
+                    else
+                    {
+                        i++;
+                    }
 
-                case FileChangeStatus.Renamed:
-                {
-                    var r = await this.ProcessRenamedFileAsync(
-                        repoRoot, change.OldPath!, change.Path, toCommit, toCommitIndex, changedNodes, extractionErrors, ct).ConfigureAwait(false);
-                    filesProcessed++;
-                    nodesAdded += r.NodesAdded;
-                    nodesRetired += r.NodesRetired;
-                    edgesAdded += r.EdgesAdded;
-                    edgesRetired += r.EdgesRetired;
                     break;
-                }
+                case 'A':
+                    if (i + 1 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 1].Replace('\\', '/'), FileChangeStatus.Created));
+                        i += 2;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+
+                    break;
+                case 'D':
+                    if (i + 1 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 1].Replace('\\', '/'), FileChangeStatus.Deleted));
+                        i += 2;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+
+                    break;
+                case 'M' or 'T':
+                    if (i + 1 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 1].Replace('\\', '/'), FileChangeStatus.Modified));
+                        i += 2;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+
+                    break;
+                default:
+                    // Unknown status — treat as Modified
+                    if (i + 1 < parts.Length)
+                    {
+                        entries.Add(new FileChangeEntry(
+                            parts[i + 1].Replace('\\', '/'), FileChangeStatus.Modified));
+                        i += 2;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+
+                    break;
             }
         }
 
-        // (4) Re-run SemanticIndexer on changed nodes (§3.6 step 9).
-        //     SemanticIndexer.IndexNodesAsync generates embeddings and creates/updates
-        //     SIMILAR_TO edges. The returned count is included in EdgesAdded so the
-        //     SyncResult accurately reflects all edge mutations.
-        int semanticEdgesCreated = 0;
-        if (changedNodes.Count > 0)
-        {
-            semanticEdgesCreated = await this.semanticIndexer.IndexNodesAsync(changedNodes, ct).ConfigureAwait(false);
-            edgesAdded += semanticEdgesCreated;
-            this.logger.LogDebug(
-                "SemanticIndexer: re-indexed {Count} changed nodes, {Edges} SIMILAR_TO edges created/updated",
-                changedNodes.Count, semanticEdgesCreated);
-        }
-
-        // (5) NOTE: Time-based expertise decay (IEvolutionEngine.DecayStaleExpertiseAsync)
-        //     is NOT invoked during incremental sync. IncrementalSync is responsible
-        //     only for event-driven decay (code-change triggers per §3.5.1, §3.6 step 10).
-        //     Time-based decay is a separate scheduled concern owned by IEvolutionEngine
-        //     and must not run here — doing so could mutate/archive expertise entries
-        //     beyond what the code-change event warrants.
-
-        // (6) Audit log (best effort)
-        try
-        {
-            await this.graphStore.LogAuditAsync(
-                "incremental-sync",
-                "ApplyDiff",
-                new
-                {
-                    FromCommit = fromCommit,
-                    ToCommit = toCommit,
-                    FilesChanged = filesProcessed,
-                    NodesAdded = nodesAdded,
-                    NodesRetired = nodesRetired,
-                    EdgesAdded = edgesAdded,
-                    EdgesRetired = edgesRetired,
-                    ExpertiseDecayed = expertiseDecayed,
-                    SemanticEdgesCreated = semanticEdgesCreated,
-                    ExtractionErrors = extractionErrors.Count,
-                },
-                ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            this.logger.LogWarning(ex, "Failed to write audit log — non-fatal");
-        }
-
-        stopwatch.Stop();
-        this.logger.LogInformation(
-            "Incremental sync complete: {Files} files, ↑{NA} −{NR} nodes, +{EA} −{ER} edges, {SE} semantic, {ED} expertise decayed, {EE} extraction errors in {Duration}ms",
-            filesProcessed, nodesAdded, nodesRetired, edgesAdded, edgesRetired, semanticEdgesCreated, expertiseDecayed, extractionErrors.Count, stopwatch.ElapsedMilliseconds);
-
-        return new SyncResult(
-            FilesChanged: filesProcessed,
-            NodesAdded: nodesAdded,
-            NodesRetired: nodesRetired,
-            EdgesAdded: edgesAdded,
-            EdgesRetired: edgesRetired,
-            ExpertiseDecayed: expertiseDecayed,
-            Duration: stopwatch.Elapsed)
-        {
-            ExtractionErrors = extractionErrors,
-            SemanticEdgesCreated = semanticEdgesCreated,
-        };
+        return entries.ToArray();
     }
 
-    private async Task<(bool Processed, int NodesAdded, int EdgesAdded)> ProcessAddedFileAsync(
-        string repoRoot,
-        string relativePath,
-        string commitSha,
-        int commitIndex,
-        List<HypergraphNode> changedNodes,
-        List<string> extractionErrors,
-        CancellationToken ct)
+    /// <inheritdoc/>
+    public void StartFileWatcher(string repoRoot)
     {
-        this.logger.LogDebug("Processing added file: {Path}", relativePath);
+        this.repoRoot = repoRoot;
+        this.StartInternal();
+    }
 
-        var extractionOpts = new ExtractionOptions
-        {
-            CommitSha = commitSha,
-            CommitIndex = commitIndex,
-            GenerateEmbeddings = false,
-        };
-
-        ExtractionResult result;
-        try
-        {
-            result = await this.extractionPipeline.ExtractFilesAsync(
-                repoRoot, new[] { relativePath }, extractionOpts, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            this.logger.LogWarning(ex, "Extraction failed for added file {Path}", relativePath);
-            extractionErrors.Add($"Added file extraction failed: {relativePath} — {ex.Message}");
-            return (false, 0, 0);
-        }
-
-        // Surface partial extraction errors from ExtractionResult.Errors (§5.4).
-        // These indicate files that were partially processed — the pipeline succeeded
-        // but some symbols could not be extracted. Callers can inspect
-        // SyncResult.ExtractionErrors to detect missed updates.
-        if (result.Errors.Count > 0)
-        {
-            foreach (var err in result.Errors)
-            {
-                extractionErrors.Add($"Added file partial error: {relativePath} — {err}");
-            }
-
-            this.logger.LogWarning(
-                "Extraction returned {ErrorCount} partial errors for added file {Path}",
-                result.Errors.Count, relativePath);
-        }
-
-        var version = new VersionRange(commitSha, commitIndex, null, null);
-
-        foreach (var node in result.Nodes)
-        {
-            await this.graphStore.UpsertNodeAsync(node, version, ct).ConfigureAwait(false);
-        }
-
-        foreach (var edge in result.Edges)
-        {
-            StampEdgeVersion(edge, commitSha, commitIndex);
-            await this.graphStore.CreateEdgeAsync(edge, ct).ConfigureAwait(false);
-        }
-
-        changedNodes.AddRange(result.Nodes);
-        return (true, result.Nodes.Count, result.Edges.Count);
+    /// <inheritdoc/>
+    public void StopFileWatcher()
+    {
+        this.StopInternal();
     }
 
     /// <summary>
-    /// Processes a modified file per architecture.md §3.6 steps 3-10:
-    /// re-extract via IExtractionPipeline, diff old vs new nodes,
-    /// upsert successor versions via UpsertNodeAsync (which atomically closes
-    /// the previous active version's UntilIndex per §5.1 temporal upsert semantics).
-    /// Removed nodes are retired via RetireNodeAsync (cascades to edges per §5.1).
-    /// Edge lifecycle is handled by edge diffing: removed edges are retired,
-    /// new edges are created, changed edges are replaced.
+    /// Starts the file system watcher on the current repoRoot.
     /// </summary>
-    private async Task<(bool Processed, int NodesAdded, int NodesRetired, int EdgesAdded, int EdgesRetired, int ExpertiseDecayed)>
-        ProcessModifiedFileAsync(
-            string repoRoot,
-            string relativePath,
-            string commitSha,
-            int commitIndex,
-            List<HypergraphNode> changedNodes,
-            List<string> extractionErrors,
-            CancellationToken ct)
+    public void Start()
     {
-        this.logger.LogDebug("Processing modified file: {Path}", relativePath);
-
-        var normalizedPath = NormalizePath(relativePath);
-
-        var existingRawNodes = await this.QueryNodesByFilePathAsync(normalizedPath, ct).ConfigureAwait(false);
-        var existingNodes = existingRawNodes
-            .Select(n => new MemoryNode(n))
-            .Where(mn => mn.Version == null || mn.Version.UntilIndex == null)
-            .ToList();
-
-        var extractionOpts = new ExtractionOptions
+        if (this.repoRoot == null)
         {
-            CommitSha = commitSha,
-            CommitIndex = commitIndex,
-            GenerateEmbeddings = false,
-        };
-
-        ExtractionResult result;
-        try
-        {
-            result = await this.extractionPipeline.ExtractFilesAsync(
-                repoRoot, new[] { relativePath }, extractionOpts, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            this.logger.LogWarning(ex, "Extraction failed for modified file {Path}", relativePath);
-            extractionErrors.Add($"Modified file extraction failed: {relativePath} — {ex.Message}");
-            return (false, 0, 0, 0, 0, 0);
+            throw new InvalidOperationException("repoRoot not set. Use StartFileWatcher(repoRoot) or constructor overload.");
         }
 
-        // Surface partial extraction errors from ExtractionResult.Errors (§5.4).
-        if (result.Errors.Count > 0)
+        this.StartInternal();
+    }
+
+    /// <summary>
+    /// Stops the watcher and disposes resources.
+    /// </summary>
+    public void Stop()
+    {
+        this.StopInternal();
+    }
+
+    /// <summary>
+    /// Inject file-change events programmatically (for testing without a real watcher).
+    /// Coalescing rules handle editor atomic-save patterns (delete → create on the
+    /// same path) by treating that sequence as Modified rather than Deleted.
+    /// </summary>
+    public void InjectChange(string relativePath, FileChangeStatus status = FileChangeStatus.Modified)
+    {
+        lock (this.syncLock)
         {
-            foreach (var err in result.Errors)
+            if (this.pendingChanges.TryGetValue(relativePath, out var existing))
             {
-                extractionErrors.Add($"Modified file partial error: {relativePath} — {err}");
+                if (existing == FileChangeStatus.Deleted && status == FileChangeStatus.Created)
+                {
+                    // Atomic save pattern: editor deletes then recreates the file.
+                    // Treat as Modified so extraction runs on the recreated content
+                    // instead of retiring graph state.
+                    this.pendingChanges[relativePath] = FileChangeStatus.Modified;
+                }
+                else if (status == FileChangeStatus.Deleted)
+                {
+                    // Deleted overrides non-Deleted
+                    this.pendingChanges[relativePath] = FileChangeStatus.Deleted;
+                }
+                else if (existing != FileChangeStatus.Deleted)
+                {
+                    // Non-Deleted updates Non-Deleted (later status wins)
+                    this.pendingChanges[relativePath] = status;
+                }
+                // else: non-Created arriving after Deleted → keep Deleted
+            }
+            else
+            {
+                this.pendingChanges[relativePath] = status;
             }
 
-            this.logger.LogWarning(
-                "Extraction returned {ErrorCount} partial errors for modified file {Path}",
-                result.Errors.Count, relativePath);
+            this.ResetDebounceTimer();
+        }
+    }
+
+    /// <summary>
+    /// Process the debounced batch of changed files. Visible for testing.
+    /// Drains pendingChanges and delegates to <see cref="SyncFilesAsync(FileChangeEntry[], string, int, CancellationToken)"/>.
+    /// Serialized via <see cref="batchSemaphore"/> to prevent overlapping
+    /// timer callbacks from running concurrently.
+    /// </summary>
+    internal async Task ProcessBatchAsync()
+    {
+        await this.batchSemaphore.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (this.disposed)
+            {
+                return;
+            }
+
+            FileChangeEntry[] batch;
+            lock (this.syncLock)
+            {
+                if (this.pendingChanges.Count == 0)
+                {
+                    return;
+                }
+
+                batch = this.pendingChanges
+                    .Select(kv => new FileChangeEntry(kv.Key, kv.Value))
+                    .ToArray();
+                this.pendingChanges.Clear();
+            }
+
+            var newIndex = Interlocked.Increment(ref this.commitIndex);
+            var workingTreeSha = $"working-tree-{newIndex}";
+
+            this.logger.LogInformation(
+                "Processing batch of {Count} changed files at commit index {Index}",
+                batch.Length, newIndex);
+
+            var result = await this.SyncFilesAsync(batch, workingTreeSha, newIndex).ConfigureAwait(false);
+
+            this.BatchProcessed?.Invoke(this, new BatchProcessedEventArgs(
+                batch.Select(e => e.Path).ToArray(),
+                result.NodesAdded, result.NodesRetired,
+                result.EdgesAdded, result.EdgesRetired, result.ExpertiseDecayed));
+
+            this.logger.LogInformation(
+                "Batch complete: {NodesAdded} upserted, {NodesRetired} retired, {EdgesAdded} edges added, {EdgesRetired} edges retired, {ExpertiseDecayed} expertise decayed",
+                result.NodesAdded, result.NodesRetired, result.EdgesAdded, result.EdgesRetired, result.ExpertiseDecayed);
+        }
+        finally
+        {
+            this.batchSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Core sync logic shared by both <see cref="ApplyDiffAsync"/> and the
+    /// FileSystemWatcher trigger. Given a set of changed files with explicit status:
+    /// 1. Separate deleted (by explicit <see cref="FileChangeStatus"/>) vs existing files
+    /// 2. Retire nodes/edges for deleted files
+    /// 3. ContentHash check via <see cref="IFileSyncStateStore"/> AND existing graph node
+    ///    <see cref="MemoryMetadataKeys.FileContentHash"/>
+    /// 4. Extract ONCE with combined changed file set
+    /// 5. Diff extraction against graph baseline: upsert only changed nodes/edges,
+    ///    retire removed (using edge ownership by SourceFile metadata), apply expertise
+    ///    decay only for changed ContentHash nodes
+    /// 6. Upsert only NEW edges (not already in graph); retire graph edges owned by
+    ///    this file but missing from extraction
+    /// </summary>
+    internal async Task<SyncResult> SyncFilesAsync(
+        FileChangeEntry[] entries,
+        string commitSha,
+        int newIndex,
+        CancellationToken ct = default)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var versionRange = new VersionRange(commitSha, newIndex, null, null);
+
+        // ── Phase 1: Separate deleted vs non-deleted via explicit status ──
+        // Reconcile against filesystem state: even if marked Deleted, if the
+        // file now exists on disk (e.g., out-of-order watcher events or atomic
+        // saves that weren't fully coalesced), treat as Modified.
+        var deletedFiles = new List<string>();
+        var existingFiles = new List<string>();
+
+        foreach (var entry in entries)
+        {
+            var fullPath = Path.Combine(this.repoRoot!, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+
+            if (entry.Status == FileChangeStatus.Deleted)
+            {
+                if (File.Exists(fullPath))
+                {
+                    // File was marked deleted but exists on disk — atomic save
+                    // or out-of-order events. Treat as existing (Modified).
+                    existingFiles.Add(entry.Path);
+                    this.logger.LogDebug(
+                        "File {FilePath} marked Deleted but exists on disk — treating as Modified",
+                        entry.Path);
+                }
+                else
+                {
+                    deletedFiles.Add(entry.Path);
+                }
+            }
+            else
+            {
+                // For non-Deleted status, verify file actually exists on disk
+                if (!File.Exists(fullPath))
+                {
+                    deletedFiles.Add(entry.Path);
+                }
+                else
+                {
+                    existingFiles.Add(entry.Path);
+                }
+            }
         }
 
-        if (result.Nodes.Count == 0 && existingNodes.Count > 0)
+        var totalNodesAdded = 0;
+        var totalNodesRetired = 0;
+        var totalEdgesAdded = 0;
+        var totalEdgesRetired = 0;
+        var totalExpertiseDecayed = 0;
+
+        // ── Phase 2: Retire nodes for deleted files ──
+        foreach (var deletedPath in deletedFiles)
         {
-            // File now produces zero nodes (e.g., became empty or all symbols removed).
-            // Treat as "all old nodes removed" — retire them all. This is different from
-            // an extraction failure (which is caught above and skips the file).
-            this.logger.LogInformation(
-                "Extraction returned 0 nodes for modified file {Path} which had {OldCount} nodes — retiring all",
-                relativePath, existingNodes.Count);
+            var (nr, er) = await this.RetireNodesForFileAsync(deletedPath, newIndex, ct).ConfigureAwait(false);
+            totalNodesRetired += nr;
+            totalEdgesRetired += er;
 
-            int retiredCount = 0;
-            var emptyFileRetiredEdgeIds = new HashSet<string>();
+            totalExpertiseDecayed += await this.ApplyExpertiseDecayForFileAsync(
+                deletedPath, isSubstantiveChange: true, ct).ConfigureAwait(false);
 
-            // Collect edges before retiring nodes (for accurate counting)
-            foreach (var node in existingNodes)
+            await this.fileSyncState.RemoveAsync(deletedPath, ct).ConfigureAwait(false);
+
+            await this.LogAuditSafeAsync("file_deleted", new { path = deletedPath, nodesRetired = nr, edgesRetired = er }, ct).ConfigureAwait(false);
+        }
+
+        // ── Phase 3: ContentHash check via IFileSyncStateStore AND graph node FileContentHash ──
+        var filesToExtract = new List<string>();
+        var currentFileHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var requeuePaths = new List<string>();
+
+        foreach (var relativePath in existingFiles)
+        {
+            string currentHash;
+            try
             {
-                var edges = await this.graphStore.GetEdgesForNodeAsync(
-                    node.Inner.Id, null, ct).ConfigureAwait(false);
-                foreach (var edge in edges)
+                var fullPath = Path.Combine(this.repoRoot!, relativePath.Replace('/', Path.DirectorySeparatorChar));
+                currentHash = await ComputeFileHashWithRetryAsync(fullPath, ct).ConfigureAwait(false);
+            }
+            catch (IOException ex)
+            {
+                // File still locked after retries — requeue for next batch
+                this.logger.LogWarning(
+                    ex, "File {FilePath} locked after retries — requeueing for next batch",
+                    relativePath);
+                requeuePaths.Add(relativePath);
+                continue;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "Failed to compute hash for {FilePath} — skipping", relativePath);
+                continue;
+            }
+
+            // Check 1: compare against last-synced hash in the sync state store
+            var lastSyncedHash = await this.fileSyncState.GetContentHashAsync(relativePath, ct).ConfigureAwait(false);
+
+            if (string.Equals(lastSyncedHash, currentHash, StringComparison.OrdinalIgnoreCase))
+            {
+                this.logger.LogDebug(
+                    "ContentHash unchanged for {FilePath} (matches last-synced hash) — skipping",
+                    relativePath);
+                continue;
+            }
+
+            // Check 2: fall back to existing graph node FileContentHash when state store has no entry
+            if (lastSyncedHash == null)
+            {
+                var graphBaseline = await this.graphStore.GetNodesAsync(
+                    new NodeFilter { FilePath = relativePath },
+                    limit: 10_000,
+                    ct).ConfigureAwait(false);
+
+                if (graphBaseline.Count > 0)
                 {
-                    if (!IsRetiredEdge(edge))
+                    // Check ALL active nodes for the file — if every active node
+                    // has a matching FileContentHash (or ContentHash fallback), we
+                    // can skip. If any active node lacks the hash, proceed with
+                    // extraction. If NO active nodes exist (all are retired), we
+                    // must proceed with extraction to repopulate the graph.
+                    var allMatch = true;
+                    var activeNodeCount = 0;
+                    foreach (var gNode in graphBaseline)
                     {
-                        emptyFileRetiredEdgeIds.Add(edge.Id);
+                        // Skip already-retired nodes
+                        if (gNode.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) && ui != null)
+                        {
+                            continue;
+                        }
+
+                        activeNodeCount++;
+
+                        var graphFileHash = gNode.Metadata.TryGetValue(
+                            MemoryMetadataKeys.FileContentHash, out var gfh) ? gfh as string : null;
+
+                        if (graphFileHash == null)
+                        {
+                            graphFileHash = gNode.Metadata.TryGetValue(
+                                MemoryMetadataKeys.ContentHash, out var gh) ? gh as string : null;
+                        }
+
+                        if (graphFileHash == null ||
+                            !string.Equals(graphFileHash, currentHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            allMatch = false;
+                            break;
+                        }
+                    }
+
+                    if (allMatch && activeNodeCount > 0)
+                    {
+                        this.logger.LogDebug(
+                            "ContentHash unchanged for {FilePath} (all {Count} active graph nodes match) — skipping",
+                            relativePath, activeNodeCount);
+                        // Update sync state store so future checks are faster
+                        await this.fileSyncState.SetContentHashAsync(relativePath, currentHash, ct).ConfigureAwait(false);
+                        continue;
                     }
                 }
             }
 
-            // Mark incoming CALLS edges stale
-            foreach (var node in existingNodes)
+            filesToExtract.Add(relativePath);
+            currentFileHashes[relativePath] = currentHash;
+        }
+
+        // Requeue locked files for a future batch
+        if (requeuePaths.Count > 0)
+        {
+            lock (this.syncLock)
             {
-                await this.PropagateStaleEdgesAsync(node.Inner.Id, ct).ConfigureAwait(false);
-            }
-
-            // Retire all nodes (cascades to connected edges per §5.1)
-            foreach (var node in existingNodes)
-            {
-                await this.graphStore.RetireNodeAsync(node.Inner.Id, commitIndex, ct).ConfigureAwait(false);
-                retiredCount++;
-            }
-
-            return (true, 0, retiredCount, 0, emptyFileRetiredEdgeIds.Count, 0);
-        }
-
-        var newNodeMap = new Dictionary<string, HypergraphNode>();
-        foreach (var node in result.Nodes)
-        {
-            newNodeMap[node.Id] = node;
-        }
-
-        var existingNodeMap = new Dictionary<string, MemoryNode>();
-        foreach (var node in existingNodes)
-        {
-            existingNodeMap[node.Inner.Id] = node;
-        }
-
-        var fileNodeIds = new HashSet<string>(existingNodeMap.Keys);
-        foreach (var id in newNodeMap.Keys)
-        {
-            fileNodeIds.Add(id);
-        }
-
-        int nodesAdded = 0;
-        int nodesRetired = 0;
-        int expertiseDecayed = 0;
-        var modifiedNodeIds = new HashSet<string>();
-        var removedNodeIds = new HashSet<string>();
-
-        foreach (var (nodeId, newNode) in newNodeMap)
-        {
-            if (existingNodeMap.TryGetValue(nodeId, out var existingNode))
-            {
-                var oldHash = existingNode.ContentHash;
-                var newHash = newNode.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var h)
-                    ? h?.ToString() : null;
-
-                if (oldHash != newHash)
+                foreach (var path in requeuePaths)
                 {
-                    modifiedNodeIds.Add(nodeId);
-                    changedNodes.Add(newNode);
-                }
-            }
-            else
-            {
-                changedNodes.Add(newNode);
-            }
-        }
-
-        foreach (var (nodeId, _) in existingNodeMap)
-        {
-            if (!newNodeMap.ContainsKey(nodeId))
-            {
-                removedNodeIds.Add(nodeId);
-            }
-        }
-
-        // (A) Mark incoming CALLS edges stale for modified nodes (§3.6 step 8)
-        foreach (var modifiedNodeId in modifiedNodeIds)
-        {
-            await this.PropagateStaleEdgesAsync(modifiedNodeId, ct).ConfigureAwait(false);
-        }
-
-        // (B) Collect old file-owned edges for diffing, filtering out already-retired edges
-        var oldFileOwnedEdges = new Dictionary<string, Hyperedge>();
-        foreach (var existingNode in existingNodes)
-        {
-            var edges = await this.graphStore.GetEdgesForNodeAsync(
-                existingNode.Inner.Id, null, ct).ConfigureAwait(false);
-            foreach (var edge in edges)
-            {
-                if (IsRetiredEdge(edge))
-                {
-                    continue;
+                    this.pendingChanges.TryAdd(path, FileChangeStatus.Modified);
                 }
 
-                if (IsFileOwnedEdge(edge, fileNodeIds))
+                if (this.pendingChanges.Count > 0)
                 {
-                    oldFileOwnedEdges.TryAdd(edge.Id, edge);
+                    this.ResetDebounceTimer();
                 }
             }
         }
 
-        var newEdgeMap = new Dictionary<string, Hyperedge>();
-        foreach (var edge in result.Edges)
+        if (filesToExtract.Count == 0)
         {
-            newEdgeMap[edge.Id] = edge;
+            stopwatch.Stop();
+            return new SyncResult(
+                entries.Length, totalNodesAdded, totalNodesRetired,
+                totalEdgesAdded, totalEdgesRetired, totalExpertiseDecayed, stopwatch.Elapsed);
         }
 
-        // Track all edge IDs retired in this operation to avoid double-counting
-        var retiredEdgeIds = new HashSet<string>();
-
-        // (C) Before retiring removed nodes, collect ALL edges connected to them
-        //     (including incoming cross-file edges) for cascade counting.
-        foreach (var removedNodeId in removedNodeIds)
+        // ── Phase 4: Extract ONCE with combined changed file set ──
+        ExtractionResult extractionResult;
+        try
         {
-            var edges = await this.graphStore.GetEdgesForNodeAsync(
-                removedNodeId, null, ct).ConfigureAwait(false);
-            foreach (var edge in edges)
-            {
-                if (!IsRetiredEdge(edge))
-                {
-                    retiredEdgeIds.Add(edge.Id);
-                }
-            }
-        }
-
-        // (D) Retire old file-owned edges not in the new extraction (and not
-        //     already covered by cascade from removed nodes)
-        foreach (var (oldEdgeId, _) in oldFileOwnedEdges)
-        {
-            if (!newEdgeMap.ContainsKey(oldEdgeId))
-            {
-                retiredEdgeIds.Add(oldEdgeId);
-                await this.graphStore.RetireEdgeAsync(oldEdgeId, commitIndex, ct).ConfigureAwait(false);
-            }
-        }
-
-        // (E) Upsert modified nodes via UpsertNodeAsync. Per §5.1 temporal upsert
-        //     semantics, UpsertNodeAsync atomically closes the previous active version
-        //     (sets its UntilIndex = newVersion.SinceIndex) before creating the
-        //     successor. This preserves temporal history without cascading edge
-        //     retirement — edges reference the logical node ID and remain valid.
-        var newVersion = new VersionRange(commitSha, commitIndex, null, null);
-        foreach (var modifiedNodeId in modifiedNodeIds)
-        {
-            await this.graphStore.UpsertNodeAsync(
-                newNodeMap[modifiedNodeId], newVersion, ct).ConfigureAwait(false);
-            nodesAdded++;
-        }
-
-        // (F) Upsert truly new nodes (not in old extraction) with new SinceIndex
-        foreach (var (nodeId, newNode) in newNodeMap)
-        {
-            if (!existingNodeMap.ContainsKey(nodeId))
-            {
-                await this.graphStore.UpsertNodeAsync(newNode, newVersion, ct).ConfigureAwait(false);
-                nodesAdded++;
-            }
-        }
-
-        // (G) Retire removed nodes via RetireNodeAsync (cascades to edges per §5.1).
-        foreach (var nodeId in removedNodeIds)
-        {
-            await this.graphStore.RetireNodeAsync(nodeId, commitIndex, ct).ConfigureAwait(false);
-            nodesRetired++;
-        }
-
-        // (H) Handle new/changed edges. For changed edges, retire the old version
-        //     and create a successor using the SAME deterministic edge ID. The store's
-        //     CreateEdgeAsync overwrites the retired dict entry, which is correct
-        //     because RetireEdgeAsync only sets metadata on the existing object.
-        //     Using the original ID ensures future extractions can match against
-        //     active edges without version-suffix drift.
-        int edgesAdded = 0;
-        foreach (var (edgeId, newEdge) in newEdgeMap)
-        {
-            if (!oldFileOwnedEdges.TryGetValue(edgeId, out var oldEdge))
-            {
-                StampEdgeVersion(newEdge, commitSha, commitIndex);
-                await this.graphStore.CreateEdgeAsync(newEdge, ct).ConfigureAwait(false);
-                edgesAdded++;
-            }
-            else if (HasEdgeChanged(oldEdge, newEdge))
-            {
-                retiredEdgeIds.Add(edgeId);
-                await this.graphStore.RetireEdgeAsync(edgeId, commitIndex, ct).ConfigureAwait(false);
-
-                // Create successor edge using the original deterministic ID.
-                // The old edge was retired in-place (metadata mutation); CreateEdgeAsync
-                // overwrites the dict entry so the active edge uses the canonical ID
-                // that future extractions will produce.
-                StampEdgeVersion(newEdge, commitSha, commitIndex);
-                await this.graphStore.CreateEdgeAsync(newEdge, ct).ConfigureAwait(false);
-                edgesAdded++;
-            }
-        }
-
-        // (I) Trigger event-driven expertise decay (§3.5.1, §3.6 step 10).
-        //     After applying decay, entries whose confidence falls below
-        //     ArchiveConfidenceFloor are archived to maintain quality.
-        foreach (var modifiedNodeId in modifiedNodeIds)
-        {
-            double decayFactor = this.DetermineDecayFactor(modifiedNodeId, existingNodeMap, newNodeMap);
-            var decayed = await this.ApplyEventDrivenDecayAsync(
-                modifiedNodeId, decayFactor, ct).ConfigureAwait(false);
-            expertiseDecayed += decayed;
-        }
-
-        return (true, nodesAdded, nodesRetired, edgesAdded, retiredEdgeIds.Count, expertiseDecayed);
-    }
-
-    /// <summary>
-    /// Processes a renamed file: extracts the new path first, then retires the old
-    /// path only if extraction succeeds. This prevents data loss when extraction fails.
-    /// </summary>
-    private async Task<(bool Processed, int NodesAdded, int NodesRetired, int EdgesAdded, int EdgesRetired)>
-        ProcessRenamedFileAsync(
-            string repoRoot,
-            string oldPath,
-            string newPath,
-            string commitSha,
-            int commitIndex,
-            List<HypergraphNode> changedNodes,
-            List<string> extractionErrors,
-            CancellationToken ct)
-    {
-        this.logger.LogDebug("Processing renamed file: {OldPath} → {NewPath}", oldPath, newPath);
-
-        // Extract the new path FIRST — if extraction fails, skip the whole rename
-        // without retiring the old path (prevents data loss).
-        var addResult = await this.ProcessAddedFileAsync(
-            repoRoot, newPath, commitSha, commitIndex, changedNodes, extractionErrors, ct).ConfigureAwait(false);
-
-        if (!addResult.Processed)
-        {
-            this.logger.LogWarning(
-                "Extraction failed for renamed file new path {NewPath} — skipping entire rename", newPath);
-            return (false, 0, 0, 0, 0);
-        }
-
-        // Old path succeeded, now retire the old path
-        var (nodesRetired, edgesRetired) = await this.ProcessDeletedFileAsync(
-            oldPath, commitIndex, ct).ConfigureAwait(false);
-
-        return (true, addResult.NodesAdded, nodesRetired, addResult.EdgesAdded, edgesRetired);
-    }
-
-    /// <summary>
-    /// Processes a deleted file per architecture.md §3.6 steps 6-7:
-    /// (1) Collect all edges connected to ANY file nodes (active + historical).
-    ///     Uses GetEdgesForNodeAsync which returns edges from the store regardless
-    ///     of whether the node is active — ensuring orphaned edges connected to
-    ///     previously retired node versions are also found.
-    /// (2) Mark incoming CALLS edges stale so callers know the target is gone.
-    /// (3) Identify which edges will be cascade-retired by RetireNodeAsync vs orphaned.
-    /// (4) Retire all active nodes via RetireNodeAsync (cascades to connected edges §5.1).
-    /// (5) Explicitly retire only orphaned edges not covered by the cascade.
-    /// </summary>
-    private async Task<(int NodesRetired, int EdgesRetired)> ProcessDeletedFileAsync(
-        string relativePath,
-        int commitIndex,
-        CancellationToken ct)
-    {
-        this.logger.LogDebug("Processing deleted file: {Path}", relativePath);
-
-        var normalizedPath = NormalizePath(relativePath);
-
-        // Query ALL nodes for this file path, including previously retired versions.
-        // This is critical for orphan edge cleanup: edges may reference historical
-        // node versions that GetNodesAsync(default) would exclude. Without IncludeRetired,
-        // orphaned edges connected to already-retired nodes would be missed.
-        var allFileNodes = await this.graphStore.GetNodesAsync(
-            new NodeFilter { FilePath = normalizedPath, IncludeRetired = true },
-            limit: 10_000, ct).ConfigureAwait(false);
-
-        if (allFileNodes.Count == 0)
-        {
-            // Fall back: parsers may store OS-native backslash paths on Windows
-            var backslashPath = normalizedPath.Replace('/', '\\');
-            if (backslashPath != normalizedPath)
-            {
-                allFileNodes = await this.graphStore.GetNodesAsync(
-                    new NodeFilter { FilePath = backslashPath, IncludeRetired = true },
-                    limit: 10_000, ct).ConfigureAwait(false);
-            }
-        }
-
-        var activeNodes = allFileNodes
-            .Where(n =>
-            {
-                var ver = VersionRangeHelper.ExtractVersion(n.Metadata);
-                return ver == null || ver.UntilIndex == null;
-            })
-            .ToList();
-
-        int nodesRetired = 0;
-        var activeNodeIds = new HashSet<string>(activeNodes.Select(n => n.Id));
-        var allNodeIds = new HashSet<string>(allFileNodes.Select(n => n.Id));
-
-        // (1) Collect all unique active edges connected to ANY node in this file.
-        //     Query every node ID (active and historical) to catch orphaned edges
-        //     that reference nodes the store may have retired or excluded from
-        //     GetNodesAsync results.
-        var allEdges = new Dictionary<string, Hyperedge>();
-        foreach (var node in allFileNodes)
-        {
-            var edges = await this.graphStore.GetEdgesForNodeAsync(
-                node.Id, null, ct).ConfigureAwait(false);
-            foreach (var edge in edges)
-            {
-                if (!IsRetiredEdge(edge))
-                {
-                    allEdges.TryAdd(edge.Id, edge);
-                }
-            }
-        }
-
-        // (2) Mark incoming CALLS edges stale so callers know the target is gone
-        foreach (var (edgeId, edge) in allEdges)
-        {
-            if (!IsCallsEdge(edge))
-            {
-                continue;
-            }
-
-            foreach (var (nodeId, role) in edge.Roles)
-            {
-                if (role == "callee" && allNodeIds.Contains(nodeId))
-                {
-                    await this.graphStore.UpdateEdgeMetadataAsync(
-                        edgeId,
-                        new Dictionary<string, object?> { [MemoryMetadataKeys.Stale] = true },
-                        ct).ConfigureAwait(false);
-                    break;
-                }
-            }
-        }
-
-        // (3) Identify cascade-covered edges (connected to active nodes that will be retired)
-        var cascadeCoveredEdgeIds = new HashSet<string>();
-        foreach (var node in activeNodes)
-        {
-            foreach (var (edgeId, edge) in allEdges)
-            {
-                if (edge.NodeIds.Contains(node.Id))
-                {
-                    cascadeCoveredEdgeIds.Add(edgeId);
-                }
-            }
-        }
-
-        // (4) Retire all active nodes. RetireNodeAsync cascades to connected edges (§5.1).
-        foreach (var node in activeNodes)
-        {
-            await this.graphStore.RetireNodeAsync(node.Id, commitIndex, ct).ConfigureAwait(false);
-            nodesRetired++;
-        }
-
-        // (5) Explicitly retire orphaned edges not covered by the cascade.
-        //     These are edges connected to historical (already retired) node versions
-        //     or edges whose node references are not in the active set.
-        int orphanedEdgesRetired = 0;
-        foreach (var (edgeId, _) in allEdges)
-        {
-            if (!cascadeCoveredEdgeIds.Contains(edgeId))
-            {
-                await this.graphStore.RetireEdgeAsync(edgeId, commitIndex, ct).ConfigureAwait(false);
-                orphanedEdgesRetired++;
-            }
-        }
-
-        int edgesRetired = cascadeCoveredEdgeIds.Count + orphanedEdgesRetired;
-        return (nodesRetired, edgesRetired);
-    }
-
-    /// <summary>
-    /// Applies event-driven expertise decay per architecture.md §3.5.1.
-    /// Fetches expertise entries for the target node, multiplies stored
-    /// Confidence by the decay factor, and persists the result via
-    /// IMemoryGraphStore.UpsertExpertiseAsync. Entries whose confidence
-    /// falls below ArchiveConfidenceFloor are archived to maintain quality.
-    /// </summary>
-    private async Task<int> ApplyEventDrivenDecayAsync(
-        string targetNodeId,
-        double decayFactor,
-        CancellationToken ct)
-    {
-        var entries = await this.graphStore.GetExpertiseForNodeAsync(
-            targetNodeId, 0.0, ct).ConfigureAwait(false);
-
-        if (entries.Count == 0)
-        {
-            return 0;
-        }
-
-        int decayed = 0;
-        foreach (var entry in entries)
-        {
-            var newConfidence = entry.Confidence * decayFactor;
-
-            // Per architecture.md §3.5.1 (lines 456-458): event-driven decay
-            // ALWAYS persists the decayed confidence immediately. This stored value
-            // is the "event-adjusted confidence" reflecting all accumulated decays.
-            var updated = entry.WithConfidence(newConfidence);
-            await this.graphStore.UpsertExpertiseAsync(updated, ct).ConfigureAwait(false);
-
-            if (newConfidence < this.options.ArchiveConfidenceFloor)
-            {
-                // Confidence fell below floor — archive AFTER persisting the
-                // decayed confidence, so the archived entry retains the
-                // multiplied value per architecture.md §3.5.1.
-                await this.graphStore.ArchiveExpertiseAsync(entry.Id, ct).ConfigureAwait(false);
-                this.logger.LogDebug(
-                    "Event-driven decay: expertise {Id} confidence {Old:F3} → {New:F3} < floor {Floor} — persisted then archived",
-                    entry.Id, entry.Confidence, newConfidence, this.options.ArchiveConfidenceFloor);
-            }
-            else
-            {
-                this.logger.LogDebug(
-                    "Event-driven decay: expertise {Id} confidence {Old:F3} → {New:F3} (factor {Factor})",
-                    entry.Id, entry.Confidence, newConfidence, decayFactor);
-            }
-
-            decayed++;
-        }
-
-        return decayed;
-    }
-
-    private static bool IsFileOwnedEdge(Hyperedge edge, HashSet<string> fileNodeIds)
-    {
-        foreach (var (nodeId, role) in edge.Roles)
-        {
-            if (fileNodeIds.Contains(nodeId) &&
-                (role == "caller" || role == "source" || role == "parent" || role == "importer"))
-            {
-                return true;
-            }
-        }
-
-        bool hasDirectionalRole = edge.Roles.Values.Any(
-            r => r == "caller" || r == "source" || r == "parent" || r == "importer");
-        if (!hasDirectionalRole)
-        {
-            return edge.NodeIds.Any(fileNodeIds.Contains);
-        }
-
-        return false;
-    }
-
-    private static bool HasEdgeChanged(Hyperedge oldEdge, Hyperedge newEdge)
-    {
-        if (!oldEdge.NodeIds.SequenceEqual(newEdge.NodeIds))
-        {
-            return true;
-        }
-
-        if (oldEdge.Roles.Count != newEdge.Roles.Count)
-        {
-            return true;
-        }
-
-        foreach (var (nodeId, oldRole) in oldEdge.Roles)
-        {
-            if (!newEdge.Roles.TryGetValue(nodeId, out var newRole) || oldRole != newRole)
-            {
-                return true;
-            }
-        }
-
-        var ignoredKeys = new HashSet<string>
-        {
-            MemoryMetadataKeys.SinceCommit,
-            MemoryMetadataKeys.SinceIndex,
-            MemoryMetadataKeys.UntilCommit,
-            MemoryMetadataKeys.UntilIndex,
-            MemoryMetadataKeys.Stale,
-        };
-
-        var oldFiltered = oldEdge.Metadata
-            .Where(kv => !ignoredKeys.Contains(kv.Key))
-            .OrderBy(kv => kv.Key)
-            .ToList();
-        var newFiltered = newEdge.Metadata
-            .Where(kv => !ignoredKeys.Contains(kv.Key))
-            .OrderBy(kv => kv.Key)
-            .ToList();
-
-        if (oldFiltered.Count != newFiltered.Count)
-        {
-            return true;
-        }
-
-        for (int i = 0; i < oldFiltered.Count; i++)
-        {
-            if (oldFiltered[i].Key != newFiltered[i].Key)
-            {
-                return true;
-            }
-
-            var oldVal = oldFiltered[i].Value?.ToString();
-            var newVal = newFiltered[i].Value?.ToString();
-            if (oldVal != newVal)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private async Task PropagateStaleEdgesAsync(string modifiedNodeId, CancellationToken ct)
-    {
-        var edges = await this.graphStore.GetEdgesForNodeAsync(
-            modifiedNodeId, null, ct).ConfigureAwait(false);
-
-        foreach (var edge in edges)
-        {
-            if (!IsCallsEdge(edge))
-            {
-                continue;
-            }
-
-            bool isCallee = edge.Roles.TryGetValue(modifiedNodeId, out var role) && role == "callee";
-            if (!isCallee)
-            {
-                continue;
-            }
-
-            await this.graphStore.UpdateEdgeMetadataAsync(
-                edge.Id,
-                new Dictionary<string, object?> { [MemoryMetadataKeys.Stale] = true },
+            extractionResult = await this.extractionPipeline.ExtractFilesAsync(
+                this.repoRoot!,
+                filesToExtract,
+                new ExtractionOptions(
+                    Languages: new[] { "C#", "PowerShell" },
+                    CommitSha: commitSha,
+                    CommitIndex: newIndex),
                 ct).ConfigureAwait(false);
         }
-    }
-
-    private static bool IsCallsEdge(Hyperedge edge)
-    {
-        return edge.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var relation)
-            && relation is string rel
-            && rel == "CALLS";
-    }
-
-    private static bool IsRetiredEdge(Hyperedge edge)
-    {
-        return edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var val)
-            && val is not null;
-    }
-
-    private double DetermineDecayFactor(
-        string nodeId,
-        Dictionary<string, MemoryNode> existingNodeMap,
-        Dictionary<string, HypergraphNode> newNodeMap)
-    {
-        if (!existingNodeMap.TryGetValue(nodeId, out var oldNode) ||
-            !newNodeMap.TryGetValue(nodeId, out var newNode))
+        catch (Exception ex)
         {
-            return this.options.StaleDecayFactor;
+            this.logger.LogError(ex, "Extraction failed for batch — watcher continues running");
+            stopwatch.Stop();
+            return new SyncResult(
+                entries.Length, totalNodesAdded, totalNodesRetired,
+                totalEdgesAdded, totalEdgesRetired, totalExpertiseDecayed, stopwatch.Elapsed);
         }
 
-        var oldSource = GetSourceText(oldNode.Inner);
-        var newSource = GetSourceText(newNode);
-
-        if (oldSource is null || newSource is null)
+        // Log extraction errors per-file but don't abort the entire batch
+        if (extractionResult.Errors.Count > 0)
         {
-            // When SourceCode metadata is unavailable, we cannot distinguish
-            // whitespace-only from substantive changes. The ContentHash already
-            // changed (which triggered this decay path), so default to the
-            // aggressive StaleDecayFactor (0.5) to correctly penalize what
-            // is presumed to be a substantive change. This avoids under-decaying
-            // expertise when source metadata is missing.
-            this.logger.LogDebug(
-                "SourceCode metadata unavailable for node {NodeId} — defaulting to StaleDecayFactor (substantive)",
-                nodeId);
-            return this.options.StaleDecayFactor;
-        }
-
-        var language = oldNode.Inner.Language;
-        var oldNormalized = NormalizeForComparison(oldSource, language);
-        var newNormalized = NormalizeForComparison(newSource, language);
-
-        return oldNormalized == newNormalized
-            ? this.options.MinorDecayFactor
-            : this.options.StaleDecayFactor;
-    }
-
-    private static string? GetSourceText(HypergraphNode node)
-    {
-        return node.Metadata.TryGetValue(MemoryMetadataKeys.SourceCode, out var code) && code is string s
-            ? s : null;
-    }
-
-    /// <summary>
-    /// Strips whitespace and comment styles for minor-change detection.
-    /// Language-aware: C# uses <c>//</c> and <c>/* */</c> comments;
-    /// PowerShell uses <c>#</c> and <c>&lt;# #&gt;</c>.
-    /// String literal content (including whitespace within strings) is preserved.
-    /// </summary>
-    internal static string NormalizeForComparison(string source, string? language = null)
-    {
-        bool isPs = string.Equals(language, "PowerShell", StringComparison.OrdinalIgnoreCase);
-
-        var sb = new System.Text.StringBuilder(source.Length);
-        bool inLineComment = false;
-        bool inBlockComment = false;
-        bool inString = false;
-        bool inVerbatimString = false;
-        char stringDelimiter = '\0';
-
-        for (int i = 0; i < source.Length; i++)
-        {
-            var c = source[i];
-
-            if (inBlockComment)
+            foreach (var error in extractionResult.Errors)
             {
-                if (c == '*' && i + 1 < source.Length && source[i + 1] == '/')
-                {
-                    inBlockComment = false;
-                    i++;
-                }
+                this.logger.LogWarning("Extraction error: {Error}", error);
+            }
+        }
 
+        // Build a set of paths that the pipeline skipped (unsupported extension).
+        // Do NOT retire existing graph nodes for skipped files.
+        var skippedPathSet = new HashSet<string>(
+            extractionResult.SkippedPaths,
+            StringComparer.OrdinalIgnoreCase);
+
+        // ── Phase 5: Diff extraction results against graph baseline ──
+        var newNodesByFile = extractionResult.ExtractedNodes
+            .GroupBy(n => n.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        // Build set of all newly extracted edge IDs for diffing
+        var newEdgeIds = new HashSet<string>(
+            extractionResult.ExtractedEdges.Select(e => e.Id),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var relativePath in filesToExtract)
+        {
+            // Skip files that the pipeline couldn't handle (e.g., unsupported extension)
+            if (skippedPathSet.Contains(relativePath))
+            {
+                this.logger.LogDebug(
+                    "File {FilePath} was skipped by pipeline — preserving existing graph state",
+                    relativePath);
                 continue;
             }
 
-            if (inLineComment)
+            // Skip files that had extraction errors — preserve existing graph state
+            if (extractionResult.Errors.Any(e => e.Contains(relativePath, StringComparison.OrdinalIgnoreCase)))
             {
-                if (c == '\n')
+                if (!newNodesByFile.ContainsKey(relativePath))
                 {
-                    inLineComment = false;
+                    this.logger.LogWarning(
+                        "Extraction error for {FilePath} — preserving existing graph state",
+                        relativePath);
+                    continue;
                 }
-
-                continue;
             }
 
-            if (inString)
+            // Get existing graph nodes for this file (the "from" baseline)
+            var existingNodes = await this.graphStore.GetNodesAsync(
+                new NodeFilter { FilePath = relativePath },
+                limit: 10_000,
+                ct).ConfigureAwait(false);
+
+            // Filter to only active nodes (no UntilIndex set)
+            var activeExistingNodes = existingNodes
+                .Where(n => !n.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) || ui == null)
+                .ToList();
+
+            var existingNodeMap = activeExistingNodes
+                .ToDictionary(n => n.Id, n => n, StringComparer.OrdinalIgnoreCase);
+
+            // Build a secondary index by stable key (NodeType:Scope:Name) for
+            // matching nodes when Roslyn line-number-based IDs shift due to
+            // whitespace/comment-only edits. Multiple nodes may share a key
+            // (e.g., overloads), so we use a list.
+            var existingNodesByStableKey = new Dictionary<string, List<HypergraphNode>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var node in activeExistingNodes)
             {
-                if (inVerbatimString)
+                var stableKey = GetNodeStableKey(node);
+                if (!existingNodesByStableKey.TryGetValue(stableKey, out var list))
                 {
-                    if (c == '"' && i + 1 < source.Length && source[i + 1] == '"')
+                    list = new List<HypergraphNode>();
+                    existingNodesByStableKey[stableKey] = list;
+                }
+
+                list.Add(node);
+            }
+
+            // Track which existing nodes were matched (by stable key) to avoid
+            // double-retiring them in Phase 5b.
+            var matchedExistingNodeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var newNodes = newNodesByFile.GetValueOrDefault(relativePath) ?? new List<HypergraphNode>();
+            var newNodeIdsForFile = new HashSet<string>(
+                newNodes.Select(n => n.Id),
+                StringComparer.OrdinalIgnoreCase);
+
+            // Per-node decay tracking: maps nodeId → true (substantive) or false (minor).
+            // Only nodes that actually changed get an entry — unchanged nodes are excluded
+            // so their expertise is NOT decayed (architecture guidance: target changed code nodes).
+            var nodeDecayMap = new Dictionary<string, NodeDecayKind>(StringComparer.OrdinalIgnoreCase);
+
+            // Track new node IDs that need semantic re-indexing (substantive changes only)
+            var reindexNodeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Compute file prefix for edge ownership checks (used in 5b and 5c)
+            var filePrefix = ComputeContentHash(relativePath)[..8];
+
+            // ── Phase 5a: UPSERT only nodes whose ContentHash actually changed ──
+            // Match new nodes against existing by ID first, then by stable key
+            // (NodeType:Scope:Name) to handle Roslyn line-number-based ID shifts.
+            foreach (var newNode in newNodes)
+            {
+                var newContentHash = newNode.Metadata.TryGetValue(
+                    MemoryMetadataKeys.ContentHash, out var nch) ? nch as string : null;
+
+                // Try direct ID match first
+                HypergraphNode? matchedExisting = null;
+                if (existingNodeMap.TryGetValue(newNode.Id, out var directMatch))
+                {
+                    matchedExisting = directMatch;
+                    matchedExistingNodeIds.Add(directMatch.Id);
+                }
+                else
+                {
+                    // Fallback: match by stable key (NodeType:Scope:Name).
+                    // This handles Roslyn extractors that embed line numbers
+                    // in node IDs — when whitespace shifts lines, the ID changes
+                    // but the stable key stays the same.
+                    var stableKey = GetNodeStableKey(newNode);
+                    if (existingNodesByStableKey.TryGetValue(stableKey, out var candidates))
                     {
-                        sb.Append(c);
-                        sb.Append(source[i + 1]);
-                        i++;
+                        // Pick the first unmatched candidate with same stable key
+                        foreach (var candidate in candidates)
+                        {
+                            if (!matchedExistingNodeIds.Contains(candidate.Id))
+                            {
+                                matchedExisting = candidate;
+                                matchedExistingNodeIds.Add(candidate.Id);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (matchedExisting != null)
+                {
+                    var existingContentHash = matchedExisting.Metadata.TryGetValue(
+                        MemoryMetadataKeys.ContentHash, out var ech) ? ech as string : null;
+
+                    if (string.Equals(existingContentHash, newContentHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Node structural hash unchanged despite file content change —
+                        // this is a minor change (whitespace/comment-only edit).
+                        // Per-node: only mark for decay if the node ID shifted (line change).
+                        // If ID is the same, no decay at all — the node content is identical.
+
+                        // If the node ID changed (line shift), retire old and upsert new
+                        // so the graph stays current — but still treat as minor change.
+                        if (!string.Equals(matchedExisting.Id, newNode.Id, StringComparison.OrdinalIgnoreCase))
+                        {
+                            await this.RetireNodeWithoutCascadeAsync(matchedExisting.Id, commitSha, newIndex, ct).ConfigureAwait(false);
+                            totalNodesRetired++;
+                            await this.graphStore.UpsertNodeAsync(newNode, versionRange, ct).ConfigureAwait(false);
+                            totalNodesAdded++;
+                            // Minor decay only for the shifted node (structure didn't change)
+                            MarkNodeForDecay(nodeDecayMap, matchedExisting.Id, NodeDecayKind.Minor);
+                            await this.LogAuditSafeAsync("node_id_shifted", new { oldId = matchedExisting.Id, newId = newNode.Id, file = relativePath }, ct).ConfigureAwait(false);
+                        }
+
+                        // Node with same ID and same ContentHash → no entry in decay map,
+                        // no expertise decay occurs for this specific node.
                         continue;
                     }
 
-                    if (c == '"')
+                    // ContentHash changed — determine if minor or substantive
+                    if (IsMinorChange(matchedExisting, newNode))
                     {
-                        inString = false;
-                        inVerbatimString = false;
+                        MarkNodeForDecay(nodeDecayMap, matchedExisting.Id, NodeDecayKind.Minor);
+                    }
+                    else
+                    {
+                        MarkNodeForDecay(nodeDecayMap, matchedExisting.Id, NodeDecayKind.Substantive);
+                        reindexNodeIds.Add(newNode.Id);
+                    }
+
+                    // If the node ID changed, retire old first (without cascade — edge/expertise
+                    // handling is done separately in Phases 5b–5e)
+                    if (!string.Equals(matchedExisting.Id, newNode.Id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        await this.RetireNodeWithoutCascadeAsync(matchedExisting.Id, commitSha, newIndex, ct).ConfigureAwait(false);
+                        totalNodesRetired++;
                     }
                 }
                 else
                 {
-                    if (c == '\\' && i + 1 < source.Length)
+                    // New node — no existing expertise to decay (brand new code).
+                    // Mark for re-indexing since it's genuinely new content.
+                    reindexNodeIds.Add(newNode.Id);
+                }
+
+                await this.graphStore.UpsertNodeAsync(newNode, versionRange, ct).ConfigureAwait(false);
+                totalNodesAdded++;
+
+                await this.LogAuditSafeAsync("node_upserted", new { nodeId = newNode.Id, file = relativePath }, ct).ConfigureAwait(false);
+            }
+
+            // ── Phase 5b: RETIRE nodes in graph but NOT in new extraction ──
+            // A node is "unmatched" if its ID is not in the new extraction AND it
+            // was not matched by stable key in Phase 5a (line-shift scenario).
+            // Uses non-cascading retire so IncrementalSync controls edge/expertise fate.
+            foreach (var existingNode in activeExistingNodes)
+            {
+                if (newNodeIdsForFile.Contains(existingNode.Id))
+                {
+                    continue;
+                }
+
+                if (matchedExistingNodeIds.Contains(existingNode.Id))
+                {
+                    // Already handled in Phase 5a (stable-key match with ID shift)
+                    continue;
+                }
+
+                // Selectively handle connected edges BEFORE retiring the node.
+                // File-owned edges are retired; cross-file edges are marked stale
+                // so their source file's next sync can decide their fate.
+                var edges = await this.graphStore.GetEdgesForNodeAsync(existingNode.Id, null, ct).ConfigureAwait(false);
+                foreach (var edge in edges)
+                {
+                    if (edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var eui) && eui != null)
                     {
-                        sb.Append(c);
-                        sb.Append(source[i + 1]);
-                        i++;
                         continue;
                     }
 
-                    if (c == stringDelimiter)
+                    if (IsEdgeOwnedByFile(edge, relativePath, filePrefix))
                     {
-                        inString = false;
-                    }
-                }
-
-                sb.Append(c);
-                continue;
-            }
-
-            if (c == '@' && i + 1 < source.Length && source[i + 1] == '"')
-            {
-                inString = true;
-                inVerbatimString = true;
-                stringDelimiter = '"';
-                sb.Append(c);
-                sb.Append(source[i + 1]);
-                i++;
-                continue;
-            }
-
-            if (c == '"' || c == '\'')
-            {
-                inString = true;
-                inVerbatimString = false;
-                stringDelimiter = c;
-                sb.Append(c);
-                continue;
-            }
-
-            if (c == '/' && i + 1 < source.Length && source[i + 1] == '*')
-            {
-                inBlockComment = true;
-                i++;
-                continue;
-            }
-
-            if (c == '/' && i + 1 < source.Length && source[i + 1] == '/')
-            {
-                inLineComment = true;
-                i++;
-                continue;
-            }
-
-            if (isPs)
-            {
-                if (c == '#')
-                {
-                    inLineComment = true;
-                    continue;
-                }
-
-                if (c == '<' && i + 1 < source.Length && source[i + 1] == '#')
-                {
-                    int end = source.IndexOf("#>", i + 2, StringComparison.Ordinal);
-                    if (end >= 0)
-                    {
-                        i = end + 1;
+                        await this.graphStore.RetireEdgeAsync(edge.Id, newIndex, ct).ConfigureAwait(false);
+                        totalEdgesRetired++;
+                        await this.LogAuditSafeAsync("edge_retired_with_node", new { edgeId = edge.Id, nodeId = existingNode.Id }, ct).ConfigureAwait(false);
                     }
                     else
                     {
-                        i = source.Length - 1;
+                        // Cross-file edge: mark as stale but preserve it. The edge's
+                        // source file will handle retirement on its next sync.
+                        await this.graphStore.UpdateEdgeMetadataAsync(
+                            edge.Id,
+                            new Dictionary<string, object?> { [MemoryMetadataKeys.Stale] = true },
+                            ct).ConfigureAwait(false);
                     }
-
-                    continue;
                 }
+
+                // Retire the node itself without cascade (edges handled above,
+                // expertise decay handled in Phase 5e)
+                await this.RetireNodeWithoutCascadeAsync(existingNode.Id, commitSha, newIndex, ct).ConfigureAwait(false);
+                totalNodesRetired++;
+                MarkNodeForDecay(nodeDecayMap, existingNode.Id, NodeDecayKind.Substantive);
+
+                await this.LogAuditSafeAsync("node_retired", new { nodeId = existingNode.Id, file = relativePath }, ct).ConfigureAwait(false);
             }
 
-            if (!char.IsWhiteSpace(c))
+            // ── Phase 5c: RETIRE edges OWNED BY THIS FILE that are absent from extraction ──
+            // Only retire edges where SourceFile metadata matches the current file,
+            // OR where the edge ID has the file's prefix (legacy fallback).
+            // Cross-file, incoming, semantic, and expertise edges are preserved.
+            // Check edges for both direct-ID-matched AND stable-key-matched existing nodes.
+            var checkedEdgeNodeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var node in newNodes)
             {
-                sb.Append(c);
+                // The node may match an existing node by direct ID or by stable key.
+                // We need to check edges on the existing node that corresponds to this
+                // new node, whichever way it matched.
+                string? existingNodeIdToCheck = null;
+                if (existingNodeMap.ContainsKey(node.Id))
+                {
+                    existingNodeIdToCheck = node.Id;
+                }
+                else
+                {
+                    // Check if this new node was matched to an existing node via stable key
+                    var stableKey = GetNodeStableKey(node);
+                    if (existingNodesByStableKey.TryGetValue(stableKey, out var candidates))
+                    {
+                        existingNodeIdToCheck = candidates
+                            .FirstOrDefault(c => matchedExistingNodeIds.Contains(c.Id))?.Id;
+                    }
+                }
+
+                if (existingNodeIdToCheck == null || !checkedEdgeNodeIds.Add(existingNodeIdToCheck))
+                {
+                    continue;
+                }
+
+                var existingEdges = await this.graphStore.GetEdgesForNodeAsync(existingNodeIdToCheck, null, ct).ConfigureAwait(false);
+                var activeExistingEdges = existingEdges
+                    .Where(e => !e.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var eui) || eui == null)
+                    .ToList();
+
+                    foreach (var existingEdge in activeExistingEdges)
+                    {
+                        // Only retire edges owned by this file
+                        if (!IsEdgeOwnedByFile(existingEdge, relativePath, filePrefix))
+                        {
+                            continue;
+                        }
+
+                        if (!newEdgeIds.Contains(existingEdge.Id))
+                        {
+                            await this.graphStore.RetireEdgeAsync(existingEdge.Id, newIndex, ct).ConfigureAwait(false);
+                            totalEdgesRetired++;
+
+                            await this.LogAuditSafeAsync("edge_retired", new { edgeId = existingEdge.Id, file = relativePath }, ct).ConfigureAwait(false);
+                        }
+                    }
+
+                    // Mark downstream CALLS/CmdletCall edges as stale (§3.6 step 8)
+                    foreach (var existingEdge in activeExistingEdges)
+                    {
+                        if (existingEdge.EdgeType == HyperedgeType.MethodInvocation ||
+                            existingEdge.EdgeType == HyperedgeType.CmdletCall)
+                        {
+                            await this.graphStore.UpdateEdgeMetadataAsync(
+                                existingEdge.Id,
+                                new Dictionary<string, object?> { [MemoryMetadataKeys.Stale] = true },
+                                ct).ConfigureAwait(false);
+
+                            await this.LogAuditSafeAsync("edge_marked_stale", new { edgeId = existingEdge.Id }, ct).ConfigureAwait(false);
+                        }
+                    }
+            }
+
+            // ── Phase 5d: Upsert extracted edges — create new, update changed ──
+            // Select edges owned by this file (SourceFile metadata or ID prefix).
+            // This prevents cross-file edges from being processed under both endpoint
+            // files when both are in the same debounced batch, avoiding duplicates.
+            // Edges are compared by content (NodeIds, EdgeType, Roles, Weight,
+            // and non-internal metadata) — if an edge with the same ID exists but
+            // has different endpoints/roles/metadata, the old edge is retired and
+            // the new edge is created. This ensures changed call chains are updated.
+            var edgesForThisFile = extractionResult.ExtractedEdges
+                .Where(e => IsEdgeOwnedByFile(e, relativePath, filePrefix))
+                .ToList();
+
+            foreach (var edge in edgesForThisFile)
+            {
+                // Look up existing active edge with the same ID in the graph.
+                // Search through both existing nodes (direct ID match) and
+                // stable-key-matched old nodes (whose IDs shifted due to line changes).
+                Hyperedge? matchedExistingEdge = null;
+
+                // First pass: search via nodes that are in the existing graph by direct ID
+                foreach (var nodeId in edge.NodeIds)
+                {
+                    if (existingNodeMap.ContainsKey(nodeId))
+                    {
+                        var existingEdges = await this.graphStore.GetEdgesForNodeAsync(nodeId, null, ct).ConfigureAwait(false);
+                        matchedExistingEdge = existingEdges.FirstOrDefault(e =>
+                            string.Equals(e.Id, edge.Id, StringComparison.OrdinalIgnoreCase) &&
+                            (!e.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) || ui == null));
+                        if (matchedExistingEdge != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                // Second pass: search via stable-key-matched old node IDs.
+                // When a node's ID shifts (e.g., line number changed), the old node ID
+                // is in matchedExistingNodeIds but NOT in the new edge's NodeIds.
+                // We need to check edges on those old nodes to find the same-ID edge.
+                if (matchedExistingEdge == null)
+                {
+                    foreach (var nodeId in edge.NodeIds)
+                    {
+                        // Find matching new node, then look up its stable-key-matched old node
+                        var newNodeForEdge = newNodes.FirstOrDefault(n =>
+                            string.Equals(n.Id, nodeId, StringComparison.OrdinalIgnoreCase));
+                        if (newNodeForEdge == null)
+                        {
+                            continue;
+                        }
+
+                        var stableKey = GetNodeStableKey(newNodeForEdge);
+                        if (existingNodesByStableKey.TryGetValue(stableKey, out var candidates))
+                        {
+                            foreach (var candidate in candidates)
+                            {
+                                if (!matchedExistingNodeIds.Contains(candidate.Id))
+                                {
+                                    continue;
+                                }
+
+                                var existingEdges = await this.graphStore.GetEdgesForNodeAsync(candidate.Id, null, ct).ConfigureAwait(false);
+                                matchedExistingEdge = existingEdges.FirstOrDefault(e =>
+                                    string.Equals(e.Id, edge.Id, StringComparison.OrdinalIgnoreCase) &&
+                                    (!e.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) || ui == null));
+                                if (matchedExistingEdge != null)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (matchedExistingEdge != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                if (matchedExistingEdge == null)
+                {
+                    // Brand new edge — stamp version metadata before creating
+                    edge.Metadata[MemoryMetadataKeys.SinceCommit] = commitSha;
+                    edge.Metadata[MemoryMetadataKeys.SinceIndex] = newIndex;
+                    await this.graphStore.CreateEdgeAsync(edge, ct).ConfigureAwait(false);
+                    totalEdgesAdded++;
+
+                    await this.LogAuditSafeAsync("edge_created", new { edgeId = edge.Id, file = relativePath }, ct).ConfigureAwait(false);
+                }
+                else if (!EdgesAreStructurallyEqual(matchedExistingEdge, edge))
+                {
+                    // Same ID but different content (endpoints, roles, type, or metadata changed).
+                    // Retire the stale edge and create the updated version.
+                    await this.graphStore.RetireEdgeAsync(matchedExistingEdge.Id, newIndex, ct).ConfigureAwait(false);
+                    totalEdgesRetired++;
+
+                    // Stamp version metadata on the replacement edge
+                    edge.Metadata[MemoryMetadataKeys.SinceCommit] = commitSha;
+                    edge.Metadata[MemoryMetadataKeys.SinceIndex] = newIndex;
+                    await this.graphStore.CreateEdgeAsync(edge, ct).ConfigureAwait(false);
+                    totalEdgesAdded++;
+
+                    await this.LogAuditSafeAsync("edge_updated", new { edgeId = edge.Id, file = relativePath, reason = "content_changed" }, ct).ConfigureAwait(false);
+                }
+                // else: same ID and structurally equal — no action needed
+            }
+
+            // ── Phase 5e: Apply per-node expertise decay ONLY for changed nodes ──
+            // Unlike file-level decay, this targets only nodes whose ContentHash
+            // actually changed. Unchanged nodes in the same file are NOT decayed.
+            if (nodeDecayMap.Count > 0)
+            {
+                totalExpertiseDecayed += await this.ApplyExpertiseDecayForNodesAsync(
+                    nodeDecayMap, ct).ConfigureAwait(false);
+            }
+
+            // ── Phase 5e.1: Semantic re-embedding (§3.6 step 9) ──
+            // Re-embed only substantively changed nodes (not all nodes in file).
+            if (reindexNodeIds.Count > 0)
+            {
+                var changedNodes = newNodes
+                    .Where(n => reindexNodeIds.Contains(n.Id))
+                    .ToList();
+
+                if (this.semanticReIndexer != null && changedNodes.Count > 0)
+                {
+                    try
+                    {
+                        await this.semanticReIndexer.ReIndexAsync(changedNodes, ct).ConfigureAwait(false);
+                        this.logger.LogDebug(
+                            "Semantic re-embedding completed for {Count} changed nodes in {FilePath}",
+                            changedNodes.Count, relativePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.LogWarning(
+                            ex,
+                            "Semantic re-embedding failed for {FilePath} — graph sync completed but embeddings may be stale",
+                            relativePath);
+                    }
+                }
+                else if (changedNodes.Count > 0)
+                {
+                    this.logger.LogDebug(
+                        "Semantic re-embedding pending for {Count} changed nodes in {FilePath} (no ISemanticReIndexer registered)",
+                        changedNodes.Count, relativePath);
+                }
+
+                await this.LogAuditSafeAsync("semantic_reembed_completed", new { file = relativePath, nodeCount = changedNodes.Count, invoked = this.semanticReIndexer != null }, ct).ConfigureAwait(false);
+            }
+
+            // ── Phase 5f: Update sync state with new file hash ──
+            if (currentFileHashes.TryGetValue(relativePath, out var fileHash))
+            {
+                try
+                {
+                    await this.fileSyncState.SetContentHashAsync(relativePath, fileHash, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning(ex, "Failed to update sync state hash for {FilePath}", relativePath);
+                }
             }
         }
 
-        return sb.ToString();
-    }
-
-    private static string NormalizePath(string path)
-    {
-        return path.Replace('\\', '/');
+        stopwatch.Stop();
+        return new SyncResult(
+            entries.Length, totalNodesAdded, totalNodesRetired,
+            totalEdgesAdded, totalEdgesRetired, totalExpertiseDecayed, stopwatch.Elapsed);
     }
 
     /// <summary>
-    /// Queries nodes by file path, handling both forward-slash (git-native)
-    /// and backslash (Windows-native) path conventions. Existing parsers may
-    /// store absolute or OS-native paths, so we query with the normalized
-    /// forward-slash path first, then fall back to backslash if needed.
+    /// Determines whether an edge is owned by (was extracted from) the specified file.
+    /// Checks explicit <see cref="MemoryMetadataKeys.SourceFile"/> metadata first,
+    /// then falls back to edge ID prefix matching for legacy edges.
     /// </summary>
-    private async Task<IReadOnlyList<HypergraphNode>> QueryNodesByFilePathAsync(
-        string normalizedForwardSlashPath,
-        CancellationToken ct)
+    private static bool IsEdgeOwnedByFile(Hyperedge edge, string relativePath, string filePrefix)
     {
-        var results = await this.graphStore.GetNodesAsync(
-            new NodeFilter { FilePath = normalizedForwardSlashPath }, limit: 10_000, ct).ConfigureAwait(false);
-
-        if (results.Count > 0)
+        // Primary: explicit SourceFile metadata
+        if (edge.Metadata.TryGetValue(MemoryMetadataKeys.SourceFile, out var sf) && sf is string sourceFile)
         {
-            return results;
+            return string.Equals(sourceFile, relativePath, StringComparison.OrdinalIgnoreCase);
         }
 
-        // Fall back: parsers may store OS-native backslash paths on Windows
-        var backslashPath = normalizedForwardSlashPath.Replace('/', '\\');
-        if (backslashPath != normalizedForwardSlashPath)
+        // Fallback: edge ID prefix matching (legacy edges without SourceFile)
+        return edge.Id.StartsWith(filePrefix + "_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Apply event-driven expertise decay for all expertise entries targeting
+    /// nodes in the specified file. Per architecture.md §3.5.1:
+    /// - Substantive change: Confidence ← Confidence × StaleDecayFactor (0.5)
+    /// - Minor change (whitespace/comment-only): Confidence ← Confidence × MinorDecayFactor (0.9)
+    /// Used only for deleted files (all nodes in a deleted file are substantively changed).
+    /// For non-deleted files, use <see cref="ApplyExpertiseDecayForNodesAsync"/> instead.
+    /// </summary>
+    private async Task<int> ApplyExpertiseDecayForFileAsync(
+        string relativePath, bool isSubstantiveChange, CancellationToken ct = default)
+    {
+        var decayFactor = isSubstantiveChange
+            ? this.options.StaleDecayFactor
+            : this.options.MinorDecayFactor;
+
+        var decayCount = 0;
+        var nodesInFile = await this.graphStore.GetNodesAsync(
+            new NodeFilter { FilePath = relativePath },
+            limit: 10_000,
+            ct).ConfigureAwait(false);
+
+        foreach (var node in nodesInFile)
         {
-            results = await this.graphStore.GetNodesAsync(
-                new NodeFilter { FilePath = backslashPath }, limit: 10_000, ct).ConfigureAwait(false);
+            var expertiseEntries = await this.graphStore.GetExpertiseForNodeAsync(node.Id, 0.0, ct).ConfigureAwait(false);
+            foreach (var entry in expertiseEntries)
+            {
+                if (entry.Archived)
+                {
+                    continue;
+                }
+
+                var newConfidence = entry.Confidence * decayFactor;
+                if (newConfidence < this.options.ArchiveConfidenceFloor)
+                {
+                    await this.graphStore.ArchiveExpertiseAsync(entry.Id, ct).ConfigureAwait(false);
+                    await this.LogAuditSafeAsync("expertise_archived", new { expertiseId = entry.Id, confidence = newConfidence }, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    entry.Confidence = newConfidence;
+                    entry.UpdatedAt = DateTime.UtcNow;
+                    await this.graphStore.UpsertExpertiseAsync(entry, ct).ConfigureAwait(false);
+                    await this.LogAuditSafeAsync("expertise_decayed", new { expertiseId = entry.Id, confidence = newConfidence, factor = decayFactor }, ct).ConfigureAwait(false);
+                }
+
+                decayCount++;
+            }
         }
 
-        return results;
+        return decayCount;
     }
 
-    private static void StampEdgeVersion(Hyperedge edge, string commitSha, int commitIndex)
+    /// <summary>
+    /// Apply per-node expertise decay. Only nodes with entries in
+    /// <paramref name="nodeDecayMap"/> have their expertise decayed.
+    /// Unchanged nodes (no entry in the map) are completely untouched.
+    /// Per architecture.md §3.5.1:
+    /// - Substantive: Confidence ← Confidence × StaleDecayFactor (0.5)
+    /// - Minor: Confidence ← Confidence × MinorDecayFactor (0.9)
+    /// </summary>
+    private async Task<int> ApplyExpertiseDecayForNodesAsync(
+        Dictionary<string, NodeDecayKind> nodeDecayMap,
+        CancellationToken ct = default)
     {
-        edge.Metadata[MemoryMetadataKeys.SinceCommit] = commitSha;
-        edge.Metadata[MemoryMetadataKeys.SinceIndex] = commitIndex;
+        var decayCount = 0;
+
+        foreach (var (nodeId, decayKind) in nodeDecayMap)
+        {
+            var decayFactor = decayKind == NodeDecayKind.Substantive
+                ? this.options.StaleDecayFactor
+                : this.options.MinorDecayFactor;
+
+            var expertiseEntries = await this.graphStore.GetExpertiseForNodeAsync(nodeId, 0.0, ct).ConfigureAwait(false);
+            foreach (var entry in expertiseEntries)
+            {
+                if (entry.Archived)
+                {
+                    continue;
+                }
+
+                var newConfidence = entry.Confidence * decayFactor;
+                if (newConfidence < this.options.ArchiveConfidenceFloor)
+                {
+                    await this.graphStore.ArchiveExpertiseAsync(entry.Id, ct).ConfigureAwait(false);
+                    await this.LogAuditSafeAsync("expertise_archived", new { expertiseId = entry.Id, nodeId, confidence = newConfidence }, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    entry.Confidence = newConfidence;
+                    entry.UpdatedAt = DateTime.UtcNow;
+                    await this.graphStore.UpsertExpertiseAsync(entry, ct).ConfigureAwait(false);
+                    await this.LogAuditSafeAsync("expertise_decayed", new { expertiseId = entry.Id, nodeId, confidence = newConfidence, factor = decayFactor }, ct).ConfigureAwait(false);
+                }
+
+                decayCount++;
+            }
+        }
+
+        return decayCount;
     }
 
-    private static SyncResult EmptyResult(TimeSpan duration)
+    /// <summary>
+    /// Adds a node to the decay map with "substantive wins" semantics:
+    /// once a node is marked <see cref="NodeDecayKind.Substantive"/>, it
+    /// cannot be downgraded to <see cref="NodeDecayKind.Minor"/>.
+    /// </summary>
+    private static void MarkNodeForDecay(
+        Dictionary<string, NodeDecayKind> map,
+        string nodeId,
+        NodeDecayKind kind)
     {
-        return new SyncResult(0, 0, 0, 0, 0, 0, duration);
+        if (map.TryGetValue(nodeId, out var existing))
+        {
+            // Substantive wins — never downgrade
+            if (existing == NodeDecayKind.Substantive)
+            {
+                return;
+            }
+        }
+
+        map[nodeId] = kind;
     }
+
+    private async Task<(int nodesRetired, int edgesRetired)> RetireNodesForFileAsync(
+        string relativePath, int untilCommitIndex, CancellationToken ct = default)
+    {
+        var existingNodes = await this.graphStore.GetNodesAsync(
+            new NodeFilter { FilePath = relativePath },
+            limit: 10_000,
+            ct).ConfigureAwait(false);
+
+        var nodesRetired = 0;
+        var edgesRetired = 0;
+        var filePrefix = ComputeContentHash(relativePath)[..8];
+
+        foreach (var node in existingNodes)
+        {
+            if (node.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui) && ui != null)
+            {
+                continue;
+            }
+
+            // Handle edges BEFORE retiring the node to avoid cascade conflicts.
+            // File-owned edges are retired; cross-file edges are marked stale.
+            var edges = await this.graphStore.GetEdgesForNodeAsync(node.Id, null, ct).ConfigureAwait(false);
+            foreach (var edge in edges)
+            {
+                if (edge.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var eui) && eui != null)
+                {
+                    continue;
+                }
+
+                if (!IsEdgeOwnedByFile(edge, relativePath, filePrefix))
+                {
+                    // Mark cross-file edges pointing to deleted nodes as stale
+                    await this.graphStore.UpdateEdgeMetadataAsync(
+                        edge.Id,
+                        new Dictionary<string, object?> { [MemoryMetadataKeys.Stale] = true },
+                        ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                await this.graphStore.RetireEdgeAsync(edge.Id, untilCommitIndex, ct).ConfigureAwait(false);
+                edgesRetired++;
+            }
+
+            // Retire the node without cascade — edges are handled above,
+            // expertise decay is handled by the caller (ApplyExpertiseDecayForFileAsync)
+            await this.RetireNodeWithoutCascadeAsync(node.Id, null, untilCommitIndex, ct).ConfigureAwait(false);
+            nodesRetired++;
+        }
+
+        return (nodesRetired, edgesRetired);
+    }
+
+    /// <summary>
+    /// Computes file hash with retry logic for handling transient file locks.
+    /// Uses <see cref="FileShare.ReadWrite"/> and exponential backoff.
+    /// </summary>
+    private static async Task<string> ComputeFileHashWithRetryAsync(string fullPath, CancellationToken ct = default)
+    {
+        for (var attempt = 0; attempt <= MaxHashRetries; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    fullPath, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                var hashBytes = await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false);
+                return Convert.ToHexString(hashBytes).ToLowerInvariant();
+            }
+            catch (IOException) when (attempt < MaxHashRetries)
+            {
+                await Task.Delay(HashRetryDelaysMs[attempt], ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new IOException($"Failed to hash {fullPath} after {MaxHashRetries + 1} attempts");
+    }
+
+    private static string ComputeContentHash(string content)
+    {
+        var hashBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Logs an audit entry. Failures are caught and logged as warnings
+    /// to avoid breaking the sync loop. See architecture.md §3.6 step 11.
+    /// </summary>
+    private async Task LogAuditSafeAsync(string operation, object detail, CancellationToken ct)
+    {
+        try
+        {
+            await this.graphStore.LogAuditAsync(this.sessionId, operation, detail, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "Audit log failed for operation {Operation}", operation);
+        }
+    }
+
+    /// <summary>
+    /// Retires a node by setting its <c>UntilIndex</c> WITHOUT cascading to connected
+    /// edges or archiving expertise. This preserves cross-file edges (which
+    /// IncrementalSync marks as stale separately) and allows expertise decay to
+    /// run before any archival.
+    ///
+    /// Uses <see cref="IMemoryGraphStore.UpsertNodeAsync"/> with the original
+    /// <c>SinceCommit/SinceIndex</c> preserved, avoiding the cascade that
+    /// <see cref="IMemoryGraphStore.RetireNodeAsync"/> performs on edges and
+    /// expertise. Idempotent: does nothing if the node is already retired or
+    /// does not exist.
+    /// </summary>
+    private async Task RetireNodeWithoutCascadeAsync(
+        string nodeId, string? untilCommit, int untilIndex, CancellationToken ct)
+    {
+        var node = await this.graphStore.GetNodeAsync(nodeId, ct).ConfigureAwait(false);
+        if (node == null)
+        {
+            return;
+        }
+
+        // Already retired — do not overwrite an earlier retirement
+        if (node.Metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var existingUi) && existingUi != null)
+        {
+            return;
+        }
+
+        // Preserve the node's original birth version
+        var sinceCommit = node.Metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sc) ? sc as string ?? "" : "";
+        var sinceIndex = 0;
+        if (node.Metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var si))
+        {
+            sinceIndex = si is int i ? i : (si is long l ? (int)l : 0);
+        }
+
+        var version = new VersionRange(sinceCommit, sinceIndex, untilCommit, untilIndex);
+        await this.graphStore.UpsertNodeAsync(node, version, ct).ConfigureAwait(false);
+    }
+
+    private void StartInternal()
+    {
+        if (this.watcher != null)
+        {
+            return;
+        }
+
+        this.watcher = new FileSystemWatcher(this.repoRoot!)
+        {
+            IncludeSubdirectories = true,
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+            EnableRaisingEvents = true
+        };
+
+        foreach (var ext in this.options.WatchedExtensions)
+        {
+            this.watcher.Filters.Add($"*{ext}");
+        }
+
+        this.watcher.Changed += this.OnFileChanged;
+        this.watcher.Created += this.OnFileCreated;
+        this.watcher.Renamed += this.OnFileRenamed;
+        this.watcher.Deleted += this.OnFileDeleted;
+        this.watcher.Error += this.OnWatcherError;
+
+        this.logger.LogInformation("IncrementalSync file watcher started on {RepoRoot}", this.repoRoot);
+    }
+
+    private void StopInternal()
+    {
+        this.watcher?.Dispose();
+        this.watcher = null;
+        this.debounceTimer?.Dispose();
+        this.debounceTimer = null;
+        this.logger.LogInformation("IncrementalSync file watcher stopped");
+    }
+
+    private void OnFileChanged(object sender, FileSystemEventArgs e)
+    {
+        var relativePath = Path.GetRelativePath(this.repoRoot!, e.FullPath).Replace('\\', '/');
+        this.InjectChange(relativePath, FileChangeStatus.Modified);
+    }
+
+    private void OnFileCreated(object sender, FileSystemEventArgs e)
+    {
+        var relativePath = Path.GetRelativePath(this.repoRoot!, e.FullPath).Replace('\\', '/');
+        this.InjectChange(relativePath, FileChangeStatus.Created);
+    }
+
+    private void OnFileRenamed(object sender, RenamedEventArgs e)
+    {
+        var oldPath = Path.GetRelativePath(this.repoRoot!, e.OldFullPath).Replace('\\', '/');
+        var newPath = Path.GetRelativePath(this.repoRoot!, e.FullPath).Replace('\\', '/');
+        this.InjectChange(oldPath, FileChangeStatus.Deleted);
+        this.InjectChange(newPath, FileChangeStatus.Created);
+    }
+
+    private void OnFileDeleted(object sender, FileSystemEventArgs e)
+    {
+        var relativePath = Path.GetRelativePath(this.repoRoot!, e.FullPath).Replace('\\', '/');
+        this.InjectChange(relativePath, FileChangeStatus.Deleted);
+    }
+
+    private void OnWatcherError(object sender, ErrorEventArgs e)
+    {
+        this.logger.LogError(e.GetException(), "FileSystemWatcher error — watcher continues running");
+    }
+
+    private void ResetDebounceTimer()
+    {
+        this.debounceTimer?.Dispose();
+        this.debounceTimer = new Timer(
+            _ => _ = this.ProcessBatchSafe(),
+            null,
+            this.options.IncrementalSyncDebounceMs,
+            Timeout.Infinite);
+    }
+
+    private async Task ProcessBatchSafe()
+    {
+        try
+        {
+            await this.ProcessBatchAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "Unexpected error in batch processing — watcher continues running");
+        }
+    }
+
+    /// <summary>
+    /// Determines whether the change between two node versions is "minor"
+    /// (whitespace/comment-only). Per architecture.md §3.5.1, minor changes
+    /// use MinorDecayFactor (0.9) instead of StaleDecayFactor (0.5).
+    ///
+    /// When ContentHash has changed (which is the precondition for calling
+    /// this method), the source text of the node actually changed. The
+    /// StructuralHash (name/type/scope/modifiers) cannot distinguish between
+    /// body-only logic changes and pure comment edits. To avoid misclassifying
+    /// substantive body edits as minor, ALL ContentHash changes are treated
+    /// as substantive. True minor changes (line-number shifts without text
+    /// changes) produce identical ContentHash and are caught earlier in
+    /// Phase 5a without ever reaching this method.
+    /// </summary>
+    private static bool IsMinorChange(
+        HypergraphNode existingNode, HypergraphNode newNode)
+    {
+        // ContentHash has already been verified as different by the caller.
+        // Any actual source-text change is treated as substantive because the
+        // current hash scheme cannot distinguish comment-only from logic edits.
+        return false;
+    }
+
+    /// <summary>
+    /// Returns a stable key for a node that excludes line numbers. The real
+    /// Roslyn extractor (<see cref="Ast.Csharp.CSharpHyperedgeExtractor"/>)
+    /// embeds the line number in the node ID, so whitespace/comment-only
+    /// edits that shift lines produce new IDs for the same logical node.
+    /// This key allows Phase 5a to recognise line-shifted nodes and apply
+    /// the minor-change/no-structural-churn path rather than treating them
+    /// as removed + added (which would cause StaleDecayFactor instead of
+    /// MinorDecayFactor).
+    /// </summary>
+    internal static string GetNodeStableKey(HypergraphNode node)
+    {
+        return $"{node.NodeType ?? ""}:{node.Scope ?? ""}:{node.Name ?? ""}";
+    }
+
+    /// <summary>
+    /// Determines whether two edges with the same ID are structurally equal.
+    /// Compares EdgeType, NodeIds (order-sensitive), Roles, Weight, and
+    /// non-internal metadata keys. Internal metadata (UntilIndex, SinceIndex,
+    /// Stale, etc.) are excluded from comparison since they are managed by
+    /// the sync engine, not the extraction pipeline.
+    /// </summary>
+    internal static bool EdgesAreStructurallyEqual(Hyperedge existing, Hyperedge extracted)
+    {
+        // Compare EdgeType
+        if (existing.EdgeType != extracted.EdgeType)
+        {
+            return false;
+        }
+
+        // Compare NodeIds (order matters for directed edges)
+        if (existing.NodeIds.Count != extracted.NodeIds.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < existing.NodeIds.Count; i++)
+        {
+            if (!string.Equals(existing.NodeIds[i], extracted.NodeIds[i], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        // Compare Roles
+        if (existing.Roles.Count != extracted.Roles.Count)
+        {
+            return false;
+        }
+
+        foreach (var kvp in extracted.Roles)
+        {
+            if (!existing.Roles.TryGetValue(kvp.Key, out var existingRole) ||
+                !string.Equals(existingRole, kvp.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        // Compare Weight
+        if (Math.Abs(existing.Weight - extracted.Weight) > 0.0001)
+        {
+            return false;
+        }
+
+        // Compare non-internal metadata (exclude sync-managed keys)
+        var internalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            MemoryMetadataKeys.UntilIndex,
+            MemoryMetadataKeys.UntilCommit,
+            MemoryMetadataKeys.SinceIndex,
+            MemoryMetadataKeys.SinceCommit,
+            MemoryMetadataKeys.Stale
+        };
+
+        var extractedUserMeta = extracted.Metadata
+            .Where(kv => !internalKeys.Contains(kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+        var existingUserMeta = existing.Metadata
+            .Where(kv => !internalKeys.Contains(kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+
+        if (extractedUserMeta.Count != existingUserMeta.Count)
+        {
+            return false;
+        }
+
+        foreach (var kvp in extractedUserMeta)
+        {
+            if (!existingUserMeta.TryGetValue(kvp.Key, out var existingVal))
+            {
+                return false;
+            }
+
+            var extractedStr = kvp.Value?.ToString() ?? string.Empty;
+            var existingStr = existingVal?.ToString() ?? string.Empty;
+            if (!string.Equals(extractedStr, existingStr, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public void Dispose()
+    {
+        if (this.disposed)
+        {
+            return;
+        }
+
+        this.disposed = true;
+        this.StopInternal();
+        this.batchSemaphore.Dispose();
+    }
+}
+
+/// <summary>
+/// Event args for the BatchProcessed event.
+/// </summary>
+public sealed class BatchProcessedEventArgs : EventArgs
+{
+    public BatchProcessedEventArgs(
+        string[] processedFiles, int nodesAdded, int nodesRetired,
+        int edgesAdded, int edgesRetired, int expertiseDecayed)
+    {
+        this.ProcessedFiles = processedFiles;
+        this.NodesAdded = nodesAdded;
+        this.NodesRetired = nodesRetired;
+        this.EdgesAdded = edgesAdded;
+        this.EdgesRetired = edgesRetired;
+        this.ExpertiseDecayed = expertiseDecayed;
+    }
+
+    public string[] ProcessedFiles { get; }
+    public int NodesAdded { get; }
+    public int NodesRetired { get; }
+    public int EdgesAdded { get; }
+    public int EdgesRetired { get; }
+    public int ExpertiseDecayed { get; }
+}
+
+/// <summary>
+/// Classifies how a node changed, determining which decay factor to apply.
+/// <see cref="Substantive"/>: code structure changed → StaleDecayFactor.
+/// <see cref="Minor"/>: whitespace/comment-only → MinorDecayFactor.
+/// </summary>
+internal enum NodeDecayKind
+{
+    Minor,
+    Substantive
 }

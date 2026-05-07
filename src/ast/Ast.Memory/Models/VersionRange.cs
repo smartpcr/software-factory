@@ -7,6 +7,11 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Temporal version range for memory nodes and edges.
+/// Dual-axis temporal version range: monotonic commit index for ordering,
+/// commit SHA for provenance. See architecture.md §4.3.
 /// </summary>
-public record VersionRange(string Since, int SinceIndex, string? Until = null, int? UntilIndex = null);
+public record VersionRange(
+    string SinceCommit,
+    int SinceIndex,
+    string? UntilCommit,
+    int? UntilIndex);
