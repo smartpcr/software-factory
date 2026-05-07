@@ -101,6 +101,14 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         var rawState = prDoc.RootElement.TryGetProperty("status", out var s) ? s.GetString() ?? "active" : "active";
         var canonical = PrSyncJob.MapUpstreamState("ado", rawState);
 
+        // Capture base + source so the local PrRow.Base / .Branch tracks
+        // upstream retargets (e.g. operator changes target from feature/X
+        // to main on ADO). Strip the "refs/heads/" prefix.
+        static string TrimRef(string? r) => r is null ? string.Empty
+            : r.StartsWith("refs/heads/") ? r["refs/heads/".Length..] : r;
+        var baseRef = TrimRef(prDoc.RootElement.TryGetProperty("targetRefName", out var tgt) ? tgt.GetString() : null);
+        var headRef = TrimRef(prDoc.RootElement.TryGetProperty("sourceRefName", out var src) ? src.GetString() : null);
+
         var lastUpdated = prDoc.RootElement.TryGetProperty("creationDate", out var cd) ? cd.GetString() : null;
         // ADO doesn't expose lastUpdatedDate at the PR level; fall back to creationDate.
         // The thread endpoint walks regardless because ADO doesn't support delta filters there.
@@ -112,7 +120,9 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         if (!threadsResp.IsSuccessStatusCode)
         {
             this.logger.LogWarning("ADO threads fetch failed: PR={Pr} status={Status}", pr.Id, threadsResp.StatusCode);
-            return new PrSyncSnapshot(canonical, lastUpdated, Array.Empty<PrSyncComment>(), false);
+            return new PrSyncSnapshot(canonical, lastUpdated, Array.Empty<PrSyncComment>(), false,
+                BaseBranch: string.IsNullOrEmpty(baseRef) ? null : baseRef,
+                SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef);
         }
 
         using var threadsDoc = JsonDocument.Parse(await threadsResp.Content.ReadAsStringAsync(ct));
@@ -205,7 +215,9 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         }
 
         return new PrSyncSnapshot(canonical, lastUpdated, comments, true,
-            Files: await this.FetchFileCountAsync(http, project, repo, num, ct));
+            Files: await this.FetchFileCountAsync(http, project, repo, num, ct),
+            BaseBranch: string.IsNullOrEmpty(baseRef) ? null : baseRef,
+            SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef);
     }
 
     /// <summary>

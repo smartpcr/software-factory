@@ -154,6 +154,40 @@ public static class PrsEndpoints
         return (provider, ctx, null);
     }
 
+    /// <summary>
+    /// Builds a 409 conflict response with a normalized <c>resolution</c>
+    /// signal so the UI can branch consistently across all conflict exits
+    /// in <see cref="Merge"/>:
+    /// <list type="bullet">
+    ///   <item><c>"force-available"</c> — force has not yet been attempted;
+    ///   the user can opt into the destructive <c>-X ours</c> path.</item>
+    ///   <item><c>"manual-required"</c> — Forge already attempted the
+    ///   destructive auto-resolve (either by inheriting AutoMerge from the
+    ///   parent story or via an explicit <c>?force=true</c>) and the
+    ///   provider still rejects the merge; the operator must resolve the
+    ///   conflict in the provider UI.</item>
+    /// </list>
+    /// The legacy <c>conflict=true</c> extension stays so older UI builds
+    /// continue to recognize the response.
+    /// </summary>
+    private static IResult ConflictResult(
+        string title,
+        string detail,
+        string resolution,
+        string? hint = null)
+    {
+        return Results.Problem(
+            title: title,
+            detail: detail,
+            statusCode: 409,
+            extensions: new Dictionary<string, object?>
+            {
+                ["conflict"] = true,
+                ["resolution"] = resolution,
+                ["hint"] = hint,
+            });
+    }
+
     // GET /api/prs — list with cached state, optionally scoped to a product (Phase 8.9).
     private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
     {
@@ -437,6 +471,7 @@ public static class PrsEndpoints
         IHumanGateEvaluator gate,
         IHubContext<ForgeHub> hub,
         IStoryGitOps git,
+        [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
         [FromQuery] bool? force = null)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -444,6 +479,38 @@ public static class PrsEndpoints
         id = NormalizePrId(id);
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
+
+        // Step 0 — sync the PR with the provider before doing anything else.
+        // Catches operator retargets (base/source ref changes), upstream
+        // mergeable transitions, and stale row state so the rebase below
+        // operates on accurate data. Best-effort: a sync failure here
+        // shouldn't block a merge that might still succeed against the
+        // last-known state, but most failures (404, 403 rate limit) are
+        // worth surfacing to the operator before they spend time on the
+        // merge itself.
+        try
+        {
+            await prSyncJob.RunSyncForAsync(id, ctx.RequestAborted);
+            // Re-read after the sync so row.Base / .Branch / .Col reflect
+            // the upstream state captured by ApplySnapshotAsync.
+            row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id) ?? row;
+        }
+        catch (Exception ex)
+        {
+            // Don't block the merge on a sync hiccup — proceed with
+            // whatever state we have. The local rebase + provider PUT
+            // below will still surface a real conflict if one exists.
+            ctx.RequestServices.GetService<ILoggerFactory>()
+                ?.CreateLogger("PrsEndpoints.Merge")
+                ?.LogWarning(ex, "Pre-merge resync failed for {PrId} — proceeding with last-known state.", id);
+        }
+
+        // After the sync, if the PR is now reported merged upstream, just
+        // reflect that locally and return success — no need to re-merge.
+        if (string.Equals(row.Col, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(PrMapper.ToContract(row));
+        }
 
         // When ?force is omitted, inherit from the PR's AutoMerge flag
         // (which propagated from story → spawn → PR at create time). The
@@ -502,19 +569,21 @@ public static class PrsEndpoints
             if (!rebaseOk)
             {
                 // Either a conflict (force=false) or -X ours itself failed.
-                // Treat both as a 409 — surfacing lets the user decide
-                // (resolve upstream, retry with force, or invoke an agent).
-                return Results.Problem(
-                    title: "Merge conflict — resolve upstream and retry",
-                    detail: effectiveForce
-                        ? "Local -X ours resolution failed; the source branch couldn't be reconciled with the base. Inspect the PR upstream."
-                        : "Source branch is behind the base and conflicts with it. Resolve in the provider UI, retry with ?force=true to take source-branch changes (-X ours), or enable AutoMerge on the parent story.",
-                    statusCode: 409,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["conflict"] = true,
-                        ["hint"] = "Stories with AutoMerge=true automatically use force=true.",
-                    });
+                // When force was on we already attempted destructive
+                // resolution locally and lost — surface as manual-required
+                // so the UI redirects to the provider UI instead of
+                // re-prompting for a force-merge that just failed.
+                return effectiveForce
+                    ? ConflictResult(
+                        title: "Merge conflict — manual resolution required",
+                        detail: "Local -X ours resolution failed; the source branch couldn't be reconciled with the base. Resolve the conflict in the provider UI (web editor or fetch + merge locally with manual resolution, then push) and retry.",
+                        resolution: "manual-required",
+                        hint: "Forge ran the destructive -X ours rebase locally but it didn't reconcile the trees.")
+                    : ConflictResult(
+                        title: "Merge conflict — resolve upstream and retry",
+                        detail: "Source branch is behind the base and conflicts with it. Resolve in the provider UI, retry with ?force=true to take source-branch changes (-X ours), or enable AutoMerge on the parent story.",
+                        resolution: "force-available",
+                        hint: "Stories with AutoMerge=true automatically use force=true.");
             }
         }
 
@@ -522,6 +591,57 @@ public static class PrsEndpoints
         try
         {
             merged = await provider!.MergePullRequestAsync(id, callCtx);
+        }
+        catch (Exception ex) when (PrMergeUtilities.LooksLikeConflict(ex.Message))
+        {
+            // Provider says conflict despite a "successful" local rebase.
+            // Two known causes:
+            //   1. MergeUpstreamIntoBranchAsync's ancestor short-circuit
+            //      returned true without pushing — GitHub/ADO's cached
+            //      `mergeable` flag is stale.
+            //   2. The provider's squash-merge sees a conflict that a
+            //      regular merge of base into source doesn't.
+            // When force is on, run the rebase again with force=true (so
+            // -X ours fires AND a push happens regardless of ancestor),
+            // then retry the provider PUT. Without force, surface as 409.
+            if (!effectiveForce)
+            {
+                return ConflictResult(
+                    title: "Merge conflict — resolve upstream and retry",
+                    detail: ex.Message,
+                    resolution: "force-available",
+                    hint: "Provider reports a conflict the local rebase didn't catch. Retry with ?force=true to run -X ours and push, or resolve in the provider UI. Stories with AutoMerge=true skip this dialog.");
+            }
+            try
+            {
+                var resolved = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, force: true, CancellationToken.None);
+                if (!resolved)
+                {
+                    return ConflictResult(
+                        title: "Merge conflict — manual resolution required",
+                        detail: "Provider rejected the merge as conflicting and the local -X ours resolution also failed. Resolve in the provider UI and retry.",
+                        resolution: "manual-required",
+                        hint: ex.Message);
+                }
+                merged = await provider!.MergePullRequestAsync(id, callCtx);
+            }
+            catch (Exception retryEx) when (PrMergeUtilities.LooksLikeConflict(retryEx.Message))
+            {
+                // Force already attempted (-X ours rebase + push) and the
+                // provider STILL rejects the squash-merge as conflicting.
+                // No more auto-resolution paths; the operator must resolve
+                // upstream. Return 409 (not 502) with resolution=manual-required
+                // so the UI can guide them to the provider URL.
+                return ConflictResult(
+                    title: "Merge conflict — manual resolution required",
+                    detail: "Forge ran -X ours locally and pushed, but the provider still rejects the squash-merge as conflicting. Resolve in the provider UI (web editor or fetch + merge locally with manual resolution, then push) and retry.",
+                    resolution: "manual-required",
+                    hint: retryEx.Message);
+            }
+            catch (Exception retryEx)
+            {
+                return Results.Problem(title: "Merge failed after force-rebase retry", detail: retryEx.Message, statusCode: 502);
+            }
         }
         catch (Exception ex)
         {
@@ -943,6 +1063,15 @@ public static class PrsEndpoints
             }
             if (existing is null)
             {
+                // Phase 46 — upstream PRs don't carry the Forge-side AutoMerge
+                // flag (AdoMapper/GitHubMapper never populate it). Inherit
+                // from the parent story spawn via the resolver so an
+                // imported PR honours its story's auto-merge setting on the
+                // very first sync, instead of waiting for SetAutoMerge or
+                // a story-edit cascade to flip it on.
+                var inheritedAutoMerge = !string.IsNullOrEmpty(workItemId)
+                    && await Forge.Api.Services.Stories.SpawnAutoMergeResolver
+                        .ResolveAsync(db, workItemId, ct);
                 db.Prs.Add(new PrRow
                 {
                     Id = pr.Id,
@@ -966,7 +1095,7 @@ public static class PrsEndpoints
                     HumanGate = pr.HumanGate,
                     GateReason = pr.GateReason,
                     ConflictPaths = pr.ConflictPaths,
-                    AutoMerge = pr.AutoMerge,
+                    AutoMerge = pr.AutoMerge || inheritedAutoMerge,
                     Blocked = pr.Blocked,
                     ImplJson = pr.Impl is null ? null : CardMapper.Serialize(pr.Impl),
                     IsActive = pr.Col != "merged",
