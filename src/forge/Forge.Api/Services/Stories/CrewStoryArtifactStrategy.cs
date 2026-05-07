@@ -448,7 +448,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               and no contradictions with sibling plan docs that already
               exist on disk).
 
-            Reply with three short sections in this order:
+            Structure your `notes` field (inside the JSON block below) into
+            three labeled parts in this order:
             1. **What improved this iteration** — one bullet list.
             2. **What still needs work** — one bullet list (be specific:
                cite section names + sentences).
@@ -462,11 +463,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             server-side gate, but your verdict needs to match so the
             iteration history reads correctly.
 
-            End with a fenced JSON block:
+            ## Output
+
+            Output **only** a fenced JSON block — no prose outside it. Put
+            your full review (including the three sections above) inside
+            the `notes` field. Example shape:
+
             ```json
-            { "score": <0-100>, "verdict": "<pass|iterate|reject>", "notes": "<one-line gist>" }
+            {
+              "score": 87,
+              "verdict": "iterate",
+              "notes": "What improved: ...  What still needs work: ...  Why this score: ..."
+            }
             ```
-            score >= 90 = pass, 70-89 = iterate (be specific in §2),
+
+            STRICT JSON: double-quoted keys (`"score"`, not `score`), no
+            trailing commas, no `//` or `/* */` comments. If your JSON is
+            malformed your entire review is discarded and the iteration is
+            wasted.
+
+            score >= 90 = pass, 70-89 = iterate (be specific in notes),
             < 70 = reject.
             """;
 
@@ -959,10 +975,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Server-side gate enforces this regardless; your verdict needs to
             match so the iteration history reads correctly.
 
-            End with a fenced JSON block:
+            ## Output
+
+            Output **only** a fenced JSON block — no prose outside it. Put
+            your full technical feedback inside the `notes` field. Example
+            shape:
+
             ```json
-            { "score": <0-100>, "notes": "<technical feedback>" }
+            {
+              "score": 87,
+              "dims": { "correctness": 35, "quality": 22, "tests": 13, "scope": 9, "risk": 8 },
+              "verdict": "iterate",
+              "notes": "Improvements this iteration: ...  Still needs improvement: ...  Why this score: ..."
+            }
             ```
+
+            STRICT JSON: double-quoted keys (`"score"`, not `score`), no
+            trailing commas, no `//` or `/* */` comments. If your JSON is
+            malformed your entire review is discarded and the iteration is
+            wasted.
+
             score >= 90 = pass, 70-89 = iterate (be specific in notes),
             < 70 = reject.
             """;
