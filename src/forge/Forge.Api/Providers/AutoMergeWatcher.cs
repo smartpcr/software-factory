@@ -144,6 +144,22 @@ public class AutoMergeWatcher : BackgroundService
                 {
                     merged = await provider.MergePullRequestAsync(pr.Id, callCtx, ct);
                 }
+                catch (HttpRequestException rateEx) when (
+                    rateEx.StatusCode == System.Net.HttpStatusCode.Forbidden
+                    || rateEx.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+                    || rateEx.Message.Contains("403", StringComparison.OrdinalIgnoreCase))
+                {
+                    // GitHub returns 403 when the per-hour rate budget is
+                    // exhausted. Stop processing the rest of this tick — every
+                    // additional call would burn further budget against an
+                    // already-closed window. The watcher resumes next tick;
+                    // by then the rate window may have rolled over.
+                    this.logger.LogWarning(
+                        rateEx,
+                        "forge.auto-merge.rate-limited pr={Pr} — aborting tick to let the rate window roll over",
+                        pr.Id);
+                    return;
+                }
                 catch (Exception ex)
                 {
                     this.logger.LogWarning(ex, "forge.auto-merge.complete.failed pr={Pr}", pr.Id);
