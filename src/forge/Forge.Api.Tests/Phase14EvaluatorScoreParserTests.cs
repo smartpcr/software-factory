@@ -12,6 +12,15 @@ using Xunit;
 /// <summary>
 /// Phase 14.3 — pure-function tests for <see cref="EvaluatorScoreParser"/>.
 /// Keep these as a fast unit suite (no DI / no DB).
+/// <para>
+/// 2026-05-06 — extended with leniency-pass coverage. The live evaluator on
+/// the engineer crew was burning iteration slots on parse fallbacks
+/// (unquoted JS-style keys, model-emitted prose without a JSON fence). The
+/// new tests lock down each lenient-recovery feature plus the cleanup-
+/// ordering traps the rubber-duck pass surfaced — string contents must
+/// never be corrupted; comments and braces inside strings must be ignored;
+/// the latest plausible candidate wins overall, not the first fenced one.
+/// </para>
 /// </summary>
 public class Phase14EvaluatorScoreParserTests
 {
@@ -26,6 +35,7 @@ public class Phase14EvaluatorScoreParserTests
             "Some chatter from the model.\n\n" +
             Wrap("{ \"score\": 92, \"dims\": { \"correctness\": 38, \"quality\": 23, \"tests\": 14, \"scope\": 9, \"risk\": 8 }, \"verdict\": \"pass\", \"notes\": \"Looks good.\" }"));
         Assert.False(r.ParseFailed);
+        Assert.False(r.ParseRecovered);
         Assert.Equal(92, r.Score);
         Assert.Equal("pass", r.Verdict);
         Assert.Equal("pass", r.ModelVerdict);
@@ -123,7 +133,11 @@ public class Phase14EvaluatorScoreParserTests
     }
 
     [Theory]
-    [InlineData(0, "reject")]
+    // Score 0 ALWAYS iterates per the explicit comment in DeriveVerdict —
+    // 0 indicates a pipeline fault (timeout, tool error) not work-quality
+    // rejection. Prior test row asserted "reject" which contradicted the
+    // implementation; corrected 2026-05-06 alongside the leniency upgrade.
+    [InlineData(0, "iterate")]
     [InlineData(50, "reject")]
     [InlineData(69, "reject")]
     [InlineData(70, "iterate")]
@@ -133,5 +147,284 @@ public class Phase14EvaluatorScoreParserTests
     public void DeriveVerdict_Matches_Spec_Boundaries(int score, string expected)
     {
         Assert.Equal(expected, EvaluatorScoreParser.DeriveVerdict(score));
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Leniency: cleanup pass recovers JSON5-ish drift
+    // ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Lenient_Unquoted_Keys_Parse_After_Cleanup()
+    {
+        // Real failure mode from the live workstream: model wrote unquoted
+        // JS-style keys, surfaced as "'r'/'i' is an invalid start of a
+        // property name. LineNumber 0 BytePositionInLine 1-2."
+        var r = EvaluatorScoreParser.Parse(Wrap("{ score: 86, \"notes\": \"fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("fine", r.Notes);
+    }
+
+    [Fact]
+    public void Lenient_Trailing_Comma_Parses()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": \"fine\", }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+    }
+
+    [Fact]
+    public void Lenient_Line_Comment_Parses()
+    {
+        // Comment must be INSIDE the object so the candidate selector
+        // doesn't simply exclude it (a comment trailing the closing `}`
+        // is harmless because the bare-object scan stops at the `}`).
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, // 86 because tests pass\n  \"notes\": \"fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+    }
+
+    [Fact]
+    public void Lenient_Block_Comment_Inside_Object_Parses()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, /* high */ \"notes\": \"fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+    }
+
+    [Fact]
+    public void Lenient_Single_Quotes_Parse()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ 'score': 86, 'notes': 'fine' }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("fine", r.Notes);
+    }
+
+    [Fact]
+    public void Lenient_Mixed_Quoted_And_Unquoted_Keys()
+    {
+        // Model fixed half the keys but missed the rest.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ score: 86, \"notes\": \"fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+    }
+
+    [Fact]
+    public void Lenient_Recovered_Notes_Carry_Recovery_Prefix()
+    {
+        // Operators should be able to spot lenient-recovery rows even before
+        // the deferred forge.eval.parse_failed counter lands.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ score: 86, \"notes\": \"fine\" }"));
+        Assert.True(r.ParseRecovered);
+        Assert.StartsWith("[parsed via lenient recovery]", r.Notes);
+    }
+
+    [Fact]
+    public void Strict_Pass_Does_Not_Set_ParseRecovered()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 91, \"notes\": \"ok\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.False(r.ParseRecovered);
+        Assert.Equal("ok", r.Notes);
+    }
+
+    [Fact]
+    public void Lenient_Recovery_Producing_Reject_Is_Honored()
+    {
+        // Critique #5 — explicit policy lock. A recovered low score is real
+        // because the model expressed an opinion in a recoverable shape;
+        // the verdict math runs as normal. Operators retain the dispute
+        // path. Burning an iteration on a fallback-iterate would be worse.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ score: 5, \"notes\": \"bad\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(5, r.Score);
+        Assert.Equal("reject", r.Verdict);
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Leniency: notes alias mapping (critique #2)
+    // ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Notes_Alias_Reasoning_Is_Mapped()
+    {
+        // Without alias mapping, a recovered { score: 86, reasoning: "..." }
+        // would silently produce empty Notes, leaving the next-iteration
+        // generator with no actionable feedback.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"reasoning\": \"index path missing\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("index path missing", r.Notes);
+    }
+
+    [Fact]
+    public void Notes_Alias_Feedback_Is_Mapped()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"feedback\": \"add tests\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.Contains("add tests", r.Notes);
+    }
+
+    [Fact]
+    public void Notes_Alias_Review_Is_Mapped()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"review\": \"good\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.Contains("good", r.Notes);
+    }
+
+    [Fact]
+    public void Notes_Wins_Over_Alias_When_Both_Present()
+    {
+        // Canonical key is authoritative.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": \"primary\", \"reasoning\": \"secondary\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.Equal("primary", r.Notes);
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Leniency: latest candidate wins (critique #1)
+    // ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Latest_Candidate_Wins_Over_Earlier_Fenced_Example()
+    {
+        // Earlier fenced "example" + later authoritative bare object —
+        // parser must pick the LATER one or it preserves the existing bug.
+        var msg = "Here's the schema for reference:\n\n"
+                + Wrap("{ \"score\": 0, \"notes\": \"example\" }")
+                + "\n\nMy actual review:\n\n"
+                + "{ \"score\": 86, \"notes\": \"real\" }";
+        var r = EvaluatorScoreParser.Parse(msg);
+        Assert.False(r.ParseFailed);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("real", r.Notes);
+    }
+
+    [Fact]
+    public void Latest_Candidate_Wins_When_Earlier_Block_Is_Valid_Later_Needs_Cleanup()
+    {
+        // Worst case: earlier candidate parses strictly, later one needs
+        // the lenient pass. The later one is the real answer.
+        var msg = Wrap("{ \"score\": 0, \"notes\": \"example\" }")
+                + "\n\nReal answer:\n\n"
+                + "{ score: 86, \"notes\": \"real\" }";
+        var r = EvaluatorScoreParser.Parse(msg);
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("real", r.Notes);
+    }
+
+    [Fact]
+    public void Two_Fenced_Blocks_Latest_Wins()
+    {
+        var msg = Wrap("{ \"score\": 0, \"notes\": \"example\" }")
+                + "\n\n"
+                + Wrap("{ \"score\": 86, \"notes\": \"real\" }");
+        var r = EvaluatorScoreParser.Parse(msg);
+        Assert.False(r.ParseFailed);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("real", r.Notes);
+    }
+
+    [Fact]
+    public void Unlabeled_Fence_With_Json_Body_Is_Accepted()
+    {
+        // Critique #9 — preserve current behavior: unlabeled ``` fences
+        // whose body starts with `{` are valid candidates.
+        var msg = "Result:\n```\n{ \"score\": 86, \"notes\": \"ok\" }\n```";
+        var r = EvaluatorScoreParser.Parse(msg);
+        Assert.False(r.ParseFailed);
+        Assert.Equal(86, r.Score);
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Leniency: cleanup must NEVER corrupt string-literal contents
+    // (critique #3 + #10 cleanup-ordering traps)
+    // ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Cleanup_Does_Not_Corrupt_String_Values_With_Colon_And_Comma()
+    {
+        // The colon-and-comma inside the string must NOT be interpreted as
+        // a key separator. (Naive regex-based unquoted-key repair would
+        // rewrite "score:" inside the string, breaking the JSON.)
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": \"score: 86, fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.Equal("score: 86, fine", r.Notes);
+    }
+
+    [Fact]
+    public void Brace_Inside_Double_Quoted_Notes_Does_Not_Confuse_Selector()
+    {
+        // The `{` inside the string must NOT be treated as the start of a
+        // top-level object by the candidate selector.
+        var msg = "{ \"score\": 86, \"notes\": \"saw { in code\" }";
+        var r = EvaluatorScoreParser.Parse(msg);
+        Assert.False(r.ParseFailed);
+        Assert.Equal(86, r.Score);
+        Assert.Contains("saw { in code", r.Notes);
+    }
+
+    [Fact]
+    public void Comment_Inside_String_Is_Not_Stripped()
+    {
+        // Strict parse should pass on the original — no cleanup needed.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": \"see /* this */ context\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.False(r.ParseRecovered);
+        Assert.Contains("/* this */", r.Notes);
+    }
+
+    [Fact]
+    public void Comment_Containing_Brace_Does_Not_Break_Selection()
+    {
+        // The `}` inside the comment must NOT close the outer object from
+        // the selector's point of view, AND the comment must be stripped
+        // for the parse to succeed.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, /* close }} */ \"notes\": \"fine\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(86, r.Score);
+    }
+
+    [Fact]
+    public void Single_Quoted_Containing_Double_Quote_Skipped_Safely()
+    {
+        // Conservative single→double conversion refuses to mutate runs
+        // that contain `"` (would corrupt on rewrap). Result: the strict
+        // parse still fails; we fall back rather than silently mangle.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": 'has \"quote\" inside' }"));
+        Assert.True(r.ParseFailed);
+    }
+
+    [Fact]
+    public void Single_Quoted_Containing_Backslash_Escape_Skipped_Safely()
+    {
+        // Backslash escapes inside single-quoted strings are also a
+        // hands-off case — the conversion would have to interpret JS-style
+        // escapes, which is beyond what we want to commit to.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 86, \"notes\": 'has \\'apostrophe\\' inside' }"));
+        Assert.True(r.ParseFailed);
+    }
+
+    [Fact]
+    public void Repaired_Identifier_Outside_Allowlist_Is_Not_Quoted()
+    {
+        // Critique #7 — known-key repair only. An unknown identifier
+        // outside the allowlist must NOT be quoted, so a malformed
+        // `{ randomKey: … }` still falls back rather than silently
+        // succeeding with a parse the operator doesn't expect.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ randomKey: 5, score: 86 }"));
+        Assert.True(r.ParseFailed);
     }
 }
