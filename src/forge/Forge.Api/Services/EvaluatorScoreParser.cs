@@ -89,6 +89,17 @@ public static class EvaluatorScoreParser
 
     private const string LenientRecoveryPrefix = "[parsed via lenient recovery] ";
 
+    // 2026-05-07 — when the evaluator emits a dim over its rubric cap (e.g.
+    // `tests: 17` against the 15-pt ceiling), we no longer reject the whole
+    // JSON. Instead we clamp the dim to its max (or 0 if negative), mark the
+    // result as recovered, and prefix Notes with a list of clamped dims so
+    // operators can spot rubric drift. WI-HIGH-MEM-CONSUMPTION iter 7
+    // collapsed to score 0 because every dim-overshoot tripped Fallback;
+    // the agent's iteration was destroyed on a 2-point overshoot. Score is
+    // preserved as the model emitted it (still in [0..100]) — recomputing
+    // from clamped dims would punish the agent for evaluator drift.
+    private const string DimClampPrefixLeader = "[parsed via dim clamping: ";
+
     /// <summary>
     /// Parse an evaluator's assistant text into a structured score. Always
     /// returns a non-null result; <see cref="EvaluatorScore.ParseFailed"/>
@@ -162,8 +173,11 @@ public static class EvaluatorScoreParser
             if (!scoreEl.TryGetInt32(out var score)) return null;
             if (score < 0 || score > 100) return null;
 
-            // Dims (optional; each present dim must be in [0, max])
+            // Dims (optional; out-of-cap values are clamped, not rejected —
+            // see DimClampPrefixLeader comment for the WI-HIGH-MEM-CONSUMPTION
+            // motivating incident).
             var dims = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var clampedDims = new List<string>();
             if (root.TryGetProperty("dims", out var dimsEl) && dimsEl.ValueKind == JsonValueKind.Object)
             {
                 foreach (var (key, max) in Dims)
@@ -171,8 +185,15 @@ public static class EvaluatorScoreParser
                     if (dimsEl.TryGetProperty(key, out var dimEl) && dimEl.ValueKind == JsonValueKind.Number)
                     {
                         if (!dimEl.TryGetInt32(out var v)) return null;
-                        if (v < 0 || v > max) return null;
-                        dims[key] = v;
+                        var clamped = v;
+                        if (clamped < 0) clamped = 0;
+                        else if (clamped > max) clamped = max;
+                        if (clamped != v)
+                        {
+                            clampedDims.Add($"{key}={v}->{clamped}");
+                        }
+
+                        dims[key] = clamped;
                     }
                 }
             }
@@ -194,13 +215,25 @@ public static class EvaluatorScoreParser
             }
             if (notes.Length > MaxNotesChars) notes = notes.Substring(0, MaxNotesChars);
 
-            // Recovered parses get a small Notes prefix so operators can spot
-            // model drift even before the deferred forge.eval.parse_failed
-            // counter lands (Phase 14.12).
-            if (recovered)
+            // Recovered parses get a Notes prefix so operators can spot model
+            // drift even before a dedicated forge.eval.* counter lands.
+            // Order: lenient first, then dim clamping. Both, one, or neither.
+            var dimsClamped = clampedDims.Count > 0;
+            var anyRepair = recovered || dimsClamped;
+            if (anyRepair)
             {
-                notes = LenientRecoveryPrefix
-                    + (string.IsNullOrEmpty(notes) ? "(no notes provided)" : notes);
+                var body = string.IsNullOrEmpty(notes) ? "(no notes provided)" : notes;
+                var prefix = string.Empty;
+                if (recovered)
+                {
+                    prefix += LenientRecoveryPrefix;
+                }
+                if (dimsClamped)
+                {
+                    prefix += DimClampPrefixLeader + string.Join(", ", clampedDims) + "] ";
+                }
+
+                notes = prefix + body;
                 if (notes.Length > MaxNotesChars) notes = notes.Substring(0, MaxNotesChars);
             }
 
@@ -216,7 +249,7 @@ public static class EvaluatorScoreParser
                 Notes: notes,
                 ParseFailed: false,
                 ParseError: null,
-                ParseRecovered: recovered);
+                ParseRecovered: anyRepair);
         }
     }
 
@@ -537,10 +570,12 @@ public static class EvaluatorScoreParser
 /// Phase 14.3 — structured evaluator output. Score + verdict are the
 /// authoritative fields; <see cref="ModelVerdict"/> is a side-channel used
 /// only to count drift between the model's claim and the math.
-/// <see cref="ParseRecovered"/> is true when the parse only succeeded after
-/// the lenient cleanup pass — distinguishes strict pass (clean evaluator
-/// output) from repaired pass (model drift) without changing the verdict
-/// math.
+/// <see cref="ParseRecovered"/> is true when the parse succeeded only after
+/// some form of repair — either lenient JSON cleanup (unquoted keys,
+/// trailing commas, comments stripped) or semantic clamping of an
+/// out-of-cap dim value (e.g. <c>tests=17</c> against the 15-pt ceiling).
+/// In both cases the score is real but the model drifted; the Notes field
+/// is prefixed so operators can spot it without a dedicated counter.
 /// </summary>
 public sealed record EvaluatorScore(
     int Score,

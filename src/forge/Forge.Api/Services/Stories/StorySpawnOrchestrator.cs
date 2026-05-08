@@ -41,6 +41,7 @@ public sealed class StorySpawnOrchestrator
     private readonly IStoryGitOps git;
     private readonly IStoryProviderOps provider;
     private readonly AgentAllocationLoader allocation;
+    private readonly Forge.Api.Realtime.TaskChannel? taskChannel;
     private readonly ILogger<StorySpawnOrchestrator>? logger;
 
     public StorySpawnOrchestrator(
@@ -49,7 +50,8 @@ public sealed class StorySpawnOrchestrator
         IStoryGitOps git,
         IStoryProviderOps provider,
         AgentAllocationLoader allocation,
-        ILogger<StorySpawnOrchestrator>? logger = null)
+        ILogger<StorySpawnOrchestrator>? logger = null,
+        Forge.Api.Realtime.TaskChannel? taskChannel = null)
     {
         this.services = services;
         this.strategy = strategy;
@@ -57,6 +59,7 @@ public sealed class StorySpawnOrchestrator
         this.provider = provider;
         this.allocation = allocation;
         this.logger = logger;
+        this.taskChannel = taskChannel;
     }
 
     /// <summary>
@@ -690,7 +693,7 @@ public sealed class StorySpawnOrchestrator
         // Assign agents, set status="active", ensure branch for every ready
         // workstream. Each claim is persisted immediately so concurrent ticks
         // see the updated status and don't double-claim.
-        var readyList = new List<(WorkstreamRow ws, string baseBranch)>();
+        var readyList = new List<(WorkstreamRow ws, string baseBranch, int wsPoints)>();
         foreach (var w in workstreams)
         {
             // Already merged into review queue — skip.
@@ -710,6 +713,26 @@ public sealed class StorySpawnOrchestrator
                 .Where(ww => ww!.Status is not ("merging" or "complete"))
                 .ToList();
             if (blocking.Count > 0) continue;
+
+            // 2026-05-07 — in-flight + failure-backoff guard. The 15s tick
+            // would otherwise spawn a fresh agent invocation every cycle on a
+            // workstream whose previous spawn was still running (or had just
+            // crashed with the Copilot SDK CLI subprocess dying mid-stream).
+            // Observed on WI-HIGH-MEM-CONSUMPTION iter 38: 25 spawns over
+            // ~80 minutes, each starting and dying without producing a
+            // deliverable row. The guard reads the WS's impl-spawn transcript
+            // events and returns SkipInFlight (budget+slack window) or
+            // SkipBackoff (consecutive-failures window) when appropriate.
+            // See ImplSpawnGuard for the full state machine.
+            var wsPointsForGuard = await LookupWorkstreamPointsAsync(db, w.Id, spawn.StoryPoints, ct);
+            var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct);
+            if (guardDecision.Outcome != ImplSpawnGuard.Decision.Allow)
+            {
+                this.logger?.LogDebug(
+                    "Workstream {WsId} skipped this tick: {Outcome} — {Reason}",
+                    w.Id, guardDecision.Outcome, guardDecision.Reason);
+                continue;
+            }
 
             // Engineer crew claim — assign BOTH the generator and the
             // evaluator agent ids so the workstream UI shows the actual
@@ -732,7 +755,7 @@ public sealed class StorySpawnOrchestrator
             await db.SaveChangesAsync(ct);
             await this.git.EnsureBranchAsync(repo, w.Branch, baseBranch, ct);
 
-            readyList.Add((w, baseBranch));
+            readyList.Add((w, baseBranch, wsPointsForGuard));
         }
         if (readyList.Count == 0) return false;
 
@@ -746,21 +769,70 @@ public sealed class StorySpawnOrchestrator
         var tasks = readyList.Select(item => Task.Run(async () =>
         {
             await semaphore.WaitAsync(ct);
+            // Emit the spawn-started marker BEFORE any orchestrator work so
+            // the in-flight guard sees this attempt even if the failure
+            // happens during worktree setup / target discovery (i.e. before
+            // DeliverableLoop emits task.iteration.started).
+            await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnStartedKind, new
+            {
+                wsId = item.ws.Id,
+                spawnId = spawn.Id,
+                wsPoints = item.wsPoints,
+                startedAt = DateTimeOffset.UtcNow,
+            }, ct);
+
             try
             {
-                var (w, bb) = item;
+                var (w, bb, _) = item;
                 await this.DriveOneWorkstreamImplAsync(spawn, w, repo, bb, hub, ct);
                 Interlocked.Exchange(ref changedFlag, 1);
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = true,
+                }, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Process shutdown — let it propagate naturally.
+                // Process shutdown — let it propagate naturally. We still
+                // emit a spawn-finished event so the in-flight guard releases
+                // on the next process boot; "success=false" applies the
+                // failure backoff which is the right behavior for an aborted
+                // run we can't reason about.
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = "OperationCanceledException",
+                    message = "process shutdown",
+                }, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                this.logger?.LogWarning(ex,
-                    "Workstream {WsId} impl failed; will retry next tick.",
-                    item.ws.Id);
+                // 2026-05-07 — escalated from LogWarning to LogError + emit
+                // a spawn-finished transcript event with full exception
+                // context. Previously the only diagnostic was the type +
+                // message in stdout; the live UI's Conversation tab had no
+                // breadcrumb explaining why iter X stalled. Now operators
+                // can see the failure inline alongside generator/evaluator
+                // turns and the in-flight guard correctly applies the
+                // failure backoff.
+                this.logger?.LogError(ex,
+                    "Workstream {WsId} impl failed; will retry after backoff. exception={ExceptionDetail}",
+                    item.ws.Id, ex.ToString());
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = ex.GetType().FullName,
+                    message = ex.Message,
+                    stackPreview = TrimStack(ex.StackTrace, 1024),
+                    innerType = ex.InnerException?.GetType().FullName,
+                    innerMessage = ex.InnerException?.Message,
+                }, CancellationToken.None);
             }
             finally
             {
@@ -770,6 +842,50 @@ public sealed class StorySpawnOrchestrator
 
         await Task.WhenAll(tasks);
         return changedFlag != 0;
+    }
+
+    /// <summary>
+    /// Resolve the points for a workstream's WI, falling back to the story
+    /// points when the row is missing. Used by the in-flight guard to size
+    /// the budget+slack window. Per-doc points (Layer B.3) live on the
+    /// WorkItemRow keyed on the workstream id.
+    /// </summary>
+    private static async Task<int> LookupWorkstreamPointsAsync(
+        ForgeDbContext db, string workstreamId, int storyPoints, CancellationToken ct)
+    {
+        var p = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workstreamId)
+            .Select(w => (int?)w.Points)
+            .FirstOrDefaultAsync(ct);
+        return Math.Max(1, p ?? storyPoints);
+    }
+
+    /// <summary>
+    /// Best-effort emit of an impl-spawn transcript event. Swallows all
+    /// errors so an emit failure can never abort the orchestrator tick —
+    /// the guard's correctness is preserved as long as MOST events land,
+    /// and the worst case (a missed emit) just causes one extra recovery
+    /// spawn after the guard window elapses.
+    /// </summary>
+    private async Task EmitSpawnEventAsync(string wsId, string kind, object payload, CancellationToken ct)
+    {
+        if (this.taskChannel is null) return;
+        try
+        {
+            await this.taskChannel.EmitAsync(wsId, kind, payload, ct: ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex,
+                "Failed to emit {Kind} for {WsId}; in-flight guard may double-spawn next tick.",
+                kind, wsId);
+        }
+    }
+
+    private static string TrimStack(string? stack, int maxChars)
+    {
+        if (string.IsNullOrEmpty(stack)) return string.Empty;
+        return stack.Length <= maxChars ? stack : stack[..maxChars];
     }
 
     /// <summary>
