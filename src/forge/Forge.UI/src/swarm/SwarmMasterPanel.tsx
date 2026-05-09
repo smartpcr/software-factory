@@ -96,8 +96,13 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const effectiveFilter = phaseStatusFilter.length === 0
     ? PHASE_STATUS_FILTER_KEYS
     : phaseStatusFilter;
+  // Phase numbers are positional within the *unfiltered* workstream list
+  // so the title stays consistent across filter changes (e.g., a row that
+  // is "PHASE 12" under `all` must still read "PHASE 12" under `active`).
   const visibleWs = useMemo(
-    () => ws.filter((w) => (effectiveFilter as readonly string[]).includes(w.status)),
+    () => ws
+      .map((w, originalIndex) => ({ w, originalIndex }))
+      .filter(({ w }) => (effectiveFilter as readonly string[]).includes(w.status)),
     [ws, effectiveFilter],
   );
   const isAllSelected = phaseStatusFilter.length === 0
@@ -181,11 +186,11 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
           </div>
         ) : (
           <div className="phase-board">
-            {visibleWs.map((w, i) => (
+            {visibleWs.map(({ w, originalIndex }) => (
               <PhaseCard
                 key={w.id}
                 ws={w}
-                index={i}
+                index={originalIndex}
                 selected={selection.kind === 'phase' && selection.id === w.id}
                 onSelect={() => onSelect({ kind: 'phase', id: w.id })}
               />

@@ -266,6 +266,13 @@ if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredServ
 builder.Services.AddSingleton<AutoMergeWatcher>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 
+// 2026-05-07 — transcript retention janitor. Bounds task_transcript_event
+// growth (was unbounded — DB hit 2.2 GB before this landed). Runs every
+// 6 hours; admin endpoint at POST /api/admin/transcripts/prune lets
+// operators trigger an on-demand sweep with optional VACUUM.
+builder.Services.AddSingleton<Forge.Api.Services.TranscriptRetentionJanitor>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.TranscriptRetentionJanitor>());
+
 // forge_implementation.md Phase 28 — story-driven spawn orchestrator + deps scheduler.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>();
 // Real-implementation bindings for the story-spawn lifecycle. No fakes /
