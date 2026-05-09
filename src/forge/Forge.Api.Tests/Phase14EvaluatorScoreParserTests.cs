@@ -103,11 +103,67 @@ public class Phase14EvaluatorScoreParserTests
     }
 
     [Fact]
-    public void Dim_Over_Max_Falls_Back()
+    public void Dim_Over_Max_Is_Clamped_And_Marked_Recovered()
     {
-        // correctness max is 40; 41 must fail.
+        // 2026-05-07 — replaces the prior `Dim_Over_Max_Falls_Back` test.
+        // Rejecting the whole shape on a 1-point overshoot destroyed the
+        // iteration's signal (WI-HIGH-MEM-CONSUMPTION iter 7 collapsed to
+        // 0 because the model emitted `tests: 17` against a 15 cap). The
+        // parser now clamps and surfaces the drift via Notes + ParseRecovered.
+        // correctness max is 40; 41 must clamp to 40.
         var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 95, \"dims\": { \"correctness\": 41 } }"));
-        Assert.True(r.ParseFailed);
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(95, r.Score);
+        Assert.Equal(40, r.Dims["correctness"]);
+        Assert.Contains("correctness=41->40", r.Notes);
+    }
+
+    [Fact]
+    public void Production_Repro_Score_Preserved_When_Tests_Dim_Overflows()
+    {
+        // 2026-05-07 — exact repro of the WI-HIGH-MEM-CONSUMPTION iter 7
+        // shape from the screenshot. Model emitted score 76 with a `tests`
+        // dim of 17 against the 15 cap. Pre-fix this fell through to score 0;
+        // post-fix the score is preserved, the dim is clamped to 15, and
+        // operators see the drift in the notes prefix.
+        var r = EvaluatorScoreParser.Parse(Wrap(
+            "{ \"score\": 76, \"dims\": { \"correctness\": 29, \"quality\": 15, \"tests\": 17, \"scope\": 8, \"risk\": 7 }, \"verdict\": \"iterate\", \"notes\": \"needs more coverage\" }"));
+
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(76, r.Score);
+        Assert.Equal("iterate", r.Verdict);
+        Assert.Equal(15, r.Dims["tests"]);
+        Assert.Equal(29, r.Dims["correctness"]);
+        Assert.Contains("tests=17->15", r.Notes);
+        Assert.Contains("needs more coverage", r.Notes);
+    }
+
+    [Fact]
+    public void Negative_Dim_Is_Clamped_To_Zero()
+    {
+        var r = EvaluatorScoreParser.Parse(Wrap("{ \"score\": 50, \"dims\": { \"risk\": -3 } }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(0, r.Dims["risk"]);
+        Assert.Contains("risk=-3->0", r.Notes);
+    }
+
+    [Fact]
+    public void Combined_Lenient_And_Clamp_Recovery_Notes_Carry_Both_Prefixes()
+    {
+        // Unquoted keys (lenient cleanup) AND tests=17 (semantic clamp) in
+        // one input — both repair markers must be present so operators can
+        // tell the difference.
+        var r = EvaluatorScoreParser.Parse(Wrap("{ score: 80, dims: { tests: 17 }, notes: \"ok\" }"));
+        Assert.False(r.ParseFailed);
+        Assert.True(r.ParseRecovered);
+        Assert.Equal(80, r.Score);
+        Assert.Equal(15, r.Dims["tests"]);
+        Assert.Contains("[parsed via lenient recovery]", r.Notes);
+        Assert.Contains("[parsed via dim clamping: tests=17->15]", r.Notes);
+        Assert.Contains("ok", r.Notes);
     }
 
     [Fact]
