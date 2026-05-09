@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 import { useCurrentUserStore } from '@/state/useCurrentUserStore';
 import type { UserSettings } from '@/types';
+import { MaintenancePanel } from './MaintenancePanel';
 
 // Phase 5.4 + 5.11 — provider configuration + health.
 // Phase-5 server reads its options from configuration (user-secrets / env).
@@ -554,6 +555,18 @@ export function SettingsView() {
               onSignOut={() => void signOut(p.kind)}
             />
           ))}
+        </div>
+
+        {/* Section divider — keeps Maintenance visually distinct from
+            providers without nesting a second `.workstream-grid-wrap`,
+            which would create a competing scroll container. */}
+        <div className="settings-section-head">
+          <span className="num">06</span>&nbsp;Maintenance
+          <span className="sep">/</span>
+          <span>database</span>
+        </div>
+        <div className="workstream-grid">
+          <MaintenancePanel />
         </div>
       </div>
     </section>
