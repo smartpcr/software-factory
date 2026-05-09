@@ -191,8 +191,17 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
             var npmExe = Path.Combine(appData, "npm", "node_modules", "@github/copilot",
                 "node_modules", "@github/copilot-win32-x64", "copilot.exe");
             if (File.Exists(npmExe)) return npmExe;
+
+            var sdkExe = Path.Combine(appData, "npm", "node_modules", "@github/copilot-sdk",
+                "node_modules", "@github/copilot-win32-x64", "copilot.exe");
+            if (File.Exists(sdkExe)) return sdkExe;
+
             var npmCmd = Path.Combine(appData, "npm", "copilot.cmd");
             if (File.Exists(npmCmd)) return npmCmd;
+
+            var sdkCmd = Path.Combine(appData, "npm", "node_modules", "@github/copilot-sdk",
+                "node_modules", ".bin", "copilot.cmd");
+            if (File.Exists(sdkCmd)) return sdkCmd;
         }
 
         return "copilot";
