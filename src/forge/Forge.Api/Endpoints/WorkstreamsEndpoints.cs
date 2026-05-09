@@ -583,7 +583,13 @@ public static class WorkstreamsEndpoints
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
         if (wi is not null)
         {
-            wi.ExecutionStatus = null;
+            // 2026-05-07 — was `null`, but ExecutionStatus is a non-nullable
+            // string (Entities.cs:1528) → SQLite NOT NULL violation at
+            // SaveChangesAsync. Match the working precedent in
+            // TaskExecutionEndpoints.ClearTranscript: queue it ready to
+            // re-claim and zero the trial counter.
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.TrialCount = 0;
             wi.AssignedAgentJson = null;
             wi.UpdatedAt = DateTimeOffset.UtcNow;
 
