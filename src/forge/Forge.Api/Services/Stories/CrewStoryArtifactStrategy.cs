@@ -990,6 +990,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             ```
 
+            Dimension caps (each dim must stay within these bounds — values
+            outside the cap are silently clamped, which signals rubric drift
+            and reduces your authority):
+            - correctness: 0..40
+            - quality:     0..25
+            - tests:       0..15
+            - scope:       0..10
+            - risk:        0..10
+            The five dim caps sum to 100; `score` must equal their sum and
+            stay in 0..100.
+
             STRICT JSON: double-quoted keys (`"score"`, not `score`), no
             trailing commas, no `//` or `/* */` comments. If your JSON is
             malformed your entire review is discarded and the iteration is
