@@ -175,6 +175,22 @@ async function ensureTaskConnection(): Promise<HubConnection> {
         useTaskLiveStore.getState().applyWorktree(msg.workItemId, snap);
       }
     });
+    // Server-side SignalR group membership is keyed by ConnectionId and is
+    // wiped on every reconnect. withAutomaticReconnect re-establishes the
+    // transport but does NOT replay invocations, so without this handler the
+    // conversation tab silently stops receiving task.event after the first
+    // network blip — events then only re-appear when the user toggles the
+    // tab (which forces detach + re-attach + Subscribe).
+    taskConnection.onreconnected(async () => {
+      const conn = taskConnection;
+      if (!conn) return;
+      const entries = useTaskLiveStore.getState().entries;
+      for (const [workItemId, entry] of Object.entries(entries)) {
+        if (entry.refCount > 0) {
+          try { await conn.invoke('Subscribe', `task.${workItemId}`); } catch { /* ignore */ }
+        }
+      }
+    });
   }
   taskStarting = taskConnection.start().catch((err) => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {

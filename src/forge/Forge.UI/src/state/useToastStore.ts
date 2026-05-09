@@ -16,13 +16,15 @@ interface ToastState {
 
 let nextId = 1;
 const TTL_MS = 5000;
+const ERROR_TTL_MS = 30000;
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
   show: (msg, kind = 'success') => {
     const id = nextId++;
     set({ toasts: [...get().toasts, { id, msg, kind }] });
-    window.setTimeout(() => get().dismiss(id), TTL_MS);
+    const ttl = kind === 'danger' ? ERROR_TTL_MS : TTL_MS;
+    window.setTimeout(() => get().dismiss(id), ttl);
   },
   dismiss: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
 }));
