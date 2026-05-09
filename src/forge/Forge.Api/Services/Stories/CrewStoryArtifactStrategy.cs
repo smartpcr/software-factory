@@ -1505,6 +1505,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorPromptPreview = Trim(evaluatorPrompt, 600),
         }, agentId: genAgentId, crewId: crew.Id, ct: ct);
 
+        // Phase 47 — per-iter no-progress detection. Track consecutive
+        // iterations whose post-generator worktree has zero uncommitted
+        // changes (impl phase only — plan/decompose write to scratch dirs
+        // that aren't git worktrees, so `git status` would always show 0
+        // there and false-trigger the guard). After NoProgressThreshold
+        // such iterations in a row, throw NoProgressException so the
+        // orchestrator can mark the workstream `blocked` instead of
+        // burning the full maxIter budget. Set up here, mutated inside
+        // GeneratorDelegate's closure.
+        var consecutiveNoChange = 0;
+        const int NoProgressThreshold = 3;
+        var isImplPhase = phaseTag.StartsWith("impl:", StringComparison.Ordinal);
+
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
         {
             string iterPrompt;
@@ -1656,6 +1669,74 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     }
                 }
                 try { File.Delete(snapshotPath); } catch { /* best-effort */ }
+            }
+
+            // Phase 47 — no-progress fail-fast. After the generator finishes
+            // editing the worktree this iteration, count uncommitted file
+            // changes via `git status --porcelain`. If the count is zero for
+            // NoProgressThreshold consecutive impl iterations, abort the
+            // gen↔eval loop with a NoProgressException — the orchestrator
+            // catches that and marks the workstream `blocked` instead of
+            // letting the loop burn through all 50 iters at $70+/iter on an
+            // agent that has stopped producing diffs. Only fires for
+            // `impl:` phaseTags; plan/decompose/qa/review-fix workspaces
+            // aren't git worktrees.
+            if (isImplPhase)
+            {
+                int changedCount;
+                try
+                {
+                    var changed = await this.git.GetChangedFilesAsync(
+                        repo: null, worktreePath: workspace, ct: iterCt);
+                    changedCount = changed.Count;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // git status failed — treat as inconclusive (don't trip
+                    // the guard on a transient failure). Reset the counter
+                    // so a real no-progress streak starts fresh on the next
+                    // successful read.
+                    this.logger?.LogDebug(ex,
+                        "No-progress check: GetChangedFilesAsync threw for {Workspace}; skipping this iter.",
+                        workspace);
+                    changedCount = -1;
+                }
+
+                if (changedCount == 0)
+                {
+                    consecutiveNoChange++;
+                    await this.taskChannel.EmitAsync(workItemId, "task.no-progress.detected", new
+                    {
+                        iter,
+                        consecutiveNoChange,
+                        threshold = NoProgressThreshold,
+                        workspace,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                    if (consecutiveNoChange >= NoProgressThreshold)
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.no-progress.aborted", new
+                        {
+                            iter,
+                            consecutiveNoChange,
+                            threshold = NoProgressThreshold,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                        throw new NoProgressException(
+                            $"Engineer produced zero file changes in {consecutiveNoChange} consecutive iterations "
+                            + $"(through iter {iter}, workspace {workspace}). Aborting gen/eval loop "
+                            + "to save budget; operator must Restart to retry.")
+                        {
+                            ConsecutiveIterations = consecutiveNoChange,
+                            LastIteration = iter,
+                        };
+                    }
+                }
+                else if (changedCount > 0)
+                {
+                    consecutiveNoChange = 0;
+                }
+                // changedCount == -1 → inconclusive, leave counter as-is.
             }
 
             return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);

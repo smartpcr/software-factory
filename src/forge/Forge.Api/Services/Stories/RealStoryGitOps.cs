@@ -294,6 +294,34 @@ public sealed class RealStoryGitOps : IStoryGitOps
         if (branchOnOrigin)
         {
             await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+
+            // Phase 47b — diagnostic breadcrumb for the worktree-wipe
+            // investigation. The engineer agent's uncommitted edits
+            // shouldn't be present here in normal operation: this method
+            // is reached AFTER CommitFilesAsync pushed any pending work
+            // to origin. If `git status` shows uncommitted changes at
+            // this point, something committed-but-not-pushed will be
+            // lost, OR the agent left edits on disk that the orchestrator
+            // didn't capture into the file dict (a bug). Capture the
+            // pre-reset state so we can correlate against the
+            // workstream's deliverable history.
+            var preReset = await this.CaptureWorktreeStateAsync(wtPath, ct);
+            var (orgShaCode, orgShaOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "rev-parse", $"origin/{branch}");
+            var originSha = orgShaCode == 0 ? orgShaOut.Trim() : "(unknown)";
+            if (preReset.UncommittedCount > 0 || !string.Equals(preReset.HeadSha, originSha, StringComparison.OrdinalIgnoreCase))
+            {
+                this.logger?.LogWarning(
+                    "WORKTREE_FORCE_RESET merge-upstream: branch={Branch} wtPath={WtPath} "
+                    + "preResetHead={Head} originSha={OriginSha} uncommittedFileCount={UncommittedCount} "
+                    + "sampleUncommittedPaths={SamplePaths} "
+                    + "(about to `git reset --hard origin/{Branch}` before merging origin/{Upstream}; "
+                    + "reflog can recover within gc-grace).",
+                    branch, wtPath, preReset.HeadSha, originSha,
+                    preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
+                    branch, upstreamBranch);
+            }
+
             await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
         }
         else
@@ -711,9 +739,33 @@ public sealed class RealStoryGitOps : IStoryGitOps
             // Best-effort fetch — the remote branch may have been deleted
             // after a PR merge. The local worktree still has its commits.
             await this.RunGitCaptureAsync(wtPath, ct, "fetch", "origin", branch);
-            var (code, _, _) = await this.RunGitCaptureAsync(wtPath, ct, "checkout", branch);
+            var (code, coStdout, coStderr) = await this.RunGitCaptureAsync(wtPath, ct, "checkout", branch);
             if (code != 0)
             {
+                // Phase 47b — diagnostic breadcrumb for the worktree-wipe
+                // investigation. Production observed (2026-05-09) the
+                // engineer agent calling `edit` 65× with confirmed tool
+                // results, yet `git status` empty between iter spans —
+                // suggesting one of two destructive paths discarded the
+                // edits. This fallback is one of them: `git checkout -B
+                // {branch} origin/{branch}` is a hard reset of the branch
+                // ref AND the working tree to origin's HEAD. Anything
+                // uncommitted that conflicts with origin's tree is wiped.
+                // Capture the pre-reset state (uncommitted file count,
+                // sample paths, HEAD SHA, original checkout error) so we
+                // can correlate against the workstream's deliverable
+                // history when investigating "agent edited but no diff".
+                var preReset = await this.CaptureWorktreeStateAsync(wtPath, ct);
+                this.logger?.LogWarning(
+                    "WORKTREE_FORCE_RESET ensure-fallback: branch={Branch} wtPath={WtPath} "
+                    + "checkoutExit={CheckoutCode} checkoutStdout={CheckoutStdout} checkoutStderr={CheckoutStderr} "
+                    + "preResetHead={Head} uncommittedFileCount={UncommittedCount} sampleUncommittedPaths={SamplePaths} "
+                    + "(falling back to destructive `git checkout -B {Branch} origin/{Branch}` — ANY uncommitted changes that "
+                    + "conflict with origin/{Branch} will be discarded; reflog can recover within gc-grace).",
+                    branch, wtPath, code, Trim(coStdout, 200), Trim(coStderr, 200),
+                    preReset.HeadSha, preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
+                    branch, branch, branch);
+
                 await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
             }
             return;
@@ -855,5 +907,54 @@ public sealed class RealStoryGitOps : IStoryGitOps
         var stderr = await stderrTask;
         this.logger?.LogDebug("git {Args} → exit={Exit} cwd={Cwd}", string.Join(' ', args), p.ExitCode, cwd);
         return (p.ExitCode, stdout, stderr);
+    }
+
+    /// <summary>
+    /// Phase 47b — snapshot a worktree's pre-destructive-op state for the
+    /// WORKTREE_FORCE_RESET diagnostic breadcrumb. Captures HEAD SHA + the
+    /// uncommitted-file count + a small sample of the actual paths so the
+    /// operator can correlate against the workstream's deliverable history
+    /// when investigating "agent edited but no diff".
+    /// </summary>
+    private async Task<(string HeadSha, int UncommittedCount, IReadOnlyList<string> SamplePaths)>
+        CaptureWorktreeStateAsync(string wtPath, CancellationToken ct)
+    {
+        string headSha = "(unknown)";
+        try
+        {
+            var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
+            if (shaCode == 0) headSha = shaOut.Trim();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort */ }
+
+        var samples = new List<string>(8);
+        var count = 0;
+        try
+        {
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain", "-uall");
+            if (statusCode == 0 && !string.IsNullOrEmpty(statusOut))
+            {
+                foreach (var line in statusOut.Split('\n'))
+                {
+                    if (line.Length < 4) continue;
+                    count++;
+                    if (samples.Count < 8)
+                    {
+                        var path = line.Substring(3).Trim();
+                        if (!string.IsNullOrEmpty(path)) samples.Add(path);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort */ }
+
+        return (headSha, count, samples);
+    }
+
+    private static string Trim(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value.Length <= max ? value.Trim() : value.Substring(0, max).Trim() + "…";
     }
 }

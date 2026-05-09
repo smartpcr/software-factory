@@ -703,7 +703,13 @@ public sealed class StorySpawnOrchestrator
             // invocation but the next 15-second tick fired a fresh iter).
             // The Restart endpoint clears deliverables and flips status back
             // to "active" to revive the loop.
-            if (w.Status is "review" or "merging" or "complete" or "cancelled") continue;
+            // Phase 47 — also skip "blocked" workstreams; a blocked ws is
+            // sitting in operator-triage after a non-pass terminal verdict
+            // (or a NoProgressException from the engineer producing zero
+            // diffs for several iters). Re-spawning would just re-trigger
+            // the same livelock the blocked status was added to break.
+            // Restart is the explicit unblock path.
+            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "blocked") continue;
 
             // Block until every dep is merged.
             var blocking = deps
@@ -807,6 +813,41 @@ public sealed class StorySpawnOrchestrator
                     success = false,
                     exceptionType = "OperationCanceledException",
                     message = "process shutdown",
+                }, CancellationToken.None);
+            }
+            catch (NoProgressException npe)
+            {
+                // Phase 47 — the engineer agent produced zero file changes
+                // for N consecutive iterations. Mark the workstream blocked
+                // immediately (don't apply failure backoff; that would just
+                // re-spawn after the window). Operator's Restart endpoint
+                // clears deliverables + flips status back to "active" to
+                // unblock. Emits ws-blocked so the UI can show needs-attention.
+                this.logger?.LogWarning(
+                    "Workstream {WsId} no-progress after {Iters} consecutive zero-change iters (last iter {LastIter}). "
+                    + "Marking blocked. Operator must Restart to retry.",
+                    item.ws.Id, npe.ConsecutiveIterations, npe.LastIteration);
+
+                using var noProgScope = this.services.CreateScope();
+                var noProgDb = noProgScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var noProgRow = await noProgDb.Workstreams.FirstOrDefaultAsync(
+                    ws => ws.Id == item.ws.Id, CancellationToken.None);
+                if (noProgRow is not null && noProgRow.Status is not "cancelled" and not "complete")
+                {
+                    noProgRow.Status = "blocked";
+                    await noProgDb.SaveChangesAsync(CancellationToken.None);
+                    await EmitChange(hub, "ws-blocked", spawn, CancellationToken.None);
+                }
+
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = nameof(NoProgressException),
+                    message = npe.Message,
+                    consecutiveNoChange = npe.ConsecutiveIterations,
+                    lastIter = npe.LastIteration,
                 }, CancellationToken.None);
             }
             catch (Exception ex)
@@ -916,6 +957,34 @@ public sealed class StorySpawnOrchestrator
                 "Workstream {WsId} already passed (iter {Iter}, score {Score}). Skipping gen/eval, using cached workspace.",
                 w.Id, lastDel.Iter, lastDel.Score);
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
+        }
+        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject")
+        {
+            // Phase 47 — non-pass terminal verdicts route to a triage state
+            // instead of re-spawning the gen↔eval loop. Before this fix, the
+            // orchestrator only special-cased `pass`, so a `stalled` /
+            // `stalled-budget` / `reject` workstream re-entered
+            // ProduceWorkstreamChangesAsync every tick. Combined with the
+            // DeliverableLoop's resume guard (which restarted iter from 1
+            // after each `stalled` row), this drove the 139-deliverable /
+            // $9,825 livelock observed 2026-05-09. We do NOT auto-route
+            // these to `review` — sending non-pass work into the normal
+            // review pipeline could let auto-merge ship rejected/stalled
+            // changes. Operator clicks Restart (which clears deliverables
+            // and resets Status="active") to retry.
+            this.logger?.LogWarning(
+                "Workstream {WsId} terminal verdict {Verdict} (iter {Iter}, score {Score}). "
+                + "Marking blocked; operator must Restart to retry.",
+                w.Id, lastDel.Verdict, lastDel.Iter, lastDel.Score);
+
+            var blockedRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (blockedRow is not null && blockedRow.Status is not "cancelled" and not "complete")
+            {
+                blockedRow.Status = "blocked";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-blocked", spawn, ct);
+            }
+            return;
         }
         else
         {

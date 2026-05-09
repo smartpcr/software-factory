@@ -99,3 +99,26 @@ public sealed record ReviewCommentContext(string FilePath, int Line, string Body
 
 /// <summary>Engineer's response: a single file edit + a reply body.</summary>
 public sealed record ReviewFix(string FilePath, string NewContent, string ReplyBody);
+
+/// <summary>
+/// Thrown by <see cref="IStoryArtifactStrategy.ProduceWorkstreamChangesAsync"/>
+/// when the engineer agent has produced zero file changes for several
+/// consecutive iterations. Treated by the orchestrator as a triage signal:
+/// the workstream is moved to <c>Status="blocked"</c>, the gen↔eval loop is
+/// not re-spawned, and the operator must <c>Restart</c> the workstream to
+/// retry. Exists to short-circuit the livelock observed 2026-05-09 where one
+/// workstream burned $9,825 across 139 zero-diff iterations because the
+/// orchestrator only checked for changes after the full <c>maxIter</c> run
+/// completed and the resume logic restarted the loop from <c>iter=1</c> on
+/// every <c>stalled</c> verdict.
+/// </summary>
+public sealed class NoProgressException : Exception
+{
+    public NoProgressException(string message) : base(message) { }
+
+    /// <summary>How many consecutive zero-change iterations triggered the abort.</summary>
+    public int ConsecutiveIterations { get; init; }
+
+    /// <summary>The iteration number that triggered the abort (last zero-change iter).</summary>
+    public int LastIteration { get; init; }
+}
