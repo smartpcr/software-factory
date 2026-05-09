@@ -286,8 +286,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Ensure the worktree is up to date.
         await this.EnsureWorktreeAsync(root, wtPath, branch, branch, ct);
         await this.GitAsync(wtPath, ct, "fetch", "origin", upstreamBranch);
-        await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
-        await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+
+        var (existsCode, existsOut, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "ls-remote", "--heads", "origin", branch);
+        var branchOnOrigin = existsCode == 0 && !string.IsNullOrWhiteSpace(existsOut);
+
+        if (branchOnOrigin)
+        {
+            await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+            await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+        }
+        else
+        {
+            // First-time merge into a never-pushed branch — push local commits
+            // so origin/{branch} exists; PushWithAutoRecover at the end then
+            // has a remote to push against without inventing one.
+            this.logger?.LogInformation(
+                "MergeUpstreamIntoBranchAsync: origin/{Branch} not on origin; pushing local commits first.",
+                branch);
+            await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+        }
 
         // Check if upstream is already an ancestor — nothing to merge.
         var (mbCode, _, _) = await this.RunGitCaptureAsync(
@@ -730,9 +748,22 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
         else
         {
-            // New branch off baseBranch.
+            // New branch off baseBranch — but a prior drive may have already
+            // created the local branch ref (step 3 cleans the worktree dir
+            // and registration, not the branch). Probe with rev-parse and
+            // attach the worktree to the existing ref instead of failing
+            // with "fatal: a branch named '…' already exists". Mirrors the
+            // pattern at CrewQueueWorker.cs:1006-1011.
             await this.GitAsync(cloneRoot, ct, "fetch", "origin", baseBranch);
-            await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
+            var (localCode, _, _) = await this.RunGitCaptureAsync(cloneRoot, ct, "rev-parse", "--verify", $"refs/heads/{branch}");
+            if (localCode == 0)
+            {
+                await this.GitAsync(cloneRoot, ct, "worktree", "add", wtPath, branch);
+            }
+            else
+            {
+                await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
+            }
         }
     }
 
