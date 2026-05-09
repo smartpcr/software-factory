@@ -2304,7 +2304,46 @@ export const forgeApi = {
   async getPerformanceScorecards(window: ReviewWindow = 'trailing20'): Promise<PerformanceScorecardsResponse> {
     return fetchJson<PerformanceScorecardsResponse>(`/api/performance/scorecards?window=${window}`);
   },
+
+  // -- Admin / maintenance ----------------------------------------------
+
+  /** 2026-05-07 — DB stats for the Settings → Maintenance panel. */
+  async getDbStats(): Promise<DbStats> {
+    return fetchJson<DbStats>(`/api/admin/db/stats`);
+  },
+
+  /** 2026-05-07 — manually trigger a transcript prune. `dryRun` returns
+   *  the counts without modifying the DB; `vacuum` runs SQLite VACUUM
+   *  after a successful prune to reclaim file-system space. */
+  async pruneTranscripts(opts: { dryRun?: boolean; vacuum?: boolean } = {}): Promise<PruneStats> {
+    const params = new URLSearchParams();
+    if (opts.dryRun) params.set('dryRun', 'true');
+    if (opts.vacuum) params.set('vacuum', 'true');
+    const qs = params.toString();
+    return fetchJson<PruneStats>(`/api/admin/transcripts/prune${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
 };
+
+export interface DbStats {
+  dbPath: string;
+  fileBytes: number;
+  modifiedAt: string | null;
+  transcriptRows: number;
+  transcriptPayloadBytes: number;
+  deliverableRows: number;
+}
+
+export interface PruneStats {
+  dryRun: boolean;
+  workItemsScanned: number;
+  workItemsPruned: number;
+  rowsDeleted: number;
+  vacuumRan: boolean;
+  elapsedMs: number;
+}
 
 function buildLocalTimeline(from: number, to: number): TimelineResponse {
   const epicColor = new Map(sampleState.epics.map((e) => [e.id, e.color]));
