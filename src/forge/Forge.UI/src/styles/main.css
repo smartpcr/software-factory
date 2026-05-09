@@ -73,6 +73,39 @@
   transform: rotate(45deg);
   margin-bottom: 4px;
 }
+
+/* 2026-05-07 — in-page section divider (e.g., Settings → Maintenance).
+   Lighter weight than `.page-head` because a settings view can have
+   multiple sections within the same scroll container. */
+.settings-section-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 22px 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.settings-section-head .num { color: var(--accent); }
+.settings-section-head .sep { color: var(--text-tertiary); opacity: 0.4; }
+
+/* Non-clickable variant of `.ws-card`. The base class is built for
+   provider rows / workstream tiles which DO drill in on click; cards
+   that just present info and host their own buttons should not show a
+   pointer cursor or lift on hover. */
+.ws-card.ws-card--static {
+  cursor: default;
+}
+.ws-card.ws-card--static:hover {
+  transform: none;
+  border-color: var(--border);
+  box-shadow: none;
+}
 .sprint-pill {
   display: inline-flex;
   align-items: center;
