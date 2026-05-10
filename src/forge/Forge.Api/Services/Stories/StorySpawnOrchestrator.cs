@@ -301,6 +301,18 @@ public sealed class StorySpawnOrchestrator
                     await ClearLastErrorAsync(db, earlyRow, ct);
                     await db.SaveChangesAsync(ct);
                     await EmitChange(hub, "phase-advanced", earlyRow, ct);
+
+                    // Phase 49 follow-up — all plan docs passed AND the PR
+                    // is merged; the plan worktree on disk is now stale
+                    // (the docs are live on main, per-iter snapshots inside
+                    // the worktree are forensic-only). Free the disk.
+                    // Best-effort: failures here log + continue; we've
+                    // already saved the phase advance.
+                    if (repo is not null && !string.IsNullOrEmpty(earlyRow.PlanBranch))
+                    {
+                        await this.git.RemoveWorktreeAsync(repo, earlyRow.PlanBranch!, ct);
+                    }
+
                     return true;
                 }
             }
@@ -446,6 +458,15 @@ public sealed class StorySpawnOrchestrator
         await ClearLastErrorAsync(db, sRow, ct);
         await db.SaveChangesAsync(ct);
         await EmitChange(hub, "phase-advanced", sRow, ct);
+
+        // Phase 49 follow-up — plan docs all passed AND the PR is merged;
+        // the plan worktree on disk is now stale. Free the disk. Matches
+        // the same cleanup at the early-return fast path above.
+        if (repo is not null && !string.IsNullOrEmpty(sRow.PlanBranch))
+        {
+            await this.git.RemoveWorktreeAsync(repo, sRow.PlanBranch!, ct);
+        }
+
         return true;
     }
 
@@ -1138,9 +1159,16 @@ public sealed class StorySpawnOrchestrator
         }
 
         // ── Phase 1: sequential claim — fast, DB-safe ─────────────────────
-        // Assign agents, set status="active", ensure branch for every ready
-        // workstream. Each claim is persisted immediately so concurrent ticks
-        // see the updated status and don't double-claim.
+        // Mark every ready workstream as `active` with EMPTY AgentsJson;
+        // ensure its branch on origin. Agent assignment happens LATER
+        // in Phase 2, right before the agent invocation starts — see
+        // the pick-lock block inside the per-task Task.Run below.
+        // Phase 49 follow-up — was assigning the (gen, eval) pair here
+        // at claim time; that made the assignment go stale by the time
+        // the runner actually started (minutes later) and caused every
+        // workstream to end up with the same default pair when the
+        // resolver couldn't beat the legacy fallback. Late assignment
+        // takes a fresh busy-set snapshot inside the parallel task.
         var readyList = new List<(WorkstreamRow ws, string baseBranch, int wsPoints)>();
         foreach (var w in workstreams)
         {
@@ -1198,16 +1226,21 @@ public sealed class StorySpawnOrchestrator
                 continue;
             }
 
-            // Engineer crew claim — assign BOTH the generator and the
-            // evaluator agent ids so the workstream UI shows the actual
-            // pair that DeliverableLoop will run (CrewStoryArtifactStrategy
-            // mirrors this resolution internally). Falls back to the
-            // legacy single-agent allocation row when the crew table has
-            // no engineer crew configured.
+            // Engineer crew claim — assign agents LATE (Phase 49 follow-up).
+            // The legacy code populated AgentsJson here at claim time,
+            // but the operator observed all workstreams ending up with the
+            // same pair because (a) the resolver returned crew defaults
+            // when it ran (now fixed via PairDiversityResolver), and (b)
+            // the busy-set snapshot was taken minutes before the agent
+            // actually ran, so by the time the runner started the pair
+            // could have shifted. The fix: leave AgentsJson empty at
+            // claim time; pick the pair INSIDE the parallel task right
+            // before strategy.ProduceWorkstreamChangesAsync runs, with a
+            // fresh busy-set read inside a shared pick-lock so concurrent
+            // tasks see each other's picks.
             if (w.Status != "active")
             {
-                var assignedAgents = await ResolveImplPairAsync(db, this.allocation, ct);
-                w.AgentsJson = JsonSerializer.Serialize(assignedAgents);
+                w.AgentsJson = "[]";
                 w.Status = "active";
             }
 
@@ -1230,6 +1263,13 @@ public sealed class StorySpawnOrchestrator
         // Bounded to 4 concurrent workstreams to avoid overloading agents.
         var changedFlag = 0;
         var semaphore = new SemaphoreSlim(4);
+        // Phase 49 follow-up — agent assignment lock. Serialises the
+        // "load busy set → pick pair → save AgentsJson" critical section
+        // across parallel tasks so two concurrent workstreams don't read
+        // the same busy snapshot and pick the same agents. The
+        // invocation itself runs OUTSIDE the lock so the lock window
+        // is short (DB read + in-memory pick + DB write ≈ <50 ms).
+        var pickLock = new SemaphoreSlim(1, 1);
         var tasks = readyList.Select(item => Task.Run(async () =>
         {
             await semaphore.WaitAsync(ct);
@@ -1248,6 +1288,38 @@ public sealed class StorySpawnOrchestrator
             try
             {
                 var (w, bb, _) = item;
+
+                // Phase 49 follow-up — LATE agent assignment, serialised
+                // across the parallel tasks via pickLock. Each task takes
+                // a fresh busy-set snapshot inside the lock, picks a
+                // pair, saves AgentsJson, releases. The invocation runs
+                // outside the lock so picking serialisation doesn't cap
+                // throughput. The freshly-assigned pair is written into
+                // `w.AgentsJson` so ProduceWorkstreamChangesAsync (which
+                // reads workstream.AgentsJson) picks up the assignment
+                // without a re-fetch.
+                await pickLock.WaitAsync(ct);
+                try
+                {
+                    using var pickScope = this.services.CreateScope();
+                    var pickDb = pickScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var freshBusy = await Forge.Api.Services.BusyAgentsHelper.LoadBusyAgentsAsync(pickDb, ct);
+                    var assignedPair = await ResolveImplPairAsync(
+                        pickDb, this.allocation, freshBusy, w.Sort, ct);
+                    var assignedJson = JsonSerializer.Serialize(assignedPair);
+                    w.AgentsJson = assignedJson;
+                    var pickRow = await pickDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+                    if (pickRow is not null)
+                    {
+                        pickRow.AgentsJson = assignedJson;
+                        await pickDb.SaveChangesAsync(ct);
+                    }
+                    this.logger?.LogInformation(
+                        "Late agent assignment for {WsId}: pair=[{Pair}] (busySet size at pick={BusyCount})",
+                        w.Id, string.Join(", ", assignedPair), freshBusy.Count);
+                }
+                finally { pickLock.Release(); }
+
                 await this.DriveOneWorkstreamImplAsync(spawn, w, repo, bb, hub, ct);
                 Interlocked.Exchange(ref changedFlag, 1);
                 await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
@@ -1528,9 +1600,13 @@ public sealed class StorySpawnOrchestrator
                 $"impl({w.Id}): {w.Name}", ct);
         }
 
-        // Phase 46 — merge latest from main into the workstream branch
-        // before creating the PR. Always enforced.
-        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, "main", ct: ct);
+        // Phase 46 — merge latest from the spawn's base branch into the
+        // workstream branch before creating the PR. Always enforced.
+        // Phase 49 follow-up — was hardcoded to "main"; spawns can use
+        // a non-main base (e.g. failover-cluster:XRAFT uses
+        // feature/xraft) and merging the wrong branch produces
+        // spurious "behind" deltas on the PR.
+        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
 
         // Build rich PR description from the last deliverable, matching the
         // format used by CrewQueueWorker for regular work-item PRs:
@@ -1682,6 +1758,15 @@ public sealed class StorySpawnOrchestrator
                             "Workstream {WsId} PR {PrId} merged — advanced to complete.",
                             w.Id, mergingPrs[0]);
                         await EmitChange(hub, "ws-complete", spawn, ct);
+
+                        // Phase 49 follow-up — workstream PR is merged into
+                        // main; the per-stage worktree on disk is now stale
+                        // (its commits are live on main). Free the disk.
+                        // Best-effort: failures log + continue.
+                        if (repo is not null && !string.IsNullOrEmpty(w.Branch))
+                        {
+                            await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                        }
                     }
                 }
                 continue;
@@ -1710,13 +1795,38 @@ public sealed class StorySpawnOrchestrator
                     "Workstream {WsId} PR {PrId} reached terminal merged state — advanced from review to complete.",
                     w.Id, prId);
                 await EmitChange(hub, "ws-complete", spawn, ct);
+
+                // Phase 49 follow-up — mirror the merging→complete cleanup
+                // for the external-merge fast path. Worktree is stale once
+                // upstream is merged.
+                if (repo is not null && !string.IsNullOrEmpty(w.Branch))
+                {
+                    await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                }
                 continue;
             }
 
-            // Round 0 → post comments. Engineer fixes immediately. Round 1 → approve & merge.
-            // We track rounds via comment count: 0 comments yet = round 0.
-            var commentRows = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
-            if (commentRows.Count == 0)
+            // Phase 49 follow-up — single resumable fix-loop. The legacy
+            // Round 0 vs Round 1+ split was brittle: Round 0 entered only
+            // when commentRows.Count == 0, posted all comments, then
+            // foreach-ed through them in ONE tick to fix + resolve. If
+            // anything failed mid-foreach (LLM timeout, commit error,
+            // transient SignalR drop), the surviving comments stayed
+            // `active` forever — Round 1+ on the next tick only checked
+            // the merge gate and never resumed the fix loop. This
+            // refactor runs the comment loop on every tick while ANY
+            // `active` comments exist, naturally addressing nested
+            // replies (a reviewer rebuttal posted as a thread reply has
+            // its own `state=active` row and gets picked up the same way
+            // as a top-level comment).
+            var allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
+            var activeComments = allComments.Where(c => c.State == "active").ToList();
+
+            // Step 1 — first visit: no comments yet → run the reviewer to
+            // post the initial round. ProduceReviewCommentsAsync emits its
+            // transcript events under workstream.Id (Phase 49), so the
+            // Review subtab in the Conversation pane lights up here.
+            if (allComments.Count == 0)
             {
                 var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
                 var comments = await this.strategy.ProduceReviewCommentsAsync(spawn, w, prId, round: 0, ct);
@@ -1735,32 +1845,68 @@ public sealed class StorySpawnOrchestrator
                     await this.provider.PostPrCommentAsync(prId, c.FilePath, c.Line, c.Body, reviewer, ct);
                 }
 
-                // Engineer immediately addresses each comment.
+                // Re-load so the fix loop below picks up the freshly-posted rows.
+                allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
+                activeComments = allComments.Where(c => c.State == "active").ToList();
+            }
+
+            // Step 2 — fix loop. Runs whenever there are ACTIVE comments
+            // (top-level OR replies). Each comment gets one ProduceReviewFixAsync
+            // call wrapped in its own try/catch so a transient failure on
+            // comment #2 doesn't leave #3 unaddressed. The engineer agent
+            // returns ONE of two shapes per comment (Phase 49):
+            //   • Code change (FilePath + NewContent non-null) → commit
+            //     the file AND post a thread reply summarising the change.
+            //   • Reply only (FilePath / NewContent null) → no commit;
+            //     post the reply explaining why no change is needed.
+            // ReplyBody is ALWAYS present so every reviewer comment gets
+            // an explicit response on the PR thread. ResolvePrCommentAsync
+            // updates the DB row state to "resolved"; the next tick re-queries
+            // and the loop exits when activeComments is empty.
+            if (activeComments.Count > 0)
+            {
                 var engineerId = ParseStringList(w.AgentsJson).FirstOrDefault() ?? "eng-default";
-                var openComments = await db.PrComments.Where(c => c.PrId == prId && c.State == "active").ToListAsync(ct);
-                foreach (var oc in openComments)
+                foreach (var oc in activeComments)
                 {
-                    var fix = await this.strategy.ProduceReviewFixAsync(spawn, w,
-                        new ReviewCommentContext(oc.FilePath ?? string.Empty, oc.Line ?? 0, oc.Body, engineerId), ct);
-                    await this.git.CommitFilesAsync(repo, w.Branch,
-                        new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath] = fix.NewContent },
-                        $"fix({w.Id}): address review comment", ct);
-                    await this.provider.ResolvePrCommentAsync(oc.Id, engineerId, ct);
+                    try
+                    {
+                        var fix = await this.strategy.ProduceReviewFixAsync(spawn, w,
+                            new ReviewCommentContext(oc.FilePath ?? string.Empty, oc.Line ?? 0, oc.Body, engineerId), ct);
+
+                        // Path A — commit the code change.
+                        if (!fix.IsReplyOnly)
+                        {
+                            await this.git.CommitFilesAsync(repo, w.Branch,
+                                new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
+                                $"fix({w.Id}): address review comment", ct);
+                        }
+                        // Path A & B — always post the reply so the
+                        // reviewer (and operator) sees an explicit response.
+                        await this.provider.ReplyPrCommentAsync(oc.Id, fix.ReplyBody, engineerId, ct);
+                        // Mark the original reviewer comment resolved so it
+                        // drops out of the active set on the next tick.
+                        await this.provider.ResolvePrCommentAsync(oc.Id, engineerId, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "DriveReviewAsync: failed to fix comment {CommentId} on PR {PrId} for ws {WsId}; "
+                            + "will retry next tick. surviving comments will still be processed in this loop.",
+                            oc.Id, prId, w.Id);
+                        // Don't break — continue with the next comment so a
+                        // failure on one doesn't strand the rest.
+                    }
                 }
                 changed = true;
                 continue;
             }
 
-            // Round 1+: any open comments? If not, approve and merge.
-            var stillOpen = commentRows.Count(c => c.State == "active");
-            if (stillOpen == 0)
-            {
-                var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
-                await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
-                w.Status = "merging";
-                await db.SaveChangesAsync(ct);
-                changed = true;
-            }
+            // Step 3 — no active comments → approve and merge.
+            var approveReviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
+            await this.ApproveAndMergeAsync(prId, w.Branch, approveReviewer, repo, baseBranch, ct);
+            w.Status = "merging";
+            await db.SaveChangesAsync(ct);
+            changed = true;
         }
         return changed;
     }
@@ -1870,6 +2016,18 @@ public sealed class StorySpawnOrchestrator
             spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
             await EmitChange(hub, "done", spawnRow, ct);
+
+            // Phase 49 follow-up — spawn reached Done; QA branch is
+            // merged into main and we won't touch its worktree again.
+            // Free disk by removing the QA worktree. Engineer worktrees
+            // (one per workstream) were already cleaned up at each
+            // ws.Status="complete" transition above and in DriveReviewAsync;
+            // this catches the QA worktree alone.
+            if (repo is not null && !string.IsNullOrEmpty(spawnRow.QaBranch))
+            {
+                await this.git.RemoveWorktreeAsync(repo, spawnRow.QaBranch!, ct);
+            }
+
             changed = true;
         }
         return changed;
@@ -1942,8 +2100,37 @@ public sealed class StorySpawnOrchestrator
     /// actually invokes. Falls back to the legacy single-agent allocation
     /// when no engineer crew is configured.
     /// </summary>
+    /// <summary>
+    /// Phase 49 follow-up — pick a (generator, evaluator) pair for an
+    /// engineer-workstream claim with three guarantees:
+    /// <list type="number">
+    /// <item><b>Diversity</b> — pulls the engineer crew's roster, runs
+    ///   <see cref="PairDiversityResolver.PickGenerator"/> /
+    ///   <see cref="PairDiversityResolver.PickEvaluator"/> against the
+    ///   live busy set so the picked agents are not already on another
+    ///   in-flight invocation.</item>
+    /// <item><b>Per-tick uniqueness</b> — mutates <paramref name="busyAgents"/>
+    ///   after picking each agent so the very next claim in the same
+    ///   tick sees them as busy and skips them. Without this, multiple
+    ///   workstreams claimed in one tick all picked the crew's lead and
+    ///   default evaluator (the bug operator hit on
+    ///   <c>1.2 → 1.3 → 1.4</c> sequential claims).</item>
+    /// <item><b>Round-robin spread</b> — seeds the picker with
+    ///   <c>TickCount + workstream.Sort</c> so adjacent claims rotate
+    ///   through the roster even when they fall in the same millisecond
+    ///   tick.</item>
+    /// </list>
+    /// Falls back to the legacy <c>(crew.DefaultGenerator,
+    /// crew.DefaultEvaluator)</c> chain when the crew has no
+    /// <c>crew_members</c> rows or every member is busy — the row still
+    /// claims and the ledger contention sorts itself out as runs finish.
+    /// </summary>
     private static async Task<string[]> ResolveImplPairAsync(
-        ForgeDbContext db, AgentAllocationLoader allocation, CancellationToken ct)
+        ForgeDbContext db,
+        AgentAllocationLoader allocation,
+        HashSet<string> busyAgents,
+        int seedOffset,
+        CancellationToken ct)
     {
         const string prefix = "crew-eng";
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
@@ -1954,15 +2141,79 @@ public sealed class StorySpawnOrchestrator
             return new[] { fallback };
         }
 
-        var gen = crew.DefaultGeneratorAgentId ?? crew.Lead;
-        var eval = crew.DefaultEvaluatorAgentId;
-        if (string.IsNullOrEmpty(eval) && !string.IsNullOrEmpty(crew.PairedWithCrewId))
+        var evaluatorCrew = !string.IsNullOrEmpty(crew.PairedWithCrewId)
+            ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct)
+            : null;
+
+        // Generator roster — engineer crew members. The schedule-gate
+        // (on-shift filter) is the orchestrator's responsibility; for
+        // story-spawn workstreams we treat all members as eligible
+        // because the spawn was already through the operator's
+        // explicit approval. Fall back to the lead when no members.
+        // Ordered by AgentId for a stable round-robin baseline; the
+        // per-claim seed below rotates the picked index.
+        var genRoster = await db.CrewMembers.AsNoTracking()
+            .Where(m => m.CrewId == crew.Id)
+            .OrderBy(m => m.AgentId)
+            .Select(m => m.AgentId)
+            .ToListAsync(ct);
+
+        // Seed: Random.Shared.Next() so concurrent claims each get an
+        // independent uniformly-random index — true randomization
+        // rather than deterministic round-robin. Combined with the
+        // mutated busyAgents set, this means two simultaneous claims
+        // pick distinct agents AND repeated claims across ticks rotate
+        // through the roster without operator-visible patterns.
+        // The seedOffset is mixed in so deterministic test fixtures
+        // (which pin Random.Shared via a thread-local seed) still see
+        // workstream-position-dependent behaviour.
+        var seed = unchecked(Random.Shared.Next() + seedOffset);
+
+        var (genAgent, _) = PairDiversityResolver.PickGenerator(
+            genRoster, busyAgents, crew.Lead, seed);
+
+        // No free roster member AND no lead — last-resort fallback.
+        if (string.IsNullOrEmpty(genAgent))
         {
-            var paired = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
-            eval = paired?.Lead;
+            genAgent = crew.DefaultGeneratorAgentId
+                ?? crew.Lead
+                ?? allocation.ForTeam("Engineer").FirstOrDefault()?.Id
+                ?? "eng-default";
         }
-        if (string.IsNullOrEmpty(gen)) gen = allocation.ForTeam("Engineer").FirstOrDefault()?.Id ?? "eng-default";
-        return string.IsNullOrEmpty(eval) ? new[] { gen! } : new[] { gen!, eval! };
+        busyAgents.Add(genAgent);
+
+        // Evaluator roster — paired crew's members (or same crew minus
+        // the picked generator for a standalone crew). Phase 39 gen != eval
+        // is enforced inside PickEvaluator.
+        var evalRosterCrewId = evaluatorCrew?.Id ?? crew.Id;
+        var evalRoster = await db.CrewMembers.AsNoTracking()
+            .Where(m => m.CrewId == evalRosterCrewId)
+            .OrderBy(m => m.AgentId)
+            .Select(m => m.AgentId)
+            .ToListAsync(ct);
+
+        var defaultEval = crew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.Lead;
+
+        var (evalAgent, _) = PairDiversityResolver.PickEvaluator(
+            evalRoster, busyAgents, defaultEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
+
+        // Q47.3 — evaluator diversity is best-effort. If every candidate
+        // is busy fall back so the row still claims; ledger contention
+        // sorts itself out as in-flight runs finish.
+        if (string.IsNullOrEmpty(evalAgent))
+        {
+            evalAgent = defaultEval;
+        }
+
+        if (string.IsNullOrEmpty(evalAgent))
+        {
+            return new[] { genAgent };
+        }
+
+        busyAgents.Add(evalAgent);
+        return new[] { genAgent, evalAgent };
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

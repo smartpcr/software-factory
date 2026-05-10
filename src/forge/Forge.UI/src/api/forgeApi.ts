@@ -130,11 +130,39 @@ export interface StorySpawnWorkstreamSummary {
    * Surfaced as a tooltip on the stalled badge.
    */
   stallReason?: string | null;
+  /**
+   * Phase 50 — short worktree folder name under `{cloneRoot}/.worktree/`
+   * (e.g. `stage-1.1-cargo-workspace-and-crate-layout` or legacy
+   * `spawn-{branch-slug}`). Computed server-side via
+   * `WorkstreamWorktreeSlug.Compute`. Surfaced in the story-delivery
+   * strip tooltip so the operator can locate the directory the engineer
+   * crew is editing.
+   */
+  worktreeFolder?: string | null;
+  /**
+   * Phase 50 — step-definition PR (`ws/{storyId}/{slug}-steps`). Opened
+   * by the orchestrator AFTER the QA PR merges, separate from the impl
+   * PR. Null until the orchestrator creates it. `stepDefMerged` is true
+   * once the PR's `Col` reaches `"merged"` — `status === 'complete'`
+   * alone is not a faithful signal because workstreams flip to
+   * `complete` when the IMPL PR merges, before step-defs exist.
+   */
+  stepDefPrId?: string | null;
+  stepDefBranch?: string | null;
+  stepDefMerged?: boolean;
 }
 
 export interface StorySpawnDetail {
   spawn: StorySpawn;
   workstreams: StorySpawnWorkstreamSummary[];
+  /**
+   * Phase 50 — true when {@link StorySpawn.qaPrId} is set AND its PR row
+   * reached the terminal `"merged"` state. Surfaced as a top-level
+   * sibling (not inside `spawn`) because the PR lookup is only done by
+   * the spawn-detail endpoint, not every place that produces a
+   * StorySpawn contract.
+   */
+  qaPrMerged?: boolean;
 }
 
 export interface StorySpawnDecomposeWorkstream {
@@ -2245,6 +2273,14 @@ export const forgeApi = {
       other: Array<{ status: string; path: string; oldPath?: string | null }>;
     }>;
     uncommitted: { added: string[]; modified: string[]; deleted: string[] };
+    /**
+     * Phase 49 follow-up — cumulative diff between the worktree's working
+     * tree (committed + uncommitted) and `origin/{baseBranch}`. Same
+     * scope a reviewer sees in the PR's file list. Use this for the
+     * `+N ~N -N` counters; fall back to `uncommitted` only when
+     * `branchTotals` is missing (older server build).
+     */
+    branchTotals?: { added: string[]; modified: string[]; deleted: string[] };
   }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/commits`, {
       method: 'GET',

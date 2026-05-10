@@ -73,8 +73,35 @@ public interface IStoryGitOps
     /// directory when running plan / coding tasks so the agent's tools see
     /// the actual repo layout instead of an isolated scratch dir. Idempotent;
     /// concurrent callers within the same process get the same path.
+    ///
+    /// <para>Phase 49 follow-up — when <paramref name="worktreeSlug"/> is
+    /// supplied, the worktree directory is rooted at
+    /// <c>{cloneRoot}/.worktree/{worktreeSlug}</c> instead of the legacy
+    /// <c>{cloneRoot}/.worktree/spawn-{branch-slug}</c>. The new convention
+    /// gives engineer workstreams short, semantic names
+    /// (<c>stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>)
+    /// that stay under Windows MAX_PATH once <c>cargo build</c> /
+    /// <c>npm install</c> / <c>target/debug/.fingerprint/…</c> trees land
+    /// underneath. Plan-doc / QA worktrees omit the override and keep the
+    /// legacy <c>spawn-</c> prefix; their names are already short.</para>
     /// </summary>
-    Task<string> EnsureWorktreeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+    Task<string> EnsureWorktreeAsync(
+        RepoRow? repo,
+        string branch,
+        string baseBranch,
+        CancellationToken ct = default,
+        string? worktreeSlug = null);
+
+    /// <summary>
+    /// Phase 49 follow-up — best-effort cleanup of the worktree associated
+    /// with <paramref name="branch"/>. Runs <c>git worktree remove --force</c>
+    /// and removes any leftover directory. The branch ref itself is left
+    /// alone (cheap on disk, useful for audit). Used to free disk after a
+    /// spawn's plan PR merges (plan worktree becomes stale) and after each
+    /// workstream's PR merges (engineer worktree becomes stale). No-op when
+    /// no worktree currently maps to the branch; never throws.
+    /// </summary>
+    Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 
     /// <summary>
     /// Phase 42 — stage one repo-relative path in <paramref name="branch"/>'s

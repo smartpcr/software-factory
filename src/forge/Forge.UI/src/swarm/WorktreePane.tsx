@@ -95,6 +95,10 @@ export function WorktreePane({ workItemId }: Props) {
 
   const commits = data?.commits ?? [];
   const uncommitted = data?.uncommitted ?? { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
+  // Phase 49 follow-up — branch totals (committed + uncommitted vs
+  // origin/baseBranch) are the right scope for the +N ~N -N pills.
+  // `uncommitted` alone underreports the moment the agent commits.
+  const branchTotals = data?.branchTotals ?? null;
   const hasDirty = uncommitted.added.length + uncommitted.modified.length + uncommitted.deleted.length > 0;
 
   // Worktree name = leaf directory of the path (matches the agent's branch
@@ -105,13 +109,21 @@ export function WorktreePane({ workItemId }: Props) {
     ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
     : (snap?.workstreamId || workItemId);
 
-  // Pills — prefer the API's authoritative ahead/behind + commit-derived
-  // file counts; fall back to the live snap when the API hasn't loaded.
+  // Pills — prefer the API's authoritative ahead/behind + branch-total
+  // file counts (committed + uncommitted vs origin/baseBranch); fall back
+  // to the uncommitted-only counts when branchTotals isn't supplied (older
+  // server build), then to the live snap when no API response loaded yet.
   const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
   const behindCount = data?.behind ?? snap?.behind ?? 0;
-  const addedCount = data ? uncommitted.added.length : (snap?.added ?? 0);
-  const modifiedCount = data ? uncommitted.modified.length : (snap?.modified ?? 0);
-  const deletedCount = data ? uncommitted.deleted.length : (snap?.deleted ?? 0);
+  const addedCount = branchTotals
+    ? branchTotals.added.length
+    : (data ? uncommitted.added.length : (snap?.added ?? 0));
+  const modifiedCount = branchTotals
+    ? branchTotals.modified.length
+    : (data ? uncommitted.modified.length : (snap?.modified ?? 0));
+  const deletedCount = branchTotals
+    ? branchTotals.deleted.length
+    : (data ? uncommitted.deleted.length : (snap?.deleted ?? 0));
   const branch = data?.branch ?? null;
 
   return (

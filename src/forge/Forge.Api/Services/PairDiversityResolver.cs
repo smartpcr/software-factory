@@ -103,7 +103,10 @@ internal static class PairDiversityResolver
     /// <summary>
     /// Pick the next available evaluator agent for a claim. Order
     /// preference is: <paramref name="defaultEvalAgentId"/> first (when
-    /// present and free), then the rest of the roster in supplied order.
+    /// present and free), then the rest of the roster — shuffled when
+    /// <paramref name="seed"/> is provided so concurrent claims pick
+    /// distinct evaluators rather than all landing on the same roster
+    /// head.
     /// </summary>
     /// <param name="evaluatorRoster">
     /// Candidate evaluator agents (typically the paired crew's members,
@@ -124,6 +127,15 @@ internal static class PairDiversityResolver
     /// because picking an evaluator without knowing the generator can't
     /// safely satisfy diversity.
     /// </param>
+    /// <param name="seed">
+    /// Optional shuffling seed. When non-zero, the post-default roster
+    /// is shuffled with a Fisher-Yates pass before "first non-busy
+    /// wins" picks. The default evaluator (when supplied) still gets
+    /// first dibs so the operator's per-crew preferred evaluator wins
+    /// when it's free — only the fallback rotates. Pass
+    /// <c>Random.Shared.Next()</c> in production for uniform
+    /// randomization; tests pass a deterministic value.
+    /// </param>
     /// <returns>
     /// <c>(AgentId, FellBackToDefault)</c>. <c>AgentId</c> is non-null
     /// when a free evaluator was found; null when every candidate
@@ -134,7 +146,8 @@ internal static class PairDiversityResolver
         IReadOnlyList<string> evaluatorRoster,
         IReadOnlyCollection<string> busyAgentIds,
         string? defaultEvalAgentId,
-        string generatorAgentId)
+        string generatorAgentId,
+        int seed = 0)
     {
         if (evaluatorRoster is null) throw new ArgumentNullException(nameof(evaluatorRoster));
         if (busyAgentIds is null) throw new ArgumentNullException(nameof(busyAgentIds));
@@ -159,12 +172,30 @@ internal static class PairDiversityResolver
             ordered.Add(defaultEvalAgentId);
         }
 
+        // Materialise the post-default roster so we can shuffle it
+        // without touching the default (which keeps first-dibs).
+        var defaultCount = ordered.Count;
         foreach (var candidate in evaluatorRoster)
         {
             if (string.IsNullOrEmpty(candidate)) continue;
             if (string.Equals(candidate, generatorAgentId, StringComparison.Ordinal)) continue;
             if (!seen.Add(candidate)) continue;
             ordered.Add(candidate);
+        }
+
+        // Phase 49 follow-up — Fisher-Yates shuffle on the post-default
+        // slice when a seed is provided. Without this, the picker
+        // always returns the same fallback when the default is busy,
+        // recreating the "everyone gets the same pair" bug for the
+        // evaluator side that already plagued the generator side.
+        if (seed != 0 && ordered.Count > defaultCount + 1)
+        {
+            var rng = new Random(seed);
+            for (var i = ordered.Count - 1; i > defaultCount; i--)
+            {
+                var j = defaultCount + rng.Next(i - defaultCount + 1);
+                (ordered[i], ordered[j]) = (ordered[j], ordered[i]);
+            }
         }
 
         // First non-busy wins. The "fell back to default" flag is true

@@ -17,8 +17,20 @@ import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
  * events that almost never fired for the architect crew, so the tab was
  * always empty for plan tasks. Coding-task panes get the same treatment so
  * the view is consistent everywhere.
+ *
+ * `review` (Phase 49 follow-up) surfaces events emitted by the Review
+ * crew during the PR review-comment + engineer-fix loop. Was previously
+ * invisible because the orchestrator emitted those events under the
+ * spawn-level transcript stream; Phase 49 re-tagged them with the
+ * workstream's id so this filter can pick them up. Matches events whose
+ * crewId is "crew-rev" (any reviewer) OR whose payload `phase` starts
+ * with "review:" / "review-fix:" (covers fix-loop transcripts that
+ * carry the engineer's crewId but belong semantically to the review
+ * subtab). Hidden by the UI tab strip until the workstream actually
+ * has review activity, so unstarted / pre-review workstreams don't
+ * surface an empty tab.
  */
-export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'summary';
+export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'review' | 'summary';
 
 export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -26,6 +38,7 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'evaluator', label: 'Evaluator' },
   { key: 'tools',     label: 'Tools' },
   { key: 'worktree',  label: 'Worktree' },
+  { key: 'review',    label: 'Review' },
   { key: 'summary',   label: 'Summary' },
 ];
 
@@ -69,6 +82,29 @@ export function filterEvents(
     const p = e.payload as Record<string, unknown> | null;
     return e.crewId || (p?.crewId as string) || null;
   };
+  const effectivePhase = (e: TaskTranscriptEvent): string | null | undefined => {
+    const p = e.payload as Record<string, unknown> | null;
+    return (p?.phase as string) ?? null;
+  };
+
+  // Phase 49 follow-up — `review` matches the PR review-comment +
+  // engineer-fix loop driven by StorySpawnOrchestrator.DriveReviewAsync.
+  // Two kinds of events show up here:
+  //   (a) `story.agent-*` from the reviewer (SG) producing comments.json.
+  //   (b) `story.agent-*` from the engineer addressing each comment via
+  //       ProduceReviewFixAsync (phaseTag = "review-fix:{wsId}").
+  // Match by crewId (crew-rev) OR by phase prefix so both reviewer-side
+  // and engineer-fix-side events surface in the same subtab — that's
+  // the operator's mental model: "what happened on the PR review".
+  if (f === 'review') {
+    return events.filter((e) => {
+      const crew = effectiveCrew(e);
+      if (crew === 'crew-rev') return true;
+      const phase = effectivePhase(e);
+      if (phase && (phase.startsWith('review:') || phase.startsWith('review-fix:'))) return true;
+      return false;
+    });
+  }
 
   if (f === 'generator') {
     return events.filter((e) => {
@@ -77,6 +113,13 @@ export function filterEvents(
       const crew = effectiveCrew(e);
       if (agent === evalAgentId && agent !== genAgentId) return false;
       if (EVAL_KINDS.has(e.kind)) return false;
+      // Phase 49 follow-up — review-loop events (crew-rev OR phase
+      // review:/review-fix:) belong to the Review subtab, not Generator.
+      // Without this they'd pollute "Generator" the moment the engineer's
+      // fix-loop ran with the engineer crew id (which matches genCrewId).
+      if (crew === 'crew-rev') return false;
+      const phase = effectivePhase(e);
+      if (phase && (phase.startsWith('review:') || phase.startsWith('review-fix:'))) return false;
       if (genCrewId && crew === genCrewId) return true;
       if (genAgentId && agent === genAgentId) return true;
       if (!crew && !agent) return true; // untagged events go to generator
@@ -89,6 +132,10 @@ export function filterEvents(
       if (EVAL_KINDS.has(e.kind)) return true;
       const agent = effectiveAgent(e);
       const crew = effectiveCrew(e);
+      // Review-loop events do NOT belong to the evaluator subtab either.
+      if (crew === 'crew-rev') return false;
+      const phase = effectivePhase(e);
+      if (phase && (phase.startsWith('review:') || phase.startsWith('review-fix:'))) return false;
       if (evalAgentId && agent === evalAgentId) return true;
       if (evalCrewId && crew === evalCrewId) return true;
       return false;

@@ -604,7 +604,7 @@
   font-size: 22px;
   letter-spacing: 0.04em;
   color: var(--sc-text-dim);
-  align-self: center;
+  align-self: start;
   text-align: center;
 }
 .swarm-ctrl .story-row .sr-meta { min-width: 0; }
@@ -639,7 +639,7 @@
 .swarm-ctrl .story-row .sr-sub b { color: var(--sc-text); font-weight: 600; }
 
 .swarm-ctrl .phase-badge {
-  align-self: center;
+  align-self: start;
   font-family: var(--sc-font-display);
   font-size: 10px;
   letter-spacing: 0.2em;
@@ -658,7 +658,7 @@
 .swarm-ctrl .phase-badge.done      { color: var(--sc-green);   border-color: var(--sc-green-d); opacity: 0.7; }
 
 .swarm-ctrl .sr-progress {
-  align-self: center;
+  align-self: start;
   display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
   min-width: 110px;
 }
@@ -688,7 +688,7 @@
 }
 
 .swarm-ctrl .sr-score {
-  align-self: center;
+  align-self: start;
   display: flex; flex-direction: column; align-items: center;
   border-left: 1px solid var(--sc-border);
   padding-left: 14px;
@@ -712,23 +712,104 @@
   text-transform: uppercase;
 }
 
-/* Workstream chip strip on each story row — tiny squares per workstream */
+/* Workstream chip strip on each story row — a layered DAG of small
+ * squares rendered as a "progress tree". Phase 50 — instead of a single
+ * flat row, every rect is positioned absolutely from its (depth, lane)
+ * coordinate so parallel work appears on parallel rows and dependency
+ * edges connect rects across columns. See SwarmStoryRow →
+ * StoryDeliveryStrip for the layout algorithm (barycentric lane
+ * assignment over longest-path layering).
+ */
 .swarm-ctrl .ws-strip {
-  display: flex; flex-wrap: wrap; gap: 3px;
+  position: relative;
+  display: block;
   margin-top: 6px;
-  align-items: center;
+  /* Width and height are computed inline from the laid-out grid; we
+   * leave room for the SVG edge layer to bleed into the inter-column
+   * gap. The element behaves as an explicit-size box rather than
+   * shrink-to-fit. */
 }
+.swarm-ctrl .ws-strip-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+/* Dependency edge — a horizontal cubic-bezier path from parent
+ * right-edge to child left-edge. Stage tint mirrors the rect's box-shadow
+ * outline so the eye can read "this edge feeds the release rect" without
+ * tracing it. */
+.swarm-ctrl .ws-edge {
+  fill: none;
+  stroke: var(--sc-border-2);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+.swarm-ctrl .ws-edge.stage-1 { stroke: var(--sc-magenta-d); opacity: 0.45; }
+.swarm-ctrl .ws-edge.stage-2 { stroke: var(--sc-border-2); opacity: 0.5; }
+.swarm-ctrl .ws-edge.stage-3 { stroke: var(--sc-blue-d); opacity: 0.45; }
+
 .swarm-ctrl .ws-chip {
+  position: absolute;
   width: 10px; height: 10px;
   border: 1px solid var(--sc-border);
   background: var(--sc-bg-2);
+  /* Stage outline lives on box-shadow so per-status background + border
+   * colour rules below stay untouched. Default = stage-2 (no outline). */
+  box-shadow: none;
+  transition: transform 80ms ease-out, box-shadow 80ms ease-out;
 }
-.swarm-ctrl .ws-chip.planning { background: var(--sc-surface-3); }
-.swarm-ctrl .ws-chip.active   { background: var(--sc-amber); border-color: var(--sc-amber-d); }
-.swarm-ctrl .ws-chip.review   { background: var(--sc-magenta); border-color: var(--sc-magenta-d); }
+.swarm-ctrl .ws-chip:hover {
+  transform: scale(1.6);
+  z-index: 2;
+}
+/* Stage tint — outer ring drawn via box-shadow so the status background
+ * and border (set below) remain authoritative. Stage 1 = magenta (design
+ * & plan), Stage 2 = no tint (impl review, the canonical lane), Stage 3
+ * = cyan-blue (release / QA + step-defs). */
+.swarm-ctrl .ws-chip.stage-1 { box-shadow: 0 0 0 1px var(--sc-magenta-d); }
+.swarm-ctrl .ws-chip.stage-2 { box-shadow: none; }
+.swarm-ctrl .ws-chip.stage-3 { box-shadow: 0 0 0 1px var(--sc-blue-d); }
+
+/* Status palette — shared across all three stages. Status comes from the
+ * server's workstream contract for stage-2 and is synthesised for the
+ * design-doc / release rects (see StoryDeliveryStrip.tsx). Not-started
+ * rects (pending / planning / blocked) use a light gray (`--sc-muted`)
+ * so they're visible against the near-black backplate; the prior
+ * `--sc-surface-3` fill matched the row background too closely. */
+.swarm-ctrl .ws-chip.pending,
+.swarm-ctrl .ws-chip.planning,
+.swarm-ctrl .ws-chip.blocked { background: var(--sc-muted); border-color: var(--sc-text-dim); }
+.swarm-ctrl .ws-chip.active,
+.swarm-ctrl .ws-chip.iterating { background: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .ws-chip.live {
+  background: var(--sc-amber);
+  border-color: var(--sc-amber-d);
+  animation: ws-chip-pulse 1.4s ease-in-out infinite;
+}
+.swarm-ctrl .ws-chip.review,
+.swarm-ctrl .ws-chip.awaiting-pr-review { background: var(--sc-magenta); border-color: var(--sc-magenta-d); }
 .swarm-ctrl .ws-chip.merging  { background: var(--sc-cyan); border-color: var(--sc-cyan-d); }
-.swarm-ctrl .ws-chip.complete { background: var(--sc-green); border-color: var(--sc-green-d); }
-.swarm-ctrl .ws-chip.blocked  { background: var(--sc-red); border-color: var(--sc-red-d); opacity: 0.7; }
+.swarm-ctrl .ws-chip.complete,
+.swarm-ctrl .ws-chip.completed { background: var(--sc-green); border-color: var(--sc-green-d); }
+/* `blocked` lifecycle is folded into the not-started selector above —
+ * keep this comment as a signpost so future status entries land in the
+ * right palette. Stalled (the real error state) stays below. */
+.swarm-ctrl .ws-chip.stalled {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sc-red) 0,
+    var(--sc-red) 2px,
+    var(--sc-red-d) 2px,
+    var(--sc-red-d) 4px
+  );
+  border-color: var(--sc-red-d);
+}
+
+@keyframes ws-chip-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
 
 /* Empty state */
 .swarm-ctrl .empty {
@@ -1024,13 +1105,40 @@
   position: relative;
 }
 .swarm-ctrl .attention-hd {
+  /* Phase 49 follow-up — element promoted from <div> to <button> so the
+   * whole header is a click target for the collapse toggle. Reset all
+   * native button chrome (margin/border/background/font) so the visual
+   * matches the original div, then keep the original flex layout
+   * declarations below intact. */
+  appearance: none;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--sc-border);
+  background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 70%);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--sc-red);
   padding: 6px 12px;
   font-family: var(--sc-font-display);
   font-size: 9px; letter-spacing: 0.22em;
-  color: var(--sc-red);
-  border-bottom: 1px solid var(--sc-border);
-  background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 70%);
   display: flex; align-items: center; justify-content: space-between;
+}
+.swarm-ctrl .attention-hd:hover { background: linear-gradient(90deg, rgba(255,107,128,0.10), transparent 70%); }
+.swarm-ctrl .attention-hd:focus-visible {
+  outline: 1px solid var(--sc-red);
+  outline-offset: -1px;
+}
+.swarm-ctrl .attention-hd__left {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.swarm-ctrl .attention-chev {
+  display: inline-block;
+  width: 10px;
+  font-size: 8px;
+  color: var(--sc-red);
+  transition: transform 120ms ease;
 }
 .swarm-ctrl .attention-hd::before { content: '⚠ '; color: var(--sc-red); }
 .swarm-ctrl .attention-bd { padding: 6px 8px; display: grid; gap: 4px; }
@@ -2703,6 +2811,9 @@
 /* Attention strip (master panel) — softer outline. */
 .swarm-ctrl .attention { border: 0; background: rgba(255, 107, 128, 0.06); border-radius: 5px; }
 .swarm-ctrl .attention-hd { border-bottom: 1px solid var(--sc-hairline); }
+/* Phase 49 follow-up — when collapsed, the body is gone so the header's
+ * border-bottom doubles up with the outer container's bottom edge. Hide it. */
+.swarm-ctrl .attention.is-collapsed .attention-hd { border-bottom: 0; }
 
 /* ─────────────────────────────────────────────────────────────────────
  * "Quiet Console" hierarchy override — the page was wearing a chip on

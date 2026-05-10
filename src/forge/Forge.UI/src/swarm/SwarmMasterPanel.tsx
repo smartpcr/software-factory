@@ -38,6 +38,32 @@ function CollapseBtn({ collapsed, onToggle }: { collapsed: boolean; onToggle: ()
   );
 }
 
+/**
+ * Phase 49 follow-up — operator can collapse the NEEDS ATTENTION block per
+ * story. Persisted to localStorage so the choice survives a refresh /
+ * cross-product switch. Stored as a boolean string under
+ * `forge.attention.collapsed.{storyId}`; absent key means expanded (the
+ * default — operators usually want to see the failures up front when a
+ * spawn first lights up).
+ */
+function loadAttentionCollapsed(storyId: string): boolean {
+  if (typeof window === 'undefined' || !storyId) return false;
+  try {
+    return window.localStorage.getItem(`forge.attention.collapsed.${storyId}`) === '1';
+  } catch { return false; }
+}
+
+function persistAttentionCollapsed(storyId: string, collapsed: boolean) {
+  if (typeof window === 'undefined' || !storyId) return;
+  try {
+    if (collapsed) {
+      window.localStorage.setItem(`forge.attention.collapsed.${storyId}`, '1');
+    } else {
+      window.localStorage.removeItem(`forge.attention.collapsed.${storyId}`);
+    }
+  } catch { /* quota / insecure context — silent */ }
+}
+
 const STATUS_TO_PHASE_CLASS: Record<string, string> = {
   planning: 'queued',
   active:   'active',
@@ -81,6 +107,21 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const stalled = ws.filter((w) => w.status === 'stalled');
   const blocked = ws.filter((w) => w.status === 'blocked');
   const attention = [...stalled, ...blocked];
+
+  // Phase 49 follow-up — collapsible NEEDS ATTENTION block. Persisted per
+  // story so the operator's choice survives reloads + product switches.
+  const storyId = detail.spawn.storyId;
+  const [attentionCollapsed, setAttentionCollapsed] = useState<boolean>(
+    () => loadAttentionCollapsed(storyId),
+  );
+  useEffect(() => { setAttentionCollapsed(loadAttentionCollapsed(storyId)); }, [storyId]);
+  const toggleAttentionCollapsed = () => {
+    setAttentionCollapsed((prev) => {
+      const next = !prev;
+      persistAttentionCollapsed(storyId, next);
+      return next;
+    });
+  };
 
   // Phase 49 — compute the canonical `phaseNum.stageNum` label for every
   // workstream. Drives both the phase-card title ("1.1 Cargo Workspace
@@ -183,22 +224,39 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
       </div>
       <div className="panel-bd">
         {attention.length > 0 && (
-          <div className="attention">
-            <div className="attention-hd">
-              <span>NEEDS ATTENTION</span>
+          <div className={`attention${attentionCollapsed ? ' is-collapsed' : ''}`}>
+            <button
+              type="button"
+              className="attention-hd"
+              onClick={toggleAttentionCollapsed}
+              aria-expanded={!attentionCollapsed}
+              aria-controls={`attention-bd-${storyId}`}
+              title={attentionCollapsed ? 'Expand needs-attention list' : 'Collapse needs-attention list'}
+            >
+              <span className="attention-hd__left">
+                <span className="attention-chev" aria-hidden="true">{attentionCollapsed ? '▸' : '▾'}</span>
+                <span>NEEDS ATTENTION</span>
+              </span>
               <span>{attention.length}</span>
-            </div>
-            <div className="attention-bd">
-              {attention.map((w) => (
-                <div key={w.id} className="att-item" onClick={() => onSelect({ kind: 'phase', id: w.id })}>
-                  <span className="id">{shortId(w.id)}</span>
-                  <span className="reason">
-                    {w.status === 'stalled' ? 'stalled — escalate to lead' : `blocked on ${w.deps.length} upstream`}
-                  </span>
-                  <span style={{ color: 'var(--sc-muted)' }}>›</span>
-                </div>
-              ))}
-            </div>
+            </button>
+            {!attentionCollapsed && (
+              <div className="attention-bd" id={`attention-bd-${storyId}`}>
+                {attention.map((w) => (
+                  <div key={w.id} className="att-item" onClick={() => onSelect({ kind: 'phase', id: w.id })}>
+                    <span className="id">{shortId(w.id)}</span>
+                    <span
+                      className="reason"
+                      title={w.status === 'stalled' && w.stallReason ? w.stallReason : undefined}
+                    >
+                      {w.status === 'stalled'
+                        ? `stalled — ${w.stallReason ?? 'escalate to lead'}`
+                        : `blocked on ${w.deps.length} upstream`}
+                    </span>
+                    <span style={{ color: 'var(--sc-muted)' }}>›</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

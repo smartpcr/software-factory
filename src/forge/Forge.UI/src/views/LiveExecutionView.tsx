@@ -768,6 +768,10 @@ function WorktreeTab(props: {
 
   const commits = data?.commits ?? [];
   const uncommitted = data?.uncommitted ?? { added: [], modified: [], deleted: [] };
+  // Phase 49 follow-up — branch totals (committed + uncommitted vs
+  // origin/baseBranch) are the right scope for the +N ~N -N pills.
+  // `uncommitted` alone underreports the moment the agent commits.
+  const branchTotals = data?.branchTotals ?? null;
   const hasDirty = uncommitted.added.length + uncommitted.modified.length + uncommitted.deleted.length > 0;
 
   // Leaf directory name — the project convention is `ws-{workItemId}` under
@@ -779,13 +783,20 @@ function WorktreeTab(props: {
     ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
     : (snap?.workstreamId || null);
 
-  // Pills: prefer the API's authoritative ahead/behind + commit-derived
-  // file counts; fall back to the live snap when the API hasn't loaded.
+  // Pills: prefer branchTotals (committed + uncommitted), fall back to
+  // uncommitted-only when branchTotals isn't available (older server),
+  // then to the live snap when no API response has loaded.
   const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
   const behindCount = data?.behind ?? snap?.behind ?? 0;
-  const addedCount = data ? uncommitted.added.length : (snap?.added ?? 0);
-  const modifiedCount = data ? uncommitted.modified.length : (snap?.modified ?? 0);
-  const deletedCount = data ? uncommitted.deleted.length : (snap?.deleted ?? 0);
+  const addedCount = branchTotals
+    ? branchTotals.added.length
+    : (data ? uncommitted.added.length : (snap?.added ?? 0));
+  const modifiedCount = branchTotals
+    ? branchTotals.modified.length
+    : (data ? uncommitted.modified.length : (snap?.modified ?? 0));
+  const deletedCount = branchTotals
+    ? branchTotals.deleted.length
+    : (data ? uncommitted.deleted.length : (snap?.deleted ?? 0));
 
   return (
     <div>

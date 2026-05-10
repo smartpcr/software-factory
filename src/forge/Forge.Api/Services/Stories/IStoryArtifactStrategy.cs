@@ -107,7 +107,32 @@ public sealed record ReviewComment(string FilePath, int Line, string Body, strin
 public sealed record ReviewCommentContext(string FilePath, int Line, string Body, string AuthoringAgentId);
 
 /// <summary>Engineer's response: a single file edit + a reply body.</summary>
-public sealed record ReviewFix(string FilePath, string NewContent, string ReplyBody);
+/// <summary>
+/// Phase 28 — output of <see cref="IStoryArtifactStrategy.ProduceReviewFixAsync"/>.
+///
+/// <para>Phase 49 follow-up — the engineer agent now picks ONE of two
+/// shapes per reviewer comment:</para>
+/// <list type="number">
+/// <item><b>Code change</b> — both <see cref="FilePath"/> and
+///   <see cref="NewContent"/> are non-null; orchestrator commits the
+///   file and posts <see cref="ReplyBody"/> as a thread reply
+///   explaining what changed.</item>
+/// <item><b>Reply-only</b> — <see cref="FilePath"/> and
+///   <see cref="NewContent"/> are null; orchestrator skips the commit
+///   and posts <see cref="ReplyBody"/> explaining why no change is
+///   needed (comment is wrong, out of scope, addressed elsewhere,
+///   intentional, etc.).</item>
+/// </list>
+/// <para><see cref="ReplyBody"/> is ALWAYS required so every reviewer
+/// comment gets an explicit response on the PR thread, never silently
+/// resolved without explanation.</para>
+/// </summary>
+public sealed record ReviewFix(string? FilePath, string? NewContent, string ReplyBody)
+{
+    /// <summary>True when no code change is committed — the response is
+    /// the <see cref="ReplyBody"/> alone.</summary>
+    public bool IsReplyOnly => string.IsNullOrEmpty(FilePath) || NewContent is null;
+}
 
 /// <summary>
 /// Thrown by <see cref="IStoryArtifactStrategy.ProduceWorkstreamChangesAsync"/>

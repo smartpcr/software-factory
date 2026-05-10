@@ -309,6 +309,66 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             ProjectName: projectName);
     }
 
+    public async Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default)
+    {
+        using var scope = this.services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var parent = await db.PrComments.AsNoTracking().FirstOrDefaultAsync(x => x.Id == parentCommentId, ct)
+            ?? throw new InvalidOperationException($"Parent comment {parentCommentId} not found.");
+
+        // Persist the reply locally — keyed under the parent's PrId + ThreadId
+        // so the UI's threaded comment renderer groups them. State="resolved"
+        // because the reply IS the response (the auto-fix loop sets the
+        // PARENT comment's state to resolved separately via ResolvePrCommentAsync;
+        // the reply row itself doesn't loop into another fix attempt).
+        var row = new PrCommentRow
+        {
+            PrId = parent.PrId,
+            ProviderCommentId = $"pending-reply:{Guid.NewGuid():N}",
+            ThreadId = parent.ThreadId,
+            ParentCommentId = parentCommentId,
+            AuthorId = authorAgentId,
+            AuthorKind = "agent",
+            Body = body,
+            FilePath = parent.FilePath,
+            Line = parent.Line,
+            State = "resolved",
+            RequiresAttention = false,
+            ResolvedByUserId = authorAgentId,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.PrComments.Add(row);
+        await db.SaveChangesAsync(ct);
+
+        // Best-effort upstream — IForgeProvider doesn't have a per-thread
+        // reply API today, so we post the reply as a regular comment with
+        // a quote-prefix that visually threads the conversation on GitHub
+        // and ADO. The local row above preserves the structural link
+        // (ParentCommentId) for Forge-side rendering.
+        var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == parent.PrId, ct);
+        if (pr is not null && !string.IsNullOrEmpty(pr.Provider))
+        {
+            try
+            {
+                var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
+                var quotedPreview = parent.Body?.Length > 160 ? parent.Body[..160] + "…" : parent.Body ?? string.Empty;
+                var formatted = $"> Re: {parent.FilePath}:{parent.Line} — {quotedPreview}\n\n{body}\n\n_({authorAgentId} reply)_";
+                var ctx = await BuildCallContextAsync(db, pr, ct);
+                await provider.CommentOnPullRequestAsync(parent.PrId, formatted, ctx, ct);
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Provider reply post failed for parent comment {ParentId} on PR {PrId}; local reply row persisted.",
+                    parentCommentId, parent.PrId);
+            }
+        }
+        return row.Id;
+    }
+
     public async Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();

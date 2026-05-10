@@ -382,20 +382,38 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
     const team = a.crewId.replace(/^crew-/, '').replace(/-night$/, '');
     return team.toUpperCase();
   };
+  // Phase 49 follow-up — only show an agent pair when the workstream is
+  // currently RUNNING or has shipped (active/review/merging/complete).
+  // For pre-claim states (planning/blocked/stalled/cancelled/historic),
+  // `latestGen/EvalAgentId` may carry the pair from a prior aborted run;
+  // displaying it as if it's the current assignment confused the
+  // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
+  // deps 1.1/1.2/1.3, yet the Overview showed Zhu Rong + Bi Gan from
+  // the workstream's earlier iter-1/iter-2 deliverables). Treat those
+  // as "no current assignment"; the SwarmMasterPanel + Conversation
+  // tab still surface the historical iter / score data so the prior
+  // run isn't hidden, just not painted as "currently assigned".
+  const isCurrentlyAssigned = (status: string): boolean =>
+    status === 'active' || status === 'review' || status === 'merging' || status === 'complete';
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
-    .map((w, i) => ({
-      id: `WS·${String(i + 1).padStart(2, '0')}`,
-      team: teamFor(w.latestGenAgentId ?? w.agents?.[0]),
-      cls: pairClsForStatus(w.status),
-      task: w.name,
-      gen:  displayName(w.latestGenAgentId ?? w.agents?.[0]),
-      genM: modelFor(w.latestGenAgentId ?? w.agents?.[0], 'gen'),
-      evl:  displayName(w.latestEvalAgentId ?? w.agents?.[1]),
-      evlM: modelFor(w.latestEvalAgentId ?? w.agents?.[1], 'evl'),
-      meters: pairMetersForWorkstream(w),
-      status: w.status,
-    }));
+    .map((w, i) => {
+      const showPair = isCurrentlyAssigned(w.status);
+      const genId = showPair ? (w.latestGenAgentId ?? w.agents?.[0]) : undefined;
+      const evlId = showPair ? (w.latestEvalAgentId ?? w.agents?.[1]) : undefined;
+      return {
+        id: `WS·${String(i + 1).padStart(2, '0')}`,
+        team: teamFor(genId),
+        cls: pairClsForStatus(w.status),
+        task: w.name,
+        gen:  showPair ? displayName(genId) : '— not assigned —',
+        genM: showPair ? modelFor(genId, 'gen') : '',
+        evl:  showPair ? displayName(evlId) : '— not assigned —',
+        evlM: showPair ? modelFor(evlId, 'evl') : '',
+        meters: pairMetersForWorkstream(w),
+        status: w.status,
+      };
+    });
 
   // Count day-shift only (`crew-{role}`, not `crew-{role}-night`) so the
   // 20-cell swarm grid matches the spec's "~20 agents per team" capacity.
@@ -752,6 +770,24 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
     return () => { cancelled = true; };
   }, []);
 
+  // Phase 49 follow-up — gate the Overview's agent-pair display on the
+  // workstream's CURRENT status. When status is one of the pre-claim or
+  // tombstoned states (planning/blocked/stalled/cancelled/historic),
+  // the stored `latestGen/EvalAgentId` reflects a PRIOR aborted run and
+  // displaying it as if it were the live assignment confused the
+  // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
+  // deps 1.1/1.2/1.3, yet the avatar panel showed Zhu Rong + Bi Gan
+  // from iter-1/iter-2 deliverables). For docs (architect plan-doc
+  // panels) we keep the legacy display — those have a stable
+  // generator/evaluator across iterations.
+  const wsRowForOverview = isWorkstream
+    ? detail.workstreams.find((w) => w.id === selection.id)
+    : null;
+  const isWsCurrentlyAssigned = !isWorkstream || (() => {
+    const s = wsRowForOverview?.status ?? '';
+    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete';
+  })();
+
   // Agent identity — prefer prompt-derived agent info (matches what the
   // system/user prompt sections display) over snapshot/API data which may
   // be from a different iteration with different round-robin agents.
@@ -759,19 +795,29 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const promptEvalId = latestPrompts.ev?.agentId ?? null;
   const fallbackGenId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
   const fallbackEvalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
-  const genId = promptGenId ?? fallbackGenId;
-  const evalId = promptEvalId ?? fallbackEvalId;
+  const rawGenId = promptGenId ?? fallbackGenId;
+  const rawEvalId = promptEvalId ?? fallbackEvalId;
+  const genId = isWsCurrentlyAssigned ? rawGenId : null;
+  const evalId = isWsCurrentlyAssigned ? rawEvalId : null;
   // When the prompt carries a different agentId than the snapshot, use the
   // agentNames map (or raw ID) — never mix a prompt-derived ID with a
   // snapshot-derived name from a different agent.
-  const genName = promptGenId
-    ? (agentNames[promptGenId] ?? promptGenId)
-    : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
-  const evalName = promptEvalId
-    ? (agentNames[promptEvalId] ?? promptEvalId)
-    : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
-  const genModel = latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
-  const evalModel = latestPrompts.ev?.model || (isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null));
+  const genName = !isWsCurrentlyAssigned
+    ? '— not assigned —'
+    : promptGenId
+      ? (agentNames[promptGenId] ?? promptGenId)
+      : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
+  const evalName = !isWsCurrentlyAssigned
+    ? '— not assigned —'
+    : promptEvalId
+      ? (agentNames[promptEvalId] ?? promptEvalId)
+      : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
+  const genModel = !isWsCurrentlyAssigned
+    ? null
+    : latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
+  const evalModel = !isWsCurrentlyAssigned
+    ? null
+    : latestPrompts.ev?.model || (isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null));
   // Phase 47c — surface backend + invoke-mode on the Overview chips so
   // operators can see which usage cap each agent is hitting (Anthropic vs
   // GitHub Copilot). Only available from the latest prompt event; the

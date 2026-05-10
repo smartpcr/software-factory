@@ -443,6 +443,38 @@ public static class StoriesEndpoints
         foreach (var id in liveExecWiIds) liveWsIds.Add(id);
         foreach (var id in openQueueWsIds) liveWsIds.Add(id);
 
+        // Phase 50 — single PR batch query to drive the story-delivery strip.
+        // The strip shows three stages (design / impl / release) on every story
+        // row in SwarmIndexView; without this batch the UI would need 1 + N
+        // round-trips per row to derive QA-merged + per-workstream step-def
+        // PR status (StorySpawnOrchestrator opens a `-steps` PR per workstream
+        // after the QA PR merges, line ~1879).
+        //
+        // The query pulls:
+        //   1. The QA PR (spawn.QaPrId, when set) — to derive qaPrMerged.
+        //   2. Every PR linked to a workstream in this spawn — to find the
+        //      step-def PR per workstream (branch suffix `-steps`) and report
+        //      its merge state.
+        var prIdsToFetch = new List<string>();
+        if (!string.IsNullOrEmpty(spawn.QaPrId)) prIdsToFetch.Add(spawn.QaPrId!);
+        var prRowsForSpawn = await db.Prs.AsNoTracking()
+            .Where(p => wsIds.Contains(p.Workstream) || prIdsToFetch.Contains(p.Id))
+            .Select(p => new { p.Id, p.Workstream, p.Branch, p.Col })
+            .ToListAsync();
+        var qaPrRow = !string.IsNullOrEmpty(spawn.QaPrId)
+            ? prRowsForSpawn.FirstOrDefault(p => string.Equals(p.Id, spawn.QaPrId, StringComparison.Ordinal))
+            : null;
+        var qaPrMerged = qaPrRow is not null
+            && string.Equals(qaPrRow.Col, "merged", StringComparison.OrdinalIgnoreCase);
+        // Group step-def PRs by workstream. The branch ends with `-steps`
+        // (see StorySpawnOrchestrator.cs:1864 — `ws/{storyId}/{slug}-steps`).
+        var stepDefPrByWs = prRowsForSpawn
+            .Where(p => !string.IsNullOrEmpty(p.Workstream)
+                     && p.Branch is not null
+                     && p.Branch.EndsWith("-steps", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(p => p.Workstream, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
         var wsByStatus = workstreams.Select(w =>
         {
             var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
@@ -510,12 +542,32 @@ public static class StoriesEndpoints
                 // gate, no-progress, non-pass verdict) without the
                 // operator having to drill into the Conversation tab.
                 stallReason = w.StallReason,
+                // Phase 50 — story-delivery strip surfaces the Engineer-crew
+                // worktree folder name (the leaf under `{cloneRoot}/.worktree/`)
+                // so the tooltip can point the operator at the exact directory
+                // their gen↔eval loop is editing. Pure compute over the same
+                // sibling list — no disk I/O — so the lookup is free here.
+                worktreeFolder = WorkstreamWorktreeSlug.Compute(w, workstreams),
+                // Phase 50 — step-def PR fields. `ws.status == "complete"`
+                // is set when the IMPL PR merges (StorySpawnOrchestrator.cs
+                // DriveReviewAsync, line ~1699) — it does NOT mean the QA
+                // step-def PR is merged. The strip's stage-3 rect needs the
+                // dedicated PR row to colour the step-def rect correctly.
+                stepDefPrId = stepDefPrByWs.TryGetValue(w.Id, out var sdPr) ? sdPr.Id : null,
+                stepDefBranch = stepDefPrByWs.TryGetValue(w.Id, out var sdBr) ? sdBr.Branch : null,
+                stepDefMerged = stepDefPrByWs.TryGetValue(w.Id, out var sdMr)
+                    && string.Equals(sdMr.Col, "merged", StringComparison.OrdinalIgnoreCase),
             };
         }).ToArray();
 
         return Results.Ok(new
         {
             spawn = ToContract(spawn),
+            // Phase 50 — top-level sibling so the strip can colour the QA-PR
+            // rect (release stage) without fetching the PR row separately.
+            // Sibling rather than inside `spawn` because ToContract is reused
+            // by endpoints that don't load PR rows.
+            qaPrMerged,
             workstreams = wsByStatus,
         });
     }

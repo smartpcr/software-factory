@@ -269,6 +269,56 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 49 follow-up — deserialize <see cref="WorkstreamRow.AgentsJson"/>
+    /// into a non-null list. Used at the impl call site to read the
+    /// generator + evaluator pair the orchestrator picked at claim time
+    /// so RunGenEvalLoopAsync runs against THOSE agents, not the crew's
+    /// global defaults.
+    /// </summary>
+    private static List<string> ParseAgentsList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try { return JsonSerializer.Deserialize<List<string>>(json, JsonOpts) ?? new List<string>(); }
+        catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — load the same-spawn workstream set and run
+    /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the short,
+    /// semantic worktree directory name
+    /// (<c>stage-{phaseNum}.{stageNum}-{anchorSlug}</c>). Returns null
+    /// when the workstream has no <see cref="WorkstreamRow.StorySpawnId"/>
+    /// — the orchestrator-side hot path is never null in production, but
+    /// guard so handcrafted ad-hoc workstreams keep working via the
+    /// legacy <c>spawn-{branch-slug}</c> fallback inside
+    /// <see cref="RealStoryGitOps.EnsureWorktreeAsync"/>.
+    /// </summary>
+    private async Task<string?> ComputeWorkstreamWorktreeSlugAsync(
+        WorkstreamRow workstream, CancellationToken ct)
+    {
+        if (workstream is null || string.IsNullOrWhiteSpace(workstream.StorySpawnId))
+        {
+            return null;
+        }
+
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var siblings = await db.Workstreams.AsNoTracking()
+            .Where(w => w.StorySpawnId == workstream.StorySpawnId)
+            .ToListAsync(ct);
+
+        // The current row may not be in `siblings` (caller is operating on a
+        // possibly-detached entity); ensure it's present so the position
+        // computation finds it.
+        if (siblings.All(w => w.Id != workstream.Id))
+        {
+            siblings.Add(workstream);
+        }
+
+        return WorkstreamWorktreeSlug.Compute(workstream, siblings);
+    }
+
+    /// <summary>
     /// Loads distinct architect crew agents for round-robin assignment.
     /// Returns up to <paramref name="count"/> agent IDs from the day-shift
     /// architect crew, excluding the evaluator default so gen ≠ eval.
@@ -974,7 +1024,50 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // never made it back to real repo paths.
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
-        var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct);
+
+        // Phase 49 follow-up — compute the short, semantic worktree slug
+        // (e.g. "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout")
+        // so the directory under {cloneRoot}/.worktree/ stays under
+        // Windows MAX_PATH once cargo/npm/dotnet build artifacts land
+        // underneath. The same-spawn workstream list is required to
+        // compute the (phase, stage) position; WorkstreamWorktreeSlug
+        // falls back to the legacy `spawn-{branch-slug}` when PlanAnchor
+        // is missing (handcrafted rows from the create-WS endpoint).
+        var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
+        var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
+
+        // Phase 49 follow-up — bring the workstream branch up to date with
+        // the spawn's base branch BEFORE the agent runs. Without this, a
+        // workstream whose branch was created before a sibling workstream
+        // merged into base inherits a stale snapshot — observed
+        // 2026-05-10 on failover-cluster:XRAFT: stage 1.2 worktree was at
+        // the plan-PR commit (3acba76), stage 1.1's PR had since merged
+        // into feature/xraft adding the xraft-core crate, and the
+        // engineer agent saw only README + docs, not the scaffolding it
+        // was supposed to extend (stalled iter 1 with score 3). The
+        // post-pass merge at the orchestrator (line ~1570) ran AFTER
+        // the agent finished, so the agent never saw the sibling's
+        // commits.
+        //
+        // MergeUpstreamIntoBranchAsync is idempotent (no-op when already
+        // up to date), handles fast-forward, falls back to merge --no-ff
+        // with -X ours conflict resolution, and pushes the merge commit
+        // back so origin/{branch} also catches up. `force: false` skips
+        // the "nudge empty commit" path since no PR exists yet —
+        // there's nothing to make mergeable. Best-effort: a merge
+        // failure logs + continues so the agent at least runs against
+        // the stale-but-known state rather than blocking the claim.
+        try
+        {
+            await this.git.MergeUpstreamIntoBranchAsync(repo, workstream.Branch, baseBranch, force: false, ct: ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "Pre-impl base merge failed for {WsId} (branch {Branch} ← {Base}); "
+                + "agent will run against the pre-merge worktree state.",
+                workstream.Id, workstream.Branch, baseBranch);
+        }
 
         // Look up the work item's description — the operator may have edited
         // it with more specific requirements (e.g. "use C# not TypeScript").
@@ -1251,6 +1344,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var wsPoints = await this.LookupWorkItemPointsAsync(
             workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
+        // Phase 49 follow-up — read the agent pair the orchestrator picked
+        // at claim time (StorySpawnOrchestrator.ResolveImplPairAsync ran
+        // PairDiversityResolver against the live busy set). The legacy
+        // call to RunGenEvalLoopAsync without overrides made
+        // workstream.AgentsJson a UI-only display field — the actual
+        // generator/evaluator always came from crew.DefaultGeneratorAgentId
+        // / DefaultEvaluatorAgentId, defeating the diversity picker.
+        // Pass agents[0] as the generator and agents[1] as the evaluator
+        // so the orchestrator's per-WS assignment actually takes effect.
+        var assignedAgents = ParseAgentsList(workstream.AgentsJson);
+        string? assignedGen = assignedAgents.Count > 0 ? assignedAgents[0] : null;
+        string? assignedEval = assignedAgents.Count > 1 ? assignedAgents[1] : null;
+
         await this.RunGenEvalLoopAsync(
             team: "Engineer",
             workItemId: workstream.Id,
@@ -1260,6 +1366,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             workspace: workspace,
             budget: BudgetForPhase(wsPoints, "impl"),
             storyPoints: wsPoints,
+            generatorAgentOverride: assignedGen,
+            evaluatorAgentOverride: assignedEval,
             // Phase 49 — pass the resolved build command so the per-iter
             // gate runs the right tool for the repo's ecosystem (cargo /
             // npm / go / mvn / dotnet) instead of always invoking
@@ -1418,7 +1526,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Empty array `[]` means approve. Reply `DONE` when finished.
             """;
 
-        await this.InvokeAsync("Review", spawn.Id, $"review:{workstream.Id}:r{round}", prompt, workspace,
+        // Phase 49 follow-up — emit transcript events under workstream.Id
+        // (not spawn.Id) so the workstream's Conversation tab can render
+        // them in the new Review subtab. Was emitting to spawn.Id and the
+        // review activity was invisible to the operator unless they
+        // queried the spawn-level transcript directly.
+        await this.InvokeAsync("Review", workstream.Id, $"review:{workstream.Id}:r{round}", prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "review"), ct);
 
         var diskPath = Path.Combine(workspace, "comments.json");
@@ -1450,42 +1563,74 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var workspace = this.PrepareWorkspace(spawn.Id, $"fix-{Slug(workstream.Id)}-{Guid.NewGuid():N}");
         var safePath = comment.FilePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
         var prompt = $$"""
-            You are the Engineer agent fixing review feedback on workstream
+            You are the Engineer agent responding to review feedback on workstream
             `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
 
             ## Reviewer comment
             File: `{{comment.FilePath}}` line {{comment.Line}}
             Body: {{comment.Body}}
 
-            ## How to deliver
-            1. Write the FIXED file at the SAME relative path as the comment's
-               file. Inside your working directory, create whatever
-               subdirectories are needed and write the full updated content to
-               `{{comment.FilePath}}`.
-            2. Write a SECOND file at the working-directory root named
-               `reply.md` containing a 1-3 sentence reply for the reviewer.
+            ## Decide first
+            Read the comment carefully. EVERY comment needs an explicit response —
+            either a code change OR a written reply explaining why no change is
+            needed. Silently resolving without responding is not acceptable.
 
-            Reply `DONE` when both files are written.
+            Choose ONE of two paths:
+
+            ### Path A — Code change
+            Use this when the reviewer's feedback is correct and the file needs
+            an update.
+
+              1. Write the FIXED file at the SAME relative path as the comment's
+                 file. Inside your working directory, create whatever
+                 subdirectories are needed and write the FULL updated content to
+                 `{{comment.FilePath}}`.
+              2. Write a SECOND file at the working-directory root named
+                 `reply.md` containing a 1-3 sentence reply for the reviewer
+                 summarising what you changed and why.
+
+            ### Path B — Reply only (no code change)
+            Use this when the comment doesn't require a code change — e.g. the
+            reviewer misread the diff, the behaviour is intentional, the concern
+            is addressed elsewhere, or it's out of scope for this PR.
+
+              1. **Do NOT write** the fixed file at `{{comment.FilePath}}`.
+              2. Write `reply.md` at the working-directory root containing a 1-3
+                 sentence reply explaining WHY no change is needed. Be specific
+                 — point at the existing code / test / doc that already addresses
+                 the concern, or explain the design choice.
+
+            `reply.md` is **mandatory** in BOTH paths.
+
+            Reply `DONE` when finished.
             """;
 
-        await this.InvokeAsync("Engineer", spawn.Id, $"review-fix:{workstream.Id}", prompt, workspace,
+        // Phase 49 follow-up — emit fix events under workstream.Id so the
+        // engineer's iteration on review feedback appears in the same
+        // Conversation tab as the original impl work.
+        await this.InvokeAsync("Engineer", workstream.Id, $"review-fix:{workstream.Id}", prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "review-fix"), ct);
 
-        var fixedFile = Path.Combine(workspace, safePath);
-        if (!File.Exists(fixedFile))
-        {
-            throw new InvalidOperationException(
-                $"Engineer did not write fixed file '{comment.FilePath}'. Workspace: {workspace}");
-        }
+        // reply.md is mandatory — every comment needs a written response.
         var replyFile = Path.Combine(workspace, "reply.md");
         if (!File.Exists(replyFile))
         {
             throw new InvalidOperationException(
-                $"Engineer did not write reply.md. Workspace: {workspace}");
+                $"Engineer did not write reply.md. Workspace: {workspace}. " +
+                $"reply.md is mandatory for both code-change and reply-only paths.");
         }
-        var content = await File.ReadAllTextAsync(fixedFile, ct);
         var reply = (await File.ReadAllTextAsync(replyFile, ct)).Trim();
-        return new ReviewFix(comment.FilePath, content, reply);
+
+        // Path A (code change) vs Path B (reply only) — determined by
+        // whether the engineer wrote the fixed file. Empty / missing →
+        // reply-only path; present → commit the file content.
+        var fixedFile = Path.Combine(workspace, safePath);
+        if (File.Exists(fixedFile))
+        {
+            var content = await File.ReadAllTextAsync(fixedFile, ct);
+            return new ReviewFix(comment.FilePath, content, reply);
+        }
+        return new ReviewFix(FilePath: null, NewContent: null, ReplyBody: reply);
     }
 
     public async Task<IReadOnlyDictionary<string, string>> ProduceQaFeatureFilesAsync(
@@ -1623,10 +1768,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // unchanged. If it doesn't (e.g. operator wiped .worktree/ between
         // ticks), this re-creates it from origin/{branch} which means
         // changes the agent left uncommitted are gone — handled below.
+        // Phase 49 — pass the same short slug as the producer path so we
+        // open the same directory the engineer agent wrote into.
+        var cachedSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         string workspace;
         try
         {
-            workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct);
+            workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: cachedSlug);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2356,10 +2504,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
     private static string? NonEmptyOrNull(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
-    private async Task InvokeAsync(string team, string spawnId, string phaseTag, string prompt, string workspace, CancellationToken ct)
-        => await this.InvokeAsync(team, spawnId, phaseTag, prompt, workspace, budget: null, ct);
+    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, CancellationToken ct)
+        => await this.InvokeAsync(team, workItemId, phaseTag, prompt, workspace, budget: null, ct);
 
-    private async Task InvokeAsync(string team, string spawnId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct)
+    /// <summary>
+    /// Phase 49 follow-up — <paramref name="workItemId"/> (formerly named
+    /// <c>spawnId</c>) is the transcript stream the emitted
+    /// <c>story.agent-*</c> events land on. Callers running spawn-scoped
+    /// work (decompose, qa-features) pass <c>spawn.Id</c>; callers
+    /// running workstream-scoped work (review-comments, review-fix,
+    /// qa-steps, discover-targets) pass <c>workstream.Id</c> so those
+    /// events appear in the workstream's Conversation tab (and the new
+    /// Review subtab) instead of disappearing into the spawn-level
+    /// stream that no UI surface renders.
+    /// </summary>
+    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct)
     {
         var prefix = CrewIdPrefix(team);
 
@@ -2414,7 +2573,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // failure that the next scheduler tick can retry.
             WallClockBudget: budget);
 
-        await this.taskChannel.EmitAsync(spawnId, "story.agent-prompt", new
+        await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
         {
             phase = phaseTag,
             team,
@@ -2427,12 +2586,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             promptPreview = Trim(prompt, 600),
         }, agentId: agentId, crewId: crew.Id, ct: ct);
 
-        var invocation = await this.runner.StartAsync(spawnId, agentId, prompt, context, ct);
+        var invocation = await this.runner.StartAsync(workItemId, agentId, prompt, context, ct);
 
         string? failure = null;
         await foreach (var evt in invocation.Events.WithCancellation(ct))
         {
-            await this.taskChannel.EmitAsync(spawnId, $"story.agent-{evt.Kind.ToString().ToLowerInvariant()}", new
+            await this.taskChannel.EmitAsync(workItemId, $"story.agent-{evt.Kind.ToString().ToLowerInvariant()}", new
             {
                 phase = phaseTag,
                 team,
