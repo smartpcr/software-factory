@@ -79,6 +79,13 @@ public interface IStoryArtifactStrategy
 /// When non-null, <see cref="StorySpawnOrchestrator.PersistDecompositionAsync"/>
 /// uses the anchor to build a stable workstream id so the reconciler can
 /// later find the row.
+///
+/// <para>Phase 46 — <see cref="PhaseAnchor"/> is the cached
+/// <c>phase-{slug}</c> prefix of <see cref="PlanAnchor"/>; the swarm
+/// DAG view uses it to group stage cards into collapsible phase
+/// containers without re-parsing the plan. <see cref="UnresolvedDeps"/>
+/// holds dep anchor refs that didn't resolve to a known phase or stage
+/// anchor; the UI surfaces them as a yellow "unresolved" banner.</para>
 /// </summary>
 public sealed record DecompositionWorkstream(
     string Title,
@@ -89,7 +96,9 @@ public sealed record DecompositionWorkstream(
     string Timeline,
     string EstimatedEffort,
     string? PlanAnchor = null,
-    string? PlanContentHash = null);
+    string? PlanContentHash = null,
+    string? PhaseAnchor = null,
+    IReadOnlyList<string>? UnresolvedDeps = null);
 
 /// <summary>One review-comment payload the strategy wants posted.</summary>
 public sealed record ReviewComment(string FilePath, int Line, string Body, string Severity);
@@ -104,13 +113,14 @@ public sealed record ReviewFix(string FilePath, string NewContent, string ReplyB
 /// Thrown by <see cref="IStoryArtifactStrategy.ProduceWorkstreamChangesAsync"/>
 /// when the engineer agent has produced zero file changes for several
 /// consecutive iterations. Treated by the orchestrator as a triage signal:
-/// the workstream is moved to <c>Status="blocked"</c>, the gen↔eval loop is
-/// not re-spawned, and the operator must <c>Restart</c> the workstream to
-/// retry. Exists to short-circuit the livelock observed 2026-05-09 where one
-/// workstream burned $9,825 across 139 zero-diff iterations because the
-/// orchestrator only checked for changes after the full <c>maxIter</c> run
-/// completed and the resume logic restarted the loop from <c>iter=1</c> on
-/// every <c>stalled</c> verdict.
+/// the workstream is moved to <c>Status="stalled"</c> (Phase 49 — was
+/// <c>"blocked"</c> before the split), the gen↔eval loop is not re-spawned,
+/// and the operator must <c>Restart</c> the workstream to retry. Exists to
+/// short-circuit the livelock observed 2026-05-09 where one workstream burned
+/// $9,825 across 139 zero-diff iterations because the orchestrator only
+/// checked for changes after the full <c>maxIter</c> run completed and the
+/// resume logic restarted the loop from <c>iter=1</c> on every <c>stalled</c>
+/// verdict.
 /// </summary>
 public sealed class NoProgressException : Exception
 {
@@ -120,5 +130,56 @@ public sealed class NoProgressException : Exception
     public int ConsecutiveIterations { get; init; }
 
     /// <summary>The iteration number that triggered the abort (last zero-change iter).</summary>
+    public int LastIteration { get; init; }
+}
+
+/// <summary>
+/// Phase 47e — thrown when the workstream's worktree fails its build gate.
+/// Routed by the orchestrator to <c>Status="stalled"</c> (Phase 49 split —
+/// was <c>"blocked"</c> before) on the same path as
+/// <see cref="NoProgressException"/>: re-spawning would just re-burn
+/// agent budget on a non-compiling diff that the evaluator silently passed.
+/// Two trip points produce this exception:
+/// <list type="number">
+///   <item>
+///     <description>
+///       <b>Per-iter</b> — three consecutive iterations whose post-generator
+///       worktree has uncommitted changes that don't compile. Caught early
+///       so the loop doesn't burn the full <c>maxIter</c> budget on broken code.
+///     </description>
+///   </item>
+///   <item>
+///     <description>
+///       <b>Post-pass</b> — the evaluator scored the iteration as <c>pass</c>,
+///       but a fresh <c>dotnet build</c> still fails. The compiler is the
+///       authoritative source of truth here; the evaluator cannot see
+///       compile errors on a deleted/renamed type.
+///     </description>
+///   </item>
+/// </list>
+/// </summary>
+public sealed class BuildFailedException : Exception
+{
+    public BuildFailedException(string message) : base(message) { }
+
+    /// <summary><c>dotnet build</c> exit code.</summary>
+    public int ExitCode { get; init; }
+
+    /// <summary>Number of <c>): error CSnnnn:</c> lines parsed from the build output.</summary>
+    public int ErrorCount { get; init; }
+
+    /// <summary>Number of <c>): warning CSnnnn:</c> lines parsed from the build output.</summary>
+    public int WarningCount { get; init; }
+
+    /// <summary>First few error lines, capped at ~2400 chars; suitable for transcript display.</summary>
+    public string ErrorSummary { get; init; } = string.Empty;
+
+    /// <summary>True when the trip point was per-iter (consecutive broken-build counter); false for post-pass single fail.</summary>
+    public bool TrippedByConsecutiveIters { get; init; }
+
+    /// <summary>How many consecutive broken-build iters (per-iter trip) or 0 (post-pass trip).</summary>
+    public int ConsecutiveBrokenIters { get; init; }
+
+    /// <summary>The iteration number that triggered the abort.</summary>
     public int LastIteration { get; init; }
 }

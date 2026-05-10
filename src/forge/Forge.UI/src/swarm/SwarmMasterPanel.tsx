@@ -82,6 +82,40 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const blocked = ws.filter((w) => w.status === 'blocked');
   const attention = [...stalled, ...blocked];
 
+  // Phase 49 — compute the canonical `phaseNum.stageNum` label for every
+  // workstream. Drives both the phase-card title ("1.1 Cargo Workspace
+  // and Crate Layout" instead of "PHASE 01") and the deps row's chip
+  // list. Identical numbering to the workstream DAG view (right pane);
+  // the Sort field is the source of truth and was renumbered to match
+  // implementation-plan.md so the operator sees one consistent set of
+  // phase / stage numbers everywhere.
+  const stageNumOf = useMemo(() => {
+    const m = new Map<string, string>();
+    const buckets = new Map<string, string[]>();
+    const phaseOrder: string[] = [];
+    for (const w of ws) {
+      const pa = w.phaseAnchor && w.phaseAnchor.length > 0 ? w.phaseAnchor : '__workstreams__';
+      if (!buckets.has(pa)) {
+        phaseOrder.push(pa);
+        buckets.set(pa, []);
+      }
+      buckets.get(pa)!.push(w.id);
+    }
+    phaseOrder.forEach((pa, gi) => {
+      const items = buckets.get(pa)!;
+      items.forEach((id, si) => {
+        m.set(id, `${gi + 1}.${si + 1}`);
+      });
+    });
+    return m;
+  }, [ws]);
+
+  const wsNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of ws) m.set(w.id, w.name);
+    return m;
+  }, [ws]);
+
   // Phase-board status filter — operator narrows which phase rows render.
   // Counts shown on chips are derived from the unfiltered list so the
   // operator always sees the full picture even when the filter is on.
@@ -191,6 +225,9 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
                 key={w.id}
                 ws={w}
                 index={originalIndex}
+                stageNum={stageNumOf.get(w.id) ?? `${originalIndex + 1}`}
+                stageNumOf={stageNumOf}
+                wsNameById={wsNameById}
                 selected={selection.kind === 'phase' && selection.id === w.id}
                 onSelect={() => onSelect({ kind: 'phase', id: w.id })}
               />
@@ -205,32 +242,42 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
 interface PhaseCardProps {
   ws: StorySpawnWorkstreamSummary;
   index: number;
+  stageNum: string;
+  stageNumOf: Map<string, string>;
+  wsNameById: Map<string, string>;
   selected: boolean;
   onSelect: () => void;
 }
 
-function PhaseCard({ ws, index, selected, onSelect }: PhaseCardProps) {
+function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }: PhaseCardProps) {
   const phaseCls = STATUS_TO_PHASE_CLASS[ws.status] ?? 'queued';
   const badgeCls = STATUS_TO_BADGE[ws.status] ?? 'blocked';
   const pct = STATUS_PROGRESS[ws.status] ?? 0;
   const unanswered = ws.unansweredQuestionCount ?? 0;
 
-  // Score / points / iter aren't yet wired into the workstream contract;
-  // surface neutral placeholders until EX.1 / EX.2 / EX.3 land.
   return (
     <div
       className={`phase ${phaseCls}${selected ? ' selected' : ''}`}
       onClick={onSelect}
-      data-sc-tooltip={`${ws.name}\n${ws.status}${ws.branch ? ` · ${ws.branch}` : ''}`}
+      data-sc-tooltip={
+        ws.status === 'stalled' && ws.stallReason
+          ? `${ws.name}\nstalled — ${ws.stallReason}${ws.branch ? `\n${ws.branch}` : ''}`
+          : `${ws.name}\n${ws.status}${ws.branch ? ` · ${ws.branch}` : ''}`
+      }
       data-sc-tooltip-pos="bottom"
     >
       <div className="phase-hd">
-        <span className="phase-no">PHASE <b>{String(index + 1).padStart(2, '0')}</b></span>
+        <span className="phase-no"><b>{stageNum}</b></span>
         <span className="phase-title">{ws.name}</span>
         <span className="score-pill">
           {ws.latestScore != null ? ws.latestScore : '—'}
         </span>
-        <span className={`badge ${badgeCls}`}>{ws.status}</span>
+        <span
+          className={`badge ${badgeCls}`}
+          title={ws.status === 'stalled' && ws.stallReason ? ws.stallReason : undefined}
+        >
+          {ws.status}
+        </span>
         {unanswered > 0 && (
           <span
             className="badge stalled"
@@ -274,7 +321,17 @@ function PhaseCard({ ws, index, selected, onSelect }: PhaseCardProps) {
           {ws.deps.length > 0 && (
             <div className="stage-row blocked">
               <span className="id">DEPS</span>
-              <span className="name">{ws.deps.length} upstream {ws.deps.length === 1 ? 'workstream' : 'workstreams'}</span>
+              <span className="name phase-card__deps">
+                {ws.deps.map((depId) => {
+                  const num = stageNumOf.get(depId) ?? '?';
+                  const upName = wsNameById.get(depId) ?? depId;
+                  return (
+                    <span key={depId} className="phase-card__dep-chip" title={`${num} — ${upName}`}>
+                      {num}
+                    </span>
+                  );
+                })}
+              </span>
               <span className="pts">—</span>
               <span className="stat">{ws.status === 'blocked' ? 'waiting' : 'cleared'}</span>
             </div>
@@ -365,7 +422,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
               <span className="doc-no">DECOMP</span>
               <span className="doc-status">{decomposed ? 'merged' : 'draft'}</span>
             </div>
-            <div className="doc-card__name">workstreams.json</div>
+            <div className="doc-card__name">workstreams.yaml</div>
             <div className="doc-card__sub">N parallel workstreams + dependency graph</div>
             <div className="doc-card__metrics">
               <span className="m-cell">

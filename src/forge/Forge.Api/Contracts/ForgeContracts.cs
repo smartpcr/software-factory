@@ -99,7 +99,14 @@ public sealed record Workstream(
     double BarEnd,
     bool Planned = false,
     /// <summary>Phase 8.11 — repo this workstream belongs to. Null on legacy rows that pre-date Phase 8.</summary>
-    string? RepoId = null);
+    string? RepoId = null,
+    /// <summary>
+    /// Phase 49 — when <see cref="Status"/> is <c>stalled</c>, a
+    /// human-readable description of the failure that landed the row in
+    /// triage (build gate, no-progress, non-pass verdict). Null on every
+    /// other status. Surfaced as a tooltip on the stalled badge.
+    /// </summary>
+    string? StallReason = null);
 
 /// <summary>
 /// Workstream timeline event (PR / merge / review / block marker).

@@ -125,7 +125,7 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     /// orchestrator treats as "no commit needed" — fine for tests).
     /// </summary>
     public Task<IReadOnlyList<string>> GetChangedFilesAsync(
-        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+        RepoRow? repo, string worktreePath, string? baseBranch = null, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
     /// <summary>

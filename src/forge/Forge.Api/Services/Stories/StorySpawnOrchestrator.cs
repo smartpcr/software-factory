@@ -242,10 +242,40 @@ public sealed class StorySpawnOrchestrator
         var baseBranch = BaseBranchOf(spawn);
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
 
+        // Phase 48 follow-up — invariant guard. While spawn.Phase=plan, no
+        // workstream of this spawn may carry Status="active". The "active"
+        // label is set exclusively by DriveImplementAsync's claim sweep
+        // (line ~978); a workstream ending up active in plan phase means
+        // a prior phase=implement excursion ran the claim sweep, then
+        // phase regressed back to Plan WITHOUT the regression's
+        // CancelInFlightImplTasksAsync running (e.g. the spawn was created
+        // before that helper existed, or the regression path took a code
+        // path that didn't include the cleanup). The orchestrator only
+        // calls DriveImplementAsync — and therefore the regression cleanup —
+        // when phase ∈ {implement, review, qa}, so once a spawn drops back
+        // to plan, the stale active rows would persist forever.
+        //
+        // Operator-reported on failover-cluster:XRAFT 2026-05-09 — 16
+        // workstreams visible as "active" while all 4 plan-docs were still
+        // iterating. The /api/stories/{id}/spawn payload echoed those
+        // active labels into the swarm view, making it look like impl
+        // work was happening when in reality nothing was claimed (no open
+        // agent_claims, no live transcript events).
+        //
+        // We cancel any open queue rows + best-effort runner invocations
+        // for these workstreams so a stranded picked-up task can't keep
+        // streaming events post-regression. Blocked / review / merging /
+        // complete / cancelled / historic rows are preserved — they
+        // represent legitimate persistent state across phase moves.
+        await this.EnforcePlanPhaseInvariantAsync(db, spawn, ct);
+
         // Early exit: if the plan PR is already merged, skip artifact
         // production and advance to decompose immediately. This prevents
         // a long-running retry (ProducePlanArtifactsAsync) from blocking
         // phase progression when the PR merged via auto-merge or externally.
+        // Phase 48 — gated. An externally-merged PR does NOT bypass the
+        // all-passed gate; if any doc is still iterating / stalled, hold
+        // at Plan and surface LastError so the operator sees the blockage.
         if (!string.IsNullOrEmpty(spawn.PlanPrId))
         {
             var mergeCheck = await db.Prs.AsNoTracking()
@@ -253,34 +283,41 @@ public sealed class StorySpawnOrchestrator
             if (mergeCheck is not null
                 && string.Equals(mergeCheck.Col, "merged", StringComparison.OrdinalIgnoreCase))
             {
-                var earlyRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-                earlyRow.Phase = StorySpawnPhases.Decompose;
-                earlyRow.UpdatedAt = DateTimeOffset.UtcNow;
-                await ClearLastErrorAsync(db, earlyRow, ct);
-                await db.SaveChangesAsync(ct);
-                await EmitChange(hub, "phase-advanced", earlyRow, ct);
-                return true;
+                var (earlyAllPassed, earlyNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+                if (!earlyAllPassed)
+                {
+                    await PersistLastErrorAsync(db, spawn.Id,
+                        $"Plan PR merged but docs not all passed; phase advance blocked: {string.Join(", ", earlyNonPassed)}",
+                        hub, ct);
+                    // Fall through to Step 1 below — we want
+                    // ProducePlanArtifactsAsync to run for the non-passed
+                    // docs even though the PR is already merged.
+                }
+                else
+                {
+                    var earlyRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                    earlyRow.Phase = StorySpawnPhases.Decompose;
+                    earlyRow.UpdatedAt = DateTimeOffset.UtcNow;
+                    await ClearLastErrorAsync(db, earlyRow, ct);
+                    await db.SaveChangesAsync(ct);
+                    await EmitChange(hub, "phase-advanced", earlyRow, ct);
+                    return true;
+                }
             }
         }
 
         // Step 1 — PR doesn't exist yet: produce artifacts, commit, open PR.
         // Also re-enters when forceResume=true and PR exists: re-generate
         // stalled/iterate docs, commit new content, push to existing PR.
-        // Also re-enters when some plan docs have no deliverables (PENDING)
-        // — they need their gen-eval loops run even if the PR was already
-        // opened for a sibling doc that passed earlier.
-        var hasPendingDocs = false;
-        if (!string.IsNullOrEmpty(spawn.PlanPrId) && !forceResume)
-        {
-            var planDocIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
-            var docIdsWithDeliverables = await db.Deliverables.AsNoTracking()
-                .Where(d => planDocIds.Contains(d.WorkItemId))
-                .Select(d => d.WorkItemId)
-                .Distinct()
-                .ToListAsync(ct);
-            hasPendingDocs = docIdsWithDeliverables.Count < planDocIds.Count;
-        }
-        if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume || hasPendingDocs)
+        // Phase 48 — also re-enters whenever ANY plan-doc's latest deliverable
+        // verdict isn't 'pass'. Replaces the older "any doc lacks deliverables"
+        // check with the stricter "all four have a passing terminal deliverable"
+        // gate; combined with the Phase 45 pass-verdict guard inside
+        // ProducePlanFileAsync, only the non-passed docs run the gen-eval
+        // loop and passed docs short-circuit to cached worktree content.
+        var (planAllPassed, planNonPassedKeys) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var notAllPassed = !planAllPassed;
+        if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume || notAllPassed)
         {
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
@@ -389,6 +426,20 @@ public sealed class StorySpawnOrchestrator
         // tick runs DriveDecomposeAsync. We bypass the gate-check on
         // PATCH /spawn/phase because the orchestrator IS the agent driver
         // for this transition.
+        // Phase 48 — re-check the all-passed gate before advancing. The PR
+        // can be merged externally (operator clicked Merge on ADO/GitHub
+        // before all docs hit pass — Bug A on the failover-cluster:XRAFT
+        // spawn) so the PR-merged signal alone isn't sufficient. This gate
+        // closes the impl-starts-while-docs-still-iterating regression.
+        var (advanceAllPassed, advanceNonPassedKeys) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        if (!advanceAllPassed)
+        {
+            await PersistLastErrorAsync(db, spawn.Id,
+                $"Plan docs not all passed; phase advance blocked: {string.Join(", ", advanceNonPassedKeys)}",
+                hub, ct);
+            return false;
+        }
+
         var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
         sRow.Phase = StorySpawnPhases.Decompose;
         sRow.UpdatedAt = DateTimeOffset.UtcNow;
@@ -478,6 +529,59 @@ public sealed class StorySpawnOrchestrator
     };
 
     /// <summary>
+    /// Spec Phase 48 — gate helper. Returns whether every plan-doc has a
+    /// terminal <c>verdict='pass'</c> on its latest deliverable. ACCEPT-overridden
+    /// docs (Phase 43) flip their latest deliverable to <c>pass</c>, so they
+    /// count as passed here.
+    ///
+    /// <para>Called from four orchestrator entry points to enforce the
+    /// "impl never starts before all plan docs complete" invariant:
+    /// <list type="bullet">
+    /// <item><c>DrivePlanAsync</c> Step 1 — re-trigger artifact production when any doc isn't passed.</item>
+    /// <item><c>DrivePlanAsync</c> Step 3 — refuse phase advance to <c>Decompose</c> when any doc isn't passed.</item>
+    /// <item><c>DriveDecomposeAsync</c> entry — regress phase to <c>Plan</c> when any doc isn't passed (recovers from spawns whose phase advanced before this fix shipped).</item>
+    /// <item><c>DriveImplementAsync</c> entry — regress phase to <c>Plan</c>; halts NEW workstream claims (in-flight rows continue to completion per Q48.3).</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    internal static async Task<(bool AllPassed, IReadOnlyList<string> NonPassedKeys)>
+        ArePlanDocsAllPassedAsync(ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+    {
+        var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
+        // Materialize the full deliverable history for these docs in one
+        // query, then pick the latest per doc client-side. SQLite EF can't
+        // GROUP BY + ORDER BY DateTimeOffset without translation drift.
+        var rows = await db.Deliverables.AsNoTracking()
+            .Where(d => docIds.Contains(d.WorkItemId))
+            .ToListAsync(ct);
+
+        var nonPassed = new List<string>();
+        foreach (var fileName in PlanDocFileNames)
+        {
+            var docId = $"plan-doc:{spawn.Id}:{fileName}";
+            var latest = rows
+                .Where(d => d.WorkItemId == docId)
+                .OrderByDescending(d => d.Iter)
+                .ThenByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
+
+            // The artifact "key" used by Resume / ACCEPT / Restart endpoints
+            // is the filename without the .md suffix (matches BuildPlanDocSpecs).
+            var key = fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+                ? fileName[..^3]
+                : fileName;
+
+            if (latest is null
+                || !string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+            {
+                nonPassed.Add(key);
+            }
+        }
+
+        return (nonPassed.Count == 0, nonPassed);
+    }
+
+    /// <summary>
     /// Phase 38 (Layer B.1) — ensure each of the four plan docs has a real
     /// <see cref="WorkItemRow"/> backing its synthetic <c>plan-doc:*</c>
     /// workItemId. Idempotent: rows already inserted by a prior tick or by
@@ -532,10 +636,199 @@ public sealed class StorySpawnOrchestrator
     }
 
     // ── decompose ────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Spec Phase 48 follow-up — when the orchestrator regresses from
+    /// Implement / Decompose back to Plan because plan docs aren't all
+    /// passed, halt every in-flight workstream agent + queue row for the
+    /// spawn. Without this, impl-phase iterations keep burning tokens
+    /// and clobbering the workstream branch even though the plan they
+    /// were based on is now invalidated.
+    ///
+    /// <para>Best-effort: failures on individual cancellations log but
+    /// don't surface as a regression failure (the phase regression
+    /// itself is the operator-visible signal). Workstreams flip to
+    /// <c>'planning'</c> so the impl scheduler will re-claim them with
+    /// fresh agent pairs when the spawn re-advances to Implement.</para>
+    /// </summary>
+    private async Task CancelInFlightImplTasksAsync(
+        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+    {
+        var workstreams = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id)
+            .ToListAsync(ct);
+        if (workstreams.Count == 0) return;
+
+        var wsIds = workstreams.Select(w => w.Id).ToHashSet(StringComparer.Ordinal);
+
+        // Find every open queue row tied to a workstream of this spawn.
+        // Open states are listed in TaskQueueStates.OpenStates.
+        var openQueueRows = await db.TaskQueue
+            .Where(r => wsIds.Contains(r.WorkItemId)
+                     && r.State != TaskQueueStates.Completed
+                     && r.State != TaskQueueStates.Cancelled)
+            .ToListAsync(ct);
+
+        foreach (var q in openQueueRows)
+        {
+            q.State = TaskQueueStates.Cancelled;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+            q.LastError = "Phase regressed to Plan — impl tasks cancelled.";
+        }
+
+        // Flip the workstream rows back to 'planning' so the impl
+        // scheduler will re-claim them once the spawn re-advances. Skip
+        // historic / cancelled / complete rows (terminal states are
+        // preserved per Phase 42).
+        foreach (var ws in workstreams)
+        {
+            if (ws.Status is "complete" or "cancelled" or "merging" or WorkstreamStatuses.Historic)
+            {
+                continue;
+            }
+            ws.Status = "planning";
+            ws.LastActive = (DateTimeOffset.UtcNow - new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero))
+                .TotalDays;
+        }
+
+        // Cancel each agent invocation. CancelByTaskAsync is per-work-item;
+        // looping is fine — production workstream counts are bounded.
+        try
+        {
+            using var scope = this.services.CreateScope();
+            var runner = scope.ServiceProvider.GetService<Forge.Api.Agents.IAgentRunner>();
+            if (runner is not null)
+            {
+                foreach (var wsId in wsIds)
+                {
+                    try { await runner.CancelByTaskAsync(wsId, ct); }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogDebug(ex,
+                            "CancelInFlightImplTasksAsync: runner.CancelByTaskAsync({WsId}) failed; queue row already cancelled.",
+                            wsId);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "CancelInFlightImplTasksAsync: agent-runner resolution failed; queue rows cancelled but agent invocations may keep streaming until they self-detect cancellation.");
+        }
+    }
+
+    /// <summary>
+    /// Phase 48 follow-up — invariant enforcement called at the start of
+    /// <see cref="DrivePlanAsync"/>. Plan phase MUST NOT have any workstream
+    /// in <c>active</c> status — that label is set exclusively by the
+    /// impl claim sweep, so its presence means a prior phase=implement
+    /// excursion's regression cleanup didn't run. Flip those rows back
+    /// to <c>planning</c> and cancel any open queue rows + runner
+    /// invocations for them so a stranded picked-up task can't keep
+    /// streaming events. Other non-terminal statuses (blocked / review /
+    /// merging) are preserved — they represent legitimate persistent
+    /// state across phase moves and shouldn't be coerced just because
+    /// the spawn is currently in plan.
+    /// </summary>
+    private async Task EnforcePlanPhaseInvariantAsync(
+        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+    {
+        var stranded = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id && w.Status == "active")
+            .ToListAsync(ct);
+        if (stranded.Count == 0) return;
+
+        var strandedIds = stranded.Select(w => w.Id).ToHashSet(StringComparer.Ordinal);
+
+        var openQueueRows = await db.TaskQueue
+            .Where(r => strandedIds.Contains(r.WorkItemId)
+                     && r.State != TaskQueueStates.Completed
+                     && r.State != TaskQueueStates.Cancelled)
+            .ToListAsync(ct);
+        foreach (var q in openQueueRows)
+        {
+            q.State = TaskQueueStates.Cancelled;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+            q.LastError = "Spawn is in plan phase — impl tasks blocked until plan-docs all pass.";
+        }
+
+        foreach (var w in stranded)
+        {
+            w.Status = "planning";
+            w.LastActive = (DateTimeOffset.UtcNow - new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero))
+                .TotalDays;
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        this.logger?.LogInformation(
+            "EnforcePlanPhaseInvariant: spawn {SpawnId} ({StoryId}) — flipped {Count} stranded 'active' workstream(s) back to 'planning' (queue rows cancelled: {QueueCount}).",
+            spawn.Id, spawn.StoryId, stranded.Count, openQueueRows.Count);
+
+        // Best-effort cancel of any in-flight agent invocations for these
+        // workstream ids. CancelByTaskAsync is per-work-item; looping is
+        // fine — the stranded set is bounded by a single spawn's workstream
+        // count. Mirrors CancelInFlightImplTasksAsync's catch-and-log
+        // pattern so a runner failure doesn't break the tick.
+        try
+        {
+            using var scope = this.services.CreateScope();
+            var runner = scope.ServiceProvider.GetService<Forge.Api.Agents.IAgentRunner>();
+            if (runner is not null)
+            {
+                foreach (var wsId in strandedIds)
+                {
+                    try { await runner.CancelByTaskAsync(wsId, ct); }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogDebug(ex,
+                            "EnforcePlanPhaseInvariant: runner.CancelByTaskAsync({WsId}) failed; queue row already cancelled.",
+                            wsId);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "EnforcePlanPhaseInvariant: agent-runner resolution failed; queue rows cancelled but agent invocations may keep streaming until they self-detect cancellation.");
+        }
+    }
+
     private async Task<bool> DriveDecomposeAsync(
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
+        // Phase 48 — recover from spawns whose phase advanced under the
+        // pre-fix Bug A. If any plan-doc isn't passed, regress phase to
+        // Plan and let DrivePlanAsync re-run the gen-eval loops (the
+        // strategy's pass-verdict guard short-circuits the already-passed
+        // docs; only non-passed ones run).
+        // Phase 48 follow-up — consolidated single SaveChangesAsync for the
+        // regression. The earlier two-save shape (Phase + SaveChanges,
+        // then PersistLastErrorAsync's own save) raised the chance of a
+        // "database is locked" race against a concurrent writer on
+        // SQLite's single-writer journal. One write keeps the
+        // transaction window tight.
+        var (decomposeAllPassed, decomposeNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        if (!decomposeAllPassed)
+        {
+            // Phase 48 follow-up — cancel any in-flight impl tasks BEFORE
+            // saving the phase regression so the cancel writes batch in
+            // the same transaction window. Reduces SQLite lock contention.
+            await CancelInFlightImplTasksAsync(db, spawn, ct);
+
+            var sBack = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+            sBack.Phase = StorySpawnPhases.Plan;
+            sBack.LastError = $"Phase regressed to Plan: docs not all passed: {string.Join(", ", decomposeNonPassed)}";
+            sBack.LastErrorAt = DateTimeOffset.UtcNow;
+            sBack.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            await EmitChange(hub, "spawn-error", sBack, ct);
+            await EmitChange(hub, "phase-regressed", sBack, ct);
+            return true;
+        }
+
         // Step 1 — generate decomposition (skip if already produced).
         if (string.IsNullOrEmpty(spawn.DecompositionJson))
         {
@@ -556,21 +849,102 @@ public sealed class StorySpawnOrchestrator
             return true;
         }
 
-        // Step 2 — auto-approve + advance to 'implement'. Per the
+        // Step 2 — backfill the WorkstreamDeps FK table from each row's
+        // DepsJson before we hand the spawn to DriveImplementAsync. The
+        // PlanReconciler writes deps as resolved stage TITLES into DepsJson
+        // during plan phase but doesn't insert the FK rows; the FK rows are
+        // what DriveImplementAsync's claim sweep reads to compute "every dep
+        // merged?". Without this backfill the sweep sees an empty FK table,
+        // treats every stage as ready, and claims all 21 stages at once on
+        // the first impl tick (observed 2026-05-09 on failover-cluster:XRAFT).
+        await SyncWorkstreamDepsFromJsonAsync(db, spawn, ct);
+
+        // Step 3 — auto-approve + advance to 'implement'. Per the
         // "no human gates" rule, the architect's decomposition lands
-        // without an explicit operator click.
-        if (!spawn.DecompositionApproved)
+        // without an explicit operator click. The earlier `if (!Approved)`
+        // guard misfired on already-approved spawns: it skipped the phase
+        // flip, leaving the spawn parked at decompose forever (observed
+        // 2026-05-09 on failover-cluster:XRAFT — decomposition was approved
+        // the moment it landed, but Phase=decompose persisted). Make the
+        // advance idempotent — any time we reach here in decompose phase,
+        // Step 1 has already produced the decomposition, so the conditions
+        // for the advance are met.
+        var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+        var changed = false;
+        if (!sRow.DecompositionApproved) { sRow.DecompositionApproved = true; changed = true; }
+        if (sRow.Phase == StorySpawnPhases.Decompose)
         {
-            var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-            sRow.DecompositionApproved = true;
             sRow.Phase = StorySpawnPhases.Implement;
+            changed = true;
+        }
+        if (changed)
+        {
             sRow.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
             await EmitChange(hub, "decomposition-approved", sRow, ct);
             return true;
         }
-
         return false;
+    }
+
+    /// <summary>
+    /// Phase 49 — backfill <see cref="WorkstreamDepRow"/> rows from each
+    /// workstream's <c>DepsJson</c> (which carries resolved stage TITLES).
+    /// <see cref="PlanReconciler"/> writes <c>DepsJson</c> during plan
+    /// phase but never touches the FK table; <see cref="PersistDecompositionAsync"/>
+    /// only writes FK rows when a workstream is freshly created — so when
+    /// the rows already exist (PlanReconciler-seeded), the FK table stays
+    /// empty. This helper closes the gap: walks each workstream of the
+    /// spawn, parses <c>DepsJson</c>, resolves each title to a workstream
+    /// id via the same-spawn name→id map, and inserts any missing
+    /// <see cref="WorkstreamDepRow"/>. Idempotent — existing rows and
+    /// titles that don't resolve to a sibling are skipped.
+    /// </summary>
+    private static async Task SyncWorkstreamDepsFromJsonAsync(
+        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+    {
+        var workstreams = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id)
+            .ToListAsync(ct);
+        if (workstreams.Count == 0) return;
+
+        var nameToId = workstreams
+            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+
+        var wsIds = workstreams.Select(w => w.Id).ToList();
+        var existing = await db.WorkstreamDeps
+            .Where(d => wsIds.Contains(d.WorkstreamId))
+            .ToListAsync(ct);
+        var existingSet = new HashSet<(string From, string To)>(
+            existing.Select(e => (e.WorkstreamId, e.DependsOnId)));
+
+        var added = 0;
+        foreach (var w in workstreams)
+        {
+            if (string.IsNullOrEmpty(w.DepsJson)) continue;
+            List<string>? titles;
+            try { titles = JsonSerializer.Deserialize<List<string>>(w.DepsJson); }
+            catch { continue; }
+            if (titles is null) continue;
+            foreach (var t in titles)
+            {
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                if (!nameToId.TryGetValue(t.Trim(), out var depId)) continue;
+                if (string.Equals(depId, w.Id, StringComparison.Ordinal)) continue;
+                if (existingSet.Contains((w.Id, depId))) continue;
+                db.WorkstreamDeps.Add(new WorkstreamDepRow
+                {
+                    WorkstreamId = w.Id,
+                    DependsOnId = depId,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                existingSet.Add((w.Id, depId));
+                added++;
+            }
+        }
+        if (added > 0) await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -601,6 +975,14 @@ public sealed class StorySpawnOrchestrator
             titleToId[w.Title] = wsId;
             // Idempotent — leave any pre-existing row alone.
             if (await db.Workstreams.AnyAsync(x => x.Id == wsId, ct)) continue;
+
+            // Phase 46 — persist deps + phase-anchor so the runtime
+            // scheduler reads dependency edges directly from the row
+            // (no plan re-parse) and the swarm DAG view groups by phase.
+            var depsJson = w.Deps is { Count: > 0 }
+                ? JsonSerializer.Serialize(w.Deps, JsonOpts)
+                : null;
+
             db.Workstreams.Add(new WorkstreamRow
             {
                 Id = wsId,
@@ -622,6 +1004,8 @@ public sealed class StorySpawnOrchestrator
                 StorySpawnId = spawn.Id,
                 PlanAnchor = w.PlanAnchor,
                 PlanContentHash = w.PlanContentHash,
+                DepsJson = depsJson,
+                PhaseAnchor = w.PhaseAnchor,
             });
 
             // Phase 38 (Layer B.2) — back the workstream with a real
@@ -678,6 +1062,33 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
+        // Phase 48 — gate the impl claim sweep on plan-doc completion.
+        // The user's regression on failover-cluster:XRAFT showed 24
+        // workstreams active while all 4 plan-docs were still iterating;
+        // this is the explicit "impl never starts before docs complete"
+        // requirement. Q48.3: in-flight workstreams (state=picked-up)
+        // continue running — only NEW claims are blocked here.
+        // Phase 48 follow-up — single SaveChangesAsync (matches DriveDecomposeAsync).
+        var (implAllPassed, implNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        if (!implAllPassed)
+        {
+            // Phase 48 follow-up — operator request 2026-05-09: stop all
+            // in-flight impl tasks when phase regresses. Without this the
+            // 24 active workstreams keep burning tokens against a plan
+            // that's been invalidated.
+            await CancelInFlightImplTasksAsync(db, spawn, ct);
+
+            var sBack = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+            sBack.Phase = StorySpawnPhases.Plan;
+            sBack.LastError = $"Phase regressed to Plan: docs not all passed: {string.Join(", ", implNonPassed)}";
+            sBack.LastErrorAt = DateTimeOffset.UtcNow;
+            sBack.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            await EmitChange(hub, "spawn-error", sBack, ct);
+            await EmitChange(hub, "phase-regressed", sBack, ct);
+            return true;
+        }
+
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
         var baseBranch = BaseBranchOf(spawn);
 
@@ -687,7 +1098,44 @@ public sealed class StorySpawnOrchestrator
             .ToListAsync(ct);
         if (workstreams.Count == 0) return false;
 
-        var deps = await db.WorkstreamDeps.ToListAsync(ct);
+        // Phase 49 — read deps from BOTH the FK table and each workstream's
+        // DepsJson titles (resolved via same-spawn name→id, excluding
+        // cancelled/historic so a tombstone can't shadow a live row).
+        // Mirrors the GetSpawn fallback so the runtime claim sweep agrees
+        // with the UI even if SyncWorkstreamDepsFromJsonAsync hasn't
+        // backfilled the FK rows yet (e.g. an older spawn that never
+        // visited decompose).
+        var fkDeps = await db.WorkstreamDeps
+            .Where(d => workstreams.Select(w => w.Id).Contains(d.WorkstreamId))
+            .ToListAsync(ct);
+        var nameToId = workstreams
+            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var depsByWs = fkDeps
+            .GroupBy(d => d.WorkstreamId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => new HashSet<string>(g.Select(d => d.DependsOnId), StringComparer.Ordinal),
+                StringComparer.Ordinal);
+        foreach (var w in workstreams)
+        {
+            if (string.IsNullOrEmpty(w.DepsJson)) continue;
+            List<string>? titles;
+            try { titles = JsonSerializer.Deserialize<List<string>>(w.DepsJson); }
+            catch { continue; }
+            if (titles is null) continue;
+            if (!depsByWs.TryGetValue(w.Id, out var resolved))
+            {
+                resolved = new HashSet<string>(StringComparer.Ordinal);
+                depsByWs[w.Id] = resolved;
+            }
+            foreach (var t in titles)
+            {
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                if (!nameToId.TryGetValue(t.Trim(), out var depId)) continue;
+                if (string.Equals(depId, w.Id, StringComparison.Ordinal)) continue;
+                resolved.Add(depId);
+            }
+        }
 
         // ── Phase 1: sequential claim — fast, DB-safe ─────────────────────
         // Assign agents, set status="active", ensure branch for every ready
@@ -709,16 +1157,26 @@ public sealed class StorySpawnOrchestrator
             // diffs for several iters). Re-spawning would just re-trigger
             // the same livelock the blocked status was added to break.
             // Restart is the explicit unblock path.
-            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "blocked") continue;
+            //
+            // Phase 49 — "stalled" is the new (and now preferred) status
+            // for failure-triage. "blocked" stays in the skip list for
+            // back-compat with rows persisted by older builds (the next
+            // operator Restart flips them to "active" and they pick up
+            // the new vocabulary).
+            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "blocked" or WorkstreamStatuses.Stalled) continue;
 
-            // Block until every dep is merged.
-            var blocking = deps
-                .Where(d => d.WorkstreamId == w.Id)
-                .Select(d => workstreams.FirstOrDefault(ww => ww.Id == d.DependsOnId))
-                .Where(ww => ww is not null)
-                .Where(ww => ww!.Status is not ("merging" or "complete"))
-                .ToList();
-            if (blocking.Count > 0) continue;
+            // Block until every dep is merged. Reads from the merged
+            // depsByWs map (FK table + DepsJson title fallback) so a
+            // stale FK table can't make a downstream stage look ready.
+            if (depsByWs.TryGetValue(w.Id, out var depIds) && depIds.Count > 0)
+            {
+                var blocking = depIds
+                    .Select(id => workstreams.FirstOrDefault(ww => ww.Id == id))
+                    .Where(ww => ww is not null)
+                    .Where(ww => ww!.Status is not ("merging" or "complete"))
+                    .ToList();
+                if (blocking.Count > 0) continue;
+            }
 
             // 2026-05-07 — in-flight + failure-backoff guard. The 15s tick
             // would otherwise spawn a fresh agent invocation every cycle on a
@@ -818,14 +1276,17 @@ public sealed class StorySpawnOrchestrator
             catch (NoProgressException npe)
             {
                 // Phase 47 — the engineer agent produced zero file changes
-                // for N consecutive iterations. Mark the workstream blocked
+                // for N consecutive iterations. Mark the workstream stalled
                 // immediately (don't apply failure backoff; that would just
                 // re-spawn after the window). Operator's Restart endpoint
                 // clears deliverables + flips status back to "active" to
-                // unblock. Emits ws-blocked so the UI can show needs-attention.
+                // unblock. Phase 49 — uses the "stalled" status (not
+                // "blocked") so the UI can distinguish failure-triage
+                // from dependency-waiting. Stores the reason on the
+                // workstream row for the tooltip.
                 this.logger?.LogWarning(
                     "Workstream {WsId} no-progress after {Iters} consecutive zero-change iters (last iter {LastIter}). "
-                    + "Marking blocked. Operator must Restart to retry.",
+                    + "Marking stalled. Operator must Restart to retry.",
                     item.ws.Id, npe.ConsecutiveIterations, npe.LastIteration);
 
                 using var noProgScope = this.services.CreateScope();
@@ -834,9 +1295,12 @@ public sealed class StorySpawnOrchestrator
                     ws => ws.Id == item.ws.Id, CancellationToken.None);
                 if (noProgRow is not null && noProgRow.Status is not "cancelled" and not "complete")
                 {
-                    noProgRow.Status = "blocked";
+                    noProgRow.Status = WorkstreamStatuses.Stalled;
+                    noProgRow.StallReason =
+                        $"No progress: agent produced zero file changes in {npe.ConsecutiveIterations} consecutive iterations "
+                        + $"(through iter {npe.LastIteration}). Restart to retry, or escalate to lead.";
                     await noProgDb.SaveChangesAsync(CancellationToken.None);
-                    await EmitChange(hub, "ws-blocked", spawn, CancellationToken.None);
+                    await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
                 }
 
                 await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
@@ -848,6 +1312,57 @@ public sealed class StorySpawnOrchestrator
                     message = npe.Message,
                     consecutiveNoChange = npe.ConsecutiveIterations,
                     lastIter = npe.LastIteration,
+                }, CancellationToken.None);
+            }
+            catch (BuildFailedException bfe)
+            {
+                // Phase 47e — the build command rejected the engineer's diff.
+                // Two trip points produce this: (a) per-iter, three
+                // consecutive broken builds, or (b) post-pass, the iter
+                // the evaluator scored at pass still doesn't compile.
+                // Both route to Status="stalled" (Phase 49 split — see
+                // WorkstreamStatuses.Stalled doc) — re-spawning would
+                // just re-burn budget on the same broken code. Operator
+                // must Restart (which wipes the worktree + deliverables)
+                // to give the agent a clean slate.
+                this.logger?.LogWarning(
+                    "Workstream {WsId} build gate failed: trippedByConsecutive={Trip} consecutiveBroken={Broken} "
+                    + "lastIter={LastIter} exit={Exit} errors={Errors}. Marking stalled.",
+                    item.ws.Id, bfe.TrippedByConsecutiveIters, bfe.ConsecutiveBrokenIters,
+                    bfe.LastIteration, bfe.ExitCode, bfe.ErrorCount);
+
+                using var buildScope = this.services.CreateScope();
+                var buildDb = buildScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var buildRow = await buildDb.Workstreams.FirstOrDefaultAsync(
+                    ws => ws.Id == item.ws.Id, CancellationToken.None);
+                if (buildRow is not null && buildRow.Status is not "cancelled" and not "complete")
+                {
+                    buildRow.Status = WorkstreamStatuses.Stalled;
+                    buildRow.StallReason = bfe.TrippedByConsecutiveIters
+                        ? $"Build failed: {bfe.ConsecutiveBrokenIters} consecutive broken-build iterations "
+                            + $"(through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                            + $"{bfe.ErrorCount} error(s)). Operator triage required."
+                        : $"Build gate failed at post-pass (iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                            + $"{bfe.ErrorCount} error(s)). Evaluator scored at pass, but the build "
+                            + $"didn't compile. Operator triage required.";
+                    await buildDb.SaveChangesAsync(CancellationToken.None);
+                    await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
+                }
+
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = nameof(BuildFailedException),
+                    message = bfe.Message,
+                    exitCode = bfe.ExitCode,
+                    errorCount = bfe.ErrorCount,
+                    warningCount = bfe.WarningCount,
+                    errorSummary = bfe.ErrorSummary,
+                    trippedByConsecutiveIters = bfe.TrippedByConsecutiveIters,
+                    consecutiveBrokenIters = bfe.ConsecutiveBrokenIters,
+                    lastIter = bfe.LastIteration,
                 }, CancellationToken.None);
             }
             catch (Exception ex)
@@ -972,17 +1487,24 @@ public sealed class StorySpawnOrchestrator
             // review pipeline could let auto-merge ship rejected/stalled
             // changes. Operator clicks Restart (which clears deliverables
             // and resets Status="active") to retry.
+            //
+            // Phase 49 — uses the new "stalled" status (not "blocked"), so
+            // the UI can distinguish failure-triage from dependency-waiting.
+            // Carries the verdict + score into StallReason for the tooltip.
             this.logger?.LogWarning(
                 "Workstream {WsId} terminal verdict {Verdict} (iter {Iter}, score {Score}). "
-                + "Marking blocked; operator must Restart to retry.",
+                + "Marking stalled; operator must Restart to retry.",
                 w.Id, lastDel.Verdict, lastDel.Iter, lastDel.Score);
 
             var blockedRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
             if (blockedRow is not null && blockedRow.Status is not "cancelled" and not "complete")
             {
-                blockedRow.Status = "blocked";
+                blockedRow.Status = WorkstreamStatuses.Stalled;
+                blockedRow.StallReason =
+                    $"Evaluator terminal verdict '{lastDel.Verdict}' at iter {lastDel.Iter} (score {lastDel.Score}). "
+                    + "Restart to retry, or escalate to lead.";
                 await db2.SaveChangesAsync(ct);
-                await EmitChange(hub, "ws-blocked", spawn, ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
             }
             return;
         }

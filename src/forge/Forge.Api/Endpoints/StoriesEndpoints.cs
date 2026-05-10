@@ -322,6 +322,50 @@ public static class StoriesEndpoints
             .Where(d => wsIds.Contains(d.WorkstreamId))
             .ToListAsync();
 
+        // Phase 49 — DepsJson fallback. Plan-phase spawns (PlanReconciler-
+        // populated rows) carry deps as resolved STAGE TITLES inside
+        // WorkstreamRow.DepsJson but DON'T populate the WorkstreamDeps
+        // FK table — that happens later in DriveDecomposeAsync after the
+        // plan PR merges. Without a fallback, the swarm DAG view sees
+        // every deps[] array as empty during plan phase and can't draw
+        // any arrows. Build a name→id index over this spawn's
+        // workstreams and merge resolved DepsJson references into the
+        // returned deps[] list (deduped against the FK rows). Excludes
+        // cancelled / historic rows from the index so a tombstone with
+        // the same name as a live row doesn't get picked up — observed
+        // 2026-05-09 on failover-cluster:XRAFT where 7 live ws were
+        // resolved against the OLD `phase-server-assembly-and-client-sdk`
+        // tombstones instead of their live `…-internal-client` rebirths.
+        var nameToId = workstreams
+            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var depsByWs = deps
+            .GroupBy(d => d.WorkstreamId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => new HashSet<string>(g.Select(d => d.DependsOnId), StringComparer.Ordinal),
+                StringComparer.Ordinal);
+        foreach (var w in workstreams)
+        {
+            if (string.IsNullOrEmpty(w.DepsJson)) continue;
+            List<string>? titles;
+            try { titles = JsonSerializer.Deserialize<List<string>>(w.DepsJson); }
+            catch { continue; }
+            if (titles is null || titles.Count == 0) continue;
+
+            if (!depsByWs.TryGetValue(w.Id, out var resolved))
+            {
+                resolved = new HashSet<string>(StringComparer.Ordinal);
+                depsByWs[w.Id] = resolved;
+            }
+            foreach (var t in titles)
+            {
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                if (!nameToId.TryGetValue(t.Trim(), out var depId)) continue;
+                if (string.Equals(depId, w.Id, StringComparison.Ordinal)) continue;
+                resolved.Add(depId);
+            }
+        }
+
         // Per-workstream live runtime data: every deliverable in the
         // CrewStoryArtifactStrategy gen/eval loop is keyed on workstream.Id
         // (see CrewStoryArtifactStrategy.ProduceWorkstreamChangesAsync — the
@@ -435,10 +479,19 @@ public static class StoriesEndpoints
                 id = w.Id,
                 name = w.Name,
                 branch = w.Branch,
-                status = ResolveWorkstreamStatus(w.Id, baseStatus, deps, workstreams, db),
+                status = ResolveWorkstreamStatus(w.Id, baseStatus, depsByWs, workstreams),
                 cards = StoriesJsonHelpers.Deserialize(w.CardsJson),
                 prs = StoriesJsonHelpers.Deserialize(w.PrsJson),
-                deps = deps.Where(d => d.WorkstreamId == w.Id).Select(d => d.DependsOnId).ToArray(),
+                deps = depsByWs.TryGetValue(w.Id, out var resolvedDeps) ? resolvedDeps.ToArray() : Array.Empty<string>(),
+                // Phase 49 — surface phase + plan anchors so the swarm DAG view
+                // can group stage cards into collapsible phase containers and
+                // render the phase / stage labels per workstream without
+                // re-parsing the plan client-side. PhaseAnchor is the
+                // `phase-{slug}` prefix; PlanAnchor is the full
+                // `phase-{slug}/stage-{slug}` ref. Null on legacy rows that
+                // predate Phase 47Migration.
+                phaseAnchor = w.PhaseAnchor,
+                planAnchor = w.PlanAnchor,
                 // ── live runtime fields ──────────────────────────────────
                 agents = wsAgents,
                 iter = wsDeliverables.Count,
@@ -452,6 +505,11 @@ public static class StoriesEndpoints
                 ahead = w.Ahead,
                 behind = w.Behind,
                 unansweredQuestionCount = wsUnanswered,
+                // Phase 49 — surface the stall reason so the swarm-control
+                // tooltip can show why the stage entered triage (build
+                // gate, no-progress, non-pass verdict) without the
+                // operator having to drill into the Conversation tab.
+                stallReason = w.StallReason,
             };
         }).ToArray();
 
@@ -465,13 +523,11 @@ public static class StoriesEndpoints
     private static string ResolveWorkstreamStatus(
         string wsId,
         string baseStatus,
-        IReadOnlyList<WorkstreamDepRow> deps,
-        IReadOnlyList<WorkstreamRow> all,
-        ForgeDbContext db)
+        IReadOnlyDictionary<string, HashSet<string>> depsByWs,
+        IReadOnlyList<WorkstreamRow> all)
     {
         // 28.5 / 28.11 — surface "blocked" when a dependency PR is unmerged.
-        var depIds = deps.Where(d => d.WorkstreamId == wsId).Select(d => d.DependsOnId).ToArray();
-        if (depIds.Length == 0) return baseStatus;
+        if (!depsByWs.TryGetValue(wsId, out var depIds) || depIds.Count == 0) return baseStatus;
         foreach (var dep in depIds)
         {
             var depWs = all.FirstOrDefault(w => w.Id == dep);

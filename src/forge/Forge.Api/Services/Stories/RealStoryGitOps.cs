@@ -544,13 +544,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     /// <summary>
     /// Phase 45 follow-up — list repo-relative paths of files the agent
-    /// modified inside <paramref name="worktreePath"/>. Combines two
-    /// sources so we don't lose changes regardless of how the agent
-    /// chose to "save its work":
+    /// <summary>
+    /// Combine two views of "what the agent contributed":
     /// <list type="number">
     /// <item><c>git status --porcelain -z</c> — files the agent edited
     /// but didn't commit (the expected/intended path).</item>
-    /// <item><c>git diff --name-only origin/{branch}..HEAD</c> — files
+    /// <item><c>git diff --name-only origin/{ref}..HEAD</c> — files
     /// touched by commits the agent made itself via its <c>bash</c> /
     /// <c>run_command</c> tool but that haven't been pushed yet.
     /// Observed 2026-05-05 when the engineer prompt mentioned
@@ -558,13 +557,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// <c>git add -A &amp;&amp; git commit</c> too. Treating those as
     /// "no changes" was a false negative that halted impl phases.</item>
     /// </list>
-    /// Skips deletions (the orchestrator's <see cref="CommitFilesAsync"/>
+    ///
+    /// <para>Phase 49 follow-up — the reference for source #2 is now
+    /// caller-controlled. When <paramref name="baseBranch"/> is
+    /// non-empty, diff against <c>origin/{baseBranch}</c> (the merge
+    /// target — gives the cumulative scope of the PR). When null/empty,
+    /// fall back to <c>origin/{HEAD branch}</c> (the legacy "delta since
+    /// last published state" frame, suitable for per-iter no-progress
+    /// detection where we want the counter to reset on uncommitted edits
+    /// each iter rather than latching to "always non-zero" after the
+    /// agent's first self-commit). The post-pass commit path passes
+    /// <c>spawn.BaseBranch</c> so the workstream's contribution is
+    /// computed against the PR target, not against a stale workstream
+    /// remote (observed 2026-05-10 on failover-cluster:XRAFT, where
+    /// <c>origin/{ws-branch}</c> was pinned to the plan PR base instead
+    /// of <c>origin/main</c>).</para>
+    ///
+    /// <para>Skips deletions (the orchestrator's <see cref="CommitFilesAsync"/>
     /// dict contract can't express them) and path-traversal entries.
-    /// Returns an empty list when the worktree is clean AND the local
-    /// branch matches origin (or the upstream ref doesn't exist yet).
+    /// Returns an empty list when the worktree is clean AND the
+    /// reference ref doesn't exist or there is no committed delta.</para>
     /// </summary>
     public async Task<IReadOnlyList<string>> GetChangedFilesAsync(
-        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+        RepoRow? repo, string worktreePath, string? baseBranch = null, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
             return Array.Empty<string>();
@@ -616,24 +631,38 @@ public sealed class RealStoryGitOps : IStoryGitOps
             }
         }
 
-        // ── 2) Local commits ahead of origin/{branch} ───────────────────
-        // Resolve the branch from the worktree itself (no signature
-        // change needed at the IStoryGitOps level). If the worktree is
-        // detached or origin/{branch} doesn't exist yet (very-first
-        // workstream commit before the initial push), fall back to
-        // returning just the uncommitted set.
-        var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
-        if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut)) return ordered;
-        var branch = branchOut.Trim();
-        if (branch == "HEAD") return ordered; // detached
+        // ── 2) Local commits ahead of the reference ref ─────────────────
+        // Phase 49 — when baseBranch is supplied, diff against the merge
+        // target (origin/{baseBranch}). This is the conceptually correct
+        // frame for the post-pass commit decision: a workstream's
+        // contribution is what would land in the PR, which is HEAD's
+        // delta from the target it merges into — NOT the workstream's
+        // own remote tracking branch (which may be at an unrelated tip
+        // or missing entirely for a never-pushed branch). When
+        // baseBranch is null/empty, fall back to origin/{HEAD branch}
+        // for per-iter no-progress detection where we want the counter
+        // to track delta-since-last-publish, not cumulative-since-base.
+        string refToDiffAgainst;
+        if (!string.IsNullOrWhiteSpace(baseBranch))
+        {
+            refToDiffAgainst = $"origin/{baseBranch}";
+        }
+        else
+        {
+            var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
+            if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut)) return ordered;
+            var branch = branchOut.Trim();
+            if (branch == "HEAD") return ordered; // detached
+            refToDiffAgainst = $"origin/{branch}";
+        }
 
         var (refCode, _, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "rev-parse", "--verify", $"refs/remotes/origin/{branch}");
-        if (refCode != 0) return ordered; // upstream ref missing — nothing to diff against
+            worktreePath, ct, "rev-parse", "--verify", $"refs/remotes/{refToDiffAgainst}");
+        if (refCode != 0) return ordered; // reference ref missing — nothing to diff against
 
         var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "diff", "--name-only", "-z", $"origin/{branch}..HEAD");
+            worktreePath, ct, "diff", "--name-only", "-z", $"{refToDiffAgainst}..HEAD");
         if (diffCode != 0 || string.IsNullOrEmpty(diffOut)) return ordered;
 
         foreach (var entry in diffOut.Split('\0'))

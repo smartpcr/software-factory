@@ -17,12 +17,16 @@ using Xunit;
 /// Phase 47 — orchestrator-side regression tests for the workstream livelock.
 /// When a workstream's most-recent deliverable is a non-pass terminal verdict
 /// (<c>stalled</c> / <c>stalled-budget</c> / <c>reject</c>), the orchestrator
-/// must NOT re-spawn the gen↔eval loop; it must move the workstream to
-/// <c>Status="blocked"</c> so the operator can triage. Before this fix, the
-/// orchestrator's <c>DriveOneWorkstreamImplAsync</c> only special-cased
+/// must NOT re-spawn the gen↔eval loop; it must move the workstream to a
+/// sticky operator-triage state so the operator can triage. Before this fix,
+/// the orchestrator's <c>DriveOneWorkstreamImplAsync</c> only special-cased
 /// <c>pass</c> and fell through to <c>ProduceWorkstreamChangesAsync</c> for
 /// every other verdict, which combined with the <see cref="DeliverableLoop"/>
 /// resume bug to produce 139 deliverables / $9,825 burn on a single workstream.
+///
+/// <para>Phase 49 — the triage state is now <c>"stalled"</c> (was
+/// <c>"blocked"</c> before the split). <c>"blocked"</c> is reserved
+/// exclusively for "waiting on upstream dependency".</para>
 /// </summary>
 public class Phase47BlockedStatusTests
 {
@@ -110,14 +114,22 @@ public class Phase47BlockedStatusTests
         return (await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == workstreamId)).Status;
     }
 
+    private static async Task<string?> ReadWorkstreamStallReasonAsync(ForgeWebApplicationFactory f, string workstreamId)
+    {
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        return (await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == workstreamId)).StallReason;
+    }
+
     /// <summary>
     /// The headline regression: a workstream whose latest deliverable is
     /// <c>stalled</c> must NOT re-enter the gen↔eval loop on the next
-    /// orchestrator drive. The orchestrator flips it to <c>blocked</c> and
-    /// stops touching it until the operator clicks Restart.
+    /// orchestrator drive. The orchestrator flips it to <c>stalled</c> status
+    /// (Phase 49 — was previously <c>blocked</c>) and stops touching it
+    /// until the operator clicks Restart.
     /// </summary>
     [Fact]
-    public async Task DriveImplement_With_Stalled_Last_Deliverable_Marks_Blocked()
+    public async Task DriveImplement_With_Stalled_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
         try
@@ -130,7 +142,8 @@ public class Phase47BlockedStatusTests
             var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
             await orchestrator.DriveAsync(storyId);
 
-            Assert.Equal("blocked", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.False(string.IsNullOrEmpty(await ReadWorkstreamStallReasonAsync(f, wsId)));
         }
         finally { f.Dispose(); }
     }
@@ -141,7 +154,7 @@ public class Phase47BlockedStatusTests
     /// raise budget via Restart.
     /// </summary>
     [Fact]
-    public async Task DriveImplement_With_StalledBudget_Last_Deliverable_Marks_Blocked()
+    public async Task DriveImplement_With_StalledBudget_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
         try
@@ -154,7 +167,8 @@ public class Phase47BlockedStatusTests
             var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
             await orchestrator.DriveAsync(storyId);
 
-            Assert.Equal("blocked", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Contains("stalled-budget", await ReadWorkstreamStallReasonAsync(f, wsId) ?? string.Empty);
         }
         finally { f.Dispose(); }
     }
@@ -165,7 +179,7 @@ public class Phase47BlockedStatusTests
     /// another reject. Block the workstream.
     /// </summary>
     [Fact]
-    public async Task DriveImplement_With_Reject_Last_Deliverable_Marks_Blocked()
+    public async Task DriveImplement_With_Reject_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
         try
@@ -178,20 +192,21 @@ public class Phase47BlockedStatusTests
             var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
             await orchestrator.DriveAsync(storyId);
 
-            Assert.Equal("blocked", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Contains("reject", await ReadWorkstreamStallReasonAsync(f, wsId) ?? string.Empty);
         }
         finally { f.Dispose(); }
     }
 
     /// <summary>
-    /// Once a workstream is <c>blocked</c>, subsequent drives must skip it
+    /// Once a workstream is <c>stalled</c>, subsequent drives must skip it
     /// — the in-flight + failure-backoff guards never fire because the
     /// status filter at the top of <c>DriveImplementAsync</c> short-circuits
-    /// first. Status remains <c>blocked</c> (no flip back to <c>active</c>),
+    /// first. Status remains <c>stalled</c> (no flip back to <c>active</c>),
     /// no new deliverables, no spawn-started events.
     /// </summary>
     [Fact]
-    public async Task DriveImplement_Skips_Blocked_Workstream_On_Subsequent_Drives()
+    public async Task DriveImplement_Skips_Stalled_Workstream_On_Subsequent_Drives()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
         try
@@ -205,7 +220,7 @@ public class Phase47BlockedStatusTests
                 var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
                 await orchestrator.DriveAsync(storyId);
             }
-            Assert.Equal("blocked", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
 
             int delivBefore;
             using (var scope = f.Services.CreateScope())
@@ -214,7 +229,7 @@ public class Phase47BlockedStatusTests
                 delivBefore = await db.Deliverables.CountAsync(d => d.WorkItemId == wsId);
             }
 
-            // Drive again — blocked must be sticky.
+            // Drive again — stalled must be sticky.
             using (var scope = f.Services.CreateScope())
             {
                 var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
@@ -222,7 +237,7 @@ public class Phase47BlockedStatusTests
                 await orchestrator.DriveAsync(storyId);
             }
 
-            Assert.Equal("blocked", await ReadWorkstreamStatusAsync(f, wsId));
+            Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
 
             using (var scope = f.Services.CreateScope())
             {
@@ -235,12 +250,12 @@ public class Phase47BlockedStatusTests
     }
 
     /// <summary>
-    /// A <c>pass</c>-verdict workstream is NOT routed to blocked — that path
+    /// A <c>pass</c>-verdict workstream is NOT routed to stalled — that path
     /// is only for non-pass terminals. Pass workstreams continue to the
     /// commit + PR + review flow as before.
     /// </summary>
     [Fact]
-    public async Task DriveImplement_With_Pass_Last_Deliverable_Does_Not_Mark_Blocked()
+    public async Task DriveImplement_With_Pass_Last_Deliverable_Does_Not_Mark_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
         try
@@ -254,10 +269,10 @@ public class Phase47BlockedStatusTests
             await orchestrator.DriveAsync(storyId);
 
             // Pass workstreams advance to "review" via the commit+PR flow,
-            // not to "blocked". The exact terminal status depends on the
-            // in-memory git ops + provider, but it MUST NOT be "blocked".
+            // not to "stalled". The exact terminal status depends on the
+            // in-memory git ops + provider, but it MUST NOT be "stalled".
             var status = await ReadWorkstreamStatusAsync(f, wsId);
-            Assert.NotEqual("blocked", status);
+            Assert.NotEqual("stalled", status);
         }
         finally { f.Dispose(); }
     }

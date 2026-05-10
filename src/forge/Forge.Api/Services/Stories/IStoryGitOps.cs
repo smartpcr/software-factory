@@ -96,14 +96,34 @@ public interface IStoryGitOps
 
     /// <summary>
     /// Phase 45 follow-up — list repo-relative paths of files the agent
-    /// touched in <paramref name="worktreePath"/> but hasn't yet committed.
-    /// Includes added / modified / renamed paths (parsed from
-    /// <c>git status --porcelain</c>); deleted paths are omitted because the
-    /// orchestrator's <see cref="CommitFilesAsync"/> dictionary contract
-    /// can't represent deletions today. Used by the workstream impl
-    /// strategy after the engineer agent edits files in place inside the
-    /// worktree, so the orchestrator gets a real-path list to commit
-    /// without needing to scan the entire repo.
+    /// touched in <paramref name="worktreePath"/> but hasn't yet committed,
+    /// PLUS files contributed by local commits that aren't yet on the
+    /// reference branch. Includes added / modified / renamed paths
+    /// (parsed from <c>git status --porcelain</c>); deleted paths are
+    /// omitted because the orchestrator's <see cref="CommitFilesAsync"/>
+    /// dictionary contract can't represent deletions today.
+    ///
+    /// <para>Phase 49 follow-up — when <paramref name="baseBranch"/> is
+    /// supplied, the committed-but-unpushed source diffs against
+    /// <c>origin/{baseBranch}</c> instead of <c>origin/{HEAD branch}</c>.
+    /// This is the correct frame for the post-pass commit decision: the
+    /// workstream's contribution to the PR is the cumulative diff
+    /// against the merge target, not against the workstream's own
+    /// remote tracking branch (which may be at a stale state, missing
+    /// entirely for a never-pushed branch, or — as observed
+    /// 2026-05-10 on failover-cluster:XRAFT — pinned to an upstream
+    /// shared branch like the plan PR base, masking the agent's
+    /// commits from the diff scope).</para>
+    ///
+    /// <para>When <paramref name="baseBranch"/> is null/empty, falls back
+    /// to the legacy <c>origin/{HEAD branch}</c> diff so per-iter
+    /// no-progress detection still resets on uncommitted edits each
+    /// iter without permanently latching to "always non-zero" after the
+    /// agent's first self-commit.</para>
     /// </summary>
-    Task<IReadOnlyList<string>> GetChangedFilesAsync(RepoRow? repo, string worktreePath, CancellationToken ct = default);
+    Task<IReadOnlyList<string>> GetChangedFilesAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string? baseBranch = null,
+        CancellationToken ct = default);
 }

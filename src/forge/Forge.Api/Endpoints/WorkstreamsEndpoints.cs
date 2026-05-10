@@ -577,6 +577,11 @@ public static class WorkstreamsEndpoints
         ws.Behind = 0;
         ws.Conflicts = 0;
         ws.AgentsJson = "[]";
+        // Phase 49 — clear the operator-triage reason when leaving the
+        // stalled state. Restart is the explicit unblock path; any prior
+        // stall reason (build failure, no-progress, non-pass verdict) is
+        // no longer applicable once the worktree + deliverables are wiped.
+        ws.StallReason = null;
 
         // Reset the work-item execution status so the orchestrator can
         // re-assign agents and re-claim the workstream.

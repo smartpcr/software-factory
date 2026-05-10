@@ -92,32 +92,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 This file is a LIVEDOC — it tracks implementation progress with checkboxes.
                 Operators tick boxes as work lands; the doc is the source of truth for "what's done".
 
-                Structure MUST follow this hierarchy EXACTLY:
+                Structure MUST follow this hierarchy EXACTLY (Phase 46 layout):
 
-                # Implementation Plan — {story title}
+                ---
+                title: "{story title}"
+                storyId: "{WI-id}"
+                ---
 
-                ## Phase N: {phase name}
+                # Phase 1: {phase name}
 
-                ### Stage N.M: {stage name}
+                ## Dependencies
+                - _none — start phase_
 
-                #### Implementation Steps
+                ## Stage 1.1: {stage name}
+
+                ### Implementation Steps
                 - [ ] Step description (concrete, actionable — one PR-sized unit of work)
                 - [ ] Another step
-                - …
 
-                #### Test Scenarios
+                ### Dependencies
+                - _none — start stage_
+
+                ### Test Scenarios
                 - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
                 - [ ] Scenario: {name} — …
 
+                ## Stage 1.2: {stage name}
+
+                ### Implementation Steps
+                - [ ] …
+
+                ### Dependencies
+                - phase-{phase-1-name-slug}/stage-{stage-1-1-name-slug}
+
+                ### Test Scenarios
+                - [ ] …
+
+                # Phase 2: {phase name}
+
+                ## Dependencies
+                - phase-{phase-1-name-slug}
+
+                ## Stage 2.1: …
+
                 Hard requirements (the evaluator will refuse pass if any are violated):
-                - Each Phase MUST contain Stage subsections (`### Stage N.M: …`); no "naked" steps directly under a phase.
-                - Each Stage MUST contain BOTH an `#### Implementation Steps` block AND a `#### Test Scenarios` block.
-                - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. (Spec cap: forge_implementation.md §16.5 Plan-tree validator.)
-                - Each step changes ≤ 20 files in the eventual PR.
+                - Top-level YAML front-matter (`title:`, `storyId:`) MUST be present so the doc rendering treats phases as root sections.
+                - Each Phase is an H1 (`# Phase N: …`); Stages are H2 (`## Stage N.M: …`); subsections are H3 (`### …`).
+                - Each Phase MUST contain a `## Dependencies` section directly under the H1 heading, before any stage. An empty body MUST read `- _none — start phase_`.
+                - Each Stage MUST contain THREE subsections in this exact order: `### Implementation Steps`, `### Dependencies`, `### Test Scenarios`.
+                - Dep refs use anchor form, NOT titles. Stage anchor: `phase-{phase-name-slug}/stage-{stage-name-slug}` (no phase or stage numbers — slugs are derived from the heading name only). Phase anchor: `phase-{phase-name-slug}`.
+                - The `### Dependencies` body MUST list one bullet per upstream stage anchor (e.g. `- phase-foo/stage-bar`). An empty body MUST read `- _none — start stage_`.
+                - Phase deps may name a phase anchor (e.g. `- phase-foo`); the orchestrator expands phase deps as "every stage in this phase depends on every stage in the upstream phase".
+                - Stage TITLES must be unique across the entire plan; a duplicate title is rejected as `plan.duplicate_stage_title`.
+                - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. Each step changes ≤ 20 files in the eventual PR.
                 - Every Implementation Step is a checkbox `- [ ]` (not bullets, not numbered).
-                - Every Test Scenario is a checkbox `- [ ]` (not bullets, not numbered) and is verifiable pass/fail (not subjective).
+                - Every Test Scenario is a checkbox `- [ ]` and is verifiable pass/fail (not subjective).
                 - Include at least 2 test scenarios per Stage.
-                - Order phases so each builds on the previous; call out hard sequencing dependencies and parallel-safe items inline.
                 - Each Implementation Step must be small enough for a single agent iteration to complete.
                 """,
                 $"{docDir}/implementation-plan.md"),
@@ -154,18 +184,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // so architect agents can read them with their file tools.
         var attachmentPaths = await CopyAttachmentsToWorktreeAsync(spawn, worktreePath, ct);
 
-        // ── Assign different generator agents per doc (round-robin) ────
-        // Load all available architect crew agents so each doc gets a
-        // distinct generator. This improves diversity — four agents writing
-        // in parallel each bring a different perspective, and the evaluator
-        // catches cross-doc inconsistencies (siblings live at their real
-        // repo paths in the shared worktree, so each agent's tools see them).
-        var generatorAgentIds = await this.LoadArchitectRosterAsync(specs.Length, ct);
+        // ── Assign different generator + evaluator agents per doc (Phase 47) ──
+        // Load both rosters so each of the 4 plan docs runs with a
+        // distinct (generator, evaluator) pair instead of sharing the
+        // crew's DefaultEvaluatorAgentId. The four invocations run via
+        // Task.WhenAll below; with shared evaluators they'd serialise
+        // behind one agent (operator-reported on failover-cluster:XRAFT
+        // 2026-05-09).
+        var (generatorAgentIds, evaluatorAgentIds) =
+            await this.LoadArchitectAndEvaluatorRostersAsync(specs.Length, ct);
 
         var tasks = specs.Select((spec, idx) =>
             this.ProducePlanFileAsync(
                 spawn, story, spec, budget, forceResume,
                 generatorAgentOverride: generatorAgentIds.Count > idx ? generatorAgentIds[idx] : null,
+                evaluatorAgentOverride: evaluatorAgentIds.Count > idx ? evaluatorAgentIds[idx] : null,
                 siblingSpecs: specs.Where((_, i) => i != idx).Select(s => s.RepoPath).ToArray(),
                 worktreePath: worktreePath,
                 repo: repo,
@@ -198,43 +231,126 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 49 follow-up — resolve the build command the build gates
+    /// (per-iter and post-pass) should run for this workstream. The
+    /// gates were originally hard-coded to <c>dotnet build</c> at the
+    /// call site (<see cref="StoryBuildRunner.RunBuildAsync"/> defaults
+    /// to it when <c>buildCommand</c> is null), so a Rust workspace
+    /// (Cargo.toml at root) would exit with code 1 in ~200 ms with no
+    /// parsed errors and route the workstream to <c>blocked</c> even
+    /// though the agent's diff was scored at pass.
+    ///
+    /// <para>Resolution order:
+    /// <list type="number">
+    ///   <item>Operator override on the repo row (<see cref="RepoRow.BuildCommand"/>) wins.</item>
+    ///   <item>Else <see cref="BuildSystemDetector.Detect"/> on the worktree
+    ///         (which is structurally identical to the repo's CloneRoot).
+    ///         Ambiguous detections (multiple .sln files, unsupported
+    ///         python build) collapse to null so we don't run an
+    ///         arbitrary build that may false-pass or false-fail.</item>
+    ///   <item>Returns null when no build system can be confidently
+    ///         identified — caller skips the gate with telemetry rather
+    ///         than running <c>dotnet build</c> against an unknown
+    ///         workspace.</item>
+    /// </list></para>
+    /// </summary>
+    private static string? ResolveBuildCommand(RepoRow? repo, string workspace)
+    {
+        if (repo is not null && !string.IsNullOrWhiteSpace(repo.BuildCommand))
+        {
+            return repo.BuildCommand;
+        }
+        var detected = BuildSystemDetector.Detect(workspace);
+        if (detected.Ambiguous)
+        {
+            return null;
+        }
+        return string.IsNullOrWhiteSpace(detected.BuildCommand) ? null : detected.BuildCommand;
+    }
+
+    /// <summary>
     /// Loads distinct architect crew agents for round-robin assignment.
     /// Returns up to <paramref name="count"/> agent IDs from the day-shift
     /// architect crew, excluding the evaluator default so gen ≠ eval.
     /// </summary>
     private async Task<IReadOnlyList<string>> LoadArchitectRosterAsync(int count, CancellationToken ct)
     {
+        var (gens, _) = await this.LoadArchitectAndEvaluatorRostersAsync(count, ct);
+        return gens;
+    }
+
+    /// <summary>
+    /// Phase 47 — load TWO distinct rosters (generators + evaluators) so
+    /// the parallel plan-doc fan-out (4 docs running concurrently via
+    /// <c>Task.WhenAll</c>) can assign a different (generator, evaluator)
+    /// pair to each doc. Without this, every doc's evaluator side is
+    /// pinned to <c>crew.DefaultEvaluatorAgentId</c> and the parallel
+    /// invocations serialise behind a single agent.
+    ///
+    /// <para>Disjointness — generator and evaluator rosters do NOT
+    /// overlap. The default evaluator agent leads the evaluator roster;
+    /// remaining evaluator-side seats come from agents not used in the
+    /// generator roster. When the crew is too small to fill both
+    /// rosters, the evaluator roster falls back to the default
+    /// evaluator alone (and parallel docs end up sharing it again).</para>
+    /// </summary>
+    private async Task<(IReadOnlyList<string> Generators, IReadOnlyList<string> Evaluators)>
+        LoadArchitectAndEvaluatorRostersAsync(int count, CancellationToken ct)
+    {
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
         var crew = await db.Crews.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == "crew-arch", ct);
-        if (crew is null) return Array.Empty<string>();
+        if (crew is null)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>());
+        }
 
-        var evalAgentId = crew.DefaultEvaluatorAgentId;
+        var defaultGen = crew.DefaultGeneratorAgentId;
+        var defaultEval = crew.DefaultEvaluatorAgentId;
 
-        // All agents in the architect day crew, excluding the evaluator
-        var agents = await db.Agents.AsNoTracking()
+        var allAgents = await db.Agents.AsNoTracking()
             .Where(a => a.CrewId == "crew-arch")
             .OrderBy(a => a.Sort)
             .Select(a => a.Id)
             .ToListAsync(ct);
 
-        // Exclude the evaluator so we don't accidentally pair gen=eval
-        if (!string.IsNullOrEmpty(evalAgentId))
-        {
-            agents = agents.Where(a => !string.Equals(a, evalAgentId, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
-
-        // Put the crew default generator first, then round-robin the rest
-        var defaultGen = crew.DefaultGeneratorAgentId;
+        // Generator roster: default generator first, then everyone else
+        // (minus the default evaluator so the two rosters don't overlap
+        // by default).
+        var generators = allAgents
+            .Where(a => string.IsNullOrEmpty(defaultEval)
+                || !string.Equals(a, defaultEval, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         if (!string.IsNullOrEmpty(defaultGen))
         {
-            agents.Remove(defaultGen);
-            agents.Insert(0, defaultGen);
+            generators.Remove(defaultGen);
+            generators.Insert(0, defaultGen);
+        }
+        var generatorPicks = generators.Take(count).ToList();
+        var generatorSet = new HashSet<string>(generatorPicks, StringComparer.OrdinalIgnoreCase);
+
+        // Evaluator roster: default evaluator first, then any remaining
+        // architect agents not already assigned as generators. When the
+        // crew is too small to fill both, the evaluator side ends up
+        // shorter than count; the caller falls back to the default
+        // evaluator for the over-run docs (they share, which is the
+        // pre-Phase-47 behaviour and not a regression).
+        var evaluators = new List<string>();
+        if (!string.IsNullOrEmpty(defaultEval))
+        {
+            evaluators.Add(defaultEval);
+        }
+        foreach (var a in allAgents)
+        {
+            if (generatorSet.Contains(a)) continue;
+            if (evaluators.Contains(a, StringComparer.OrdinalIgnoreCase)) continue;
+            evaluators.Add(a);
+            if (evaluators.Count >= count) break;
         }
 
-        return agents.Take(count).ToList();
+        return (generatorPicks, evaluators);
     }
 
     private async Task<string> ProducePlanFileAsync(
@@ -242,6 +358,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         (string FileName, string Brief, string RepoPath) spec,
         TimeSpan budget, bool forceResume,
         string? generatorAgentOverride,
+        string? evaluatorAgentOverride,
         string[] siblingSpecs,
         string worktreePath,
         RepoRow? repo,
@@ -287,29 +404,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
 
-        // Resume case — a previous tick's architect already wrote this file
-        // and committed it to the branch. Skip re-invoking the LLM unless
-        // forceResume is set OR the doc has no deliverables (PENDING — the
-        // previous run's loop was cancelled/timed out before the evaluator
-        // could score, so the file exists but the doc needs to be scored).
-        if (!forceResume && File.Exists(diskPath))
-        {
-            using var checkScope = this.scopeFactory.CreateScope();
-            var checkDb = checkScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            var hasDeliverables = await checkDb.Deliverables.AsNoTracking()
-                .AnyAsync(d => d.WorkItemId == docWorkItemId, ct);
-            if (hasDeliverables)
-            {
-                var existing = await File.ReadAllTextAsync(diskPath, ct);
-                if (!string.IsNullOrWhiteSpace(existing))
-                {
-                    this.logger?.LogInformation(
-                        "Plan file '{File}' already in worktree ({Bytes} bytes) with deliverables; skipping architect invocation.",
-                        spec.FileName, existing.Length);
-                    return existing;
-                }
-            }
-        }
+        // Resume case — historical guard from before the Phase 45 pass-verdict
+        // check above. The pre-Phase-45 logic skipped the gen-eval loop whenever
+        // the file existed AND any deliverable existed, regardless of whether
+        // the latest verdict was a terminal `pass`. That misfired on the common
+        // resume path: process restart (or in-process loop crash) mid-iteration
+        // leaves the file on disk + N `iterate`-verdict deliverables, and the
+        // 15s SpawnDependencyScheduler tick re-enters DrivePlanAsync →
+        // ProducePlanArtifactsAsync → here. With the old `hasDeliverables`
+        // short-circuit the doc was silently abandoned (observed
+        // 2026-05-09 on failover-cluster:XRAFT architecture.md iter 7 — the
+        // generator started, the process was restarted, and no further iters
+        // ever ran because every subsequent tick returned the cached file
+        // content). The Phase 45 guard above now correctly handles the
+        // already-passed case, so we no longer need a second short-circuit
+        // here. Falling through means the gen-eval loop's own resume logic
+        // (DeliverableLoop picks up at the next iter via lastPersisted.Iter)
+        // takes over and the doc continues toward `pass`.
 
         // Phase 43 — build attachment prompt section if the story has uploaded reference docs.
         var attachmentPromptSection = BuildAttachmentPromptSection(spawn);
@@ -508,6 +619,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             budget: docBudget,
             storyPoints: docPoints,
             generatorAgentOverride: generatorAgentOverride,
+            evaluatorAgentOverride: evaluatorAgentOverride,
             // Phase 41 — revoke shell access. The architect's job is file I/O.
             disallowedTools: ArchitectDisallowedTools,
             // Phase 41 — restore from snapshot if the generator destroys the file.
@@ -600,8 +712,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var allKeys = specs.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
         var docIndex = allKeys.IndexOf(key);
         if (docIndex < 0) docIndex = 0;
-        var roster = await this.LoadArchitectRosterAsync(allKeys.Count, ct);
-        var generatorOverride = roster.Count > docIndex ? roster[docIndex] : null;
+        // Phase 47 — load BOTH rosters (gen + eval) so a single-doc resume
+        // doesn't accidentally re-pin the original (potentially still busy)
+        // evaluator. The doc keeps its position in both rosters via
+        // docIndex so a Restart of doc-3 picks the same gen+eval pair the
+        // full run would have assigned to doc-3.
+        var (genRoster, evalRoster) = await this.LoadArchitectAndEvaluatorRostersAsync(allKeys.Count, ct);
+        var generatorOverride = genRoster.Count > docIndex ? genRoster[docIndex] : null;
+        var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
 
         // Phase 42 — same git-worktree plumbing as the full plan run.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
@@ -618,6 +736,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume: true,
             generatorAgentOverride: generatorOverride,
+            evaluatorAgentOverride: evaluatorOverride,
             siblingSpecs: siblingPaths,
             worktreePath: worktreePath,
             repo: repo,
@@ -664,29 +783,55 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         if (stages.Count > 0)
         {
-            // Plan-derived path — deterministic. Each Stage becomes one
-            // workstream; deps stay empty by default (the plan's stated
-            // sequencing is captured in stage ordering, not as cross-stage
-            // dependencies, at v0). The reconciler can only join stages back
-            // to rows when the title matches what the plan parser produced,
-            // so use the canonical name verbatim.
-            return stages.Select(s => new DecompositionWorkstream(
-                Title: s.Name,
-                Description: s.Steps.Count == 0
-                    ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
-                    : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
-                AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
-                Deps: (IReadOnlyList<string>)Array.Empty<string>(),
-                Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
-                Timeline: string.Empty,
-                EstimatedEffort: string.Empty,
-                PlanAnchor: s.Anchor,
-                PlanContentHash: s.ContentHash)).ToList();
+            // Phase 46 — refuse decomposition when the parser surfaced a
+            // structural violation (subsection order, duplicate title).
+            // The orchestrator's exception handler captures this in the
+            // spawn's LastError so the operator sees the concrete code.
+            if (canonical.ParseErrors.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Plan refused at decomposition: {string.Join(", ", canonical.ParseErrors)}");
+            }
+
+            // Phase 46 — resolve every stage's dep refs (explicit stage
+            // anchors + phase-anchor cross-product expansion + title
+            // fallback) into a flat set of upstream titles. Cycles in the
+            // effective DAG throw plan.dep_cycle, surfaced by the caller
+            // as the spawn's LastError.
+            var resolved = DecompositionDepsResolver.ResolveAll(canonical);
+
+            return stages.Select(s =>
+            {
+                resolved.TryGetValue(s.Anchor, out var rd);
+                var deps = rd?.Deps ?? Array.Empty<string>();
+                var unresolved = rd?.UnresolvedDeps ?? Array.Empty<string>();
+                // Phase 46 — cache the phase-{slug} prefix so the swarm
+                // DAG can group cards without re-parsing the plan.
+                var slash = s.Anchor.IndexOf('/');
+                var phaseAnchor = slash > 0 ? s.Anchor[..slash] : s.Anchor;
+
+                return new DecompositionWorkstream(
+                    Title: s.Name,
+                    Description: s.Steps.Count == 0
+                        ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
+                        : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
+                    AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
+                    Deps: deps,
+                    Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
+                    Timeline: string.Empty,
+                    EstimatedEffort: string.Empty,
+                    PlanAnchor: s.Anchor,
+                    PlanContentHash: s.ContentHash,
+                    PhaseAnchor: phaseAnchor,
+                    UnresolvedDeps: unresolved.Count == 0 ? null : unresolved);
+            }).ToList();
         }
 
         // Fallback — plan file is missing or unparseable. Keep the original
         // LLM prompt path so the orchestrator still makes forward progress
         // (the reconciler will re-align the rows once the plan lands).
+        // Phase 46 — artefact is workstreams.yaml; legacy workstreams.json
+        // files in the same workspace are migrated in place on first read.
         var workspace = this.PrepareWorkspace(spawn.Id, "decompose");
         var prompt = $$"""
             You are the Architect agent decomposing story `{{spawn.StoryId}}`
@@ -706,20 +851,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## How to deliver
             Use your filesystem tools to write a SINGLE file named
-            `workstreams.json` inside your working directory. Its content must
-            be valid JSON conforming exactly to this schema:
+            `workstreams.yaml` inside your working directory. Its content must
+            be a YAML sequence of mappings conforming exactly to this schema
+            (camelCase keys, no nested objects beyond the top-level array):
 
-            [
-              {
-                "title": "short imperative title",
-                "description": "1-3 sentences of scope",
-                "acceptanceCriteria": ["bullet", "..."],
-                "deps": ["title of upstream workstream", "..."],
-                "deliverables": ["file or artifact", "..."],
-                "timeline": "e.g. day 1-2",
-                "estimatedEffort": "e.g. S | M | L or hours"
-              }
-            ]
+            - title: "short imperative title"
+              description: "1-3 sentences of scope"
+              acceptanceCriteria:
+                - "bullet"
+              deps:
+                - "title of upstream workstream"
+              deliverables:
+                - "file or artifact"
+              timeline: "e.g. day 1-2"
+              estimatedEffort: "e.g. S | M | L or hours"
 
             Do NOT write any other files. Do NOT create subdirectories. Reply
             `DONE` after writing the file and stop.
@@ -728,16 +873,27 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await this.InvokeAsync("Architect", spawn.Id, "decompose", prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "decompose"), ct);
 
-        var diskPath = Path.Combine(workspace, "workstreams.json");
-        if (!File.Exists(diskPath))
+        var yamlPath = Path.Combine(workspace, "workstreams.yaml");
+        var legacyJsonPath = Path.Combine(workspace, "workstreams.json");
+
+        // Phase 46 — legacy migration. If the architect (or a previous run)
+        // wrote workstreams.json, read it once, write the YAML equivalent
+        // alongside, and use that going forward. Idempotent: a subsequent
+        // run sees the YAML and skips JSON entirely.
+        if (!File.Exists(yamlPath) && File.Exists(legacyJsonPath))
+        {
+            await MigrateLegacyJsonToYamlAsync(legacyJsonPath, yamlPath, spawn.Id, ct);
+        }
+
+        if (!File.Exists(yamlPath))
         {
             throw new InvalidOperationException(
-                $"Architect did not write workstreams.json. Workspace: {workspace}");
+                $"Architect did not write workstreams.yaml. Workspace: {workspace}");
         }
-        var json = await File.ReadAllTextAsync(diskPath, ct);
+        var yamlText = await File.ReadAllTextAsync(yamlPath, ct);
         try
         {
-            var rows = JsonSerializer.Deserialize<List<DecomposeJsonRow>>(json, JsonOpts);
+            var rows = DecompositionYamlSerializer.Deserialize(yamlText);
             if (rows is null || rows.Count == 0)
             {
                 throw new InvalidOperationException("Architect produced an empty decomposition.");
@@ -751,10 +907,52 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Timeline: r.Timeline ?? string.Empty,
                 EstimatedEffort: r.EstimatedEffort ?? string.Empty)).ToList();
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is YamlDotNet.Core.YamlException or InvalidOperationException)
         {
             throw new InvalidOperationException(
-                $"Architect workstreams.json failed to parse: {ex.Message}. Workspace: {workspace}", ex);
+                $"Architect workstreams.yaml failed to parse: {ex.Message}. Workspace: {workspace}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Phase 46 — read a legacy <c>workstreams.json</c> and emit the
+    /// equivalent <c>workstreams.yaml</c>. Records an audit row so the
+    /// migration is visible in <c>/audit</c>. Best-effort: a parse
+    /// failure leaves both files in place and the caller throws on the
+    /// missing YAML check.
+    /// </summary>
+    private async Task MigrateLegacyJsonToYamlAsync(
+        string legacyJsonPath, string yamlPath, string spawnId, CancellationToken ct)
+    {
+        try
+        {
+            var json = await File.ReadAllTextAsync(legacyJsonPath, ct);
+            var rows = JsonSerializer.Deserialize<List<DecomposeJsonRow>>(json, JsonOpts);
+            if (rows is null || rows.Count == 0) return;
+
+            var yaml = DecompositionYamlSerializer.Serialize(rows);
+            await File.WriteAllTextAsync(yamlPath, yaml, ct);
+
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            db.Audit.Add(new AuditRow
+            {
+                At = DateTimeOffset.UtcNow,
+                User = "system",
+                Method = "MIGRATE",
+                Path = $"/spawn/{spawnId}/decompose/migrate-workstreams-yaml",
+                Status = 200,
+                RequestBodySnippet = JsonSerializer.Serialize(
+                    new { spawnId, rowCount = rows.Count, legacyJsonPath },
+                    JsonOpts),
+            });
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "Phase 46 — failed to migrate legacy workstreams.json at {Path}; the YAML check that follows will throw if the architect didn't write the YAML.",
+                legacyJsonPath);
         }
     }
 
@@ -886,6 +1084,40 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             the previous version of this prompt did that and the changes
             never landed against the real codebase. Edit real files at
             their real paths.
+
+            ## DO NOT DELETE PRODUCTION CODE
+            Files outside this workstream's stated targets MUST NOT be
+            deleted. Forge enforces a hard `dotnet build` gate after every
+            iteration: if your diff fails to compile (including breaks
+            caused by removing types that other code references) the
+            workstream is moved to `blocked` and the operator must triage.
+            Three consecutive broken-build iters trips the gate early.
+
+            Specifically:
+              - DO NOT use `Remove-Item`, `rm`, `del`, `git rm`, or any
+                tool that removes files under `src/`, `src/ast/`, or any
+                production-code path unless the workstream brief
+                **explicitly** says to delete those files.
+              - If you believe an existing file is in your way, raise it
+                as an Open Question at the end of your output and stop —
+                do NOT act unilaterally.
+              - For *integration-test* / *e2e-test* / *qa-test* / *test*
+                workstreams (this one's name contains those words if so),
+                your edits should land **primarily under the test project**
+                (e.g. `src/CodeIntelligence.IntegrationTests/`,
+                `src/*.UnitTests/`, `src/*.IntegrationTests/`). Refactoring
+                production code under `src/ast/` or similar to make a test
+                pass is out of scope — propose it as a follow-up workstream
+                via Open Questions.
+              - The build gate applies to ALL workstreams, not just test
+                stages: every iter's diff must compile.
+
+            ## You MUST verify your work compiles before claiming DONE
+            Before replying `DONE`, run `dotnet build --nologo --verbosity minimal`
+            from the worktree root and confirm exit 0. If the build fails,
+            FIX it before responding — do not claim DONE on broken code.
+            The Forge build gate will reject and block the workstream
+            otherwise.
 
             ## Don't run git yourself
             DO NOT run `git add`, `git commit`, `git push`, `git stash`,
@@ -1028,6 +1260,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             workspace: workspace,
             budget: BudgetForPhase(wsPoints, "impl"),
             storyPoints: wsPoints,
+            // Phase 49 — pass the resolved build command so the per-iter
+            // gate runs the right tool for the repo's ecosystem (cargo /
+            // npm / go / mvn / dotnet) instead of always invoking
+            // `dotnet build`. Null = no detectable build system, gate
+            // is skipped per-iter (mirrors the post-pass skip).
+            buildCommand: ResolveBuildCommand(repo, workspace),
             ct: ct);
 
         // Phase 45 follow-up — collect only files the agent actually changed
@@ -1036,11 +1274,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // its REAL repo-relative path. The orchestrator's `CommitFilesAsync`
         // re-materialises the same content (idempotent since files already
         // live in the worktree) and produces a single commit.
-        var changedPaths = await this.git.GetChangedFilesAsync(repo, workspace, ct);
+        // Phase 49 — diff against the merge target (spawn.BaseBranch)
+        // instead of origin/{ws-branch}. The workstream's contribution
+        // to the PR is the cumulative delta from the branch it merges
+        // into, not from its own remote tracking ref (which may be
+        // pinned to an unrelated upstream like the plan PR base, as
+        // observed on failover-cluster:XRAFT 2026-05-10 where the
+        // ws-branch's origin shadowed the agent's commit from the
+        // diff scope).
+        var changedPaths = await this.git.GetChangedFilesAsync(
+            repo, workspace, baseBranch: baseBranch, ct: ct);
         if (changedPaths.Count == 0)
         {
             throw new InvalidOperationException(
-                $"Engineer produced no file changes for workstream {workstream.Id}. Worktree: {workspace}. " +
+                $"Engineer produced no file changes for workstream {workstream.Id}. Worktree: {workspace}, base: {baseBranch}. " +
                 $"The agent finished without editing any files in place — check the transcript for tool-call activity.");
         }
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1055,6 +1302,81 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException(
                 $"Engineer changed {changedPaths.Count} path(s) but none were readable for workstream {workstream.Id}.");
         }
+
+        // Phase 47e — post-pass build gate. The gen↔eval loop returned a
+        // diff the evaluator scored; that score does NOT prove the diff
+        // compiles. Run the repo's build command on the worktree and
+        // refuse to commit if it fails. The text-only evaluator was
+        // observed (2026-05-09) scoring 68 on a diff that deleted
+        // production EvolutionEngine.cs along with 17 other files; the
+        // compiler is the only honest source of truth for "does this
+        // code parse". BuildFailedException is caught by
+        // DriveImplementAsync's spawn task and routed to Status="stalled"
+        // (Phase 49 split — was "blocked" before) so the operator can
+        // triage.
+        //
+        // Phase 49 — resolve the build command per repo (dotnet/cargo/
+        // npm/go/mvn) instead of hard-coding `dotnet build`. A Rust
+        // workspace (e.g. failover-cluster:XRAFT) was hitting a 200 ms
+        // exit-1 here from `dotnet build` failing to find a .sln,
+        // routing every parallel stage to blocked despite passing
+        // evaluator scores. When the build system is unknown or
+        // ambiguous, skip the gate and emit telemetry so the operator
+        // can configure repo.BuildCommand explicitly.
+        var resolvedBuildCommand = ResolveBuildCommand(repo, workspace);
+        if (string.IsNullOrWhiteSpace(resolvedBuildCommand))
+        {
+            var detected = BuildSystemDetector.Detect(workspace);
+            await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.skipped", new
+            {
+                stage = "post-pass",
+                reason = detected.Ambiguous ? "ambiguous-build-system" : "no-build-system-detected",
+                ecosystem = detected.Ecosystem,
+                ambiguous = detected.Ambiguous,
+                ambiguityDetail = detected.AmbiguityDetail,
+                workspace,
+            }, ct: ct);
+            this.logger?.LogInformation(
+                "Post-pass build gate skipped for {WorkItem}: ecosystem={Ecosystem} ambiguous={Ambiguous}. "
+                + "Set repo.BuildCommand explicitly to enable the gate.",
+                workstream.Id, detected.Ecosystem, detected.Ambiguous);
+        }
+        else
+        {
+            var postPassBuild = await StoryBuildRunner.RunBuildAsync(
+                workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: resolvedBuildCommand);
+            if (!postPassBuild.Success)
+            {
+                await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.failed", new
+                {
+                    stage = "post-pass",
+                    exitCode = postPassBuild.ExitCode,
+                    errorCount = postPassBuild.ErrorCount,
+                    warningCount = postPassBuild.WarningCount,
+                    durationSec = postPassBuild.Duration.TotalSeconds,
+                    timedOut = postPassBuild.TimedOut,
+                    errorSummary = postPassBuild.ErrorSummary,
+                    buildCommand = resolvedBuildCommand,
+                    workspace,
+                }, ct: ct);
+
+                throw new BuildFailedException(
+                    $"Workstream {workstream.Id} post-pass build gate failed (exit {postPassBuild.ExitCode}, "
+                    + $"{postPassBuild.ErrorCount} error(s)) running `{resolvedBuildCommand}`. The gen/eval "
+                    + $"loop returned a diff the evaluator scored at pass, but the build shows the diff "
+                    + $"doesn't compile. Refusing to commit broken code.\n\n{postPassBuild.ErrorSummary}")
+                {
+                    ExitCode = postPassBuild.ExitCode,
+                    ErrorCount = postPassBuild.ErrorCount,
+                    WarningCount = postPassBuild.WarningCount,
+                    ErrorSummary = postPassBuild.ErrorSummary,
+                    TrippedByConsecutiveIters = false,
+                    ConsecutiveBrokenIters = 0,
+                    LastIteration = 0,
+                };
+            }
+        }
+
         return dict;
     }
 
@@ -1314,7 +1636,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             return dict;
         }
 
-        var changedPaths = await this.git.GetChangedFilesAsync(repo, workspace, ct);
+        // Phase 49 — diff against spawn.BaseBranch so cached files
+        // include the agent's local commits even when origin/{branch}
+        // is at an unrelated upstream tip (matches the post-pass
+        // commit-scope frame in ProduceWorkstreamChangesAsync).
+        var changedPaths = await this.git.GetChangedFilesAsync(
+            repo, workspace, baseBranch: baseBranch, ct: ct);
         foreach (var rel in changedPaths)
         {
             var diskPath = Path.Combine(workspace, rel.Replace('/', Path.DirectorySeparatorChar));
@@ -1397,6 +1724,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TimeSpan? budget,
         int storyPoints,
         string? generatorAgentOverride = null,
+        // Phase 47 — evaluator agent override. When set, the crew's
+        // DefaultEvaluatorAgentId is temporarily replaced so
+        // ResolveAgentRunConfigAsync (useEvaluatorRole=true) picks up
+        // the override. Allows the parallel plan-doc fan-out to assign
+        // a different evaluator per doc instead of all 4 docs sharing
+        // the crew's default evaluator.
+        string? evaluatorAgentOverride = null,
         // Phase 41 — Claude-Code tool names to revoke for this invocation
         // (forwarded to the CLI as `--disallowedTools`). Architect plan-doc
         // generators pass `["Bash"]` so an agent can't `Remove-Item` its
@@ -1414,6 +1748,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // the loop. Null = no per-iter side effects (engineer crews don't
         // need this; their CommitFilesAsync runs once at the end).
         Func<int, string, Task>? onIterationCompleted = null,
+        // Phase 49 — resolved build command for the per-iter build gate
+        // (impl phase only). When null, the gate is skipped: either the
+        // repo's ecosystem isn't recognised by BuildSystemDetector or
+        // the caller is a non-impl phase that doesn't run a build at all
+        // (architect plan-doc, decompose, qa, review-fix). Passed through
+        // to StoryBuildRunner.RunBuildAsync; null/empty there falls back
+        // to `dotnet build`, which is the wrong default for non-.NET
+        // ecosystems — we explicitly skip instead.
+        string? buildCommand = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -1431,6 +1774,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (!string.IsNullOrEmpty(generatorAgentOverride))
         {
             crew.DefaultGeneratorAgentId = generatorAgentOverride;
+        }
+
+        // Phase 47 — same trick for the evaluator: temporarily replace
+        // the crew's DefaultEvaluatorAgentId so the evaluator-side
+        // ResolveAgentRunConfigAsync (called below with
+        // useEvaluatorRole=true) picks up the per-doc override. The
+        // crew is AsNoTracking so this mutation is safe — it only
+        // affects the in-memory copy used by this call.
+        if (!string.IsNullOrEmpty(evaluatorAgentOverride))
+        {
+            crew.DefaultEvaluatorAgentId = evaluatorAgentOverride;
         }
 
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
@@ -1515,7 +1869,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // burning the full maxIter budget. Set up here, mutated inside
         // GeneratorDelegate's closure.
         var consecutiveNoChange = 0;
+        // Phase 47e — separate counter for "agent edited files but they
+        // don't compile". Tripped after three consecutive broken-build
+        // iters; routes to BuildFailedException → blocked. Distinct from
+        // no-progress so the operator can tell which failure mode hit.
+        var consecutiveBrokenBuild = 0;
         const int NoProgressThreshold = 3;
+        const int BuildFailThreshold = 3;
         var isImplPhase = phaseTag.StartsWith("impl:", StringComparison.Ordinal);
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
@@ -1735,6 +2095,87 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 else if (changedCount > 0)
                 {
                     consecutiveNoChange = 0;
+
+                    // Phase 47e — agent edited files this iter. Validate
+                    // the build BEFORE the evaluator scores the diff. The
+                    // evaluator (text-only) was observed scoring 68 on a
+                    // diff that deleted EvolutionEngine.cs along with 17
+                    // other production files — the compiler is the only
+                    // honest check on "does this diff make sense as code".
+                    //
+                    // Phase 49 — when buildCommand is null the repo has
+                    // no detectable build system (or the operator hasn't
+                    // configured repo.BuildCommand yet). Skip the gate
+                    // rather than running `dotnet build` against an
+                    // unknown workspace and false-failing in 200 ms. The
+                    // post-pass skip path emits matching telemetry; the
+                    // per-iter path stays quiet to avoid event spam.
+                    StoryBuildResult? build = null;
+                    if (!string.IsNullOrWhiteSpace(buildCommand))
+                    {
+                        try
+                        {
+                            build = await StoryBuildRunner.RunBuildAsync(
+                                workspace, iterCt, StoryBuildRunner.DefaultTimeout,
+                                buildCommand: buildCommand);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            this.logger?.LogWarning(ex,
+                                "Per-iter build check threw for {Workspace}; skipping this iter's build gate.",
+                                workspace);
+                            build = null;
+                        }
+                    }
+
+                    if (build is not null && !build.Success)
+                    {
+                        consecutiveBrokenBuild++;
+                        await this.taskChannel.EmitAsync(workItemId, "task.build-failed.detected", new
+                        {
+                            iter,
+                            consecutiveBrokenBuild,
+                            threshold = BuildFailThreshold,
+                            exitCode = build.ExitCode,
+                            errorCount = build.ErrorCount,
+                            warningCount = build.WarningCount,
+                            durationSec = build.Duration.TotalSeconds,
+                            timedOut = build.TimedOut,
+                            errorSummary = build.ErrorSummary,
+                            buildCommand,
+                            workspace,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                        if (consecutiveBrokenBuild >= BuildFailThreshold)
+                        {
+                            await this.taskChannel.EmitAsync(workItemId, "task.build-failed.aborted", new
+                            {
+                                iter,
+                                consecutiveBrokenBuild,
+                                threshold = BuildFailThreshold,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                            throw new BuildFailedException(
+                                $"Engineer's diff failed `{buildCommand}` in {consecutiveBrokenBuild} consecutive "
+                                + $"iterations (through iter {iter}, exit {build.ExitCode}, "
+                                + $"{build.ErrorCount} error(s)). Aborting gen/eval loop; operator must Restart "
+                                + $"to retry.\n\n{build.ErrorSummary}")
+                            {
+                                ExitCode = build.ExitCode,
+                                ErrorCount = build.ErrorCount,
+                                WarningCount = build.WarningCount,
+                                ErrorSummary = build.ErrorSummary,
+                                TrippedByConsecutiveIters = true,
+                                ConsecutiveBrokenIters = consecutiveBrokenBuild,
+                                LastIteration = iter,
+                            };
+                        }
+                    }
+                    else if (build is not null)
+                    {
+                        consecutiveBrokenBuild = 0;
+                    }
+                    // build == null → check threw; leave counter as-is.
                 }
                 // changedCount == -1 → inconclusive, leave counter as-is.
             }
