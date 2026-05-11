@@ -322,6 +322,50 @@ public static class StoriesEndpoints
             .Where(d => wsIds.Contains(d.WorkstreamId))
             .ToListAsync();
 
+        // Phase 49 — DepsJson fallback. Plan-phase spawns (PlanReconciler-
+        // populated rows) carry deps as resolved STAGE TITLES inside
+        // WorkstreamRow.DepsJson but DON'T populate the WorkstreamDeps
+        // FK table — that happens later in DriveDecomposeAsync after the
+        // plan PR merges. Without a fallback, the swarm DAG view sees
+        // every deps[] array as empty during plan phase and can't draw
+        // any arrows. Build a name→id index over this spawn's
+        // workstreams and merge resolved DepsJson references into the
+        // returned deps[] list (deduped against the FK rows). Excludes
+        // cancelled / historic rows from the index so a tombstone with
+        // the same name as a live row doesn't get picked up — observed
+        // 2026-05-09 on failover-cluster:XRAFT where 7 live ws were
+        // resolved against the OLD `phase-server-assembly-and-client-sdk`
+        // tombstones instead of their live `…-internal-client` rebirths.
+        var nameToId = workstreams
+            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var depsByWs = deps
+            .GroupBy(d => d.WorkstreamId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => new HashSet<string>(g.Select(d => d.DependsOnId), StringComparer.Ordinal),
+                StringComparer.Ordinal);
+        foreach (var w in workstreams)
+        {
+            if (string.IsNullOrEmpty(w.DepsJson)) continue;
+            List<string>? titles;
+            try { titles = JsonSerializer.Deserialize<List<string>>(w.DepsJson); }
+            catch { continue; }
+            if (titles is null || titles.Count == 0) continue;
+
+            if (!depsByWs.TryGetValue(w.Id, out var resolved))
+            {
+                resolved = new HashSet<string>(StringComparer.Ordinal);
+                depsByWs[w.Id] = resolved;
+            }
+            foreach (var t in titles)
+            {
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                if (!nameToId.TryGetValue(t.Trim(), out var depId)) continue;
+                if (string.Equals(depId, w.Id, StringComparison.Ordinal)) continue;
+                resolved.Add(depId);
+            }
+        }
+
         // Per-workstream live runtime data: every deliverable in the
         // CrewStoryArtifactStrategy gen/eval loop is keyed on workstream.Id
         // (see CrewStoryArtifactStrategy.ProduceWorkstreamChangesAsync — the
@@ -399,6 +443,38 @@ public static class StoriesEndpoints
         foreach (var id in liveExecWiIds) liveWsIds.Add(id);
         foreach (var id in openQueueWsIds) liveWsIds.Add(id);
 
+        // Phase 50 — single PR batch query to drive the story-delivery strip.
+        // The strip shows three stages (design / impl / release) on every story
+        // row in SwarmIndexView; without this batch the UI would need 1 + N
+        // round-trips per row to derive QA-merged + per-workstream step-def
+        // PR status (StorySpawnOrchestrator opens a `-steps` PR per workstream
+        // after the QA PR merges, line ~1879).
+        //
+        // The query pulls:
+        //   1. The QA PR (spawn.QaPrId, when set) — to derive qaPrMerged.
+        //   2. Every PR linked to a workstream in this spawn — to find the
+        //      step-def PR per workstream (branch suffix `-steps`) and report
+        //      its merge state.
+        var prIdsToFetch = new List<string>();
+        if (!string.IsNullOrEmpty(spawn.QaPrId)) prIdsToFetch.Add(spawn.QaPrId!);
+        var prRowsForSpawn = await db.Prs.AsNoTracking()
+            .Where(p => wsIds.Contains(p.Workstream) || prIdsToFetch.Contains(p.Id))
+            .Select(p => new { p.Id, p.Workstream, p.Branch, p.Col })
+            .ToListAsync();
+        var qaPrRow = !string.IsNullOrEmpty(spawn.QaPrId)
+            ? prRowsForSpawn.FirstOrDefault(p => string.Equals(p.Id, spawn.QaPrId, StringComparison.Ordinal))
+            : null;
+        var qaPrMerged = qaPrRow is not null
+            && string.Equals(qaPrRow.Col, "merged", StringComparison.OrdinalIgnoreCase);
+        // Group step-def PRs by workstream. The branch ends with `-steps`
+        // (see StorySpawnOrchestrator.cs:1864 — `ws/{storyId}/{slug}-steps`).
+        var stepDefPrByWs = prRowsForSpawn
+            .Where(p => !string.IsNullOrEmpty(p.Workstream)
+                     && p.Branch is not null
+                     && p.Branch.EndsWith("-steps", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(p => p.Workstream, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
         var wsByStatus = workstreams.Select(w =>
         {
             var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
@@ -435,10 +511,19 @@ public static class StoriesEndpoints
                 id = w.Id,
                 name = w.Name,
                 branch = w.Branch,
-                status = ResolveWorkstreamStatus(w.Id, baseStatus, deps, workstreams, db),
+                status = ResolveWorkstreamStatus(w.Id, baseStatus, depsByWs, workstreams),
                 cards = StoriesJsonHelpers.Deserialize(w.CardsJson),
                 prs = StoriesJsonHelpers.Deserialize(w.PrsJson),
-                deps = deps.Where(d => d.WorkstreamId == w.Id).Select(d => d.DependsOnId).ToArray(),
+                deps = depsByWs.TryGetValue(w.Id, out var resolvedDeps) ? resolvedDeps.ToArray() : Array.Empty<string>(),
+                // Phase 49 — surface phase + plan anchors so the swarm DAG view
+                // can group stage cards into collapsible phase containers and
+                // render the phase / stage labels per workstream without
+                // re-parsing the plan client-side. PhaseAnchor is the
+                // `phase-{slug}` prefix; PlanAnchor is the full
+                // `phase-{slug}/stage-{slug}` ref. Null on legacy rows that
+                // predate Phase 47Migration.
+                phaseAnchor = w.PhaseAnchor,
+                planAnchor = w.PlanAnchor,
                 // ── live runtime fields ──────────────────────────────────
                 agents = wsAgents,
                 iter = wsDeliverables.Count,
@@ -452,12 +537,37 @@ public static class StoriesEndpoints
                 ahead = w.Ahead,
                 behind = w.Behind,
                 unansweredQuestionCount = wsUnanswered,
+                // Phase 49 — surface the stall reason so the swarm-control
+                // tooltip can show why the stage entered triage (build
+                // gate, no-progress, non-pass verdict) without the
+                // operator having to drill into the Conversation tab.
+                stallReason = w.StallReason,
+                // Phase 50 — story-delivery strip surfaces the Engineer-crew
+                // worktree folder name (the leaf under `{cloneRoot}/.worktree/`)
+                // so the tooltip can point the operator at the exact directory
+                // their gen↔eval loop is editing. Pure compute over the same
+                // sibling list — no disk I/O — so the lookup is free here.
+                worktreeFolder = WorkstreamWorktreeSlug.Compute(w, workstreams),
+                // Phase 50 — step-def PR fields. `ws.status == "complete"`
+                // is set when the IMPL PR merges (StorySpawnOrchestrator.cs
+                // DriveReviewAsync, line ~1699) — it does NOT mean the QA
+                // step-def PR is merged. The strip's stage-3 rect needs the
+                // dedicated PR row to colour the step-def rect correctly.
+                stepDefPrId = stepDefPrByWs.TryGetValue(w.Id, out var sdPr) ? sdPr.Id : null,
+                stepDefBranch = stepDefPrByWs.TryGetValue(w.Id, out var sdBr) ? sdBr.Branch : null,
+                stepDefMerged = stepDefPrByWs.TryGetValue(w.Id, out var sdMr)
+                    && string.Equals(sdMr.Col, "merged", StringComparison.OrdinalIgnoreCase),
             };
         }).ToArray();
 
         return Results.Ok(new
         {
             spawn = ToContract(spawn),
+            // Phase 50 — top-level sibling so the strip can colour the QA-PR
+            // rect (release stage) without fetching the PR row separately.
+            // Sibling rather than inside `spawn` because ToContract is reused
+            // by endpoints that don't load PR rows.
+            qaPrMerged,
             workstreams = wsByStatus,
         });
     }
@@ -465,19 +575,24 @@ public static class StoriesEndpoints
     private static string ResolveWorkstreamStatus(
         string wsId,
         string baseStatus,
-        IReadOnlyList<WorkstreamDepRow> deps,
-        IReadOnlyList<WorkstreamRow> all,
-        ForgeDbContext db)
+        IReadOnlyDictionary<string, HashSet<string>> depsByWs,
+        IReadOnlyList<WorkstreamRow> all)
     {
         // 28.5 / 28.11 — surface "blocked" when a dependency PR is unmerged.
-        var depIds = deps.Where(d => d.WorkstreamId == wsId).Select(d => d.DependsOnId).ToArray();
-        if (depIds.Length == 0) return baseStatus;
+        //
+        // Phase 49 follow-up — only "complete" upstream lets a downstream
+        // start (was "merging" or "complete"). Matches the orchestrator's
+        // tightened dep-check in StorySpawnOrchestrator.cs so the UI
+        // display agrees with what the claim sweep actually does: a
+        // downstream waiting on a "merging" upstream renders as blocked
+        // (the upstream's lifecycle hasn't fully settled — see notes in
+        // StorySpawnOrchestrator's dep-check block).
+        if (!depsByWs.TryGetValue(wsId, out var depIds) || depIds.Count == 0) return baseStatus;
         foreach (var dep in depIds)
         {
             var depWs = all.FirstOrDefault(w => w.Id == dep);
             if (depWs is null) continue;
-            // "merging" or "complete" upstream lets a downstream start.
-            if (depWs.Status != "merging" && depWs.Status != "complete")
+            if (depWs.Status != "complete")
             {
                 return baseStatus == "planning" ? "blocked" : baseStatus;
             }

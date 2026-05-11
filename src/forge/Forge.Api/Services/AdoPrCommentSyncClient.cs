@@ -216,8 +216,38 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
 
         return new PrSyncSnapshot(canonical, lastUpdated, comments, true,
             Files: await this.FetchFileCountAsync(http, project, repo, num, ct),
+            Commits: await this.FetchCommitCountAsync(http, project, repo, num, ct),
             BaseBranch: string.IsNullOrEmpty(baseRef) ? null : baseRef,
             SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef);
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — count commits on the PR's source branch via
+    /// ADO's <c>pullRequests/{id}/commits</c> endpoint. Mirrors the
+    /// GitHub client's commit-count plumbing so Forge's PR header
+    /// reflects the engineer's review-fix commits in real time. Returns
+    /// null on any failure so <see cref="PrSyncJob"/>'s
+    /// <c>if (snapshot.Commits.HasValue)</c> guard leaves the existing
+    /// value untouched rather than overwriting with zero.
+    /// </summary>
+    private async Task<int?> FetchCommitCountAsync(
+        HttpClient http, string project, string repo, string prNum, CancellationToken ct)
+    {
+        try
+        {
+            var resp = await http.GetAsync(
+                $"{Uri.EscapeDataString(project)}/_apis/git/repositories/{Uri.EscapeDataString(repo)}/pullRequests/{Uri.EscapeDataString(prNum)}/commits?api-version=7.0&$top=1000",
+                ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (doc.RootElement.TryGetProperty("value", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                return arr.GetArrayLength();
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>

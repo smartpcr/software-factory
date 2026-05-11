@@ -183,6 +183,31 @@ public sealed class DeliverableLoop : IDeliverableLoop
         // the loop reads each iteration below.
         var maxIter = request.MaxIterations ?? PointsToMaxIter(request.WorkItemPoints);
 
+        // Phase 47 — apply the queue's MaxIterOverride BEFORE the terminal
+        // short-circuit below so an operator who bumped the cap (Resume on
+        // a stalled WI) gets a chance to run additional iters instead of
+        // being short-circuited on the OLD cap. The original per-iter
+        // override read inside the while loop still wins for mid-loop
+        // updates; this is just to seed the right baseline for the
+        // short-circuit check.
+        var initialQueueRows = await this.db.TaskQueue.AsNoTracking()
+            .Where(q => q.WorkItemId == request.WorkItemId)
+            .ToListAsync(ct);
+        var initialOverride = initialQueueRows
+            .Where(q => q.State != "completed" && q.MaxIterOverride != null)
+            .OrderByDescending(q => q.Id)
+            .Select(q => q.MaxIterOverride)
+            .FirstOrDefault()
+            ?? initialQueueRows
+                .Where(q => q.MaxIterOverride != null)
+                .OrderByDescending(q => q.Id)
+                .Select(q => q.MaxIterOverride)
+                .FirstOrDefault();
+        if (initialOverride is int iov && iov > 0)
+        {
+            maxIter = iov;
+        }
+
         // Resume support — when boot-recovery puts a half-finished work item
         // back on the queue, the agent invocation re-enters this loop. Seed
         // `iter` and `notesForNext` from the most recent persisted deliverable
@@ -195,6 +220,63 @@ public sealed class DeliverableLoop : IDeliverableLoop
             .Where(d => d.WorkItemId == request.WorkItemId)
             .ToListAsync(ct);
         var lastPersisted = existingDeliverables.OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter).FirstOrDefault();
+
+        // Phase 47 — terminal-verdict short-circuit. Before this, a workstream
+        // that hit `iter == maxIter` with `stalled` verdict would re-enter the
+        // loop with `iter` reset to 0 (the resume guard below requires
+        // `lastPersisted.Iter < maxIter`) and run a full fresh cycle of
+        // iterations 1→maxIter. Confirmed in production 2026-05-09: a single
+        // workstream had 139 deliverable rows for maxIter=50 — the iter
+        // histogram showed each iter 1-36 occurring 3 times, costing $9,825
+        // across 4 days. Now we return the persisted verdict immediately on
+        // any of these terminal cases:
+        //   pass            — terminal regardless of iter (orchestrator-side
+        //                     short-circuits this too, but defense-in-depth
+        //                     in case a caller bypasses the orchestrator).
+        //   reject          — terminal regardless of iter (lead must triage).
+        //   stalled-budget  — terminal regardless of iter (operator must
+        //                     raise budget via Restart; just re-running with
+        //                     the same cap burns more cost).
+        //   stalled         — terminal only when at-or-past cap. If the
+        //                     operator bumped MaxIterOverride (handled
+        //                     above), the new cap exceeds the persisted
+        //                     iter and the resume path takes over instead.
+        // Mirror the original side effects (TrySetWorkItemStateAsync) so a
+        // replay of pass/reject still leaves WorkItem state consistent if a
+        // crash had skipped them last round.
+        if (lastPersisted is not null)
+        {
+            var persistedTerminal =
+                lastPersisted.Verdict is "pass" or "reject" or "stalled-budget"
+                || (lastPersisted.Verdict == "stalled" && lastPersisted.Iter >= maxIter);
+            if (persistedTerminal)
+            {
+                if (lastPersisted.Verdict == "pass")
+                {
+                    await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "active", ct);
+                }
+                else if (lastPersisted.Verdict == "reject")
+                {
+                    await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "proposed", ct);
+                }
+
+                await this.EmitAsync(request.WorkItemId, "task.iteration.terminal-replay", new
+                {
+                    iter = lastPersisted.Iter,
+                    verdict = lastPersisted.Verdict,
+                    score = lastPersisted.Score,
+                    maxIter,
+                }, ct);
+
+                return new DeliverableLoopResult(
+                    lastPersisted.Verdict,
+                    lastPersisted.Iter,
+                    lastPersisted.Score,
+                    new List<long>(),
+                    0m);
+            }
+        }
+
         if (lastPersisted is not null
             && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget"
             && lastPersisted.Iter < maxIter)

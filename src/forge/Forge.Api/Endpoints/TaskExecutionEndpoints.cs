@@ -445,7 +445,10 @@ public static class TaskExecutionEndpoints
 
         // Worktree (best-effort): most recent task.worktree-tick payload.
         // Falls back to a live disk read when no tick events exist (e.g.
-        // after a server restart that lost in-memory feed subscriptions).
+        // after a server restart that lost in-memory feed subscriptions),
+        // OR when the cached tick is from before the Phase 49 follow-up
+        // (no branchDiff field → fall through so the disk sampler
+        // attaches the correct cumulative branch totals).
         WorktreeSnapshot? worktree = null;
         var lastTick = transcriptRows.LastOrDefault(e => e.Kind == "task.worktree-tick");
         if (lastTick is not null)
@@ -458,64 +461,44 @@ public static class TaskExecutionEndpoints
             catch { /* malformed payload — fall through to null */ }
         }
 
+        // Phase 49 follow-up — when the cached tick predates the
+        // branchDiff fix the UI's pre-/commits-loaded fallback can't
+        // get accurate counts. Treat a tick with no BranchDiff as
+        // "stale shape" and force a fresh disk sample below so the
+        // operator sees correct numbers on first open.
+        var diskSampleNeeded = worktree is null || worktree.BranchDiff is null;
+
         // Fallback: read worktree directly from disk using the path from
         // the started event or derived from the work item's repo + branch.
-        if (worktree is null)
+        if (diskSampleNeeded)
         {
-            string? wtPath = null;
-            var startedEvt = transcriptRows.FirstOrDefault(e => e.Kind == "task.started" || e.Kind == "task.prompts");
-            if (startedEvt is not null)
-            {
-                try
-                {
-                    using var startDoc = JsonDocument.Parse(startedEvt.PayloadJson);
-                    if (startDoc.RootElement.TryGetProperty("worktreePath", out var wp))
-                        wtPath = wp.GetString();
-                }
-                catch { /* ignore */ }
-            }
-
-            // Convention fallback: {cloneRoot}\.worktree\spawn-{sanitizedBranch}
-            // Matches RealStoryGitOps.WorktreePath which uses `spawn-` prefix
-            // with the sanitized branch slug.
+            string? wtPath = worktree?.WorktreePath;
             if (string.IsNullOrEmpty(wtPath))
             {
-                // Try the workstream's branch first (coding tasks), then
-                // fall back to the work item's branch (legacy path).
-                string? branch = null;
-                string? repoId = wi?.RepoId;
-                var wsRow = await db.Workstreams.AsNoTracking()
-                    .FirstOrDefaultAsync(w => w.Id == id, ct);
-                if (wsRow is not null)
+                var startedEvt = transcriptRows.FirstOrDefault(e => e.Kind == "task.started" || e.Kind == "task.prompts");
+                if (startedEvt is not null)
                 {
-                    branch = wsRow.Branch;
-                    repoId ??= wsRow.RepoId;
-                }
-                branch ??= wsRow?.Branch;
-
-                if (!string.IsNullOrEmpty(repoId))
-                {
-                    var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
-                        .FirstOrDefaultAsync(r => r.Id == repoId, ct);
-                    if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot))
+                    try
                     {
-                        // Story-spawn convention (RealStoryGitOps): spawn-{sanitizedBranch}
-                        if (!string.IsNullOrEmpty(branch))
-                        {
-                            var sanitized = SanitizeBranchSlug(branch);
-                            var candidate = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{sanitized}");
-                            if (Directory.Exists(candidate))
-                                wtPath = candidate;
-                        }
-                        // CrewQueueWorker convention: ws-{sanitizedId}
-                        if (string.IsNullOrEmpty(wtPath))
-                        {
-                            var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
-                            var candidate2 = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{sanitizedId}");
-                            if (Directory.Exists(candidate2))
-                                wtPath = candidate2;
-                        }
+                        using var startDoc = JsonDocument.Parse(startedEvt.PayloadJson);
+                        if (startDoc.RootElement.TryGetProperty("worktreePath", out var wp))
+                            wtPath = wp.GetString();
                     }
+                    catch { /* ignore */ }
+                }
+            }
+
+            // Convention fallback: resolve via WorktreePathResolver so the
+            // snapshot endpoint and the commits endpoint agree on which
+            // path actually holds the worktree (Phase 49 short name vs.
+            // legacy `spawn-` vs. legacy `ws-`).
+            if (string.IsNullOrEmpty(wtPath))
+            {
+                var resolved = await Forge.Api.Services.Stories.WorktreePathResolver
+                    .ResolveForWorkstreamAsync(db, id, ct);
+                if (!string.IsNullOrEmpty(resolved.WorktreePath))
+                {
+                    wtPath = resolved.WorktreePath;
                 }
             }
 
@@ -523,7 +506,13 @@ public static class TaskExecutionEndpoints
             {
                 try
                 {
-                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, ct);
+                    // Phase 49 follow-up — resolve the workstream's
+                    // real base branch (spawn.BaseBranch when present)
+                    // so the disk-sample's branchDiff / ahead / behind
+                    // agree with what /commits computes.
+                    var execBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+                        .ResolveAsync(db, id, ct);
+                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, execBase, ct);
                     if (diskSnap is not null)
                     {
                         worktree = new WorktreeSnapshot(
@@ -532,10 +521,14 @@ public static class TaskExecutionEndpoints
                             diskSnap.Ahead, diskSnap.Behind, diskSnap.Dirty,
                             diskSnap.HeadSha, diskSnap.HeadMessage, diskSnap.HeadAuthor, diskSnap.HeadAt,
                             diskSnap.Truncated, DateTimeOffset.UtcNow,
-                            wtPath);
+                            wtPath,
+                            BranchDiff: new WorktreeBranchDiff(
+                                diskSnap.BranchDiffAdded ?? Array.Empty<string>(),
+                                diskSnap.BranchDiffModified ?? Array.Empty<string>(),
+                                diskSnap.BranchDiffDeleted ?? Array.Empty<string>()));
 
                         // Re-subscribe the feed so future ticks are emitted.
-                        worktreeFeed.Subscribe(id, string.Empty, wtPath);
+                        worktreeFeed.Subscribe(id, string.Empty, wtPath, execBase);
                     }
                 }
                 catch { /* best-effort */ }
@@ -857,13 +850,44 @@ public static class TaskExecutionEndpoints
                 headAt = dt;
         }
 
+        // Phase 49 follow-up — surface the branchDiff arrays so the
+        // Worktree-tab pills agree with the PR file list during the
+        // pre-/commits-loaded window. Older ticks (pre-fix) didn't
+        // emit branchDiff at all, OR emitted it anchored at `main` —
+        // both surface as `null` here so the UI falls back gracefully.
+        WorktreeBranchDiff? branchDiff = null;
+        if (el.TryGetProperty("branchDiff", out var bd) && bd.ValueKind == JsonValueKind.Object)
+        {
+            branchDiff = new WorktreeBranchDiff(
+                Added: ExtractStrings(bd, "added"),
+                Modified: ExtractStrings(bd, "modified"),
+                Deleted: ExtractStrings(bd, "deleted"));
+        }
+
         return new WorktreeSnapshot(
             wsId ?? string.Empty,
             added, modified, deleted,
             ahead, behind, dirty,
             sha, msg, author, headAt,
             truncated, at,
-            wtPath);
+            wtPath,
+            BranchDiff: branchDiff);
+    }
+
+    private static IReadOnlyList<string> ExtractStrings(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return Array.Empty<string>();
+        var list = new List<string>(arr.GetArrayLength());
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var s = item.GetString();
+                if (!string.IsNullOrEmpty(s)) list.Add(s);
+            }
+        }
+        return list;
     }
 
     private static int TryGetInt(JsonElement el, string name, int fallback)
@@ -926,23 +950,6 @@ public static class TaskExecutionEndpoints
     // 200 with empty `commits` — branch has no commits ahead of base, or
     //                            the worktree directory doesn't exist.
 
-    private sealed record CommitFileChange(string Status, string Path, string? OldPath = null);
-
-    private sealed record CommitEntry(
-        string Sha,
-        string Message,
-        string Author,
-        string At,
-        IReadOnlyList<string> Added,
-        IReadOnlyList<string> Modified,
-        IReadOnlyList<string> Deleted,
-        IReadOnlyList<CommitFileChange> Other);
-
-    private sealed record UncommittedChanges(
-        IReadOnlyList<string> Added,
-        IReadOnlyList<string> Modified,
-        IReadOnlyList<string> Deleted);
-
     private sealed record CommitsResponse(
         string? WorktreePath,
         string Branch,
@@ -950,35 +957,64 @@ public static class TaskExecutionEndpoints
         int Ahead,
         int Behind,
         string? HeadSha,
-        IReadOnlyList<CommitEntry> Commits,
-        UncommittedChanges Uncommitted);
+        IReadOnlyList<Forge.Api.Services.WorktreeCommitsScanner.CommitEntry> Commits,
+        Forge.Api.Services.WorktreeCommitsScanner.UncommittedChanges Uncommitted,
+        Forge.Api.Services.WorktreeCommitsScanner.BranchTotals BranchTotals);
 
     private static async Task<IResult> GetCommits(
         string id,
         ForgeDbContext db,
+        HttpContext httpCtx,
         CancellationToken ct)
     {
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
         if (wi is null)
             return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
 
+        // Phase 49 follow-up — operator-driven refresh. The default
+        // (refresh=false) returns fast based on the locally-cached
+        // origin/{baseBranch} ref + fires a background fetch with a
+        // 15s cooldown so the NEXT poll sees fresh upstream data.
+        // ?refresh=true makes the fetch blocking — used by the UI's
+        // explicit refresh button when the operator wants up-to-the-
+        // second ahead/behind counts. Cold load drops from ~4s to
+        // ~600ms with the default; refresh stays at ~2-4s.
+        var refreshParam = httpCtx.Request.Query["refresh"].FirstOrDefault();
+        var fetchUpstream = string.Equals(refreshParam, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(refreshParam, "1", StringComparison.Ordinal);
+
         // Resolve worktree path with the same convention CrewQueueWorker uses:
         // {repo.CloneRoot}/.worktree/ws-{sanitizedId}.
         string? cloneRoot = null;
-        var baseBranch = "main";
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
             var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.CloneRoot)) cloneRoot = repo.CloneRoot;
-            if (!string.IsNullOrEmpty(repo?.DefaultBranch)) baseBranch = repo.DefaultBranch;
         }
+
+        // Phase 49 follow-up — base branch comes from the shared
+        // resolver so /commits, /execution disk-sample, and the
+        // CrewQueueWorker subscribe path all anchor at the same ref.
+        // For story-spawn workstreams that's spawn.BaseBranch (e.g.
+        // `feature/xraft`); plain crew-queue items get repo default.
+        var baseBranch = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+            .ResolveAsync(db, id, ct);
 
         // Phase 42 — plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
         // share the spawn's plan-branch worktree at `{cloneRoot}/.worktree/spawn-{slug}`,
         // not the per-workstream `.worktree/ws-{id}` convention. Route to the
         // right worktree based on the id prefix; engineer workstreams take
         // the legacy path.
+        //
+        // Phase 49 — engineer workstreams switched to
+        // `stage-{phaseNum}.{stageNum}-{anchorSlug}` to dodge Windows
+        // MAX_PATH. Use WorktreePathResolver so the displayed worktree
+        // path agrees with whatever's actually on disk (new short name,
+        // legacy `spawn-` prefix, or legacy `ws-` prefix). Observed
+        // 2026-05-10: PR #2 had 35 files but the Worktree tab read +0
+        // changes because the old code hard-coded the `ws-{id}` path
+        // while the orchestrator had written to `stage-1.1-…`.
         string branch;
         string? worktreePath;
         if (id.StartsWith("plan-doc:", StringComparison.Ordinal))
@@ -991,7 +1027,9 @@ public static class TaskExecutionEndpoints
             // any custom branch name the orchestrator picked at spawn time).
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
             branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
-            // Mirror RealStoryGitOps.WorktreePath: spawn-{sanitizedBranchSlug}.
+            // Plan-doc paths still use the legacy `spawn-{slug}` shape
+            // (Phase 49 only renamed engineer workstream paths; plan-doc
+            // names were already short).
             var sanitizedBranch = SanitizeBranchSlug(branch);
             worktreePath = !string.IsNullOrEmpty(cloneRoot)
                 ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
@@ -999,11 +1037,13 @@ public static class TaskExecutionEndpoints
         }
         else
         {
-            var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
-            branch = $"ws/{id}";
-            worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                ? Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}")
-                : null;
+            // Engineer workstream — let WorktreePathResolver pick the
+            // right convention (new short name vs. legacy long names) by
+            // looking at what's actually on disk.
+            var resolved = await Forge.Api.Services.Stories.WorktreePathResolver
+                .ResolveForWorkstreamAsync(db, id, ct);
+            branch = !string.IsNullOrEmpty(resolved.Branch) ? resolved.Branch : $"ws/{id}";
+            worktreePath = resolved.WorktreePath;
         }
 
         // Empty response when the worktree directory isn't on disk yet.
@@ -1015,143 +1055,26 @@ public static class TaskExecutionEndpoints
                 BaseBranch: baseBranch,
                 Ahead: 0, Behind: 0,
                 HeadSha: null,
-                Commits: Array.Empty<CommitEntry>(),
-                Uncommitted: new UncommittedChanges(
+                Commits: Array.Empty<Forge.Api.Services.WorktreeCommitsScanner.CommitEntry>(),
+                Uncommitted: new Forge.Api.Services.WorktreeCommitsScanner.UncommittedChanges(
+                    Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()),
+                BranchTotals: new Forge.Api.Services.WorktreeCommitsScanner.BranchTotals(
                     Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>())));
         }
 
-        // Refresh tracking refs so ahead/behind reflects what the remote knows.
-        // Best-effort — a network failure here just means staler counts; the
-        // commit listing is still local-only.
-        await RunGitAsync(worktreePath, ct, "fetch", "origin", "--quiet");
-
-        // Ahead / behind vs the remote base branch.
-        var (acCode, acOut, _) = await RunGitAsync(worktreePath, ct,
-            "rev-list", "--left-right", "--count", $"origin/{baseBranch}...HEAD");
-        int ahead = 0, behind = 0;
-        if (acCode == 0)
-        {
-            var parts = acOut.Trim().Split('\t');
-            if (parts.Length == 2)
-            {
-                int.TryParse(parts[0], out behind);
-                int.TryParse(parts[1], out ahead);
-            }
-        }
-
-        // HEAD sha for the convenience field.
-        var (headCode, headSha, _) = await RunGitAsync(worktreePath, ct, "rev-parse", "HEAD");
-        var headShaStr = headCode == 0 ? headSha.Trim() : null;
-
-        // Commit list with per-file changes. The __COMMIT__ prefix lets us
-        // distinguish header lines from --name-status rows in one pass.
-        var (logCode, logOut, _) = await RunGitAsync(worktreePath, ct,
-            "log",
-            $"origin/{baseBranch}..HEAD",
-            "--pretty=format:__COMMIT__%H%x09%aI%x09%aN%x09%s",
-            "--name-status");
-
-        var commits = new List<CommitEntry>();
-        if (logCode == 0 && !string.IsNullOrWhiteSpace(logOut))
-        {
-            CommitEntry? cur = null;
-            var added = new List<string>();
-            var modified = new List<string>();
-            var deleted = new List<string>();
-            var other = new List<CommitFileChange>();
-            void Flush()
-            {
-                if (cur is null) return;
-                commits.Add(cur with
-                {
-                    Added = added.ToArray(),
-                    Modified = modified.ToArray(),
-                    Deleted = deleted.ToArray(),
-                    Other = other.ToArray(),
-                });
-                added.Clear(); modified.Clear(); deleted.Clear(); other.Clear();
-            }
-            foreach (var rawLine in logOut.Split('\n'))
-            {
-                var line = rawLine.TrimEnd('\r');
-                if (string.IsNullOrEmpty(line)) continue;
-                if (line.StartsWith("__COMMIT__", StringComparison.Ordinal))
-                {
-                    Flush();
-                    var fields = line.Substring("__COMMIT__".Length).Split('\t');
-                    if (fields.Length >= 4)
-                    {
-                        cur = new CommitEntry(
-                            Sha: fields[0],
-                            Message: fields[3],
-                            Author: fields[2],
-                            At: fields[1],
-                            Added: Array.Empty<string>(),
-                            Modified: Array.Empty<string>(),
-                            Deleted: Array.Empty<string>(),
-                            Other: Array.Empty<CommitFileChange>());
-                    }
-                }
-                else if (cur is not null)
-                {
-                    var parts = line.Split('\t');
-                    if (parts.Length < 2) continue;
-                    var status = parts[0];
-                    // Renames/copies show 3 cols: R100 oldpath newpath. Track
-                    // the rename in `other` and the new path under modified
-                    // so the summary still surfaces it.
-                    if (status.StartsWith("R", StringComparison.Ordinal) || status.StartsWith("C", StringComparison.Ordinal))
-                    {
-                        if (parts.Length >= 3)
-                        {
-                            other.Add(new CommitFileChange(status, parts[2], parts[1]));
-                            modified.Add(parts[2]);
-                        }
-                        continue;
-                    }
-                    var path = parts[1];
-                    switch (status)
-                    {
-                        case "A": added.Add(path); break;
-                        case "M": modified.Add(path); break;
-                        case "D": deleted.Add(path); break;
-                        default: other.Add(new CommitFileChange(status, path)); break;
-                    }
-                }
-            }
-            Flush();
-        }
-
-        // Currently uncommitted (working-tree + staged, excluding untracked
-        // dirs that the worktree-feed already skips).
-        var (stCode, stOut, _) = await RunGitAsync(worktreePath, ct, "status", "--porcelain");
-        var uAdded = new List<string>();
-        var uMod = new List<string>();
-        var uDel = new List<string>();
-        if (stCode == 0)
-        {
-            foreach (var rawLine in stOut.Split('\n'))
-            {
-                var line = rawLine.TrimEnd('\r');
-                if (line.Length < 4) continue;
-                var status = line.Substring(0, 2);
-                var path = line.Substring(3);
-                // The two columns are <staged><unstaged>. We classify by the
-                // first non-space column, treating ?? (untracked) as added.
-                if (status[0] == 'A' || status[0] == '?' || status == "??") uAdded.Add(path);
-                else if (status[0] == 'D' || status[1] == 'D') uDel.Add(path);
-                else uMod.Add(path);
-            }
-        }
-
+        // All git work (fetch/log/status/diff/merge-base) lives in the
+        // scanner so it can be unit-tested directly against a temp
+        // repo. See Phase49WorktreeCommitsScannerTests.
+        var scan = await Forge.Api.Services.WorktreeCommitsScanner.ScanAsync(worktreePath, baseBranch, fetchUpstream, ct);
         return Results.Ok(new CommitsResponse(
             WorktreePath: worktreePath,
             Branch: branch,
             BaseBranch: baseBranch,
-            Ahead: ahead, Behind: behind,
-            HeadSha: headShaStr,
-            Commits: commits,
-            Uncommitted: new UncommittedChanges(uAdded, uMod, uDel)));
+            Ahead: scan.Ahead, Behind: scan.Behind,
+            HeadSha: scan.HeadSha,
+            Commits: scan.Commits,
+            Uncommitted: scan.Uncommitted,
+            BranchTotals: scan.BranchTotals));
     }
 
     /// <summary>

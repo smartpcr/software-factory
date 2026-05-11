@@ -171,3 +171,30 @@ export function agentTooltip(
 export function listAllocation(): AllocationEntry[] {
   return ALLOCATION;
 }
+
+/**
+ * Resolve an agent id to display name + crew role + default model. Used by
+ * tooltips that show "(name) — model" pairs without making an API call —
+ * for example the per-rectangle tooltip on the story-delivery strip
+ * (`SwarmStoryRow`). Falls back to plausible defaults when the id is
+ * unknown (legacy / prototype / deactivated agents). Returns null when no
+ * id is supplied at all (caller decides whether to render an "unassigned"
+ * placeholder).
+ */
+export function agentInfo(id: string | null | undefined): {
+  id: string;
+  name: string;
+  role: string;
+  model: string;
+} | null {
+  if (!id) return null;
+  const entry = ALLOC_BY_ID[id];
+  const role = entry?.crew_role ?? roleFromId(id);
+  const model = MODEL_BY_ROLE[role] ?? 'unknown';
+  return {
+    id,
+    name: entry?.name ?? id,
+    role,
+    model,
+  };
+}
