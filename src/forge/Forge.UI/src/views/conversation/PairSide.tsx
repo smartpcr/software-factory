@@ -9,15 +9,24 @@ export function PairSide(props: {
   agentName?: string | null;
   agentId?: string | null;
   model?: string | null;
+  /**
+   * Phase 47c — surfacing the backend ("copilot" vs "claude") next to the
+   * model so operators can see which usage cap each agent is hitting. Read
+   * from the most recent `task.prompt` transcript event; null when the
+   * iter hasn't dispatched yet.
+   */
+  backend?: string | null;
+  invokeMode?: string | null;
   sameAsOther?: boolean;
   selected?: boolean;
   onClick?: () => void;
 }): JSX.Element {
-  const { role, crewName, agentName, agentId, model, sameAsOther, selected, onClick } = props;
+  const { role, crewName, agentName, agentId, model, backend, invokeMode, sameAsOther, selected, onClick } = props;
   const portraitKey = agentId ?? agentName ?? null;
   const portrait = portraitKey ? avatarFor(portraitKey, agentName ?? null) : null;
   const tip = portraitKey ? agentTooltip(portraitKey, agentName ?? null, role) : '';
   const modelLabel = model ? formatModelLabel(model) : null;
+  const backendLabel = formatBackendLabel(backend, invokeMode);
   return (
     <div
       className="live-exec__pair-side"
@@ -60,6 +69,7 @@ export function PairSide(props: {
             title={
               (sameAsOther ? 'Generator and evaluator share the same model — pair-diversity rule violated.\n' : '')
               + `Model: ${model}`
+              + (backend ? `\nBackend: ${backend}${invokeMode ? `/${invokeMode}` : ''}` : '')
             }
             style={{
               fontSize: 10,
@@ -68,10 +78,45 @@ export function PairSide(props: {
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              maxWidth: 180,
+              maxWidth: 220,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
             }}
           >
-            {sameAsOther ? '⚠ ' : ''}{modelLabel}
+            {sameAsOther ? '⚠ ' : ''}
+            {backendLabel && (
+              <span
+                title={
+                  backend === 'claude'
+                    ? 'Routes through the Anthropic Claude CLI/SDK (uses your Anthropic plan quota).'
+                    : backend === 'copilot'
+                    ? 'Routes through the GitHub Copilot SDK (uses your Copilot subscription quota).'
+                    : `Backend: ${backend}`
+                }
+                style={{
+                  display: 'inline-block',
+                  padding: '0 4px',
+                  fontSize: 9,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  borderRadius: 3,
+                  border: '1px solid currentColor',
+                  // Color-code so claude (Anthropic billing) reads warn-amber
+                  // and copilot (subscription billing) reads neutral. Helps
+                  // operators spot agents on the wrong rail at a glance.
+                  color: backend === 'claude'
+                    ? 'rgb(217, 119, 6)'
+                    : backend === 'copilot'
+                    ? 'rgb(56, 189, 248)'
+                    : 'inherit',
+                  opacity: 0.9,
+                }}
+              >
+                {backendLabel}
+              </span>
+            )}
+            <span>{modelLabel}</span>
           </span>
         )}
       </div>
@@ -85,4 +130,23 @@ export function PairSide(props: {
 export function formatModelLabel(model: string): string {
   const slash = model.lastIndexOf('/');
   return slash >= 0 ? model.slice(slash + 1) : model;
+}
+
+/**
+ * Format the backend + invoke-mode pair as a compact pill label. Returns
+ * null when both inputs are missing so the chip falls back to the previous
+ * model-only layout. Examples:
+ *   ("copilot", "sdk") → "copilot"
+ *   ("claude",  "cli") → "claude·cli"
+ *   ("copilot", null)  → "copilot"
+ *   (null,       null) → null
+ */
+function formatBackendLabel(backend?: string | null, invokeMode?: string | null): string | null {
+  if (!backend) return null;
+  // Hide the default copilot/sdk invoke-mode (it's the inherited norm) so
+  // the pill stays short for the common case; surface anything else
+  // (claude/cli, copilot/cli, claude/sdk, …) since divergence from the
+  // norm is the actionable signal.
+  if (backend === 'copilot' && (!invokeMode || invokeMode === 'sdk')) return backend;
+  return invokeMode ? `${backend}·${invokeMode}` : backend;
 }
