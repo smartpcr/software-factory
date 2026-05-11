@@ -11,8 +11,10 @@ import {
   groupByIteration,
   TranscriptLine,
   SummaryView,
+  countActiveBuildFailures,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
+import { BuildPane } from './BuildPane';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -114,13 +116,20 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
 
   const isSummaryMode = filter === 'summary';
   const isWorktreeMode = filter === 'worktree';
+  const isBuildMode = filter === 'build';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
+
+  // Phase 49 follow-up — count active build/test failures so the
+  // Build tab can render a red ✗N badge. Recomputed from the full
+  // transcript (not the filtered slice) so failures stay visible even
+  // when the operator has another filter active.
+  const buildFailures = useMemo(() => countActiveBuildFailures(transcript), [transcript]);
 
   const currentIteration = snapshot?.currentIteration ?? (summaryIters.length > 0 ? summaryIters[summaryIters.length - 1].iter : 0);
   const maxIterations = snapshot?.maxIterations ?? 0;
@@ -183,18 +192,49 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
         </div>
       )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
-        {FILTERS.map((f) => (
-          <button
-            key={f.key}
-            type="button"
-            role="tab"
-            aria-selected={filter === f.key}
-            className={`live-exec__filter${filter === f.key ? ' active' : ''}`}
-            onClick={() => setFilter(f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
+        {FILTERS.map((f) => {
+          // Phase 49 follow-up — show a red "✗N" badge on the Build
+          // tab when at least one build / test / quality gate is
+          // currently in a failed terminal state. Helps the operator
+          // spot a stalled workstream without having to open the
+          // tab. Only computed for the Build tab; everything else
+          // gets the unchanged plain label.
+          const buildFailCount = f.key === 'build' ? buildFailures : 0;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              role="tab"
+              aria-selected={filter === f.key}
+              className={`live-exec__filter${filter === f.key ? ' active' : ''}`}
+              onClick={() => setFilter(f.key)}
+            >
+              {f.label}
+              {buildFailCount > 0 && (
+                <span
+                  aria-label={`${buildFailCount} build/test failure${buildFailCount === 1 ? '' : 's'}`}
+                  title={`${buildFailCount} active build/test failure${buildFailCount === 1 ? '' : 's'}`}
+                  style={{
+                    marginLeft: 6,
+                    padding: '0 5px',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: '0.04em',
+                    color: '#fff',
+                    background: 'var(--sc-red, #f87171)',
+                    borderRadius: 8,
+                    lineHeight: '14px',
+                    display: 'inline-block',
+                    minWidth: 14,
+                    textAlign: 'center',
+                  }}
+                >
+                  ✗{buildFailCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
         <span style={{ flex: 1 }} />
         <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming || cancelling || restarting}
           title={isComplete ? 'Completed.' : isLive ? 'Running.' : !canResume ? 'No iterations yet.' : 'Resume loop.'}
@@ -268,6 +308,8 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
         {isWorktreeMode ? (
           <WorktreePane workItemId={workstreamId} />
+        ) : isBuildMode ? (
+          <BuildPane workItemId={workstreamId} />
         ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}

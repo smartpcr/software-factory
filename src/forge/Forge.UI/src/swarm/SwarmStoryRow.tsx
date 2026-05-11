@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { forgeApi, type StorySpawn, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { StoryDeliveryStrip } from './StoryDeliveryStrip';
 
 interface Props {
   spawn: StorySpawn;
@@ -51,13 +52,7 @@ export function SwarmStoryRow({ spawn, index }: Props) {
           {completeCount > 0 && <span className="seg" style={{ color: 'var(--sc-green)' }}><b>{completeCount}</b> complete</span>}
           {spawn.repoId && <span className="seg">repo <b>{spawn.repoId}</b></span>}
         </div>
-        {wsCount > 0 && (
-          <div className="ws-strip" title={`${wsCount} workstreams`}>
-            {ws.map((w) => (
-              <span key={w.id} className={`ws-chip ${w.status}`} title={`${w.id} · ${w.status}`} />
-            ))}
-          </div>
-        )}
+        {detail && <StoryDeliveryStrip detail={detail} />}
       </div>
       <span className={`phase-badge ${spawn.phase}`}>{spawn.phase}</span>
       <div className="sr-progress">

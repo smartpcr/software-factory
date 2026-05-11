@@ -464,6 +464,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
         var claimed = 0;
         var skips = new List<ClaimSkip>();
+        // Phase 47 — load currently-busy agents once per tick. We mutate
+        // this set as we pick agents within the tick so a later crew's
+        // claim sees the just-picked generator/evaluator as busy and
+        // diversifies against them.
+        var busyAgents = await BusyAgentsHelper.LoadBusyAgentsAsync(db, ct);
         foreach (var crewId in crewsWithQueue)
         {
             var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
@@ -604,18 +609,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     picked = priorAgent;
                 }
             }
-            picked ??= onShiftMembers.Count == 0
-                ? crew.Lead
-                : onShiftMembers[Math.Abs(Environment.TickCount) % onShiftMembers.Count];
+            picked ??= ResolveDiverseGenerator(onShiftMembers, busyAgents, crew.Lead);
 
             // Phase 18.6 (Q18.3) — when zero members are on-shift AND there's
             // no lead to fall back on, picked is null. Skip cleanly rather
             // than calling ClaimNextAsync(crewId, null), which would CAS the
             // row to picked-up with PickedUpByAgent=null and then run the
             // agent runner against a null agent id.
+            // Phase 47 — `picked` is also null when every roster member is
+            // currently busy on another invocation (the "no-free-pair-member"
+            // case). Skip with the specific reason so the audit trail
+            // distinguishes capacity-by-roster from capacity-by-cap.
             if (string.IsNullOrEmpty(picked))
             {
-                skips.Add(new ClaimSkip(crewId, "no-agent-available", $"members={allMembers.Count} onShift={onShiftMembers.Count} lead={crew.Lead ?? "(null)"}"));
+                var reason = onShiftMembers.Count > 0 ? "no-free-pair-member" : "no-agent-available";
+                skips.Add(new ClaimSkip(crewId, reason, $"members={allMembers.Count} onShift={onShiftMembers.Count} busy={busyAgents.Count} lead={crew.Lead ?? "(null)"}"));
                 continue;
             }
 
@@ -634,6 +642,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 await db.SaveChangesAsync(ct);
             }
             claimed++;
+
+            // Phase 47 — mark the picked generator busy so subsequent
+            // crews in the same tick don't pick the same agent. The
+            // ledger update from the runner won't be visible until the
+            // next tick; this in-memory mutation closes the gap.
+            busyAgents.Add(picked!);
 
             // Resolve the paired evaluator crew (if any).
             CrewRow? evaluatorCrew = null;
@@ -661,7 +675,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
                 // Phase 22 — write AssignedAgentJson (not AssignedToJson).
                 // AssignedToJson retains whatever WIT-level value it had.
-                var evalAgentId = crew.DefaultEvaluatorAgentId ?? evaluatorCrew?.Lead;
+                // Phase 47 — diversify the evaluator pick over the paired
+                // crew's roster (or this crew's roster when standalone)
+                // so two parallel claims don't share an evaluator. Falls
+                // through to the legacy DefaultEvaluatorAgentId / lead
+                // when no roster member is free; the diversity rule for
+                // the evaluator side is best-effort, not blocking, so a
+                // capacity-saturated pair doesn't wedge the queue.
+                var evalAgentId = await ResolveDiverseEvaluatorAsync(
+                    db, crew, evaluatorCrew, picked!, busyAgents, ct);
                 var agents = new List<string> { picked! };
                 if (evalAgentId is not null) agents.Add(evalAgentId);
                 var now = DateTimeOffset.UtcNow;
@@ -680,6 +702,18 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     assignedBy = "queue-worker",
                 };
                 wi.AssignedAgentJson = System.Text.Json.JsonSerializer.Serialize(assignedAgent);
+
+                // Phase 47 — persist the resolved evaluator on the queue
+                // row so the deliverable loop's evaluator-resolution path
+                // (RunAgentAsync) reads the same agent that
+                // AssignedAgentJson advertised. Without this, the runner
+                // re-derives evaluator from CrewRow.DefaultEvaluatorAgentId
+                // and disagrees with the diverse pick.
+                if (!string.IsNullOrEmpty(evalAgentId))
+                {
+                    row.RoutedEvaluatorAgentId = evalAgentId;
+                    busyAgents.Add(evalAgentId);
+                }
 
                 // Phase 22 — append agent_assignments history row atomically.
                 db.AgentAssignments.Add(new AgentAssignmentRow
@@ -730,7 +764,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 try
                 {
-                    await RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None);
+                    await RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, row.RoutedEvaluatorAgentId, CancellationToken.None);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -759,7 +793,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Agent runner kickoff ───────────────────────────────────────────────
     private async Task RunAgentAsync(
         string workItemId, string crewId, string agentId,
-        CrewRow crew, WorkItemRow? wi, string kind, CancellationToken ct)
+        CrewRow crew, WorkItemRow? wi, string kind,
+        string? routedEvaluatorAgentId,
+        CancellationToken ct)
     {
         // Phase 44 — claim the agent slot before doing any work.
         await this.slots.TryClaimAsync(agentId, workItemId, "generator", ct);
@@ -1033,7 +1069,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Subscribe the worktree feed now that the final path is known.
             if (!string.IsNullOrEmpty(worktreePath))
             {
-                this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath);
+                // Phase 49 follow-up — anchor the live branchDiff at the
+                // workstream's REAL base branch (spawn.BaseBranch when
+                // present) so the Worktree-tab pills agree with what
+                // /commits computes. Without this the feed would diff
+                // against repo default (often `main`) and inflate the
+                // pills with every upstream PR's contents.
+                var resolvedBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+                    .ResolveAsync(db, workItemId, ct);
+                this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath, resolvedBase);
             }
 
             // Build prompt from the work item.
@@ -1276,7 +1320,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 evalCrew = await db.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
                 evaluatorCrewId = evalCrew?.Id;
-                evaluatorAgentId = crew.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
+                // Phase 47 — prefer the evaluator the queue worker resolved
+                // at claim time so this iteration scores against the same
+                // diverse pick that AssignedAgentJson advertised. Falls
+                // back to the legacy DefaultEvaluatorAgentId / lead chain
+                // when null (legacy claims pre-dating Phase 47).
+                evaluatorAgentId = !string.IsNullOrEmpty(routedEvaluatorAgentId)
+                    ? routedEvaluatorAgentId
+                    : crew.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
             }
 
             // (3) Run the deliverable loop (generator ↔ evaluator iterations).
@@ -2694,6 +2745,69 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// determine the product and skip — auto-creating a "homeless" workstream
     /// would be worse than the empty view.
     /// </summary>
+    /// <summary>
+    /// Phase 47 — pure wrapper around <see cref="PairDiversityResolver.PickGenerator"/>
+    /// that supplies the production round-robin seed (TickCount). Tests
+    /// call <c>PairDiversityResolver.PickGenerator</c> directly with a
+    /// deterministic seed.
+    /// </summary>
+    private static string? ResolveDiverseGenerator(
+        IReadOnlyList<string> onShiftMembers,
+        HashSet<string> busyAgents,
+        string? lead)
+    {
+        var (agentId, _) = PairDiversityResolver.PickGenerator(
+            onShiftMembers, busyAgents, lead, Environment.TickCount);
+        return agentId;
+    }
+
+    /// <summary>
+    /// Phase 47 — resolve the evaluator agent for a row's claim. Pulls the
+    /// paired crew's members (or the same crew's members minus the picked
+    /// generator for a standalone crew) as the candidate roster and runs
+    /// <see cref="PairDiversityResolver.PickEvaluator"/>. Best-effort:
+    /// when the resolver returns null (every candidate busy), falls
+    /// through to the legacy <c>DefaultEvaluatorAgentId</c> /
+    /// <c>evaluatorCrew.Lead</c> chain so the row still claims (the
+    /// evaluator can wait its turn rather than blocking the row).
+    /// </summary>
+    private static async Task<string?> ResolveDiverseEvaluatorAsync(
+        ForgeDbContext db,
+        CrewRow generatorCrew,
+        CrewRow? evaluatorCrew,
+        string generatorAgentId,
+        HashSet<string> busyAgents,
+        CancellationToken ct)
+    {
+        // Build the evaluator candidate roster.
+        var rosterCrewId = evaluatorCrew?.Id ?? generatorCrew.Id;
+        var roster = await db.CrewMembers.AsNoTracking()
+            .Where(m => m.CrewId == rosterCrewId)
+            .Select(m => m.AgentId)
+            .ToListAsync(ct);
+
+        // The evaluator-side roster must NOT include the just-picked
+        // generator (Phase 39 gen != eval). PickEvaluator filters on this
+        // too, but pre-filtering keeps the candidate list tidy in the
+        // standalone-crew case where roster == generator-crew members.
+        var defaultEvalAgentId = generatorCrew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.Lead;
+
+        var (picked, _) = PairDiversityResolver.PickEvaluator(
+            roster, busyAgents, defaultEvalAgentId, generatorAgentId);
+
+        // Q47.3 implication — evaluator diversity is best-effort. If
+        // every roster member is busy, fall back to the legacy chain so
+        // the row still claims and the iteration can still run; the
+        // ledger contention will sort itself out as runs finish.
+        if (picked is null)
+        {
+            picked = defaultEvalAgentId;
+        }
+        return picked;
+    }
+
     private async Task AutoLinkToWorkstreamAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         try

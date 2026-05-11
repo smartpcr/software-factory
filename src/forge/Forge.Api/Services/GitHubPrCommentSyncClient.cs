@@ -89,6 +89,26 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         var canonical = PrSyncJob.MapUpstreamState("github", providerState);
         var prUpdatedAt = prDoc.RootElement.TryGetProperty("updated_at", out var ua) ? ua.GetString() : null;
 
+        // Phase 49 follow-up — capture the PR's running file/commit/diff
+        // stats from the SAME response we're already parsing. GitHub
+        // returns these on GET /pulls/{n} alongside head/base. Without
+        // this, PrRow.Commits / Files / Additions / Deletions stayed at
+        // whatever was set at PR-creation time and never reflected the
+        // engineer's review-fix commits (observed 2026-05-10 on PR
+        // smartpcr/failover-cluster#3: GitHub showed 5 commits after
+        // review-fix pushed 3 reply commits, but the Forge PR header
+        // still read "2 commits" — the original CreatePullRequest count).
+        // Parsing into nullables so the PrSyncJob's existing
+        // `if (snapshot.X.HasValue)` write guards still work.
+        int? commitsCount = null;
+        int? filesChanged = null;
+        int? additions = null;
+        int? deletions = null;
+        if (prDoc.RootElement.TryGetProperty("commits", out var cEl) && cEl.ValueKind == JsonValueKind.Number) commitsCount = cEl.GetInt32();
+        if (prDoc.RootElement.TryGetProperty("changed_files", out var fEl) && fEl.ValueKind == JsonValueKind.Number) filesChanged = fEl.GetInt32();
+        if (prDoc.RootElement.TryGetProperty("additions", out var aEl) && aEl.ValueKind == JsonValueKind.Number) additions = aEl.GetInt32();
+        if (prDoc.RootElement.TryGetProperty("deletions", out var dEl) && dEl.ValueKind == JsonValueKind.Number) deletions = dEl.GetInt32();
+
         // Capture base + source branch so the local PrRow.Base / .Branch
         // don't go stale when the operator retargets the PR on GitHub.
         // Without this, the merge endpoint's pre-rebase fetches the wrong
@@ -112,11 +132,18 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
             headRef = headRefEl.GetString();
         }
 
-        // Skip the comment fetch entirely when nothing has changed.
+        // Skip the comment fetch entirely when nothing has changed —
+        // but still echo back the freshly-read stats so the PR header
+        // counters refresh even when no new comments landed (engineer
+        // pushed a fix commit without comment activity).
         if (!string.IsNullOrEmpty(pr.LastUpstreamUpdatedAt)
             && string.Equals(prUpdatedAt, pr.LastUpstreamUpdatedAt, StringComparison.Ordinal))
         {
             return new PrSyncSnapshot(canonical, prUpdatedAt, Array.Empty<PrSyncComment>(), false,
+                Files: filesChanged,
+                Commits: commitsCount,
+                Additions: additions,
+                Deletions: deletions,
                 BaseBranch: baseRef, SourceBranch: headRef);
         }
 
@@ -156,6 +183,10 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         }
 
         return new PrSyncSnapshot(canonical, prUpdatedAt, byId.Values.ToList(), true,
+            Files: filesChanged,
+            Commits: commitsCount,
+            Additions: additions,
+            Deletions: deletions,
             BaseBranch: baseRef, SourceBranch: headRef);
     }
 
