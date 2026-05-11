@@ -59,11 +59,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
             return;
         }
 
-        // Doesn't exist remotely — create + push.
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
-        await this.EnsureWorktreeAsync(root, wtPath, branch, baseBranch, ct);
-        await this.GitAsync(wtPath, ct, "push", "-u", "origin", branch);
+        // Phase 49 follow-up — push the new branch ref to origin WITHOUT
+        // creating a worktree. The legacy code materialised a worktree
+        // here just so it could `git push -u` from it, but that produced
+        // 100+ char `.worktree/{slug}` directories for EVERY workstream
+        // the claim sweep visited (observed 2026-05-10 on
+        // failover-cluster:XRAFT: 20 stale worktrees for unstarted
+        // stages). The lazy `EnsureWorktreeAsync` inside
+        // `ProduceWorkstreamChangesAsync` still creates a worktree when
+        // an agent actually needs one. Pushing
+        // `refs/remotes/origin/{base}:refs/heads/{branch}` advances the
+        // remote-tracking ref directly — no working copy required.
+        await this.GitAsync(root, ct, "push", "origin",
+            $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+
+        // After the push, fetch back so the local remote-tracking ref is
+        // populated. Downstream callers (RealStoryGitOps.ReadFileAsync,
+        // EnsureWorktreeAsync's existing-on-origin branch) read
+        // `refs/remotes/origin/{branch}` and would otherwise see "not
+        // found" until the next periodic fetch.
+        await this.GitAsync(root, ct, "fetch", "origin", branch);
     }
 
     public async Task<string> CommitFilesAsync(
@@ -280,8 +295,21 @@ public sealed class RealStoryGitOps : IStoryGitOps
         RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
+
+        // Phase 49 follow-up — find the EXISTING worktree on this branch
+        // (regardless of which directory layout it lives under: the new
+        // `stage-{n.n}-{slug}` short name, the legacy `spawn-{slug}`, or
+        // any operator-customised path). The merge MUST happen in the
+        // same working directory the agent is using, otherwise the
+        // merge commit lands in a sibling worktree and the agent's
+        // tree stays at the pre-merge state (observed 2026-05-10 on
+        // failover-cluster:XRAFT stage 1.2: behind base by 1, agent
+        // saw README + docs only). Only fall back to creating a new
+        // worktree at the legacy path when NO worktree is registered.
+        var existingWtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        var wtPath = !string.IsNullOrEmpty(existingWtPath)
+            ? existingWtPath
+            : WorktreePath(root, SanitizeBranchSlug(branch));
 
         // Ensure the worktree is up to date.
         await this.EnsureWorktreeAsync(root, wtPath, branch, branch, ct);
@@ -294,6 +322,34 @@ public sealed class RealStoryGitOps : IStoryGitOps
         if (branchOnOrigin)
         {
             await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+
+            // Phase 47b — diagnostic breadcrumb for the worktree-wipe
+            // investigation. The engineer agent's uncommitted edits
+            // shouldn't be present here in normal operation: this method
+            // is reached AFTER CommitFilesAsync pushed any pending work
+            // to origin. If `git status` shows uncommitted changes at
+            // this point, something committed-but-not-pushed will be
+            // lost, OR the agent left edits on disk that the orchestrator
+            // didn't capture into the file dict (a bug). Capture the
+            // pre-reset state so we can correlate against the
+            // workstream's deliverable history.
+            var preReset = await this.CaptureWorktreeStateAsync(wtPath, ct);
+            var (orgShaCode, orgShaOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "rev-parse", $"origin/{branch}");
+            var originSha = orgShaCode == 0 ? orgShaOut.Trim() : "(unknown)";
+            if (preReset.UncommittedCount > 0 || !string.Equals(preReset.HeadSha, originSha, StringComparison.OrdinalIgnoreCase))
+            {
+                this.logger?.LogWarning(
+                    "WORKTREE_FORCE_RESET merge-upstream: branch={Branch} wtPath={WtPath} "
+                    + "preResetHead={Head} originSha={OriginSha} uncommittedFileCount={UncommittedCount} "
+                    + "sampleUncommittedPaths={SamplePaths} "
+                    + "(about to `git reset --hard origin/{Branch}` before merging origin/{Upstream}; "
+                    + "reflog can recover within gc-grace).",
+                    branch, wtPath, preReset.HeadSha, originSha,
+                    preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
+                    branch, upstreamBranch);
+            }
+
             await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
         }
         else
@@ -401,11 +457,17 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     public async Task<string> EnsureWorktreeAsync(
-        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default, string? worktreeSlug = null)
     {
         var root = ResolveCloneRoot(repo);
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
+        // Phase 49 — when the caller passes a precomputed slug (engineer
+        // workstreams use WorkstreamWorktreeSlug.Compute), root the
+        // worktree directory at it directly. Otherwise fall back to the
+        // legacy `spawn-{branch-slug}` shape so plan-doc / QA paths
+        // (which already have short names) don't churn.
+        var wtPath = !string.IsNullOrWhiteSpace(worktreeSlug)
+            ? Path.Combine(root, ".worktree", worktreeSlug)
+            : WorktreePath(root, SanitizeBranchSlug(branch));
 
         // Serialise the ensure step against itself per-branch so two concurrent
         // callers don't race `git worktree add`.
@@ -420,6 +482,63 @@ public sealed class RealStoryGitOps : IStoryGitOps
             gate.Release();
         }
         return wtPath;
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — locate and remove the worktree currently
+    /// associated with <paramref name="branch"/>, regardless of which
+    /// directory layout (legacy <c>spawn-{slug}</c> vs. new
+    /// <c>stage-{n.n}-{slug}</c>) it lives under. Best-effort: never
+    /// throws, just logs. The branch ref itself is left intact (an
+    /// already-merged plan / workstream branch is still useful for
+    /// audit). Used to free disk after a spawn's plan PR merges (plan
+    /// worktree becomes stale) and after each engineer workstream's PR
+    /// merges (engineer worktree becomes stale).
+    /// </summary>
+    public async Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(branch)) return;
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
+        if (!Directory.Exists(repo.CloneRoot)) return;
+
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "prune");
+            var existing = await this.TryFindExistingWorktreeAsync(repo.CloneRoot, branch, ct);
+            if (string.IsNullOrEmpty(existing))
+            {
+                this.logger?.LogDebug(
+                    "RemoveWorktreeAsync: no worktree registered for branch {Branch} on repo {Repo}; nothing to clean.",
+                    branch, repo.Id);
+                return;
+            }
+
+            this.logger?.LogInformation(
+                "RemoveWorktreeAsync: removing worktree {Path} for branch {Branch}.", existing, branch);
+            await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "remove", "--force", existing);
+            if (Directory.Exists(existing))
+            {
+                try { Directory.Delete(existing, recursive: true); }
+                catch (IOException ex)
+                {
+                    this.logger?.LogWarning(ex,
+                        "RemoveWorktreeAsync: could not delete dir {Path} after `git worktree remove`; will be pruned on next claim.",
+                        existing);
+                }
+            }
+            await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "prune");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "RemoveWorktreeAsync: best-effort cleanup failed for branch {Branch}; ignoring.", branch);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task<string> CommitPathInWorktreeAsync(
@@ -516,13 +635,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     /// <summary>
     /// Phase 45 follow-up — list repo-relative paths of files the agent
-    /// modified inside <paramref name="worktreePath"/>. Combines two
-    /// sources so we don't lose changes regardless of how the agent
-    /// chose to "save its work":
+    /// <summary>
+    /// Combine two views of "what the agent contributed":
     /// <list type="number">
     /// <item><c>git status --porcelain -z</c> — files the agent edited
     /// but didn't commit (the expected/intended path).</item>
-    /// <item><c>git diff --name-only origin/{branch}..HEAD</c> — files
+    /// <item><c>git diff --name-only origin/{ref}..HEAD</c> — files
     /// touched by commits the agent made itself via its <c>bash</c> /
     /// <c>run_command</c> tool but that haven't been pushed yet.
     /// Observed 2026-05-05 when the engineer prompt mentioned
@@ -530,13 +648,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// <c>git add -A &amp;&amp; git commit</c> too. Treating those as
     /// "no changes" was a false negative that halted impl phases.</item>
     /// </list>
-    /// Skips deletions (the orchestrator's <see cref="CommitFilesAsync"/>
+    ///
+    /// <para>Phase 49 follow-up — the reference for source #2 is now
+    /// caller-controlled. When <paramref name="baseBranch"/> is
+    /// non-empty, diff against <c>origin/{baseBranch}</c> (the merge
+    /// target — gives the cumulative scope of the PR). When null/empty,
+    /// fall back to <c>origin/{HEAD branch}</c> (the legacy "delta since
+    /// last published state" frame, suitable for per-iter no-progress
+    /// detection where we want the counter to reset on uncommitted edits
+    /// each iter rather than latching to "always non-zero" after the
+    /// agent's first self-commit). The post-pass commit path passes
+    /// <c>spawn.BaseBranch</c> so the workstream's contribution is
+    /// computed against the PR target, not against a stale workstream
+    /// remote (observed 2026-05-10 on failover-cluster:XRAFT, where
+    /// <c>origin/{ws-branch}</c> was pinned to the plan PR base instead
+    /// of <c>origin/main</c>).</para>
+    ///
+    /// <para>Skips deletions (the orchestrator's <see cref="CommitFilesAsync"/>
     /// dict contract can't express them) and path-traversal entries.
-    /// Returns an empty list when the worktree is clean AND the local
-    /// branch matches origin (or the upstream ref doesn't exist yet).
+    /// Returns an empty list when the worktree is clean AND the
+    /// reference ref doesn't exist or there is no committed delta.</para>
     /// </summary>
     public async Task<IReadOnlyList<string>> GetChangedFilesAsync(
-        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+        RepoRow? repo, string worktreePath, string? baseBranch = null, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
             return Array.Empty<string>();
@@ -588,24 +722,38 @@ public sealed class RealStoryGitOps : IStoryGitOps
             }
         }
 
-        // ── 2) Local commits ahead of origin/{branch} ───────────────────
-        // Resolve the branch from the worktree itself (no signature
-        // change needed at the IStoryGitOps level). If the worktree is
-        // detached or origin/{branch} doesn't exist yet (very-first
-        // workstream commit before the initial push), fall back to
-        // returning just the uncommitted set.
-        var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
-        if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut)) return ordered;
-        var branch = branchOut.Trim();
-        if (branch == "HEAD") return ordered; // detached
+        // ── 2) Local commits ahead of the reference ref ─────────────────
+        // Phase 49 — when baseBranch is supplied, diff against the merge
+        // target (origin/{baseBranch}). This is the conceptually correct
+        // frame for the post-pass commit decision: a workstream's
+        // contribution is what would land in the PR, which is HEAD's
+        // delta from the target it merges into — NOT the workstream's
+        // own remote tracking branch (which may be at an unrelated tip
+        // or missing entirely for a never-pushed branch). When
+        // baseBranch is null/empty, fall back to origin/{HEAD branch}
+        // for per-iter no-progress detection where we want the counter
+        // to track delta-since-last-publish, not cumulative-since-base.
+        string refToDiffAgainst;
+        if (!string.IsNullOrWhiteSpace(baseBranch))
+        {
+            refToDiffAgainst = $"origin/{baseBranch}";
+        }
+        else
+        {
+            var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
+            if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut)) return ordered;
+            var branch = branchOut.Trim();
+            if (branch == "HEAD") return ordered; // detached
+            refToDiffAgainst = $"origin/{branch}";
+        }
 
         var (refCode, _, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "rev-parse", "--verify", $"refs/remotes/origin/{branch}");
-        if (refCode != 0) return ordered; // upstream ref missing — nothing to diff against
+            worktreePath, ct, "rev-parse", "--verify", $"refs/remotes/{refToDiffAgainst}");
+        if (refCode != 0) return ordered; // reference ref missing — nothing to diff against
 
         var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "diff", "--name-only", "-z", $"origin/{branch}..HEAD");
+            worktreePath, ct, "diff", "--name-only", "-z", $"{refToDiffAgainst}..HEAD");
         if (diffCode != 0 || string.IsNullOrEmpty(diffOut)) return ordered;
 
         foreach (var entry in diffOut.Split('\0'))
@@ -700,6 +848,39 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // doesn't leave a registered-but-missing entry that confuses us.
         await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
 
+        // Phase 49 follow-up — the branch may be registered to a DIFFERENT
+        // worktree path under the legacy `spawn-{branch-slug}` layout
+        // (typically 100+ chars). Detect that and unregister before we try
+        // to add the short-name worktree, otherwise `git worktree add` aborts
+        // with "branch already checked out at {oldPath}". The branch ref
+        // (and any local commits the agent made) survives the worktree
+        // removal — only the working directory is torn down.
+        var existingOnBranch = await this.TryFindExistingWorktreeAsync(cloneRoot, branch, ct);
+        if (!string.IsNullOrEmpty(existingOnBranch))
+        {
+            var wantedNormalized = wtPath.Replace('\\', '/');
+            var existingNormalized = existingOnBranch.Replace('\\', '/');
+            if (!string.Equals(wantedNormalized, existingNormalized, StringComparison.OrdinalIgnoreCase))
+            {
+                this.logger?.LogInformation(
+                    "Phase 49 worktree migration: branch {Branch} is registered at legacy path {Old}; "
+                    + "removing so it can be re-added at the short path {New}.",
+                    branch, existingOnBranch, wtPath);
+                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", existingOnBranch);
+                if (Directory.Exists(existingOnBranch))
+                {
+                    try { Directory.Delete(existingOnBranch, recursive: true); }
+                    catch (IOException ex)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "Could not delete legacy worktree dir {Path}; git worktree remove may have cleared the registration only.",
+                            existingOnBranch);
+                    }
+                }
+                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
+            }
+        }
+
         // Step 2: registered + on-disk → reuse. Normalize both sides because
         // `git worktree list` reports forward-slash paths even on Windows
         // while wtPath is backslash-separated.
@@ -711,9 +892,33 @@ public sealed class RealStoryGitOps : IStoryGitOps
             // Best-effort fetch — the remote branch may have been deleted
             // after a PR merge. The local worktree still has its commits.
             await this.RunGitCaptureAsync(wtPath, ct, "fetch", "origin", branch);
-            var (code, _, _) = await this.RunGitCaptureAsync(wtPath, ct, "checkout", branch);
+            var (code, coStdout, coStderr) = await this.RunGitCaptureAsync(wtPath, ct, "checkout", branch);
             if (code != 0)
             {
+                // Phase 47b — diagnostic breadcrumb for the worktree-wipe
+                // investigation. Production observed (2026-05-09) the
+                // engineer agent calling `edit` 65× with confirmed tool
+                // results, yet `git status` empty between iter spans —
+                // suggesting one of two destructive paths discarded the
+                // edits. This fallback is one of them: `git checkout -B
+                // {branch} origin/{branch}` is a hard reset of the branch
+                // ref AND the working tree to origin's HEAD. Anything
+                // uncommitted that conflicts with origin's tree is wiped.
+                // Capture the pre-reset state (uncommitted file count,
+                // sample paths, HEAD SHA, original checkout error) so we
+                // can correlate against the workstream's deliverable
+                // history when investigating "agent edited but no diff".
+                var preReset = await this.CaptureWorktreeStateAsync(wtPath, ct);
+                this.logger?.LogWarning(
+                    "WORKTREE_FORCE_RESET ensure-fallback: branch={Branch} wtPath={WtPath} "
+                    + "checkoutExit={CheckoutCode} checkoutStdout={CheckoutStdout} checkoutStderr={CheckoutStderr} "
+                    + "preResetHead={Head} uncommittedFileCount={UncommittedCount} sampleUncommittedPaths={SamplePaths} "
+                    + "(falling back to destructive `git checkout -B {Branch} origin/{Branch}` — ANY uncommitted changes that "
+                    + "conflict with origin/{Branch} will be discarded; reflog can recover within gc-grace).",
+                    branch, wtPath, code, Trim(coStdout, 200), Trim(coStderr, 200),
+                    preReset.HeadSha, preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
+                    branch, branch, branch);
+
                 await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
             }
             return;
@@ -855,5 +1060,54 @@ public sealed class RealStoryGitOps : IStoryGitOps
         var stderr = await stderrTask;
         this.logger?.LogDebug("git {Args} → exit={Exit} cwd={Cwd}", string.Join(' ', args), p.ExitCode, cwd);
         return (p.ExitCode, stdout, stderr);
+    }
+
+    /// <summary>
+    /// Phase 47b — snapshot a worktree's pre-destructive-op state for the
+    /// WORKTREE_FORCE_RESET diagnostic breadcrumb. Captures HEAD SHA + the
+    /// uncommitted-file count + a small sample of the actual paths so the
+    /// operator can correlate against the workstream's deliverable history
+    /// when investigating "agent edited but no diff".
+    /// </summary>
+    private async Task<(string HeadSha, int UncommittedCount, IReadOnlyList<string> SamplePaths)>
+        CaptureWorktreeStateAsync(string wtPath, CancellationToken ct)
+    {
+        string headSha = "(unknown)";
+        try
+        {
+            var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
+            if (shaCode == 0) headSha = shaOut.Trim();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort */ }
+
+        var samples = new List<string>(8);
+        var count = 0;
+        try
+        {
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain", "-uall");
+            if (statusCode == 0 && !string.IsNullOrEmpty(statusOut))
+            {
+                foreach (var line in statusOut.Split('\n'))
+                {
+                    if (line.Length < 4) continue;
+                    count++;
+                    if (samples.Count < 8)
+                    {
+                        var path = line.Substring(3).Trim();
+                        if (!string.IsNullOrEmpty(path)) samples.Add(path);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort */ }
+
+        return (headSha, count, samples);
+    }
+
+    private static string Trim(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value.Length <= max ? value.Trim() : value.Substring(0, max).Trim() + "…";
     }
 }

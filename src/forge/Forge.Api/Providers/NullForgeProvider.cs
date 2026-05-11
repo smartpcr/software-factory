@@ -63,6 +63,9 @@ public class NullForgeProvider : IForgeProvider
     public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
         throw Unconfigured();
 
+    public Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
     public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
         throw Unconfigured();
 

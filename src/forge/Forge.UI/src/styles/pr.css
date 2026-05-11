@@ -691,6 +691,22 @@
 }
 .pr-comment-row.is-bot .pr-comment-avatar { background: var(--bg-base); }
 
+/* Phase 49 follow-up — when the avatar resolves to a bundled portrait
+   via avatarFor(id), render the PNG flush to the chip edges instead of
+   the initials-on-bg pattern. The img is set to overflow:hidden via
+   the parent's border-radius so it inherits the circular crop. */
+.pr-comment-avatar.has-image {
+  overflow: hidden;
+  background: transparent;
+  padding: 0;
+}
+.pr-comment-avatar.has-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .pr-comment-main { flex: 1; min-width: 0; }
 
 .pr-comment-meta {

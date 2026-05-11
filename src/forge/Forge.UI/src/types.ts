@@ -6,7 +6,17 @@ export type CardType = 'story' | 'task' | 'bug';
 export type ColumnId = 'backlog' | 'design' | 'build' | 'review' | 'done';
 export type Priority = 'low' | 'med' | 'high';
 export type EpicStatus = 'active' | 'merging' | 'planning';
-export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning' | 'idle';
+export type WorkstreamStatus =
+  | 'active'
+  | 'merging'
+  | 'review'
+  | 'planning'
+  | 'idle'
+  | 'blocked'
+  | 'stalled'
+  | 'complete'
+  | 'cancelled'
+  | 'historic';
 
 /** Phase 43 — metadata for an operator-uploaded reference document. */
 export interface StoryAttachment {
@@ -115,6 +125,15 @@ export interface Workstream {
   planned?: boolean;
   /** Phase 8.11 — repo this workstream belongs to. Null on legacy seed rows. */
   repoId?: string | null;
+  /**
+   * Phase 49 — when {@link status} is `'stalled'`, a human-readable
+   * description of the failure that landed the row in operator triage
+   * (build gate, no-progress, non-pass verdict). Null on every other
+   * status. Surfaced as a tooltip on the stalled badge so operators
+   * can decide whether to Restart or escalate without drilling into
+   * the Conversation tab.
+   */
+  stallReason?: string | null;
 }
 
 export interface WsEvent {
