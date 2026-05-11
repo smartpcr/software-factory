@@ -614,10 +614,10 @@ public class Phase16ExecutionTests
 
             Assert.Equal(0, feed.CountSubscribers(@"C:\repo\wt\feature1"));
 
-            feed.Subscribe("wi-wt-1", "ws-1", @"C:\repo\wt\feature1");
+            feed.Subscribe("wi-wt-1", "ws-1", @"C:\repo\wt\feature1", "main");
             Assert.Equal(1, feed.CountSubscribers(@"C:\repo\wt\feature1"));
 
-            feed.Subscribe("wi-wt-2", "ws-1", @"C:\repo\wt\feature1");
+            feed.Subscribe("wi-wt-2", "ws-1", @"C:\repo\wt\feature1", "main");
             Assert.Equal(2, feed.CountSubscribers(@"C:\repo\wt\feature1"));
 
             feed.Unsubscribe("wi-wt-1");
