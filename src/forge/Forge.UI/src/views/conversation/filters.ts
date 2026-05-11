@@ -110,6 +110,54 @@ export function isBuildEvent(e: TaskTranscriptEvent): boolean {
   return false;
 }
 
+/**
+ * Phase 49 follow-up — Forge-emitted build / test event kinds that
+ * indicate a HARD failure (gate refused the PR). The tab badge uses
+ * this so a stale `per-iter build (warning)` warning that the agent
+ * already recovered from doesn't keep the badge red.
+ */
+const FORGE_BUILD_FAILURE_KINDS = new Set<string>([
+  'task.build-gate.failed',
+  'task.test-gate.failed',
+  'task.build-failed.aborted',
+]);
+
+/**
+ * Phase 49 follow-up — count active build/test failures in the
+ * transcript. Used by the conversation tab strip to render a red
+ * "✗ N" badge on the Build tab so the operator sees a stalled
+ * workstream's build state without clicking into the tab.
+ *
+ * <para>"Active" here means "the last terminal state for that gate
+ * is failure". A workstream that had a build-gate.failed earlier
+ * but later passed (e.g. operator hit Restart) shows 0 — we walk the
+ * transcript forward and clear the failure on any subsequent passed
+ * event for the same stage. The set is small (~3 stages: post-pass
+ * build, post-pass-quality, post-pass test, plus per-iter aborted)
+ * so an O(N) walk is fine.</para>
+ */
+export function countActiveBuildFailures(events: TaskTranscriptEvent[]): number {
+  // Map of "stage" → most recent terminal state ('pass' | 'fail').
+  // Stage is taken from payload.stage (post-pass / post-pass-quality /
+  // post-pass-test) for gate events; the per-iter aborted event
+  // doesn't have a stage so we use the literal kind as the key.
+  const stageState = new Map<string, 'pass' | 'fail'>();
+  for (const e of events) {
+    if (!FORGE_BUILD_EVENT_KINDS.has(e.kind)) continue;
+    const p = (e.payload as Record<string, unknown> | null) ?? {};
+    const stage = (p.stage as string) ?? e.kind;
+    if (FORGE_BUILD_FAILURE_KINDS.has(e.kind)) {
+      stageState.set(stage, 'fail');
+    } else if (e.kind === 'task.build-gate.passed' || e.kind === 'task.test-gate.passed') {
+      stageState.set(stage, 'pass');
+    }
+    // skipped / detected (warning) don't change terminal state
+  }
+  let n = 0;
+  for (const v of stageState.values()) if (v === 'fail') n += 1;
+  return n;
+}
+
 export function filterEvents(
   events: TaskTranscriptEvent[],
   f: FilterKey,

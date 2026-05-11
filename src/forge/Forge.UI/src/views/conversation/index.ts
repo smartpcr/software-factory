@@ -5,6 +5,8 @@ export {
   filterEvents,
   buildPageWindow,
   groupByIteration,
+  isBuildEvent,
+  countActiveBuildFailures,
 } from './filters';
 export { TranscriptLine, renderPayload } from './TranscriptLine';
 export { SummaryView } from './SummaryView';

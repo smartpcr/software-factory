@@ -11,6 +11,7 @@ import {
   groupByIteration,
   TranscriptLine,
   SummaryView,
+  countActiveBuildFailures,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
@@ -217,6 +218,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
   // Reverse-chronological: newest events on top within the active iteration.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
+  // Phase 49 follow-up — count active build/test failures so the
+  // Build tab gets a red ✗N badge even when the operator hasn't
+  // opened it yet. Same shape as WorkstreamConversationPane.
+  const buildFailures = useMemo(() => countActiveBuildFailures(transcript), [transcript]);
+
   // Empty / loading guard. The pane is also reachable when the doc hasn't
   // produced any iterations yet — show the same prompt-y empty state as
   // before in that case.
@@ -239,18 +245,43 @@ export function DocConversationPane({ storyId, docId }: Props) {
   return (
     <div className="doc-conv doc-conv--quiet">
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
-        {FILTERS.map((f) => (
-          <button
-            key={f.key}
-            type="button"
-            role="tab"
-            aria-selected={filter === f.key}
-            className={`live-exec__filter${filter === f.key ? ' active' : ''}`}
-            onClick={() => setFilter(f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
+        {FILTERS.map((f) => {
+          const buildFailCount = f.key === 'build' ? buildFailures : 0;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              role="tab"
+              aria-selected={filter === f.key}
+              className={`live-exec__filter${filter === f.key ? ' active' : ''}`}
+              onClick={() => setFilter(f.key)}
+            >
+              {f.label}
+              {buildFailCount > 0 && (
+                <span
+                  aria-label={`${buildFailCount} build/test failure${buildFailCount === 1 ? '' : 's'}`}
+                  title={`${buildFailCount} active build/test failure${buildFailCount === 1 ? '' : 's'}`}
+                  style={{
+                    marginLeft: 6,
+                    padding: '0 5px',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: '0.04em',
+                    color: '#fff',
+                    background: 'var(--sc-red, #f87171)',
+                    borderRadius: 8,
+                    lineHeight: '14px',
+                    display: 'inline-block',
+                    minWidth: 14,
+                    textAlign: 'center',
+                  }}
+                >
+                  ✗{buildFailCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
         <span style={{ flex: 1 }} />
         <button type="button" className="doc-conv-resume-btn" disabled={!canResume || busy}
           title={isLive ? 'Running.' : isCompleted ? 'Shipped.' : !hasIterations ? 'No iterations.' : 'Resume loop.'}

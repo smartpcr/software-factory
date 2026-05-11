@@ -2249,44 +2249,115 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // iters; routes to BuildFailedException → blocked. Distinct from
         // no-progress so the operator can tell which failure mode hit.
         var consecutiveBrokenBuild = 0;
+        // Phase 49 follow-up — when the per-iter build gate fails we
+        // capture the result so the NEXT iteration's generator prompt
+        // can quote the actual compiler / test output. Without this the
+        // generator only sees the evaluator's text-only feedback and
+        // has no way to know its code doesn't compile (the build runs
+        // AFTER the generator returns its diff, so the agent itself
+        // never observes the failure mid-turn unless it volunteered a
+        // build inside the tool stream). Cleared back to null on the
+        // first successful build so a stale failure doesn't haunt the
+        // prompt forever once the agent fixes it.
+        StoryBuildResult? lastBuildFailure = null;
+        string? lastBuildFailureCommand = null;
         const int NoProgressThreshold = 3;
         const int BuildFailThreshold = 3;
         var isImplPhase = phaseTag.StartsWith("impl:", StringComparison.Ordinal);
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
         {
+            // Phase 49 follow-up — assemble the iter prompt from up to
+            // THREE layered sections so the generator sees the most
+            // actionable feedback first:
+            //   1. Build / test output from the prior iter (if any) —
+            //      compiler-truth, highest signal. Forge already
+            //      decided this iter's diff doesn't build; the agent
+            //      MUST fix that before doing anything else.
+            //   2. Evaluator feedback (if any) — text critique on
+            //      what's wrong with the design / approach. Useful
+            //      once the code at least compiles.
+            //   3. The original brief — for reference. Same exact
+            //      content as iter 1; never gets "lost" but takes
+            //      bottom priority once feedback exists.
+            // iter 1 has neither section (1) nor (2), so it sees only
+            // the brief — the unchanged historic shape.
+            var hasBuildFeedback = lastBuildFailure is not null;
+            var hasEvalFeedback = !string.IsNullOrWhiteSpace(evalNotes);
+
             string iterPrompt;
-            if (iter == 1 || string.IsNullOrWhiteSpace(evalNotes))
+            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback))
             {
                 iterPrompt = generatorPrompt;
             }
             else
             {
-                // Place evaluator feedback BEFORE the original prompt so it
-                // gets maximum attention weight. The generator must address
-                // every critique before re-reading the original brief.
-                iterPrompt = $"""
-                    ╔══════════════════════════════════════════════════════════╗
-                    ║  EVALUATOR FEEDBACK — YOU MUST ADDRESS EVERY ITEM BELOW ║
-                    ╚══════════════════════════════════════════════════════════╝
-
-                    This is iteration {iter}. Your prior attempts scored below the
-                    pass threshold. The evaluator's feedback below tells you EXACTLY
-                    what to fix. Do NOT re-read the original brief and start from
-                    scratch — read the feedback, open the file, and make TARGETED
-                    edits that address each critique. If the same critique appears
-                    in multiple iterations, your prior fix did not work — try a
-                    fundamentally different approach.
-
-                    {evalNotes}
-
-                    ════════════════════════════════════════════════════════════
-                    Now here is the original task brief (for reference only —
-                    the feedback above takes priority):
-                    ════════════════════════════════════════════════════════════
-
-                    {generatorPrompt}
-                    """;
+                var sb = new StringBuilder();
+                if (hasBuildFeedback)
+                {
+                    var bf = lastBuildFailure!;
+                    sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+                    sb.AppendLine("║  BUILD FAILURE FROM PRIOR ITERATION — FIX THIS FIRST    ║");
+                    sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+                    sb.AppendLine();
+                    sb.AppendLine($"Your iteration {iter - 1} diff DID NOT COMPILE.");
+                    sb.AppendLine($"  command  : {lastBuildFailureCommand ?? "<resolved at runtime>"}");
+                    sb.AppendLine($"  exit code: {bf.ExitCode}");
+                    sb.AppendLine($"  errors   : {bf.ErrorCount}");
+                    sb.AppendLine($"  warnings : {bf.WarningCount}");
+                    sb.AppendLine($"  duration : {bf.Duration.TotalSeconds:F2}s{(bf.TimedOut ? " (TIMED OUT)" : "")}");
+                    sb.AppendLine();
+                    sb.AppendLine("BUILD ERROR OUTPUT (verbatim from the compiler — fix EVERY error):");
+                    sb.AppendLine("```");
+                    // Cap at ~6000 chars so the prompt stays under most
+                    // model context windows even after the rest of the
+                    // layered sections + the original brief. The
+                    // scanner's ErrorSummary is already a truncated
+                    // best-effort excerpt, so this is a second guard.
+                    var summary = bf.ErrorSummary ?? string.Empty;
+                    if (summary.Length > 6000)
+                    {
+                        summary = summary[..6000] + "\n…(truncated; run the command again locally to see the full output)";
+                    }
+                    sb.AppendLine(summary);
+                    sb.AppendLine("```");
+                    sb.AppendLine();
+                    sb.AppendLine($"Three consecutive broken-build iterations will trip the build gate and stall the workstream. You are currently {consecutiveBrokenBuild} of {BuildFailThreshold}.");
+                    sb.AppendLine();
+                    sb.AppendLine("How to fix:");
+                    sb.AppendLine("  1. Read the error output above. The compiler tells you the exact file, line, and reason.");
+                    sb.AppendLine("  2. Open the file at the line indicated and make the targeted fix.");
+                    sb.AppendLine("  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build — edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.");
+                    sb.AppendLine($"  4. Run `{lastBuildFailureCommand ?? "the build command"}` yourself before responding to confirm exit 0.");
+                    sb.AppendLine();
+                    sb.AppendLine("────────────────────────────────────────────────────────────");
+                    sb.AppendLine();
+                }
+                if (hasEvalFeedback)
+                {
+                    sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+                    sb.AppendLine("║  EVALUATOR FEEDBACK — YOU MUST ADDRESS EVERY ITEM BELOW ║");
+                    sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+                    sb.AppendLine();
+                    sb.AppendLine($"This is iteration {iter}. Your prior attempts scored below the");
+                    sb.AppendLine("pass threshold. The evaluator's feedback below tells you EXACTLY");
+                    sb.AppendLine("what to fix. Do NOT re-read the original brief and start from");
+                    sb.AppendLine("scratch — read the feedback, open the file, and make TARGETED");
+                    sb.AppendLine("edits that address each critique. If the same critique appears");
+                    sb.AppendLine("in multiple iterations, your prior fix did not work — try a");
+                    sb.AppendLine("fundamentally different approach.");
+                    sb.AppendLine();
+                    sb.AppendLine(evalNotes);
+                    sb.AppendLine();
+                    sb.AppendLine("────────────────────────────────────────────────────────────");
+                    sb.AppendLine();
+                }
+                sb.AppendLine("Now here is the original task brief (for reference only — the");
+                sb.AppendLine("feedback above takes priority):");
+                sb.AppendLine("────────────────────────────────────────────────────────────");
+                sb.AppendLine();
+                sb.Append(generatorPrompt);
+                iterPrompt = sb.ToString();
             }
 
             // Phase 41 — snapshot the protected file before invoking the
@@ -2519,6 +2590,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     if (build is not null && !build.Success)
                     {
                         consecutiveBrokenBuild++;
+                        // Phase 49 follow-up — capture this build's
+                        // output so iter N+1's GeneratorDelegate can
+                        // prepend it to the prompt. Cleared back to
+                        // null on the FIRST successful build below
+                        // (and on the success branch of changedCount
+                        // == 0 elsewhere) so the agent only sees
+                        // CURRENT build state, not a stale failure
+                        // from a fix it already shipped.
+                        lastBuildFailure = build;
+                        lastBuildFailureCommand = buildCommand;
                         await this.taskChannel.EmitAsync(workItemId, "task.build-failed.detected", new
                         {
                             iter,
@@ -2562,6 +2643,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     else if (build is not null)
                     {
                         consecutiveBrokenBuild = 0;
+                        // Phase 49 follow-up — the agent fixed the
+                        // build (or it was never broken). Clear the
+                        // feedback so iter N+1 doesn't see stale
+                        // compiler output.
+                        lastBuildFailure = null;
+                        lastBuildFailureCommand = null;
                     }
                     // build == null → check threw; leave counter as-is.
                 }
