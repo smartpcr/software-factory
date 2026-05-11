@@ -45,6 +45,14 @@
 *.db-wal
 *.db-journal
 
+# Forge plan-doc protection snapshots (Phase 41). Created by
+# CrewStoryArtifactStrategy.RunIterativeRefineLoopAsync before each
+# generator iter to recover from a generator that deletes/truncates
+# the protected file. Cleaned up in try/finally — but if a snapshot
+# ever leaks (e.g., process killed between create and delete), this
+# rule stops it from being committed to source by the next engineer.
+*.iter-snapshot.bak
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

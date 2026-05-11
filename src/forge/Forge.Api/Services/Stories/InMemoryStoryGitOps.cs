@@ -75,10 +75,19 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     /// architect strategy in tests is <c>DeterministicStoryArtifactStrategy</c>
     /// which doesn't touch git.
     /// </summary>
-    public Task<string> EnsureWorktreeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    public Task<string> EnsureWorktreeAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default, string? worktreeSlug = null)
     {
         return Task.FromResult($"/tmp/forge-test-worktree/{repo?.Id ?? "_default"}/{branch.Replace('/', '-')}");
     }
+
+    /// <summary>
+    /// Phase 49 follow-up — in-memory stub. No real worktree exists for
+    /// tests so this is a no-op; the contract is "best-effort; never
+    /// throws" which a no-op trivially satisfies.
+    /// </summary>
+    public Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+        => Task.CompletedTask;
 
     /// <summary>
     /// In-memory commit — appends the file content to the branch tree. Mirrors
@@ -125,7 +134,7 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     /// orchestrator treats as "no commit needed" — fine for tests).
     /// </summary>
     public Task<IReadOnlyList<string>> GetChangedFilesAsync(
-        RepoRow? repo, string worktreePath, CancellationToken ct = default)
+        RepoRow? repo, string worktreePath, string? baseBranch = null, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
     /// <summary>

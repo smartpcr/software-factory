@@ -63,6 +63,21 @@ public interface IForgeProvider
     /// <summary>Posts a comment to a PR.</summary>
     Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default);
 
+    /// <summary>
+    /// Phase 49 follow-up — post a threaded reply to a specific review
+    /// comment. When the provider supports native threading (GitHub:
+    /// <c>POST /pulls/{n}/comments/{id}/replies</c>) and
+    /// <paramref name="parentProviderCommentId"/> is a real upstream id,
+    /// the reply appears in-thread on the file/line conversation.
+    /// Otherwise (parent id is local-only or provider lacks threading)
+    /// implementations fall back to a top-level PR comment so the
+    /// response is at least visible on the PR.
+    /// </summary>
+    /// <param name="prId">PR id (e.g. "PR owner/repo#123" or ADO numeric).</param>
+    /// <param name="parentProviderCommentId">Upstream provider id of the comment being replied to. Local-only ids (e.g. "pending:...") trigger the fallback path.</param>
+    /// <param name="body">Reply markdown. When threaded, sent verbatim; when falling back, callers should pre-format with a quote prefix so the reply still reads as a response.</param>
+    Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default);
+
     /// <summary>Closes/abandons a PR without merging.</summary>
     Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default);
 
