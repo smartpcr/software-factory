@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
@@ -382,20 +382,38 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
     const team = a.crewId.replace(/^crew-/, '').replace(/-night$/, '');
     return team.toUpperCase();
   };
+  // Phase 49 follow-up — only show an agent pair when the workstream is
+  // currently RUNNING or has shipped (active/review/merging/complete).
+  // For pre-claim states (planning/blocked/stalled/cancelled/historic),
+  // `latestGen/EvalAgentId` may carry the pair from a prior aborted run;
+  // displaying it as if it's the current assignment confused the
+  // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
+  // deps 1.1/1.2/1.3, yet the Overview showed Zhu Rong + Bi Gan from
+  // the workstream's earlier iter-1/iter-2 deliverables). Treat those
+  // as "no current assignment"; the SwarmMasterPanel + Conversation
+  // tab still surface the historical iter / score data so the prior
+  // run isn't hidden, just not painted as "currently assigned".
+  const isCurrentlyAssigned = (status: string): boolean =>
+    status === 'active' || status === 'review' || status === 'merging' || status === 'complete';
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
-    .map((w, i) => ({
-      id: `WS·${String(i + 1).padStart(2, '0')}`,
-      team: teamFor(w.latestGenAgentId ?? w.agents?.[0]),
-      cls: pairClsForStatus(w.status),
-      task: w.name,
-      gen:  displayName(w.latestGenAgentId ?? w.agents?.[0]),
-      genM: modelFor(w.latestGenAgentId ?? w.agents?.[0], 'gen'),
-      evl:  displayName(w.latestEvalAgentId ?? w.agents?.[1]),
-      evlM: modelFor(w.latestEvalAgentId ?? w.agents?.[1], 'evl'),
-      meters: pairMetersForWorkstream(w),
-      status: w.status,
-    }));
+    .map((w, i) => {
+      const showPair = isCurrentlyAssigned(w.status);
+      const genId = showPair ? (w.latestGenAgentId ?? w.agents?.[0]) : undefined;
+      const evlId = showPair ? (w.latestEvalAgentId ?? w.agents?.[1]) : undefined;
+      return {
+        id: `WS·${String(i + 1).padStart(2, '0')}`,
+        team: teamFor(genId),
+        cls: pairClsForStatus(w.status),
+        task: w.name,
+        gen:  showPair ? displayName(genId) : '— not assigned —',
+        genM: showPair ? modelFor(genId, 'gen') : '',
+        evl:  showPair ? displayName(evlId) : '— not assigned —',
+        evlM: showPair ? modelFor(evlId, 'evl') : '',
+        meters: pairMetersForWorkstream(w),
+        status: w.status,
+      };
+    });
 
   // Count day-shift only (`crew-{role}`, not `crew-{role}-night`) so the
   // 20-cell swarm grid matches the spec's "~20 agents per team" capacity.
@@ -752,6 +770,24 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
     return () => { cancelled = true; };
   }, []);
 
+  // Phase 49 follow-up — gate the Overview's agent-pair display on the
+  // workstream's CURRENT status. When status is one of the pre-claim or
+  // tombstoned states (planning/blocked/stalled/cancelled/historic),
+  // the stored `latestGen/EvalAgentId` reflects a PRIOR aborted run and
+  // displaying it as if it were the live assignment confused the
+  // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
+  // deps 1.1/1.2/1.3, yet the avatar panel showed Zhu Rong + Bi Gan
+  // from iter-1/iter-2 deliverables). For docs (architect plan-doc
+  // panels) we keep the legacy display — those have a stable
+  // generator/evaluator across iterations.
+  const wsRowForOverview = isWorkstream
+    ? detail.workstreams.find((w) => w.id === selection.id)
+    : null;
+  const isWsCurrentlyAssigned = !isWorkstream || (() => {
+    const s = wsRowForOverview?.status ?? '';
+    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete';
+  })();
+
   // Agent identity — prefer prompt-derived agent info (matches what the
   // system/user prompt sections display) over snapshot/API data which may
   // be from a different iteration with different round-robin agents.
@@ -759,19 +795,38 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const promptEvalId = latestPrompts.ev?.agentId ?? null;
   const fallbackGenId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
   const fallbackEvalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
-  const genId = promptGenId ?? fallbackGenId;
-  const evalId = promptEvalId ?? fallbackEvalId;
+  const rawGenId = promptGenId ?? fallbackGenId;
+  const rawEvalId = promptEvalId ?? fallbackEvalId;
+  const genId = isWsCurrentlyAssigned ? rawGenId : null;
+  const evalId = isWsCurrentlyAssigned ? rawEvalId : null;
   // When the prompt carries a different agentId than the snapshot, use the
   // agentNames map (or raw ID) — never mix a prompt-derived ID with a
   // snapshot-derived name from a different agent.
-  const genName = promptGenId
-    ? (agentNames[promptGenId] ?? promptGenId)
-    : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
-  const evalName = promptEvalId
-    ? (agentNames[promptEvalId] ?? promptEvalId)
-    : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
-  const genModel = latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
-  const evalModel = latestPrompts.ev?.model || (isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null));
+  const genName = !isWsCurrentlyAssigned
+    ? '— not assigned —'
+    : promptGenId
+      ? (agentNames[promptGenId] ?? promptGenId)
+      : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
+  const evalName = !isWsCurrentlyAssigned
+    ? '— not assigned —'
+    : promptEvalId
+      ? (agentNames[promptEvalId] ?? promptEvalId)
+      : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
+  const genModel = !isWsCurrentlyAssigned
+    ? null
+    : latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
+  const evalModel = !isWsCurrentlyAssigned
+    ? null
+    : latestPrompts.ev?.model || (isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null));
+  // Phase 47c — surface backend + invoke-mode on the Overview chips so
+  // operators can see which usage cap each agent is hitting (Anthropic vs
+  // GitHub Copilot). Only available from the latest prompt event; the
+  // snapshot doesn't currently carry it. Null when no iter has dispatched
+  // yet — chip falls back to model-only.
+  const genBackend = latestPrompts.gen?.backend || null;
+  const evalBackend = latestPrompts.ev?.backend || null;
+  const genInvoke = latestPrompts.gen?.mode || null;
+  const evalInvoke = latestPrompts.ev?.mode || null;
 
   // Cache of `eventId → { systemPrompt, userPrompt }` after the operator
   // clicks "Show full". The transcript-stream truncates strings >320 chars
@@ -812,6 +867,8 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
           agentId={genId}
           agentName={genName}
           model={genModel}
+          backend={genBackend}
+          invokeMode={genInvoke}
           sameAsOther={!!genModel && genModel === evalModel}
           selected={promptRole === 'generator'}
           onClick={() => setPromptRole('generator')}
@@ -822,6 +879,8 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
           agentId={evalId}
           agentName={evalName}
           model={evalModel}
+          backend={evalBackend}
+          invokeMode={evalInvoke}
           sameAsOther={!!genModel && genModel === evalModel}
           selected={promptRole === 'evaluator'}
           onClick={() => setPromptRole('evaluator')}
@@ -1498,210 +1557,541 @@ const WS_STATUS_COLOR: Record<string, string> = {
   review:   'var(--sc-amber, #ffd57c)',
   merging:  'var(--sc-green, #66e5b8)',
   complete: 'var(--sc-muted, #888)',
+  cancelled:'var(--sc-muted, #888)',
   stalled:  'var(--sc-red, #ff7caa)',
 };
 
-function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
-  const ws = detail.workstreams;
+const WS_DAG_DEFAULT_PHASE = '__workstreams__';
 
-  // Build adjacency: each workstream may depend on others via `deps[]`.
-  // Assign columns using a topological sort (BFS by dependency depth).
-  const depthMap = useMemo(() => {
-    const depths = new Map<string, number>();
-    const byId = new Map(ws.map((w) => [w.id, w]));
+function loadWsDagCollapsed(storyId: string): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(`forge.ws-dag.collapsed.${storyId}`);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === 'string')) : new Set();
+  } catch { return new Set(); }
+}
 
-    function getDepth(id: string, visited: Set<string>): number {
-      if (depths.has(id)) return depths.get(id)!;
-      if (visited.has(id)) return 0; // cycle guard
-      visited.add(id);
-      const w = byId.get(id);
-      if (!w || w.deps.length === 0) { depths.set(id, 0); return 0; }
-      const d = 1 + Math.max(...w.deps.map((dep) => getDepth(dep, visited)));
-      depths.set(id, d);
-      return d;
+function persistWsDagCollapsed(storyId: string, collapsed: Set<string>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`forge.ws-dag.collapsed.${storyId}`, JSON.stringify([...collapsed]));
+  } catch { /* quota / insecure context — silent */ }
+}
+
+/** Convert `phase-network-transport` → `Network Transport`. */
+function wsPhaseLabel(anchor: string): string {
+  if (anchor === WS_DAG_DEFAULT_PHASE) return 'Workstreams';
+  const stem = anchor.startsWith('phase-') ? anchor.slice(6) : anchor;
+  return stem.split('-').filter((w) => w.length > 0)
+    .map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+/** Convert `phase-foo/stage-bar-baz` → `Bar Baz`; fallback to ws.name. */
+function wsStageLabel(planAnchor: string | null | undefined, fallback: string): string {
+  if (!planAnchor) return fallback;
+  const slash = planAnchor.indexOf('/');
+  if (slash < 0) return fallback;
+  const stagePart = planAnchor.slice(slash + 1);
+  const stem = stagePart.startsWith('stage-') ? stagePart.slice(6) : stagePart;
+  if (stem.length === 0) return fallback;
+  return stem.split('-').filter((w) => w.length > 0)
+    .map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+interface WsPhaseGroup {
+  anchor: string;
+  label: string;
+  items: StorySpawnDetail['workstreams'];
+}
+
+function groupWsByPhase(ws: StorySpawnDetail['workstreams']): WsPhaseGroup[] {
+  const order: string[] = [];
+  const buckets = new Map<string, StorySpawnDetail['workstreams']>();
+  for (const w of ws) {
+    const anchor = w.phaseAnchor && w.phaseAnchor.length > 0 ? w.phaseAnchor : WS_DAG_DEFAULT_PHASE;
+    if (!buckets.has(anchor)) {
+      order.push(anchor);
+      buckets.set(anchor, []);
     }
-    for (const w of ws) getDepth(w.id, new Set());
-    return depths;
-  }, [ws]);
+    buckets.get(anchor)!.push(w);
+  }
+  return order.map((anchor) => ({
+    anchor,
+    label: wsPhaseLabel(anchor),
+    items: buckets.get(anchor)!,
+  }));
+}
 
-  const maxDepth = Math.max(0, ...Array.from(depthMap.values()));
-  const columns = useMemo(() => {
-    const cols: Array<typeof ws> = [];
-    for (let d = 0; d <= maxDepth; d++) {
-      cols.push(ws.filter((w) => (depthMap.get(w.id) ?? 0) === d));
-    }
-    return cols;
-  }, [ws, depthMap, maxDepth]);
+const WS_NODE_W = 224;
+const WS_NODE_H = 96;
+const WS_COL_GAP = 56;
+const WS_ROW_GAP = 14;
+const WS_PAD_X = 14;
+const WS_PAD_Y = 14;
 
-  // Layout constants
-  const nodeW = 220, nodeH = 80, colGap = 100, rowGap = 32, padX = 40, padY = 60;
-  const maxRows = Math.max(1, ...columns.map((c) => c.length));
-  const svgW = padX * 2 + (maxDepth + 1) * nodeW + maxDepth * colGap;
-  const svgH = padY * 2 + maxRows * nodeH + (maxRows - 1) * rowGap;
+interface PhaseLayout {
+  cards: Array<{ ws: StorySpawnDetail['workstreams'][number]; x: number; y: number }>;
+  arrows: Array<{ d: string; fromId: string; toId: string; tone: 'normal' | 'blocked' }>;
+  width: number;
+  height: number;
+}
 
-  // Position each node
-  const positions = useMemo(() => {
-    const pos = new Map<string, { x: number; y: number }>();
-    for (let col = 0; col <= maxDepth; col++) {
-      const items = columns[col];
-      const totalH = items.length * nodeH + (items.length - 1) * rowGap;
-      const startY = (svgH - totalH) / 2;
-      items.forEach((w, row) => {
-        pos.set(w.id, {
-          x: padX + col * (nodeW + colGap),
-          y: startY + row * (nodeH + rowGap),
-        });
+/** Topologically position a phase's stages by INTRA-phase deps only.
+ *  Cross-phase deps are surfaced separately (chips) rather than as
+ *  arrows that would dangle when the upstream phase is collapsed. */
+function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
+  const ids = new Set(items.map((i) => i.id));
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const depths = new Map<string, number>();
+
+  function getDepth(id: string, visiting: Set<string>): number {
+    const cached = depths.get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(id)) return 0; // cycle guard
+    visiting.add(id);
+    const item = byId.get(id);
+    if (!item) return 0;
+    const intra = (item.deps ?? []).filter((d) => ids.has(d));
+    if (intra.length === 0) { depths.set(id, 0); return 0; }
+    const d = 1 + Math.max(0, ...intra.map((dep) => getDepth(dep, visiting)));
+    depths.set(id, d);
+    return d;
+  }
+  for (const it of items) getDepth(it.id, new Set());
+
+  const maxDepth = Math.max(0, ...Array.from(depths.values()));
+  const cols: Array<typeof items> = [];
+  for (let d = 0; d <= maxDepth; d++) {
+    cols.push(items.filter((i) => (depths.get(i.id) ?? 0) === d));
+  }
+
+  const cards = items.map((item) => {
+    const d = depths.get(item.id) ?? 0;
+    const idx = cols[d].indexOf(item);
+    return {
+      ws: item,
+      x: WS_PAD_X + d * (WS_NODE_W + WS_COL_GAP),
+      y: WS_PAD_Y + idx * (WS_NODE_H + WS_ROW_GAP),
+    };
+  });
+  const cardById = new Map(cards.map((c) => [c.ws.id, c]));
+
+  const arrows: PhaseLayout['arrows'] = [];
+  for (const item of items) {
+    const to = cardById.get(item.id);
+    if (!to) continue;
+    for (const depId of item.deps ?? []) {
+      const from = cardById.get(depId);
+      if (!from) continue; // cross-phase, rendered as chip elsewhere
+      const x1 = from.x + WS_NODE_W;
+      const y1 = from.y + WS_NODE_H / 2;
+      const x2 = to.x;
+      const y2 = to.y + WS_NODE_H / 2;
+      const midX = (x1 + x2) / 2;
+      const tone = item.status === 'blocked' ? 'blocked' : 'normal';
+      arrows.push({
+        d: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
+        fromId: from.ws.id,
+        toId: to.ws.id,
+        tone,
       });
     }
-    return pos;
-  }, [columns, maxDepth, svgH]);
+  }
+
+  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  const width = WS_PAD_X * 2 + (maxDepth + 1) * WS_NODE_W + maxDepth * WS_COL_GAP;
+  const height = WS_PAD_Y * 2 + maxRows * WS_NODE_H + (maxRows - 1) * WS_ROW_GAP;
+  return { cards, arrows, width, height };
+}
+
+function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
+  const storyId = detail.spawn.storyId;
+  const ws = detail.workstreams;
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadWsDagCollapsed(storyId));
+  useEffect(() => { setCollapsed(loadWsDagCollapsed(storyId)); }, [storyId]);
+
+  const groups = useMemo(() => groupWsByPhase(ws), [ws]);
+  const byId = useMemo(() => new Map(ws.map((w) => [w.id, w])), [ws]);
+  const phaseAnchorOf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of ws) m.set(w.id, w.phaseAnchor && w.phaseAnchor.length > 0 ? w.phaseAnchor : WS_DAG_DEFAULT_PHASE);
+    return m;
+  }, [ws]);
+
+  // Refs and live position state for the global arrow overlay. Each card
+  // and each phase header registers its DOM node here; useLayoutEffect
+  // measures every node's position relative to the phases container so
+  // arrows draw correctly across phase boundaries (and route to the
+  // phase header when the dep's phase is collapsed). Re-runs whenever
+  // collapse state changes (cards unmount → ref nulls → measurement
+  // refreshes).
+  const phasesRef = useRef<HTMLDivElement | null>(null);
+  const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const headerRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [layoutTick, setLayoutTick] = useState(0);
+  const registerCardRef = useCallback((id: string, el: HTMLElement | null) => {
+    if (el) cardRefs.current.set(id, el);
+    else cardRefs.current.delete(id);
+    setLayoutTick((t) => t + 1);
+  }, []);
+  const registerHeaderRef = useCallback((anchor: string, el: HTMLElement | null) => {
+    if (el) headerRefs.current.set(anchor, el);
+    else headerRefs.current.delete(anchor);
+    setLayoutTick((t) => t + 1);
+  }, []);
+
+  type Anchor = { x: number; y: number; w: number; h: number };
+  const [boxes, setBoxes] = useState<{ cards: Map<string, Anchor>; headers: Map<string, Anchor>; total: { w: number; h: number } }>({
+    cards: new Map(), headers: new Map(), total: { w: 0, h: 0 },
+  });
+  useLayoutEffect(() => {
+    const container = phasesRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const cardMap = new Map<string, Anchor>();
+    cardRefs.current.forEach((el, id) => {
+      const r = el.getBoundingClientRect();
+      cardMap.set(id, {
+        x: r.left - containerRect.left,
+        y: r.top - containerRect.top,
+        w: r.width,
+        h: r.height,
+      });
+    });
+    const headerMap = new Map<string, Anchor>();
+    headerRefs.current.forEach((el, anchor) => {
+      const r = el.getBoundingClientRect();
+      headerMap.set(anchor, {
+        x: r.left - containerRect.left,
+        y: r.top - containerRect.top,
+        w: r.width,
+        h: r.height,
+      });
+    });
+    setBoxes({ cards: cardMap, headers: headerMap, total: { w: containerRect.width, h: containerRect.height } });
+  }, [collapsed, ws, layoutTick]);
+
+  // Re-measure on container resize so window resize / sidebar collapse keep
+  // the SVG aligned with the phases stack.
+  useEffect(() => {
+    const container = phasesRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setLayoutTick((t) => t + 1));
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
+
+  // Compute a `phaseNum.stageNum` label for every workstream so the
+  // cross-phase dep chips read like "1.2", "3.4" — the same numbering
+  // the operator sees in implementation-plan.md (Stage N.M). Phase index
+  // matches the order of `groups` (which mirrors the spawn's Sort order,
+  // which mirrors the plan's `# Phase 1`, `# Phase 2` order). Stage index
+  // is the row's position within its phase, also Sort-ordered.
+  const stageNumOf = useMemo(() => {
+    const m = new Map<string, string>();
+    groups.forEach((g, gi) => {
+      g.items.forEach((w, si) => {
+        m.set(w.id, `${gi + 1}.${si + 1}`);
+      });
+    });
+    return m;
+  }, [groups]);
+
+  type ArrowSpec = { d: string; tone: 'normal' | 'blocked'; key: string };
+  const arrows = useMemo<ArrowSpec[]>(() => {
+    const out: ArrowSpec[] = [];
+    for (const w of ws) {
+      const myPhase = phaseAnchorOf.get(w.id) ?? WS_DAG_DEFAULT_PHASE;
+      const toCollapsed = collapsed.has(myPhase);
+      const toBox = toCollapsed ? boxes.headers.get(myPhase) : boxes.cards.get(w.id);
+      if (!toBox) continue;
+      for (const depId of w.deps ?? []) {
+        const upPhase = phaseAnchorOf.get(depId) ?? WS_DAG_DEFAULT_PHASE;
+        // Phase 49 follow-up — only draw INTRA-phase arrows. Cross-phase
+        // edges are surfaced as `↥ 1.2 2.3 …` chips on each card so the
+        // overlay doesn't smother the cards with spaghetti when phases
+        // pile up. The chip set is shorter and orders-of-magnitude
+        // easier to read than the previous global arrow soup.
+        if (upPhase !== myPhase) continue;
+        const fromCollapsed = collapsed.has(upPhase);
+        const fromBox = fromCollapsed ? boxes.headers.get(upPhase) : boxes.cards.get(depId);
+        if (!fromBox) continue;
+
+        // Anchor at the right edge of source, left edge of target so
+        // arrows read left-to-right (matches topological flow within a
+        // phase). The cubic Bezier with midX control points keeps the
+        // line clean and visually parses as a DAG edge rather than
+        // overlapping the cards.
+        const x1 = fromBox.x + fromBox.w;
+        const y1 = fromBox.y + fromBox.h / 2;
+        const x2 = toBox.x;
+        const y2 = toBox.y + toBox.h / 2;
+        const midX = (x1 + x2) / 2;
+        const tone: 'normal' | 'blocked' = w.status === 'blocked' ? 'blocked' : 'normal';
+        out.push({
+          d: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
+          tone,
+          key: `${depId}->${w.id}`,
+        });
+      }
+    }
+    return out;
+  }, [ws, phaseAnchorOf, collapsed, boxes]);
+
+  function togglePhase(anchor: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(anchor)) next.delete(anchor);
+      else next.add(anchor);
+      persistWsDagCollapsed(storyId, next);
+      return next;
+    });
+  }
+
+  function expandAll() {
+    setCollapsed(() => {
+      const next = new Set<string>();
+      persistWsDagCollapsed(storyId, next);
+      return next;
+    });
+  }
+
+  function collapseAll() {
+    setCollapsed(() => {
+      const next = new Set(groups.map((g) => g.anchor));
+      persistWsDagCollapsed(storyId, next);
+      return next;
+    });
+  }
 
   const activeCount = ws.filter((w) => w.status === 'active').length;
   const blockedCount = ws.filter((w) => w.status === 'blocked').length;
-  const completeCount = ws.filter((w) => w.status === 'complete').length;
+  const completeCount = ws.filter((w) => w.status === 'complete' || w.status === 'merging').length;
+  const cancelledCount = ws.filter((w) => w.status === 'cancelled').length;
 
   return (
-    <div style={{ padding: 16, overflow: 'auto', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-        <span style={{
-          fontFamily: 'var(--sc-font-display, monospace)',
-          fontSize: 10,
-          letterSpacing: '0.16em',
-          color: 'var(--sc-text-dim, #888)',
-          textTransform: 'uppercase',
-        }}>
-          IMPLEMENTATION DIAGRAM
+    <div className="ws-dag" style={{ padding: 16, overflow: 'auto', height: '100%' }}>
+      <div className="ws-dag__hd">
+        <span className="ws-dag__title">▌ WORKSTREAM DAG</span>
+        <span className="ws-dag__counts">
+          {ws.length} stages · {groups.length} phase{groups.length === 1 ? '' : 's'} · {activeCount} active
+          {blockedCount > 0 ? ` · ${blockedCount} blocked` : ''}
+          {completeCount > 0 ? ` · ${completeCount} complete/merging` : ''}
+          {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ''}
         </span>
-        <span style={{ fontSize: 11, color: 'var(--sc-text-dim, #888)' }}>
-          {ws.length} workstreams · {activeCount} active · {blockedCount} blocked · {completeCount} complete
-        </span>
-        <span style={{
-          marginLeft: 'auto',
-          fontSize: 10,
-          color: 'var(--sc-text-dim, #888)',
-        }}>
-          {detail.spawn.decompositionApproved ? '✓ approved' : '⏳ pending approval'}
-        </span>
+        <span className="ws-dag__approval">{detail.spawn.decompositionApproved ? '✓ approved' : '⏳ pending approval'}</span>
+        <span className="ws-dag__spacer" />
+        <button type="button" className="ws-dag__btn" onClick={expandAll} title="Expand every phase">expand all</button>
+        <button type="button" className="ws-dag__btn" onClick={collapseAll} title="Collapse every phase">collapse all</button>
       </div>
 
-      <svg
-        width={svgW}
-        height={svgH}
-        viewBox={`0 0 ${svgW} ${svgH}`}
-        style={{ display: 'block' }}
-      >
-        {/* Arrow marker definitions */}
-        <defs>
-          <marker id="dep-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
-            <path d="M 0 0 L 10 4 L 0 8 Z" fill="#7cc1ff" />
-          </marker>
-          <marker id="dep-arrow-blocked" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
-            <path d="M 0 0 L 10 4 L 0 8 Z" fill="#ffd57c" />
-          </marker>
-        </defs>
+      <div className="ws-dag__phases" ref={phasesRef}>
+        {/* Global arrow overlay — draws all dep edges (intra- and cross-
+            phase) in a single absolutely-positioned SVG covering the
+            entire phases stack. Dep targets that live in a collapsed
+            phase route to the phase header so the operator still sees
+            a visual signal that the workstream depends on something
+            up there. */}
+        <svg
+          className="ws-dag__arrows-overlay"
+          width={boxes.total.w}
+          height={boxes.total.h}
+          viewBox={`0 0 ${boxes.total.w} ${boxes.total.h}`}
+          aria-hidden
+        >
+          <defs>
+            <marker id="ws-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+              <path d="M 0 0 L 10 4 L 0 8 Z" fill="#7cc1ff" />
+            </marker>
+            <marker id="ws-arrow-blocked" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+              <path d="M 0 0 L 10 4 L 0 8 Z" fill="#ffd57c" />
+            </marker>
+          </defs>
+          {arrows.map((a) => (
+            <path
+              key={a.key}
+              d={a.d}
+              fill="none"
+              stroke={a.tone === 'blocked' ? '#ffd57c' : '#7cc1ff'}
+              strokeWidth={2}
+              strokeDasharray={a.tone === 'blocked' ? '6 4' : undefined}
+              markerEnd={`url(#${a.tone === 'blocked' ? 'ws-arrow-blocked' : 'ws-arrow'})`}
+            />
+          ))}
+        </svg>
 
-        {/* Column labels */}
-        {columns.map((_, col) => (
-          <text
-            key={col}
-            x={padX + col * (nodeW + colGap) + nodeW / 2}
-            y={20}
-            textAnchor="middle"
-            fontSize={9}
-            fontFamily="var(--sc-font-display, monospace)"
-            letterSpacing="0.14em"
-            fill="var(--sc-text-dim, #888)"
-          >
-            PHASE {String(col + 1).padStart(2, '0')}
-          </text>
+        {groups.map((g, idx) => (
+          <WsPhaseContainer
+            key={g.anchor}
+            group={g}
+            phaseIndex={idx + 1}
+            byId={byId}
+            phaseAnchorOf={phaseAnchorOf}
+            stageNumOf={stageNumOf}
+            collapsed={collapsed.has(g.anchor)}
+            onToggle={() => togglePhase(g.anchor)}
+            registerCardRef={registerCardRef}
+            registerHeaderRef={registerHeaderRef}
+          />
         ))}
-
-        {/* Workstream nodes */}
-        {ws.map((w) => {
-          const p = positions.get(w.id);
-          if (!p) return null;
-          const color = WS_STATUS_COLOR[w.status] ?? 'var(--sc-muted, #888)';
-          const shortName = w.name.length > 28 ? w.name.slice(0, 26) + '…' : w.name;
-          const shortId = w.id.length > 24 ? '…' + w.id.slice(-20) : w.id;
-          return (
-            <g key={w.id}>
-              <rect
-                x={p.x}
-                y={p.y}
-                width={nodeW}
-                height={nodeH}
-                rx={6}
-                fill="var(--sc-surface-2, #1e1e2e)"
-                stroke={color}
-                strokeWidth={w.status === 'active' ? 2 : 1}
-              />
-              {/* Status dot */}
-              <circle cx={p.x + 14} cy={p.y + 16} r={4} fill={color} />
-              <text x={p.x + 24} y={p.y + 20} fontSize={10} fontWeight={600} fill={color}
-                fontFamily="var(--sc-font-display, monospace)" letterSpacing="0.08em">
-                {w.status.toUpperCase()}
-              </text>
-              {/* Name */}
-              <text x={p.x + 10} y={p.y + 40} fontSize={12} fontWeight={500}
-                fill="var(--sc-text, #eee)">
-                {shortName}
-              </text>
-              {/* ID */}
-              <text x={p.x + 10} y={p.y + 58} fontSize={9}
-                fill="var(--sc-text-dim, #888)" fontFamily="var(--sc-font-mono, monospace)">
-                {shortId}
-              </text>
-              {/* Dep count */}
-              {w.deps.length > 0 && (
-                <text x={p.x + nodeW - 10} y={p.y + 20} fontSize={9} textAnchor="end"
-                  fill="var(--sc-text-dim, #888)">
-                  ⮨ {w.deps.length}
-                </text>
-              )}
-              {/* Branch badge */}
-              {w.branch && (
-                <text x={p.x + 10} y={p.y + nodeH - 8} fontSize={8}
-                  fill="var(--sc-text-dim, #666)" fontFamily="var(--sc-font-mono, monospace)">
-                  ⎇ {w.branch.split('/').pop()}
-                </text>
-              )}
-            </g>
-          );
-        })}
-
-        {/* Dependency arrows — rendered last so they draw on top of nodes */}
-        {ws.map((w) =>
-          w.deps.map((depId) => {
-            const from = positions.get(depId);
-            const to = positions.get(w.id);
-            if (!from || !to) return null;
-            const x1 = from.x + nodeW + 2;
-            const y1 = from.y + nodeH / 2;
-            const x2 = to.x - 12;
-            const y2 = to.y + nodeH / 2;
-            const midX = (x1 + x2) / 2;
-            const isBlocked = w.status === 'blocked';
-            const strokeColor = isBlocked ? '#ffd57c' : '#7cc1ff';
-            const markerId = isBlocked ? 'dep-arrow-blocked' : 'dep-arrow';
-            return (
-              <g key={`${depId}->${w.id}`}>
-                <path
-                  d={`M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`}
-                  fill="none"
-                  stroke={strokeColor}
-                  strokeWidth="2"
-                  strokeDasharray={isBlocked ? '6 4' : undefined}
-                  markerEnd={`url(#${markerId})`}
-                />
-              </g>
-            );
-          }),
-        )}
-      </svg>
+      </div>
     </div>
   );
 }
 
+function WsPhaseContainer({
+  group, phaseIndex, byId, phaseAnchorOf, stageNumOf, collapsed, onToggle,
+  registerCardRef, registerHeaderRef,
+}: {
+  group: WsPhaseGroup;
+  phaseIndex: number;
+  byId: Map<string, StorySpawnDetail['workstreams'][number]>;
+  phaseAnchorOf: Map<string, string>;
+  stageNumOf: Map<string, string>;
+  collapsed: boolean;
+  onToggle: () => void;
+  registerCardRef: (id: string, el: HTMLElement | null) => void;
+  registerHeaderRef: (anchor: string, el: HTMLElement | null) => void;
+}) {
+  const layout = useMemo(() => layoutPhase(group.items), [group.items]);
+  const activeInPhase = group.items.filter((w) => w.status === 'active').length;
+  const blockedInPhase = group.items.filter((w) => w.status === 'blocked').length;
+  const cancelledInPhase = group.items.filter((w) => w.status === 'cancelled').length;
+
+  const headerCb = useCallback((el: HTMLElement | null) => registerHeaderRef(group.anchor, el),
+    [registerHeaderRef, group.anchor]);
+
+  return (
+    <section className={`ws-phase${collapsed ? ' is-collapsed' : ''}`}>
+      <header
+        className="ws-phase__hd"
+        ref={headerCb}
+      >
+        <button
+          type="button"
+          className="ws-phase__chevron"
+          aria-expanded={!collapsed}
+          aria-controls={`ws-phase-body-${group.anchor}`}
+          onClick={onToggle}
+          title={collapsed ? 'expand phase' : 'collapse phase'}
+        >{collapsed ? '▸' : '▾'}</button>
+        <span className="ws-phase__num">PHASE {phaseIndex}</span>
+        <span className="ws-phase__title">{group.label}</span>
+        <span className="ws-phase__count">
+          {group.items.length} stage{group.items.length === 1 ? '' : 's'}
+          {activeInPhase > 0 ? ` · ${activeInPhase} active` : ''}
+          {blockedInPhase > 0 ? ` · ${blockedInPhase} blocked` : ''}
+          {cancelledInPhase > 0 ? ` · ${cancelledInPhase} cancelled` : ''}
+        </span>
+      </header>
+      {!collapsed && (
+        <div
+          id={`ws-phase-body-${group.anchor}`}
+          className="ws-phase__body"
+          style={{ width: layout.width, height: layout.height }}
+        >
+          {layout.cards.map((c) => (
+            <WsStageCard
+              key={c.ws.id}
+              ws={c.ws}
+              left={c.x}
+              top={c.y}
+              byId={byId}
+              phaseAnchorOf={phaseAnchorOf}
+              stageNumOf={stageNumOf}
+              registerCardRef={registerCardRef}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WsStageCard({
+  ws, left, top, byId, phaseAnchorOf, stageNumOf, registerCardRef,
+}: {
+  ws: StorySpawnDetail['workstreams'][number];
+  left: number;
+  top: number;
+  byId: Map<string, StorySpawnDetail['workstreams'][number]>;
+  phaseAnchorOf: Map<string, string>;
+  stageNumOf: Map<string, string>;
+  registerCardRef: (id: string, el: HTMLElement | null) => void;
+}) {
+  const stageLabel = wsStageLabel(ws.planAnchor, ws.name);
+  const myStageNum = stageNumOf.get(ws.id);
+  const color = WS_STATUS_COLOR[ws.status] ?? 'var(--sc-muted, #888)';
+  const myPhase = phaseAnchorOf.get(ws.id) ?? WS_DAG_DEFAULT_PHASE;
+  const crossDeps = (ws.deps ?? [])
+    .map((d) => byId.get(d))
+    .filter((u): u is StorySpawnDetail['workstreams'][number] => !!u)
+    .filter((u) => (phaseAnchorOf.get(u.id) ?? WS_DAG_DEFAULT_PHASE) !== myPhase);
+
+  const cb = useCallback((el: HTMLElement | null) => registerCardRef(ws.id, el),
+    [registerCardRef, ws.id]);
+
+  return (
+    <div
+      ref={cb}
+      className={`ws-stage ws-stage--${ws.status}`}
+      style={{
+        position: 'absolute',
+        left,
+        top,
+        width: WS_NODE_W,
+        height: WS_NODE_H,
+        borderColor: color,
+      }}
+      data-ws-id={ws.id}
+      title={
+        ws.status === 'stalled' && ws.stallReason
+          ? `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nstalled — ${ws.stallReason}`
+          : `${ws.name}\n${ws.planAnchor ?? ws.id}`
+      }
+    >
+      <div className="ws-stage__hd">
+        <span className="ws-stage__pill" style={{ color, borderColor: color }}>
+          <span className="dot" style={{ background: color }} />
+          {ws.status.toUpperCase()}
+        </span>
+        {myStageNum && (
+          <span className="ws-stage__stagenum" title="Stage number — phase.stage">{myStageNum}</span>
+        )}
+        {typeof ws.iter === 'number' && ws.iter > 0 && (
+          <span className="ws-stage__iter">iter {ws.iter}</span>
+        )}
+        {typeof ws.latestScore === 'number' && (
+          <span className={`ws-stage__score${ws.latestVerdict === 'pass' ? ' is-pass' : ''}`}>
+            {ws.latestScore}
+          </span>
+        )}
+      </div>
+      <div className="ws-stage__stage">STAGE · {stageLabel}</div>
+      <div className="ws-stage__name">{ws.name}</div>
+      {crossDeps.length > 0 && (
+        <div className="ws-stage__cross">
+          <span className="ws-stage__cross-label" title="Cross-phase upstream deps">↥ deps</span>
+          {crossDeps.map((u) => {
+            const num = stageNumOf.get(u.id) ?? '?';
+            return (
+              <span
+                key={u.id}
+                className="ws-stage__cross-chip"
+                title={`${num} — ${u.name}\n${u.planAnchor ?? u.id}`}
+              >
+                {num}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 /* ─── helpers ───────────────────────────────────────────────────────── */
 
 function pairClsForStatus(status: string): string {
