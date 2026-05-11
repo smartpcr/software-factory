@@ -682,6 +682,55 @@ public class GitHubProvider : IForgeProvider
         resp.EnsureSuccessStatusCode();
     }
 
+    /// <summary>
+    /// Phase 49 follow-up — post a threaded reply to a review comment.
+    /// Uses GitHub's <c>POST /repos/{owner}/{repo}/pulls/{n}/comments/{id}/replies</c>
+    /// endpoint when <paramref name="parentProviderCommentId"/> is a real
+    /// numeric review-comment id; otherwise falls back to a top-level
+    /// issue comment (same as <see cref="CommentOnPullRequestAsync"/>).
+    /// Today's call sites mint <c>"pending:{guid}"</c> placeholder ids
+    /// because <see cref="CommentOnPullRequestAsync"/> doesn't echo back
+    /// the upstream id, so the fallback path is the default. When
+    /// reviewer comments switch to the per-line review endpoint
+    /// (<c>POST /pulls/{n}/comments</c> with a <c>commit_id</c>) and
+    /// capture the response id, threaded replies will start working
+    /// without further code changes.
+    /// </summary>
+    public async Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+
+        // Real GitHub review-comment ids are numeric. Anything else
+        // (empty, "pending:...", "local-...", etc.) means we don't have
+        // an upstream id to reply against — fall back to a top-level
+        // issue comment so the response is still visible.
+        if (!long.TryParse(parentProviderCommentId, out var parentId))
+        {
+            await this.CommentOnPullRequestAsync(prId, body, ctx, ct);
+            return;
+        }
+
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(prId);
+        var payload = JsonSerializer.Serialize(new { body });
+        using var msg = new HttpRequestMessage(HttpMethod.Post,
+            $"repos/{repo}/pulls/{num}/comments/{parentId}/replies")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        if (!resp.IsSuccessStatusCode)
+        {
+            // 404 = parent comment not found (e.g. it was an issue
+            // comment, not a review comment, so the replies endpoint
+            // doesn't apply). 422 = body invalid. Either way, fall back
+            // so the response still lands somewhere visible.
+            await this.CommentOnPullRequestAsync(prId, body, ctx, ct);
+            return;
+        }
+    }
+
     public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();

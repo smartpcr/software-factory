@@ -14,6 +14,21 @@ namespace Forge.Api.Services;
 public static class BuildSystemDetector
 {
     /// <summary>Result of a build-system scan.</summary>
+    /// <param name="QualityCommands">
+    /// Phase 49 follow-up — quality gates that run AFTER <see cref="BuildCommand"/>
+    /// at the post-pass build-gate trip point in
+    /// <c>CrewStoryArtifactStrategy.ProduceWorkstreamChangesAsync</c>. Each
+    /// entry is parsed like <see cref="BuildCommand"/> (program + args)
+    /// and executed sequentially via <c>StoryBuildRunner.RunBuildAsync</c>.
+    /// First non-zero exit becomes a <c>BuildFailedException</c> with a
+    /// <c>stage="post-pass-quality"</c> telemetry payload that names the
+    /// failed command, mirroring upstream CI semantics (a Rust repo's
+    /// <c>ci.yml</c> typically requires fmt + clippy in addition to
+    /// build). Empty list means "no extra gates" — the existing
+    /// build-only behaviour is preserved for ecosystems that don't have
+    /// universal opinionated quality checks (dotnet/node/go/maven/python
+    /// vary too much per-repo).
+    /// </param>
     public sealed record DetectedCommands(
         string? InitCommand,
         string? RestoreCommand,
@@ -21,7 +36,8 @@ public static class BuildSystemDetector
         string? TestCommand,
         string Ecosystem,
         bool Ambiguous,
-        string? AmbiguityDetail);
+        string? AmbiguityDetail,
+        IReadOnlyList<string> QualityCommands);
 
     /// <summary>
     /// Scans <paramref name="repoRoot"/> for known project markers and
@@ -54,7 +70,8 @@ public static class BuildSystemDetector
                 TestCommand: $"dotnet test {sln}",
                 Ecosystem: "dotnet",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
         if (slnFiles.Length > 1)
         {
@@ -67,7 +84,8 @@ public static class BuildSystemDetector
                 TestCommand: $"dotnet test {sln}",
                 Ecosystem: "dotnet",
                 Ambiguous: true,
-                AmbiguityDetail: $"Multiple .sln files found: {string.Join(", ", slnFiles.Select(Path.GetFileName))}. Using {Path.GetFileName(slnFiles[0])}.");
+                AmbiguityDetail: $"Multiple .sln files found: {string.Join(", ", slnFiles.Select(Path.GetFileName))}. Using {Path.GetFileName(slnFiles[0])}.",
+                QualityCommands: Array.Empty<string>());
         }
 
         // Single .csproj in root (no .sln).
@@ -82,7 +100,8 @@ public static class BuildSystemDetector
                 TestCommand: $"dotnet test {proj}",
                 Ecosystem: "dotnet",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
 
         // ── 2. Node.js / npm ─────────────────────────────────────────
@@ -109,10 +128,24 @@ public static class BuildSystemDetector
                 TestCommand: hasTest ? "npm test" : null,
                 Ecosystem: "node",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
 
         // ── 3. Rust / Cargo ──────────────────────────────────────────
+        //
+        // Phase 49 follow-up — Cargo repos uniformly run rustfmt + clippy
+        // in upstream CI (`cargo fmt --check`, `cargo clippy -D warnings`).
+        // After PR smartpcr/failover-cluster#6 sat un-merged for 3 hours
+        // because Forge's local gate passed `cargo build` while the
+        // remote CI rejected the PR on a cargo-fmt diff, the build gate
+        // mirrors CI: fmt-check + clippy-deny-warnings are wired in as
+        // post-pass quality commands. The engineer agent that produced
+        // the diff sees them in the same telemetry channel as a build
+        // failure, so the next iteration / restart can self-correct.
+        // (Per-iter wiring stays build-only — clippy adds minutes per
+        // iter; catching at post-pass is sufficient for the merge-gate
+        // alignment use case.)
         if (File.Exists(Path.Combine(repoRoot, "Cargo.toml")))
         {
             return new DetectedCommands(
@@ -122,7 +155,12 @@ public static class BuildSystemDetector
                 TestCommand: "cargo test",
                 Ecosystem: "rust",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: new[]
+                {
+                    "cargo fmt --check --all",
+                    "cargo clippy --workspace --all-targets -- -D warnings",
+                });
         }
 
         // ── 4. Go ────────────────────────────────────────────────────
@@ -135,7 +173,8 @@ public static class BuildSystemDetector
                 TestCommand: "go test ./...",
                 Ecosystem: "go",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
 
         // ── 5. Java / Maven ─────────────────────────────────────────
@@ -148,7 +187,8 @@ public static class BuildSystemDetector
                 TestCommand: "mvn test",
                 Ecosystem: "maven",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
 
         // ── 6. Python ────────────────────────────────────────────────
@@ -161,7 +201,8 @@ public static class BuildSystemDetector
                 TestCommand: "pytest",
                 Ecosystem: "python",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
         if (File.Exists(Path.Combine(repoRoot, "requirements.txt")))
         {
@@ -172,7 +213,8 @@ public static class BuildSystemDetector
                 TestCommand: "pytest",
                 Ecosystem: "python",
                 Ambiguous: false,
-                AmbiguityDetail: null);
+                AmbiguityDetail: null,
+                QualityCommands: Array.Empty<string>());
         }
 
         return Unknown();
@@ -210,7 +252,7 @@ public static class BuildSystemDetector
     }
 
     private static DetectedCommands Unknown() => new(
-        null, null, null, null, "unknown", false, null);
+        null, null, null, null, "unknown", false, null, Array.Empty<string>());
 
     /// <summary>
     /// Wraps a filename in double quotes if it contains spaces, so the
