@@ -10,6 +10,7 @@ using Forge.Api.Auth;
 using Forge.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -363,6 +364,411 @@ public static class AdminEndpoints
                 at = DateTimeOffset.UtcNow,
             });
         }).WithTags("Admin").WithName("AdminBackfillPrReplies");
+
+        // Phase 49 follow-up — backfill missing ThreadId values on
+        // PrComments rows. Pre-fix data had ThreadId="" for every
+        // production-path comment (ProviderStoryProviderOps was minting
+        // empty strings instead of unique guids), which collapsed every
+        // comment on a PR into one UI thread. The post-fix grouping
+        // logic in PrCommentsList.tsx has a defensive fallback for empty
+        // threadIds, but persisting real ids brings the cached rows in
+        // line with newly-created ones and removes the legacy code path
+        // once data is migrated.
+        //
+        // Algorithm:
+        //   1. For each PrCommentRow with ParentCommentId == null and
+        //      empty ThreadId: set ThreadId = "thread-{Id}-{guid}".
+        //   2. For each row with ParentCommentId != null and empty
+        //      ThreadId: inherit the parent's (now-populated) ThreadId.
+        //
+        // Idempotent — only touches rows where ThreadId is empty.
+        // Supports ?dryRun=true to see what would change.
+        app.MapPost("/api/admin/pr-comments/backfill-thread-ids", async (
+            HttpContext ctx,
+            Forge.Api.Persistence.ForgeDbContext db,
+            [FromQuery] bool? dryRun,
+            [FromQuery] string? prId,
+            CancellationToken ct) =>
+        {
+            if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+            var dry = dryRun ?? false;
+
+            // Pull only rows that need fixing. Scoping by PrId is
+            // optional — null/empty = global backfill across all PRs.
+            var query = db.PrComments.Where(c => c.ThreadId == string.Empty);
+            if (!string.IsNullOrWhiteSpace(prId)) query = query.Where(c => c.PrId == prId);
+            var rows = await query.ToListAsync(ct);
+
+            if (rows.Count == 0)
+            {
+                return Results.Ok(new
+                {
+                    dryRun = dry,
+                    scope = prId ?? "(all PRs)",
+                    rowsNeedingThreadId = 0,
+                    message = "No rows with empty ThreadId — nothing to do.",
+                });
+            }
+
+            // Step 1: parents (ParentCommentId is null) get a fresh guid.
+            //         We mint deterministic-ish ids tied to the row Id so a
+            //         second run on the same dataset produces the same value
+            //         (helpful when comparing snapshots across environments).
+            var parents = rows.Where(c => !c.ParentCommentId.HasValue).ToList();
+            var replies = rows.Where(c => c.ParentCommentId.HasValue).ToList();
+
+            var parentChanges = new List<object>();
+            foreach (var p in parents)
+            {
+                var newId = $"thread-{p.Id}-{Guid.NewGuid():N}";
+                if (!dry) p.ThreadId = newId;
+                p.UpdatedAt = DateTimeOffset.UtcNow;
+                parentChanges.Add(new { rowId = p.Id, prId = p.PrId, oldThreadId = string.Empty, newThreadId = newId });
+            }
+
+            // Step 2: replies inherit their parent's ThreadId. The parent
+            //         may itself have been backfilled in Step 1 (already
+            //         in-memory via EF tracking) or may already have a
+            //         valid ThreadId from earlier.
+            var replyChanges = new List<object>();
+            var unresolvedReplies = new List<object>();
+            foreach (var r in replies)
+            {
+                var parent = await db.PrComments.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == r.ParentCommentId!.Value, ct);
+                if (parent is null)
+                {
+                    unresolvedReplies.Add(new { rowId = r.Id, parentCommentId = r.ParentCommentId, reason = "parent-not-found" });
+                    continue;
+                }
+
+                // If parent was in our backfill set, EF's change tracker
+                // returns the in-memory copy with the updated ThreadId
+                // when we query via the tracked context. Force a fetch
+                // through the tracked DbSet to get that.
+                var trackedParent = parents.FirstOrDefault(p => p.Id == r.ParentCommentId!.Value);
+                var effectiveThreadId = trackedParent?.ThreadId ?? parent.ThreadId;
+                if (string.IsNullOrEmpty(effectiveThreadId))
+                {
+                    // Parent ALSO has empty threadId and wasn't in our
+                    // step-1 batch — mint one for it now so the reply
+                    // has somewhere to land. (Edge case: parent was
+                    // scoped out by prId filter mismatch.)
+                    effectiveThreadId = $"thread-{parent.Id}-{Guid.NewGuid():N}";
+                    if (!dry)
+                    {
+                        var tp = await db.PrComments.FirstOrDefaultAsync(x => x.Id == parent.Id, ct);
+                        if (tp is not null)
+                        {
+                            tp.ThreadId = effectiveThreadId;
+                            tp.UpdatedAt = DateTimeOffset.UtcNow;
+                        }
+                    }
+                }
+
+                if (!dry) r.ThreadId = effectiveThreadId;
+                r.UpdatedAt = DateTimeOffset.UtcNow;
+                replyChanges.Add(new { rowId = r.Id, prId = r.PrId, parentCommentId = r.ParentCommentId, inheritedThreadId = effectiveThreadId });
+            }
+
+            if (!dry) await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new
+            {
+                dryRun = dry,
+                scope = prId ?? "(all PRs)",
+                rowsNeedingThreadId = rows.Count,
+                parentsBackfilled = parentChanges.Count,
+                repliesBackfilled = replyChanges.Count,
+                unresolvedReplies = unresolvedReplies.Count,
+                parents = parentChanges,
+                replies = replyChanges,
+                problems = unresolvedReplies,
+                at = DateTimeOffset.UtcNow,
+            });
+        }).WithTags("Admin").WithName("AdminBackfillPrCommentThreadIds");
+
+        // Phase 49 follow-up — backfill stale stats (Commits, Files,
+        // Additions, Deletions) on already-merged PRs. Once a PR
+        // transitions to merged, PrSyncJob's IsActive=true candidate
+        // filter excludes it and the cached row freezes at whatever
+        // CreatePullRequestAsync recorded — typically the initial-push
+        // count, not the post-review-fix count. The merge-path now
+        // captures these in MergePrAsync but for PRs merged BEFORE that
+        // fix shipped, the values are still stale. This endpoint pulls
+        // the latest stats from each provider and writes them back.
+        //
+        // Supports two scopes:
+        //   POST /api/admin/prs/{prId}/refresh-stats        — single PR
+        //   POST /api/admin/prs/backfill-merged-stats       — all merged
+        //                                                     PRs in DB
+        // Both honour ?dryRun=true to preview without writes.
+        app.MapPost("/api/admin/prs/{prId}/refresh-stats", async (
+            HttpContext ctx,
+            string prId,
+            Forge.Api.Persistence.ForgeDbContext db,
+            IServiceProvider sp,
+            [FromQuery] bool? dryRun,
+            CancellationToken ct) =>
+        {
+            if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+            var dry = dryRun ?? false;
+
+            var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+            if (row is null)
+                return Results.Problem(title: $"PR '{prId}' not found", statusCode: 404);
+            if (string.IsNullOrEmpty(row.Provider))
+                return Results.Problem(title: $"PR '{prId}' has no provider configured", statusCode: 400);
+
+            var providers = sp.GetServices<Forge.Api.Providers.IForgeProvider>();
+            var provider = providers.FirstOrDefault(p =>
+                string.Equals(p.Kind, row.Provider, StringComparison.OrdinalIgnoreCase));
+            if (provider is null)
+                return Results.Problem(title: $"Provider '{row.Provider}' not registered", statusCode: 500);
+
+            try
+            {
+                var latest = await provider.GetPullRequestAsync(prId, ct);
+                if (latest is null)
+                    return Results.Problem(title: $"Provider returned no PR for '{prId}'", statusCode: 404);
+
+                var before = new { row.Commits, row.Files, row.Additions, row.Deletions };
+                var after = new { latest.Commits, latest.Files, latest.Additions, latest.Deletions };
+
+                if (!dry)
+                {
+                    row.Commits = latest.Commits;
+                    row.Files = latest.Files;
+                    row.Additions = latest.Additions;
+                    row.Deletions = latest.Deletions;
+                    row.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+                    await db.SaveChangesAsync(ct);
+                }
+
+                return Results.Ok(new { dryRun = dry, prId, before, after, at = DateTimeOffset.UtcNow });
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: $"Provider GetPullRequestAsync failed for '{prId}'",
+                    detail: ex.Message,
+                    statusCode: 502);
+            }
+        }).WithTags("Admin").WithName("AdminRefreshPrStats");
+
+        app.MapPost("/api/admin/prs/backfill-merged-stats", async (
+            HttpContext ctx,
+            Forge.Api.Persistence.ForgeDbContext db,
+            IServiceProvider sp,
+            [FromQuery] bool? dryRun,
+            [FromQuery] int? limit,
+            CancellationToken ct) =>
+        {
+            if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+            var dry = dryRun ?? false;
+            var cap = Math.Max(1, Math.Min(limit ?? 200, 1000));
+
+            // Merged PRs only (Col=="merged" OR IsActive=false). Ordered by
+            // most-recently-updated so the freshest data refreshes first
+            // when the cap is hit.
+            var candidates = await db.Prs
+                .Where(p => !p.IsActive || p.Col == "merged")
+                .Where(p => !string.IsNullOrEmpty(p.Provider))
+                .OrderByDescending(p => p.UpdatedAt ?? string.Empty)
+                .Take(cap)
+                .ToListAsync(ct);
+
+            var providers = sp.GetServices<Forge.Api.Providers.IForgeProvider>().ToList();
+            var updated = new List<object>();
+            var failed = new List<object>();
+            foreach (var row in candidates)
+            {
+                var provider = providers.FirstOrDefault(p =>
+                    string.Equals(p.Kind, row.Provider, StringComparison.OrdinalIgnoreCase));
+                if (provider is null)
+                {
+                    failed.Add(new { prId = row.Id, reason = $"provider '{row.Provider}' not registered" });
+                    continue;
+                }
+                try
+                {
+                    var latest = await provider.GetPullRequestAsync(row.Id, ct);
+                    if (latest is null)
+                    {
+                        failed.Add(new { prId = row.Id, reason = "provider returned null" });
+                        continue;
+                    }
+                    var changed =
+                        row.Commits != latest.Commits
+                        || row.Files != latest.Files
+                        || row.Additions != latest.Additions
+                        || row.Deletions != latest.Deletions;
+                    if (changed && !dry)
+                    {
+                        row.Commits = latest.Commits;
+                        row.Files = latest.Files;
+                        row.Additions = latest.Additions;
+                        row.Deletions = latest.Deletions;
+                        row.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+                    }
+                    if (changed)
+                    {
+                        updated.Add(new
+                        {
+                            prId = row.Id,
+                            commits = new { before = row.Commits, after = latest.Commits },
+                            files = new { before = row.Files, after = latest.Files },
+                            additions = new { before = row.Additions, after = latest.Additions },
+                            deletions = new { before = row.Deletions, after = latest.Deletions },
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(new { prId = row.Id, reason = ex.Message });
+                }
+            }
+
+            if (!dry) await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new
+            {
+                dryRun = dry,
+                scope = "merged",
+                considered = candidates.Count,
+                changedCount = updated.Count,
+                failedCount = failed.Count,
+                changed = updated,
+                failed,
+                at = DateTimeOffset.UtcNow,
+            });
+        }).WithTags("Admin").WithName("AdminBackfillMergedPrStats");
+
+        // Phase 49 follow-up — migrate legacy "blocked" workstream rows
+        // to the new state vocabulary. Pre-fix code conflated two
+        // semantics under Status="blocked":
+        //   (a) waiting for upstream deps  ← should be re-evaluated
+        //   (b) failure triage             ← now spelled "stalled"
+        // After the split, (b) writes Status="stalled" + StallReason.
+        // Rows still sitting at "blocked" with NO StallReason are (a):
+        // they were either dep-waiters from a legacy build OR speculative
+        // runs that ran before the dep-graph guard was tightened
+        // (observed 2026-05-10 on failover-cluster:XRAFT stages 2.1/2.2/2.3
+        // — all ran iters yesterday against a base missing their upstream
+        // crate scaffolding, achieved iterate/pass on a stale tree, then
+        // sat at "blocked" indefinitely).
+        //
+        // This endpoint:
+        //   1. Finds workstreams where Status='blocked' AND StallReason IS NULL.
+        //   2. Optionally scoped by spawnId (?spawnId=spawn-foo).
+        //   3. For each: clears deliverables (results were against stale base),
+        //      clears AgentsJson (late-binding picks fresh on next claim),
+        //      bumps Status to 'planning' so the orchestrator's claim sweep
+        //      sees it on the next tick. Worktree + branch left in place;
+        //      EnsureWorktreeAsync/EnsureBranchAsync handle fresh re-creation
+        //      from the now-current base.
+        //   4. ?dryRun=true to preview.
+        //
+        // Idempotent: a second call finds nothing to do (Status is no
+        // longer "blocked"). Safe to run anytime.
+        app.MapPost("/api/admin/workstreams/unblock-stale", async (
+            HttpContext ctx,
+            Forge.Api.Persistence.ForgeDbContext db,
+            Microsoft.AspNetCore.SignalR.IHubContext<Forge.Api.Realtime.ForgeHub>? hub,
+            [FromQuery] bool? dryRun,
+            [FromQuery] string? spawnId,
+            CancellationToken ct) =>
+        {
+            if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+            var dry = dryRun ?? false;
+
+            var query = db.Workstreams
+                .Where(w => w.Status == "blocked" && (w.StallReason == null || w.StallReason == string.Empty));
+            if (!string.IsNullOrWhiteSpace(spawnId))
+                query = query.Where(w => w.StorySpawnId == spawnId);
+            var rows = await query.ToListAsync(ct);
+
+            if (rows.Count == 0)
+            {
+                return Results.Ok(new
+                {
+                    dryRun = dry,
+                    scope = spawnId ?? "(all spawns)",
+                    matched = 0,
+                    message = "No blocked workstreams without a StallReason — nothing to migrate.",
+                });
+            }
+
+            var nowIso = DateTimeOffset.UtcNow.ToString("O");
+            var migrated = new List<object>();
+
+            foreach (var w in rows)
+            {
+                var beforeStatus = w.Status;
+                var deliverablesNuked = 0;
+
+                if (!dry)
+                {
+                    // Wipe deliverables — they were scored against a
+                    // base missing upstream crate code, so they're
+                    // worthless for the fresh run.
+                    var deliverables = await db.Deliverables.Where(d => d.WorkItemId == w.Id).ToListAsync(ct);
+                    deliverablesNuked = deliverables.Count;
+                    if (deliverables.Count > 0) db.Deliverables.RemoveRange(deliverables);
+
+                    // Reset for fresh claim. Worktree + branch left in
+                    // place; EnsureWorktreeAsync handles re-creation
+                    // (or pruning + recreation if the slug changed).
+                    w.Status = "planning";
+                    w.AgentsJson = "[]";
+                    w.StallReason = null;
+                    w.LastActive = 0;
+                }
+                else
+                {
+                    deliverablesNuked = await db.Deliverables.CountAsync(d => d.WorkItemId == w.Id, ct);
+                }
+
+                migrated.Add(new
+                {
+                    workstreamId = w.Id,
+                    name = w.Name,
+                    storySpawnId = w.StorySpawnId,
+                    beforeStatus,
+                    afterStatus = "planning",
+                    deliverablesCleared = deliverablesNuked,
+                });
+            }
+
+            if (!dry)
+            {
+                await db.SaveChangesAsync(ct);
+
+                // Best-effort SignalR push so the UI re-renders without
+                // a hard refresh.
+                if (hub is not null)
+                {
+                    foreach (var w in rows)
+                    {
+                        try
+                        {
+                            await hub.Clients.All.SendAsync("workstream.changed",
+                                new { kind = "unblocked-stale", id = w.Id }, ct);
+                        }
+                        catch { /* best-effort */ }
+                    }
+                }
+            }
+
+            return Results.Ok(new
+            {
+                dryRun = dry,
+                scope = spawnId ?? "(all spawns)",
+                matched = rows.Count,
+                migrated,
+                at = nowIso,
+            });
+        }).WithTags("Admin").WithName("AdminUnblockStaleWorkstreams");
 
         return app;
     }

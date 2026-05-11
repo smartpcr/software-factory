@@ -896,41 +896,6 @@ public static class TaskExecutionEndpoints
     // 200 with empty `commits` — branch has no commits ahead of base, or
     //                            the worktree directory doesn't exist.
 
-    private sealed record CommitFileChange(string Status, string Path, string? OldPath = null);
-
-    private sealed record CommitEntry(
-        string Sha,
-        string Message,
-        string Author,
-        string At,
-        IReadOnlyList<string> Added,
-        IReadOnlyList<string> Modified,
-        IReadOnlyList<string> Deleted,
-        IReadOnlyList<CommitFileChange> Other);
-
-    private sealed record UncommittedChanges(
-        IReadOnlyList<string> Added,
-        IReadOnlyList<string> Modified,
-        IReadOnlyList<string> Deleted);
-
-    /// <summary>
-    /// Phase 49 follow-up — the cumulative diff between
-    /// <c>origin/{BaseBranch}</c> and the worktree's working tree
-    /// (committed + uncommitted, the same scope a PR against
-    /// <c>BaseBranch</c> would show). Different from
-    /// <see cref="UncommittedChanges"/>, which is ONLY the dirty/staged
-    /// changes from <c>git status</c>: for a workstream where the agent
-    /// committed everything, <c>Uncommitted</c> is all-empty and the
-    /// Worktree-tab counters underreport. Branch totals deduplicate
-    /// per-path across commits (Add-then-Modify in two commits collapses
-    /// to one Added entry) so the count matches what reviewers see in
-    /// the PR's file list.
-    /// </summary>
-    private sealed record BranchTotals(
-        IReadOnlyList<string> Added,
-        IReadOnlyList<string> Modified,
-        IReadOnlyList<string> Deleted);
-
     private sealed record CommitsResponse(
         string? WorktreePath,
         string Branch,
@@ -938,18 +903,31 @@ public static class TaskExecutionEndpoints
         int Ahead,
         int Behind,
         string? HeadSha,
-        IReadOnlyList<CommitEntry> Commits,
-        UncommittedChanges Uncommitted,
-        BranchTotals BranchTotals);
+        IReadOnlyList<Forge.Api.Services.WorktreeCommitsScanner.CommitEntry> Commits,
+        Forge.Api.Services.WorktreeCommitsScanner.UncommittedChanges Uncommitted,
+        Forge.Api.Services.WorktreeCommitsScanner.BranchTotals BranchTotals);
 
     private static async Task<IResult> GetCommits(
         string id,
         ForgeDbContext db,
+        HttpContext httpCtx,
         CancellationToken ct)
     {
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
         if (wi is null)
             return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        // Phase 49 follow-up — operator-driven refresh. The default
+        // (refresh=false) returns fast based on the locally-cached
+        // origin/{baseBranch} ref + fires a background fetch with a
+        // 15s cooldown so the NEXT poll sees fresh upstream data.
+        // ?refresh=true makes the fetch blocking — used by the UI's
+        // explicit refresh button when the operator wants up-to-the-
+        // second ahead/behind counts. Cold load drops from ~4s to
+        // ~600ms with the default; refresh stays at ~2-4s.
+        var refreshParam = httpCtx.Request.Query["refresh"].FirstOrDefault();
+        var fetchUpstream = string.Equals(refreshParam, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(refreshParam, "1", StringComparison.Ordinal);
 
         // Resolve worktree path with the same convention CrewQueueWorker uses:
         // {repo.CloneRoot}/.worktree/ws-{sanitizedId}.
@@ -1037,196 +1015,26 @@ public static class TaskExecutionEndpoints
                 BaseBranch: baseBranch,
                 Ahead: 0, Behind: 0,
                 HeadSha: null,
-                Commits: Array.Empty<CommitEntry>(),
-                Uncommitted: new UncommittedChanges(
+                Commits: Array.Empty<Forge.Api.Services.WorktreeCommitsScanner.CommitEntry>(),
+                Uncommitted: new Forge.Api.Services.WorktreeCommitsScanner.UncommittedChanges(
                     Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()),
-                BranchTotals: new BranchTotals(
+                BranchTotals: new Forge.Api.Services.WorktreeCommitsScanner.BranchTotals(
                     Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>())));
         }
 
-        // Refresh tracking refs so ahead/behind reflects what the remote knows.
-        // Best-effort — a network failure here just means staler counts; the
-        // commit listing is still local-only.
-        await RunGitAsync(worktreePath, ct, "fetch", "origin", "--quiet");
-
-        // Ahead / behind vs the remote base branch.
-        var (acCode, acOut, _) = await RunGitAsync(worktreePath, ct,
-            "rev-list", "--left-right", "--count", $"origin/{baseBranch}...HEAD");
-        int ahead = 0, behind = 0;
-        if (acCode == 0)
-        {
-            var parts = acOut.Trim().Split('\t');
-            if (parts.Length == 2)
-            {
-                int.TryParse(parts[0], out behind);
-                int.TryParse(parts[1], out ahead);
-            }
-        }
-
-        // HEAD sha for the convenience field.
-        var (headCode, headSha, _) = await RunGitAsync(worktreePath, ct, "rev-parse", "HEAD");
-        var headShaStr = headCode == 0 ? headSha.Trim() : null;
-
-        // Commit list with per-file changes. The __COMMIT__ prefix lets us
-        // distinguish header lines from --name-status rows in one pass.
-        var (logCode, logOut, _) = await RunGitAsync(worktreePath, ct,
-            "log",
-            $"origin/{baseBranch}..HEAD",
-            "--pretty=format:__COMMIT__%H%x09%aI%x09%aN%x09%s",
-            "--name-status");
-
-        var commits = new List<CommitEntry>();
-        if (logCode == 0 && !string.IsNullOrWhiteSpace(logOut))
-        {
-            CommitEntry? cur = null;
-            var added = new List<string>();
-            var modified = new List<string>();
-            var deleted = new List<string>();
-            var other = new List<CommitFileChange>();
-            void Flush()
-            {
-                if (cur is null) return;
-                commits.Add(cur with
-                {
-                    Added = added.ToArray(),
-                    Modified = modified.ToArray(),
-                    Deleted = deleted.ToArray(),
-                    Other = other.ToArray(),
-                });
-                added.Clear(); modified.Clear(); deleted.Clear(); other.Clear();
-            }
-            foreach (var rawLine in logOut.Split('\n'))
-            {
-                var line = rawLine.TrimEnd('\r');
-                if (string.IsNullOrEmpty(line)) continue;
-                if (line.StartsWith("__COMMIT__", StringComparison.Ordinal))
-                {
-                    Flush();
-                    var fields = line.Substring("__COMMIT__".Length).Split('\t');
-                    if (fields.Length >= 4)
-                    {
-                        cur = new CommitEntry(
-                            Sha: fields[0],
-                            Message: fields[3],
-                            Author: fields[2],
-                            At: fields[1],
-                            Added: Array.Empty<string>(),
-                            Modified: Array.Empty<string>(),
-                            Deleted: Array.Empty<string>(),
-                            Other: Array.Empty<CommitFileChange>());
-                    }
-                }
-                else if (cur is not null)
-                {
-                    var parts = line.Split('\t');
-                    if (parts.Length < 2) continue;
-                    var status = parts[0];
-                    // Renames/copies show 3 cols: R100 oldpath newpath. Track
-                    // the rename in `other` and the new path under modified
-                    // so the summary still surfaces it.
-                    if (status.StartsWith("R", StringComparison.Ordinal) || status.StartsWith("C", StringComparison.Ordinal))
-                    {
-                        if (parts.Length >= 3)
-                        {
-                            other.Add(new CommitFileChange(status, parts[2], parts[1]));
-                            modified.Add(parts[2]);
-                        }
-                        continue;
-                    }
-                    var path = parts[1];
-                    switch (status)
-                    {
-                        case "A": added.Add(path); break;
-                        case "M": modified.Add(path); break;
-                        case "D": deleted.Add(path); break;
-                        default: other.Add(new CommitFileChange(status, path)); break;
-                    }
-                }
-            }
-            Flush();
-        }
-
-        // Currently uncommitted (working-tree + staged, excluding untracked
-        // dirs that the worktree-feed already skips).
-        var (stCode, stOut, _) = await RunGitAsync(worktreePath, ct, "status", "--porcelain");
-        var uAdded = new List<string>();
-        var uMod = new List<string>();
-        var uDel = new List<string>();
-        if (stCode == 0)
-        {
-            foreach (var rawLine in stOut.Split('\n'))
-            {
-                var line = rawLine.TrimEnd('\r');
-                if (line.Length < 4) continue;
-                var status = line.Substring(0, 2);
-                var path = line.Substring(3);
-                // The two columns are <staged><unstaged>. We classify by the
-                // first non-space column, treating ?? (untracked) as added.
-                if (status[0] == 'A' || status[0] == '?' || status == "??") uAdded.Add(path);
-                else if (status[0] == 'D' || status[1] == 'D') uDel.Add(path);
-                else uMod.Add(path);
-            }
-        }
-
-        // Phase 49 follow-up — cumulative branch totals (committed +
-        // uncommitted) vs the merge target. Same scope a PR review would
-        // see. Computed via `git diff --name-status origin/{baseBranch}`
-        // which compares the WORKING TREE (HEAD + dirty) against the
-        // upstream tip, so committed-and-uncommitted both fold into one
-        // status per path. Without this, the Worktree tab pills
-        // (`+0 ~0 -0`) underreported every workstream where the agent
-        // self-committed (observed 2026-05-10 on failover-cluster:XRAFT
-        // stage 1.1 — agent had 4 commits / 35 files, pills read +0/~0/-0).
-        var tAdded = new List<string>();
-        var tMod = new List<string>();
-        var tDel = new List<string>();
-        try
-        {
-            var (totalsCode, totalsOut, _) = await RunGitAsync(
-                worktreePath, ct, "diff", "--name-status", $"origin/{baseBranch}");
-            if (totalsCode == 0)
-            {
-                foreach (var rawLine in totalsOut.Split('\n'))
-                {
-                    var line = rawLine.TrimEnd('\r');
-                    if (string.IsNullOrEmpty(line)) continue;
-                    var parts = line.Split('\t');
-                    if (parts.Length < 2) continue;
-                    var status = parts[0];
-                    // Renames / copies: R100\t<old>\t<new> — bucket as Modified.
-                    if (status.StartsWith("R", StringComparison.Ordinal) || status.StartsWith("C", StringComparison.Ordinal))
-                    {
-                        if (parts.Length >= 3) tMod.Add(parts[2]);
-                        continue;
-                    }
-                    var path = parts[1];
-                    switch (status)
-                    {
-                        case "A": tAdded.Add(path); break;
-                        case "D": tDel.Add(path); break;
-                        case "M":
-                        case "T": tMod.Add(path); break;
-                        default: tMod.Add(path); break;
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // Best-effort — if origin/{baseBranch} doesn't exist locally
-            // (never fetched / detached worktree), the totals stay empty
-            // and the UI falls back to the Uncommitted counters.
-        }
-
+        // All git work (fetch/log/status/diff/merge-base) lives in the
+        // scanner so it can be unit-tested directly against a temp
+        // repo. See Phase49WorktreeCommitsScannerTests.
+        var scan = await Forge.Api.Services.WorktreeCommitsScanner.ScanAsync(worktreePath, baseBranch, fetchUpstream, ct);
         return Results.Ok(new CommitsResponse(
             WorktreePath: worktreePath,
             Branch: branch,
             BaseBranch: baseBranch,
-            Ahead: ahead, Behind: behind,
-            HeadSha: headShaStr,
-            Commits: commits,
-            Uncommitted: new UncommittedChanges(uAdded, uMod, uDel),
-            BranchTotals: new BranchTotals(tAdded, tMod, tDel)));
+            Ahead: scan.Ahead, Behind: scan.Behind,
+            HeadSha: scan.HeadSha,
+            Commits: scan.Commits,
+            Uncommitted: scan.Uncommitted,
+            BranchTotals: scan.BranchTotals));
     }
 
     /// <summary>

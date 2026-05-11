@@ -2068,6 +2068,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // it back) gets restored from the prior iteration's content.
             // Also snapshot on iter 1 so we have a baseline if the generator
             // nukes the seed file.
+            //
+            // Phase 49 follow-up — the snapshot file MUST be deleted at the
+            // end of every iter, even when the body throws (NoProgressException,
+            // BuildFailedException) or the agent's event stream is cancelled
+            // mid-await. Previously the cleanup was a trailing best-effort
+            // delete inside the restore branch; if any throw fired between
+            // snapshot-create and that line, the `.iter-snapshot.bak` leaked
+            // into the worktree, got committed by the next engineer turn, and
+            // poisoned the base branch (observed 2026-05-10 on
+            // feature/xraft after the architect's plan-doc loop). The
+            // try/finally below guarantees cleanup; *.iter-snapshot.bak is
+            // also in .gitignore as a second line of defence.
             string? snapshotPath = null;
             long snapshotSize = 0;
             if (!string.IsNullOrEmpty(protectedFile) && File.Exists(protectedFile))
@@ -2081,6 +2093,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 catch { snapshotPath = null; }
             }
 
+            try
+            {
             // task.prompt — same shape CrewQueueWorker emits, so the live-exec /
             // doc-conv view's latestPrompt extraction works against plan-doc
             // workItemIds the same way it does against work-item runs.
@@ -2176,7 +2190,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         // will score 0 on a missing file as it does today.
                     }
                 }
-                try { File.Delete(snapshotPath); } catch { /* best-effort */ }
             }
 
             // Phase 47 — no-progress fail-fast. After the generator finishes
@@ -2329,6 +2342,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
 
             return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
+            }
+            finally
+            {
+                // Phase 49 — ALWAYS delete the snapshot file. Runs after
+                // a clean iter, after a thrown guard (NoProgressException /
+                // BuildFailedException), and after iterCt cancellation.
+                // File.Delete is idempotent on non-existent paths so a
+                // double-cleanup (e.g., the restore branch already ran) is
+                // safe.
+                if (!string.IsNullOrEmpty(snapshotPath))
+                {
+                    try { File.Delete(snapshotPath); } catch { /* best-effort */ }
+                }
+            }
         }
 
         async Task<EvaluatorRunOutput> EvaluatorDelegate(int iter, string genOutput, CancellationToken iterCt)

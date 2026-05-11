@@ -4,7 +4,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   forgeApi,
   type StorySpawn,
@@ -463,8 +464,42 @@ function rectY(lane: number): number {
   return PAD + lane * (CELL + ROW_GAP);
 }
 
+/**
+ * Map a rect key to the (mode, selection-kind, selection-id) tuple that
+ * SwarmStoryView consumes via URL search params. Centralised so the rect
+ * click handler stays declarative.
+ *
+ * - `plan:{docKey}` → design mode, doc:doc:{docKey} (the master panel
+ *   keys doc cards with the `doc:` prefix; the strip's rect keys use
+ *   `plan:` so we re-prefix here).
+ * - `impl:{wsId}` → impl mode, phase:{wsId} (matches PhaseCard's
+ *   selection contract).
+ * - `release:qa-pr` → release mode, gate:qa (the QA-merged release gate
+ *   in ReleaseMaster).
+ * - `release:steps:{wsId}` → impl mode, phase:{wsId}. The step-def task
+ *   doesn't have its own card; routing the operator to the parent
+ *   workstream surfaces the step-def state inside that card.
+ */
+function rectTarget(rect: Rect): { mode: 'design' | 'impl' | 'release'; selKind: string; selId: string } | null {
+  if (rect.key.startsWith('plan:')) {
+    const docKey = rect.key.slice('plan:'.length);
+    return { mode: 'design', selKind: 'doc', selId: `doc:${docKey}` };
+  }
+  if (rect.key.startsWith('impl:')) {
+    return { mode: 'impl', selKind: 'phase', selId: rect.key.slice('impl:'.length) };
+  }
+  if (rect.key === 'release:qa-pr') {
+    return { mode: 'release', selKind: 'gate', selId: 'qa' };
+  }
+  if (rect.key.startsWith('release:steps:')) {
+    return { mode: 'impl', selKind: 'phase', selId: rect.key.slice('release:steps:'.length) };
+  }
+  return null;
+}
+
 export function StoryDeliveryStrip({ detail }: Props) {
   const docStats = useDocStats(detail.spawn.storyId);
+  const navigate = useNavigate();
 
   // Stage 1 — 4 design MD docs + 1 decomposition.
   const stage1: Rect[] = [
@@ -529,6 +564,24 @@ export function StoryDeliveryStrip({ detail }: Props) {
     }
   }
 
+  function handleRectClick(r: Rect, e: ReactMouseEvent) {
+    // The strip lives inside SwarmStoryRow which has its own onClick that
+    // navigates without query params. Stop propagation so the more
+    // specific rect click wins.
+    e.stopPropagation();
+    const t = rectTarget(r);
+    if (!t) return;
+    const params = new URLSearchParams();
+    params.set('mode', t.mode);
+    params.set('sel', t.selKind);
+    params.set('selId', t.selId);
+    // Open the master panel by default — operator just chose a specific
+    // task and almost certainly wants to see its card. Mirrors the
+    // existing "auto-open on selection" behaviour inside SwarmStoryView.
+    params.set('master', 'open');
+    navigate(`/workstreams/${encodeURIComponent(detail.spawn.storyId)}?${params.toString()}`);
+  }
+
   return (
     <div
       className="ws-strip"
@@ -552,8 +605,17 @@ export function StoryDeliveryStrip({ detail }: Props) {
           <span
             key={r.key}
             className={`ws-chip stage-${r.stage} ${r.status}`}
-            style={{ left: p.x, top: p.y }}
+            style={{ left: p.x, top: p.y, cursor: 'pointer' }}
             title={buildTooltip(r)}
+            role="button"
+            tabIndex={0}
+            onClick={(e) => handleRectClick(r, e)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleRectClick(r, e as unknown as ReactMouseEvent);
+              }
+            }}
           />
         );
       })}

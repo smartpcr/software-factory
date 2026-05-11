@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnWorkstreamSummary } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import { avatarFor } from '@/agentAvatar';
@@ -95,9 +95,57 @@ const STATUS_PROGRESS: Record<string, number> = {
 };
 
 export function SwarmMasterPanel(props: Props) {
+  // Phase 50 — when the operator clicks a rect on the story-row strip we
+  // navigate to `/workstreams/{storyId}?mode=…&sel=…&selId=…` which
+  // restores both the mode and the per-card selection. Scroll the
+  // matching card into the viewport centre so the operator doesn't have
+  // to hunt for it inside a 21-row phase board. Retry on rAF for ~500 ms
+  // because the cards only render after `detail` resolves; the
+  // ref-guard ensures a refetch tick doesn't repeatedly re-scroll.
+  useScrollSelectedIntoView(props.mode, props.selection, props.detail);
+
   if (props.mode === 'design') return <DesignMaster {...props} />;
   if (props.mode === 'release') return <ReleaseMaster {...props} />;
   return <ImplMaster {...props} />;
+}
+
+function useScrollSelectedIntoView(
+  mode: SwarmMode,
+  selection: Selection,
+  detail: StorySpawnDetail | null,
+) {
+  const lastScrolled = useRef<string>('');
+  useEffect(() => {
+    if (selection.kind === 'overview' || !selection.id) {
+      lastScrolled.current = '';
+      return;
+    }
+    const key = `${selection.kind}:${selection.id}`;
+    const trackKey = `${mode}|${key}`;
+    if (lastScrolled.current === trackKey) return;
+
+    let cancelled = false;
+    let raf = 0;
+    let attempts = 0;
+    const tryScroll = () => {
+      if (cancelled) return;
+      // CSS.escape covers colons / slashes inside the selection id
+      // (e.g. `phase:ws-failover-cluster-XRAFT:phase-1/stage-1`).
+      const sel = `[data-sel-key="${CSS.escape(key)}"]`;
+      const el = document.querySelector(sel);
+      if (el && 'scrollIntoView' in el) {
+        (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        lastScrolled.current = trackKey;
+        return;
+      }
+      // Card hasn't rendered yet (detail still loading, mode just
+      // switched, …). Retry on the next frame, but cap so a missing
+      // card doesn't spin the rAF forever.
+      if (attempts++ < 30) raf = requestAnimationFrame(tryScroll);
+    };
+    raf = requestAnimationFrame(tryScroll);
+    return () => { cancelled = true; if (raf) cancelAnimationFrame(raf); };
+  }, [mode, selection.kind, selection.id, detail]);
 }
 
 /* ─── IMPL MODE ── workstreams as phase cards ────────────────────────── */
@@ -316,6 +364,7 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }:
   return (
     <div
       className={`phase ${phaseCls}${selected ? ' selected' : ''}`}
+      data-sel-key={`phase:${ws.id}`}
       onClick={onSelect}
       data-sc-tooltip={
         ws.status === 'stalled' && ws.stallReason
@@ -436,6 +485,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
               <div
                 key={doc.key}
                 className={`doc-card ${prState}${selection.kind === 'doc' && selection.id === id ? ' selected' : ''}`}
+                data-sel-key={`doc:${id}`}
                 onClick={() => onSelect({ kind: 'doc', id })}
                 title={`plan PR ${artifacts?.plan.pr ?? '—'} · branch ${artifacts?.plan.branch ?? '—'}`}
               >
@@ -474,6 +524,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
 
           <div
             className={`doc-card ${decomposed ? 'merged' : 'draft'}${selection.kind === 'doc' && selection.id === 'doc:decomposition' ? ' selected' : ''}`}
+            data-sel-key="doc:doc:decomposition"
             onClick={() => onSelect({ kind: 'doc', id: 'doc:decomposition' })}
           >
             <div className="doc-card__top">
@@ -560,6 +611,7 @@ function ReleaseMaster({ detail, artifacts, selection, onSelect, collapsed, onTo
             <div
               key={g.id}
               className={`gate-card ${g.status}${selection.kind === 'gate' && selection.id === g.id ? ' selected' : ''}`}
+              data-sel-key={`gate:${g.id}`}
               onClick={() => onSelect({ kind: 'gate', id: g.id })}
             >
               <div className="gate-hd">

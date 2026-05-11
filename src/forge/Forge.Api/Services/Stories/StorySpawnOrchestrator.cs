@@ -1179,19 +1179,24 @@ public sealed class StorySpawnOrchestrator
             // invocation but the next 15-second tick fired a fresh iter).
             // The Restart endpoint clears deliverables and flips status back
             // to "active" to revive the loop.
-            // Phase 47 — also skip "blocked" workstreams; a blocked ws is
-            // sitting in operator-triage after a non-pass terminal verdict
-            // (or a NoProgressException from the engineer producing zero
-            // diffs for several iters). Re-spawning would just re-trigger
-            // the same livelock the blocked status was added to break.
-            // Restart is the explicit unblock path.
             //
-            // Phase 49 — "stalled" is the new (and now preferred) status
-            // for failure-triage. "blocked" stays in the skip list for
-            // back-compat with rows persisted by older builds (the next
-            // operator Restart flips them to "active" and they pick up
-            // the new vocabulary).
-            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "blocked" or WorkstreamStatuses.Stalled) continue;
+            // Phase 49 follow-up — "blocked" was REMOVED from this skip
+            // list. The historical reason for keeping it (back-compat
+            // with rows persisted by older builds where "blocked" meant
+            // failure-triage) is no longer worth the cost: failure-triage
+            // now writes "stalled" + StallReason, and back-compat rows
+            // are migrated to "planning" by the one-off SQL cleanup
+            // (admin endpoint /api/admin/workstreams/unblock-stale).
+            // Net effect: a workstream sitting at "blocked" with all
+            // its deps now complete will re-enter the claim sweep on
+            // the next tick instead of waiting for a manual Restart.
+            // Observed 2026-05-10 on failover-cluster:XRAFT stages
+            // 2.1/2.2/2.3: they ran speculatively before deps were
+            // enforced, got marked "blocked" by an older code path, and
+            // sat indefinitely after 1.1/1.2/1.3 completed because the
+            // skip list excluded them. "stalled" stays in the skip
+            // list because that IS the operator-attention state.
+            if (w.Status is "review" or "merging" or "complete" or "cancelled" or WorkstreamStatuses.Stalled) continue;
 
             // Block until every dep is merged. Reads from the merged
             // depsByWs map (FK table + DepsJson title fallback) so a
