@@ -138,6 +138,39 @@ public sealed class LocalStoryProviderOps : IStoryProviderOps
         }, ct);
     }
 
+    public Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default)
+    {
+        return this.WithDbAsync<long>(async (db, _) =>
+        {
+            var parent = await db.PrComments.AsNoTracking().FirstOrDefaultAsync(x => x.Id == parentCommentId, ct)
+                ?? throw new InvalidOperationException($"Parent comment {parentCommentId} not found.");
+            var row = new PrCommentRow
+            {
+                PrId = parent.PrId,
+                ProviderCommentId = $"local-reply-{Guid.NewGuid():N}",
+                ThreadId = parent.ThreadId,
+                ParentCommentId = parentCommentId,
+                AuthorId = authorAgentId,
+                AuthorKind = "agent",
+                Body = body,
+                FilePath = parent.FilePath,
+                Line = parent.Line,
+                // Engineer replies don't need their own follow-up — set
+                // resolved immediately so the auto-fix loop doesn't pick
+                // its own reply back up on the next tick.
+                State = "resolved",
+                RequiresAttention = false,
+                ResolvedByUserId = authorAgentId,
+                ResolvedAt = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.PrComments.Add(row);
+            await db.SaveChangesAsync(ct);
+            return row.Id;
+        }, ct);
+    }
+
     public Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)
     {
         return this.WithDbAsync<bool>(async (db, _) =>
