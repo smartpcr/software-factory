@@ -1069,7 +1069,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Subscribe the worktree feed now that the final path is known.
             if (!string.IsNullOrEmpty(worktreePath))
             {
-                this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath);
+                // Phase 49 follow-up — anchor the live branchDiff at the
+                // workstream's REAL base branch (spawn.BaseBranch when
+                // present) so the Worktree-tab pills agree with what
+                // /commits computes. Without this the feed would diff
+                // against repo default (often `main`) and inflate the
+                // pills with every upstream PR's contents.
+                var resolvedBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+                    .ResolveAsync(db, workItemId, ct);
+                this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath, resolvedBase);
             }
 
             // Build prompt from the work item.

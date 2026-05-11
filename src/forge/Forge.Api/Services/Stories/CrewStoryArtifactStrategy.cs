@@ -269,6 +269,75 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 49 follow-up — resolve the quality-gate commands (run AFTER
+    /// the build succeeds at the post-pass trip point) for this
+    /// workstream. Mirrors the upstream-CI shape: a Cargo workspace's
+    /// <c>ci.yml</c> runs <c>cargo fmt --check</c> and
+    /// <c>cargo clippy -D warnings</c> as required jobs, so a PR that
+    /// passes Forge's local <c>cargo build</c> gate but fails fmt/clippy
+    /// upstream will leave <c>mergeable_state=unstable</c> and the
+    /// orchestrator's merge-retry loop livelocks (observed 2026-05-11
+    /// on PR smartpcr/failover-cluster#6 sitting un-merged 3+ hours).
+    /// Running the same gates locally surfaces the failure on the
+    /// engineer's side BEFORE push so the next iteration self-corrects.
+    /// <para>
+    /// Resolution: detector-only for now. There is no per-repo override
+    /// column yet — if an operator needs to disable a noisy quality gate
+    /// for a specific repo, add a <c>QualityCommandsJson</c> column with
+    /// the same null=auto / empty=disabled / populated=override
+    /// semantics used elsewhere. Returns an empty list when the workspace
+    /// has no detected build system, when the detection is ambiguous, or
+    /// when the ecosystem has no universal quality opinions (dotnet /
+    /// node / go / maven / python vary too much per-repo to ship
+    /// defaults that won't false-fail).
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> ResolveQualityCommands(RepoRow? repo, string workspace)
+    {
+        _ = repo;
+        var detected = BuildSystemDetector.Detect(workspace);
+        if (detected.Ambiguous)
+        {
+            return Array.Empty<string>();
+        }
+        return detected.QualityCommands;
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — resolve the test command for the post-pass
+    /// test gate. Same precedence as <see cref="ResolveBuildCommand"/>:
+    /// operator override on the repo row wins; else
+    /// <see cref="BuildSystemDetector.Detect"/> on the worktree picks one
+    /// of the ecosystem defaults (<c>cargo test</c>,
+    /// <c>dotnet test {sln}</c>, <c>npm test</c>, <c>go test ./...</c>,
+    /// <c>mvn test</c>, <c>pytest</c>). Returns null when nothing is
+    /// detectable or detection is ambiguous, which the caller surfaces
+    /// as <c>task.test-gate.skipped</c> rather than failing closed.
+    /// <para>The companion to build + quality gates: after a diff
+    /// compiles cleanly and the upstream-CI-mirroring quality gates
+    /// (fmt / clippy) pass, this gate ensures the test suite still
+    /// passes before Forge opens a PR. Without it the evaluator can
+    /// pass a refactor that compiles but silently broke a unit test —
+    /// the operator only finds out when CI fails on the PR
+    /// (observed pre-fix on failover-cluster:XRAFT where the upstream
+    /// build was already broken; with this gate the engineer agent
+    /// can't even merge if the new code regresses an existing test).</para>
+    /// </summary>
+    private static string? ResolveTestCommand(RepoRow? repo, string workspace)
+    {
+        if (repo is not null && !string.IsNullOrWhiteSpace(repo.TestCommand))
+        {
+            return repo.TestCommand;
+        }
+        var detected = BuildSystemDetector.Detect(workspace);
+        if (detected.Ambiguous)
+        {
+            return null;
+        }
+        return string.IsNullOrWhiteSpace(detected.TestCommand) ? null : detected.TestCommand;
+    }
+
+    /// <summary>
     /// Phase 49 follow-up — deserialize <see cref="WorkstreamRow.AgentsJson"/>
     /// into a non-null list. Used at the impl call site to read the
     /// generator + evaluator pair the orchestrator picked at claim time
@@ -1482,6 +1551,164 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     ConsecutiveBrokenIters = 0,
                     LastIteration = 0,
                 };
+            }
+
+            // Phase 49 follow-up — emit the "passed" event symmetrically
+            // with the "failed" / "skipped" paths so the Build tab in
+            // the Conversation pane can render a green tick. Previously
+            // only failure / skipped fired, leaving the operator with
+            // no visible "build is healthy" signal between iterations.
+            await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.passed", new
+            {
+                stage = "post-pass",
+                durationSec = postPassBuild.Duration.TotalSeconds,
+                warningCount = postPassBuild.WarningCount,
+                buildCommand = resolvedBuildCommand,
+                workspace,
+            }, ct: ct);
+
+            // Phase 49 follow-up — quality gates after build success.
+            // Mirrors the upstream CI shape (`ci.yml` Check job for
+            // Cargo workspaces runs fmt + clippy in addition to build).
+            // Each quality command runs sequentially; first non-zero
+            // exit becomes a BuildFailedException with
+            // stage="post-pass-quality" telemetry naming the failed
+            // command, so the operator (and engineer agent on the next
+            // restart) can distinguish a real compile failure from a
+            // formatting / lint failure. The exception is caught by
+            // StorySpawnOrchestrator.DriveImplementAsync and routes the
+            // workstream to Status="stalled" with StallReason set.
+            // Quality failures are NOT auto-fixed today — the engineer
+            // agent must be Restarted; a future enhancement could route
+            // them into a dedicated quality-fix loop on the same PR.
+            var qualityCommands = ResolveQualityCommands(repo, workspace);
+            for (var i = 0; i < qualityCommands.Count; i++)
+            {
+                var qc = qualityCommands[i];
+                if (string.IsNullOrWhiteSpace(qc)) continue;
+
+                var qResult = await StoryBuildRunner.RunBuildAsync(
+                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: qc);
+                if (qResult.Success)
+                {
+                    // Phase 49 follow-up — emit per-quality-command passed
+                    // event so the Build tab can show each gate tick
+                    // (fmt ✓, clippy ✓) independently. Without this the
+                    // operator only sees the BUILD passed tick + the
+                    // final TEST passed tick, with the quality gates
+                    // silently in between.
+                    await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.passed", new
+                    {
+                        stage = "post-pass-quality",
+                        qualityCommand = qc,
+                        qualityCommandIndex = i,
+                        durationSec = qResult.Duration.TotalSeconds,
+                        warningCount = qResult.WarningCount,
+                        buildCommand = resolvedBuildCommand,
+                        workspace,
+                    }, ct: ct);
+                    continue;
+                }
+
+                await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.failed", new
+                {
+                    stage = "post-pass-quality",
+                    qualityCommand = qc,
+                    qualityCommandIndex = i,
+                    exitCode = qResult.ExitCode,
+                    errorCount = qResult.ErrorCount,
+                    warningCount = qResult.WarningCount,
+                    durationSec = qResult.Duration.TotalSeconds,
+                    timedOut = qResult.TimedOut,
+                    errorSummary = qResult.ErrorSummary,
+                    buildCommand = resolvedBuildCommand,
+                    workspace,
+                }, ct: ct);
+
+                throw new BuildFailedException(
+                    $"Workstream {workstream.Id} post-pass quality gate failed (exit {qResult.ExitCode}) "
+                    + $"running `{qc}`. The build itself passed (`{resolvedBuildCommand}` ok), but the "
+                    + $"upstream-CI-mirroring quality gate rejected the diff. This is what blocks merge "
+                    + $"on the remote (e.g. cargo fmt --check or cargo clippy -D warnings is a required "
+                    + $"status check). Refusing to commit code that the remote will reject.\n\n{qResult.ErrorSummary}")
+                {
+                    ExitCode = qResult.ExitCode,
+                    ErrorCount = qResult.ErrorCount,
+                    WarningCount = qResult.WarningCount,
+                    ErrorSummary = qResult.ErrorSummary,
+                    TrippedByConsecutiveIters = false,
+                    ConsecutiveBrokenIters = 0,
+                    LastIteration = 0,
+                };
+            }
+
+            // Phase 49 follow-up — post-pass TEST gate. Final gate
+            // before Forge opens the PR: build compiles, quality gates
+            // (fmt / clippy) are clean, NOW run the test suite to
+            // ensure the diff hasn't silently regressed an existing
+            // test. Same UX as build / quality gate failures —
+            // BuildFailedException(stage="post-pass-test") routes the
+            // workstream to Status="stalled" via
+            // DriveImplementAsync's catch; no PR is opened.
+            // <para>Resolution: operator override on
+            // <see cref="RepoRow.TestCommand"/> wins; else
+            // <see cref="BuildSystemDetector"/> picks the ecosystem
+            // default (cargo test, dotnet test {sln}, npm test,
+            // go test ./..., mvn test, pytest). Null → no detectable
+            // test command → skip the gate rather than fail closed.</para>
+            var resolvedTestCommand = ResolveTestCommand(repo, workspace);
+            if (string.IsNullOrWhiteSpace(resolvedTestCommand))
+            {
+                await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.skipped", new
+                {
+                    stage = "post-pass",
+                    reason = "no test command resolved (set repo.TestCommand to enable)",
+                    workspace,
+                }, ct: ct);
+            }
+            else
+            {
+                var testResult = await StoryBuildRunner.RunBuildAsync(
+                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: resolvedTestCommand);
+                if (!testResult.Success)
+                {
+                    await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.failed", new
+                    {
+                        stage = "post-pass",
+                        exitCode = testResult.ExitCode,
+                        errorCount = testResult.ErrorCount,
+                        warningCount = testResult.WarningCount,
+                        durationSec = testResult.Duration.TotalSeconds,
+                        timedOut = testResult.TimedOut,
+                        errorSummary = testResult.ErrorSummary,
+                        testCommand = resolvedTestCommand,
+                        workspace,
+                    }, ct: ct);
+
+                    throw new BuildFailedException(
+                        $"Workstream {workstream.Id} post-pass test gate failed (exit {testResult.ExitCode}, "
+                        + $"{testResult.ErrorCount} error(s)) running `{resolvedTestCommand}`. The build + "
+                        + $"quality gates passed, but the test suite has regressions. Refusing to commit code "
+                        + $"that breaks tests.\n\n{testResult.ErrorSummary}")
+                    {
+                        ExitCode = testResult.ExitCode,
+                        ErrorCount = testResult.ErrorCount,
+                        WarningCount = testResult.WarningCount,
+                        ErrorSummary = testResult.ErrorSummary,
+                        TrippedByConsecutiveIters = false,
+                        ConsecutiveBrokenIters = 0,
+                        LastIteration = 0,
+                    };
+                }
+
+                await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.passed", new
+                {
+                    stage = "post-pass",
+                    durationSec = testResult.Duration.TotalSeconds,
+                    warningCount = testResult.WarningCount,
+                    testCommand = resolvedTestCommand,
+                    workspace,
+                }, ct: ct);
             }
         }
 

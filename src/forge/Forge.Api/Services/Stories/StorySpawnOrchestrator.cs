@@ -1854,12 +1854,29 @@ public sealed class StorySpawnOrchestrator
                 var comments = await this.strategy.ProduceReviewCommentsAsync(spawn, w, prId, round: 0, ct);
                 if (comments.Count == 0)
                 {
-                    // No findings — straight to approve and merge.
-                    await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
-                    w.Status = "merging";
-                    await db.SaveChangesAsync(ct);
-                    changed = true;
-                    continue;
+                    // No findings — straight to approve and merge. Phase 49
+                    // follow-up — the merge can throw (GitHub 405 dirty when
+                    // a sibling PR merged first, 405 unstable on required-
+                    // check red, network blip, etc.). Catch per-workstream
+                    // so a single bad merge stalls only THIS row instead of
+                    // halting the entire spawn via TickOneSpawnAsync's
+                    // outer LastError catch (observed 2026-05-11 on
+                    // failover-cluster:XRAFT — PR #7 merge-conflict took
+                    // down all 21 workstreams).
+                    try
+                    {
+                        await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
+                        w.Status = "merging";
+                        await db.SaveChangesAsync(ct);
+                        changed = true;
+                        continue;
+                    }
+                    catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
+                    {
+                        await this.StallWorkstreamForMergeFailureAsync(db, hub, spawn, w, prId, mergeEx, ct);
+                        changed = true;
+                        continue;
+                    }
                 }
 
                 foreach (var c in comments)
@@ -1923,14 +1940,92 @@ public sealed class StorySpawnOrchestrator
                 continue;
             }
 
-            // Step 3 — no active comments → approve and merge.
+            // Step 3 — no active comments → approve and merge. Phase 49
+            // follow-up — same per-workstream catch as Step 1 so a
+            // GitHub 405 (merge conflicts / required-checks red / blocked
+            // by branch protection) on this PR doesn't bubble up to
+            // TickOneSpawnAsync and set spawn.LastError, which the UI
+            // surfaces as "ORCHESTRATOR HALTED" and freezes the
+            // remaining workstreams. Marking only THIS row stalled keeps
+            // the spawn's other workstreams progressing.
             var approveReviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
-            await this.ApproveAndMergeAsync(prId, w.Branch, approveReviewer, repo, baseBranch, ct);
-            w.Status = "merging";
-            await db.SaveChangesAsync(ct);
-            changed = true;
+            try
+            {
+                await this.ApproveAndMergeAsync(prId, w.Branch, approveReviewer, repo, baseBranch, ct);
+                w.Status = "merging";
+                await db.SaveChangesAsync(ct);
+                changed = true;
+            }
+            catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
+            {
+                await this.StallWorkstreamForMergeFailureAsync(db, hub, spawn, w, prId, mergeEx, ct);
+                changed = true;
+            }
         }
         return changed;
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — route an exception from
+    /// <see cref="ApproveAndMergeAsync"/> to a workstream-scoped
+    /// <c>stalled</c> transition with a precise
+    /// <see cref="WorkstreamRow.StallReason"/>, instead of letting it
+    /// escape <see cref="DriveReviewAsync"/> and trip the outer
+    /// <see cref="TickOneSpawnAsync"/> catch (which sets
+    /// <see cref="StorySpawnRow.LastError"/> and surfaces as
+    /// "ORCHESTRATOR HALTED" in the UI, freezing every workstream).
+    ///
+    /// <para>Triggered by: GitHub 405 <c>Pull Request has merge conflicts</c>
+    /// (mergeable_state=dirty when a sibling PR has merged into the base
+    /// since this branch was rebased on claim); 405 <c>required status
+    /// check failed</c> (mergeable_state=unstable / blocked); transient
+    /// 5xx from the provider; <c>RealStoryGitOps.MergeAsync</c> failures
+    /// when the post-upstream-merge fast-forward into the local mirror
+    /// hits a stale ref. All look identical from this layer's POV —
+    /// the operator gets the concrete provider message in
+    /// <c>StallReason</c> and uses Restart (after a manual rebase if
+    /// needed) to retry.</para>
+    /// </summary>
+    private async Task StallWorkstreamForMergeFailureAsync(
+        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkstreamRow w, string prId, Exception ex, CancellationToken ct)
+    {
+        this.logger?.LogWarning(ex,
+            "DriveReviewAsync: ApproveAndMergeAsync failed for ws {WsId} PR {PrId}. "
+            + "Marking stalled; spawn continues with remaining workstreams.",
+            w.Id, prId);
+
+        // Don't overwrite a terminal/operator-set state. Same guard the
+        // BuildFailedException path in DriveImplementAsync uses.
+        if (w.Status is not "cancelled" and not "complete")
+        {
+            w.Status = WorkstreamStatuses.Stalled;
+            w.StallReason =
+                $"Merge failed for PR {prId}: {FlattenMessage(ex)}. "
+                + "Resolve the conflict (rebase the ws branch onto the current base tip "
+                + "and push, or fix the failing required-status check), then Restart.";
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception saveEx)
+            {
+                // Don't let a save failure mask the original merge failure.
+                this.logger?.LogWarning(saveEx,
+                    "DriveReviewAsync: failed to persist stalled status for ws {WsId} after merge failure; "
+                    + "next tick will re-enter and retry the transition.", w.Id);
+            }
+            await EmitChange(hub, "ws-stalled", spawn, ct);
+        }
+
+        await this.EmitSpawnEventAsync(w.Id, "task.merge-failed", new
+        {
+            wsId = w.Id,
+            prId,
+            spawnId = spawn.Id,
+            message = FlattenMessage(ex),
+            exceptionType = ex.GetType().Name,
+        }, ct);
     }
 
     // ── qa ───────────────────────────────────────────────────────────────────

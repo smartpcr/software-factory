@@ -445,7 +445,10 @@ public static class TaskExecutionEndpoints
 
         // Worktree (best-effort): most recent task.worktree-tick payload.
         // Falls back to a live disk read when no tick events exist (e.g.
-        // after a server restart that lost in-memory feed subscriptions).
+        // after a server restart that lost in-memory feed subscriptions),
+        // OR when the cached tick is from before the Phase 49 follow-up
+        // (no branchDiff field → fall through so the disk sampler
+        // attaches the correct cumulative branch totals).
         WorktreeSnapshot? worktree = null;
         var lastTick = transcriptRows.LastOrDefault(e => e.Kind == "task.worktree-tick");
         if (lastTick is not null)
@@ -458,21 +461,31 @@ public static class TaskExecutionEndpoints
             catch { /* malformed payload — fall through to null */ }
         }
 
+        // Phase 49 follow-up — when the cached tick predates the
+        // branchDiff fix the UI's pre-/commits-loaded fallback can't
+        // get accurate counts. Treat a tick with no BranchDiff as
+        // "stale shape" and force a fresh disk sample below so the
+        // operator sees correct numbers on first open.
+        var diskSampleNeeded = worktree is null || worktree.BranchDiff is null;
+
         // Fallback: read worktree directly from disk using the path from
         // the started event or derived from the work item's repo + branch.
-        if (worktree is null)
+        if (diskSampleNeeded)
         {
-            string? wtPath = null;
-            var startedEvt = transcriptRows.FirstOrDefault(e => e.Kind == "task.started" || e.Kind == "task.prompts");
-            if (startedEvt is not null)
+            string? wtPath = worktree?.WorktreePath;
+            if (string.IsNullOrEmpty(wtPath))
             {
-                try
+                var startedEvt = transcriptRows.FirstOrDefault(e => e.Kind == "task.started" || e.Kind == "task.prompts");
+                if (startedEvt is not null)
                 {
-                    using var startDoc = JsonDocument.Parse(startedEvt.PayloadJson);
-                    if (startDoc.RootElement.TryGetProperty("worktreePath", out var wp))
-                        wtPath = wp.GetString();
+                    try
+                    {
+                        using var startDoc = JsonDocument.Parse(startedEvt.PayloadJson);
+                        if (startDoc.RootElement.TryGetProperty("worktreePath", out var wp))
+                            wtPath = wp.GetString();
+                    }
+                    catch { /* ignore */ }
                 }
-                catch { /* ignore */ }
             }
 
             // Convention fallback: resolve via WorktreePathResolver so the
@@ -493,7 +506,13 @@ public static class TaskExecutionEndpoints
             {
                 try
                 {
-                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, ct);
+                    // Phase 49 follow-up — resolve the workstream's
+                    // real base branch (spawn.BaseBranch when present)
+                    // so the disk-sample's branchDiff / ahead / behind
+                    // agree with what /commits computes.
+                    var execBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+                        .ResolveAsync(db, id, ct);
+                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, execBase, ct);
                     if (diskSnap is not null)
                     {
                         worktree = new WorktreeSnapshot(
@@ -502,10 +521,14 @@ public static class TaskExecutionEndpoints
                             diskSnap.Ahead, diskSnap.Behind, diskSnap.Dirty,
                             diskSnap.HeadSha, diskSnap.HeadMessage, diskSnap.HeadAuthor, diskSnap.HeadAt,
                             diskSnap.Truncated, DateTimeOffset.UtcNow,
-                            wtPath);
+                            wtPath,
+                            BranchDiff: new WorktreeBranchDiff(
+                                diskSnap.BranchDiffAdded ?? Array.Empty<string>(),
+                                diskSnap.BranchDiffModified ?? Array.Empty<string>(),
+                                diskSnap.BranchDiffDeleted ?? Array.Empty<string>()));
 
                         // Re-subscribe the feed so future ticks are emitted.
-                        worktreeFeed.Subscribe(id, string.Empty, wtPath);
+                        worktreeFeed.Subscribe(id, string.Empty, wtPath, execBase);
                     }
                 }
                 catch { /* best-effort */ }
@@ -827,13 +850,44 @@ public static class TaskExecutionEndpoints
                 headAt = dt;
         }
 
+        // Phase 49 follow-up — surface the branchDiff arrays so the
+        // Worktree-tab pills agree with the PR file list during the
+        // pre-/commits-loaded window. Older ticks (pre-fix) didn't
+        // emit branchDiff at all, OR emitted it anchored at `main` —
+        // both surface as `null` here so the UI falls back gracefully.
+        WorktreeBranchDiff? branchDiff = null;
+        if (el.TryGetProperty("branchDiff", out var bd) && bd.ValueKind == JsonValueKind.Object)
+        {
+            branchDiff = new WorktreeBranchDiff(
+                Added: ExtractStrings(bd, "added"),
+                Modified: ExtractStrings(bd, "modified"),
+                Deleted: ExtractStrings(bd, "deleted"));
+        }
+
         return new WorktreeSnapshot(
             wsId ?? string.Empty,
             added, modified, deleted,
             ahead, behind, dirty,
             sha, msg, author, headAt,
             truncated, at,
-            wtPath);
+            wtPath,
+            BranchDiff: branchDiff);
+    }
+
+    private static IReadOnlyList<string> ExtractStrings(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return Array.Empty<string>();
+        var list = new List<string>(arr.GetArrayLength());
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var s = item.GetString();
+                if (!string.IsNullOrEmpty(s)) list.Add(s);
+            }
+        }
+        return list;
     }
 
     private static int TryGetInt(JsonElement el, string name, int fallback)
@@ -932,34 +986,20 @@ public static class TaskExecutionEndpoints
         // Resolve worktree path with the same convention CrewQueueWorker uses:
         // {repo.CloneRoot}/.worktree/ws-{sanitizedId}.
         string? cloneRoot = null;
-        var baseBranch = "main";
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
             var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.CloneRoot)) cloneRoot = repo.CloneRoot;
-            if (!string.IsNullOrEmpty(repo?.DefaultBranch)) baseBranch = repo.DefaultBranch;
         }
 
-        // Phase 49 follow-up — engineer workstreams branch off the SPAWN's
-        // chosen base, not the repo's default branch. For
-        // failover-cluster:XRAFT the spawn's BaseBranch is
-        // `feature/xraft` (the plan PR merge target) while repo default
-        // is `main`. Diffing against `main` includes the plan PR's own
-        // commit (`[plan] xraft (#1)` with 9 doc files) as if it were
-        // part of the workstream's contribution. Use the workstream's
-        // owning spawn.BaseBranch when available so the commit list
-        // shows only what THIS workstream produced.
-        var wsRow = await db.Workstreams.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
-        if (wsRow is not null && !string.IsNullOrEmpty(wsRow.StorySpawnId))
-        {
-            var spawnRow = await db.StorySpawns.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Id == wsRow.StorySpawnId, ct);
-            if (spawnRow is not null && !string.IsNullOrEmpty(spawnRow.BaseBranch))
-            {
-                baseBranch = spawnRow.BaseBranch;
-            }
-        }
+        // Phase 49 follow-up — base branch comes from the shared
+        // resolver so /commits, /execution disk-sample, and the
+        // CrewQueueWorker subscribe path all anchor at the same ref.
+        // For story-spawn workstreams that's spawn.BaseBranch (e.g.
+        // `feature/xraft`); plain crew-queue items get repo default.
+        var baseBranch = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
+            .ResolveAsync(db, id, ct);
 
         // Phase 42 — plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
         // share the spawn's plan-branch worktree at `{cloneRoot}/.worktree/spawn-{slug}`,

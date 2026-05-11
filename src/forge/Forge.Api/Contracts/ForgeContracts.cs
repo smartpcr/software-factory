@@ -1095,7 +1095,29 @@ public sealed record WorktreeSnapshot(
     bool Truncated,
     DateTimeOffset At,
     /// <summary>Absolute filesystem path to the worktree (e.g. <c>E:\work\hci\update\.worktree\ws-WI-1035</c>). Null when the worktree is not yet attached or the tick predates the field being added.</summary>
-    string? WorktreePath = null);
+    string? WorktreePath = null,
+    /// <summary>
+    /// Phase 49 follow-up — cumulative committed + uncommitted diff
+    /// vs. the workstream's fork point on its real base branch
+    /// (<c>spawn.BaseBranch</c> when present). Same scope a reviewer
+    /// sees in the PR's file list. The Worktree-tab pills use this
+    /// for the +N ~N -N counters when the API <c>/commits</c>
+    /// response hasn't loaded yet; the dirty scalar fields above
+    /// stay as uncommitted-only.
+    /// </summary>
+    WorktreeBranchDiff? BranchDiff = null);
+
+/// <summary>
+/// Phase 49 follow-up — path lists for the cumulative branch diff
+/// computed against the workstream's fork point on its real base
+/// branch. Matches <see cref="Forge.Api.Services.WorktreeCommitsScanner.BranchTotals"/>
+/// semantics (folds tracked-but-uncommitted + untracked entries in)
+/// so the Worktree-tab pills agree with the PR's file list.
+/// </summary>
+public sealed record WorktreeBranchDiff(
+    IReadOnlyList<string> Added,
+    IReadOnlyList<string> Modified,
+    IReadOnlyList<string> Deleted);
 
 /// <summary>
 /// Phase 16.9 — snapshot of a work item's execution state. Returned by

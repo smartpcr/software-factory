@@ -18,6 +18,15 @@ import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
  * always empty for plan tasks. Coding-task panes get the same treatment so
  * the view is consistent everywhere.
  *
+ * `build` (Phase 49 follow-up) surfaces build + test gate runs alongside
+ * the agent's own `cargo build` / `cargo test` / `dotnet build` /
+ * `dotnet test` invocations from its tool-call stream. The dedicated
+ * <c>&lt;BuildPane&gt;</c> renders each event as a status card (green
+ * tick / red cross / gray skipped) with the exit code, duration, and
+ * an expandable error summary so the operator can see why a workstream
+ * stalled without trawling the raw transcript. Same "render-special"
+ * pattern as `worktree`.
+ *
  * `review` (Phase 49 follow-up) surfaces events emitted by the Review
  * crew during the PR review-comment + engineer-fix loop. Was previously
  * invisible because the orchestrator emitted those events under the
@@ -30,7 +39,7 @@ import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
  * has review activity, so unstarted / pre-review workstreams don't
  * surface an empty tab.
  */
-export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'review' | 'summary';
+export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'build' | 'review' | 'summary';
 
 export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -38,6 +47,7 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'evaluator', label: 'Evaluator' },
   { key: 'tools',     label: 'Tools' },
   { key: 'worktree',  label: 'Worktree' },
+  { key: 'build',     label: 'Build' },
   { key: 'review',    label: 'Review' },
   { key: 'summary',   label: 'Summary' },
 ];
@@ -52,6 +62,54 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
 const TOOL_CALL_KINDS = new Set(['task.tool-call', 'task.toolcall']);
 const TOOL_RESULT_KINDS = new Set(['task.tool-result', 'task.toolresult']);
 
+// Phase 49 follow-up — Forge-emitted build/test gate events. Their
+// kinds map 1:1 to the gate trip points in `CrewStoryArtifactStrategy`
+// (build / quality / test, each with passed/failed/skipped variants)
+// plus the per-iter detector that warns before the 3-strike abort.
+const FORGE_BUILD_EVENT_KINDS = new Set<string>([
+  'task.build-gate.passed',
+  'task.build-gate.failed',
+  'task.build-gate.skipped',
+  'task.build-failed.detected',
+  'task.build-failed.aborted',
+  'task.test-gate.passed',
+  'task.test-gate.failed',
+  'task.test-gate.skipped',
+]);
+
+// Phase 49 follow-up — detect agent-issued build/test commands so the
+// Build tab shows the engineer's `cargo build` / `cargo test` /
+// `dotnet build` / etc invocations alongside Forge's own gate runs.
+// Each entry catches both the canonical form (`cargo test`) and common
+// variants (`cargo nextest run`, `cargo test --workspace`).
+const AGENT_BUILD_CMD_REGEX = /\b(cargo\s+(?:build|test|check|clippy|fmt|nextest)|dotnet\s+(?:build|test|publish|run)|npm\s+(?:test|run\s+(?:build|test|lint))|pnpm\s+(?:test|run\s+(?:build|test|lint))|yarn\s+(?:test|build|lint)|go\s+(?:build|test|vet)|mvn\s+(?:test|compile|verify)|gradle(?:w)?\s+(?:build|test|check)|pytest\b|tox\b)/i;
+
+/**
+ * Phase 49 follow-up — true when an event should appear in the Build
+ * tab. Either a Forge-emitted gate event, OR a tool-call / tool-result
+ * whose payload references a known build/test command. Exported so the
+ * tab-availability check (`availableTabs`) can hide the Build tab
+ * before any build activity has happened for the workstream.
+ */
+export function isBuildEvent(e: TaskTranscriptEvent): boolean {
+  if (FORGE_BUILD_EVENT_KINDS.has(e.kind)) return true;
+  if (TOOL_CALL_KINDS.has(e.kind) || TOOL_RESULT_KINDS.has(e.kind)) {
+    const p = e.payload as Record<string, unknown> | null;
+    // The CrewQueueWorker shape stores the command in `text`; the
+    // CrewStoryArtifactStrategy shape stores it under `toolPayload`.
+    // toolName is e.g. "bash" / "shell" / "run_command" / "execute" —
+    // we don't restrict by name because different agent backends use
+    // different tool names and we don't want to miss any.
+    const text = (p?.text as string) ?? '';
+    const toolPayload = typeof p?.toolPayload === 'string'
+      ? (p.toolPayload as string)
+      : (p?.toolPayload != null ? JSON.stringify(p.toolPayload) : '');
+    const haystack = `${text} ${toolPayload}`;
+    return AGENT_BUILD_CMD_REGEX.test(haystack);
+  }
+  return false;
+}
+
 export function filterEvents(
   events: TaskTranscriptEvent[],
   f: FilterKey,
@@ -65,6 +123,12 @@ export function filterEvents(
   // returning [] here prevents the transcript list from rendering anything
   // when the caller forgets to branch.
   if (f === 'worktree') return [];
+  // `build` is rendered specially by BuildPane (Phase 49 follow-up).
+  // The pane needs the events to render its status cards, so unlike
+  // `worktree` we DO return the filtered list here — and BuildPane
+  // imports `isBuildEvent` directly when it needs to compute the same
+  // set without piping through this function (e.g. for tab visibility).
+  if (f === 'build') return events.filter(isBuildEvent);
   if (f === 'tools')   return events.filter((e) => TOOL_CALL_KINDS.has(e.kind) || TOOL_RESULT_KINDS.has(e.kind));
 
   const EVAL_KINDS = new Set([

@@ -13,6 +13,7 @@ import {
   SummaryView,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
+import { BuildPane } from './BuildPane';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -114,11 +115,12 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
 
   const isSummaryMode = filter === 'summary';
   const isWorktreeMode = filter === 'worktree';
+  const isBuildMode = filter === 'build';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -268,6 +270,8 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
         {isWorktreeMode ? (
           <WorktreePane workItemId={workstreamId} />
+        ) : isBuildMode ? (
+          <BuildPane workItemId={workstreamId} />
         ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}

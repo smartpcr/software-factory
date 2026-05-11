@@ -113,17 +113,25 @@ export function WorktreePane({ workItemId }: Props) {
   // file counts (committed + uncommitted vs origin/baseBranch); fall back
   // to the uncommitted-only counts when branchTotals isn't supplied (older
   // server build), then to the live snap when no API response loaded yet.
+  // Phase 49 follow-up — when only `snap` is available (API still
+  // loading on first open), prefer `snap.branchDiff` array lengths
+  // over `snap.added/.modified/.deleted` SCALARS. The scalars are
+  // git-status uncommitted counts (always 0 once the agent commits),
+  // while `branchDiff` is the cumulative committed+uncommitted vs the
+  // workstream's fork point — same scope as `branchTotals` from the
+  // API. Without this fallback the pre-/commits-loaded window shows
+  // `+0 ~0 -0` for any workstream whose agent has finished committing.
   const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
   const behindCount = data?.behind ?? snap?.behind ?? 0;
   const addedCount = branchTotals
     ? branchTotals.added.length
-    : (data ? uncommitted.added.length : (snap?.added ?? 0));
+    : (data ? uncommitted.added.length : (snap?.branchDiff?.added.length ?? snap?.added ?? 0));
   const modifiedCount = branchTotals
     ? branchTotals.modified.length
-    : (data ? uncommitted.modified.length : (snap?.modified ?? 0));
+    : (data ? uncommitted.modified.length : (snap?.branchDiff?.modified.length ?? snap?.modified ?? 0));
   const deletedCount = branchTotals
     ? branchTotals.deleted.length
-    : (data ? uncommitted.deleted.length : (snap?.deleted ?? 0));
+    : (data ? uncommitted.deleted.length : (snap?.branchDiff?.deleted.length ?? snap?.deleted ?? 0));
   const branch = data?.branch ?? null;
 
   return (

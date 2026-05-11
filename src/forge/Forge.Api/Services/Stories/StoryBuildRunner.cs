@@ -204,7 +204,7 @@ public static class StoryBuildRunner
                 ExitCode: -1,
                 ErrorCount: 0,
                 WarningCount: 0,
-                ErrorSummary: $"dotnet build timed out after {budget.TotalMinutes:0.0}min in '{workspace}'",
+                ErrorSummary: $"`{program}` build command timed out after {budget.TotalMinutes:0.0}min in '{workspace}'",
                 Duration: sw.Elapsed,
                 TimedOut: true);
         }
@@ -219,9 +219,13 @@ public static class StoryBuildRunner
         if (string.IsNullOrEmpty(summary) && proc.ExitCode != 0)
         {
             // Build failed but no parseable error lines — surface the tail
-            // of stderr so the operator has something to look at.
-            var stderrTail = stderr.Length > 800 ? stderr[^800..] : stderr;
-            summary = "(no parsed error lines; raw stderr tail below)\n" + stderrTail;
+            // of the combined stream so the operator has something to look
+            // at. The dotnet compiler routes errors to stdout, so the
+            // earlier stderr-only tail missed everything for `dotnet build`;
+            // cargo fmt --check writes its diff to stdout too. Combined
+            // tail is the safe universal default.
+            var combinedTail = combined.Length > 1200 ? combined[^1200..] : combined;
+            summary = "(no parsed error lines; raw output tail below)\n" + combinedTail.Trim();
         }
 
         return new StoryBuildResult(
