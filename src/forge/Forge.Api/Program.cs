@@ -133,7 +133,15 @@ builder.Services.AddCors(options =>
             cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
             cmd.ExecuteNonQuery();
         }
-        opt.UseSqlite($"Data Source={dbPath}");
+        // Phase 48 follow-up — `Default Timeout=30` makes SQLite wait up to
+        // 30 s for a lock before throwing "database is locked". The
+        // orchestrator's tick loop and the queue worker both write to the
+        // shared file; without the timeout, two concurrent writers race
+        // and the second one fails immediately. The user hit this on the
+        // failover-cluster:XRAFT spawn at 17:36 PT 2026-05-09 ("plan
+        // failed: SQLite Error 5: 'database is locked'") because the
+        // regression-to-Plan write coincided with a concurrent operation.
+        opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
     });
 }
 
@@ -429,6 +437,23 @@ using (var scope = app.Services.CreateScope())
     await Phase43Migration.ApplyAsync(db);
     await Phase45Migration.ApplyAsync(db);
     await Phase46Migration.ApplyAsync(db);
+    // Phase 46 (spec) — workstreams.DepsJson + PhaseAnchor for v2 plan
+    // layout. Filename retained as Phase47Migration on disk because
+    // Phase46Migration is taken by the AutoMerge flag migration. MUST
+    // run before Phase 38 (which issues `db.Workstreams.ToListAsync()`)
+    // so the EF column projection finds DepsJson on the live DB —
+    // observed 2026-05-09 boot crash on the prod DB at E:\forge\forge.db
+    // ("SQLite Error 1: 'no such column: w.DepsJson'") because the prod
+    // DB pre-dates the entity-model addition and Phase 47 was scheduled
+    // after Phase 38.
+    await Phase47Migration.ApplyAsync(db);
+    // Phase 49 (spec) — workstreams.StallReason for the new stalled
+    // triage state (build-gate / no-progress / non-pass verdict).
+    // MUST run before Phase 38 for the same reason as Phase 47: Phase
+    // 38 issues `db.Workstreams.ToListAsync()` which projects every
+    // mapped column including StallReason. Without this ordering the
+    // prod DB crashes at boot with "no such column: w.StallReason".
+    await Phase49Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
@@ -444,6 +469,17 @@ using (var scope = app.Services.CreateScope())
     await Phase43Migration.ApplyAsync(db);
     // Phase 44 — agent_claims table + MaxConcurrentTasks on agents.
     await Phase44Migration.ApplyAsync(db);
+    // Phase 47 (spec) — task_queue.RoutedEvaluatorAgentId for pair-diversity
+    // (filename Phase48Migration on disk; see migration class doc).
+    await Phase48Migration.ApplyAsync(db);
+    // Phase 47 (spec) — reap stale agent_usage rows from a crashed runner so
+    // a permanently-busy agent doesn't wedge the diversity picker.
+    // Phase 48 follow-up — by definition no invocation can be in flight at
+    // boot, so close ALL open rows (not just those older than the 24h cap).
+    // Without this, fresh-orphaned rows from the most recent crash leave
+    // their agents marked busy and plan-doc loops freeze because the
+    // pair-diversity picker filters every candidate out as busy.
+    await Forge.Api.Services.BusyAgentsHelper.ReapAllOpenOnBootAsync(db);
     // Phase 45 ran above (out of numeric order) so Phase 38's EF read of
     // story_spawns sees the BaseBranch column.
     // Phase 42 already ran at the top of this scope(must precede the EF
@@ -544,7 +580,9 @@ using (var scope = app.Services.CreateScope())
     // Startup config: enforce canonical model/quota/evaluator-model on
     // all 8 crews and guarantee each day/night shift has ≥ 2 members.
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
-    await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger);
+    var startupConfig = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+    var backendPolicy = Forge.Api.Configuration.ForgeBackendPolicy.FromConfiguration(startupConfig);
+    await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger, backendPolicy);
 }
 
 // One-time CLI scrub of test fixture rows that leaked into the prod DB
@@ -677,6 +715,7 @@ app.MapAuthEndpoints();
 app.MapMeEndpoints();
 app.MapMeSettingsEndpoints();
 app.MapCrewsEndpoints();
+app.MapBackendPolicyEndpoints();
 app.MapModelsEndpoints();
 app.MapAgentsEndpoints();
 app.MapWorkItemsEndpoints();

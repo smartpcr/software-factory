@@ -870,6 +870,7 @@ public class Phase26BuildTestGateTests
             Assert.Equal("dotnet test MyApp.sln", result.TestCommand);
             Assert.Equal("dotnet restore MyApp.sln", result.RestoreCommand);
             Assert.False(result.Ambiguous);
+            Assert.Empty(result.QualityCommands);
         }
         finally { Directory.Delete(dir, true); }
     }
@@ -968,6 +969,65 @@ public class Phase26BuildTestGateTests
             Assert.Equal("rust", result.Ecosystem);
             Assert.Equal("cargo build", result.BuildCommand);
             Assert.Equal("cargo test", result.TestCommand);
+            // Phase 49 follow-up — quality gates mirror upstream CI for
+            // Cargo. PR smartpcr/failover-cluster#6 (2026-05-11) sat
+            // un-merged for 3+ hours because local `cargo build` passed
+            // while remote CI rejected the PR on a cargo-fmt diff. The
+            // detector now seeds fmt + clippy as post-pass quality
+            // commands so Forge's gate matches CI's required-check set.
+            Assert.Equal(2, result.QualityCommands.Count);
+            Assert.Equal("cargo fmt --check --all", result.QualityCommands[0]);
+            Assert.Equal("cargo clippy --workspace --all-targets -- -D warnings", result.QualityCommands[1]);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — only Cargo gets non-empty <c>QualityCommands</c>
+    /// today; every other ecosystem returns an empty list so existing
+    /// behaviour is preserved bit-for-bit. dotnet / node / go / maven /
+    /// python vary too much per-repo on what fmt/lint they enforce to ship
+    /// universal defaults that wouldn't false-fail.
+    /// </summary>
+    [Theory]
+    [InlineData("dotnet", "MyApp.sln", "")]
+    [InlineData("node", "package.json", "{}")]
+    [InlineData("go", "go.mod", "module example.com/foo")]
+    [InlineData("maven", "pom.xml", "<project></project>")]
+    [InlineData("python", "pyproject.toml", "[build-system]")]
+    public void Detector_Non_Rust_Ecosystems_Have_Empty_Quality_Commands(string expectedEcosystem, string markerFile, string markerContent)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"detect-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, markerFile), markerContent);
+            var result = BuildSystemDetector.Detect(dir);
+            Assert.Equal(expectedEcosystem, result.Ecosystem);
+            Assert.NotNull(result.QualityCommands);
+            Assert.Empty(result.QualityCommands);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    /// <summary>
+    /// Phase 49 follow-up — an unknown ecosystem (no marker files in the
+    /// root) returns empty <c>QualityCommands</c>, matching the build /
+    /// test command nulls so the orchestrator skips the gate entirely
+    /// instead of running an arbitrary quality command against a workspace
+    /// it can't classify.
+    /// </summary>
+    [Fact]
+    public void Detector_Unknown_Has_Empty_Quality_Commands()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"detect-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var result = BuildSystemDetector.Detect(dir);
+            Assert.Equal("unknown", result.Ecosystem);
+            Assert.NotNull(result.QualityCommands);
+            Assert.Empty(result.QualityCommands);
         }
         finally { Directory.Delete(dir, true); }
     }
@@ -1036,7 +1096,7 @@ public class Phase26BuildTestGateTests
         };
         var detected = new BuildSystemDetector.DetectedCommands(
             null, "dotnet restore", "dotnet build Foo.sln", "dotnet test Foo.sln",
-            "dotnet", false, null);
+            "dotnet", false, null, Array.Empty<string>());
         var changed = BuildSystemDetector.MergeInto(row, detected);
         Assert.True(changed);
         Assert.Equal("my-custom-build", row.BuildCommand); // preserved
@@ -1053,7 +1113,7 @@ public class Phase26BuildTestGateTests
             TestCommand = "existing-test",
         };
         var detected = new BuildSystemDetector.DetectedCommands(
-            null, null, "dotnet build", "dotnet test", "dotnet", false, null);
+            null, null, "dotnet build", "dotnet test", "dotnet", false, null, Array.Empty<string>());
         var changed = BuildSystemDetector.MergeInto(row, detected);
         Assert.False(changed);
     }

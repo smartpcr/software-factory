@@ -20,6 +20,8 @@
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
     <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner. -->
     <PackageReference Include="GitHub.Copilot.SDK" />
+    <!-- Phase 46 — workstreams.yaml decomposition artefact + plan front-matter parser. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
   <!-- Phase 11.2 — model registry seed. The Web SDK auto-includes the JSON;

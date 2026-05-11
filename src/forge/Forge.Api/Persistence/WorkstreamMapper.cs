@@ -19,5 +19,6 @@ public static class WorkstreamMapper
         CardMapper.Deserialize<List<string>>(r.CardsJson) ?? new(),
         r.Commits, r.Ahead, r.Behind, r.Conflicts, r.Summary,
         r.BarStart, r.BarEnd, r.Planned,
-        r.RepoId);
+        r.RepoId,
+        r.StallReason);
 }
