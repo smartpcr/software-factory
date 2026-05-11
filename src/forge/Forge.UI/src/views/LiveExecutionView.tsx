@@ -9,6 +9,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot, type DeliverableShape } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { BuildPane } from '@/swarm/BuildPane';
 import {
   type FilterKey,
   FILTERS,
@@ -101,6 +102,7 @@ export function LiveExecutionView(): JSX.Element {
   }, [isRunActive, resumeComposerOpen]);
 
   const isSummaryMode = filter === 'summary';
+  const isBuildMode = filter === 'build';
   const pagerLength = isSummaryMode ? summaryIters.length : iterations.length;
   const totalIters = pagerLength;
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
@@ -109,9 +111,9 @@ export function LiveExecutionView(): JSX.Element {
   useEffect(() => { setSelectedIter(null); }, [filter]);
   // Default to the latest iteration; selectedIter===null means "follow latest".
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isBuildMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode ? filtered : []);
+    : (!isSummaryMode && !isBuildMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
   // Reverse-chronological: newest events on top.
@@ -643,6 +645,8 @@ export function LiveExecutionView(): JSX.Element {
         <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
           {isSummaryMode ? (
             <SummaryView deliverable={activeSummary} loading={!!entry?.loading} dispatched={snapshot?.autoDispatchedAt != null} />
+          ) : isBuildMode ? (
+            <BuildPane workItemId={workItemId} />
           ) : (
             <>
               {transcriptTotalCount > 0 && (
@@ -768,6 +772,10 @@ function WorktreeTab(props: {
 
   const commits = data?.commits ?? [];
   const uncommitted = data?.uncommitted ?? { added: [], modified: [], deleted: [] };
+  // Phase 49 follow-up — branch totals (committed + uncommitted vs
+  // origin/baseBranch) are the right scope for the +N ~N -N pills.
+  // `uncommitted` alone underreports the moment the agent commits.
+  const branchTotals = data?.branchTotals ?? null;
   const hasDirty = uncommitted.added.length + uncommitted.modified.length + uncommitted.deleted.length > 0;
 
   // Leaf directory name — the project convention is `ws-{workItemId}` under
@@ -779,13 +787,27 @@ function WorktreeTab(props: {
     ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
     : (snap?.workstreamId || null);
 
-  // Pills: prefer the API's authoritative ahead/behind + commit-derived
-  // file counts; fall back to the live snap when the API hasn't loaded.
+  // Pills: prefer branchTotals (committed + uncommitted), fall back to
+  // uncommitted-only when branchTotals isn't available (older server),
+  // then to the live snap when no API response has loaded.
+  // Phase 49 follow-up — when only `snap` is available, prefer
+  // `snap.branchDiff` array lengths over `snap.added/.modified/.deleted`
+  // scalars. The scalars are git-status uncommitted counts (always 0
+  // once the agent commits); the branchDiff arrays carry the cumulative
+  // committed+uncommitted scope. Without this fallback the pre-API-loaded
+  // window misreports +0 ~0 -0 for workstreams that have finished
+  // committing.
   const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
   const behindCount = data?.behind ?? snap?.behind ?? 0;
-  const addedCount = data ? uncommitted.added.length : (snap?.added ?? 0);
-  const modifiedCount = data ? uncommitted.modified.length : (snap?.modified ?? 0);
-  const deletedCount = data ? uncommitted.deleted.length : (snap?.deleted ?? 0);
+  const addedCount = branchTotals
+    ? branchTotals.added.length
+    : (data ? uncommitted.added.length : (snap?.branchDiff?.added.length ?? snap?.added ?? 0));
+  const modifiedCount = branchTotals
+    ? branchTotals.modified.length
+    : (data ? uncommitted.modified.length : (snap?.branchDiff?.modified.length ?? snap?.modified ?? 0));
+  const deletedCount = branchTotals
+    ? branchTotals.deleted.length
+    : (data ? uncommitted.deleted.length : (snap?.branchDiff?.deleted.length ?? snap?.deleted ?? 0));
 
   return (
     <div>

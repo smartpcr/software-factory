@@ -176,6 +176,36 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         var ctx = await BuildCallContextAsync(db, pr, ct);
         await provider.MergePullRequestAsync(prId, ctx, ct);
 
+        // Phase 49 follow-up — capture the FINAL stats (commit count,
+        // file count, +/-) from the provider before flipping
+        // IsActive=false, because PrSyncJob filters merged PRs out of
+        // its candidate set and the row will never be re-synced after
+        // this point. Without this, PrRow.Commits is stuck at whatever
+        // CreatePullRequestAsync recorded — typically the initial-push
+        // count, not the post-review-fix count (observed 2026-05-10 on
+        // PR smartpcr/failover-cluster#3: 2 commits cached locally,
+        // GitHub showed 5 after the engineer addressed three review
+        // comments). Best-effort: if the provider call throws (rate
+        // limit, transient 5xx) we still proceed with the merge so
+        // the local row at least flips to "merged" cleanly.
+        try
+        {
+            var latest = await provider.GetPullRequestAsync(prId, ct);
+            if (latest is not null)
+            {
+                pr.Commits = latest.Commits;
+                pr.Files = latest.Files;
+                pr.Additions = latest.Additions;
+                pr.Deletions = latest.Deletions;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogWarning(ex,
+                "Final stats capture failed for {PrId} after merge; PrRow.Commits/Files/Additions/Deletions stay at prior values.",
+                prId);
+        }
+
         var wasMerged = string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase);
         pr.Col = "merged";
         pr.IsActive = false;
@@ -245,11 +275,21 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         // request and is not reconciled with the upstream copy because
         // there's no reliable matching key (CommentOnPullRequestAsync
         // doesn't echo back the created comment id).
+        //
+        // Phase 49 follow-up — ThreadId must be unique per top-level
+        // comment. Empty string here would cause PrCommentsList.tsx to
+        // collapse every comment on the PR into one mega-thread, hiding
+        // engineer replies under the wrong parent (observed 2026-05-10 on
+        // PR smartpcr/failover-cluster#3: SG posted three independent
+        // review comments + LZ posted one reply, all four rendered as a
+        // single 4-comment thread with confused parent/reply structure).
+        // LocalStoryProviderOps:124 already mints unique threadIds; this
+        // brings the production path in line.
         var row = new PrCommentRow
         {
             PrId = prId,
             ProviderCommentId = $"pending:{Guid.NewGuid():N}",
-            ThreadId = string.Empty,
+            ThreadId = $"thread-{Guid.NewGuid():N}",
             AuthorId = authorAgentId,
             AuthorKind = "agent",
             Body = body,
@@ -307,6 +347,71 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             IdempotencyKey: null,
             RepositoryName: repoName,
             ProjectName: projectName);
+    }
+
+    public async Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default)
+    {
+        using var scope = this.services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var parent = await db.PrComments.AsNoTracking().FirstOrDefaultAsync(x => x.Id == parentCommentId, ct)
+            ?? throw new InvalidOperationException($"Parent comment {parentCommentId} not found.");
+
+        // Persist the reply locally — keyed under the parent's PrId + ThreadId
+        // so the UI's threaded comment renderer groups them. State="resolved"
+        // because the reply IS the response (the auto-fix loop sets the
+        // PARENT comment's state to resolved separately via ResolvePrCommentAsync;
+        // the reply row itself doesn't loop into another fix attempt).
+        var row = new PrCommentRow
+        {
+            PrId = parent.PrId,
+            ProviderCommentId = $"pending-reply:{Guid.NewGuid():N}",
+            ThreadId = parent.ThreadId,
+            ParentCommentId = parentCommentId,
+            AuthorId = authorAgentId,
+            AuthorKind = "agent",
+            Body = body,
+            FilePath = parent.FilePath,
+            Line = parent.Line,
+            State = "resolved",
+            RequiresAttention = false,
+            ResolvedByUserId = authorAgentId,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.PrComments.Add(row);
+        await db.SaveChangesAsync(ct);
+
+        // Best-effort upstream — Phase 49 uses
+        // <see cref="IForgeProvider.ReplyToReviewCommentAsync"/> so a
+        // numeric upstream review-comment id (when we have one) lands the
+        // reply in-thread on the file/line conversation. Today the parent
+        // row's <c>ProviderCommentId</c> is typically a "pending:{guid}"
+        // placeholder (the create call doesn't echo back the upstream id),
+        // and the provider impl falls back to a top-level PR comment.
+        // The local <see cref="PrCommentRow"/> above preserves the
+        // structural link (<c>ParentCommentId</c>) for Forge-side
+        // threaded rendering regardless of the upstream outcome.
+        var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == parent.PrId, ct);
+        if (pr is not null && !string.IsNullOrEmpty(pr.Provider))
+        {
+            try
+            {
+                var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
+                var quotedPreview = parent.Body?.Length > 160 ? parent.Body[..160] + "…" : parent.Body ?? string.Empty;
+                var formatted = $"> Re: {parent.FilePath}:{parent.Line} — {quotedPreview}\n\n{body}\n\n_({authorAgentId} reply)_";
+                var ctx = await BuildCallContextAsync(db, pr, ct);
+                await provider.ReplyToReviewCommentAsync(parent.PrId, parent.ProviderCommentId ?? string.Empty, formatted, ctx, ct);
+            }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Provider reply post failed for parent comment {ParentId} on PR {PrId}; local reply row persisted.",
+                    parentCommentId, parent.PrId);
+            }
+        }
+        return row.Id;
     }
 
     public async Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)

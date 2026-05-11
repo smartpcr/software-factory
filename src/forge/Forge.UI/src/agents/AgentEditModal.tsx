@@ -36,6 +36,22 @@ function AgentEditModal({ agentId, onClose }: {
   const [original, setOriginal] = useState<AgentDetail | null>(null);
   const [crews, setCrews] = useState<Crew[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  /**
+   * Phase 47d — operator-controlled backend allow-list. Fetched from
+   * `GET /api/settings/backend-policy` so we can grey out backend /
+   * invoke-mode dropdown options that aren't permitted by the current
+   * `Forge:BackendPolicy` configuration. Default policy disables claude;
+   * the operator can re-enable it by adding "claude" to AllowedBackends
+   * in appsettings.json and bouncing Forge.Api. Null while loading;
+   * fall back to "everything allowed" if the fetch fails (UI shouldn't
+   * block on a config endpoint).
+   */
+  const [backendPolicy, setBackendPolicy] = useState<{
+    allowedBackends: string[];
+    allowedInvokeModes: string[];
+    canonical: string;
+    canonicalInvokeMode: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [role, setRole] = useState('');
@@ -58,10 +74,13 @@ function AgentEditModal({ agentId, onClose }: {
     setSoulLoading(true);
     void (async () => {
       try {
-        const [agent, crewList, modelList] = await Promise.all([
+        const [agent, crewList, modelList, policyResp] = await Promise.all([
           forgeApi.getAgent(agentId),
           forgeApi.listCrews().catch(() => [] as Crew[]),
           forgeApi.listModels().catch(() => [] as ModelInfo[]),
+          fetch('/api/settings/backend-policy', { credentials: 'include' })
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null),
         ]);
         if (cancelled) return;
         setOriginal(agent);
@@ -74,6 +93,14 @@ function AgentEditModal({ agentId, onClose }: {
         setInvokeMode(agent.invokeMode ?? '');
         setGeneratorModel(agent.generatorModel ?? '');
         setEvaluatorModel(agent.evaluatorModel ?? '');
+        if (policyResp && Array.isArray(policyResp.allowedBackends) && Array.isArray(policyResp.allowedInvokeModes)) {
+          setBackendPolicy({
+            allowedBackends: policyResp.allowedBackends.map((b: string) => b.toLowerCase()),
+            allowedInvokeModes: policyResp.allowedInvokeModes.map((m: string) => m.toLowerCase()),
+            canonical: (policyResp.canonical ?? 'copilot').toLowerCase(),
+            canonicalInvokeMode: (policyResp.canonicalInvokeMode ?? 'sdk').toLowerCase(),
+          });
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
@@ -296,8 +323,34 @@ function AgentEditModal({ agentId, onClose }: {
                     style={{ ...selectStyle, width: '100%' }}
                   >
                     <option value="">— inherit ({homeCrew?.backend ?? 'copilot'}) —</option>
-                    <option value="copilot">Copilot · GitHub.Copilot.SDK</option>
-                    <option value="claude">Claude · Anthropic /v1/messages</option>
+                    {(['copilot', 'claude'] as const).map((bk) => {
+                      const allowed = !backendPolicy || backendPolicy.allowedBackends.includes(bk);
+                      // Allow keeping a previously-saved disallowed value
+                      // (so the modal can render an existing claude row
+                      // without the backend silently flipping to ''), but
+                      // mark it disabled-with-warning so the operator
+                      // cannot newly select it. Saving forwards the
+                      // existing value unchanged.
+                      const isCurrent = backend === bk;
+                      const disabled = !allowed && !isCurrent;
+                      const label = bk === 'copilot'
+                        ? 'Copilot · GitHub.Copilot.SDK'
+                        : 'Claude · Anthropic /v1/messages';
+                      return (
+                        <option
+                          key={bk}
+                          value={bk}
+                          disabled={disabled}
+                          title={
+                            allowed
+                              ? undefined
+                              : `Backend "${bk}" is not in Forge:BackendPolicy.AllowedBackends. Add it to appsettings.json and restart Forge.Api to enable.`
+                          }
+                        >
+                          {label}{!allowed ? '  (disabled by policy)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 <div>
@@ -308,8 +361,28 @@ function AgentEditModal({ agentId, onClose }: {
                     style={{ ...selectStyle, width: '100%' }}
                   >
                     <option value="">— inherit ({homeCrew?.invokeMode ?? 'sdk'}) —</option>
-                    <option value="sdk">SDK · streaming events + tools</option>
-                    <option value="cli">CLI · stdin/stdout (text-only)</option>
+                    {(['sdk', 'cli'] as const).map((mode) => {
+                      const allowed = !backendPolicy || backendPolicy.allowedInvokeModes.includes(mode);
+                      const isCurrent = invokeMode === mode;
+                      const disabled = !allowed && !isCurrent;
+                      const label = mode === 'sdk'
+                        ? 'SDK · streaming events + tools'
+                        : 'CLI · stdin/stdout (text-only)';
+                      return (
+                        <option
+                          key={mode}
+                          value={mode}
+                          disabled={disabled}
+                          title={
+                            allowed
+                              ? undefined
+                              : `Invoke mode "${mode}" is not in Forge:BackendPolicy.AllowedInvokeModes. Add it to appsettings.json and restart Forge.Api to enable.`
+                          }
+                        >
+                          {label}{!allowed ? '  (disabled by policy)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>
