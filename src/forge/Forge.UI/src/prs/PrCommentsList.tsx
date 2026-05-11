@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { renderRichText } from '@/markdown';
+import { avatarFor, agentInfo } from '@/agentAvatar';
 import { isAgentReview, isBuildEvent, summarizePlainText } from './prBuildEvents';
 import type { PrComment, PrCommentState } from '@/types';
 
@@ -61,15 +62,37 @@ function summarizeBody(body: string | null | undefined, max = 110): string {
 }
 
 /**
- * Resolve a friendly author name + bot flag for a comment row. ADO PR
- * Assistant remarks land with `authorKind: 'system'` and an empty
+ * Resolve a friendly author name + bot flag + avatar URL for a comment row.
+ * ADO PR Assistant remarks land with `authorKind: 'system'` and an empty
  * UPN, so the raw author would render as "unknown" — substitute the
  * canonical name and treat them as agent rows in the UI.
+ *
+ * Phase 49 follow-up — agent rows now resolve through
+ * <see cref="agentInfo"/> so the displayed name is the FULL allocation
+ * name (e.g. "Ling Zhu" rather than "LZ") and through
+ * <see cref="avatarFor"/> so we can render the bundled character
+ * portrait instead of a two-letter initial chip.
  */
-function effectiveAuthor(c: PrComment): { name: string; isBot: boolean } {
-  if (isAgentReview(c)) return { name: 'PR Assistant', isBot: true };
-  if (c.authorKind === 'agent') return { name: c.authorId ?? 'agent', isBot: true };
-  return { name: c.authorId && c.authorId.length > 0 ? c.authorId : 'unknown', isBot: false };
+function effectiveAuthor(c: PrComment): { name: string; role: string | null; isBot: boolean; avatarUrl: string | null } {
+  if (isAgentReview(c)) {
+    return { name: 'PR Assistant', role: null, isBot: true, avatarUrl: null };
+  }
+  if (c.authorKind === 'agent') {
+    const info = agentInfo(c.authorId);
+    const avatarUrl = avatarFor(c.authorId, info?.name);
+    return {
+      name: info?.name ?? c.authorId ?? 'agent',
+      role: info?.role ?? null,
+      isBot: true,
+      avatarUrl,
+    };
+  }
+  return {
+    name: c.authorId && c.authorId.length > 0 ? c.authorId : 'unknown',
+    role: null,
+    isBot: false,
+    avatarUrl: null,
+  };
 }
 
 export function PrCommentsList({ prId, comments, error: parentError, onRefresh, callerIsHuman = true }: Props) {
@@ -101,9 +124,19 @@ export function PrCommentsList({ prId, comments, error: parentError, onRefresh, 
   const threads = useMemo(() => {
     const byThread = new Map<string, PrComment[]>();
     for (const c of reviewComments) {
-      const arr = byThread.get(c.threadId) ?? [];
+      // Phase 49 follow-up — defensive grouping key. Empty threadId
+      // (legacy data from before ProviderStoryProviderOps minted unique
+      // ids) used to collapse every comment on a PR into one mega-thread.
+      // Fall back to `parentCommentId ?? id` so each top-level comment
+      // gets its own group and replies fold into their parent's group
+      // (a reply has parentCommentId set; the parent has it null, so
+      // both end up with the same legacy- key on the parent's id).
+      const groupKey = c.threadId && c.threadId.length > 0
+        ? c.threadId
+        : `legacy-${c.parentCommentId ?? c.id}`;
+      const arr = byThread.get(groupKey) ?? [];
       arr.push(c);
-      byThread.set(c.threadId, arr);
+      byThread.set(groupKey, arr);
     }
     const list = Array.from(byThread.entries()).map(([threadId, items]) => {
       const sorted = [...items].sort((a, b) => {
@@ -394,8 +427,17 @@ function ThreadSummaryRow({ parent, replyCount, expanded, onClick }: SummaryProp
           />
         </svg>
       </span>
-      <span className="pr-comment-avatar" title={author.name}>
-        {author.isBot ? '🤖' : <span>{authorInitials(parent.authorId)}</span>}
+      <span
+        className={`pr-comment-avatar${author.avatarUrl ? ' has-image' : ''}`}
+        title={author.role ? `${author.name} · ${author.role}` : author.name}
+      >
+        {author.avatarUrl ? (
+          <img src={author.avatarUrl} alt={author.name} />
+        ) : author.isBot ? (
+          '🤖'
+        ) : (
+          <span>{authorInitials(parent.authorId)}</span>
+        )}
       </span>
       <span className="pr-comment-summary-main">
         <span className="pr-comment-summary-meta">
@@ -438,8 +480,17 @@ function CommentBody({ c, isReply, callerIsHuman, busyId, onResolve, onReopen, o
   const author = effectiveAuthor(c);
   return (
     <div className={`pr-comment-row ${isReply ? 'is-reply' : ''}${author.isBot ? ' is-bot' : ''}`}>
-      <div className="pr-comment-avatar" title={author.name}>
-        {author.isBot ? '🤖' : <span>{authorInitials(c.authorId)}</span>}
+      <div
+        className={`pr-comment-avatar${author.avatarUrl ? ' has-image' : ''}`}
+        title={author.role ? `${author.name} · ${author.role}` : author.name}
+      >
+        {author.avatarUrl ? (
+          <img src={author.avatarUrl} alt={author.name} />
+        ) : author.isBot ? (
+          '🤖'
+        ) : (
+          <span>{authorInitials(c.authorId)}</span>
+        )}
       </div>
       <div className="pr-comment-main">
         <div className="pr-comment-meta">

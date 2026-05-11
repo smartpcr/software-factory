@@ -130,6 +130,23 @@ public sealed class PlanReconciler
             return new ReconciliationReport(spawnId, 0, 0, 0, 0, 0, 0, 0, 0, false);
         }
 
+        // Phase 46 — refuse to reconcile when the parser surfaced a
+        // structural violation. Same gate as ProduceDecompositionAsync;
+        // mirrors that path's "fail loudly so the operator sees the code
+        // and re-emits via the architect's evaluator loop".
+        if (canonical.ParseErrors.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Reconcile refused: {string.Join(", ", canonical.ParseErrors)}");
+        }
+
+        // Phase 46 — resolve every stage's effective deps (explicit +
+        // phase-expansion). Cycles short-circuit with plan.dep_cycle. We
+        // resolve once and pass the map into the insert/update paths so
+        // both produce DepsJson consistent with the plan-derived
+        // ProduceDecompositionAsync output.
+        var resolvedDeps = DecompositionDepsResolver.ResolveAll(canonical);
+
         var existing = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
             .ToListAsync(ct);
@@ -164,6 +181,12 @@ public sealed class PlanReconciler
             {
                 if (string.Equals(row.PlanContentHash, stage.ContentHash, StringComparison.Ordinal))
                 {
+                    // Phase 46 — even on a no-op content-hash match, refresh
+                    // DepsJson + PhaseAnchor when null so the columns
+                    // backfill incrementally on legacy rows the migration
+                    // didn't catch (e.g. WorkstreamRow created by the
+                    // pre-Phase-46 manual API path).
+                    SyncDepsAndAnchor(row, stage, resolvedDeps);
                     noop++;
                     continue;
                 }
@@ -180,7 +203,7 @@ public sealed class PlanReconciler
                     {
                         wi.PlanAnchor = row.PlanAnchor;
                     });
-                    InsertWorkstream(db, spawn, stage, ref maxSort);
+                    InsertWorkstream(db, spawn, stage, ref maxSort, resolvedDeps);
                     splitForDelta++;
                 }
                 else
@@ -190,6 +213,7 @@ public sealed class PlanReconciler
                     row.Name = stage.Name;
                     row.Summary = StageSummary(stage);
                     row.PlanContentHash = stage.ContentHash;
+                    SyncDepsAndAnchor(row, stage, resolvedDeps);
                     UpdateMatchingWorkItem(db, row.Id, wi =>
                     {
                         wi.Title = stage.Name;
@@ -201,7 +225,7 @@ public sealed class PlanReconciler
             }
             else
             {
-                InsertWorkstream(db, spawn, stage, ref maxSort);
+                InsertWorkstream(db, spawn, stage, ref maxSort, resolvedDeps);
                 added++;
             }
         }
@@ -250,8 +274,12 @@ public sealed class PlanReconciler
         // doesn't leave the DB in a half-state.
         await db.SaveChangesAsync(ct);
 
-        // Rewrite spawn.DecompositionJson + commit workstreams.json on the
+        // Rewrite spawn.DecompositionJson + commit workstreams.yaml on the
         // plan branch so the artifact stays in lockstep with the plan.
+        // Phase 46 — worktree artefact is YAML (was JSON). The DB column
+        // DecompositionJson keeps its JSON shape for back-compat with the
+        // existing UI store + endpoints; the YAML view is rendered
+        // on-the-fly from the same data via DecompositionYamlSerializer.
         var artifactWritten = false;
         try
         {
@@ -262,12 +290,13 @@ public sealed class PlanReconciler
 
             if (repo is not null)
             {
-                var artifactRepoPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/workstreams.json";
+                var artifactRepoPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/workstreams.yaml";
+                var artifactYaml = ToYaml(artifactJson);
                 await this.git.CommitFilesAsync(
                     repo,
                     planBranch,
-                    new Dictionary<string, string> { [artifactRepoPath] = artifactJson },
-                    $"reconcile: regenerate workstreams.json from implementation-plan.md ({planStages.Count} stages)",
+                    new Dictionary<string, string> { [artifactRepoPath] = artifactYaml },
+                    $"reconcile: regenerate workstreams.yaml from implementation-plan.md ({planStages.Count} stages)",
                     ct);
                 artifactWritten = true;
             }
@@ -275,7 +304,7 @@ public sealed class PlanReconciler
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             this.logger?.LogWarning(ex,
-                "Reconcile: workstreams.json artifact write failed for spawn {SpawnId}; DB state is up-to-date.",
+                "Reconcile: workstreams.yaml artifact write failed for spawn {SpawnId}; DB state is up-to-date.",
                 spawnId);
         }
 
@@ -357,13 +386,24 @@ public sealed class PlanReconciler
     }
 
     private static void InsertWorkstream(
-        ForgeDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort)
+        ForgeDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
     {
         var wsId = WorkstreamIdFor(spawn.StoryId, stage.Anchor);
         if (db.Workstreams.Any(x => x.Id == wsId)) return; // idempotent
 
         var safeStory = StoryPaths.Safe(spawn.StoryId);
         var branchSlug = stage.Anchor.Replace('/', '-').Replace('@', '-');
+
+        // Phase 46 — derive deps + phase anchor from the resolver so a
+        // freshly-inserted row carries the same DepsJson the
+        // ProduceDecompositionAsync path would have produced.
+        resolvedDeps.TryGetValue(stage.Anchor, out var rd);
+        var depsJson = rd is { Deps.Count: > 0 }
+            ? JsonSerializer.Serialize(rd.Deps)
+            : null;
+        var slash = stage.Anchor.IndexOf('/');
+        var phaseAnchor = slash > 0 ? stage.Anchor[..slash] : stage.Anchor;
 
         db.Workstreams.Add(new WorkstreamRow
         {
@@ -388,6 +428,8 @@ public sealed class PlanReconciler
             StorySpawnId = spawn.Id,
             PlanAnchor = stage.Anchor,
             PlanContentHash = stage.ContentHash,
+            DepsJson = depsJson,
+            PhaseAnchor = phaseAnchor,
         });
 
         if (!db.WorkItems.Any(x => x.Id == wsId))
@@ -419,6 +461,35 @@ public sealed class PlanReconciler
         var wi = db.WorkItems.FirstOrDefault(w => w.Id == wsId);
         if (wi is null) return;
         mutate(wi);
+    }
+
+    /// <summary>
+    /// Phase 46 — re-derive <see cref="WorkstreamRow.DepsJson"/> +
+    /// <see cref="WorkstreamRow.PhaseAnchor"/> for a row whose plan stage
+    /// is otherwise unchanged. Idempotent: writes only when the value
+    /// would actually change so EF's change tracker doesn't bump
+    /// UpdatedAt without cause.
+    /// </summary>
+    private static void SyncDepsAndAnchor(
+        WorkstreamRow row,
+        PlanParser.CanonicalStage stage,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
+    {
+        resolvedDeps.TryGetValue(stage.Anchor, out var rd);
+        var newDepsJson = rd is { Deps.Count: > 0 }
+            ? JsonSerializer.Serialize(rd.Deps)
+            : null;
+        if (!string.Equals(row.DepsJson, newDepsJson, StringComparison.Ordinal))
+        {
+            row.DepsJson = newDepsJson;
+        }
+
+        var slash = stage.Anchor.IndexOf('/');
+        var newPhaseAnchor = slash > 0 ? stage.Anchor[..slash] : stage.Anchor;
+        if (!string.Equals(row.PhaseAnchor, newPhaseAnchor, StringComparison.Ordinal))
+        {
+            row.PhaseAnchor = newPhaseAnchor;
+        }
     }
 
     private async Task<RowState> ClassifyAsync(ForgeDbContext db, WorkstreamRow row, CancellationToken ct)
@@ -588,6 +659,24 @@ public sealed class PlanReconciler
         return JsonSerializer.Serialize(artifact, JsonOpts);
     }
 
+    /// <summary>
+    /// Phase 46 — convert the JSON artefact string to YAML for the
+    /// worktree commit. Round-trips through <see cref="JsonElement"/>
+    /// because the artifact shape is anonymous-typed at the call site;
+    /// the serializer mirrors the camelCase keys verbatim.
+    /// </summary>
+    private static string ToYaml(string artifactJson)
+    {
+        if (string.IsNullOrWhiteSpace(artifactJson)) return string.Empty;
+        using var doc = JsonDocument.Parse(artifactJson);
+        // Yaml expects a plain object/list, not a JsonElement. Convert
+        // by re-deserialising into a List<Dictionary<string,object?>> via
+        // System.Text.Json so YamlDotNet can walk it.
+        var rows = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(artifactJson);
+        if (rows is null) return string.Empty;
+        return DecompositionYamlSerializer.Serialize(rows);
+    }
+
     private enum RowState
     {
         NotStarted,
@@ -601,4 +690,15 @@ public static class WorkstreamStatuses
 {
     /// <summary>Frozen — shipped under a previous version of the plan; preserved for audit.</summary>
     public const string Historic = "historic";
+
+    /// <summary>
+    /// Phase 49 — operator-triage state after a non-recoverable failure
+    /// (build-gate failure, no-progress abort, non-pass terminal
+    /// verdict). Sticky: the orchestrator's claim loop skips
+    /// <c>stalled</c> rows until <c>Restart</c> flips them back to
+    /// <c>active</c>. Distinct from <c>blocked</c> (now reserved
+    /// exclusively for "waiting on an upstream dependency"); a stalled
+    /// row carries a <c>StallReason</c> string for the UI tooltip.
+    /// </summary>
+    public const string Stalled = "stalled";
 }

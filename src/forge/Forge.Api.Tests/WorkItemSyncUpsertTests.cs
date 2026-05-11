@@ -285,6 +285,7 @@ public class WorkItemSyncUpsertTests
         public Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();
         public Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) => Task.FromResult<BuildStatus?>(null);
         public Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) => Task.FromResult<BuildStatus?>(null);

@@ -7,6 +7,7 @@
 namespace Forge.Api.Persistence;
 
 using System.Text.Json;
+using Forge.Api.Configuration;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -1039,7 +1040,7 @@ public static class ForgeSeed
     /// Idempotent: writing the same values is a no-op at the SQLite layer;
     /// roster additions only happen when the guarantee is unmet.
     /// </summary>
-    public static async Task EnsureStartupConfigAsync(ForgeDbContext db, ILogger? logger = null)
+    public static async Task EnsureStartupConfigAsync(ForgeDbContext db, ILogger? logger = null, ForgeBackendPolicy? backendPolicy = null)
     {
         // ── 1. Canonical crew ids we manage. ────────────────────────────
         var canonicalIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1048,8 +1049,20 @@ public static class ForgeSeed
             "crew-eng-night", "crew-rev-night", "crew-arch-night", "crew-qa-night",
         };
 
+        // Phase 47d — operator-controlled backend rail. Default is
+        // <see cref="ForgeBackendPolicy.Default"/> (copilot/sdk only),
+        // overridable via the `Forge:BackendPolicy` config section so the
+        // operator can re-enable claude without a code change. Loaded
+        // BEFORE the canonical-crews early-return so the agent-level heal
+        // (which is orthogonal to crew presence) runs even on sparse test
+        // fixtures that haven't seeded the canonical 8.
+        var policy = backendPolicy ?? ForgeBackendPolicy.Default;
+        logger?.LogInformation(
+            "EnsureStartupConfigAsync: backend policy canonical={Canonical}/{InvokeMode} allowedBackends=[{Backends}] allowedInvokeModes=[{Modes}]",
+            policy.Canonical, policy.CanonicalInvokeMode,
+            string.Join(",", policy.AllowedBackends), string.Join(",", policy.AllowedInvokeModes));
+
         var crews = await db.Crews.Where(c => canonicalIds.Contains(c.Id)).ToListAsync();
-        if (crews.Count == 0) return;
 
         // ── 2. Enforce model + quotas. ──────────────────────────────────
         const string runtimeModel  = "claude-opus-4.6-1m";
@@ -1071,6 +1084,84 @@ public static class ForgeSeed
             c.WeeklyCap               = weeklyCap;
             c.DailyBudgetUsd          = dailyBudget;
             c.MaxTaskBudgetUsd        = perTaskBudget;
+            // Phase 47d — pin the rail. Crews always normalise to the
+            // canonical pair; agent-level overrides (cleared in 2b below)
+            // are the only escape hatch and they're now policy-gated.
+            c.Backend                 = policy.Canonical;
+            c.InvokeMode              = policy.CanonicalInvokeMode;
+        }
+
+        // ── 2b. Clear any agent-level Backend/InvokeMode override that
+        //        isn't in the operator's allowed list. Agents whose
+        //        override IS allowed (e.g. operator explicitly added
+        //        "claude" back to AllowedBackends) keep their setting and
+        //        route through that backend. Model overrides on the agent
+        //        row are intentionally untouched — those are about which
+        //        model an agent runs, not which billing rail.
+        var agentsToHeal = await db.Agents
+            .Where(a =>
+                (a.Backend != null && a.Backend != "")
+                || (a.InvokeMode != null && a.InvokeMode != ""))
+            .ToListAsync();
+        var healed = new List<AgentRow>();
+        foreach (var a in agentsToHeal)
+        {
+            var clearBackend = !policy.IsBackendAllowed(a.Backend);
+            var clearInvoke = !policy.IsInvokeModeAllowed(a.InvokeMode);
+            if (!clearBackend && !clearInvoke) continue;
+            healed.Add(a);
+            if (clearBackend) a.Backend = null;
+            if (clearInvoke) a.InvokeMode = null;
+        }
+        if (healed.Count > 0)
+        {
+            logger?.LogWarning(
+                "EnsureStartupConfigAsync: cleared disallowed Backend/InvokeMode override on {Count} agent(s): {Ids}. "
+                + "Allowed backends: [{AllowedBackends}]; allowed invoke modes: [{AllowedInvokeModes}]. "
+                + "Add the override value to the corresponding allow-list in `Forge:BackendPolicy` if this was intentional.",
+                healed.Count,
+                string.Join(", ", healed.Select(a => $"{a.Id}({a.Backend ?? "-"}/{a.InvokeMode ?? "-"})")),
+                string.Join(",", policy.AllowedBackends),
+                string.Join(",", policy.AllowedInvokeModes));
+        }
+
+        // Persist the seed pass before the post-condition check so an
+        // assert failure isn't caused by un-saved local edits.
+        await db.SaveChangesAsync();
+
+        // ── 2c. Hard post-condition. After the self-heal above, every
+        //        canonical crew must equal the policy and no agent override
+        //        may sit outside the allow-lists. If something still does,
+        //        refuse to boot — silent drift is exactly what cost $33k
+        //        on 2026-05-09.
+        var stillBadCrews = await db.Crews.AsNoTracking()
+            .Where(c => canonicalIds.Contains(c.Id)
+                && ((c.Backend ?? string.Empty) != policy.Canonical
+                    || (c.InvokeMode ?? string.Empty) != policy.CanonicalInvokeMode))
+            .Select(c => new { c.Id, c.Backend, c.InvokeMode })
+            .ToListAsync();
+        var allAgentOverrides = await db.Agents.AsNoTracking()
+            .Where(a => (a.Backend != null && a.Backend != "") || (a.InvokeMode != null && a.InvokeMode != ""))
+            .Select(a => new { a.Id, a.Backend, a.InvokeMode })
+            .ToListAsync();
+        var stillBadAgents = allAgentOverrides
+            .Where(a => !policy.IsBackendAllowed(a.Backend) || !policy.IsInvokeModeAllowed(a.InvokeMode))
+            .ToList();
+        if (stillBadCrews.Count > 0 || stillBadAgents.Count > 0)
+        {
+            var crewSummary = stillBadCrews.Count == 0
+                ? "(none)"
+                : string.Join(", ", stillBadCrews.Select(c => $"{c.Id}({c.Backend}/{c.InvokeMode})"));
+            var agentSummary = stillBadAgents.Count == 0
+                ? "(none)"
+                : string.Join(", ", stillBadAgents.Select(a => $"{a.Id}({a.Backend}/{a.InvokeMode})"));
+            throw new InvalidOperationException(
+                $"Backend policy violated post-seed. Canonical: {policy.Canonical}/{policy.CanonicalInvokeMode}. "
+                + $"Allowed backends: [{string.Join(",", policy.AllowedBackends)}]. "
+                + $"Allowed invoke modes: [{string.Join(",", policy.AllowedInvokeModes)}]. "
+                + $"Non-conforming crews: {crewSummary}. Non-conforming agents: {agentSummary}. "
+                + "Refusing to start so the broken config can't dispatch agents on a disallowed billing rail. "
+                + "Either fix the row(s) or extend `Forge:BackendPolicy.AllowedBackends` / `AllowedInvokeModes` in appsettings.json.");
         }
 
         // ── 3. Roster balance — each shift needs ≥ 2 effective members. ─
