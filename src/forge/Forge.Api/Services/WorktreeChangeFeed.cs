@@ -54,11 +54,20 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
         this.logger = logger;
     }
 
-    /// <summary>Register a work item to receive <c>task.worktree-tick</c> events.</summary>
-    public void Subscribe(string workItemId, string workstreamId, string worktreePath)
+    /// <summary>
+    /// Register a work item to receive <c>task.worktree-tick</c> events.
+    /// <paramref name="baseBranch"/> determines which ref the branchDiff
+    /// + ahead/behind counters anchor against — must be the workstream's
+    /// real fork point (typically <c>spawn.BaseBranch</c>) or the
+    /// counters will be wrong. Use
+    /// <see cref="Forge.Api.Services.Stories.WorkItemBaseBranchResolver"/>
+    /// to resolve.
+    /// </summary>
+    public void Subscribe(string workItemId, string workstreamId, string worktreePath, string baseBranch)
     {
         if (string.IsNullOrEmpty(workItemId) || string.IsNullOrEmpty(worktreePath)) return;
-        this.subs[workItemId] = new Subscription(workstreamId, worktreePath);
+        var resolvedBase = string.IsNullOrWhiteSpace(baseBranch) ? "main" : baseBranch;
+        this.subs[workItemId] = new Subscription(workstreamId, worktreePath, resolvedBase);
     }
 
     /// <summary>Stop receiving ticks for the work item. Idempotent.</summary>
@@ -68,29 +77,49 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
     public int CountSubscribers(string worktreePath) =>
         this.subs.Values.Count(s => string.Equals(s.WorktreePath, worktreePath, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>The most recent snapshot for a path, or null if never sampled.</summary>
-    public Snapshot? GetLatest(string worktreePath) =>
-        this.snapshots.TryGetValue(worktreePath, out var s) ? s : null;
+    /// <summary>The most recent snapshot for a path (any base branch), or null if never sampled.</summary>
+    public Snapshot? GetLatest(string worktreePath)
+    {
+        foreach (var kvp in this.snapshots)
+        {
+            if (kvp.Key.StartsWith(worktreePath + "\0", StringComparison.OrdinalIgnoreCase))
+            {
+                return kvp.Value;
+            }
+        }
+        return null;
+    }
 
     /// <summary>
-    /// Run one tick across all active worktree paths. Public so tests can
-    /// drive the loop deterministically without spawning the hosted timer.
+    /// Run one tick across all active <c>(path, baseBranch)</c> groups.
+    /// Public so tests can drive the loop deterministically without
+    /// spawning the hosted timer.
+    /// <para>Phase 49 follow-up — was previously keyed by path only,
+    /// which forced every subscriber sharing a path to share an
+    /// anchor. The current implementation groups by both axes so
+    /// branchDiff/ahead/behind always agree with each subscriber's
+    /// own spawn base branch.</para>
     /// </summary>
     public async Task RunOnceAsync(CancellationToken ct)
     {
-        var paths = this.subs.Values.Select(s => s.WorktreePath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        foreach (var path in paths)
+        var groups = this.subs.Values
+            .GroupBy(s => (s.WorktreePath, s.BaseBranch),
+                (k, _) => k)
+            .ToList();
+        foreach (var (path, baseBranch) in groups)
         {
             try
             {
-                var snap = await SampleAsync(path, ct);
+                var snap = await SampleAsync(path, baseBranch, ct);
                 if (snap is null) continue;
-                if (this.snapshots.TryGetValue(path, out var prev) && prev.Equals(snap)) continue;
-                this.snapshots[path] = snap;
+                var cacheKey = CacheKey(path, baseBranch);
+                if (this.snapshots.TryGetValue(cacheKey, out var prev) && prev.Equals(snap)) continue;
+                this.snapshots[cacheKey] = snap;
 
                 // Fan out per-subscriber so each work-item channel receives the tick.
                 var workItems = this.subs
-                    .Where(kvp => string.Equals(kvp.Value.WorktreePath, path, StringComparison.OrdinalIgnoreCase))
+                    .Where(kvp => string.Equals(kvp.Value.WorktreePath, path, StringComparison.OrdinalIgnoreCase)
+                                  && string.Equals(kvp.Value.BaseBranch, baseBranch, StringComparison.Ordinal))
                     .ToList();
                 foreach (var (wid, sub) in workItems)
                 {
@@ -101,6 +130,7 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
                         {
                             workstreamId = sub.WorkstreamId,
                             worktreePath = sub.WorktreePath,
+                            baseBranch = sub.BaseBranch,
                             added = snap.Added,
                             modified = snap.Modified,
                             deleted = snap.Deleted,
@@ -133,10 +163,13 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                this.logger.LogDebug(ex, "WorktreeChangeFeed tick failed for {Path}", path);
+                this.logger.LogDebug(ex, "WorktreeChangeFeed tick failed for {Path} base={Base}", path, baseBranch);
             }
         }
     }
+
+    private static string CacheKey(string path, string baseBranch) =>
+        $"{path}\0{baseBranch}";
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -174,15 +207,25 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Build a snapshot of the worktree. Returns null if the path isn't a
-    /// git repo (a misconfigured workstream shouldn't break the loop).
+    /// Build a snapshot of the worktree against the given base branch.
+    /// Returns null if the path isn't a git repo (a misconfigured
+    /// workstream shouldn't break the loop).
+    /// <para>The branchDiff arrays match
+    /// <see cref="WorktreeCommitsScanner.BranchTotals"/>: anchored at
+    /// the fork point (<c>git merge-base origin/{baseBranch} HEAD</c>),
+    /// folding tracked-but-uncommitted + untracked entries from
+    /// <c>git status --porcelain</c> so reviewers see the same set of
+    /// files in the Worktree-tab pills as in the PR's file list.</para>
     /// </summary>
-    public async Task<Snapshot?> SampleAsync(string path, CancellationToken ct)
+    public async Task<Snapshot?> SampleAsync(string path, string baseBranch, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return null;
         if (!Directory.Exists(Path.Combine(path, ".git")) && !File.Exists(Path.Combine(path, ".git"))) return null;
 
-        // git status --porcelain=v2 --branch
+        var resolvedBase = string.IsNullOrWhiteSpace(baseBranch) ? "main" : baseBranch;
+
+        // git status --porcelain=v2 --branch — kept for the dirty paths
+        // (Added/Modified/Deleted path lists + the dirty scalar).
         var status = await RunGitAsync(path, "status --porcelain=v2 --branch", ct);
         if (status is null) return null;
         var parsed = ParsePorcelainV2(status);
@@ -208,27 +251,76 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             || parsed.ModifiedPaths.Count >= MaxPathsPerCategory
             || parsed.DeletedPaths.Count  >= MaxPathsPerCategory;
 
-        // Branch diff: files changed vs. the upstream base (main/master).
+        // Ahead/behind vs the workstream's REAL base ref. Mirrors
+        // WorktreeCommitsScanner so the Worktree-tab pills (live snap)
+        // never disagree with /commits' counters.
+        int ahead = 0, behind = 0;
+        var revList = await RunGitAsync(path,
+            $"rev-list --left-right --count origin/{resolvedBase}...HEAD", ct);
+        if (!string.IsNullOrEmpty(revList))
+        {
+            var rlParts = revList!.Trim().Split('\t');
+            if (rlParts.Length == 2)
+            {
+                int.TryParse(rlParts[0], out behind);
+                int.TryParse(rlParts[1], out ahead);
+            }
+        }
+
+        // Branch diff vs the workstream's fork point. The merge-base is
+        // the most recent common ancestor of origin/{baseBranch} and
+        // HEAD — diffing from there scopes the result to "what THIS
+        // workstream contributed", regardless of how the base branch
+        // has advanced (sibling PRs landing, etc).
+        var mergeBase = await RunGitAsync(path, $"merge-base origin/{resolvedBase} HEAD", ct);
+        var diffAnchor = !string.IsNullOrWhiteSpace(mergeBase)
+            ? mergeBase!.Trim()
+            : $"origin/{resolvedBase}";
+
         var branchDiffAdded = new List<string>();
         var branchDiffModified = new List<string>();
         var branchDiffDeleted = new List<string>();
-        var diffOutput = await RunGitAsync(path, "diff --name-status main..HEAD", ct);
+        var diffOutput = await RunGitAsync(path, $"diff --name-status {diffAnchor}", ct);
         if (!string.IsNullOrEmpty(diffOutput))
         {
-            foreach (var line in diffOutput!.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var rawLine in diffOutput!.Split('\n'))
             {
-                if (line.Length < 2) continue;
-                var diffStatus = line[0];
-                var filePath = line.Substring(1).Trim();
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrEmpty(line)) continue;
+                // `git diff --name-status` outputs <status>\t<path>, but
+                // rename / copy lines are <status>\t<old>\t<new>. Split
+                // on TAB and treat R/C as a modification on the new path.
+                var parts = line.Split('\t');
+                if (parts.Length < 2) continue;
+                var diffStatus = parts[0];
+                if (diffStatus.StartsWith("R", StringComparison.Ordinal) || diffStatus.StartsWith("C", StringComparison.Ordinal))
+                {
+                    if (parts.Length >= 3) branchDiffModified.Add(parts[2]);
+                    continue;
+                }
+                var filePath = parts[1];
                 if (string.IsNullOrEmpty(filePath)) continue;
                 switch (diffStatus)
                 {
-                    case 'A': branchDiffAdded.Add(filePath); break;
-                    case 'D': branchDiffDeleted.Add(filePath); break;
-                    default:  branchDiffModified.Add(filePath); break;
+                    case "A": branchDiffAdded.Add(filePath); break;
+                    case "D": branchDiffDeleted.Add(filePath); break;
+                    case "M":
+                    case "T": branchDiffModified.Add(filePath); break;
+                    default: branchDiffModified.Add(filePath); break;
                 }
             }
         }
+
+        // Fold uncommitted entries into the totals so untracked files
+        // (which `git diff` is blind to) and tracked-but-uncommitted
+        // changes both surface in the Worktree-tab pills — same
+        // semantics as WorktreeCommitsScanner.BranchTotals.
+        var seen = new HashSet<string>(branchDiffAdded, StringComparer.Ordinal);
+        seen.UnionWith(branchDiffModified);
+        seen.UnionWith(branchDiffDeleted);
+        foreach (var p in parsed.AddedPaths)    if (seen.Add(p)) branchDiffAdded.Add(p);
+        foreach (var p in parsed.ModifiedPaths) if (seen.Add(p)) branchDiffModified.Add(p);
+        foreach (var p in parsed.DeletedPaths)  if (seen.Add(p)) branchDiffDeleted.Add(p);
 
         return new Snapshot(
             Added:    parsed.AddedPaths.Count,
@@ -237,8 +329,8 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             AddedPaths:    parsed.AddedPaths.Take(MaxPathsPerCategory).ToList(),
             ModifiedPaths: parsed.ModifiedPaths.Take(MaxPathsPerCategory).ToList(),
             DeletedPaths:  parsed.DeletedPaths.Take(MaxPathsPerCategory).ToList(),
-            Ahead:  parsed.Ahead,
-            Behind: parsed.Behind,
+            Ahead:  ahead,
+            Behind: behind,
             Dirty:  parsed.AddedPaths.Count + parsed.ModifiedPaths.Count + parsed.DeletedPaths.Count,
             HeadSha:     sha,
             HeadMessage: message,
@@ -349,7 +441,7 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
         return new PorcelainV2(added, modified, deleted, ahead, behind);
     }
 
-    public sealed record Subscription(string WorkstreamId, string WorktreePath);
+    public sealed record Subscription(string WorkstreamId, string WorktreePath, string BaseBranch);
 
     public sealed record Snapshot(
         int Added,
@@ -371,6 +463,10 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
         IReadOnlyList<string>? BranchDiffDeleted = null)
     {
         // Equals(): cheap content comparison so an unchanged tick is free.
+        // Phase 49 follow-up — include branchDiff arrays so a tick that
+        // only changes the cumulative branch totals (e.g. agent commits
+        // a new file, dirty count stays at 0 but branchDiff grows)
+        // still emits.
         public bool Equals(Snapshot? other) =>
             other is not null
             && this.Added == other.Added && this.Modified == other.Modified && this.Deleted == other.Deleted
@@ -378,7 +474,10 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             && this.HeadSha == other.HeadSha
             && PathsEqual(this.AddedPaths, other.AddedPaths)
             && PathsEqual(this.ModifiedPaths, other.ModifiedPaths)
-            && PathsEqual(this.DeletedPaths, other.DeletedPaths);
+            && PathsEqual(this.DeletedPaths, other.DeletedPaths)
+            && PathsEqual(this.BranchDiffAdded ?? Array.Empty<string>(), other.BranchDiffAdded ?? Array.Empty<string>())
+            && PathsEqual(this.BranchDiffModified ?? Array.Empty<string>(), other.BranchDiffModified ?? Array.Empty<string>())
+            && PathsEqual(this.BranchDiffDeleted ?? Array.Empty<string>(), other.BranchDiffDeleted ?? Array.Empty<string>());
 
         public override int GetHashCode() => HashCode.Combine(this.Added, this.Modified, this.Deleted, this.Ahead, this.Behind, this.HeadSha);
 

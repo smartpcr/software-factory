@@ -73,8 +73,35 @@ public interface IStoryGitOps
     /// directory when running plan / coding tasks so the agent's tools see
     /// the actual repo layout instead of an isolated scratch dir. Idempotent;
     /// concurrent callers within the same process get the same path.
+    ///
+    /// <para>Phase 49 follow-up — when <paramref name="worktreeSlug"/> is
+    /// supplied, the worktree directory is rooted at
+    /// <c>{cloneRoot}/.worktree/{worktreeSlug}</c> instead of the legacy
+    /// <c>{cloneRoot}/.worktree/spawn-{branch-slug}</c>. The new convention
+    /// gives engineer workstreams short, semantic names
+    /// (<c>stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>)
+    /// that stay under Windows MAX_PATH once <c>cargo build</c> /
+    /// <c>npm install</c> / <c>target/debug/.fingerprint/…</c> trees land
+    /// underneath. Plan-doc / QA worktrees omit the override and keep the
+    /// legacy <c>spawn-</c> prefix; their names are already short.</para>
     /// </summary>
-    Task<string> EnsureWorktreeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+    Task<string> EnsureWorktreeAsync(
+        RepoRow? repo,
+        string branch,
+        string baseBranch,
+        CancellationToken ct = default,
+        string? worktreeSlug = null);
+
+    /// <summary>
+    /// Phase 49 follow-up — best-effort cleanup of the worktree associated
+    /// with <paramref name="branch"/>. Runs <c>git worktree remove --force</c>
+    /// and removes any leftover directory. The branch ref itself is left
+    /// alone (cheap on disk, useful for audit). Used to free disk after a
+    /// spawn's plan PR merges (plan worktree becomes stale) and after each
+    /// workstream's PR merges (engineer worktree becomes stale). No-op when
+    /// no worktree currently maps to the branch; never throws.
+    /// </summary>
+    Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 
     /// <summary>
     /// Phase 42 — stage one repo-relative path in <paramref name="branch"/>'s
@@ -96,14 +123,34 @@ public interface IStoryGitOps
 
     /// <summary>
     /// Phase 45 follow-up — list repo-relative paths of files the agent
-    /// touched in <paramref name="worktreePath"/> but hasn't yet committed.
-    /// Includes added / modified / renamed paths (parsed from
-    /// <c>git status --porcelain</c>); deleted paths are omitted because the
-    /// orchestrator's <see cref="CommitFilesAsync"/> dictionary contract
-    /// can't represent deletions today. Used by the workstream impl
-    /// strategy after the engineer agent edits files in place inside the
-    /// worktree, so the orchestrator gets a real-path list to commit
-    /// without needing to scan the entire repo.
+    /// touched in <paramref name="worktreePath"/> but hasn't yet committed,
+    /// PLUS files contributed by local commits that aren't yet on the
+    /// reference branch. Includes added / modified / renamed paths
+    /// (parsed from <c>git status --porcelain</c>); deleted paths are
+    /// omitted because the orchestrator's <see cref="CommitFilesAsync"/>
+    /// dictionary contract can't represent deletions today.
+    ///
+    /// <para>Phase 49 follow-up — when <paramref name="baseBranch"/> is
+    /// supplied, the committed-but-unpushed source diffs against
+    /// <c>origin/{baseBranch}</c> instead of <c>origin/{HEAD branch}</c>.
+    /// This is the correct frame for the post-pass commit decision: the
+    /// workstream's contribution to the PR is the cumulative diff
+    /// against the merge target, not against the workstream's own
+    /// remote tracking branch (which may be at a stale state, missing
+    /// entirely for a never-pushed branch, or — as observed
+    /// 2026-05-10 on failover-cluster:XRAFT — pinned to an upstream
+    /// shared branch like the plan PR base, masking the agent's
+    /// commits from the diff scope).</para>
+    ///
+    /// <para>When <paramref name="baseBranch"/> is null/empty, falls back
+    /// to the legacy <c>origin/{HEAD branch}</c> diff so per-iter
+    /// no-progress detection still resets on uncommitted edits each
+    /// iter without permanently latching to "always non-zero" after the
+    /// agent's first self-commit.</para>
     /// </summary>
-    Task<IReadOnlyList<string>> GetChangedFilesAsync(RepoRow? repo, string worktreePath, CancellationToken ct = default);
+    Task<IReadOnlyList<string>> GetChangedFilesAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string? baseBranch = null,
+        CancellationToken ct = default);
 }
