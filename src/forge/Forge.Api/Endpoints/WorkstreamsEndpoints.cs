@@ -577,6 +577,11 @@ public static class WorkstreamsEndpoints
         ws.Behind = 0;
         ws.Conflicts = 0;
         ws.AgentsJson = "[]";
+        // Phase 49 — clear the operator-triage reason when leaving the
+        // stalled state. Restart is the explicit unblock path; any prior
+        // stall reason (build failure, no-progress, non-pass verdict) is
+        // no longer applicable once the worktree + deliverables are wiped.
+        ws.StallReason = null;
 
         // Reset the work-item execution status so the orchestrator can
         // re-assign agents and re-claim the workstream.
@@ -635,17 +640,40 @@ public static class WorkstreamsEndpoints
                 && System.IO.Directory.Exists(repoRow.CloneRoot))
             {
                 var cloneRoot = repoRow.CloneRoot;
+
+                // Phase 49 follow-up — engineer workstreams switched from the
+                // legacy `spawn-{branch-slug}` directory shape (often 100+
+                // chars on Windows MAX_PATH-fragile builds) to the short
+                // `stage-{phaseNum}.{stageNum}-{anchorSlug}` shape. Restart
+                // must clean BOTH so a row migrating from old → new doesn't
+                // leave a stale 100-char dir behind that the next claim
+                // can't see (it'd open the new short path; the old long
+                // one would persist forever as an orphan).
                 var sanitized = SanitizeBranchSlug(ws.Branch);
-                var wtPath = System.IO.Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
+                var legacyWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
 
-                // (a) Remove worktree (if registered)
-                await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath);
-
-                // (b) Delete directory if it survived the remove
-                if (System.IO.Directory.Exists(wtPath))
+                string? newWtPath = null;
+                if (!string.IsNullOrEmpty(ws.StorySpawnId))
                 {
-                    try { System.IO.Directory.Delete(wtPath, recursive: true); }
-                    catch { /* locked files — will be pruned on next tick */ }
+                    var siblings = await db.Workstreams.AsNoTracking()
+                        .Where(w => w.StorySpawnId == ws.StorySpawnId)
+                        .ToListAsync();
+                    if (siblings.All(w => w.Id != ws.Id)) siblings.Add(ws);
+                    var newSlug = Forge.Api.Services.Stories.WorkstreamWorktreeSlug.Compute(ws, siblings);
+                    newWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", newSlug);
+                }
+
+                foreach (var wtPath in new[] { newWtPath, legacyWtPath }.Where(p => !string.IsNullOrEmpty(p)).Distinct())
+                {
+                    // (a) Remove worktree (if registered)
+                    await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath!);
+
+                    // (b) Delete directory if it survived the remove
+                    if (System.IO.Directory.Exists(wtPath!))
+                    {
+                        try { System.IO.Directory.Delete(wtPath!, recursive: true); }
+                        catch { /* locked files — will be pruned on next tick */ }
+                    }
                 }
 
                 // (c) Prune stale worktree refs
