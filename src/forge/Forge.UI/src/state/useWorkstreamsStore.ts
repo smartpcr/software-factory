@@ -19,6 +19,7 @@ export const PHASE_STATUS_FILTER_KEYS = [
   'merging',
   'planning',
   'blocked',
+  'stalled',
   'complete',
   'cancelled',
 ] as const;
