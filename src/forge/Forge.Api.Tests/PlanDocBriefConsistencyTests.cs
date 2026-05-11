@@ -60,7 +60,8 @@ public class PlanDocBriefConsistencyTests
     /// is the source of truth for what shipped, and a hand-wavy brief lets
     /// the agent emit a sketch instead of a structured plan. The evaluator
     /// then has nothing concrete to grade against. This pins the structural
-    /// mandates the architect MUST follow.
+    /// mandates the architect MUST follow (Phase 46 layout: H1 phases,
+    /// H2 stages, H3 subsections, per-phase + per-stage Dependencies).
     /// </summary>
     [Fact]
     public void ImplementationPlan_Brief_Mandates_Phase_Stage_Hierarchy()
@@ -70,8 +71,9 @@ public class PlanDocBriefConsistencyTests
         Assert.Contains("Phase", brief);
         Assert.Contains("Stage", brief);
         Assert.Contains("LIVEDOC", brief);
-        // Stages MUST be subsections under each phase.
-        Assert.Contains("Stage subsections", brief, System.StringComparison.OrdinalIgnoreCase);
+        // Phase 46 — Stages MUST be H2 subsections under each H1 phase.
+        Assert.Contains("Each Phase is an H1", brief);
+        Assert.Contains("Stages are H2", brief);
     }
 
     [Fact]
@@ -106,9 +108,40 @@ public class PlanDocBriefConsistencyTests
 
         Assert.Contains("Implementation Steps", brief);
         Assert.Contains("Test Scenarios", brief);
-        // Both blocks must appear under EVERY stage.
-        Assert.Contains("Each Stage MUST contain BOTH", brief);
+        // Phase 46 — three subsections in fixed order, plus the per-stage
+        // test count.
+        Assert.Contains("THREE subsections in this exact order", brief);
         Assert.Contains("at least 2 test scenarios per Stage", brief);
+    }
+
+    /// <summary>
+    /// Phase 46 — both per-phase and per-stage Dependencies blocks are
+    /// mandatory; the brief must teach the architect to emit them.
+    /// </summary>
+    [Fact]
+    public void ImplementationPlan_Brief_Mandates_Phase_And_Stage_Dependencies()
+    {
+        var brief = CrewStoryArtifactStrategy.BuildPlanDocSpecs("d")["implementation-plan"].Brief;
+
+        Assert.Contains("`## Dependencies` section directly under the H1 heading", brief);
+        Assert.Contains("`### Dependencies`", brief);
+        Assert.Contains("_none — start phase_", brief);
+        Assert.Contains("_none — start stage_", brief);
+    }
+
+    /// <summary>
+    /// Phase 46 — the YAML front-matter prelude is what the TOC renderer
+    /// reads to surface the story title; without it the doc loses its
+    /// title and the rendered TOC numbers phases as §1.1 again.
+    /// </summary>
+    [Fact]
+    public void ImplementationPlan_Brief_Mandates_Yaml_FrontMatter()
+    {
+        var brief = CrewStoryArtifactStrategy.BuildPlanDocSpecs("d")["implementation-plan"].Brief;
+
+        Assert.Contains("YAML front-matter", brief);
+        Assert.Contains("title:", brief);
+        Assert.Contains("storyId:", brief);
     }
 
     /// <summary>

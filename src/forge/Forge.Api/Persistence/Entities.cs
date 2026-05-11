@@ -218,6 +218,36 @@ public class WorkstreamRow
     /// reconciler updates Summary + re-prompts engineers on open PRs.
     /// </summary>
     public string? PlanContentHash { get; set; }
+
+    /// <summary>
+    /// Phase 46 — JSON <c>string[]</c> of upstream workstream titles this
+    /// stage depends on. The orchestrator's stage-level scheduler reads
+    /// this directly without re-parsing the plan; the value is the
+    /// resolved + phase-expanded set produced by
+    /// <c>CrewStoryArtifactStrategy.ProduceDecompositionAsync</c>.
+    /// </summary>
+    public string? DepsJson { get; set; }
+
+    /// <summary>
+    /// Phase 46 — cached <c>phase-{slug}</c> prefix of <see cref="PlanAnchor"/>.
+    /// Used by the swarm-control DAG view to group stage cards into
+    /// collapsible phase containers without re-parsing the plan.
+    /// </summary>
+    public string? PhaseAnchor { get; set; }
+
+    /// <summary>
+    /// Phase 49 — human-readable reason a workstream is sitting in the
+    /// <c>stalled</c> triage state. Set when the orchestrator transitions
+    /// <see cref="Status"/> to <c>stalled</c> after a build-gate failure,
+    /// a no-progress abort, or a non-pass terminal verdict. Surfaced in
+    /// the swarm-control UI as a tooltip on the stalled badge so
+    /// operators can decide whether to Restart or escalate without
+    /// drilling into the Conversation tab. Cleared by the Restart
+    /// endpoint when <see cref="Status"/> flips back to <c>active</c>.
+    /// Null on every other status (and historically on rows that were
+    /// blocked before this column existed — backfilled to null).
+    /// </summary>
+    public string? StallReason { get; set; }
 }
 
 public class WsEventRow
@@ -1147,6 +1177,19 @@ public class TaskQueueRow
     /// operator can see <c>comment-response.no_original_agent</c> at a glance.
     /// </summary>
     public string? LastError { get; set; }
+
+    /// <summary>
+    /// Phase 47 — agent the worker resolved as the row's evaluator at claim
+    /// time, so the deliverable loop's evaluator side reads the same agent
+    /// that <see cref="WorkItemRow.AssignedAgentJson"/> advertised. Without
+    /// this, a Phase 47 diversity pick at claim and the
+    /// <c>RunAgentAsync</c> resolution path would re-derive the evaluator
+    /// from <c>CrewRow.DefaultEvaluatorAgentId</c> and disagree (UI shows
+    /// agent X, agent Y actually scores). Null on legacy rows + on claims
+    /// pre-dating Phase 47; the deliverable loop falls back to the
+    /// existing default-evaluator resolution in that case.
+    /// </summary>
+    public string? RoutedEvaluatorAgentId { get; set; }
 }
 
 /// <summary>Phase 24 — well-known values for <see cref="TaskQueueRow.Kind"/>.</summary>

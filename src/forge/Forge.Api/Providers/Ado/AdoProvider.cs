@@ -454,6 +454,22 @@ public class AdoProvider : IForgeProvider
         }
     }
 
+    /// <summary>
+    /// Phase 49 follow-up — ADO threaded replies. ADO models PR comments
+    /// as comments-within-threads, so a true reply posts to
+    /// <c>POST /pullRequests/{n}/threads/{threadId}/comments</c>. Today
+    /// we don't track the upstream <c>threadId</c> against local
+    /// <c>PrCommentRow</c>s, so this always falls back to creating a new
+    /// top-level thread — same as <see cref="CommentOnPullRequestAsync"/>.
+    /// Wire-up identical to GitHub's fallback path so callers can use
+    /// the new interface method uniformly.
+    /// </summary>
+    public Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        // No reliable parent-thread mapping yet — fall back to a fresh thread.
+        return this.CommentOnPullRequestAsync(prId, body, ctx, ct);
+    }
+
     public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
