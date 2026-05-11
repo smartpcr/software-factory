@@ -37,6 +37,17 @@ public interface IStoryProviderOps
     /// <summary>Post a review comment on a PR; returns the persisted PrCommentRow id.</summary>
     Task<long> PostPrCommentAsync(string prId, string filePath, int line, string body, string authorAgentId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Phase 49 follow-up — post a reply on the same thread as
+    /// <paramref name="parentCommentId"/>. Used by the engineer's
+    /// review-fix loop to respond to every reviewer comment, even when
+    /// no code change is needed (e.g. "this is intentional because X").
+    /// Persists a local <see cref="PrCommentRow"/> with
+    /// <c>ParentCommentId</c> set + best-effort upstream post via the
+    /// configured provider. Returns the new row id.
+    /// </summary>
+    Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default);
+
     /// <summary>Mark a PR comment resolved.</summary>
     Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default);
 

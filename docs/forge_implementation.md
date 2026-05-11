@@ -4950,6 +4950,299 @@ Feature: Operator-chosen base branch on a story spawn
     Then the API returns 200 with no replayed branches and no retargeted PRs
 ```
 
+## Phase 46 — Implementation-plan layout v2: phase-as-root, two-level deps, stage-keyed execution, YAML decomposition
+
+> Operator feedback (2026-05-09) on a real spawn (`AGENT MEMORY`, 28 workstreams): the rendered `implementation-plan.md` TOC shows `§1.1`, `§1.2`, … because every Phase nests under a single H1 doc title. Phases should be siblings at the document root. Stages have no `Dependencies` block, so the decomposition emits workstreams with empty `deps[]` — the engineer pool fans out into ~28 parallel impl runs and the swarm-control DAG view shows several **floating cards with no edges** (the Phase 28 graph collapses to a flat decomposition). The decomposition artefact `workstreams.json` is awkward to hand-read when the operator wants to validate the plan before approval.
+>
+> **Phase 46 fixes the layout in four places** so the operator's mental model lines up with how the orchestrator actually schedules work:
+>
+> 1. **Phase-as-root markdown.** Phases are H1 (was H2); stages are H2 (was H3); subsections are H3 (was H4). The story title moves out of a wrapper H1 into YAML front-matter at the top of the file, so the TOC numbers phases as `§1`, `§2`, `§3` directly. The parser keeps backward-compat: legacy `## Phase / ### Stage / #### subsection` docs still parse, with the level set inferred from the first matched phase heading.
+>
+> 2. **Per-stage `Dependencies` subsection.** Every stage has three subsections in a fixed order: `### Implementation Steps`, `### Dependencies`, `### Test Scenarios`. The architect prompt + evaluator rubric both enforce the order; out-of-order yields a structured parse error the architect can self-correct against.
+>
+> 3. **Per-phase `Dependencies` subsection** — a `## Dependencies` block sits directly under the H1 phase heading, before any stage. Phase deps gate the entire phase: every stage in phase B with phase-deps `[A, C]` cannot start until **every** stage in A and C is `complete`. Stage-level deps are an additional, finer-grained constraint within or across phases. The orchestrator's effective stage-level DAG = explicit stage edges ∪ expanded phase-edge cross-products.
+>
+> 4. **`workstreams.yaml` replaces `workstreams.json`.** YAML is easier to diff, comment, and hand-edit than JSON; multi-line scalars + `#` comments make the operator's pre-approval review readable. The plan-derived deterministic path also writes YAML; the architect's fallback prompt asks for YAML. Legacy `workstreams.json` files encountered on disk are migrated in-place on first read (rename + reformat + audit row).
+>
+> Three principles drive the shape:
+>
+> 1. **The doc structure mirrors execution.** Phase = top-level grouping (UI container, schedule barrier). Stage = unit of execution (one work item, one workstream, one PR). Step = checkbox inside a stage. Subsection ordering inside a stage is the contract: Steps → Dependencies → Test Scenarios.
+> 2. **No floating nodes in the DAG.** Every stage either declares stage deps, declares a `_start_` marker (`### Dependencies` body = `_none — start stage_`), or sits inside a phase with non-empty phase-deps that supply the inbound edge transitively. The DAG view banner-flags any stage with neither inbound edges (explicit or phase-derived) nor a start marker so the architect's next iteration corrects it.
+> 3. **YAML is the human-readable contract; the plan markdown is the source of truth.** When both exist, the markdown wins; `workstreams.yaml` is regenerated from the parsed plan on every reconcile. Operators who hand-edit `workstreams.yaml` see their change clobbered on the next architect iteration — which is the desired behavior because the markdown is what gets PR-reviewed.
+
+### Resolved decisions
+
+- **Q46.1 Heading hierarchy — H1=Phase, H2=Stage, H3=subsection; story title in YAML front-matter; parser keeps back-compat.** The new file shape is:
+
+  ````markdown
+  ---
+  title: "{story title}"
+  storyId: "{WI-id}"
+  ---
+
+  # Phase 1: {phase name}
+
+  ## Dependencies
+  - _none — start phase_
+
+  ## Stage 1.1: {stage name}
+
+  ### Implementation Steps
+  - [ ] {step text}
+
+  ### Dependencies
+  - _none — start stage_
+
+  ### Test Scenarios
+  - [ ] Scenario: {name} — Given {ctx}, When {act}, Then {expected}
+
+  ## Stage 1.2: {stage name}
+
+  ### Implementation Steps
+  - [ ] …
+
+  ### Dependencies
+  - phase-1-{phase-slug}/stage-1-1-{stage-slug}
+
+  ### Test Scenarios
+  - [ ] …
+
+  # Phase 2: {phase name}
+
+  ## Dependencies
+  - phase-1-{phase-slug}
+
+  ## Stage 2.1: …
+  ````
+
+  - **Implications:**
+    - `PlanParser` regexes shift one level up: `# Phase N: …` (H1), `## Stage N.M: …` (H2), `### Implementation Steps|Dependencies|Test Scenarios` (H3). The `## Dependencies` H2 subsection (phase-level deps) is distinguished from `## Stage N.M:` by the fixed `Stage N.M:` token — there's no ambiguity.
+    - **Format detection** runs in one pass: the parser scans for the first phase heading; if it matches H1, the file is v2 (locked level set H1/H2/H3); if H2, the file is v1 (locked H2/H3/H4); if neither, the file is malformed and the parser returns an empty plan + emits `forge.plan.format_unknown`. The locked level set applies to the rest of the file — mixed levels are not supported.
+    - YAML front-matter is parsed by a tiny built-in reader (no `YamlDotNet` round-trip required for this; the front-matter is ≤ 5 keys at v0.1) and surfaced as `CanonicalPlan.FrontMatter: IReadOnlyDictionary<string,string>`. Unknown keys are preserved verbatim so future fields don't break the parser.
+    - The architect's prompt template in `CrewStoryArtifactStrategy.PromptForDoc("implementation-plan")` is rewritten to emit the new shape. An example block in the prompt shows one start-phase + one downstream phase + one start-stage + one downstream stage so the architect has a concrete reference.
+
+- **Q46.2 Two-level deps; stage deps are the source of truth, phase deps are sugar that expands.** Both phases and stages can declare deps, but they compose with explicit semantics:
+  - **Phase deps**: `## Dependencies` block under an H1 Phase; one bullet per upstream **phase anchor** (e.g. `phase-1-memory-schema-and-foundation`). Empty body or `_none — start phase_` means "no phase-level prerequisite".
+  - **Stage deps**: `### Dependencies` block under an H2 Stage; one bullet per upstream **stage anchor** (e.g. `phase-1-memory-schema-and-foundation/stage-1-2-imemorygraphstore-interface`). Empty body or `_none — start stage_` means "no stage-level prerequisite within the phase's gate".
+  - **Effective stage-level DAG** (what the orchestrator schedules against) = `explicit_stage_edges ∪ phase_expansion_edges` where the phase-expansion rule is: for each phase B with phase-deps `[A, C]`, add an implicit edge from **every** stage in B to **every** stage in A and C. This is the smallest set of edges that enforces "phase B may only start when all of A and C are done".
+  - **Implications:**
+    - One workstream per stage holds (the existing 1:1 `Stage → WorkstreamRow` mapping is unchanged). The work item created during impl is at the **stage** level — phases are not separate work items.
+    - The decomposer projects both stage deps and phase-expansion deps into `WorkstreamRow.DepsJson` so the runtime scheduler reads a single flat list per workstream and never re-parses the plan.
+    - Cross-phase stage deps are allowed (a stage in Phase 2 may explicitly depend on a stage in Phase 1) — the UI's phase grouping is presentational, not a hard constraint on the dep graph.
+    - The DAG view renders **two layers**: phase-to-phase edges between phase containers (one per phase-level dep) and stage-to-stage edges between cards (one per explicit stage dep). Phase-expansion edges are NOT drawn — they're implied by the phase-container edge — to keep the visual readable.
+    - Cycle detection runs on the effective stage-level DAG; a cycle returns `400 + plan.dep_cycle { path: [stage-a, stage-b, stage-a] }` from the parse / decomposition path.
+    - Unresolved anchor refs (a dep cites a phase or stage anchor that doesn't exist) are kept verbatim and surfaced as `plan.dep_unresolved` audit rows; they do not block decomposition but render the offending workstream with a yellow banner in the DAG.
+
+- **Q46.3 Stage subsection order — Steps → Dependencies → Test Scenarios.** The contract is "what to build, what it needs first, how we verify". The parser refuses with `plan.stage_subsection_order_invalid` when the order is wrong; the evaluator lists the violation in `dims.scope` so the architect re-emits without operator intervention. The phase-level `## Dependencies` has only itself as a section so order is moot at the phase level.
+
+- **Q46.4 `workstreams.yaml` replaces `workstreams.json`.** YAML, not JSON, is the contract:
+  - **Architect prompt** asks for a file named `workstreams.yaml` and shows the schema in YAML form (one mapping per stage, fields: `title`, `description`, `acceptanceCriteria` (sequence), `deps` (sequence of titles), `phaseAnchor`, `stageAnchor`, `deliverables` (sequence), `timeline`, `estimatedEffort`).
+  - **Plan-derived path** writes `workstreams.yaml` deterministically from the parsed plan; this file is committed alongside `implementation-plan.md` so the operator can diff or hand-edit between iterations (hand-edits are clobbered on next reconcile by design — Q46.0 principle 3).
+  - **Legacy migration**: a `workstreams.json` file encountered on first read is rename-migrated in place to `workstreams.yaml` (single one-time conversion, idempotent — already-YAML files are untouched), with a `forge_actions(kind='migrate-workstreams-yaml')` audit row.
+  - **Dependency**: `YamlDotNet` (Apache 2.0) added to `Forge.Api.csproj`. Round-trip uses `CamelCaseNamingConvention` so YAML keys are `title`, `acceptanceCriteria`, `phaseAnchor` (camelCase) — no surprise capitalisation drift.
+  - The TS `StorySpawnDecomposeWorkstream` shape gains `phaseAnchor`, `stageAnchor` (string, optional) so the UI can group cards by phase without re-parsing the plan.
+
+- **Q46.5 DAG view — phase containers collapsible, every stage has an edge.**
+  - **Layout**: `DecompositionView` renders phase containers (light-bordered rounded rectangles labelled `▾ {phase name} · {n} stages`) with stage cards stacked inside, laid out left-to-right via ELK.js (`direction: RIGHT`, `hierarchyHandling: INCLUDE_CHILDREN`) so phase containers act as ELK hierarchy nodes that constrain layout.
+  - **Edges**: stage-to-stage edges (explicit stage deps) drawn between cards regardless of phase boundary. Phase-to-phase edges (phase deps) drawn between phase container headers as bold edges. Phase-expansion edges (the cross-product implicit set) are NOT drawn.
+  - **Collapse / expand**: clicking the phase header toggles `collapsed` state; collapsed phase containers render as a single `{phase name} · {n} stages collapsed` chip. Stage cards inside vanish; phase-to-phase edges remain visible. Persisted in `localStorage[`forge.dag.collapsed.{spawnId}`] = string[]` so the operator's preference survives navigation.
+  - **Floating-card detection**: any stage with zero inbound edges (explicit + phase-expansion) and no `_none — start stage_` marker renders with a yellow `⚠ floating` banner. Same logic for phases with zero inbound and no start marker.
+  - **YAML toggle**: the existing `cards / json` toggle gains a `yaml` option; the YAML view is the source of truth for the operator's pre-approval review.
+
+### Implementation steps
+
+- [ ] **46.1** **Plan format spec + parser update** — `Forge.Api/Services/Stories/PlanParser.cs`:
+  - Extend `CanonicalStage` with `Dependencies: IReadOnlyList<string>` (anchor refs of upstream stages, verbatim).
+  - Add `CanonicalPhase.Dependencies: IReadOnlyList<string>` (anchor refs of upstream phases) and `CanonicalPhase.IsStartPhase: bool` (true when body is empty or `_none …_`).
+  - Add `CanonicalPlan.FrontMatter: IReadOnlyDictionary<string,string>` (parsed YAML key/values; values are strings — no nested structures at v0.1).
+  - New regex set for v2 (`# Phase N:` / `## Stage N.M:` / `### Implementation Steps|Dependencies|Test Scenarios`); legacy regex set retained.
+  - `Parse(markdown)` runs front-matter extraction first (between `---` lines at the top), then format-detects from the first heading match (H1=v2, H2=v1), then locks the level set for the rest of the file.
+  - `## Dependencies` (v2) and `### Dependencies` (v1) are recognised distinctly from `## Stage N.M:` / `### Stage N.M:` by the fixed `Stage N.M:` token; the dependency block is read as a flat bullet list.
+  - New error codes: `plan.format_unknown`, `plan.stage_subsection_order_invalid`, `plan.dep_cycle`, `plan.dep_unresolved`.
+  - `ContentHash` includes the Dependencies bullets (so a dep edit re-prompts engineers exactly like a step edit does, via the existing `PlanReconciler` path).
+
+- [ ] **46.2** **Architect prompt template** — `Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs` `PromptForDoc("implementation-plan")`:
+  - Rewrite the structure block to the new H1/H2/H3 hierarchy with the YAML front-matter prelude.
+  - Inject the per-stage subsection-order rule and the per-phase `## Dependencies` requirement.
+  - Show one start phase + one downstream phase + one start stage + one downstream stage as a verbatim example.
+  - Add the explicit "every stage MUST have a `### Dependencies` section even if empty" + "every phase MUST have a `## Dependencies` section even if empty" rules.
+  - Keep the existing 20-stages-per-phase, 20-steps-per-stage, ≤ 20 files-per-step caps unchanged (Phase 16.5 invariants).
+
+- [ ] **46.3** **Decomposition deps propagation** — `CrewStoryArtifactStrategy.ProduceDecompositionAsync`:
+  - When the plan-derived path runs, read `stage.Dependencies` and `stage.Phase.Dependencies`; resolve anchor refs to workstream titles via the existing `PlanAnchor` join.
+  - Compute the effective stage-level DAG by expanding phase-deps as cross-product edges (Q46.2) and write the union (explicit ∪ expanded) into `DecompositionWorkstream.Deps`.
+  - Persist the unresolved-anchor flag in a new optional `DecompositionWorkstream.UnresolvedDeps: IReadOnlyList<string>` so the UI surfaces them without re-parsing.
+  - The fallback architect prompt path likewise reads `deps` from `workstreams.yaml`; YAML omits the phase-expansion (architect declares stage-level deps directly), so the same expansion runs server-side after parse.
+  - Cycle detection on the effective DAG; `plan.dep_cycle` short-circuits decomposition and surfaces in the orchestrator's `LastError`.
+
+- [ ] **46.4** **YAML decomposition artefact** — replace `workstreams.json` with `workstreams.yaml`:
+  - Add `YamlDotNet` to `src/forge/Forge.Api/Forge.Api.csproj`. Use `CamelCaseNamingConvention`.
+  - Architect prompt asks for `workstreams.yaml`; example schema in YAML form.
+  - Strategy reads/writes YAML; legacy JSON files migrated on first read (rename to `.yaml`, reformat with the same field names, write `forge_actions(kind='migrate-workstreams-yaml', body: { spawnId, oldPath })`).
+  - `PlanReconciler` writes YAML on every reconcile so disk + DB stay in lockstep.
+  - YAML schema field-for-field mirrors the JSON contract today, with two new optional fields: `phaseAnchor`, `stageAnchor`. Required fields (`title`) stay required.
+
+- [ ] **46.5** **DAG view rework** — `src/forge/Forge.UI/src/swarm/DecompositionView.tsx`:
+  - Group cards into phase containers parsed from `phaseAnchor` (if present) or derived from `PlanAnchor`'s `phase-…/stage-…` prefix (back-compat for spawns produced before 46.4 ships).
+  - Render edges via ELK.js layout (already present in `package.json`); both intra-phase and cross-phase edges drawn.
+  - Phase-to-phase edges drawn from container header to container header for explicit phase-deps; stage-to-stage edges drawn between cards for explicit stage-deps. Phase-expansion edges NOT drawn (Q46.5).
+  - Phase header has a `▾`/`▸` chevron toggle; click toggles `collapsed`; persisted in `localStorage[`forge.dag.collapsed.{spawnId}`] = string[]`.
+  - Floating-card detector banner-flags stages with zero inbound edges + no start marker.
+  - Existing `cards` / `json` toggle preserved; YAML view added as a third option in the toggle. The YAML view shares the copy-to-clipboard affordance the JSON view has today.
+
+- [ ] **46.6** **Schema migration** — `Forge.Api/Persistence/Phase46Migration.cs` (idempotent, runs after `Phase45Migration`):
+  - Adds `WorkstreamRow.DepsJson TEXT NULL` (JSON `string[]` of upstream workstream titles, the resolved + expanded set). Backfill walks `StorySpawnRow.DecompositionJson` once and projects `deps` in place.
+  - Adds `WorkstreamRow.PhaseAnchor TEXT NULL` (cached for cheap UI grouping; matches `PlanAnchor`'s `phase-…` prefix).
+  - No data shape change to `StorySpawnRow.DecompositionJson` — that column continues to hold the architect's serialised decomposition (now YAML-derived but still JSON in the DB; the on-disk artefact is YAML).
+
+- [ ] **46.7** **Spec-consistency tests** — `Forge.Api.Tests/Phase46PlanFormatTests.cs` (xUnit):
+  - Parser round-trips a v2 plan with both phase-deps and stage-deps; cap enforcement still holds; YAML front-matter is preserved.
+  - Parser back-compat: a v1 plan (legacy H2 phases, no `Dependencies` blocks) still parses; deps default to empty; format detection lock is correct.
+  - Decomposition propagates explicit + expanded deps onto workstream `Deps`; cycle detection refuses with `plan.dep_cycle`.
+  - YAML round-trip: a `workstreams.yaml` parses to the same in-memory shape as the equivalent JSON; legacy JSON is migrated to YAML on first read (and the audit row is written).
+  - Subsection-order rule: a stage with `Test Scenarios` before `Dependencies` returns `plan.stage_subsection_order_invalid`.
+  - DAG layout: ELK input has phase-as-hierarchy nodes; collapsing a phase keeps phase-to-phase edges visible at the boundary; floating-card detector fires on a stage with zero inbound edges and no start marker.
+  - Phase-expansion semantics: a phase with stage-deps `A → B` and a downstream phase with phase-dep on the upstream phase shows `B` (the leaf) gates every stage in the downstream phase; explicit cross-phase stage-dep edges win over the implicit phase-expansion when both are present.
+
+- [ ] **46.8** **Fidelity** — Phase 46 is additive UI (phase containers, edges, YAML toggle, floating-card banner) and a doc format change. Exempt from the Phase 0 prototype screenshot diff. Reuses the Phase 28 `swarm-control` palette + the existing `--sc-amber` / `--sc-cyan` tokens; no new design tokens.
+
+### Out of scope (explicitly deferred)
+
+- **Per-step dependencies.** Steps inside a stage are sequential by listing order; cross-step deps are not modelled at v0.1. A stage that needs a different shape gets split into two stages.
+- **Auto-rewrite legacy v1 plans to v2.** The parser supports both formats in read; rewriting an existing v1 plan to v2 is an operator action (edit the file in the worktree). The reconciler accepts either shape and updates `WorkstreamRow.DepsJson` as it sees them.
+- **DAG editing in the UI.** The DAG is read-only at v0.1; deps are edited by changing the plan markdown and letting the reconciler apply. A drag-edges-in-the-UI editor is `forge_v2.md`.
+- **Phase-expansion edges drawn explicitly.** The DAG draws phase-to-phase edges only; the cross-product expansion is implied. A "show me the actual edges the orchestrator schedules against" debug overlay is `forge_v2.md`.
+- **Phase-level YAML front-matter** (e.g. `deps:` as a yaml key inside the phase prose). The contract is `## Dependencies` markdown subsections only — keeps the parser single-mode.
+- **Stage anchors without phase prefixes** (e.g. just `stage-foo` without `phase-bar/`). Anchors are always fully qualified so a stage move across phases is a delete+add to the reconciler. Free-floating stage names are `forge_v2.md`.
+
+---
+
+## Phase 47 — Pair diversity for parallel deliverables
+
+> Operator feedback (2026-05-09) on the `failover-cluster:XRAFT` spawn: the architect crew's 4 plan-docs run concurrently via `Task.WhenAll` but every iteration serializes on the same evaluator agent (`crew.DefaultEvaluatorAgentId`), turning a 4-way fan-out into an effective 4-deep queue. The same shape will surface the moment IMPL-phase workstreams kick off — `CrewQueueWorker` picks the generator via `Environment.TickCount % onShiftMembers.Count` (which collides on parallel claims within the same tick) and uses a fixed evaluator agent for every claim. **Phase 47 enforces that parallel deliverables on the same crew use distinct (generator, evaluator) agent pairs.**
+>
+> Two principles drive the shape:
+>
+> 1. **Diversity is computed at claim time, not configured statically.** A crew has a roster of generator-eligible members and a roster of evaluator-eligible members; the picker filters out anyone currently invoking and round-robins the remainder. No new schema, no new config — the existing `agent_usage` ledger (Phase 11.4) is the truth signal.
+> 2. **No-free-pair-available is a deliberate skip, not a fall-through.** When every roster member is busy, the worker SKIPS the claim with reason `no-free-pair-member` and waits for the next tick. The crew's `MaxConcurrent` cap interacts: effective parallelism = `min(MaxConcurrent, |non-busy roster|)`. Falling back to the lead silently would re-introduce the serialization bug the operator just hit.
+
+### Resolved decisions
+
+- **Q47.1 Busy signal — `agent_usage WHERE EndedAt IS NULL`.** The cost ledger is the truth: every invocation appends a row at start and updates `EndedAt` on completion (or cancel). `SELECT DISTINCT AgentId FROM agent_usage WHERE EndedAt IS NULL` returns the busy set. Re-queried per claim so a long batch tick that picks several rows in sequence sees agents that just became busy in earlier claims.
+  - **Implications:**
+    - No new schema. Existing `agent_usage` index `(AgentId, StartedAt)` already covers the query.
+    - Stale `EndedAt IS NULL` rows from a crashed runner could falsely mark agents busy. Mitigation: `agent_usage` rows get an `EndedAt = StartedAt + 24h` reaper on boot (one-line addition to `Program.cs` post-migration block) so a crashed worker doesn't permanently wedge an agent.
+    - Plan-doc + decompose + judge invocations all flow through the same ledger, so an architect mid-iteration on doc-1 is correctly excluded as busy when doc-2 looks for a generator. Single source of truth across all paths.
+
+- **Q47.2 Generator roster = on-shift crew members; evaluator roster = on-shift paired-crew members.** The generator picker pool is the crew's members minus the lead (existing Phase 16.7 / Phase 18.6 logic). The evaluator picker pool is the **paired crew's** members (or the same crew when no pair is configured), with `DefaultEvaluatorAgentId` as the preferred head of the rotation. Self-pairing (gen-agent == eval-agent) is rejected as a parse error in `PairDiversityResolver`.
+  - **Implications:**
+    - When the paired-crew has 4 evaluator members and the generator crew has 4 generator members, up to 4 fully-distinct pairs run in parallel without any agent serializing.
+    - When the paired-crew is `null` (standalone crew), the resolver falls back to the same crew's roster minus the picked generator. Phase 16.2 already enforces "evaluator only on Architect / Engineer crews" for arch+eng pairs; review/QA crews stay self-evaluating per the Q16.2 carve-out.
+    - The `DefaultEvaluatorAgentId` stays as the preferred default — it's first in the roster — but is skipped when busy. Ops semantics unchanged for low-throughput crews where 1 evaluator is always free.
+
+- **Q47.3 No-free-pair fallback — skip claim with `no-free-pair-member` reason.** When the filtered generator roster OR filtered evaluator roster is empty, the worker DOES NOT pick the claim. It logs a `ClaimSkip` with reason `no-free-pair-member`, increments a `forge.queue.no_free_pair` counter tagged with `crewId` + `side` (`generator | evaluator`), and lets the next tick try again. The crew's `MaxConcurrent` cap interacts: a crew with `MaxConcurrent=4` and `roster={a, b, c, d}` and one row already in flight on `a` allows the next claim to use `b/c/d` but no member of `{a}`. With 4 in flight on `{a, b, c, d}` and capacity-cap = 4, capacity check fails first; with 4 in flight and cap = 6, the next claim hits no-free-pair-member and waits.
+  - **Implications:**
+    - The lead is NOT a fallback for the generator role at v0.1. Existing Q18.3 lead-24×7 exemption stays for the off-shift case (every member off-shift → lead), and is unaffected by busy-detection (the lead exempt path runs first, before busy-filtering is applied).
+    - A future polish (Phase R candidate) could add `pairDiversityFallback: 'skip' | 'lead' | 'shared'` per-crew to relax the rule for low-headcount setups; v0.1 is strict.
+
+- **Q47.4 Plan-doc parallelism — same diversity rule applies to evaluators.** `LoadArchitectRosterAsync` already round-robins generator agent IDs across the 4 plan-doc specs (`Q42` legacy). Phase 47 extends this with a parallel evaluator roster: `LoadEvaluatorRosterAsync(count)` returns N distinct evaluator agents (preferring `DefaultEvaluatorAgentId` first, then other crew members not in the generator roster). `ProducePlanFileAsync` accepts an `evaluatorAgentOverride: string?` mirror of the existing `generatorAgentOverride`; when set, `InvokeAsync` resolves the evaluator from the override instead of `crew.DefaultEvaluatorAgentId`.
+  - **Implications:**
+    - The 4 plan docs (architecture, tech-spec, implementation-plan, e2e-scenarios) now each get a distinct evaluator. With the architect crew's typical 8 members (4 gen + 4 eval), every iteration runs 4 in parallel without any cross-doc serialization.
+    - The `ResumeSingleArtifactAsync` path passes a single doc's evaluator override too, so a single-doc resume doesn't accidentally re-pin the original (potentially still busy) evaluator.
+
+### Implementation steps
+
+- [ ] **47.1** **`PairDiversityResolver.cs`** — new pure helper at `Forge.Api/Services/PairDiversityResolver.cs`:
+  - `PickGenerator(roster, busy, lead)` returns `(string AgentId, bool FellBackToLead)`. Filter `roster` by `busy`; round-robin the remainder by stable index (`Environment.TickCount` REPLACED by an explicit caller-supplied seed so two claims in the same tick can deliberately desynchronise). Empty filtered roster → `(lead, true)` ONLY when `lead` is non-null AND `lead` is on shift via the existing Q18.3 exemption. Else → `(null, false)` and caller skips.
+  - `PickEvaluator(roster, busy, defaultEvalAgentId, lead, generatorAgentId)` returns `(string AgentId, bool FellBackToDefault)`. Pre-condition: `defaultEvalAgentId != null`. Order the roster with `defaultEvalAgentId` first; filter by `busy ∪ {generatorAgentId}` (gen ≠ eval invariant from Phase 39); pick the first non-busy. Empty filtered roster → `(null, false)` for the caller to skip.
+  - Self-edge guard: `PickEvaluator` rejects with `InvalidOperationException` when the resolved evaluator equals the generator (defense in depth — should be impossible given the filter, but the rubber-duck-pass on the deps resolver showed self-edge guards are cheap insurance).
+
+- [ ] **47.2** **Busy detection helper** — new method on `IDeliverableLoop` (or a free-function) `LoadBusyAgentsAsync(db, ct)`:
+  - Query: `SELECT DISTINCT AgentId FROM agent_usage WHERE EndedAt IS NULL`.
+  - Returns `HashSet<string>` for O(1) `Contains` lookups in the resolver.
+  - Stale-row reaper: a hosted-service-side daily sweep flips `EndedAt = StartedAt + 24h` on rows older than 24h with null `EndedAt`, emitting a `forge.agent.usage.reaped` counter so a crashed runner doesn't permanently wedge an agent. The 24h window is picked from `ScoringConstants.MaxIterationWallClockHours` so the reaper trails any legitimate long iteration.
+
+- [ ] **47.3** **`CrewQueueWorker` impl-path wiring** — replace the existing `TickCount % onShiftMembers.Count` round-robin (around line 607) with a call to `PairDiversityResolver.PickGenerator`. Resolve the evaluator via `PickEvaluator` over the paired crew's members (same `LoadBusyAgentsAsync`), and persist the resolved evaluator on the `task_queue` row's existing claim path so the live-exec view can render it without a re-query.
+  - When the resolver returns `null` for either side, write a `ClaimSkip` with reason `no-free-pair-member`, increment `forge.queue.no_free_pair{side}`, and `continue` the tick.
+  - The Q24.14 pinned-agent path (preferred-agent-pin for comment-response continuity) is unchanged — diversity rule applies only when no pin is in effect.
+
+- [ ] **47.4** **`CrewStoryArtifactStrategy` plan-doc wiring** — extend `LoadArchitectRosterAsync` to `LoadArchitectAndEvaluatorRostersAsync(count)` returning `(IReadOnlyList<string> Generators, IReadOnlyList<string> Evaluators)`. Each list has `count` distinct agent IDs (no overlap between generators and evaluators). `ProducePlanArtifactsAsync` indexes both rosters per doc; `ProducePlanFileAsync` accepts a new `evaluatorAgentOverride: string?` parameter that flows into `InvokeAsync`'s evaluator resolution branch (mirror of the existing generator override).
+
+- [ ] **47.5** **Tests** — `Forge.Api.Tests/Phase47PairDiversityTests.cs` (xUnit):
+  - `PickGenerator_skips_busy_members_and_returns_first_free` — 3 members, 1 busy, picks one of the other 2.
+  - `PickGenerator_falls_back_to_lead_when_all_members_busy` — 2 members both busy, lead non-null on-shift; returns lead with `FellBackToLead=true`.
+  - `PickGenerator_returns_null_when_no_free_member_and_no_lead` — caller will skip the claim.
+  - `PickEvaluator_prefers_default_when_free`.
+  - `PickEvaluator_skips_default_when_busy_and_picks_next`.
+  - `PickEvaluator_excludes_generator_to_satisfy_pair_diversity` — generator agent is filtered from evaluator pool even when it's in the evaluator roster.
+  - `PickEvaluator_returns_null_when_only_candidate_equals_generator` — defense in depth for self-pair.
+  - `LoadBusyAgentsAsync_returns_agents_with_open_invocations` — round-trip via `agent_usage`.
+  - `Plan_phase_4_docs_get_4_distinct_pairs` — integration test over `LoadArchitectAndEvaluatorRostersAsync` with a seeded crew of 8 agents.
+  - `Impl_phase_two_parallel_claims_pick_different_generators` — integration test simulating two ticks of `CrewQueueWorker.RunOnceAsync` against a crew with 2 members + 1 row in flight, asserting the second claim picks the other member.
+
+- [ ] **47.6** **Fidelity** — Phase 47 is a backend-only behavior change. No UI surface; existing `task.delegated` / `agent.{id}` SignalR events already carry the resolved agent IDs. No fidelity diff impact.
+
+### Out of scope (explicitly deferred)
+
+- **Per-crew `pairDiversityFallback` knob.** Strict skip is the only mode at v0.1; relaxation is `forge_v2.md`.
+- **Cross-spawn agent contention.** Agents on different spawns share the same `agent_usage` busy set; a generator on Spawn A blocks the same agent from being picked on Spawn B. The operator can grow the architect / engineer rosters or accept the shared-resource serialization. Per-spawn agent quotas are `forge_v2.md`.
+- **Replacing Phase 16.7's lead exemption.** The existing "lead is fallback when no member is on-shift" rule (Q18.3) is preserved verbatim; Phase 47's busy filter sits between the on-shift filter and the round-robin pick.
+- **Diversity for review / QA pair crews.** Phase 16.2 left review + QA crews self-evaluating; Phase 47 only affects Architect + Engineer crews. Diversity for review crews is `forge_v2.md`.
+
+---
+
+## Phase 48 — Plan-doc completion gate (regression fix)
+
+> Operator regression on `failover-cluster:XRAFT` (2026-05-09): `Phase=IMPLEMENT` with 24 workstreams active while all 4 plan-docs were still iterating (iters 5/6/7, scores 76–84, none at pass). After app restart, the doc tasks froze and never resumed. Two distinct bugs surfaced together:
+>
+> 1. **Bug A — Phase advance gate missing.** `DrivePlanAsync` opens the plan PR and advances phase as soon as `ProducePlanArtifactsAsync`'s `Task.WhenAll` returns. The strategy returns content even when a doc verdict is `stalled` / `iterate`. The orchestrator never checks per-doc verdicts before opening the PR or before flipping `Phase=Decompose`. Once advanced, `DriveImplement` doesn't re-check plan docs.
+>
+> 2. **Bug B — Frozen plan-doc loops after restart.** `StoryResumeRecoveryService` only re-fires keys present in `StorySpawnRow.ResumePendingJson`. That column is populated by Resume / Restart endpoints. The orchestrator's first plan run uses `Task.WhenAll` directly (no marker). When the app crashes mid-iteration during the first run, no key is in `ResumePendingJson`. The next tick would resume the docs IF `Phase=Plan`, but Bug A already advanced the phase.
+>
+> **Phase 48 closes both bugs with one mechanism**: a `ArePlanDocsAllPassedAsync` helper applied at four orchestrator entry points. The cascade self-heals frozen state without separate boot-recovery plumbing.
+
+### Resolved decisions
+
+- **Q48.1 "All passed" definition — latest deliverable verdict equals `pass`.** A plan doc is passed iff `SELECT verdict FROM deliverables WHERE work_item_id = 'plan-doc:{spawn.Id}:{fileName}' ORDER BY iter DESC, created_at DESC LIMIT 1` returns `'pass'`. Docs with zero deliverables are NOT passed (initial state). ACCEPT-overridden docs (Phase 43) are recognized as passed because `POST /api/stories/{storyId}/spawn/artifacts/{key}/accept` flips the latest deliverable's verdict to `pass`.
+
+- **Q48.2 Gate cascade across four orchestrator entry points.**
+  - **`DrivePlanAsync` Step 1 (artifact production trigger):** the existing `hasPendingDocs` check ("any doc has zero deliverables") becomes `!allPassed` ("any doc's latest verdict isn't pass"). This re-triggers `ProducePlanArtifactsAsync` even when every doc has SOME history but at least one is still iterating / stalled. Combined with the Phase 45 pass-verdict guard inside `ProducePlanFileAsync`, only the non-passed docs run the gen-eval loop; passed docs short-circuit to cached worktree content.
+  - **`DrivePlanAsync` Step 3 (phase advance):** before flipping `Phase=Decompose`, call the helper. If any doc isn't passed, persist `LastError = "Plan docs not all passed: <keys>"`, emit `phase-advance-blocked`, and return without advancing. Next tick re-runs Step 1.
+  - **`DriveDecomposeAsync` entry:** call the helper. If any doc isn't passed, regress `Phase=Plan`, persist `LastError`, emit `phase-regressed`, return true (we made a change). Recovers from spawns whose phase advanced under Bug A before this fix shipped.
+  - **`DriveImplementAsync` entry:** identical regression logic. Halts new workstream claims (the user's "impl should NEVER start before docs complete" requirement).
+
+- **Q48.3 In-flight workstreams keep running on phase regression.** When `DriveImplementAsync` regresses to Plan, currently-claimed workstreams (state `picked-up` / `active`) continue to completion. Cancelling them mid-flight loses work; the operator decides via the existing per-workstream Cancel button. Only NEW claims are blocked by the regression — the gate at the top of `DriveImplementAsync` short-circuits before any new workstream is claimed.
+
+### Implementation steps
+
+- [ ] **48.1** **`ArePlanDocsAllPassedAsync` helper.** `Forge.Api/Services/Stories/StorySpawnOrchestrator.cs`. Pure DB query over `deliverables` table; returns `(bool AllPassed, IReadOnlyList<string> NonPassedKeys)` where `NonPassedKeys` are the file names without the `.md` suffix (matches the artifact key convention used by Resume / ACCEPT endpoints).
+
+- [ ] **48.2** **Update `DrivePlanAsync`.** Replace lines 273–282 (`hasPendingDocs` calculation) with a call to the helper; rename the local to `notAllPassed` for clarity. The Step 1 trigger becomes `string.IsNullOrEmpty(spawn.PlanPrId) || forceResume || notAllPassed`. At Step 3 (line ~388, before `sRow.Phase = StorySpawnPhases.Decompose`), call the helper again; if any doc isn't passed, persist LastError and return false.
+
+- [ ] **48.3** **Add gate to `DriveDecomposeAsync`.** First line of the method, before the existing decomposition logic. On non-pass: regress `Phase=Plan`, persist LastError, emit `phase-regressed` SignalR, return true.
+
+- [ ] **48.4** **Add gate to `DriveImplementAsync`.** First line, before the existing claim sweep. Same regression logic.
+
+- [ ] **48.5** **Tests.** `Forge.Api.Tests/Phase48PlanDocGateTests.cs`:
+  - `ArePlanDocsAllPassedAsync_returns_false_when_any_doc_lacks_deliverables` — fresh spawn, four work items, zero deliverables.
+  - `ArePlanDocsAllPassedAsync_returns_false_when_any_doc_latest_verdict_iterates` — three docs at pass, one at iterate.
+  - `ArePlanDocsAllPassedAsync_returns_true_when_all_four_docs_passed` — all four with `verdict='pass'` deliverable.
+  - `ArePlanDocsAllPassedAsync_treats_accept_overridden_doc_as_passed` — Phase 43 ACCEPT-flipped row counts.
+  - `DriveImplementAsync_regresses_to_plan_when_any_doc_not_passed` — spawn at `Phase=Implement` with stalled doc; one tick regresses to Plan with `phase-regressed` event.
+  - `DrivePlanAsync_does_not_advance_when_any_doc_stalled` — PR exists + merged + one doc stalled → Step 3 holds.
+  - `DrivePlanAsync_advances_when_all_docs_passed` — same path, all four passed → Step 3 advances.
+
+- [ ] **48.6** **Fidelity.** Backend-only behavior change. No UI surface. SignalR events `phase-regressed` + `phase-advance-blocked` are additive on the existing `story-spawn.changed` channel; the swarm UI already re-fetches on any spawn change, so nothing breaks.
+
+### Out of scope (explicitly deferred)
+
+- **Cancelling in-flight workstreams on phase regression.** Q48.3 keeps them running; cancellation is operator-driven.
+- **Boot-recovery extension for plan-doc work outside `ResumePendingJson`.** The phase-regression cascade is sufficient; a separate sweep would duplicate the gate's effect.
+- **Per-doc forecast / ETA on the regression banner.** `LastError` carries the non-passed keys; a richer UI is `forge_v2.md`.
+- **Auto-ACCEPT after N stalled iterations.** Operators must explicitly ACCEPT a stalled doc to unblock; an auto-accept would mask quality regressions.
+
+---
+
 ## Phase R — Post-implementation refactor (deferred)
 
 > **Do not start until every checkbox in Phases 0–7 is ticked and all fidelity checks are green.** This phase exists only to record the deferred design debt so reviewers know it is acknowledged, not forgotten.
@@ -4962,8 +5255,130 @@ Candidate refactors to consider once the prototype is faithfully reproduced and 
 - [ ] **R.5** A11y pass: keyboard focus rings, ARIA roles for the board, color-contrast audit.
 - [ ] **R.6** Performance: virtualize long lists (cards in Backlog, audit log) once they exceed ~200 rows.
 - [ ] **R.7** Storybook for components, fed by the same `sampleData.ts`.
+- [ ] **R.8** Realtime + messaging refactor — replace direct `IHubContext<ForgeHub>` calls with `IForgeBus` + SQLite-backed transactional outbox + SSE. **See detailed subsection below.**
 
 Anything else that surfaces during Phases 0–7 goes into a `Refactor backlog` section here — **not** into the implementation steps above.
+
+### R.8 — Realtime + messaging refactor: `IForgeBus` + transactional outbox + SSE
+
+> Operator pain (2026-05-09): the current realtime path fans out via ~70 direct `IHubContext<ForgeHub>.Clients.All.SendAsync("event.kind", new { ... })` call sites scattered across endpoints (`Endpoints/*Endpoints.cs`), background services (`Services/*Job.cs`, `Services/Stories/*.cs`), and `Persistence/ProviderCache.cs`. Three failure modes are visible in production:
+> 1. **Silent loss on disconnect.** SignalR has no replay; events fired while a browser is asleep, refreshing, or behind a transient network drop are gone. The UI works around this with a "kick-the-cache" pattern — `useForgeHub.ts` listens to events only to call `useSpawnStore.bump()` / `useWorkstreamsStore.load()` to refetch via REST.
+> 2. **Stringly-typed contracts.** Event names are hand-typed strings on both sides; a typo on the server (e.g. `worktstream.changed`) silently drops the event, no compile-time check, no test catches it.
+> 3. **Send failures swallowed.** `Realtime/TaskChannel.cs:117`, `Persistence/ProviderCache.cs`, and most domain sites wrap `SendAsync` in `try { ... } catch { log.Debug(...) }` — state commits, broadcast vanishes, no visibility.
+>
+> The `task_transcript_event` table (Phase 16.5) is already a partial outbox for one event family. **Phase R.8 generalizes that pattern into a typed, durable, replayable bus and replaces the direct hub calls.**
+>
+> Five principles drive the shape:
+>
+> 1. **Same DB, same transaction.** Outbox rows commit atomically with the state mutation that produced them. If the SQLite commit succeeded, the event is durable. No two-phase distributed transactions, no "best-effort" send.
+> 2. **At-least-once + idempotent consumer = effectively-once.** Each consumer records `(consumerName, eventId)` in a dedup table; replays are no-ops. We do not pretend to do cross-system exactly-once.
+> 3. **The transport is swappable.** Domain code only sees `IForgeBus.PublishAsync(envelope)`. The current implementation is SQLite + SSE; the day Forge runs >1 replica or moves to hosted SaaS, the same interface points at Wolverine/Postgres or NATS JetStream behind one DI registration change.
+> 4. **QoS lives on the envelope, not on per-handler ceremony.** Priority, partition key, TTL, scheduled delivery, idempotency key are fields on `PublishOptions`; consumers don't reach into infrastructure to set them.
+> 5. **The browser is just another consumer.** SSE tail-reads from the outbox via a `?since=lastId` cursor; reconnect resumes via `Last-Event-ID`. No special-case hub plumbing, no fan-out arithmetic that excludes the UI.
+
+#### Resolved decisions
+
+- **QR.8.1 Bus surface — `IForgeBus.PublishAsync<T>(T evt, PublishOptions? opts, CancellationToken ct)`.** Events are records implementing `IForgeEvent` with a `static abstract string Kind { get; }` discriminator (.NET 8 static interface members). Registration: `services.AddForgeBus(b => b.RegisterEvent<WorkItemChanged>().RegisterEvent<PrChanged>()...)` builds a `kind → Type` map for the dispatcher and the SSE deserializer. **No `Clients.All.SendAsync(string, object)` outside the bus implementation** is enforced by a Roslyn analyzer in `Forge.Api.Tests` (`BannedSymbols.txt` style) so future contributors can't reintroduce the leak.
+  - **Implications:**
+    - Every existing event becomes a record under `Forge.Api/Contracts/Events/`: `WorkItemChanged`, `PrChanged`, `PrLogLine`, `CardChanged`, `StorySpawnChanged`, `RepoValidationComplete`, `TaskEvent`, `QueueChanged`, `SprintChanged`, `WorkstreamChanged`, `RepoChanged`, `ProductChanged`, `StoryChanged`, `PrCommentEvent`, `WorkItemLinked`, `BuildFixPromoted`, `BuildFixBlocked`, `CommentNeedsResponse` — one record per existing string. ~30 records.
+    - Each record carries the same payload that today's anonymous object carries; mappers from the domain rows already exist (e.g. `WorkItemMapper.MapWorkItem`, `PrMapper.ToContract`, `CardMapper.ToContract`).
+    - The Roslyn analyzer rule: any `IHubContext<ForgeHub>` symbol reference outside `Forge.Api.Realtime.Bus.*` is a build error. Migration period: tag the legacy call sites with `[Obsolete("R.8 migration", error: false)]` while the rewrite lands incrementally.
+
+- **QR.8.2 Transport tier-0 = SQLite outbox + per-partition serializer.** The persistent store is the same `ForgeDbContext` that owns work items / PRs / stories — not a separate ESDB / file. This keeps "atomic with the state change" trivial: `db.Outbox.Add(row); await db.SaveChangesAsync(ct);` inside the existing endpoint transaction. SQLite's single-writer model is fine at Forge's volume (sustained ≪ 100 events/s); the dispatcher batches reads and the per-partition mutex prevents head-of-line blocking across keys.
+  - **Implications:**
+    - No new infra dependency at v0.1. The desktop deployment story (single `Forge.Api.exe`, single SQLite file) is preserved verbatim.
+    - The `task_transcript_event` table (Phase 16.5) becomes a **projection** of the outbox: a `TaskTranscriptProjection` consumer subscribes to `TaskEvent` and writes to it. Existing reads of `task_transcript_event` are unchanged; the writes move into the consumer.
+    - Tier-1 reservation: when Forge needs to scale out, the same `IForgeBus` interface is implemented by `WolverineForgeBus` (Postgres backing) or `NatsJetStreamForgeBus`. No domain code changes.
+
+- **QR.8.3 Delivery guarantees — at-least-once with effective-once via consumer inbox.** Producer side: outbox row write is part of the state-change transaction → durable. Consumer side: each consumer dedups on `(consumer_name, event_id)` with a UNIQUE constraint; a duplicate dispatch is a no-op INSERT followed by a no-op handler skip. Cross-system exactly-once is **explicitly out of scope** — see "Out of scope" below.
+  - **Implications:**
+    - Handlers must be idempotent. Existing handlers that toggle DB state already are, by design (UPSERT semantics on work-item / PR rows). Side-effecting handlers (e.g. webhook posts) take the dedup row in the same TX as the side effect to make replay safe.
+    - The dispatcher commits `(consumer_inbox row + outbox.state='delivered')` atomically per consumer; partial dispatch (consumer A delivered, consumer B failed) is the normal case — only B retries.
+
+- **QR.8.4 QoS knobs on the envelope.** `PublishOptions { string? PartitionKey, int Priority = 5, TimeSpan? Delay, TimeSpan? Ttl, string? IdempotencyKey }`. Defaults are quiet: priority 5, no partition (parallel-safe), no TTL, no delay. Per-event policy lives in `EventPolicies.cs` so a single source defines "PrLogLine has TTL=1h, partition=prId" and all publishers inherit it.
+  - **Implications:**
+    - `priority`: 1=urgent (operator alerts, budget exceeded, validation-failed), 5=routine state changes (workitem/pr/story-spawn updates), 8=high-volume telemetry (`task.token`, `pr.log`, `worktree-tick`). Dispatcher orders `ORDER BY priority ASC, id ASC`.
+    - `partitionKey`: same-key events serialize. `WorkItemChanged{id=123}` uses `partitionKey="wi:123"` so two updates to the same work item never reach the browser out of order. NULL partition means parallel-eligible; the dispatcher can pull these on as many worker threads as configured.
+    - `delay` / `notBefore`: scheduled delivery without a separate scheduler. Replaces ad-hoc `Task.Delay` in jobs (e.g. PR sync's "re-check in 60s after auto-merge enable").
+    - `ttl`: high-frequency telemetry (e.g. `worktree-tick` at 1 Hz) self-expires so a one-week disconnected client doesn't replay 600k stale ticks on reconnect.
+    - `idempotencyKey`: producer-side dedup. A retry of a webhook handler that publishes `PrChanged{prId=42, kind=updated}` with `idempotencyKey="pr-update:42:rev:abc"` collapses to a single outbox row even when the producer is invoked twice.
+
+- **QR.8.5 Browser delivery — SSE with `Last-Event-ID` cursor.** Endpoint `GET /api/events/stream?topics=workitem,pr,story-spawn` returning `text/event-stream`. Server emits `id: <outbox.id>\nevent: <kind>\ndata: <json>\n\n`. Reconnect: the browser's `EventSource` automatically sends `Last-Event-ID: <n>`; the server's first response is a backfill SELECT (`WHERE id > :lastId AND kind IN (:topics) AND (expires_at IS NULL OR expires_at > now()) ORDER BY id LIMIT N`) followed by the live tail. **No `@microsoft/signalr` client dep, no negotiate/upgrade handshake, no group `Subscribe` round-trips.**
+  - **Implications:**
+    - `Realtime/ForgeHub.cs`, `Realtime/TaskChannel.cs`, and the `AddSignalR()` + `MapHub<ForgeHub>` calls in `Program.cs` are deleted at the end of the migration (R.8.13). Mid-migration, both transports run in parallel: the bus dispatches to a `LegacyHubBridge` consumer that re-emits via the existing hub, so old UI code keeps working until each store is migrated.
+    - The `useForgeHub.ts` hook becomes `useForgeStream.ts` — a thin `EventSource` wrapper that dispatches typed envelopes into the same Zustand stores. The "kick-the-cache" `bump()` / `load()` workarounds disappear because events are authoritative.
+    - The "process-lifetime connection because StrictMode hates lifecycle" hack (`useForgeHub.ts:155`) goes away; `EventSource` is naturally idempotent on remount.
+    - Per-topic filtering at the server keeps the wire small. The default topic set follows the view: `/board` subscribes to `card,workitem`; `/prs` to `pr,pr-comment`; `/workstreams` to `story-spawn,workstream`; the live-execution drawer to `task` for one specific `workItemId`.
+    - Heartbeat: server emits `: ping\n\n` every 15 s so reverse proxies / Windows firewall idle timers don't drop the stream.
+
+- **QR.8.6 Outbox state machine + retry policy.** States: `pending → inflight → delivered | dead`. Dispatcher leases a row by setting `state=inflight, leased_by=<dispatcher_id>, leased_until=now()+30s`; a watchdog scans for `inflight AND leased_until<now()` and resets to `pending` (recovers from a crashed dispatcher). On consumer success → `delivered`. On consumer failure → `attempt++`, `not_before=now()+backoff(attempt)`, state back to `pending`. Past `MaxAttempts` (default 8, configurable per event kind in `EventPolicies`) → row copied to `dead_event` with the last error, source row marked `dead`.
+  - **Implications:**
+    - `delivered` rows live until `expires_at` or for 7 days (whichever is sooner) so a slow consumer / browser reconnecting after a long gap has cursor coverage. The `OutboxRetention` job purges past-retention rows nightly.
+    - Backoff: exponential with jitter, capped at 5 minutes. Exact policy in `OutboxRetryPolicy.cs` so it's tunable centrally.
+    - Per-consumer DLQ visibility — `dead_event` carries `consumer` so the operator can see which consumer poisoned vs. which event is universally bad.
+
+- **QR.8.7 Migration playbook — bridge first, migrate stores incrementally, drop hub last.** No flag-day rewrite. Order:
+  1. Land the bus + outbox + dispatcher + SSE endpoint, gated by `Forge:Realtime:Mode` (`legacy | dual | bus`). Default `dual` mid-migration.
+  2. In `dual` mode: bus publish writes outbox AND a `LegacyHubBridge` consumer re-emits via the existing hub for store-by-store cutover. Existing UI code unchanged.
+  3. Migrate each Zustand store from `useForgeHub.connection.on('kind', ...)` to `useForgeStream.subscribe<KindEvent>(...)`. One PR per store: `useBoardStore`, `usePrsStore`, `usePrLogStore`, `useSprintsStore`, `useWorkItemsStore`, `useSpawnStore`, `useWorkstreamsStore`, validation toasts, `useQueueStore`, `useTaskLiveStore`.
+  4. Migrate each domain call site from `await hub.Clients.All.SendAsync("kind", new {...})` to `await bus.PublishAsync(new KindEvent(...))`. One PR per file is reasonable — ~70 files total. Tracker table in `docs/forge_r8_migration.md` (created during the phase) records the cutover state per file.
+  5. Flip `Forge:Realtime:Mode=bus`. Run for a week. If clean, delete `ForgeHub`, `TaskChannel`, `LegacyHubBridge`, the SignalR registration, and the `@microsoft/signalr` npm dep.
+  - **Implications:**
+    - The Roslyn analyzer (QR.8.1) graduates from warning to error at step 4's start; it was advisory during the bridge phase.
+    - `task_transcript_event` writes pivot to a `TaskTranscriptProjection` consumer at step 3 of the relevant store; reads stay on the existing endpoints unchanged.
+
+- **QR.8.8 Operator UX — `/admin/queue`.** New view rendering: per-kind depth (`pending`, `inflight`, `delivered`, `dead`), oldest-pending age, p50/p95 dispatch lag, per-consumer offset cursor, DLQ table with one-click `retry` (resets to `pending`, `attempt=0`) and `discard` (deletes the `dead_event` row). Backed by simple aggregation queries against `outbox_event` + `dead_event`. Read-only at v0.1 except for retry/discard. Gated by `role: 'product-owner'`.
+  - **Implications:**
+    - Provides the visibility that's missing today (silent SendAsync failures land in DLQ, not in `log.Debug`).
+    - Replay for development: an operator can `POST /api/admin/events/{id}/replay?consumer=ui` to re-fire a specific event to the SSE bridge — useful for reproducing UI regressions without re-running the producing job.
+
+- **QR.8.9 Observability — OTel-first.** Counters: `forge.bus.publish{kind}`, `forge.bus.dispatch{kind,outcome}`, `forge.bus.dlq{kind,consumer,reason}`. Histograms: `forge.bus.dispatch.lag_ms{kind}` (publish→delivered), `forge.bus.dispatch.duration_ms{consumer}`. Gauges: `forge.bus.depth{state}`. The SSE endpoint adds `forge.bus.sse.connected_clients` + `forge.bus.sse.events_per_client_per_min` for back-pressure visibility. Dashboard JSON exported under `docs/observability/forge-bus.json`.
+
+#### Implementation steps
+
+- [ ] **R.8.1** **Schema migration** — `Forge.Api/Persistence/PhaseR8Migration.cs` (idempotent, runs after the latest production migration):
+  - `outbox_event(id INTEGER PK AUTOINCREMENT, kind TEXT NOT NULL, partition_key TEXT, priority INTEGER NOT NULL DEFAULT 5, payload_json TEXT NOT NULL, trace_id TEXT, idempotency_key TEXT, occurred_at DATETIME NOT NULL, not_before DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at DATETIME, attempt INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', leased_by TEXT, leased_until DATETIME)`. Indexes: `(state, not_before, priority, id)` for the dispatcher; `(partition_key, id) WHERE partition_key IS NOT NULL` for per-key ordering; `(idempotency_key) UNIQUE WHERE idempotency_key IS NOT NULL` for producer-side dedup; `(kind, id)` for SSE topic filtering; `(expires_at)` for the retention sweep.
+  - `consumer_inbox(consumer TEXT, event_id INTEGER, processed_at DATETIME NOT NULL, PRIMARY KEY (consumer, event_id))`.
+  - `consumer_offset(consumer TEXT PRIMARY KEY, last_event_id INTEGER NOT NULL, updated_at DATETIME NOT NULL)` — for in-process consumers' resume cursor (SSE clients use the browser's `Last-Event-ID` header instead).
+  - `dead_event(id INTEGER PK, consumer TEXT NOT NULL, kind TEXT NOT NULL, reason TEXT NOT NULL, last_error TEXT, attempts INTEGER NOT NULL, moved_at DATETIME NOT NULL, payload_json TEXT NOT NULL)`.
+
+- [ ] **R.8.2** **Event contracts + kind registry** — `Forge.Api/Contracts/Events/*.cs`. One record per existing string event name (catalog from grep: ~30 distinct kinds across ~70 call sites). `IForgeEvent` interface with `static abstract string Kind { get; }`. `EventRegistry` in `Forge.Api/Realtime/Bus/EventRegistry.cs` maps `kind → Type` for the dispatcher and SSE deserializer. Registration via `services.AddForgeBus().RegisterEvent<WorkItemChanged>()...` in `Program.cs`. TS mirror records in `Forge.UI/src/realtime/events.ts` (one type per kind, exhaustive `KindMap`) so the browser handler signature is also typed.
+
+- [ ] **R.8.3** **`IForgeBus` + `OutboxBus` implementation** — `Forge.Api/Realtime/Bus/IForgeBus.cs`, `Forge.Api/Realtime/Bus/OutboxBus.cs`. `PublishAsync<T>` serializes the envelope, applies `EventPolicies` defaults, writes the outbox row via the **caller's** `ForgeDbContext` (so it's part of the same transaction). `PublishOptions` record per QR.8.4. Idempotency dedup via the UNIQUE index — duplicate insert is caught (`SqliteException` constraint violation) and treated as success.
+
+- [ ] **R.8.4** **`OutboxDispatcher` hosted service** — `Forge.Api/Realtime/Bus/OutboxDispatcher.cs`. Polls every 200 ms (jittered ±50 ms); leases up to N rows (`ORDER BY priority ASC, id ASC` filtered by `state='pending' AND not_before<=now()`); per-`partition_key` serialization via a `ConcurrentDictionary<string, SemaphoreSlim>(1, 1)`; calls each registered `IConsumer<TEvent>` (in-process) and the SSE broadcaster (which appends to per-client buffers). Retry with exponential backoff per QR.8.6. Watchdog sub-loop scans for stale leases. Retention sub-loop purges `delivered` rows past their retention window nightly.
+
+- [ ] **R.8.5** **SSE endpoint + browser hook** — `Forge.Api/Endpoints/EventStreamEndpoints.cs` exposes `GET /api/events/stream` returning `text/event-stream`. Honors `Last-Event-ID` header and `?topics=` filter; sends a heartbeat comment line every 15 s. Browser-side `Forge.UI/src/realtime/useForgeStream.ts` wraps `EventSource` with a typed dispatcher: `subscribe<T>(kind, handler)` registers a typed handler keyed off `KindMap`; on reconnect, `EventSource` sends `Last-Event-ID` automatically.
+
+- [ ] **R.8.6** **`LegacyHubBridge` consumer** — `Forge.Api/Realtime/Bus/LegacyHubBridge.cs`. Subscribes to all event kinds and re-emits them via `IHubContext<ForgeHub>.Clients.All.SendAsync(envelope.Kind, envelope.Payload)`. Active only when `Forge:Realtime:Mode IN ('dual', 'legacy')`. Lets old UI code keep working during the migration. The bridge is the **only** code path with `IHubContext<ForgeHub>` after R.8.7 starts; the analyzer carve-out is scoped to this one file.
+
+- [ ] **R.8.7** **Per-call-site migration (server)** — track in `docs/forge_r8_migration.md`. Catalog: 70+ `IHubContext<ForgeHub>` references already enumerated by grep (`Endpoints/*Endpoints.cs`, `Services/*Job.cs`, `Services/Stories/*.cs`, `Persistence/ProviderCache.cs`, `Realtime/TaskChannel.cs`, `Providers/AutoMergeWatcher.cs`). Migrate one file per PR. Each PR: replace `hub.Clients.All.SendAsync("kind", new {...})` with `bus.PublishAsync(new KindEvent(...))`; if the call lives inside an existing DB-write block, the publish lands in the same transaction. Drop the `IHubContext<ForgeHub>` constructor parameter once the file is clean.
+
+- [ ] **R.8.8** **Per-store UI migration** — `useBoardStore`, `usePrsStore`, `usePrLogStore`, `useSprintsStore`, `useWorkItemsStore`, `useSpawnStore`, `useWorkstreamsStore`, `useQueueStore`, `useTaskLiveStore`, validation toasts. Each store moves from `connection.on('kind', ...)` (in `useForgeHub.ts`) to `stream.subscribe<KindEvent>(...)`. One PR per store. Drop the `bump()` / `load()` workarounds where the typed envelope carries the full payload.
+
+- [ ] **R.8.9** **`/admin/queue` endpoints + UI page** — read-only `GET /api/admin/queue/depth`, `GET /api/admin/queue/dead?kind=&consumer=&limit=`, and write `POST /api/admin/queue/dead/{id}/retry`, `DELETE /api/admin/queue/dead/{id}`, `POST /api/admin/events/{id}/replay?consumer=`. UI page renders the table. Behind `role: 'product-owner'` gating.
+
+- [ ] **R.8.10** **OTel instrumentation** — counters / histograms / gauges per QR.8.9. Dashboard JSON exported under `docs/observability/forge-bus.json`.
+
+- [ ] **R.8.11** **Roslyn analyzer** — `Forge.Api.Analyzers/HubContextBannedAnalyzer.cs` (lives in `Forge.Api.Tests` project for now to avoid the analyzer-package ceremony). Errors on `Microsoft.AspNetCore.SignalR.IHubContext<>` symbol references outside `Forge.Api.Realtime.Bus.LegacyHubBridge` (during migration) and zero exceptions after R.8.13.
+
+- [ ] **R.8.12** **Tests** — `Forge.Api.Tests/PhaseR8/`:
+  - **Bus** — publish-in-tx → outbox row visible after commit only; rollback drops the row. Per-partition serialization — two events with same key dispatched in order even with N>1 dispatcher worker tasks. Idempotency dedup on duplicate `idempotencyKey` returns the original row id.
+  - **Dispatcher** — retry-then-DLQ on a flaky consumer (3 transient failures then success → success on retry; 8 failures → row in `dead_event`); lease watchdog recovers from a simulated dispatcher crash; retention purges past-retention rows.
+  - **SSE** — `Last-Event-ID` resume returns missed events in order; `?topics=` filter excludes other kinds; heartbeat keeps connection alive past the proxy idle window in the test harness.
+  - **Migration** — `dual` mode emits both legacy hub event and SSE event for the same publish; consumers see no double-dispatch (dedup via inbox).
+
+- [ ] **R.8.13** **Decommission** — once all stores are migrated and `Forge:Realtime:Mode=bus` has been clean for a week: delete `Forge.Api/Realtime/ForgeHub.cs`, `Forge.Api/Realtime/TaskChannel.cs` (replaced by `TaskTranscriptProjection` consumer), `LegacyHubBridge`, the `AddSignalR()` and `MapHub<>` calls in `Program.cs`, and the `@microsoft/signalr` npm dep. Update Phase 16.5 in this document to point at the bus.
+
+#### Out of scope (explicitly deferred)
+
+- **Real broker (RabbitMQ / NATS JetStream / Azure Service Bus / Kafka).** Reserved for the day Forge runs >1 replica or moves to hosted multi-tenant SaaS. The `IForgeBus` abstraction makes this a transport-level swap — not a domain rewrite. `forge_v2.md` candidate.
+- **Wolverine + Postgres adoption.** Same rationale — the SQL transport upgrade naturally pairs with the Postgres store migration. Reserved as a single coordinated `forge_v2.md` initiative.
+- **Cross-system exactly-once.** We do at-least-once + idempotent consumers (effective-once at handler granularity). Distributed exactly-once requires producer/consumer coordination (transactional inbox + transactional outbox at every system boundary) that Forge doesn't need at the operator scale we ship to.
+- **Saga / process-manager runtime built on the bus.** The orchestrator state machines (`StorySpawnOrchestrator`, `DeliverableLoop`) stay imperative. Sagas are a future refactor if the orchestrator's hand-rolled state machine becomes hard to reason about.
+- **External subscribers.** No public `/api/events/stream` for third-party consumers at v0.1; the SSE endpoint is auth-gated to the operator's session.
+- **Causal ordering across partitions.** Within one partition, order is preserved. Across partitions, order is dispatcher-id order — not application-causal. Cross-partition causal ordering requires vector clocks / Lamport timestamps and is `forge_v2.md`.
+- **Bidirectional client→server messaging.** SSE is server→client only. The few existing client→server hub calls (`Subscribe` / `Unsubscribe` group joins) become `?topics=` query params on the SSE endpoint; if a future feature genuinely needs client-pushed messages, they go through REST endpoints rather than re-introducing a WebSocket.
 
 ---
 
