@@ -147,6 +147,54 @@ public class Phase28StorySpawnTests
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// Spec Phase 48 helper — seed a passing terminal deliverable for
+    /// each of the four plan-doc work item ids of the given story so
+    /// the orchestrator's <c>ArePlanDocsAllPassedAsync</c> gate releases.
+    /// </summary>
+    private static Task SeedAllPlanDocsPassedAsync(ForgeWebApplicationFactory f, string storyId)
+    {
+        return SeedPlanDocVerdictsAsync(f, storyId, new[]
+        {
+            ("tech-spec.md", 3, "pass"),
+            ("architecture.md", 4, "pass"),
+            ("implementation-plan.md", 5, "pass"),
+            ("e2e-scenarios.md", 4, "pass"),
+        });
+    }
+
+    /// <summary>
+    /// Spec Phase 48 helper — seed an explicit (iter, verdict) pair per
+    /// plan doc. Used by the gate-cascade tests to verify both the
+    /// "all passed → advance" and "any non-pass → hold" code paths.
+    /// </summary>
+    private static async Task SeedPlanDocVerdictsAsync(
+        ForgeWebApplicationFactory f, string storyId,
+        (string FileName, int Iter, string Verdict)[] verdicts)
+    {
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
+        foreach (var (fileName, iter, verdict) in verdicts)
+        {
+            db.Deliverables.Add(new DeliverableRow
+            {
+                WorkItemId = $"plan-doc:{spawn.Id}:{fileName}",
+                CrewId = "crew-arch",
+                GeneratorAgentId = "G",
+                EvaluatorAgentId = "E",
+                Iter = iter,
+                Score = string.Equals(verdict, "pass", StringComparison.Ordinal) ? 92 : 78,
+                DimsJson = "{}",
+                Verdict = verdict,
+                Notes = string.Empty,
+                GeneratorSummary = string.Empty,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
     // -----------------------------------------------------------------------
     // 28.1 — Data model
     // -----------------------------------------------------------------------
@@ -357,10 +405,11 @@ public class Phase28StorySpawnTests
 
     /// <summary>
     /// Regression: DrivePlanAsync must skip ProducePlanArtifactsAsync and
-    /// auto-advance to decompose when the plan PR is already merged. Before
-    /// this fix, a long-running gen-eval retry blocked phase progression
-    /// indefinitely because ProducePlanArtifactsAsync never returned while
-    /// the scheduler kept re-entering Step 1.
+    /// auto-advance to decompose when the plan PR is already merged AND
+    /// all four plan docs passed. Before the original fix, a long-running
+    /// gen-eval retry blocked phase progression. After Phase 48 the gate
+    /// also requires every doc to have a passing terminal verdict so
+    /// impl never starts before docs complete.
     /// </summary>
     [Fact]
     public async Task Drive_Advances_To_Decompose_When_Plan_Pr_Already_Merged()
@@ -371,6 +420,10 @@ public class Phase28StorySpawnTests
             await SeedStoryAsync(f, "WI-60004-merged", "Auto-advance on merged PR");
             await SpawnAsync(c, "WI-60004-merged");
             await SetPlanPrAsync(f, "WI-60004-merged", "pr-merged-1", "merged");
+            // Phase 48 — gate requires every plan doc to have a passing
+            // deliverable. Seed pass rows for all four so the gate
+            // releases the advance.
+            await SeedAllPlanDocsPassedAsync(f, "WI-60004-merged");
 
             // Verify precondition: still at plan phase with a merged PR.
             var before = await GetSpawnAsync(f, "WI-60004-merged");
@@ -385,6 +438,46 @@ public class Phase28StorySpawnTests
             // Phase must have advanced past plan.
             var after = await GetSpawnAsync(f, "WI-60004-merged");
             Assert.NotEqual(StorySpawnPhases.Plan, after!.Phase);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Spec Phase 48 — when the plan PR is merged externally but at least
+    /// one plan-doc still has a non-pass terminal verdict (iterate /
+    /// stalled), the orchestrator must HOLD at Plan and surface the
+    /// non-passed keys via LastError. Closes the failover-cluster:XRAFT
+    /// regression where impl started while docs were still iterating.
+    /// </summary>
+    [Fact]
+    public async Task Drive_Holds_At_Plan_When_Pr_Merged_But_Docs_Not_All_Passed()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-60004-stalled", "Hold at plan on stalled docs");
+            await SpawnAsync(c, "WI-60004-stalled");
+            await SetPlanPrAsync(f, "WI-60004-stalled", "pr-merged-stalled", "merged");
+            // Three docs at pass, one stalled — the gate must hold.
+            await SeedPlanDocVerdictsAsync(f, "WI-60004-stalled", new[]
+            {
+                ("tech-spec.md", 3, "pass"),
+                ("architecture.md", 4, "pass"),
+                ("implementation-plan.md", 5, "pass"),
+                ("e2e-scenarios.md", 5, "stalled"),
+            });
+
+            using var scope = f.Services.CreateScope();
+            var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            await orchestrator.DriveAsync("WI-60004-stalled");
+
+            // Spec Phase 48 — the gate must HOLD the spawn at Plan when
+            // any doc has a non-pass terminal verdict, even with a
+            // merged PR. The fall-through to Step 1 will fail in test
+            // context (no real git repo), but the post-condition we care
+            // about is the phase did not advance.
+            var after = await GetSpawnAsync(f, "WI-60004-stalled");
+            Assert.Equal(StorySpawnPhases.Plan, after!.Phase);
         }
         finally { f.Dispose(); }
     }

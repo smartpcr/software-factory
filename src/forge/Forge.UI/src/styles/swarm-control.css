@@ -604,7 +604,7 @@
   font-size: 22px;
   letter-spacing: 0.04em;
   color: var(--sc-text-dim);
-  align-self: center;
+  align-self: start;
   text-align: center;
 }
 .swarm-ctrl .story-row .sr-meta { min-width: 0; }
@@ -639,7 +639,7 @@
 .swarm-ctrl .story-row .sr-sub b { color: var(--sc-text); font-weight: 600; }
 
 .swarm-ctrl .phase-badge {
-  align-self: center;
+  align-self: start;
   font-family: var(--sc-font-display);
   font-size: 10px;
   letter-spacing: 0.2em;
@@ -658,7 +658,7 @@
 .swarm-ctrl .phase-badge.done      { color: var(--sc-green);   border-color: var(--sc-green-d); opacity: 0.7; }
 
 .swarm-ctrl .sr-progress {
-  align-self: center;
+  align-self: start;
   display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
   min-width: 110px;
 }
@@ -688,7 +688,7 @@
 }
 
 .swarm-ctrl .sr-score {
-  align-self: center;
+  align-self: start;
   display: flex; flex-direction: column; align-items: center;
   border-left: 1px solid var(--sc-border);
   padding-left: 14px;
@@ -712,23 +712,104 @@
   text-transform: uppercase;
 }
 
-/* Workstream chip strip on each story row — tiny squares per workstream */
+/* Workstream chip strip on each story row — a layered DAG of small
+ * squares rendered as a "progress tree". Phase 50 — instead of a single
+ * flat row, every rect is positioned absolutely from its (depth, lane)
+ * coordinate so parallel work appears on parallel rows and dependency
+ * edges connect rects across columns. See SwarmStoryRow →
+ * StoryDeliveryStrip for the layout algorithm (barycentric lane
+ * assignment over longest-path layering).
+ */
 .swarm-ctrl .ws-strip {
-  display: flex; flex-wrap: wrap; gap: 3px;
+  position: relative;
+  display: block;
   margin-top: 6px;
-  align-items: center;
+  /* Width and height are computed inline from the laid-out grid; we
+   * leave room for the SVG edge layer to bleed into the inter-column
+   * gap. The element behaves as an explicit-size box rather than
+   * shrink-to-fit. */
 }
+.swarm-ctrl .ws-strip-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+/* Dependency edge — a horizontal cubic-bezier path from parent
+ * right-edge to child left-edge. Stage tint mirrors the rect's box-shadow
+ * outline so the eye can read "this edge feeds the release rect" without
+ * tracing it. */
+.swarm-ctrl .ws-edge {
+  fill: none;
+  stroke: var(--sc-border-2);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+.swarm-ctrl .ws-edge.stage-1 { stroke: var(--sc-magenta-d); opacity: 0.45; }
+.swarm-ctrl .ws-edge.stage-2 { stroke: var(--sc-border-2); opacity: 0.5; }
+.swarm-ctrl .ws-edge.stage-3 { stroke: var(--sc-blue-d); opacity: 0.45; }
+
 .swarm-ctrl .ws-chip {
+  position: absolute;
   width: 10px; height: 10px;
   border: 1px solid var(--sc-border);
   background: var(--sc-bg-2);
+  /* Stage outline lives on box-shadow so per-status background + border
+   * colour rules below stay untouched. Default = stage-2 (no outline). */
+  box-shadow: none;
+  transition: transform 80ms ease-out, box-shadow 80ms ease-out;
 }
-.swarm-ctrl .ws-chip.planning { background: var(--sc-surface-3); }
-.swarm-ctrl .ws-chip.active   { background: var(--sc-amber); border-color: var(--sc-amber-d); }
-.swarm-ctrl .ws-chip.review   { background: var(--sc-magenta); border-color: var(--sc-magenta-d); }
+.swarm-ctrl .ws-chip:hover {
+  transform: scale(1.6);
+  z-index: 2;
+}
+/* Stage tint — outer ring drawn via box-shadow so the status background
+ * and border (set below) remain authoritative. Stage 1 = magenta (design
+ * & plan), Stage 2 = no tint (impl review, the canonical lane), Stage 3
+ * = cyan-blue (release / QA + step-defs). */
+.swarm-ctrl .ws-chip.stage-1 { box-shadow: 0 0 0 1px var(--sc-magenta-d); }
+.swarm-ctrl .ws-chip.stage-2 { box-shadow: none; }
+.swarm-ctrl .ws-chip.stage-3 { box-shadow: 0 0 0 1px var(--sc-blue-d); }
+
+/* Status palette — shared across all three stages. Status comes from the
+ * server's workstream contract for stage-2 and is synthesised for the
+ * design-doc / release rects (see StoryDeliveryStrip.tsx). Not-started
+ * rects (pending / planning / blocked) use a light gray (`--sc-muted`)
+ * so they're visible against the near-black backplate; the prior
+ * `--sc-surface-3` fill matched the row background too closely. */
+.swarm-ctrl .ws-chip.pending,
+.swarm-ctrl .ws-chip.planning,
+.swarm-ctrl .ws-chip.blocked { background: var(--sc-muted); border-color: var(--sc-text-dim); }
+.swarm-ctrl .ws-chip.active,
+.swarm-ctrl .ws-chip.iterating { background: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .ws-chip.live {
+  background: var(--sc-amber);
+  border-color: var(--sc-amber-d);
+  animation: ws-chip-pulse 1.4s ease-in-out infinite;
+}
+.swarm-ctrl .ws-chip.review,
+.swarm-ctrl .ws-chip.awaiting-pr-review { background: var(--sc-magenta); border-color: var(--sc-magenta-d); }
 .swarm-ctrl .ws-chip.merging  { background: var(--sc-cyan); border-color: var(--sc-cyan-d); }
-.swarm-ctrl .ws-chip.complete { background: var(--sc-green); border-color: var(--sc-green-d); }
-.swarm-ctrl .ws-chip.blocked  { background: var(--sc-red); border-color: var(--sc-red-d); opacity: 0.7; }
+.swarm-ctrl .ws-chip.complete,
+.swarm-ctrl .ws-chip.completed { background: var(--sc-green); border-color: var(--sc-green-d); }
+/* `blocked` lifecycle is folded into the not-started selector above —
+ * keep this comment as a signpost so future status entries land in the
+ * right palette. Stalled (the real error state) stays below. */
+.swarm-ctrl .ws-chip.stalled {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sc-red) 0,
+    var(--sc-red) 2px,
+    var(--sc-red-d) 2px,
+    var(--sc-red-d) 4px
+  );
+  border-color: var(--sc-red-d);
+}
+
+@keyframes ws-chip-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
 
 /* Empty state */
 .swarm-ctrl .empty {
@@ -915,13 +996,28 @@
   padding: 8px 10px 8px 14px;
   border-bottom: 1px solid var(--sc-border);
 }
-.swarm-ctrl .phase-no { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.22em; color: var(--sc-muted); }
-.swarm-ctrl .phase-no b { color: var(--sc-text); font-weight: 400; }
+.swarm-ctrl .phase-no { font-family: var(--sc-font-display); font-size: 11px; letter-spacing: 0.16em; color: var(--sc-amber); }
+.swarm-ctrl .phase-no b { color: var(--sc-amber); font-weight: 600; }
 .swarm-ctrl .phase-title {
   font-family: var(--sc-font-mono);
   font-size: 11px; font-weight: 500;
   color: var(--sc-text); letter-spacing: 0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.swarm-ctrl .phase-card__deps {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+.swarm-ctrl .phase-card__dep-chip {
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  padding: 0 5px;
+  line-height: 14px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  border-radius: 2px;
 }
 
 .swarm-ctrl .badge {
@@ -1009,13 +1105,40 @@
   position: relative;
 }
 .swarm-ctrl .attention-hd {
+  /* Phase 49 follow-up — element promoted from <div> to <button> so the
+   * whole header is a click target for the collapse toggle. Reset all
+   * native button chrome (margin/border/background/font) so the visual
+   * matches the original div, then keep the original flex layout
+   * declarations below intact. */
+  appearance: none;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--sc-border);
+  background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 70%);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--sc-red);
   padding: 6px 12px;
   font-family: var(--sc-font-display);
   font-size: 9px; letter-spacing: 0.22em;
-  color: var(--sc-red);
-  border-bottom: 1px solid var(--sc-border);
-  background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 70%);
   display: flex; align-items: center; justify-content: space-between;
+}
+.swarm-ctrl .attention-hd:hover { background: linear-gradient(90deg, rgba(255,107,128,0.10), transparent 70%); }
+.swarm-ctrl .attention-hd:focus-visible {
+  outline: 1px solid var(--sc-red);
+  outline-offset: -1px;
+}
+.swarm-ctrl .attention-hd__left {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.swarm-ctrl .attention-chev {
+  display: inline-block;
+  width: 10px;
+  font-size: 8px;
+  color: var(--sc-red);
+  transition: transform 120ms ease;
 }
 .swarm-ctrl .attention-hd::before { content: '⚠ '; color: var(--sc-red); }
 .swarm-ctrl .attention-bd { padding: 6px 8px; display: grid; gap: 4px; }
@@ -2012,6 +2135,276 @@
   border-radius: 2px;
 }
 
+/* Phase 46 — phase containers, collapsible. Stages within a phase are
+ * laid out as before (decomp-list); phases stack vertically with a
+ * labelled header that toggles collapse. The container border uses
+ * --sc-border-2 (matches existing decomp surfaces) plus a slightly
+ * darker bg so the grouping reads visually without new design tokens.
+ */
+.swarm-ctrl .decomp-phases {
+  display: flex; flex-direction: column; gap: 14px;
+}
+.swarm-ctrl .decomp-phase {
+  border: 1px solid var(--sc-border-2);
+  border-radius: 5px;
+  background: var(--sc-surface);
+  overflow: hidden;
+}
+.swarm-ctrl .decomp-phase.is-collapsed {
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .decomp-phase__hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--sc-border-2);
+  font-family: var(--sc-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .decomp-phase.is-collapsed .decomp-phase__hd {
+  border-bottom-color: transparent;
+}
+.swarm-ctrl .decomp-phase__chevron {
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--sc-text-dim);
+  font-size: 13px; padding: 0; line-height: 1;
+  width: 14px; text-align: center;
+}
+.swarm-ctrl .decomp-phase__chevron:hover { color: var(--sc-text); }
+.swarm-ctrl .decomp-phase__title {
+  flex: 1;
+  color: var(--sc-text);
+  text-transform: uppercase;
+}
+.swarm-ctrl .decomp-phase__count {
+  color: var(--sc-text-dim);
+  font-size: 11px;
+}
+.swarm-ctrl .decomp-phase .decomp-list {
+  padding: 12px;
+}
+
+/* Phase 46 — floating-card banner. A stage with no inbound + no outbound
+ * edges + no explicit start marker shows a yellow strip so the operator
+ * sees the missing edge before approving the decomposition. The
+ * unresolved-deps banner sits below it (same row, sibling span).
+ */
+.swarm-ctrl .decomp-card--floating {
+  border-color: var(--sc-amber-d, var(--sc-amber));
+}
+.swarm-ctrl .decomp-card__warn {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 6px 0 4px;
+}
+.swarm-ctrl .decomp-card__warn-banner {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 3px;
+  background: rgba(255, 179, 71, 0.12);
+  color: var(--sc-amber);
+  font-size: 11px;
+  font-family: var(--sc-font-mono);
+}
+.swarm-ctrl .decomp-card__warn-banner--unresolved {
+  background: rgba(255, 90, 90, 0.10);
+  color: var(--sc-red, #e06464);
+}
+
+/* Phase 46 — YAML view shares the `decomp-json` <pre> styling but
+ * tightens line-height so the workstreams.yaml output is more compact
+ * for the operator's pre-approval scroll-through.
+ */
+.swarm-ctrl .decomp-yaml { line-height: 1.45; }
+
+/* Phase 49 — workstream DAG view. Replaces the old single-SVG
+ * DecompositionDiagram with a vertical stack of collapsible phase
+ * containers; each container draws an SVG arrow overlay for INTRA-phase
+ * deps and renders stage cards in HTML so they can show status pill,
+ * stage label, score, and cross-phase upstream chips. Cross-phase deps
+ * deliberately don't draw arrows (the target node may be hidden behind
+ * a collapsed phase) — the chip listing keeps that information visible
+ * in either expand state.
+ */
+.swarm-ctrl .ws-dag { display: flex; flex-direction: column; gap: 12px; }
+.swarm-ctrl .ws-dag__hd {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-bg-2);
+  border-radius: 4px;
+}
+.swarm-ctrl .ws-dag__title {
+  font-family: var(--sc-font-display); font-size: 11px;
+  letter-spacing: 0.18em; color: var(--sc-amber);
+  text-transform: uppercase;
+}
+.swarm-ctrl .ws-dag__counts {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .ws-dag__approval {
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .ws-dag__spacer { flex: 1; }
+.swarm-ctrl .ws-dag__btn {
+  background: transparent;
+  border: 1px solid var(--sc-border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--sc-text-dim); cursor: pointer;
+}
+.swarm-ctrl .ws-dag__btn:hover { color: var(--sc-cyan); border-color: var(--sc-cyan-d); }
+
+.swarm-ctrl .ws-dag__phases {
+  display: flex; flex-direction: column; gap: 14px;
+  position: relative;
+}
+.swarm-ctrl .ws-dag__arrows-overlay {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  overflow: visible;
+}
+
+.swarm-ctrl .ws-phase {
+  border: 1px solid var(--sc-border-2);
+  border-radius: 5px;
+  background: var(--sc-surface);
+  overflow: hidden;
+}
+.swarm-ctrl .ws-phase.is-collapsed { background: var(--sc-bg-2); }
+.swarm-ctrl .ws-phase__hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--sc-border-2);
+  font-family: var(--sc-font-mono);
+  font-size: 12px; letter-spacing: 0.04em;
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .ws-phase.is-collapsed .ws-phase__hd { border-bottom-color: transparent; }
+.swarm-ctrl .ws-phase__chevron {
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--sc-text-dim);
+  font-size: 13px; padding: 0; line-height: 1;
+  width: 14px; text-align: center;
+}
+.swarm-ctrl .ws-phase__chevron:hover { color: var(--sc-text); }
+.swarm-ctrl .ws-phase__num {
+  font-family: var(--sc-font-display); font-size: 9.5px;
+  letter-spacing: 0.20em;
+  color: var(--sc-amber);
+  padding: 1px 6px;
+  border: 1px solid var(--sc-amber-d);
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.swarm-ctrl .ws-phase__label {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.18em; color: var(--sc-muted);
+}
+.swarm-ctrl .ws-phase__title {
+  flex: 1;
+  color: var(--sc-text);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.swarm-ctrl .ws-phase__count {
+  color: var(--sc-text-dim); font-size: 11px;
+}
+.swarm-ctrl .ws-phase__body {
+  position: relative;
+  padding: 0;
+  /* width/height set inline by the layout pass */
+}
+
+.swarm-ctrl .ws-stage {
+  position: absolute;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-left-width: 3px;
+  border-radius: 5px;
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 4px;
+  font-family: var(--sc-font-mono);
+  z-index: 1;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+.swarm-ctrl .ws-stage--cancelled { opacity: 0.55; }
+.swarm-ctrl .ws-stage__hd {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 9px;
+}
+.swarm-ctrl .ws-stage__pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px;
+  font-family: var(--sc-font-display); font-size: 8.5px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background: rgba(0,0,0,0.18);
+}
+.swarm-ctrl .ws-stage__pill .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+}
+.swarm-ctrl .ws-stage__iter {
+  font-size: 9px; color: var(--sc-text-dim);
+}
+.swarm-ctrl .ws-stage__stagenum {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.10em;
+  color: var(--sc-amber);
+  border: 1px solid var(--sc-amber-d);
+  border-radius: 2px;
+  padding: 0 5px;
+  line-height: 14px;
+}
+.swarm-ctrl .ws-stage__score {
+  margin-left: auto;
+  font-size: 10px; color: var(--sc-text-dim);
+  padding: 0 4px;
+}
+.swarm-ctrl .ws-stage__score.is-pass { color: var(--sc-green); font-weight: 600; }
+.swarm-ctrl .ws-stage__stage {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.14em; color: var(--sc-cyan);
+  text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.swarm-ctrl .ws-stage__name {
+  font-size: 11.5px; color: var(--sc-text);
+  font-weight: 500;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.25;
+}
+.swarm-ctrl .ws-stage__cross {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  font-size: 9px; color: var(--sc-text-dim);
+  margin-top: auto;
+}
+.swarm-ctrl .ws-stage__cross-label {
+  font-size: 11px; color: var(--sc-amber);
+}
+.swarm-ctrl .ws-stage__cross-chip {
+  font-size: 9px;
+  padding: 1px 5px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  border-radius: 2px;
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Phase 39 (Layer C) — open-questions wizard. Sits between the prompts
  * panel and the filter tab strip; surfaces structured questions the
  * generator emitted in `## Open Questions` JSON blocks. Blocking when any
@@ -2418,6 +2811,9 @@
 /* Attention strip (master panel) — softer outline. */
 .swarm-ctrl .attention { border: 0; background: rgba(255, 107, 128, 0.06); border-radius: 5px; }
 .swarm-ctrl .attention-hd { border-bottom: 1px solid var(--sc-hairline); }
+/* Phase 49 follow-up — when collapsed, the body is gone so the header's
+ * border-bottom doubles up with the outer container's bottom edge. Hide it. */
+.swarm-ctrl .attention.is-collapsed .attention-hd { border-bottom: 0; }
 
 /* ─────────────────────────────────────────────────────────────────────
  * "Quiet Console" hierarchy override — the page was wearing a chip on

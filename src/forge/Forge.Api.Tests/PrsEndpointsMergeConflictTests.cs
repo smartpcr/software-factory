@@ -251,6 +251,9 @@ public class PrsEndpointsMergeConflictTests
         public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
             Task.CompletedTask;
 
+        public Task ReplyToReviewCommentAsync(string prId, string parentProviderCommentId, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+            Task.CompletedTask;
+
         public Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) =>
             Task.FromResult<BuildStatus?>(null);
 
