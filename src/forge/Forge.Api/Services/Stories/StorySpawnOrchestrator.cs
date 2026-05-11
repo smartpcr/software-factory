@@ -1201,12 +1201,29 @@ public sealed class StorySpawnOrchestrator
             // Block until every dep is merged. Reads from the merged
             // depsByWs map (FK table + DepsJson title fallback) so a
             // stale FK table can't make a downstream stage look ready.
+            //
+            // Phase 49 follow-up — only "complete" satisfies a dep.
+            // The prior check accepted "merging" too on the rationale
+            // that the upstream PR was already merged on the provider
+            // side at that point. But that left a race window: the
+            // downstream worktree could fetch origin/{baseBranch}
+            // BEFORE the upstream merge propagated locally, claim
+            // against a stale base missing the upstream contribution,
+            // and produce code that conflicts at merge time
+            // (observed 2026-05-10 on failover-cluster:XRAFT stages
+            // 2.2/2.3 starting while 2.1 was still in "merging"
+            // limbo). Requiring "complete" guarantees the workstream
+            // lifecycle has fully settled (PR.Col="merged",
+            // ws.Status="complete") and at least one PrSyncJob fetch
+            // has run against the post-merge tip before the
+            // downstream worktree is created. ~15-30s slower pipeline,
+            // zero stale-base races.
             if (depsByWs.TryGetValue(w.Id, out var depIds) && depIds.Count > 0)
             {
                 var blocking = depIds
                     .Select(id => workstreams.FirstOrDefault(ww => ww.Id == id))
                     .Where(ww => ww is not null)
-                    .Where(ww => ww!.Status is not ("merging" or "complete"))
+                    .Where(ww => ww!.Status != "complete")
                     .ToList();
                 if (blocking.Count > 0) continue;
             }

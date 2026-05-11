@@ -579,13 +579,20 @@ public static class StoriesEndpoints
         IReadOnlyList<WorkstreamRow> all)
     {
         // 28.5 / 28.11 — surface "blocked" when a dependency PR is unmerged.
+        //
+        // Phase 49 follow-up — only "complete" upstream lets a downstream
+        // start (was "merging" or "complete"). Matches the orchestrator's
+        // tightened dep-check in StorySpawnOrchestrator.cs so the UI
+        // display agrees with what the claim sweep actually does: a
+        // downstream waiting on a "merging" upstream renders as blocked
+        // (the upstream's lifecycle hasn't fully settled — see notes in
+        // StorySpawnOrchestrator's dep-check block).
         if (!depsByWs.TryGetValue(wsId, out var depIds) || depIds.Count == 0) return baseStatus;
         foreach (var dep in depIds)
         {
             var depWs = all.FirstOrDefault(w => w.Id == dep);
             if (depWs is null) continue;
-            // "merging" or "complete" upstream lets a downstream start.
-            if (depWs.Status != "merging" && depWs.Status != "complete")
+            if (depWs.Status != "complete")
             {
                 return baseStatus == "planning" ? "blocked" : baseStatus;
             }
