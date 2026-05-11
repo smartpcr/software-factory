@@ -95,6 +95,18 @@ export interface StorySpawnWorkstreamSummary {
   cards: string[];
   prs: string[];
   deps: string[];
+  /**
+   * Phase 49 — `phase-{slug}` prefix of the originating Stage's PlanAnchor.
+   * The swarm DAG view groups stage cards into collapsible phase containers
+   * keyed on this. Null / undefined on legacy rows that predate Phase 47
+   * (workstreams.PhaseAnchor column).
+   */
+  phaseAnchor?: string | null;
+  /**
+   * Phase 49 — full `phase-{slug}/stage-{slug}` plan anchor. Used by the UI
+   * to derive the stage's display label without re-parsing the plan.
+   */
+  planAnchor?: string | null;
   /** Phase 28+ — live runtime fields surfaced from the deliverables /
    *  agent_usage tables. All optional so older clients keep working and
    *  workstreams that haven't claimed yet (planning) report zeroes. */
@@ -111,11 +123,46 @@ export interface StorySpawnWorkstreamSummary {
   behind?: number;
   /** Unanswered open questions blocking pass — 0 when no questions exist. */
   unansweredQuestionCount?: number;
+  /**
+   * Phase 49 — when {@link status} is `'stalled'`, the operator-facing
+   * description of the failure that landed the row in triage (build
+   * gate, no-progress, non-pass verdict). Null on every other status.
+   * Surfaced as a tooltip on the stalled badge.
+   */
+  stallReason?: string | null;
+  /**
+   * Phase 50 — short worktree folder name under `{cloneRoot}/.worktree/`
+   * (e.g. `stage-1.1-cargo-workspace-and-crate-layout` or legacy
+   * `spawn-{branch-slug}`). Computed server-side via
+   * `WorkstreamWorktreeSlug.Compute`. Surfaced in the story-delivery
+   * strip tooltip so the operator can locate the directory the engineer
+   * crew is editing.
+   */
+  worktreeFolder?: string | null;
+  /**
+   * Phase 50 — step-definition PR (`ws/{storyId}/{slug}-steps`). Opened
+   * by the orchestrator AFTER the QA PR merges, separate from the impl
+   * PR. Null until the orchestrator creates it. `stepDefMerged` is true
+   * once the PR's `Col` reaches `"merged"` — `status === 'complete'`
+   * alone is not a faithful signal because workstreams flip to
+   * `complete` when the IMPL PR merges, before step-defs exist.
+   */
+  stepDefPrId?: string | null;
+  stepDefBranch?: string | null;
+  stepDefMerged?: boolean;
 }
 
 export interface StorySpawnDetail {
   spawn: StorySpawn;
   workstreams: StorySpawnWorkstreamSummary[];
+  /**
+   * Phase 50 — true when {@link StorySpawn.qaPrId} is set AND its PR row
+   * reached the terminal `"merged"` state. Surfaced as a top-level
+   * sibling (not inside `spawn`) because the PR lookup is only done by
+   * the spawn-detail endpoint, not every place that produces a
+   * StorySpawn contract.
+   */
+  qaPrMerged?: boolean;
 }
 
 export interface StorySpawnDecomposeWorkstream {
@@ -126,6 +173,20 @@ export interface StorySpawnDecomposeWorkstream {
   deliverables?: string[];
   timeline?: string;
   estimatedEffort?: string;
+  /**
+   * Phase 46 — cached `phase-{slug}` prefix of the originating Stage's
+   * PlanAnchor. Used by the swarm DAG view to group stage cards into
+   * collapsible phase containers without re-parsing the plan. Null /
+   * undefined on legacy LLM-only fallback rows; in that case the UI
+   * groups every card under a single "Workstreams" container.
+   */
+  phaseAnchor?: string;
+  /**
+   * Phase 46 — anchor refs from the plan that didn't resolve to any
+   * known phase / stage. Surfaced as a yellow "unresolved" banner on
+   * the offending card.
+   */
+  unresolvedDeps?: string[];
 }
 
 export interface StorySpawnArtifacts {
@@ -2212,6 +2273,14 @@ export const forgeApi = {
       other: Array<{ status: string; path: string; oldPath?: string | null }>;
     }>;
     uncommitted: { added: string[]; modified: string[]; deleted: string[] };
+    /**
+     * Phase 49 follow-up — cumulative diff between the worktree's working
+     * tree (committed + uncommitted) and `origin/{baseBranch}`. Same
+     * scope a reviewer sees in the PR's file list. Use this for the
+     * `+N ~N -N` counters; fall back to `uncommitted` only when
+     * `branchTotals` is missing (older server build).
+     */
+    branchTotals?: { added: string[]; modified: string[]; deleted: string[] };
   }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/commits`, {
       method: 'GET',
