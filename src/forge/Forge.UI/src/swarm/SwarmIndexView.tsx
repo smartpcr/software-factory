@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { forgeApi, type StorySpawn, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
+import { useSpawnStore } from '@/state/useSpawnStore';
 import { SwarmTopbar } from './SwarmTopbar';
 import { SwarmNavBar } from './SwarmNavBar';
 import { SwarmStoryRow } from './SwarmStoryRow';
@@ -120,6 +121,14 @@ export function SwarmIndexView() {
   // Bumped by handlers (e.g. onDeleted) to force the polling effect to
   // re-fetch immediately instead of waiting for the 15 s tick.
   const [refreshTick, setRefreshTick] = useState(0);
+  // Phase 51 — global list tick from the spawn store. Bumped by the
+  // SignalR `story-spawn.changed` handler in useForgeHub so list views
+  // refetch on every server-side spawn lifecycle event (created,
+  // deleted, phase-advanced, decomposed, ws-*, etc.) without waiting
+  // for the 15 s poll. Without this dependency, a spawn created from
+  // another browser tab — OR the orchestrator finishing a phase
+  // transition — would linger in stale form for up to 15 s.
+  const listTick = useSpawnStore((s) => s.listTick);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,7 +164,7 @@ export function SwarmIndexView() {
     void load();
     const id = setInterval(() => { void load(); }, 15_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [refreshTick]);
+  }, [refreshTick, listTick]);
 
   /**
    * Optimistic-then-refresh pattern when a row deletes its own spawn.
