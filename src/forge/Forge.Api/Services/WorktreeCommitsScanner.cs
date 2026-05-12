@@ -388,6 +388,7 @@ internal static class WorktreeCommitsScanner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
         try
         {
