@@ -72,6 +72,9 @@ public class ForgeDbContext : DbContext
 
     public DbSet<DeliverableRow> Deliverables => this.Set<DeliverableRow>();
 
+    /// <summary>Phase 52 — one row per (work_item, pair) attempt; sloppy-rate KPI source.</summary>
+    public DbSet<AgentPairAssignmentRow> AgentPairAssignments => this.Set<AgentPairAssignmentRow>();
+
     /// <summary>Phase 39 (Layer C) — open questions emitted by generators, answered by operator via wizard.</summary>
     public DbSet<DeliverableQuestionRow> DeliverableQuestions => this.Set<DeliverableQuestionRow>();
 
@@ -257,6 +260,13 @@ public class ForgeDbContext : DbContext
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.CrewId, x.CreatedAt });
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.GeneratorAgentId, x.CreatedAt });
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.EvaluatorAgentId, x.CreatedAt });
+
+        // Phase 52 — agent_pair_assignment (one row per (work_item, pair) attempt).
+        mb.Entity<AgentPairAssignmentRow>().ToTable("agent_pair_assignment").HasKey(x => x.Id);
+        mb.Entity<AgentPairAssignmentRow>().Property(x => x.TotalCostUsd).HasConversion<double>();
+        mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.WorkItemId, x.SequenceNo }).IsUnique();
+        mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.GeneratorAgentId, x.CreatedAt });
+        mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.EvaluatorAgentId, x.CreatedAt });
 
         // Phase 39 (Layer C) — open questions emitted by generators.
         mb.Entity<DeliverableQuestionRow>().ToTable("deliverable_questions").HasKey(x => x.Id);

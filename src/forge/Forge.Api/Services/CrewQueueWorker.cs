@@ -611,6 +611,31 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }
                     catch (System.Text.Json.JsonException) { /* malformed — skip rotation */ }
                 }
+                // Phase 52 — also union the cumulative PriorPairsJson into
+                // busyAgents. Every pair that's been judged sloppy on this
+                // work item is excluded permanently (for the lifetime of
+                // the work item), not just the most-recent pair. This is
+                // distinct from Phase 51's LastPairAgentIdsJson, which is
+                // a one-rotation hint cleared on the next successful pick.
+                if (headWi is not null && !string.IsNullOrWhiteSpace(headWi.PriorPairsJson))
+                {
+                    try
+                    {
+                        var priorPairs = System.Text.Json.JsonSerializer.Deserialize<List<string[]>>(headWi.PriorPairsJson);
+                        if (priorPairs is not null)
+                        {
+                            foreach (var p in priorPairs)
+                            {
+                                if (p is null) continue;
+                                foreach (var id in p)
+                                {
+                                    if (!string.IsNullOrEmpty(id)) busyAgents.Add(id);
+                                }
+                            }
+                        }
+                    }
+                    catch (System.Text.Json.JsonException) { /* malformed — skip exclusion */ }
+                }
             }
             if (excludeForRotation is not null)
             {
@@ -2389,6 +2414,58 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     return;
                 }
 
+                // Phase 52 — sloppy verdict (score plateau, generator token
+                // cap, or iter cap). Route to pending-reassign so the
+                // SloppyReassignmentReconciler picks it up next tick. The
+                // reconciler decides whether to reassign to a fresh pair
+                // (PairAttemptCount < MaxPairAttempts) or terminate with
+                // the locked failure reason. We append the current pair
+                // to PriorPairsJson here so the eventual picker excludes
+                // them on the reassignment claim.
+                if (string.Equals(result.FinalVerdict, "sloppy", StringComparison.Ordinal))
+                {
+                    var liveWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+                    if (liveWi is not null)
+                    {
+                        liveWi.ExecutionStatus = ExecutionStatuses.PendingReassign;
+                        liveWi.UpdatedAt = DateTimeOffset.UtcNow;
+                        var priorPairs = new List<string[]>();
+                        if (!string.IsNullOrWhiteSpace(liveWi.PriorPairsJson))
+                        {
+                            try
+                            {
+                                var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string[]>>(liveWi.PriorPairsJson);
+                                if (parsed is not null) priorPairs = parsed;
+                            }
+                            catch (System.Text.Json.JsonException) { /* malformed — start fresh */ }
+                        }
+                        var currentPair = new[] { agentId ?? string.Empty, evaluatorAgentId ?? string.Empty };
+                        var alreadyLast = priorPairs.Count > 0
+                            && priorPairs[priorPairs.Count - 1].Length == 2
+                            && string.Equals(priorPairs[priorPairs.Count - 1][0], currentPair[0], StringComparison.Ordinal)
+                            && string.Equals(priorPairs[priorPairs.Count - 1][1], currentPair[1], StringComparison.Ordinal);
+                        if (!alreadyLast) priorPairs.Add(currentPair);
+                        liveWi.PriorPairsJson = System.Text.Json.JsonSerializer.Serialize(priorPairs);
+                        await db.SaveChangesAsync(ct);
+                        await this.BroadcastWorkItemChangedAsync(liveWi, "pending-reassign", ct, db);
+                    }
+
+                    await this.taskChannel.EmitAsync(workItemId, "task.sloppy-parked", new
+                    {
+                        agentId,
+                        crewId,
+                        evaluatorAgentId,
+                        verdict = result.FinalVerdict,
+                        score = result.FinalScore,
+                        iterations = result.Iterations,
+                        sloppyReason = result.SloppyReason,
+                        pairAttemptCount = liveWi?.PairAttemptCount ?? 1,
+                        maxPairAttempts = ScoringConstants.MaxPairAttempts,
+                        reason = "Sloppy verdict — parked for SloppyReassignmentReconciler. New pair picked up to MaxPairAttempts; terminal failure thereafter.",
+                    }, crewId: crewId, ct: ct);
+                    return;
+                }
+
                 await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
                 await this.taskChannel.EmitAsync(workItemId, "task.failed", new
                 {
@@ -2904,9 +2981,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // generator (Phase 39 gen != eval). PickEvaluator filters on this
         // too, but pre-filtering keeps the candidate list tidy in the
         // standalone-crew case where roster == generator-crew members.
-        var defaultEvalAgentId = generatorCrew.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.Lead;
+        //
+        // 2026-05-12 bug fix — only the operator-configured preferred
+        // evaluator gets first-dibs in PickEvaluator. The previous code
+        // ALSO promoted `evaluatorCrew?.Lead` into this slot, giving the
+        // paired-crew lead unconditional first-dibs and pinning every
+        // claim to the same evaluator. Lead is now reserved as a
+        // last-resort fallback ONLY when PickEvaluator returns null.
+        var preferredEvalAgentId = generatorCrew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId;
+        var leadFallback = evaluatorCrew?.Lead;
 
         // Phase 50 fix (2026-05-11) — pass a real per-claim seed so the
         // post-default Fisher-Yates shuffle inside PickEvaluator actually
@@ -2915,7 +2999,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // picked the same fallback evaluator in roster order. Mirrors the
         // StorySpawnOrchestrator engineer-pair claim site at line 2317.
         var (picked, _) = PairDiversityResolver.PickEvaluator(
-            roster, busyAgents, defaultEvalAgentId, generatorAgentId,
+            roster, busyAgents, preferredEvalAgentId, generatorAgentId,
             seed: Random.Shared.Next());
 
         // Q47.3 implication — evaluator diversity is best-effort. If
@@ -2924,7 +3008,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // ledger contention will sort itself out as runs finish.
         if (picked is null)
         {
-            picked = defaultEvalAgentId;
+            picked = preferredEvalAgentId ?? leadFallback;
         }
         return picked;
     }
@@ -3339,6 +3423,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var proc = System.Diagnostics.Process.Start(psi)!;
         var stdout = await proc.StandardOutput.ReadToEndAsync();
