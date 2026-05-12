@@ -326,14 +326,20 @@ function labelOf(event: TaskTranscriptEvent, stage: string | null): string {
     case 'task.build-gate.passed':
     case 'task.build-gate.failed':
     case 'task.build-gate.skipped': {
+      // Phase 49 follow-up² — per-iter ticks vs post-pass / quality
+      // ticks come through the same kind; the `stage` payload field
+      // tells them apart. Show the operator which one they're looking
+      // at so a green per-iter dot isn't confused with the single
+      // post-pass green dot at end-of-loop.
+      if (stage === 'per-iter') return 'per-iter build';
       if (stage === 'post-pass') return 'build gate';
       if (stage === 'post-pass-quality') return 'quality gate';
       return 'build gate';
     }
     case 'task.build-failed.detected':
-      return 'per-iter build (warning)';
+      return stage === 'per-iter' ? 'per-iter build (warning)' : 'per-iter build (warning)';
     case 'task.build-failed.aborted':
-      return 'per-iter build (aborted)';
+      return stage === 'per-iter' ? 'per-iter build (aborted)' : 'per-iter build (aborted)';
     case 'task.test-gate.passed':
     case 'task.test-gate.failed':
     case 'task.test-gate.skipped':

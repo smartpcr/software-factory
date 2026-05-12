@@ -2566,11 +2566,34 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     // no detectable build system (or the operator hasn't
                     // configured repo.BuildCommand yet). Skip the gate
                     // rather than running `dotnet build` against an
-                    // unknown workspace and false-failing in 200 ms. The
-                    // post-pass skip path emits matching telemetry; the
-                    // per-iter path stays quiet to avoid event spam.
+                    // unknown workspace and false-failing in 200 ms.
+                    //
+                    // Phase 49 follow-up² — emit telemetry on the
+                    // skipped + passed paths too, not just failure.
+                    // Pre-fix the per-iter gate was silent on success
+                    // and silent when buildCommand resolved to null;
+                    // operators looking at the Build tab for a
+                    // long-running workstream saw zero events even
+                    // though the gate had run 20+ times and passed
+                    // every iter. Now every iter that touched files
+                    // emits exactly one task.build-gate.{passed,
+                    // failed,skipped} per the gate's outcome so the
+                    // Build tab shows a continuous green/red/gray
+                    // timeline. The events flag stage="per-iter" so
+                    // the UI can distinguish per-iter ticks from the
+                    // single post-pass tick at the end of the loop.
                     StoryBuildResult? build = null;
-                    if (!string.IsNullOrWhiteSpace(buildCommand))
+                    if (string.IsNullOrWhiteSpace(buildCommand))
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
+                        {
+                            stage = "per-iter",
+                            iter,
+                            reason = "no build command resolved (set repo.BuildCommand to enable)",
+                            workspace,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    else
                     {
                         try
                         {
@@ -2584,6 +2607,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                                 "Per-iter build check threw for {Workspace}; skipping this iter's build gate.",
                                 workspace);
                             build = null;
+                            await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
+                            {
+                                stage = "per-iter",
+                                iter,
+                                reason = $"build runner threw: {ex.GetType().Name}: {ex.Message}",
+                                buildCommand,
+                                workspace,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
                         }
                     }
 
@@ -2602,6 +2633,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         lastBuildFailureCommand = buildCommand;
                         await this.taskChannel.EmitAsync(workItemId, "task.build-failed.detected", new
                         {
+                            stage = "per-iter",
                             iter,
                             consecutiveBrokenBuild,
                             threshold = BuildFailThreshold,
@@ -2619,6 +2651,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         {
                             await this.taskChannel.EmitAsync(workItemId, "task.build-failed.aborted", new
                             {
+                                stage = "per-iter",
                                 iter,
                                 consecutiveBrokenBuild,
                                 threshold = BuildFailThreshold,
@@ -2649,8 +2682,34 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         // compiler output.
                         lastBuildFailure = null;
                         lastBuildFailureCommand = null;
+                        // Phase 49 follow-up² — emit a per-iter passed
+                        // tick so the Build tab shows a green dot for
+                        // every successful per-iter gate run. Without
+                        // this the Build tab is empty for any
+                        // long-running workstream that builds cleanly
+                        // each iter — the post-pass passed event only
+                        // fires once at the end of a passing iter, and
+                        // a workstream that never reaches `pass`
+                        // (verdict=iterate every iter) shows zero
+                        // ticks despite every iter's diff actually
+                        // compiling. Observed 2026-05-11 on
+                        // failover-cluster:XRAFT stage 3.1: 23
+                        // iterations, every diff compiled cleanly via
+                        // the agent's own `cargo build` invocations,
+                        // but the Build tab was completely empty.
+                        await this.taskChannel.EmitAsync(workItemId, "task.build-gate.passed", new
+                        {
+                            stage = "per-iter",
+                            iter,
+                            durationSec = build.Duration.TotalSeconds,
+                            warningCount = build.WarningCount,
+                            buildCommand,
+                            workspace,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
                     }
                     // build == null → check threw; leave counter as-is.
+                    // (The skipped event above already records the throw
+                    // so the Build tab still has a row for this iter.)
                 }
                 // changedCount == -1 → inconclusive, leave counter as-is.
             }

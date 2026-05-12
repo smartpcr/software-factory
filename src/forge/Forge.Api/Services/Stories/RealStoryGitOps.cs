@@ -70,8 +70,46 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // an agent actually needs one. Pushing
         // `refs/remotes/origin/{base}:refs/heads/{branch}` advances the
         // remote-tracking ref directly — no working copy required.
-        await this.GitAsync(root, ct, "push", "origin",
-            $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+        //
+        // Phase 49 follow-up² — be defensive about the push outcome.
+        // The ls-remote check above is a HINT, not authoritative: it
+        // can return empty for transient network failures, auth retries,
+        // or a moment when the remote was being updated by a concurrent
+        // operation (e.g. PR #8 merging at the same instant). When that
+        // happens we mistakenly think the branch is missing and try to
+        // bootstrap it from `origin/main` — which then fails as
+        // `non-fast-forward` because the branch DOES exist and has
+        // commits ahead of main. Pre-fix that exception escaped to
+        // `TickOneSpawnAsync` and set `spawn.LastError =
+        // "implement failed: git push origin … (non-fast-forward)"`,
+        // halting the entire spawn on a non-issue (the branch was
+        // exactly where we wanted it, our existence check just blinked).
+        // Now: if the push fails AND the failure reads like "branch
+        // already exists" (non-fast-forward / rejected), assume the
+        // branch is fine, fetch it, and return cleanly.
+        var (pushCode, _, pushErr) = await this.RunGitCaptureAsync(root, ct,
+            "push", "origin", $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+        if (pushCode != 0)
+        {
+            var stderr = pushErr ?? string.Empty;
+            var rejectedAsExisting =
+                stderr.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("[rejected]", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("fetch first", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("Updates were rejected", StringComparison.OrdinalIgnoreCase);
+            if (rejectedAsExisting)
+            {
+                this.logger?.LogInformation(
+                    "EnsureBranchAsync: push origin/{Base} → {Branch} rejected ({Why}); branch already exists, recovering with fetch.",
+                    baseBranch, branch,
+                    stderr.Length > 200 ? stderr[..200] + "…" : stderr);
+                await this.GitAsync(root, ct, "fetch", "origin", branch);
+                return;
+            }
+            throw new InvalidOperationException(
+                $"git push origin refs/remotes/origin/{baseBranch}:refs/heads/{branch} "
+                + $"failed (exit {pushCode}) in '{root}'. stderr: {stderr}");
+        }
 
         // After the push, fetch back so the local remote-tracking ref is
         // populated. Downstream callers (RealStoryGitOps.ReadFileAsync,
