@@ -571,7 +571,7 @@
 }
 .swarm-ctrl .story-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto auto;
+  grid-template-columns: 56px 1fr auto auto auto auto;
   align-items: stretch;
   gap: 14px;
   padding: 10px 14px;
@@ -710,6 +710,46 @@
   color: var(--sc-muted);
   margin-top: 2px;
   text-transform: uppercase;
+}
+
+/* Phase 50 — destructive action button on each story-index row. Sits in
+ * the 6th grid column after .sr-score. Click stops propagation so it
+ * never accidentally opens the spawn detail (the row's onClick navigates
+ * to the workstream view); the two-step confirm flow lives in
+ * SwarmStoryRow.handleDelete and uses the global ConfirmDialog. The hover
+ * / focus / disabled states match the other terminal-aesthetic buttons:
+ * dim slate at rest, red accent on intent. The button renders an inline
+ * SVG trash-can; flex centering keeps the icon visually aligned with the
+ * `…` ellipsis used during the delete-in-flight state. */
+.swarm-ctrl .story-row .sr-delete {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--sc-border);
+  color: var(--sc-muted);
+  cursor: pointer;
+  font-family: var(--sc-font-display);
+  font-size: 14px;
+  line-height: 1;
+  padding: 6px 9px;
+  transition: all 0.15s;
+  min-width: 30px;
+  min-height: 28px;
+}
+.swarm-ctrl .story-row .sr-delete:hover:not(:disabled) {
+  border-color: var(--sc-red);
+  color: var(--sc-red);
+  background: rgba(255, 72, 72, 0.08);
+}
+.swarm-ctrl .story-row .sr-delete:focus-visible {
+  outline: 1px solid var(--sc-red);
+  outline-offset: 2px;
+}
+.swarm-ctrl .story-row .sr-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 /* Workstream chip strip on each story row — a layered DAG of small
@@ -1210,9 +1250,16 @@
 /* Loop status — overrides PR-state colour so the badge reflects the gen↔eval
    loop state rather than the plan PR. `live` pulses while the agents are
    actively emitting events. `awaiting-pr-review` is the post-pass state
-   before the plan PR merges. */
+   before the plan PR merges. `stalled` flips the badge to red + pulse so
+   the operator notices that operator action is required (most common
+   cause: unanswered open questions blocking the pass gate — see
+   DeliverableLoop.cs:450 which demotes verdict=pass → iterate when
+   unanswered questions exist; the StoriesEndpoints status priority
+   promotes `stalled` above `live` for that case so the iter-counter
+   climbing isn't mistaken for forward progress). */
 .swarm-ctrl .doc-card .doc-status.doc-status--live              { color: var(--sc-cyan);     border-color: var(--sc-cyan-d, currentColor); animation: sc-blink 1.4s ease-in-out infinite; }
 .swarm-ctrl .doc-card .doc-status.doc-status--iterating         { color: var(--sc-amber);    border-color: var(--sc-amber-d, currentColor); }
+.swarm-ctrl .doc-card .doc-status.doc-status--stalled           { color: var(--sc-red);      border-color: var(--sc-red-d, currentColor); background: rgba(255, 72, 72, 0.08); animation: sc-pulse 1.6s ease-in-out infinite; }
 .swarm-ctrl .doc-card .doc-status[class*="awaiting-pr-review"]  { color: var(--sc-magenta);  border-color: var(--sc-magenta-d, currentColor); }
 .swarm-ctrl .doc-card .doc-status.doc-status--completed         { color: var(--sc-green);    border-color: var(--sc-green-d, currentColor); }
 .swarm-ctrl .doc-card .doc-status.doc-status--pending           { color: var(--sc-text-dim); border-color: var(--sc-border); }
@@ -1560,7 +1607,7 @@
   .swarm-ctrl .mode-pane.active { grid-template-columns: 1fr; }
   .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr); }
   .swarm-ctrl .clock { display: none; }
-  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto; }
+  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto; }
   .swarm-ctrl .sr-score { display: none; }
   .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
   .swarm-ctrl .ov-split-r { display: none; }
