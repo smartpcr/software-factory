@@ -115,10 +115,19 @@ export function isBuildEvent(e: TaskTranscriptEvent): boolean {
  * indicate a HARD failure (gate refused the PR). The tab badge uses
  * this so a stale `per-iter build (warning)` warning that the agent
  * already recovered from doesn't keep the badge red.
+ *
+ * <para>Phase 49 follow-up² — <c>build-failed.detected</c> is also
+ * included now that per-iter passed events are emitted. The terminal
+ * state of any (stage, kind) pair is the LATEST emission for that
+ * stage; if the agent's most recent per-iter build broke, the badge
+ * should reflect that. The next passing iter emits
+ * <c>build-gate.passed (stage=per-iter)</c> which overwrites the
+ * stage's state back to 'pass' and clears the badge.</para>
  */
 const FORGE_BUILD_FAILURE_KINDS = new Set<string>([
   'task.build-gate.failed',
   'task.test-gate.failed',
+  'task.build-failed.detected',
   'task.build-failed.aborted',
 ]);
 

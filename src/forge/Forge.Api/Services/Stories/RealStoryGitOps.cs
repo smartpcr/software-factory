@@ -70,14 +70,112 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // an agent actually needs one. Pushing
         // `refs/remotes/origin/{base}:refs/heads/{branch}` advances the
         // remote-tracking ref directly — no working copy required.
-        await this.GitAsync(root, ct, "push", "origin",
-            $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+        //
+        // Phase 49 follow-up² — be defensive about the push outcome.
+        // The ls-remote check above is a HINT, not authoritative: it
+        // can return empty for transient network failures, auth retries,
+        // or a moment when the remote was being updated by a concurrent
+        // operation (e.g. PR #8 merging at the same instant). When that
+        // happens we mistakenly think the branch is missing and try to
+        // bootstrap it from `origin/main` — which then fails as
+        // `non-fast-forward` because the branch DOES exist and has
+        // commits ahead of main. Pre-fix that exception escaped to
+        // `TickOneSpawnAsync` and set `spawn.LastError =
+        // "implement failed: git push origin … (non-fast-forward)"`,
+        // halting the entire spawn on a non-issue (the branch was
+        // exactly where we wanted it, our existence check just blinked).
+        // Now: if the push fails AND the failure reads like "branch
+        // already exists" (non-fast-forward / rejected), assume the
+        // branch is fine, fetch it, and return cleanly.
+        var (pushCode, _, pushErr) = await this.RunGitCaptureAsync(root, ct,
+            "push", "origin", $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+        if (pushCode != 0)
+        {
+            var stderr = pushErr ?? string.Empty;
+            var rejectedAsExisting =
+                stderr.Contains("non-fast-forward", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("[rejected]", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("fetch first", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("Updates were rejected", StringComparison.OrdinalIgnoreCase);
+            if (rejectedAsExisting)
+            {
+                this.logger?.LogInformation(
+                    "EnsureBranchAsync: push origin/{Base} → {Branch} rejected ({Why}); branch already exists, recovering with fetch.",
+                    baseBranch, branch,
+                    stderr.Length > 200 ? stderr[..200] + "…" : stderr);
+                await this.GitAsync(root, ct, "fetch", "origin", branch);
+                return;
+            }
+            throw new InvalidOperationException(
+                $"git push origin refs/remotes/origin/{baseBranch}:refs/heads/{branch} "
+                + $"failed (exit {pushCode}) in '{root}'. stderr: {stderr}");
+        }
 
         // After the push, fetch back so the local remote-tracking ref is
         // populated. Downstream callers (RealStoryGitOps.ReadFileAsync,
         // EnsureWorktreeAsync's existing-on-origin branch) read
         // `refs/remotes/origin/{branch}` and would otherwise see "not
         // found" until the next periodic fetch.
+        await this.GitAsync(root, ct, "fetch", "origin", branch);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Phase 50 — implementation. Force-pushes the base tip to
+    /// <c>refs/heads/{branch}</c> on origin so any orphan tip is replaced
+    /// in one atomic operation. Then tears down any local mirror — the
+    /// local branch ref and the legacy <c>spawn-{slug}</c> worktree — so
+    /// downstream callers don't reuse a stale checkout. Idempotent on a
+    /// non-orphan branch (force-pushes an identical tree).
+    /// </remarks>
+    public async Task EnsureBranchFreshAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+
+        // Step 1 — refresh local view of base so the force-push reads the
+        // up-to-date tip rather than a stale fetched copy.
+        await this.GitAsync(root, ct, "fetch", "origin", baseBranch);
+
+        // Step 2 — atomic force-push: replaces the orphan tip OR creates
+        // the branch fresh when missing. Runs under the operator's
+        // current auth context (matches the caller's POST /spawn), so
+        // any auth fix the operator applied since the prior failed
+        // delete takes effect here.
+        await this.GitAsync(root, ct, "push", "origin", "--force",
+            $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+
+        // Step 3 — drop any local mirror of the branch + its worktree.
+        // EnsureWorktreeAsync (called later by the orchestrator) is
+        // smart enough to recreate from the now-fresh origin tip; the
+        // problem we're guarding against is its reuse of a directory
+        // that still holds the OLD spawn's files. `git worktree remove
+        // --force` + raw Directory.Delete handles the "registered but
+        // missing" and "missing but with leftover files" cases.
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+        if (Directory.Exists(wtPath))
+        {
+            await this.RunGitCaptureAsync(root, ct, "worktree", "remove", "--force", wtPath);
+            if (Directory.Exists(wtPath))
+            {
+                try { Directory.Delete(wtPath, recursive: true); }
+                catch (Exception ex)
+                {
+                    this.logger?.LogWarning(ex,
+                        "EnsureBranchFreshAsync: could not raw-delete worktree {Path}; pruning git metadata only.",
+                        wtPath);
+                }
+            }
+            await this.RunGitCaptureAsync(root, ct, "worktree", "prune");
+        }
+
+        // Local branch ref — best-effort. `git branch -D` refuses if the
+        // ref is checked out somewhere (already handled above) or doesn't
+        // exist locally (typical when the orphan only lived on origin).
+        await this.RunGitCaptureAsync(root, ct, "branch", "-D", branch);
+
+        // Step 4 — populate local origin/{branch} tracking ref so
+        // downstream worktree-add sees the fresh tip.
         await this.GitAsync(root, ct, "fetch", "origin", branch);
     }
 
