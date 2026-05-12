@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -35,6 +36,28 @@ using Microsoft.EntityFrameworkCore;
 public sealed class StorySpawnOrchestrator
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Phase 51 Fix 5 — per-spawn drive lock. Two concurrent
+    /// <see cref="DriveAsync(string, bool, CancellationToken)"/> calls
+    /// race on the unprotected <c>EnsureBranchFreshAsync</c> force-push
+    /// and ADO rejects the second with
+    /// <c>TF401028: The reference has already been updated by another
+    /// client</c>. Concurrent callers happen in production:
+    /// <list type="bullet">
+    /// <item>POST /spawn's background <c>Task.Run</c> (request returned 201).</item>
+    /// <item><c>SpawnDependencyScheduler</c> 15 s tick.</item>
+    /// <item>PATCH /spawn/phase / /spawn/decompose/approve operator actions.</item>
+    /// </list>
+    /// Keyed by deterministic <c>spawn.Id = spawn-{safeStoryId}</c> (not
+    /// <c>storyId</c> — the spawn-id matches the gate's claim semantics
+    /// and is what every other branch/path slug uses). Acquired
+    /// non-blocking via <see cref="SemaphoreSlim.WaitAsync(int)"/> with
+    /// timeout 0 — if held, the current call returns immediately and
+    /// the next scheduler tick / operator action picks up.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> driveLocks =
+        new(StringComparer.Ordinal);
 
     private readonly IServiceProvider services;
     private readonly IStoryArtifactStrategy strategy;
@@ -91,12 +114,34 @@ public sealed class StorySpawnOrchestrator
         // Removing the previous in-line tight loop also lets phase-level
         // assertions in the test suite observe each intermediate state
         // (e.g. spawn at "plan" with PR opened but not yet merged).
-        using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-        var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
-        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
-        if (spawn is null) return;
-        await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
+
+        // Phase 51 Fix 5 — per-spawn drive lock. spawn.Id is deterministic
+        // from storyId (`spawn-{safeStoryId}`) so we can derive it without
+        // a DB round-trip and avoid spending DI scope creation when a
+        // concurrent drive is already in flight.
+        var spawnId = $"spawn-{StoryPaths.Safe(storyId)}";
+        var gate = driveLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(0, ct).ConfigureAwait(false))
+        {
+            this.logger?.LogInformation(
+                "DriveAsync: drive for spawn {SpawnId} already in flight; skipping (next scheduler tick will retry).",
+                spawnId);
+            return;
+        }
+
+        try
+        {
+            using var scope = this.services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+            var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+            if (spawn is null) return;
+            await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>
@@ -1591,7 +1636,7 @@ public sealed class StorySpawnOrchestrator
                 w.Id, lastDel.Iter, lastDel.Score);
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
-        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject")
+        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
             // instead of re-spawning the gen↔eval loop.
@@ -1607,6 +1652,50 @@ public sealed class StorySpawnOrchestrator
             // BudgetCooldownReconciler.TryResumeAsync; both ends must
             // agree so the reconciler doesn't clear the stall and the
             // orchestrator immediately re-set it on the next tick.
+            //
+            // Phase 52 — `sloppy` (score plateau, generator token cap, or
+            // iter cap) is auto-recovered by SloppyReassignmentReconciler:
+            // it picks a fresh pair (clean slate) up to MaxPairAttempts,
+            // then terminates. The orchestrator MUST NOT mark the
+            // workstream stalled on a sloppy verdict — that would race
+            // the reconciler. Only when PairAttemptCount has hit the cap
+            // (terminal failure) do we set the stall + reason; the
+            // reconciler does this transition itself via
+            // MarkTerminalFailedAsync, so we just no-op here to avoid
+            // double-stalling.
+            if (string.Equals(lastDel.Verdict, "sloppy", StringComparison.Ordinal))
+            {
+                var wiSloppy = await db2.WorkItems.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+                var atCap = wiSloppy is not null
+                    && wiSloppy.PairAttemptCount >= ScoringConstants.MaxPairAttempts;
+                this.logger?.LogInformation(
+                    "DriveOneWorkstreamImpl: ws={WsId} lastVerdict=sloppy iter={Iter} "
+                    + "pairAttempt={Pair}/{Max} atCap={AtCap}",
+                    w.Id, lastDel.Iter,
+                    wiSloppy?.PairAttemptCount ?? 0, ScoringConstants.MaxPairAttempts, atCap);
+                if (!atCap)
+                {
+                    // Reconciler in flight — wait for next tick. Do NOT
+                    // mark stalled (the reconciler will requeue within
+                    // ~15s).
+                    return;
+                }
+                // At cap. The reconciler's MarkTerminalFailedAsync stamps
+                // workstream stall + reason. Mirror that here as
+                // defense-in-depth in case the reconciler hasn't run yet.
+                var sloppyRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+                if (sloppyRow is not null && sloppyRow.Status is not "cancelled" and not "complete")
+                {
+                    sloppyRow.Status = WorkstreamStatuses.Stalled;
+                    sloppyRow.StallReason =
+                        "Sloppy-3-attempts: " + ScoringConstants.SloppyTerminalFailureReason;
+                    await db2.SaveChangesAsync(ct);
+                    await EmitChange(hub, "ws-stalled", spawn, ct);
+                }
+                return;
+            }
+
             if (string.Equals(lastDel.Verdict, "stalled-budget", StringComparison.Ordinal))
             {
                 var crew = await db2.Crews.AsNoTracking()
@@ -2318,7 +2407,7 @@ public sealed class StorySpawnOrchestrator
     /// <c>crew_members</c> rows or every member is busy — the row still
     /// claims and the ledger contention sorts itself out as runs finish.
     /// </summary>
-    private static async Task<string[]> ResolveImplPairAsync(
+    internal static async Task<string[]> ResolveImplPairAsync(
         ForgeDbContext db,
         AgentAllocationLoader allocation,
         HashSet<string> busyAgents,
@@ -2385,19 +2474,30 @@ public sealed class StorySpawnOrchestrator
             .Select(m => m.AgentId)
             .ToListAsync(ct);
 
-        var defaultEval = crew.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.Lead;
+        // 2026-05-12 bug fix — only the operator-configured preferred
+        // evaluator gets first-dibs in PickEvaluator. The previous code
+        // ALSO promoted `evaluatorCrew?.Lead` into this slot, which gave
+        // the night-crew lead unconditional first-dibs and pinned every
+        // engineer claim to the same evaluator (operator-reported: "the
+        // evaluator side always assigns the same agent"). The Lead is
+        // now reserved as a last-resort fallback ONLY when PickEvaluator
+        // returns null because every roster member is busy.
+        var preferredEval = crew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId;
+        var leadFallback = evaluatorCrew?.Lead;
 
         var (evalAgent, _) = PairDiversityResolver.PickEvaluator(
-            evalRoster, busyAgents, defaultEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
+            evalRoster, busyAgents, preferredEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
 
         // Q47.3 — evaluator diversity is best-effort. If every candidate
         // is busy fall back so the row still claims; ledger contention
-        // sorts itself out as in-flight runs finish.
+        // sorts itself out as in-flight runs finish. Preference order
+        // matches the previous behaviour minus the implicit Lead-as-
+        // first-dibs promotion: operator-configured default first,
+        // crew Lead last.
         if (string.IsNullOrEmpty(evalAgent))
         {
-            evalAgent = defaultEval;
+            evalAgent = preferredEval ?? leadFallback;
         }
 
         if (string.IsNullOrEmpty(evalAgent))
