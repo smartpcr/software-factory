@@ -2728,18 +2728,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             crew.DefaultGeneratorAgentId = generatorAgentOverride;
         }
 
-        // Phase 47 — same trick for the evaluator: temporarily replace
-        // the crew's DefaultEvaluatorAgentId so the evaluator-side
-        // ResolveAgentRunConfigAsync (called below with
-        // useEvaluatorRole=true) picks up the per-doc override. The
-        // crew is AsNoTracking so this mutation is safe — it only
-        // affects the in-memory copy used by this call.
-        if (!string.IsNullOrEmpty(evaluatorAgentOverride))
-        {
-            crew.DefaultEvaluatorAgentId = evaluatorAgentOverride;
-        }
+        // NOTE: the evaluator override write moved BELOW the evalCrew
+        // fetch. See the Phase-50-followup comment there for the bug
+        // history (operator-reported 2026-05-12: all four plan docs
+        // pinned to the night-crew Lead). Writing the override on
+        // `crew` here was a no-op for any crew with PairedWithCrewId.
 
-        var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
+        var (genAgentId, genContext, genBackendStr, genInvokeStr) = await ResolveAgentRunConfigAsync(
             db, crew, useEvaluatorRole: false, workspace, budget, ct);
 
         // Phase 41 — apply per-loop tool restrictions (Bash revoked for
@@ -2760,11 +2755,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         CrewRow? evalCrew = !string.IsNullOrEmpty(evalPrefix)
             ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evalPrefix, ct)
             : crew;
+
+        // Phase 50 follow-up bug fix (operator-reported 2026-05-12) —
+        // the evaluator override MUST land on `evalCrew`, which is the
+        // row ResolveAgentRunConfigAsync(useEvaluatorRole: true)
+        // actually consults via `evalCrew.DefaultEvaluatorAgentId ??
+        // evalCrew.Lead`. When `crew.PairedWithCrewId` is set, `evalCrew`
+        // above is a FRESH AsNoTracking row from the DB, so any earlier
+        // mutation on `crew` doesn't propagate; the override was being
+        // silently dropped and the resolver fell through to
+        // `evalCrew.Lead`, pinning every plan-doc evaluator to the
+        // night-crew Lead (all four MICROSOFT-TEAMS-MESSENGER docs ran
+        // against the same agent "AB2" instead of the 4 distinct agents
+        // the algorithm picked). Applying the override here covers both
+        // the paired case (target = night crew row) and the unpaired
+        // case (evalCrew == crew, same reference, equivalent to the
+        // old write).
+        if (!string.IsNullOrEmpty(evaluatorAgentOverride) && evalCrew is not null)
+        {
+            evalCrew.DefaultEvaluatorAgentId = evaluatorAgentOverride;
+        }
+
         if (evalCrew is not null)
         {
             try
             {
-                var (eId, eCtx, _, _) = await this.ResolveAgentRunConfigAsync(
+                var (eId, eCtx, _, _) = await ResolveAgentRunConfigAsync(
                     db, evalCrew, useEvaluatorRole: true, workspace, budget, ct);
                 evalAgentId = eId;
                 evalContext = eCtx;
@@ -3476,8 +3492,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <c>Lead</c> and the crew's primary model. Throws when the role isn't
     /// configured so callers can fall back (e.g. the gen-eval loop's null
     /// evaluator path).
+    ///
+    /// <para><b>Exposed as <c>internal static</c></b> so the Phase-50-followup
+    /// regression test (<c>Phase50PlanDocEvaluatorOverrideTests</c>) can pin
+    /// the resolver's contract against a seeded in-memory DB without
+    /// constructing the full strategy. The body has no <c>this.</c> usage
+    /// — it's pure on <paramref name="db"/> + <paramref name="crew"/> +
+    /// <c>ForgeSeed.ResolveSoulPath</c> (static) — so making it static is
+    /// safe and keeps the test simple.</para>
     /// </summary>
-    private async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
+    internal static async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
         ForgeDbContext db, CrewRow crew, bool useEvaluatorRole,
         string workspace, TimeSpan? budget, CancellationToken ct)
     {
