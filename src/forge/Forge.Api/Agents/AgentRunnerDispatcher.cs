@@ -431,7 +431,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             ? prompt
             : $"{context.SoulMd}\n\n---\n\n{prompt}";
 
-        // copilot CLI: `--prompt -` reads from stdin, `-m` selects model.
+        // copilot CLI: `--prompt -` reads from stdin, `--model` selects model.
+        // (Recent copilot CLI versions dropped the `-m` short form — the
+        // current CLI ONLY accepts `--model <model>`. Caught 2026-05-12
+        // after 39 consecutive `unknown option '-m'` exit=1 failures on
+        // review-fix invocations.)
         var psi = new ProcessStartInfo
         {
             FileName = cliPath,
@@ -444,7 +448,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         };
         psi.ArgumentList.Add("--prompt");
         psi.ArgumentList.Add("-");
-        psi.ArgumentList.Add("-m");
+        psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(context.Model);
         foreach (var a in this.options.Value.CopilotCliExtraArgs) psi.ArgumentList.Add(a);
 
