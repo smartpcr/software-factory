@@ -2236,6 +2236,22 @@ public class StorySpawnRow
     /// deliberately.
     /// </summary>
     public bool AutoMerge { get; set; }
+
+    /// <summary>
+    /// Phase 50 — operator-authored decision pins. Each pin is a binding
+    /// directive that gets prepended to EVERY future iter prompt for
+    /// every plan-doc / workstream under this spawn. Used to break out
+    /// of cross-doc convergence loops (e.g. "DefaultAction lives in
+    /// sidecar — STOP flipping. tech-spec HC-3 is authoritative.")
+    /// where the agent keeps re-litigating the same decision because
+    /// sibling docs change between iters.
+    ///
+    /// <para>JSON shape:
+    /// <c>[{ "id": "guid", "text": "...", "workItemId": "plan-doc:..." | null, "createdAt": "ISO-8601", "createdBy": "actor" }]</c>.
+    /// <c>workItemId</c> null means "applies to every iter on this
+    /// spawn"; non-null scopes the pin to one specific doc / workstream.</para>
+    /// </summary>
+    public string? DecisionPinsJson { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>
