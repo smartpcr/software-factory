@@ -102,7 +102,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     public Task ResumeSingleArtifactAsync(
-        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, string key, bool restartFromScratch = false, CancellationToken ct = default)
     {
         // Deterministic strategy has no gen↔eval loop — record an observable
         // signal so integration tests can assert "the recovery service called
@@ -111,6 +111,15 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         // and clear it before the next setup.
         var bucket = $"{spawn.Id}:{key}";
         Resumed.AddOrUpdate(bucket, 1, (_, n) => n + 1);
+        // Phase 50 follow-up — record whether Restart vs ordinary Resume
+        // invoked the strategy, so RestartBehaviorTests can assert that
+        // POST /spawn/artifacts/{key}/restart actually plumbs the flag
+        // through RunResumeWithCleanupAsync rather than degrading silently
+        // to a plain Resume.
+        if (restartFromScratch)
+        {
+            ResumedWithRestartFromScratch[bucket] = true;
+        }
         return Task.CompletedTask;
     }
 
@@ -120,7 +129,19 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> Resumed = new();
 
-    public static void Reset() => Resumed.Clear();
+    /// <summary>
+    /// Test hook — records buckets that invoked <see cref="ResumeSingleArtifactAsync"/>
+    /// with <c>restartFromScratch=true</c>. Used by RestartBehaviorTests to
+    /// verify the Restart endpoint propagates the flag end-to-end. Cleared by
+    /// <see cref="Reset"/>.
+    /// </summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> ResumedWithRestartFromScratch = new();
+
+    public static void Reset()
+    {
+        Resumed.Clear();
+        ResumedWithRestartFromScratch.Clear();
+    }
 
     public Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
