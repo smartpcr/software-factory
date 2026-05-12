@@ -128,6 +128,20 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
       const res = await forgeApi.deleteStorySpawn(spawn.storyId, deleteBaseBranch);
       const baseTxt = res.baseBranchDeleted ? ` (base '${spawn.baseBranch}' removed)` : '';
       toast(`Deleted spawn '${spawn.storyTitle}'${baseTxt}`, 'success');
+      // Phase 50 — warn the operator when one or more remote branches
+      // couldn't be deleted (typical cause: git credential cache empty
+      // or branch protection). Without this, a re-spawn of the same
+      // storyId inherits the orphan tip via EnsureBranchAsync's
+      // existing-on-origin fast path. The orchestrator now also auto-
+      // heals via EnsureBranchFreshAsync on first drive, but surfacing
+      // the failure lets the operator fix the underlying auth before
+      // it bites them somewhere else.
+      if (res.remoteDeleteFailures && res.remoteDeleteFailures.length > 0) {
+        toast(
+          `Remote delete failed for ${res.remoteDeleteFailures.length} branch(es): ${res.remoteDeleteFailures.join(', ')}. The orchestrator will force-reset on re-spawn.`,
+          'danger',
+        );
+      }
     } catch (err) {
       if (err instanceof ForgeApiError && err.status === 409 && deleteBaseBranch) {
         // Shared base branch: retry without the flag so the spawn still
