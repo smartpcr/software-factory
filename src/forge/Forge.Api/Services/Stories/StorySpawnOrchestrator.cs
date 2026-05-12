@@ -1591,7 +1591,7 @@ public sealed class StorySpawnOrchestrator
                 w.Id, lastDel.Iter, lastDel.Score);
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
-        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject")
+        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
             // instead of re-spawning the gen↔eval loop.
@@ -1607,6 +1607,50 @@ public sealed class StorySpawnOrchestrator
             // BudgetCooldownReconciler.TryResumeAsync; both ends must
             // agree so the reconciler doesn't clear the stall and the
             // orchestrator immediately re-set it on the next tick.
+            //
+            // Phase 52 — `sloppy` (score plateau, generator token cap, or
+            // iter cap) is auto-recovered by SloppyReassignmentReconciler:
+            // it picks a fresh pair (clean slate) up to MaxPairAttempts,
+            // then terminates. The orchestrator MUST NOT mark the
+            // workstream stalled on a sloppy verdict — that would race
+            // the reconciler. Only when PairAttemptCount has hit the cap
+            // (terminal failure) do we set the stall + reason; the
+            // reconciler does this transition itself via
+            // MarkTerminalFailedAsync, so we just no-op here to avoid
+            // double-stalling.
+            if (string.Equals(lastDel.Verdict, "sloppy", StringComparison.Ordinal))
+            {
+                var wiSloppy = await db2.WorkItems.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+                var atCap = wiSloppy is not null
+                    && wiSloppy.PairAttemptCount >= ScoringConstants.MaxPairAttempts;
+                this.logger?.LogInformation(
+                    "DriveOneWorkstreamImpl: ws={WsId} lastVerdict=sloppy iter={Iter} "
+                    + "pairAttempt={Pair}/{Max} atCap={AtCap}",
+                    w.Id, lastDel.Iter,
+                    wiSloppy?.PairAttemptCount ?? 0, ScoringConstants.MaxPairAttempts, atCap);
+                if (!atCap)
+                {
+                    // Reconciler in flight — wait for next tick. Do NOT
+                    // mark stalled (the reconciler will requeue within
+                    // ~15s).
+                    return;
+                }
+                // At cap. The reconciler's MarkTerminalFailedAsync stamps
+                // workstream stall + reason. Mirror that here as
+                // defense-in-depth in case the reconciler hasn't run yet.
+                var sloppyRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+                if (sloppyRow is not null && sloppyRow.Status is not "cancelled" and not "complete")
+                {
+                    sloppyRow.Status = WorkstreamStatuses.Stalled;
+                    sloppyRow.StallReason =
+                        "Sloppy-3-attempts: " + ScoringConstants.SloppyTerminalFailureReason;
+                    await db2.SaveChangesAsync(ct);
+                    await EmitChange(hub, "ws-stalled", spawn, ct);
+                }
+                return;
+            }
+
             if (string.Equals(lastDel.Verdict, "stalled-budget", StringComparison.Ordinal))
             {
                 var crew = await db2.Crews.AsNoTracking()
