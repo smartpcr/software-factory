@@ -2904,9 +2904,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // generator (Phase 39 gen != eval). PickEvaluator filters on this
         // too, but pre-filtering keeps the candidate list tidy in the
         // standalone-crew case where roster == generator-crew members.
-        var defaultEvalAgentId = generatorCrew.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.Lead;
+        //
+        // 2026-05-12 bug fix — only the operator-configured preferred
+        // evaluator gets first-dibs in PickEvaluator. The previous code
+        // ALSO promoted `evaluatorCrew?.Lead` into this slot, giving the
+        // paired-crew lead unconditional first-dibs and pinning every
+        // claim to the same evaluator. Lead is now reserved as a
+        // last-resort fallback ONLY when PickEvaluator returns null.
+        var preferredEvalAgentId = generatorCrew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId;
+        var leadFallback = evaluatorCrew?.Lead;
 
         // Phase 50 fix (2026-05-11) — pass a real per-claim seed so the
         // post-default Fisher-Yates shuffle inside PickEvaluator actually
@@ -2915,7 +2922,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // picked the same fallback evaluator in roster order. Mirrors the
         // StorySpawnOrchestrator engineer-pair claim site at line 2317.
         var (picked, _) = PairDiversityResolver.PickEvaluator(
-            roster, busyAgents, defaultEvalAgentId, generatorAgentId,
+            roster, busyAgents, preferredEvalAgentId, generatorAgentId,
             seed: Random.Shared.Next());
 
         // Q47.3 implication — evaluator diversity is best-effort. If
@@ -2924,7 +2931,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // ledger contention will sort itself out as runs finish.
         if (picked is null)
         {
-            picked = defaultEvalAgentId;
+            picked = preferredEvalAgentId ?? leadFallback;
         }
         return picked;
     }
@@ -3339,6 +3346,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var proc = System.Diagnostics.Process.Start(psi)!;
         var stdout = await proc.StandardOutput.ReadToEndAsync();
