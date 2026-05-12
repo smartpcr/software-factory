@@ -481,6 +481,43 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
                 await this.db.SaveChangesAsync(ct);
             }
+
+            // Phase 50 — checkbox-attention hard gate. The evaluator now
+            // emits "What still needs work" as `- [ ] N. <item>` checkboxes,
+            // and the generator prompt requires those checkboxes to be
+            // echoed back into the next iter's `### Prior feedback
+            // resolution` section with each one marked `- [x]` FIXED or
+            // `- [x]` DEFERRED. Silently skipping a checkbox is the
+            // dominant cause of convergence loops (DefaultAction appeared
+            // unaddressed in 41/51 architecture.md iters on
+            // qq:TELEGRAM-MESSENGER-S). When the prior iter listed N
+            // unchecked items and this iter's generator output has fewer
+            // than N `- [x]` markings, demote pass→iterate so the
+            // evaluator's next round catches and re-lists the skipped
+            // items.
+            //
+            // priorChain[Count-1] holds iter N-1's eval notes (the chain
+            // hasn't been extended with iter N's row yet at this point).
+            // For iter 1 there is no prior, so the gate is a no-op.
+            if (verdict == "pass" && priorChain.Count > 0)
+            {
+                var priorEval = priorChain[priorChain.Count - 1].Notes ?? string.Empty;
+                var priorUnchecked = CountCheckboxMarkers(priorEval, lookForUnchecked: true);
+                if (priorUnchecked > 0)
+                {
+                    var genChecked = CountCheckboxMarkers(gen.OutputText ?? string.Empty, lookForUnchecked: false);
+                    if (genChecked < priorUnchecked)
+                    {
+                        verdict = "iterate";
+                        row.Verdict = verdict;
+                        var skipNote = $"BLOCKED: prior iteration's evaluator listed {priorUnchecked} `- [ ]` checkbox item(s); the generator's reply only marked {genChecked} as `- [x]`. Every prior checkbox must be marked FIXED or DEFERRED-with-rationale in the `### Prior feedback resolution` block before pass is allowed. Silently skipping items is the dominant cause of convergence loops — the next iteration must address the remaining {priorUnchecked - genChecked} item(s).";
+                        row.Notes = string.IsNullOrEmpty(row.Notes) ? skipNote : row.Notes + "\n\n" + skipNote;
+                        lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
+                        await this.db.SaveChangesAsync(ct);
+                    }
+                }
+            }
+
             priorChain.Add((iter, lastScore.Score, verdict, lastScore.Notes));
             notesForNext = FormatPriorChain(priorChain);
 
@@ -521,6 +558,46 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 await this.db.SaveChangesAsync(ct);
                 await this.EmitAsync(request.WorkItemId, "task.budget-warning", new { iter, totalCostUsd = totalCost, cap }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
+            }
+
+            // Phase 50 — convergence detector. When the same topics show
+            // up in the evaluator's "What still needs work" list across N
+            // consecutive iters, the loop is going in circles (observed
+            // on qq:TELEGRAM-MESSENGER-S architecture.md: DefaultAction
+            // re-litigated in 41/51 iters; P95-latency in 46/51).
+            // Continuing burns budget chasing a sibling-doc moving target
+            // the agent can't resolve unilaterally. Exit with
+            // `stalled-no-convergence` so the operator can decision-pin
+            // or restart with smaller scope.
+            //
+            // We require at least 4 prior iters worth of chain before
+            // running the check — fewer than that and the topic-overlap
+            // signal is too noisy (a single repeated section ref between
+            // iter 1 and iter 2 is normal).
+            if (priorChain.Count >= 4)
+            {
+                var (looping, recurringTopics) = DetectConvergenceLoop(priorChain);
+                if (looping)
+                {
+                    verdict = "stalled-no-convergence";
+                    row.Verdict = verdict;
+                    var loopNote = "STALLED: convergence loop detected — the same topics ("
+                        + string.Join(", ", recurringTopics.Take(8))
+                        + ") have appeared in the evaluator's `What still needs work` list across the last "
+                        + Math.Min(priorChain.Count, 5)
+                        + " iterations. The agent cannot resolve these unilaterally — operator should either pin a decision via the spawn's decision-pins endpoint, restart the loop with smaller scope, or accept the doc at its current score.";
+                    row.Notes = string.IsNullOrEmpty(row.Notes) ? loopNote : row.Notes + "\n\n" + loopNote;
+                    await this.db.SaveChangesAsync(ct);
+                    await this.EmitAsync(request.WorkItemId, "task.iteration.stalled", new
+                    {
+                        iter,
+                        score = lastScore.Score,
+                        reason = "no-convergence",
+                        recurringTopics,
+                        priorIters = priorChain.Count,
+                    }, ct);
+                    return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
+                }
             }
 
             // verdict == "iterate" → loop re-enters
@@ -610,6 +687,163 @@ public sealed class DeliverableLoop : IDeliverableLoop
     }
 
     /// <summary>
+    /// Phase 50 — count markdown checkbox markers in a free-form text
+    /// block. <paramref name="lookForUnchecked"/>=true counts <c>- [ ]</c> /
+    /// <c>* [ ]</c> entries (unaddressed evaluator items); false counts
+    /// <c>- [x]</c> / <c>* [x]</c> / <c>- [X]</c> / <c>* [X]</c>
+    /// (generator-marked FIXED or DEFERRED items).
+    ///
+    /// <para>Used by the checkbox-attention hard gate
+    /// (<c>RunAsync</c>) to demote pass→iterate when the generator's
+    /// output marks fewer items as resolved than the prior evaluator
+    /// listed as unresolved.</para>
+    /// </summary>
+    internal static int CountCheckboxMarkers(string text, bool lookForUnchecked)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        var pattern = lookForUnchecked
+            ? @"(?:^|\n)\s*[-*]\s+\[ \]"
+            : @"(?:^|\n)\s*[-*]\s+\[[xX]\]";
+        return System.Text.RegularExpressions.Regex.Matches(text, pattern).Count;
+    }
+
+    /// <summary>
+    /// Phase 50 — token-based convergence detector.Returns
+    /// <c>(looping=true, recurringTopics)</c> when the same set of
+    /// significant tokens (section refs, camelCase identifiers, dotted
+    /// symbols) appears in the evaluator's `What still needs work` block
+    /// across the last 5 iterations.
+    ///
+    /// <para>Token extraction picks symbols that look like
+    /// engineer-meaningful identifiers: <c>§N.M</c> section markers,
+    /// dotted names (<c>telegram.send.latency_ms</c>), camelCase
+    /// (<c>DefaultAction</c>), slash names (<c>/handoff</c>). English
+    /// stopwords and short words are dropped. The "topic" is the set
+    /// of these tokens after dedup.</para>
+    ///
+    /// <para>Threshold: a topic is "recurring" when it appears in at
+    /// least 3 of the last 4 iterations (75 %). The loop is "looping"
+    /// when ≥ 2 distinct recurring topics exist — a single recurring
+    /// topic might be a genuinely-stuck dimension that one more iter
+    /// could resolve; two or more is a pattern that hasn't been
+    /// converging.</para>
+    ///
+    /// <para>The function only consumes the trailing 4 chain entries
+    /// (or fewer when chain is shorter). The 4-iter window is the
+    /// minimum that catches "same critique in 3 of last 4" — observed
+    /// on qq:TELEGRAM-MESSENGER-S architecture.md as a stable pattern
+    /// from iter 5 onward. Earlier triggering means earlier operator
+    /// intervention (pin a decision, restart, or accept) instead of
+    /// burning 40+ iters in a loop.</para>
+    /// </summary>
+    internal static (bool looping, IReadOnlyList<string> recurringTopics) DetectConvergenceLoop(
+        IReadOnlyList<(int Iter, int Score, string Verdict, string Notes)> chain)
+    {
+        const int WindowSize = 4;
+        const int RecurrenceThreshold = 3;
+        const int MinDistinctTopics = 2;
+
+        if (chain.Count < 4) return (false, Array.Empty<string>());
+
+        var window = chain.Skip(Math.Max(0, chain.Count - WindowSize)).ToList();
+
+        // Build token sets per iter.
+        var perIterTokens = window
+            .Select(c => ExtractTopicTokens(c.Notes))
+            .ToList();
+
+        // Count token recurrence across iters.
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tokenSet in perIterTokens)
+        {
+            foreach (var token in tokenSet)
+            {
+                counts[token] = counts.GetValueOrDefault(token) + 1;
+            }
+        }
+
+        var recurring = counts
+            .Where(kv => kv.Value >= RecurrenceThreshold)
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        var looping = recurring.Count >= MinDistinctTopics;
+        return (looping, recurring);
+    }
+
+    /// <summary>
+    /// Extract "topic tokens" from an evaluator notes string. Targets:
+    /// <list type="bullet">
+    ///   <item>Section refs: <c>§3.1</c>, <c>§10.4</c>, <c>Section 5.5</c>,
+    ///         <c>5.5</c> bare (when preceded by section/§).</item>
+    ///   <item>Dotted symbols: <c>telegram.send.latency_ms</c>,
+    ///         <c>AgentQuestion.DefaultAction</c>.</item>
+    ///   <item>CamelCase / PascalCase identifiers: <c>DefaultAction</c>,
+    ///         <c>OperatorBinding</c>.</item>
+    ///   <item>Slash commands / paths: <c>/handoff</c>, <c>/approve</c>.</item>
+    /// </list>
+    /// Short tokens (&lt; 4 chars) and stopwords are dropped.
+    /// </summary>
+    private static HashSet<string> ExtractTopicTokens(string? notes)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(notes)) return result;
+
+        // Section markers — capture the number for cross-iter equality.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                notes,
+                @"§\s*([0-9]+(?:\.[0-9]+)*)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            result.Add($"§{m.Groups[1].Value}");
+        }
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                notes,
+                @"\bSection\s+([0-9]+(?:\.[0-9]+)*)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            result.Add($"§{m.Groups[1].Value}");
+        }
+
+        // Slash commands.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                notes,
+                @"(?<![A-Za-z])/[a-z][a-z0-9_-]{2,30}",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            result.Add(m.Value.ToLowerInvariant());
+        }
+
+        // Dotted symbols — at least one dot, leading letter, terms
+        // separated by dots, underscores, or dashes.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                notes,
+                @"\b[A-Za-z][A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){1,5}\b"))
+        {
+            if (m.Value.Length >= 6) result.Add(m.Value);
+        }
+
+        // CamelCase / PascalCase identifiers: at least one inner
+        // uppercase after a lowercase, length ≥ 5 to drop noise like
+        // "API" or "Bar".
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                notes,
+                @"\b[A-Z][a-z]+(?:[A-Z][a-z]+){1,5}\b"))
+        {
+            if (m.Value.Length >= 5) result.Add(m.Value);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Best-effort state flip on the linked work item. Tolerates missing
     /// rows (the loop should never crash because of a stale id); existing
     /// state-machine constraints (e.g. closed → closed is a no-op) are
@@ -678,6 +912,25 @@ public sealed class DeliverableLoop : IDeliverableLoop
         sb.AppendLine($"## LATEST evaluator feedback (iteration {latest.Iter}, score {latest.Score}, verdict: {latest.Verdict})");
         sb.AppendLine();
         sb.AppendLine(string.IsNullOrWhiteSpace(latest.Notes) ? "(no notes)" : latest.Notes);
+        sb.AppendLine();
+
+        // Phase 50 (2026-05-11) — explicit instruction to treat the
+        // `## What still needs work` numbered items as a checklist.
+        // Score-regression observed on qq:TELEGRAM-MESSENGER-S iter 43
+        // (88 → 85): the agent fixed the symptom of iter 42's comments
+        // locally but introduced new structural bugs (MessengerMessage
+        // inserted before OperatorBinding table; AlertType renamed in
+        // §4.6 but missed in §5.6's example). The fix-one-place-break-
+        // another pattern needs an explicit acknowledgement step in the
+        // next iter so the agent can't drift away from prior critique.
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("**REQUIRED — Prior-feedback resolution checklist.** In your next iteration's `## Iteration Summary` / `## Change Summary`, add a `### Prior feedback resolution` subsection that mirrors EACH numbered item from the `## What still needs work` list above and marks it:");
+        sb.AppendLine();
+        sb.AppendLine("- `1. ADDRESSED — <one-line description of the fix + section/file ref>`");
+        sb.AppendLine("- `2. DEFERRED — <reason + which iter/workstream will handle it>`");
+        sb.AppendLine();
+        sb.AppendLine("Silently skipping items is the most common cause of score regression. If you fixed three of five points, the remaining two MUST appear as `DEFERRED` with a rationale.");
         sb.AppendLine();
 
         // If there's more than one prior iteration, show a condensed summary
