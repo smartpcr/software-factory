@@ -13,13 +13,26 @@ interface Props {
    * Called when this row's spawn has been deleted server-side. The parent
    * (SwarmIndexView) is expected to refresh its spawn list immediately so
    * the row disappears without waiting for the 15 s polling tick.
+   *
+   * Phase 50: fired OPTIMISTICALLY at click time (before the API call)
+   * so the operator sees an immediate result. The cascade-delete on a
+   * multi-workstream spawn runs server-side for 30 s+ (closes each PR
+   * upstream, removes each worktree, deletes each branch), and the row
+   * lingering for that long was perceived as "delete had no effect".
    */
   onDeleted?: (storyId: string) => void;
+  /**
+   * Phase 50 rollback hook. Called when the optimistically-removed row's
+   * server-side delete fails — the parent forces a list refetch so the
+   * row reappears at its correct position. Without this, an API error
+   * would leave the spawn live on the server but invisible in the UI.
+   */
+  onDeleteFailed?: (storyId: string) => void;
 }
 
 const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
 
-export function SwarmStoryRow({ spawn, index, onDeleted }: Props) {
+export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props) {
   const navigate = useNavigate();
   const tick = useSpawnStore((s) => s.ticks[spawn.storyId] ?? 0);
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
@@ -103,11 +116,18 @@ export function SwarmStoryRow({ spawn, index, onDeleted }: Props) {
     }
 
     setDeleting(true);
+    // Phase 50 optimistic removal: drop the row from the parent's list
+    // immediately so the operator gets visible feedback. The cascade
+    // delete on a 20+ workstream spawn runs for 30 s+ server-side; the
+    // previous code only fired `onDeleted` AFTER the await, so the row
+    // appeared frozen and clicks felt like no-ops. On failure, the
+    // catch branches call `onDeleteFailed` to force a parent re-fetch
+    // and restore the row at its correct position.
+    onDeleted?.(spawn.storyId);
     try {
       const res = await forgeApi.deleteStorySpawn(spawn.storyId, deleteBaseBranch);
       const baseTxt = res.baseBranchDeleted ? ` (base '${spawn.baseBranch}' removed)` : '';
       toast(`Deleted spawn '${spawn.storyTitle}'${baseTxt}`, 'success');
-      onDeleted?.(spawn.storyId);
     } catch (err) {
       if (err instanceof ForgeApiError && err.status === 409 && deleteBaseBranch) {
         // Shared base branch: retry without the flag so the spawn still
@@ -118,12 +138,13 @@ export function SwarmStoryRow({ spawn, index, onDeleted }: Props) {
           const detailMsg = err.problem?.detail
             ?? `Base branch '${spawn.baseBranch}' is shared and was kept.`;
           toast(`Deleted spawn (base branch kept): ${detailMsg}`, 'info');
-          onDeleted?.(spawn.storyId);
           return;
         } catch (retryErr) {
+          onDeleteFailed?.(spawn.storyId);
           toast(`Delete failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`, 'danger');
         }
       } else {
+        onDeleteFailed?.(spawn.storyId);
         toast(`Delete failed: ${err instanceof Error ? err.message : String(err)}`, 'danger');
       }
     } finally {
