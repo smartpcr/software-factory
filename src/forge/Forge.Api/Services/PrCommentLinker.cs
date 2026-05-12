@@ -175,6 +175,7 @@ public sealed class PrCommentLinker
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
             using var proc = Process.Start(psi);
             if (proc is null) return commits;
             var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
