@@ -77,13 +77,15 @@ public class Phase47NoProgressLivelockTests
         var (f, db, loop) = await SetupAsync("wi-stalled-replay");
         try
         {
-            // First run: stall the loop by always scoring 80 (iterate range).
+            // Strict-increasing iterate-range scores so plateau doesn't fire
+            // at iter 4 and the parser doesn't bottom out into reject.
+            // Iter-cap exhausts at iter 5 with verdict="sloppy".
             var firstReq = new DeliverableLoopRequest(
                 "wi-stalled-replay", "crew-x", "gen-1", "eval-1",
                 Generator: (_, _, _) => Task.FromResult(new GeneratorRunOutput("out", 0m)),
-                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(80), 0m)));
+                Evaluator: (iter, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(72 + iter * 3), 0m)));
             var first = await loop.RunAsync(firstReq, CancellationToken.None);
-            Assert.Equal("stalled", first.FinalVerdict);
+            Assert.Equal("sloppy", first.FinalVerdict);
             var firstRowCount = await db.Deliverables
                 .CountAsync(d => d.WorkItemId == "wi-stalled-replay");
             Assert.Equal(ScoringConstants.MaxIterations, firstRowCount);
@@ -98,7 +100,7 @@ public class Phase47NoProgressLivelockTests
                 Evaluator: (_, _, _) => { evalCalls++; return Task.FromResult(new EvaluatorRunOutput(EvalJson(80), 0m)); });
             var replay = await loop.RunAsync(replayReq, CancellationToken.None);
 
-            Assert.Equal("stalled", replay.FinalVerdict);
+            Assert.Equal("sloppy", replay.FinalVerdict);
             Assert.Equal(ScoringConstants.MaxIterations, replay.Iterations);
             Assert.Equal(0, genCalls); // ← the actual fix
             Assert.Equal(0, evalCalls);
@@ -233,13 +235,15 @@ public class Phase47NoProgressLivelockTests
         var (f, db, loop) = await SetupAsync("wi-resume-bump");
         try
         {
-            // Stall at the default cap of 5.
+            // Strict-increasing iterate-range scores so plateau doesn't fire
+            // and the parser stays in iterate range. Iter-cap exhausts at
+            // iter 5 with verdict="sloppy".
             var firstReq = new DeliverableLoopRequest(
                 "wi-resume-bump", "crew-x", "gen-1", "eval-1",
                 Generator: (_, _, _) => Task.FromResult(new GeneratorRunOutput("out", 0m)),
-                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(80), 0m)));
+                Evaluator: (iter, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(72 + iter * 3), 0m)));
             var first = await loop.RunAsync(firstReq, CancellationToken.None);
-            Assert.Equal("stalled", first.FinalVerdict);
+            Assert.Equal("sloppy", first.FinalVerdict);
             Assert.Equal(ScoringConstants.MaxIterations, first.Iterations);
 
             // Operator raises the cap via a queue row override.
