@@ -134,7 +134,8 @@ public static class StoriesEndpoints
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
         IConfiguration config,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        IServiceScopeFactory scopeFactory)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -171,12 +172,22 @@ public static class StoriesEndpoints
         // iterations from several days ago). Purging here makes
         // "delete + re-spawn" idempotent regardless of what survived
         // the previous DeleteSpawn.
+        //
+        // Phase 51 (Fix 2): purge is deferred to the background drive
+        // task — it issues `git push origin --delete` against every
+        // candidate repo's remote, which against an ADO remote can hang
+        // for up to the credential-manager timeout (and BEFORE Phase 51
+        // Fix 1 added GIT_TERMINAL_PROMPT=0/GCM_INTERACTIVE=Never, would
+        // hang forever waiting for an interactive UI prompt). Running
+        // synchronously on the request thread blocked the operator's
+        // spawn-button at "Spawning…" for days. The purge still
+        // executes BEFORE the orchestrator drive (single Task.Run,
+        // awaited sequentially) so plan-doc work items the orchestrator
+        // is about to create cannot collide with the stale rows being
+        // reaped. Inline mode (tests) keeps the synchronous path so
+        // PlanPrId is observable on the 201 response.
         var safeStoryIdForPurge = StoryPaths.Safe(storyId);
         var deterministicSpawnId = $"spawn-{safeStoryIdForPurge}";
-        await PurgeResidualSpawnDataAsync(
-            db, config, deterministicSpawnId, safeStoryIdForPurge,
-            loggerFactory.CreateLogger("forge.story-spawn.respawn-purge"),
-            ctx.RequestAborted);
 
         // 28.2 — story must exist. Three sources accepted:
         //   1) ProductStoryRow (locally-authored story; description carries the
@@ -299,6 +310,13 @@ public static class StoriesEndpoints
         {
             if (SpawnDriveInline(ctx))
             {
+                // Inline mode (tests): run purge synchronously first so the
+                // orchestrator drive sees a clean state, then await the
+                // drive itself. PlanPrId is observable on the 201 response.
+                await PurgeResidualSpawnDataAsync(
+                    db, config, deterministicSpawnId, safeStoryIdForPurge,
+                    loggerFactory.CreateLogger("forge.story-spawn.respawn-purge"),
+                    ctx.RequestAborted);
                 await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
                 var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
                 return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
@@ -307,10 +325,38 @@ public static class StoriesEndpoints
             // Background drive — must NOT use ctx.RequestAborted (the HTTP
             // request ends as soon as we return). StorySpawnOrchestrator is
             // a singleton, so capturing it here is safe across the request
-            // boundary. Failures are logged inside DriveAsync; the
+            // boundary. The request-scoped `db` and per-request logger are
+            // disposed once we return, so the background task creates its
+            // own DI scope. Purge is awaited BEFORE the orchestrator drive
+            // so plan-doc work items the orchestrator is about to create
+            // cannot collide with the stale rows being reaped. Failures
+            // inside DriveAsync are logged inside the orchestrator; the
             // SpawnDependencyScheduler will re-drive on the next 15 s tick.
+            var spawnIdForBg = deterministicSpawnId;
+            var safeStoryIdForBg = safeStoryIdForPurge;
             _ = Task.Run(async () =>
             {
+                try
+                {
+                    using var bgScope = scopeFactory.CreateScope();
+                    var bgDb = bgScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var bgLoggerFactory = bgScope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+                    var bgPurgeLogger = bgLoggerFactory.CreateLogger("forge.story-spawn.respawn-purge");
+                    try
+                    {
+                        await PurgeResidualSpawnDataAsync(
+                            bgDb, config, spawnIdForBg, safeStoryIdForBg,
+                            bgPurgeLogger, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        bgPurgeLogger.LogWarning(ex,
+                            "Background purge failed for spawn-id '{SpawnId}'; continuing to drive.",
+                            spawnIdForBg);
+                    }
+                }
+                catch { /* swallowed — scope/db creation failed, drive will retry on next tick */ }
+
                 try { await orchestrator.DriveAsync(storyId, CancellationToken.None); }
                 catch { /* swallowed — orchestrator already logs */ }
             });
@@ -1112,6 +1158,79 @@ public static class StoriesEndpoints
         {
             await CleanBranchAsync(pr.Branch);
         }
+
+        // Phase 51 Fix 6a — clean base-branch worktrees. `RealStoryGitOps.MergeAsync`
+        // creates `spawn-{baseBranch}` (when an EnsureBranchAsync worktree
+        // already exists) or `spawn-merge-{baseBranch}` (fallback). These
+        // worktrees survived every prior DeleteSpawn run because the old
+        // code at section 9 below claimed "Base branches don't have
+        // spawn-specific worktrees" — observed 2026-05-12 with 14 stale
+        // dirs in `E:\forge\update\.worktree\` including `spawn-feature-history`
+        // / `spawn-feature-memory-pressure` / `spawn-merge-feature-memory-pressure`.
+        // We always remove the WORKTREE dirs; the base branch's REF
+        // delete is still gated by `deleteBase=true` at section 9 below.
+        if (!string.IsNullOrEmpty(spawn.BaseBranch)
+            && repo is not null
+            && !string.IsNullOrEmpty(repo.CloneRoot)
+            && Directory.Exists(repo.CloneRoot))
+        {
+            // 6a.1 — RemoveWorktreeAsync covers the case where the base
+            // branch is checked out in a worktree git knows about
+            // (the `spawn-{base}` path from EnsureBranchAsync).
+            if (storyGitOps is not null)
+            {
+                try { await storyGitOps.RemoveWorktreeAsync(repo, spawn.BaseBranch, ctx.RequestAborted); }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex,
+                        "DeleteSpawn: base-branch RemoveWorktreeAsync failed for {Base}; continuing.",
+                        spawn.BaseBranch);
+                }
+            }
+
+            // 6a.2 — Force-cleanup the `spawn-merge-{base}` fallback dir
+            // that MergeAsync materialized. Even with Fix 6b removing
+            // these post-sync, prior installations left them on disk.
+            var mergeSanitized = SanitizeForWorktree($"merge-{spawn.BaseBranch}");
+            var mergeWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{mergeSanitized}");
+            if (Directory.Exists(mergeWtPath))
+            {
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", mergeWtPath);
+                if (Directory.Exists(mergeWtPath))
+                {
+                    try { Directory.Delete(mergeWtPath, recursive: true); }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex,
+                            "DeleteSpawn: could not raw-delete merge worktree dir {Path}; will be pruned on next claim.",
+                            mergeWtPath);
+                    }
+                }
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
+            }
+
+            // 6a.3 — Also force-cleanup the legacy `spawn-{base}` dir
+            // (created pre-Phase 49 by EnsureBranchAsync). RemoveWorktreeAsync
+            // skips it if `git worktree list` doesn't know about it.
+            var baseSanitized = SanitizeForWorktree(spawn.BaseBranch);
+            var baseWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{baseSanitized}");
+            if (Directory.Exists(baseWtPath))
+            {
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", baseWtPath);
+                if (Directory.Exists(baseWtPath))
+                {
+                    try { Directory.Delete(baseWtPath, recursive: true); }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex,
+                            "DeleteSpawn: could not raw-delete legacy base worktree dir {Path}; will be pruned on next claim.",
+                            baseWtPath);
+                    }
+                }
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
+            }
+        }
+
         counts["branchesCleaned"] = cleanedBranches.Count;
 
         // ── 8. On-disk dirs ─────────────────────────────────────────────
@@ -1150,13 +1269,15 @@ public static class StoriesEndpoints
             }
         }
 
-        // ── 9. Optional base-branch deletion ────────────────────────────
+        // ── 9. Optional base-branch REF deletion ────────────────────────
         if (!string.IsNullOrEmpty(baseBranchToDelete) && repo is not null
             && !string.IsNullOrEmpty(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
         {
-            // Base branches don't have spawn-specific worktrees of their
-            // own (the plan/qa/workstream worktrees branched off them);
-            // skip RemoveWorktreeAsync and go straight to the ref delete.
+            // Phase 51 Fix 6a — base-branch worktree dirs are now cleaned
+            // up unconditionally above (section 7's tail). This section
+            // is purely the optional ref-delete that runs only when the
+            // operator confirms via `deleteBase=true` AND the base isn't
+            // "main".
             //
             // `git branch -D` against the currently-checked-out branch
             // fails — the cloneRoot's HEAD is usually `main`, so deleting

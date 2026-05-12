@@ -354,6 +354,7 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
             using var p = Process.Start(psi);
             if (p is null) return null;
             var stdout = await p.StandardOutput.ReadToEndAsync(ct);
