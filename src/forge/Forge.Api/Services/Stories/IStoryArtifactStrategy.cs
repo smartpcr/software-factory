@@ -35,9 +35,25 @@ public interface IStoryArtifactStrategy
     /// this re-runs only the specified <paramref name="key"/> with
     /// forceResume semantics (workspace cache bypassed). Used by the
     /// per-doc Resume button on the conversation tab.
+    ///
+    /// <para>When <paramref name="restartFromScratch"/> is <c>true</c>,
+    /// the strategy MUST treat this as an operator-initiated Restart
+    /// (not a resume): delete any existing on-disk doc file in the
+    /// plan-branch worktree and purge any stale per-doc DB rows
+    /// (deliverables / transcripts / queue) BEFORE the architect's
+    /// first iteration, so the agent regenerates the file from scratch
+    /// instead of incrementally editing the previous run's content.
+    /// Defaults to <c>false</c> so the ordinary Resume path
+    /// (workspace-cache bypass for a mid-iter resumption) is preserved.
+    /// Set by <c>POST /api/stories/{id}/spawn/artifacts/{key}/restart</c>
+    /// via <c>StoriesEndpoints.RunResumeWithCleanupAsync</c>.</para>
     /// </summary>
     Task ResumeSingleArtifactAsync(
-        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default);
+        StorySpawnRow spawn,
+        WorkItemRow story,
+        string key,
+        bool restartFromScratch = false,
+        CancellationToken ct = default);
 
     /// <summary>Architect's decomposition — split the plan into N parallel workstreams.</summary>
     Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
