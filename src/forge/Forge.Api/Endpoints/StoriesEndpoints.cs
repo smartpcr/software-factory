@@ -94,6 +94,13 @@ public static class StoriesEndpoints
         // implementation-plan artifact, scheduler tick) cover automatic cases; this one is for
         // operator-driven recovery after a manual edit on the plan branch.
         grp.MapPost("/{storyId}/spawn/reconcile", Reconcile).WithName("ReconcileStorySpawn");
+        // Phase 50 — operator-pinned decisions that break convergence loops.
+        // Pinned text is prepended to every future iter prompt for every
+        // plan-doc / workstream under the spawn. Use when the evaluator keeps
+        // flagging the same cross-doc contradiction iter after iter.
+        grp.MapGet("/{storyId}/spawn/pins", ListDecisionPins).WithName("ListStoryDecisionPins");
+        grp.MapPost("/{storyId}/spawn/pins", AddDecisionPin).WithName("AddStoryDecisionPin");
+        grp.MapDelete("/{storyId}/spawn/pins/{pinId}", RemoveDecisionPin).WithName("RemoveStoryDecisionPin");
         // Phase 43 — upload reference documents before spawning.
         grp.MapPost("/attachments/upload", UploadAttachments).WithName("UploadStoryAttachments")
             .DisableAntiforgery();
@@ -3011,6 +3018,150 @@ public static class StoriesEndpoints
         });
     }
 
+    /// <summary>
+    /// Phase 50 — operator-authored decision pin contract. <c>text</c> is
+    /// the directive (e.g. "DefaultAction lives in sidecar — STOP
+    /// flipping. tech-spec HC-3 is authoritative."). <c>workItemId</c>
+    /// scopes the pin to one plan-doc / workstream; null means it
+    /// applies to every iter on the spawn.
+    /// </summary>
+    public sealed record AddDecisionPinRequest(string Text, string? WorkItemId);
+
+    private static async Task<IResult> ListDecisionPins(string storyId, ForgeDbContext db)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.IsNullOrEmpty(spawn.DecisionPinsJson))
+        {
+            return Results.Ok(Array.Empty<object>());
+        }
+        try
+        {
+            var pins = JsonSerializer.Deserialize<List<JsonElement>>(spawn.DecisionPinsJson, JsonOpts)
+                ?? new List<JsonElement>();
+            return Results.Ok(pins);
+        }
+        catch
+        {
+            // Corrupted JSON — return empty rather than 500 so the UI
+            // can recover by re-pinning.
+            return Results.Ok(Array.Empty<object>());
+        }
+    }
+
+    private static async Task<IResult> AddDecisionPin(
+        HttpContext ctx,
+        string storyId,
+        [FromBody] AddDecisionPinRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.Text))
+        {
+            return Results.Problem(title: "text is required", statusCode: 400);
+        }
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+
+        // Load existing pins, append new one, persist. The id is a fresh
+        // guid so the UI / DELETE endpoint can address it without race
+        // conditions on text equality.
+        var pins = new List<Dictionary<string, object?>>();
+        if (!string.IsNullOrEmpty(spawn.DecisionPinsJson))
+        {
+            try
+            {
+                var existing = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+                    spawn.DecisionPinsJson, JsonOpts);
+                if (existing is not null) pins = existing;
+            }
+            catch { /* corrupted — start fresh */ }
+        }
+
+        var newPin = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["id"] = Guid.NewGuid().ToString("N"),
+            ["text"] = req.Text.Trim(),
+            ["workItemId"] = string.IsNullOrWhiteSpace(req.WorkItemId) ? null : req.WorkItemId.Trim(),
+            ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["createdBy"] = actor,
+        };
+        pins.Add(newPin);
+
+        spawn.DecisionPinsJson = JsonSerializer.Serialize(pins, JsonOpts);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "decision-pin-added", spawn = ToContract(spawn) });
+
+        return Results.Ok(newPin);
+    }
+
+    private static async Task<IResult> RemoveDecisionPin(
+        HttpContext ctx,
+        string storyId,
+        string pinId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.IsNullOrEmpty(spawn.DecisionPinsJson))
+        {
+            return Results.Ok(new { removed = 0 });
+        }
+
+        List<Dictionary<string, object?>> pins;
+        try
+        {
+            pins = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+                spawn.DecisionPinsJson, JsonOpts) ?? new();
+        }
+        catch
+        {
+            // Corrupted JSON — wipe so the operator can re-pin from scratch.
+            spawn.DecisionPinsJson = null;
+            spawn.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            return Results.Ok(new { removed = 0 });
+        }
+
+        var before = pins.Count;
+        pins = pins.Where(p =>
+            !p.TryGetValue("id", out var v)
+            || v is null
+            || !string.Equals(v.ToString(), pinId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var removed = before - pins.Count;
+
+        spawn.DecisionPinsJson = pins.Count > 0
+            ? JsonSerializer.Serialize(pins, JsonOpts)
+            : null;
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        if (removed > 0)
+        {
+            await hub.Clients.All.SendAsync("story-spawn.changed",
+                new { kind = "decision-pin-removed", spawn = ToContract(spawn), pinId });
+        }
+
+        return Results.Ok(new { removed });
+    }
+
     private static object ToContract(StorySpawnRow row) => new
     {
         id = row.Id,
@@ -3043,6 +3194,12 @@ public static class StoriesEndpoints
         attachments = string.IsNullOrEmpty(row.AttachmentsJson)
             ? (object)Array.Empty<object>()
             : System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement[]>(row.AttachmentsJson)!,
+        // Phase 50 — operator-pinned decisions prepended to every iter
+        // prompt. Empty array when no pins exist; UI uses the count to
+        // surface a "📌 N pins" badge on the spawn header.
+        decisionPins = string.IsNullOrEmpty(row.DecisionPinsJson)
+            ? (object)Array.Empty<object>()
+            : System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement[]>(row.DecisionPinsJson)!,
     };
 
     private static string SlugFor(string title)
