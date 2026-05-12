@@ -43,6 +43,15 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     private readonly string dbPath = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}.db");
     private readonly Dictionary<string, string?> extraConfig;
 
+    /// <summary>
+    /// Per-instance temp DB path. Subclasses (e.g. e2e factories that wire
+    /// real <c>IStoryGitOps</c>) read this to locate the parent state dir
+    /// where the production code resolves <c>storyworkspaces/{spawnId}</c>
+    /// and <c>attachments/{spawnId}</c> under
+    /// <c>Path.GetDirectoryName(Forge:Db:Path)</c>.
+    /// </summary>
+    protected internal string DbPath => this.dbPath;
+
     public ForgeWebApplicationFactory() : this(null) { }
 
     internal ForgeWebApplicationFactory(Dictionary<string, string?>? extraConfig)
