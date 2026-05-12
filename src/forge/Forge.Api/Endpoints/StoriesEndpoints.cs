@@ -12,6 +12,7 @@ using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Realtime;
+using Forge.Api.Services;
 using Forge.Api.Services.Git;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
@@ -3339,15 +3340,23 @@ public static class StoriesEndpoints
                 evaluator = (object?)null,
                 iterations = Array.Empty<object>(),
                 totalCostUsd = 0.0,
+                pairAttemptCount = 1,
+                maxPairAttempts = ScoringConstants.MaxPairAttempts,
+                generatorTokensSinceWindow = 0L,
+                generatorTokenCap = ScoringConstants.SloppyGeneratorTokenCap,
             });
         }
 
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
-        var workItemPoints = await db.WorkItems.AsNoTracking()
+        // Pull the Phase 52 sloppy meters (PairAttemptCount, BudgetWindowStartUtc)
+        // alongside Points so the UI can render attempt n/m and the
+        // tokens-used/cap ratio that drives reassignment.
+        var workItemRow = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)
-            .Select(w => (int?)w.Points)
+            .Select(w => new { w.Points, w.PairAttemptCount, w.BudgetWindowStartUtc })
             .FirstOrDefaultAsync();
+        var workItemPoints = workItemRow?.Points;
         var maxIterations = ScoringConstants.MaxIterationsForPoints(workItemPoints ?? 0);
         var budgetSeconds = (int)CrewStoryArtifactStrategy.BudgetForPhase(
             workItemPoints ?? Math.Max(1, spawn.StoryPoints), $"plan:{fileName}").TotalSeconds;
@@ -3366,6 +3375,11 @@ public static class StoriesEndpoints
         var totalCost = await db.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId)
             .SumAsync(u => (double?)u.CostUsd) ?? 0.0;
+
+        // Phase 52 — windowed generator tokens for the sloppy-cap meter.
+        // Computed after agent resolution below; declared up-front so the
+        // response shape lines up cleanly.
+        long generatorTokensSinceWindow = 0L;
 
         var iterations = rows.Select(d => new
         {
@@ -3476,6 +3490,18 @@ public static class StoriesEndpoints
             // pass and avoids EF parameter-extraction quirks with array nulls.
             var genAgentId = lastDeliverable.GeneratorAgentId;
             var evalAgentId = lastDeliverable.EvaluatorAgentId;
+
+            // Phase 52 — windowed gen tokens. Mirror the sloppy gate
+            // (CheckTokenCapAsync) so the displayed tokens-used/cap ratio
+            // matches the actual trigger. Pre-window rows for the current
+            // generator are excluded; rows from the previous pair (different
+            // AgentId) are excluded too — those got reset on reassignment.
+            if (!string.IsNullOrEmpty(genAgentId))
+            {
+                (_, generatorTokensSinceWindow) = await SloppyDetector.CheckTokenCapAsync(
+                    db, workItemId, genAgentId, workItemRow?.BudgetWindowStartUtc, default);
+            }
+
             var genAgent = string.IsNullOrEmpty(genAgentId) ? null
                 : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId);
             var evalAgent = string.IsNullOrEmpty(evalAgentId) ? null
@@ -3538,6 +3564,10 @@ public static class StoriesEndpoints
             evaluator = evalInfo,
             iterations,
             totalCostUsd = totalCost,
+            pairAttemptCount = workItemRow?.PairAttemptCount ?? 1,
+            maxPairAttempts = ScoringConstants.MaxPairAttempts,
+            generatorTokensSinceWindow,
+            generatorTokenCap = ScoringConstants.SloppyGeneratorTokenCap,
         });
     }
 

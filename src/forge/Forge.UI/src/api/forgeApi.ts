@@ -1344,6 +1344,19 @@ export const forgeApi = {
       createdAt: string;
     }>;
     totalCostUsd: number;
+    /** Phase 52 — current pair attempt (1 = original, 2+ = reassigned).
+     *  UI surfaces an "ATTEMPT n/m" badge when this exceeds 1. */
+    pairAttemptCount: number;
+    /** Phase 52 — max allowed pair attempts before terminal failure
+     *  (mirrors `ScoringConstants.MaxPairAttempts`, currently 3). */
+    maxPairAttempts: number;
+    /** Phase 52 — generator-side input+output tokens accrued since
+     *  `WorkItemRow.BudgetWindowStartUtc`. Matches the meter the sloppy
+     *  detector gates against. */
+    generatorTokensSinceWindow: number;
+    /** Phase 52 — generator-side token cap. Matches
+     *  `ScoringConstants.SloppyGeneratorTokenCap` (currently 500,000). */
+    generatorTokenCap: number;
   }> {
     return fetchJson(
       `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iterations`);

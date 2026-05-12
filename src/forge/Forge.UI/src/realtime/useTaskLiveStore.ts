@@ -87,6 +87,18 @@ export interface TaskExecutionSnapshot {
   maxIterations?: number;
   budgetSeconds?: number;
   transcriptTotalCount?: number;
+  /** Phase 52 — current pair attempt (1 = original pair, 2 = first
+   *  reassignment, 3 = second). UI badges the doc/workstream when > 1. */
+  pairAttemptCount?: number;
+  /** Phase 52 — max attempts before terminal failure (mirrors
+   *  `ScoringConstants.MaxPairAttempts`, currently 3). */
+  maxPairAttempts?: number;
+  /** Phase 52 — generator tokens since `BudgetWindowStartUtc`. This is the
+   *  EXACT meter the sloppy detector gates against; surfaced so the
+   *  operator can see how close the run is to a sloppy reassignment. */
+  generatorTokensSinceWindow?: number;
+  /** Phase 52 — generator token cap (`ScoringConstants.SloppyGeneratorTokenCap`). */
+  generatorTokenCap?: number;
 }
 
 // ─── Store (one entry per work-item) ──────────────────────────────────────

@@ -377,6 +377,19 @@ public static class TaskExecutionEndpoints
         long evalIn  = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.InputTokens);
         long evalOut = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.OutputTokens);
 
+        // Phase 52 — windowed generator tokens for the sloppy-cap meter the
+        // UI displays. Uses the SAME (agentId + BudgetWindowStartUtc) filter
+        // as SloppyDetector.CheckTokenCapAsync so the displayed
+        // tokens-used/cap ratio matches the actual gate. Cumulative genIn/
+        // genOut (above) include prior reassigned pairs and are kept for
+        // backwards compatibility.
+        long generatorTokensSinceWindow = 0;
+        if (!string.IsNullOrEmpty(generatorAgentId))
+        {
+            (_, generatorTokensSinceWindow) = await SloppyDetector.CheckTokenCapAsync(
+                db, id, generatorAgentId, wi?.BudgetWindowStartUtc, ct);
+        }
+
         // Crew budget (today's spend vs. daily cap, if any).
         // Also resolve evaluatorCrewId from the generator crew's pair when not
         // yet known from deliverables (pre-first-iteration state).
@@ -619,7 +632,11 @@ public static class TaskExecutionEndpoints
             // The runtime PATCH override on the queue row still wins.
             MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
             TranscriptTotalCount: transcriptTotalCount,
-            BudgetSeconds: budgetSeconds);
+            BudgetSeconds: budgetSeconds,
+            PairAttemptCount: wi?.PairAttemptCount ?? 1,
+            MaxPairAttempts: ScoringConstants.MaxPairAttempts,
+            GeneratorTokensSinceWindow: generatorTokensSinceWindow,
+            GeneratorTokenCap: ScoringConstants.SloppyGeneratorTokenCap);
 
         return Results.Ok(snap);
     }

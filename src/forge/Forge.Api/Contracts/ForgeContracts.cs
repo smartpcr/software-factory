@@ -1174,7 +1174,35 @@ public sealed record TaskExecutionSnapshot(
     /// <summary>Total number of transcript events for this work item (supports paging).</summary>
     int TranscriptTotalCount = 0,
     /// <summary>Time budget for this task in seconds (derived from story points × phase multiplier).</summary>
-    int BudgetSeconds = 0);
+    int BudgetSeconds = 0,
+    /// <summary>
+    /// Phase 52 — current pair attempt (1 = original pair, 2 = first
+    /// reassignment, 3 = second). UI surfaces an "ATTEMPT n/m" badge when
+    /// this exceeds 1 so the operator can see at a glance that the work
+    /// item has been rotated to a fresh pair.
+    /// </summary>
+    int PairAttemptCount = 1,
+    /// <summary>
+    /// Phase 52 — maximum allowed pair attempts before the reconciler
+    /// stamps terminal failure. Mirrors <see cref="ScoringConstants.MaxPairAttempts"/>;
+    /// surfaced here so the UI doesn't need its own constant.
+    /// </summary>
+    int MaxPairAttempts = 3,
+    /// <summary>
+    /// Phase 52 — generator-side input+output tokens accrued against this
+    /// work item since <c>WorkItemRow.BudgetWindowStartUtc</c> (or row
+    /// creation if null). This is the EXACT meter the sloppy detector
+    /// gates against — display it next to the cost so the operator can
+    /// see how close the run is to the token-cap trigger.
+    /// </summary>
+    long GeneratorTokensSinceWindow = 0,
+    /// <summary>
+    /// Phase 52 — generator-side token cap (mirrors
+    /// <see cref="ScoringConstants.SloppyGeneratorTokenCap"/>). When
+    /// <see cref="GeneratorTokensSinceWindow"/> exceeds this, the next
+    /// sloppy check parks the work item for reassignment.
+    /// </summary>
+    long GeneratorTokenCap = 500_000);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 
