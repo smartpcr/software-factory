@@ -95,6 +95,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private readonly IHubContext<ForgeHub> hub;
     private readonly AgentSlotService slots;
     private readonly ILogger<CrewQueueWorker> logger;
+    private readonly Microsoft.Extensions.Options.IOptionsMonitor<BudgetCooldownOptions> cooldownOptions;
 
     /// <summary>Per-crew strain debounce — when did we last emit a signal?</summary>
     private readonly ConcurrentDictionary<string, bool> strainArmed = new();
@@ -142,7 +143,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         IHubContext<ForgeHub> hub,
         WorktreeChangeFeed worktreeFeed,
         AgentSlotService slots,
-        ILogger<CrewQueueWorker> logger)
+        ILogger<CrewQueueWorker> logger,
+        Microsoft.Extensions.Options.IOptionsMonitor<BudgetCooldownOptions> cooldownOptions)
     {
         this.scopeFactory = scopeFactory;
         this.taskChannel = taskChannel;
@@ -150,6 +152,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         this.worktreeFeed = worktreeFeed;
         this.slots = slots;
         this.logger = logger;
+        this.cooldownOptions = cooldownOptions;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -585,12 +588,64 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
             }
 
+            // Phase 51 — pair-rotation on budget cooldown-elapsed resume.
+            // When BudgetCooldownReconciler resumes a stalled-budget row
+            // WITHOUT a cap raise (the 10m timer fired), it leaves
+            // WorkItemRow.LastPairAgentIdsJson populated with the prior
+            // (generatorId, evaluatorId) so the next claim rotates to a
+            // fresh pair. We honor it by (a) treating those IDs as busy
+            // for THIS pick AND (b) skipping the "prefer prior agent"
+            // continuity branch below. The cap-raised path clears
+            // LastPairAgentIdsJson so the continuity branch runs normally
+            // (same pair, more budget).
+            string[]? excludeForRotation = null;
+            if (headRow is not null)
+            {
+                var headWi = await db.WorkItems.AsNoTracking()
+                    .FirstOrDefaultAsync(w => w.Id == headRow.WorkItemId, ct);
+                if (headWi is not null && !string.IsNullOrWhiteSpace(headWi.LastPairAgentIdsJson))
+                {
+                    try
+                    {
+                        excludeForRotation = System.Text.Json.JsonSerializer.Deserialize<string[]>(headWi.LastPairAgentIdsJson);
+                    }
+                    catch (System.Text.Json.JsonException) { /* malformed — skip rotation */ }
+                }
+            }
+            if (excludeForRotation is not null)
+            {
+                foreach (var id in excludeForRotation)
+                {
+                    if (!string.IsNullOrEmpty(id)) busyAgents.Add(id);
+                }
+            }
+
+            // Phase 51 — when the lead is in the rotation exclusion set we
+            // must NOT let it back in via the empty-roster fallback inside
+            // PairDiversityResolver.PickGenerator (Q18.3 24×7 exemption).
+            // That fallback ignores busyAgents by design — without this
+            // override a budget-stalled task whose generator WAS the lead
+            // would re-claim back onto the lead the moment onShiftMembers
+            // is empty (e.g., off-band hours, lightly-configured test crews).
+            // Suppress the lead for this single claim; the row falls back
+            // to "no-agent-available" and waits for the next tick when a
+            // non-excluded member is on shift.
+            string? leadForPick = crew.Lead;
+            if (excludeForRotation is not null
+                && !string.IsNullOrEmpty(leadForPick)
+                && Array.Exists(excludeForRotation, id => string.Equals(id, leadForPick, StringComparison.Ordinal)))
+            {
+                leadForPick = null;
+            }
+
             // Resume support — when a work item already has deliverables (boot-
             // recovery just put it back on the queue), prefer the same agent
             // that was driving it before. Without pinning, every restart spins
             // up a fresh round-robin pick and the live transcript looks like a
             // brand-new task instead of a continuation.
-            if (string.IsNullOrEmpty(picked) && headRow is not null)
+            // Skipped when excludeForRotation is set: the budget reconciler
+            // explicitly wants a fresh pair, not continuity.
+            if (string.IsNullOrEmpty(picked) && headRow is not null && excludeForRotation is null)
             {
                 var priorAgent = (await db.Deliverables.AsNoTracking()
                     .Where(d => d.WorkItemId == headRow.WorkItemId)
@@ -609,7 +664,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     picked = priorAgent;
                 }
             }
-            picked ??= ResolveDiverseGenerator(onShiftMembers, busyAgents, crew.Lead);
+            picked ??= ResolveDiverseGenerator(onShiftMembers, busyAgents, leadForPick);
+
+            // Phase 51 — once the rotation pick succeeds, clear the exclusion
+            // semaphore on the work item so subsequent ticks (e.g. boot
+            // recovery after this run) don't keep rotating away from the
+            // original pair. The cleared value is committed alongside the
+            // rest of the claim's writes below.
+            if (excludeForRotation is not null && !string.IsNullOrEmpty(picked))
+            {
+                var headWiLive = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == headRow!.WorkItemId, ct);
+                if (headWiLive is not null)
+                {
+                    headWiLive.LastPairAgentIdsJson = null;
+                }
+            }
 
             // Phase 18.6 (Q18.3) — when zero members are on-shift AND there's
             // no lead to fall back on, picked is null. Skip cleanly rather
@@ -2275,6 +2344,51 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }, crewId: crewId, ct: ct);
 
                 await this.CompleteQueueRowAsync(workItemId, ct);
+
+                // Phase 51 — stalled-budget is recoverable: the operator can
+                // raise the crew's MaxTaskBudgetUsd and the reconciler will
+                // resume on the next 15s tick (or after MaxWait — default
+                // 10m — with the pair rotated). Park the row in
+                // CooldownBudget rather than Failed so the ExecBadge can
+                // render "auto-resuming in Xm" and the reconciler picks it
+                // up. Other non-pass verdicts (stalled iter-cap,
+                // stalled-no-convergence, reject) are dead ends — agent
+                // ran out of ideas; restart with operator steering is the
+                // correct next move, not auto-retry.
+                if (string.Equals(result.FinalVerdict, "stalled-budget", StringComparison.Ordinal))
+                {
+                    var maxWait = this.cooldownOptions.CurrentValue.MaxWait;
+                    var cooldownUntil = DateTimeOffset.UtcNow.Add(maxWait);
+                    var pair = new[] { agentId, evaluatorAgentId ?? agentId };
+                    var pairJson = System.Text.Json.JsonSerializer.Serialize(pair);
+
+                    var liveWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+                    if (liveWi is not null)
+                    {
+                        liveWi.ExecutionStatus = ExecutionStatuses.CooldownBudget;
+                        liveWi.BudgetCooldownUntilUtc = cooldownUntil;
+                        liveWi.LastPairAgentIdsJson = pairJson;
+                        liveWi.UpdatedAt = DateTimeOffset.UtcNow;
+                        await db.SaveChangesAsync(ct);
+                        await this.BroadcastWorkItemChangedAsync(liveWi, "cooldown-budget", ct, db);
+                    }
+
+                    await this.taskChannel.EmitAsync(workItemId, "task.budget-cooldown", new
+                    {
+                        agentId,
+                        crewId,
+                        evaluatorAgentId,
+                        cooldownUntilUtc = cooldownUntil,
+                        maxWaitSeconds = (int)maxWait.TotalSeconds,
+                        priorPair = pair,
+                        verdict = result.FinalVerdict,
+                        score = result.FinalScore,
+                        iterations = result.Iterations,
+                        reason = "Per-task budget cap hit. Auto-resume when the cap is raised (immediate) or after the cooldown window (with pair rotation).",
+                    }, crewId: crewId, ct: ct);
+                    return;
+                }
+
                 await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
                 await this.taskChannel.EmitAsync(workItemId, "task.failed", new
                 {
