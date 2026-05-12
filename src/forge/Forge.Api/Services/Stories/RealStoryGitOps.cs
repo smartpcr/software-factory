@@ -81,6 +81,66 @@ public sealed class RealStoryGitOps : IStoryGitOps
         await this.GitAsync(root, ct, "fetch", "origin", branch);
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Phase 50 — implementation. Force-pushes the base tip to
+    /// <c>refs/heads/{branch}</c> on origin so any orphan tip is replaced
+    /// in one atomic operation. Then tears down any local mirror — the
+    /// local branch ref and the legacy <c>spawn-{slug}</c> worktree — so
+    /// downstream callers don't reuse a stale checkout. Idempotent on a
+    /// non-orphan branch (force-pushes an identical tree).
+    /// </remarks>
+    public async Task EnsureBranchFreshAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+
+        // Step 1 — refresh local view of base so the force-push reads the
+        // up-to-date tip rather than a stale fetched copy.
+        await this.GitAsync(root, ct, "fetch", "origin", baseBranch);
+
+        // Step 2 — atomic force-push: replaces the orphan tip OR creates
+        // the branch fresh when missing. Runs under the operator's
+        // current auth context (matches the caller's POST /spawn), so
+        // any auth fix the operator applied since the prior failed
+        // delete takes effect here.
+        await this.GitAsync(root, ct, "push", "origin", "--force",
+            $"refs/remotes/origin/{baseBranch}:refs/heads/{branch}");
+
+        // Step 3 — drop any local mirror of the branch + its worktree.
+        // EnsureWorktreeAsync (called later by the orchestrator) is
+        // smart enough to recreate from the now-fresh origin tip; the
+        // problem we're guarding against is its reuse of a directory
+        // that still holds the OLD spawn's files. `git worktree remove
+        // --force` + raw Directory.Delete handles the "registered but
+        // missing" and "missing but with leftover files" cases.
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+        if (Directory.Exists(wtPath))
+        {
+            await this.RunGitCaptureAsync(root, ct, "worktree", "remove", "--force", wtPath);
+            if (Directory.Exists(wtPath))
+            {
+                try { Directory.Delete(wtPath, recursive: true); }
+                catch (Exception ex)
+                {
+                    this.logger?.LogWarning(ex,
+                        "EnsureBranchFreshAsync: could not raw-delete worktree {Path}; pruning git metadata only.",
+                        wtPath);
+                }
+            }
+            await this.RunGitCaptureAsync(root, ct, "worktree", "prune");
+        }
+
+        // Local branch ref — best-effort. `git branch -D` refuses if the
+        // ref is checked out somewhere (already handled above) or doesn't
+        // exist locally (typical when the orphan only lived on origin).
+        await this.RunGitCaptureAsync(root, ct, "branch", "-D", branch);
+
+        // Step 4 — populate local origin/{branch} tracking ref so
+        // downstream worktree-add sees the fresh tip.
+        await this.GitAsync(root, ct, "fetch", "origin", branch);
+    }
+
     public async Task<string> CommitFilesAsync(
         RepoRow? repo, string branch, IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
     {

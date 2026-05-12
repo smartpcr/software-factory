@@ -617,7 +617,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string worktreePath,
         RepoRow? repo,
         string planBranch,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool restartFromScratch = false)
     {
         // Phase 42 — agent's working dir IS the git worktree root. Doc lives
         // at its real repo path inside the worktree so the agent's tools see
@@ -637,13 +638,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // any path that re-enters the strategy (Resume click, scheduler tick,
         // base-branch-change replay, boot recovery) re-iterates a doc that
         // was already done — burning tokens and confusing the UI's status.
+        List<DeliverableRow> existingDeliverables;
+        using (var passScope = this.scopeFactory.CreateScope())
+        {
+            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            existingDeliverables = await passDb.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == docWorkItemId)
+                .ToListAsync(ct);
+        }
+
         if (!forceResume)
         {
-            using var passScope = this.scopeFactory.CreateScope();
-            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            var latestVerdict = (await passDb.Deliverables.AsNoTracking()
-                    .Where(d => d.WorkItemId == docWorkItemId)
-                    .ToListAsync(ct))
+            var latestVerdict = existingDeliverables
                 .OrderByDescending(d => d.CreatedAt)
                 .FirstOrDefault()?.Verdict;
             if (string.Equals(latestVerdict, "pass", StringComparison.OrdinalIgnoreCase))
@@ -656,6 +662,66 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     spec.FileName, docWorkItemId);
                 return cachedFromDisk;
             }
+        }
+
+        // Phase 50 — fresh-start cleanup. Three distinct leak vectors all
+        // surface here, and the fix is the same: clear the file off disk
+        // (after EnsureWorktreeAsync has re-checked it out from the branch
+        // tip) and purge any stale DB rows BEFORE the architect runs, so
+        // the agent generates from scratch instead of editing the prior
+        // run's content incrementally.
+        //
+        //   (a) Re-spawn after a merged plan PR. The previous spawn's
+        //       plan PR merged `docs/stories/{storyId}/{file}.md` into
+        //       the base branch. EnsureBranchFreshAsync resets the new
+        //       plan branch tip to base — which still carries those
+        //       docs — so the new architect's worktree boots up with
+        //       the OLD plan-doc already on disk. Without this cleanup
+        //       the architect sees an "existing file" and edits it
+        //       incrementally instead of regenerating from the user's
+        //       new story description.
+        //
+        //   (b) DeleteSpawn race. Spawn.Id is deterministic
+        //       (`spawn-{safeStoryId}`), so deliverable WorkItemIds
+        //       collide across spawn lifecycles. If a previous
+        //       DeleteSpawn missed any deliverables (in-flight agent
+        //       writing while the cancel propagated), they'd live on
+        //       under the new spawn's identity. Defensively delete
+        //       every deliverable + transcript + queue row keyed by
+        //       this docWorkItemId so the new architect starts at
+        //       iter 1 with a clean slate even if DeleteSpawn was
+        //       imperfect.
+        //
+        //   (c) Phase 50 follow-up — operator-initiated Restart. The
+        //       RestartArtifact endpoint wipes deliverables/transcripts/
+        //       queue rows and the architect scratch dir, then fires
+        //       ResumeSingleArtifactAsync with `restartFromScratch=true`.
+        //       Previously this cleanup block was gated by
+        //       `if (!forceResume)`, so Restart (forceResume=true)
+        //       bypassed it — leaving the prior 56-iter architecture.md
+        //       on disk for the new "iter 1" to read and incrementally
+        //       edit. Now `restartFromScratch=true` forces the cleanup
+        //       regardless of forceResume; the OR-fallback on
+        //       `existingDeliverables.Count == 0` is belt-and-suspenders
+        //       for the boot-recovery edge case (process killed after
+        //       the Restart endpoint wiped deliverables but before the
+        //       fire-and-forget Resume reached this point —
+        //       StoryResumeRecoveryService doesn't know the resume
+        //       originated from a Restart and re-fires with the default
+        //       `restartFromScratch=false`).
+        //
+        // Trigger condition: `restartFromScratch` (explicit operator signal)
+        // OR `!forceResume && existingDeliverables.Count == 0` (fresh-spawn).
+        // For ordinary Resume (forceResume=true, restartFromScratch=false,
+        // deliverables.Count > 0 because the resume is mid-iter), the
+        // cleanup correctly does NOT trigger — the gen/eval loop's own
+        // resume logic in DeliverableLoop picks up from lastPersisted.Iter.
+        var isFreshFirstIteration = existingDeliverables.Count == 0;
+        var shouldCleanup = restartFromScratch || (!forceResume && isFreshFirstIteration);
+        if (shouldCleanup)
+        {
+            await EnsureFreshDocWorkspaceAsync(
+                this.scopeFactory, this.logger, diskPath, docWorkItemId, restartFromScratch, ct);
         }
 
         // Resume case — historical guard from before the Phase 45 pass-verdict
@@ -791,15 +857,50 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  Evaluator said:  `- [ ] 1. §3.1 has markdown structure error: …`
                  Your summary:    `- [x] 1. FIXED — §3.1 — split MessengerMessage out into its own H4 block; OperatorBinding table now sits directly under its heading. grep-checked for orphan refs.`
 
-            2. **Doc-wide audit when you rename or restructure.** If your
-               edit changes a field name, type, section heading, or any
-               cross-referenced term:
-                 - BEFORE replying DONE, run `grep -F <old-term>` (via
-                   your shell) against `{{spec.RepoPath}}` AND its sibling
-                   plan docs under `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
-                 - Update EVERY remaining reference to the old term, or
-                   if a reference is intentionally untouched, leave a
-                   one-line `> Note: …` callout explaining why.
+            2. **Doc-wide audit with LITERAL grep — show actual output.**
+               If your edit removed or renamed a phrase, you MUST verify
+               by running `grep -nF "<EXACT phrase from the BEFORE state>"`
+               against `{{spec.RepoPath}}` and PASTE THE ACTUAL OUTPUT
+               in your `[x] FIXED` line — NOT a regex pattern you invent,
+               NOT a paraphrase, NOT a summary. The literal `grep -F`
+               with the exact pre-edit phrase is the only verification
+               that doesn't produce false positives.
+
+               Required format:
+                 `[x] N. FIXED — §X.Y — <description>. Verification:`
+                 ```
+                 $ grep -nF "resolve HumanAction.Value from the stored AgentQuestion JSON" docs/stories/<id>/architecture.md
+                 (empty — phrase removed)
+                 ```
+
+               Or, when SOME hits remain by design (e.g. a `> Note:`
+               callout explaining the retention), paste the hits too:
+                 ```
+                 $ grep -nF "..." docs/stories/<id>/architecture.md
+                 1234:> Note: this section intentionally retains the old term because …
+                 ```
+
+               Why this matters (qq:TELEGRAM-MESSENGER-S iter 56 case study,
+               score regressed because of this exact failure mode):
+                 Agent's claim: `grep-checked: no remaining deserializes.*AgentQuestion.*finds the`
+                 The pattern `deserializes.*AgentQuestion.*finds the` is
+                 a regex the agent INVENTED — it doesn't match the actual
+                 unfixed text "resolve `HumanAction.Value` from the stored
+                 `AgentQuestion` JSON" at §3.1 line 238. The grep returned
+                 empty for the invented pattern, the agent declared success,
+                 and the evaluator caught the unfixed phrase next iter.
+                 The literal `grep -F` of the pre-edit phrase would have
+                 caught the unfixed reference immediately.
+
+               Rules:
+                 - Use `grep -F` (fixed-string), never `grep` (regex) or `grep -E`.
+                 - The phrase is the EXACT string from the file BEFORE your
+                   edit — not a paraphrase, not your own description.
+                 - Run against the file you edited AND its sibling plan docs
+                   under `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+                 - Paste the actual output verbatim. Empty output = `(empty)`.
+                 - When you legitimately retain SOME occurrences, paste the
+                   surviving hits and explain inline.
                  - Example failure (qq:TELEGRAM-MESSENGER-S iter 43):
                    the agent renamed `AlertType/Summary` → `Title/Body`
                    in §4.6 but missed `alertType=Error` in §5.6's example.
@@ -882,9 +983,42 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               and no contradictions with sibling plan docs that already
               exist on disk).
 
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            DO NOT TRUST the generator's `### Prior feedback resolution`
+            block at face value. For each `[x] N. FIXED — … grep -F "<phrase>" …`
+            claim in the generator's reply, you MUST independently verify
+            against the actual file:
+
+            1. Extract the literal phrase from the generator's claim
+               (the quoted string after `grep -F`).
+            2. Run `grep -nF "<phrase>"` (via your shell) against
+               `{{spec.RepoPath}}` AND the sibling plan docs under
+               `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+            3. If your grep returns any hits the generator did NOT
+               explicitly acknowledge, the claim is FALSE-VERIFIED.
+            4. For every falsely-verified `[x]` claim, add a NEW
+               checkbox to your "What still needs work" list with the
+               literal grep evidence:
+
+                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                  [x] FIXED with grep-checked: "<their pattern>", but
+                  actual grep -nF "<phrase>" shows: <paste the hit
+                  line(s)>. Fix the missed reference and re-verify.`
+
+            Why this matters (qq:TELEGRAM-MESSENGER-S iter 56 case study):
+            the generator claimed `grep-checked: no remaining
+            deserializes.*AgentQuestion.*finds the` — a regex it invented
+            that didn't match the actual unfixed phrase "resolve
+            HumanAction.Value from the stored AgentQuestion JSON" at
+            §3.1 line 238. Without independent re-verification by you,
+            the loop would have iterated on the same phantom-fixed
+            phrase indefinitely.
+
             Structure your `notes` field (inside the JSON block below) into
             three labeled parts in this order:
-            1. **What improved this iteration** — one bullet list.
+            1. **What improved this iteration** — one bullet list. Include
+               any `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your
+               own grep.
             2. **What still needs work** — emit a markdown CHECKBOX list,
                one item per line, in this exact shape:
                  `- [ ] 1. <atomic issue + section/line citation>`
@@ -896,6 +1030,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                note. Keep items atomic (one issue per checkbox) — never
                combine two issues into one line, or the generator can't
                cleanly mark just one of them as fixed.
+
+               Include `UNVERIFIED CLAIM` items here whenever your
+               re-grep contradicts the generator's claim. Cite the
+               specific phrase and line(s) where your grep found hits.
 
                ALSO: when scoring iteration N+1, compare the prior
                iteration's checkboxes against what the generator
@@ -1031,8 +1169,90 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     private static readonly string[] ArchitectDisallowedTools = new[] { "Bash" };
 
+    /// <summary>
+    /// Phase 50 — clear the on-disk plan-doc file and purge any stale per-doc
+    /// DB rows so the architect's next architect invocation regenerates the
+    /// doc from scratch instead of inheriting prior content. Shared by:
+    /// fresh-spawn iter 1 (count==0 + !forceResume), operator-initiated
+    /// Restart (restartFromScratch=true), and boot-recovery edge cases.
+    /// Extracted from <see cref="ProducePlanFileAsync"/> so the cleanup
+    /// contract has a single source of truth and can be unit-tested
+    /// without spinning up the full strategy + agent runner stack.
+    ///
+    /// <para>This runs AFTER <see cref="IStoryGitOps.EnsureWorktreeAsync"/>
+    /// has set up (or restored) the worktree — otherwise the file deletion
+    /// would be undone by the worktree's <c>git checkout</c> re-pulling the
+    /// file from the plan-branch tip. Best-effort: file delete failures are
+    /// logged at warning level but do not throw, so a transient FS lock
+    /// doesn't strand the loop; the agent's iter 1 will then edit the
+    /// stale file instead of regenerating (degraded but not broken).</para>
+    /// </summary>
+    /// <param name="scopeFactory">DI scope factory for the one-shot purge transaction.</param>
+    /// <param name="logger">Optional logger for diagnostics; helper still functions when null.</param>
+    /// <param name="diskPath">Absolute path to the plan doc inside the worktree.</param>
+    /// <param name="docWorkItemId">Synthetic work-item id (<c>plan-doc:{spawn.Id}:{fileName}</c>) used as the DB key for all per-doc rows.</param>
+    /// <param name="restartFromScratch">When true, log as Restart; when false, log as fresh-spawn.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal static async Task EnsureFreshDocWorkspaceAsync(
+        IServiceScopeFactory scopeFactory,
+        ILogger? logger,
+        string diskPath,
+        string docWorkItemId,
+        bool restartFromScratch,
+        CancellationToken ct)
+    {
+        var reason = restartFromScratch ? "Restart" : "fresh-spawn";
+        if (File.Exists(diskPath))
+        {
+            try
+            {
+                File.Delete(diskPath);
+                logger?.LogInformation(
+                    "Phase 50 {Reason} cleanup: removed stale plan doc at {DiskPath} (workItem {WorkItem}) before architect invocation.",
+                    reason, diskPath, docWorkItemId);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex,
+                    "Phase 50 {Reason} cleanup: could not delete stale plan doc at {DiskPath}; architect may inherit prior content.",
+                    reason, diskPath);
+            }
+        }
+
+        // Defensive DB sweep of anything keyed by this docWorkItemId that
+        // survived an upstream cleanup (DeleteSpawn race with in-flight
+        // agent, RestartArtifact endpoint racing with an agent finishing
+        // mid-cancel, etc.). Everything we remove was genuinely "left
+        // over" rather than freshly produced — this runs BEFORE iter 1
+        // starts, so nothing the new architect produces could land in
+        // these tables yet.
+        using var purgeScope = scopeFactory.CreateScope();
+        var purgeDb = purgeScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var staleDeliverables = await purgeDb.Deliverables.Where(d => d.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.Deliverables.RemoveRange(staleDeliverables);
+        var staleQuestions = await purgeDb.DeliverableQuestions.Where(q => q.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.DeliverableQuestions.RemoveRange(staleQuestions);
+        var staleTranscripts = await purgeDb.TaskTranscriptEvents.Where(e => e.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.TaskTranscriptEvents.RemoveRange(staleTranscripts);
+        var staleQueue = await purgeDb.TaskQueue.Where(q => q.WorkItemId == docWorkItemId).ToListAsync(ct);
+        var staleQueueIds = staleQueue.Select(q => q.Id).ToList();
+        if (staleQueueIds.Count > 0)
+        {
+            var staleQueueHist = await purgeDb.TaskQueueHistory.Where(h => staleQueueIds.Contains(h.QueueId)).ToListAsync(ct);
+            purgeDb.TaskQueueHistory.RemoveRange(staleQueueHist);
+        }
+        purgeDb.TaskQueue.RemoveRange(staleQueue);
+        if (staleDeliverables.Count > 0 || staleTranscripts.Count > 0 || staleQueue.Count > 0)
+        {
+            await purgeDb.SaveChangesAsync(ct);
+            logger?.LogInformation(
+                "Phase 50 {Reason} cleanup: purged {D} deliverables, {Q} questions, {T} transcripts, {QR} queue rows for {WorkItem}.",
+                reason, staleDeliverables.Count, staleQuestions.Count, staleTranscripts.Count, staleQueue.Count, docWorkItemId);
+        }
+    }
+
     public async Task ResumeSingleArtifactAsync(
-        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, string key, bool restartFromScratch = false, CancellationToken ct = default)
     {
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
@@ -1084,6 +1304,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             worktreePath: worktreePath,
             repo: repo,
             planBranch: planBranch,
+            restartFromScratch: restartFromScratch,
             ct: ct);
     }
 
@@ -1566,18 +1787,39 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  Evaluator said:  `- [ ] 1. HttpMetricsHandler.cs:42 still buffers; should stream`
                  Your summary:    `- [x] 1. FIXED — HttpMetricsHandler.cs:42 — replaced ReadAsync into MemoryStream with CopyToAsync; added test ServerSentEventsStreamingTest.NoBuffering`
 
-            2. **Search the whole repo when renaming a symbol.** When
-               your edit renames a type, method, field, config key, or
-               feature flag:
-                 - Run `grep -r '<old-name>' src/ tests/` before claiming
-                   DONE.
-                 - Update every remaining reference, or document why a
-                   reference is intentionally untouched in your Change
-                   Summary.
-                 - The build gate catches compile failures but NOT
-                   silent stale references (e.g. a test asserting the
-                   old name in a string literal, a YAML config still
-                   pointing at the old key).
+            2. **Repo-wide audit with LITERAL grep — show actual output.**
+               When your edit renames a type, method, field, config key,
+               or feature flag, you MUST verify by running
+               `grep -rnF "<EXACT symbol from the BEFORE state>" src/ tests/`
+               and PASTE THE ACTUAL OUTPUT in your `[x] FIXED` line —
+               NOT a regex pattern you invent, NOT a paraphrase. The
+               literal `grep -F` with the exact pre-edit symbol is the
+               only verification that doesn't produce false positives.
+
+               Required format inside the resolution checklist:
+                 `[x] N. FIXED — <file:line> — <description>. Verification:`
+                 ```
+                 $ grep -rnF "OldSymbolName" src/ tests/
+                 (empty — symbol fully removed)
+                 ```
+
+               When SOME hits remain by design (e.g. a backward-compat
+               adapter), paste them and explain:
+                 ```
+                 $ grep -rnF "OldSymbolName" src/ tests/
+                 src/Compat.cs:23: // legacy alias kept for downstream consumers
+                 ```
+
+               Rules:
+                 - Use `grep -rnF` (fixed-string, recursive, with line numbers),
+                   never plain `grep` or `grep -E`.
+                 - The symbol/string is the EXACT identifier from the
+                   code BEFORE your edit.
+                 - Paste actual output verbatim. Empty output = `(empty)`.
+                 - The build gate catches compile failures but NOT silent
+                   stale references (e.g. a test asserting the old name
+                   in a string literal, a YAML config still pointing at
+                   the old key) — only an exhaustive `grep -F` catches those.
 
             3. **Verify the whole test suite passes, not just the file
                you edited.** Run the workstream's project tests
@@ -1643,6 +1885,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               planning artifacts on `main` (architecture.md / implementation-plan.md).
             - Obvious bugs, missing error paths, untested edge cases.
 
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            DO NOT TRUST the generator's `### Prior feedback resolution`
+            block at face value. For each `[x] N. FIXED — … grep -rnF "<phrase>"`
+            claim in the generator's reply, you MUST independently verify
+            against the actual code:
+
+            1. Extract the literal phrase from the generator's claim
+               (the quoted string after `grep -rnF`).
+            2. Run `grep -rnF "<phrase>" src/ tests/` (via your shell).
+            3. If your grep returns any hits the generator did NOT
+               explicitly acknowledge, the claim is FALSE-VERIFIED.
+            4. For every falsely-verified `[x]` claim, add a NEW
+               checkbox to your "Still needs improvement" list with the
+               literal grep evidence:
+
+                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                  [x] FIXED with grep-checked: "<their pattern>", but
+                  actual grep -rnF "<phrase>" src/ tests/ shows: <paste
+                  the hit line(s)>. Fix the missed reference and re-verify.`
+
+            The build gate catches compile failures but NOT silent stale
+            references (e.g. a test asserting the old name in a string
+            literal, a YAML config still pointing at the old key). Your
+            independent re-grep is the only way to catch these.
+
             ## Open-questions hard gate
             If the engineer surfaced open questions in their
             `## Open Questions` JSON block AND the operator hasn't answered
@@ -1655,7 +1922,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Output **only** a fenced JSON block — no prose outside it. Put
             your full technical feedback inside the `notes` field. Structure
             the `notes` content in this order:
-            1. **Improvements this iteration** — bullet list.
+            1. **Improvements this iteration** — bullet list. Include any
+               `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your own
+               grep.
             2. **Still needs improvement** — emit a markdown CHECKBOX list,
                one item per line, in this exact shape:
                  `- [ ] 1. <atomic issue + file:line / function / test ref>`
@@ -1667,6 +1936,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                note. Keep items atomic — one issue per checkbox — so the
                generator can cleanly mark just one of them as fixed
                without ambiguity.
+
+               Include `UNVERIFIED CLAIM` items here whenever your
+               re-grep contradicts the generator's claim. Cite the
+               specific phrase and line(s) where your grep found hits.
 
                When scoring iteration N+1, compare the prior iteration's
                checkboxes against the actual code/tests as you see them.
