@@ -43,6 +43,30 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Phase 50 — in-memory equivalent of a force-reset to base: drops any
+    /// existing tree under <paramref name="branch"/> and recreates it as a
+    /// copy of <paramref name="baseBranch"/>'s tree. Mirrors what the real
+    /// git path does via <c>git push --force</c>. Used by tests verifying
+    /// fresh-spawn behavior after a prior spawn delete.
+    /// </remarks>
+    public Task EnsureBranchFreshAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var key = Key(repo, branch);
+        var baseKey = Key(repo, baseBranch);
+        if (!this.trees.TryGetValue(baseKey, out var baseTree))
+        {
+            baseTree = new Dictionary<string, string>(StringComparer.Ordinal);
+            this.trees[baseKey] = baseTree;
+            this.tips[baseKey] = ShaOf(baseTree);
+        }
+        var tree = new Dictionary<string, string>(baseTree, StringComparer.Ordinal);
+        this.trees[key] = tree;
+        this.tips[key] = ShaOf(tree);
+        return Task.CompletedTask;
+    }
+
     public Task<string> CommitFilesAsync(
         RepoRow? repo, string branch, IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
     {
