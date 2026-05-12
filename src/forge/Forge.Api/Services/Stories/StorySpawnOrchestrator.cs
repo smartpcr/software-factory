@@ -1594,24 +1594,75 @@ public sealed class StorySpawnOrchestrator
         else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
-            // instead of re-spawning the gen↔eval loop. Before this fix, the
-            // orchestrator only special-cased `pass`, so a `stalled` /
-            // `stalled-budget` / `reject` workstream re-entered
-            // ProduceWorkstreamChangesAsync every tick. Combined with the
-            // DeliverableLoop's resume guard (which restarted iter from 1
-            // after each `stalled` row), this drove the 139-deliverable /
-            // $9,825 livelock observed 2026-05-09. We do NOT auto-route
-            // these to `review` — sending non-pass work into the normal
-            // review pipeline could let auto-merge ship rejected/stalled
-            // changes. Operator clicks Restart (which clears deliverables
-            // and resets Status="active") to retry.
+            // instead of re-spawning the gen↔eval loop.
             //
-            // Phase 49 — uses the new "stalled" status (not "blocked"), so
-            // the UI can distinguish failure-triage from dependency-waiting.
-            // Carries the verdict + score into StallReason for the tooltip.
+            // Phase 51 — `stalled-budget` is the one verdict in this set
+            // that is NOT a dead end: the operator can raise the crew's
+            // MaxTaskBudgetUsd and the row should resume automatically.
+            // Re-evaluate against the CURRENT cap right here. If
+            // cumulative cost is now under cap, the cap was raised since
+            // the deliverable was written — fall through to the else
+            // branch (produces a fresh iteration) instead of re-stalling.
+            // This is the orchestrator-side mirror of
+            // BudgetCooldownReconciler.TryResumeAsync; both ends must
+            // agree so the reconciler doesn't clear the stall and the
+            // orchestrator immediately re-set it on the next tick.
+            if (string.Equals(lastDel.Verdict, "stalled-budget", StringComparison.Ordinal))
+            {
+                var crew = await db2.Crews.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == lastDel.CrewId, ct);
+                // Windowed cost — sum agent_usage from
+                // WorkItemRow.BudgetWindowStartUtc forward so a
+                // cooldown-elapsed reset (BudgetCooldownReconciler) is
+                // honored here too. Both decision points must agree on
+                // "what is the current attempt's cost" or the
+                // orchestrator re-stalls a row the reconciler just
+                // freshened.
+                var wiForWindow = await db2.WorkItems.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+                var windowStart = wiForWindow?.BudgetWindowStartUtc;
+                var usageRows = await db2.AgentUsage.AsNoTracking()
+                    .Where(u => u.TaskId == w.Id)
+                    .ToListAsync(ct);
+                var cumulativeCost = windowStart is DateTimeOffset ws
+                    ? usageRows.Where(u => u.StartedAt >= ws).Sum(u => u.CostUsd)
+                    : usageRows.Sum(u => u.CostUsd);
+                var currentCap = crew?.MaxTaskBudgetUsd;
+                var capRaised = currentCap is decimal cap && cumulativeCost < cap;
+                this.logger?.LogInformation(
+                    "DriveOneWorkstreamImpl: ws={WsId} lastVerdict=stalled-budget iter={Iter} "
+                    + "cost={Cost} currentCap={Cap} crew={Crew} capRaised={CapRaised}",
+                    w.Id, lastDel.Iter,
+                    cumulativeCost.ToString("0.00"),
+                    currentCap?.ToString("0.00") ?? "(null)",
+                    lastDel.CrewId ?? "(null)",
+                    capRaised);
+                if (capRaised)
+                {
+                    // Cap was raised since iter N's deliverable was written.
+                    // Clear any stale stalled status from a prior tick and
+                    // fall through to produce a fresh iteration.
+                    var liveRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+                    if (liveRow is not null && liveRow.Status == WorkstreamStatuses.Stalled)
+                    {
+                        liveRow.Status = "active";
+                        liveRow.StallReason = null;
+                        liveRow.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                        await db2.SaveChangesAsync(ct);
+                        await EmitChange(hub, "ws-unstalled-budget-raise", spawn, ct);
+                        this.logger?.LogInformation(
+                            "Cleared budget-stall on {WsId}; new cap ${Cap} > cost ${Cost}. Driving fresh iteration.",
+                            w.Id, currentCap?.ToString("0.00"), cumulativeCost.ToString("0.00"));
+                    }
+                    files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
+                    goto AfterProduce;
+                }
+                // Cap not raised — fall through to the normal stall path.
+            }
+
             this.logger?.LogWarning(
                 "Workstream {WsId} terminal verdict {Verdict} (iter {Iter}, score {Score}). "
-                + "Marking stalled; operator must Restart to retry.",
+                + "Marking stalled; operator must Restart (or raise cap for stalled-budget) to retry.",
                 w.Id, lastDel.Verdict, lastDel.Iter, lastDel.Score);
 
             var blockedRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
@@ -1631,6 +1682,7 @@ public sealed class StorySpawnOrchestrator
             files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
         }
 
+    AfterProduce:
         // Re-check status: operator may have cancelled mid-loop.
         var freshRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
         if (freshRow is null || freshRow.Status is "cancelled")
