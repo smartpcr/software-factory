@@ -99,6 +99,7 @@ public class RepoCloneService : IRepoCloneService
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            GitProcessEnv.ApplyFailFast(psi);
             psi.ArgumentList.Add("clone");
             psi.ArgumentList.Add("--progress");
             psi.ArgumentList.Add(authedUrl);
@@ -166,6 +167,7 @@ public class RepoCloneService : IRepoCloneService
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            GitProcessEnv.ApplyFailFast(psi);
             psi.ArgumentList.Add("config");
             psi.ArgumentList.Add("--get");
             psi.ArgumentList.Add("remote.origin.url");

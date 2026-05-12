@@ -83,8 +83,16 @@ async function ensureConnected() {
     // workstreams view subscribes to these so its story cards reflect phase
     // advances + auto-orchestration in real time without polling.
     connection.on('story-spawn.changed', (payload: { kind?: string; storyId?: string; phase?: string }) => {
+      // Phase 51 — always bump the GLOBAL list tick so SwarmIndexView's
+      // list/details refetch immediately. The `created` and `deleted`
+      // kinds carry no per-storyId association on every event (the
+      // server's `kind=created` payload nests storyId inside `spawn`),
+      // so the list-level tick is the only reliable signal for them.
+      useSpawnStore.getState().bumpList();
+
       if (!payload?.storyId) return;
-      // Bump a tick on the spawn store so subscribed components re-fetch.
+      // Bump a tick on the spawn store so per-story subscribed components
+      // re-fetch detail (SwarmStoryRow, SwarmStoryView, StoryCard).
       useSpawnStore.getState().bump(payload.storyId);
       // Re-pull the workstreams slice on the kinds that mutate the
       // workstream table — `decomposed` adds new rows, the orchestrator
