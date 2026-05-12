@@ -111,4 +111,42 @@ public static class ScoringConstants
 
     // ── Lead floor (Q14.5) ──────────────────────────────────────────────
     public const int LeadMinLevel = 7;
+
+    // ── Phase 52 — sloppy-iteration guard ───────────────────────────────
+
+    /// <summary>
+    /// Q52.2 — generator-side cumulative input+output token cap. When the
+    /// generator agent's tokens since <c>WorkItemRow.BudgetWindowStartUtc</c>
+    /// exceed this number, the deliverable is marked sloppy and the work
+    /// item is parked for reassignment. The evaluator's tokens are bounded
+    /// by rubric size and don't bloat, so we only meter the generator side.
+    /// </summary>
+    public const long SloppyGeneratorTokenCap = 500_000;
+
+    /// <summary>
+    /// Q52.5 — maximum number of pair-attempts allowed on a single work item
+    /// before terminal failure. Original pair = attempt 1; first reassignment
+    /// = attempt 2; second reassignment = attempt 3. After the third attempt
+    /// is judged sloppy, the reconciler does NOT pick a fourth pair — it
+    /// stamps <see cref="ExecutionStatuses.Failed"/> with
+    /// <see cref="SloppyTerminalFailureReason"/>.
+    /// </summary>
+    public const int MaxPairAttempts = 3;
+
+    /// <summary>
+    /// Q52.5 — locked terminal-failure reason for the sloppy-3-attempts path.
+    /// Lifted verbatim from the operator brief; the
+    /// <c>Phase14SpecConsistencyTests</c> assertion catches any drift.
+    /// </summary>
+    public const string SloppyTerminalFailureReason =
+        "Failed after 3 reassignments, didn't advance, consider refactor and break down the scope";
+
+    /// <summary>
+    /// Phase 14.7 / Q52.7 — demotion-risk threshold for the new
+    /// <c>SloppyRate</c> KPI. An agent whose share of sloppy-class
+    /// pair-attempts exceeds this fraction in the rolling window is flagged
+    /// at demotion risk even when their rolling-avg score is above the floor
+    /// (symmetric with the existing <c>RejectRate &gt; 0.10</c> rule).
+    /// </summary>
+    public const double SloppyRiskRate = 0.15;
 }

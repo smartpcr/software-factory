@@ -907,7 +907,7 @@ public class DeliverableRow
     /// <summary>JSON object mapping each rubric dimension to its 0..weight points.</summary>
     public string DimsJson { get; set; } = "{}";
 
-    /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | paused-eod</c>.</summary>
+    /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | stalled-no-convergence | sloppy | paused-eod</c>.</summary>
     public string Verdict { get; set; } = "iterate";
 
     /// <summary>Evaluator's free-form notes (≤ 4000 chars by spec, not enforced at the row level).</summary>
@@ -931,8 +931,102 @@ public class DeliverableRow
 }
 
 /// <summary>
-/// Phase 39 (Layer C) — open questions extracted from a generator's
-/// `## Open Questions` JSON block. Operator answers them via the
+/// Phase 52 — one row per (work_item, pair) attempt. The audit-trail-of-record
+/// for "what did this pair cost and produce on this work item". Created on
+/// first claim with <c>SequenceNo = 1</c>; the <c>SloppyReassignmentReconciler</c>
+/// opens a fresh row on each reassignment (SequenceNo 2, 3). The pair-attempt
+/// cap (<see cref="ScoringConstants.MaxPairAttempts"/>) is enforced against
+/// <see cref="WorkItemRow.PairAttemptCount"/>, not the count of rows here —
+/// the row count is the *audit* shape, the work-item column is the *guard*
+/// shape, which lets the reconciler refuse a reassignment without first
+/// opening a row.
+///
+/// <para><see cref="Outcome"/> values: <c>in-progress | passed |
+/// reassigned-sloppy | terminal-failed | cancelled</c>. <see cref="SloppyReason"/>
+/// values when sloppy-class: <c>score-plateau | token-cap | iter-cap</c>.
+/// Phase 14.16's KPI service reads this table for the <c>SloppyRate</c>
+/// KPI; Phase 14.7's promotion job treats sustained sloppy-rate as a
+/// demotion signal.</para>
+/// </summary>
+public class AgentPairAssignmentRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>1-based, 1..<see cref="ScoringConstants.MaxPairAttempts"/>. Unique on (WorkItemId, SequenceNo).</summary>
+    public int SequenceNo { get; set; } = 1;
+
+    public string GeneratorAgentId { get; set; } = string.Empty;
+
+    public string EvaluatorAgentId { get; set; } = string.Empty;
+
+    public string CrewId { get; set; } = string.Empty;
+
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Set when <see cref="Outcome"/> leaves <c>in-progress</c>.</summary>
+    public DateTimeOffset? EndedAt { get; set; }
+
+    public int TotalIters { get; set; }
+
+    public int? FinalScore { get; set; }
+
+    public long TotalInputTokens { get; set; }
+
+    public long TotalOutputTokens { get; set; }
+
+    public decimal TotalCostUsd { get; set; }
+
+    /// <summary>One of <see cref="AgentPairAssignmentOutcomes"/>.</summary>
+    public string Outcome { get; set; } = AgentPairAssignmentOutcomes.InProgress;
+
+    /// <summary>One of <see cref="SloppyReasons"/> when <see cref="Outcome"/> is sloppy-class; null otherwise.</summary>
+    public string? SloppyReason { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 52 — well-known values for <see cref="AgentPairAssignmentRow.Outcome"/>.
+/// </summary>
+public static class AgentPairAssignmentOutcomes
+{
+    /// <summary>Pair is currently working on the iteration loop.</summary>
+    public const string InProgress = "in-progress";
+
+    /// <summary>Pair produced a passing deliverable. Terminal happy path.</summary>
+    public const string Passed = "passed";
+
+    /// <summary>
+    /// Sloppy detector fired. The reconciler will open a fresh pair-attempt
+    /// row unless this is the third attempt (cap), in which case it stamps
+    /// <see cref="TerminalFailed"/> instead.
+    /// </summary>
+    public const string ReassignedSloppy = "reassigned-sloppy";
+
+    /// <summary>Cap hit (PairAttemptCount &gt;= MaxPairAttempts). Work item terminates with FailureReason.</summary>
+    public const string TerminalFailed = "terminal-failed";
+
+    /// <summary>Operator cancelled the work item; row closed without a verdict.</summary>
+    public const string Cancelled = "cancelled";
+}
+
+/// <summary>
+/// Phase 52 — well-known values for <see cref="AgentPairAssignmentRow.SloppyReason"/>.
+/// </summary>
+public static class SloppyReasons
+{
+    /// <summary>Q52.1 — score plateau against personal best. Latest 3 scores ≤ peak at iter ≤ N-3.</summary>
+    public const string ScorePlateau = "score-plateau";
+
+    /// <summary>Q52.2 — generator's cumulative input+output tokens since BudgetWindowStartUtc exceed <see cref="ScoringConstants.SloppyGeneratorTokenCap"/>.</summary>
+    public const string TokenCap = "token-cap";
+
+    /// <summary>Phase 14.4 hard 5-iter cap hit without pass. Phase 52 absorbs the legacy <c>stalled</c> path into the same reassignment flow.</summary>
+    public const string IterCap = "iter-cap";
+}
+
 /// conversation-tab wizard; answers are prepended to the next iteration's
 /// user prompt and the evaluator's pass verdict is overridden to `iterate`
 /// while any rows for this work item have <see cref="Answer"/> = null.
@@ -1648,6 +1742,37 @@ public class WorkItemRow
     /// Null = no window has elapsed yet (count from row creation).
     /// </summary>
     public DateTimeOffset? BudgetWindowStartUtc { get; set; }
+
+    /// <summary>
+    /// Phase 52 — total pair-attempts so far on this work item. Starts at
+    /// 1 when the first pair is claimed; the <c>SloppyReassignmentReconciler</c>
+    /// increments to 2 on the first reassignment and 3 on the second. When
+    /// the row hits attempt 3 AND another sloppy trigger fires, the
+    /// reconciler does NOT pick a fourth pair — it stamps
+    /// <see cref="ExecutionStatus"/>=<c>failed</c> with
+    /// <see cref="FailureReason"/>=<see cref="ScoringConstants.SloppyTerminalFailureReason"/>.
+    /// Independent of <see cref="TrialCount"/> (per-claim retry counter
+    /// from Phase 19).
+    /// </summary>
+    public int PairAttemptCount { get; set; } = 1;
+
+    /// <summary>
+    /// Phase 52 — JSON array of <c>[generatorAgentId, evaluatorAgentId]</c>
+    /// tuples appended on every reassignment. The claim picker excludes
+    /// ALL prior pairs (not just the most recent) so reassignment never
+    /// rotates back to a previously-rejected pair. Null when no
+    /// reassignment has happened yet.
+    /// </summary>
+    public string? PriorPairsJson { get; set; }
+
+    /// <summary>
+    /// Phase 52 — structured failure reason set on the sloppy-3-attempts
+    /// terminal path. Today only set to
+    /// <see cref="ScoringConstants.SloppyTerminalFailureReason"/>; reserved
+    /// for future terminal-failure paths so the UI has one column to
+    /// read regardless of the underlying cause.
+    /// </summary>
+    public string? FailureReason { get; set; }
 }
 
 /// <summary>
@@ -1670,6 +1795,17 @@ public static class ExecutionStatuses
     /// operator sees an auto-recovery is in flight rather than a dead end.
     /// </summary>
     public const string CooldownBudget = "cooldown-budget";
+
+    /// <summary>
+    /// Phase 52 — sloppy verdict fired; the work item is parked waiting
+    /// for the <c>SloppyReassignmentReconciler</c> to either rotate to a
+    /// fresh pair (full clean slate: transcript / deliverables / budget /
+    /// worktree wiped) or — when <c>PairAttemptCount &gt;= MaxPairAttempts</c>
+    /// — flip to <see cref="Failed"/> with the locked terminal reason.
+    /// Distinct from <see cref="Failed"/> so the UI shows an auto-recovery
+    /// is in flight.
+    /// </summary>
+    public const string PendingReassign = "pending-reassign";
 }
 
 /// <summary>
