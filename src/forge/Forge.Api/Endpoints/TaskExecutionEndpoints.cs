@@ -1105,6 +1105,7 @@ public static class TaskExecutionEndpoints
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
         try
         {

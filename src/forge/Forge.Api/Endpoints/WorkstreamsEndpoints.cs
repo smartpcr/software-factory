@@ -505,6 +505,7 @@ public static class WorkstreamsEndpoints
                         UseShellExecute = false,
                         CreateNoWindow = true,
                     };
+                    Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
                     using var p = System.Diagnostics.Process.Start(psi);
                     if (p is not null && p.WaitForExit(10_000) && p.ExitCode == 0)
                     {
@@ -800,6 +801,7 @@ public static class WorkstreamsEndpoints
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return -1;
@@ -829,6 +831,7 @@ public static class WorkstreamsEndpoints
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return (-1, string.Empty, string.Empty);
