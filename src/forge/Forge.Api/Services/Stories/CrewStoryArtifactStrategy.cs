@@ -231,6 +231,111 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Resolve the on-disk state directory (where forge.db lives and
+    /// where storyworkspaces / attachments are rooted). Mirrors the
+    /// same resolution rule the rest of the codebase uses.
+    /// </summary>
+    private string ResolveStateDir()
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var cfg = scope.ServiceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+        var dbPath = cfg?["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        return Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+    }
+
+    /// <summary>
+    /// Phase 50 — render operator-pinned decisions as a prompt block that
+    /// the generator must treat as binding. Pins are stored on the spawn
+    /// as <c>StorySpawnRow.DecisionPinsJson</c>; this helper resolves the
+    /// spawn id from the work item id (plan-doc: prefix → spawn id;
+    /// engineer workstream → walk StorySpawnId), loads the JSON, filters
+    /// by scope (pins with <c>workItemId == null</c> apply globally; pins
+    /// scoped to a specific id only fire for that id), and returns a
+    /// rendered markdown block.
+    ///
+    /// <para>Returns empty string when no pins apply — caller checks for
+    /// non-empty before inserting the block + separator.</para>
+    /// </summary>
+    private async Task<string> BuildDecisionPinsBlockAsync(string workItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return string.Empty;
+
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        // Resolve spawn id: plan-doc:{spawnId}:{file} → spawnId; else
+        // workstream row's StorySpawnId; else workItemId itself (when
+        // the caller passes a spawn id directly, e.g. decompose/qa).
+        string? spawnId = null;
+        if (workItemId.StartsWith("plan-doc:", StringComparison.Ordinal))
+        {
+            var rest = workItemId.Substring("plan-doc:".Length);
+            var lastColon = rest.LastIndexOf(':');
+            spawnId = lastColon > 0 ? rest.Substring(0, lastColon) : rest;
+        }
+        else
+        {
+            var ws = await db.Workstreams.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            spawnId = ws?.StorySpawnId ?? workItemId;
+        }
+        if (string.IsNullOrEmpty(spawnId)) return string.Empty;
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+        if (spawn is null || string.IsNullOrEmpty(spawn.DecisionPinsJson)) return string.Empty;
+
+        List<System.Text.Json.JsonElement>? pins = null;
+        try
+        {
+            pins = System.Text.Json.JsonSerializer.Deserialize<List<System.Text.Json.JsonElement>>(
+                spawn.DecisionPinsJson);
+        }
+        catch { return string.Empty; }
+        if (pins is null || pins.Count == 0) return string.Empty;
+
+        var applicable = new List<System.Text.Json.JsonElement>();
+        foreach (var pin in pins)
+        {
+            var scopedTo = pin.TryGetProperty("workItemId", out var wid)
+                && wid.ValueKind == System.Text.Json.JsonValueKind.String
+                ? wid.GetString()
+                : null;
+            if (string.IsNullOrEmpty(scopedTo)
+                || string.Equals(scopedTo, workItemId, StringComparison.Ordinal))
+            {
+                applicable.Add(pin);
+            }
+        }
+        if (applicable.Count == 0) return string.Empty;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+        sb.AppendLine("║  OPERATOR DECISION PINS — BINDING, OVERRIDES EVERYTHING ║");
+        sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+        sb.AppendLine();
+        sb.AppendLine("The operator has explicitly arbitrated the following decisions");
+        sb.AppendLine("after observing convergence loops in prior iterations. You MUST");
+        sb.AppendLine("treat each pin as a non-negotiable directive that overrides any");
+        sb.AppendLine("sibling-doc text, evaluator critique, or prior chain context.");
+        sb.AppendLine("If a pin contradicts what a sibling doc says, follow the pin");
+        sb.AppendLine("(the sibling doc is wrong and will be corrected separately).");
+        sb.AppendLine();
+        for (var i = 0; i < applicable.Count; i++)
+        {
+            var pin = applicable[i];
+            var text = pin.TryGetProperty("text", out var t)
+                && t.ValueKind == System.Text.Json.JsonValueKind.String
+                ? t.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            sb.AppendLine($"{i + 1}. {text}");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Phase 49 follow-up — resolve the build command the build gates
     /// (per-iter and post-pass) should run for this workstream. The
     /// gates were originally hard-coded to <c>dotnet build</c> at the
@@ -578,6 +683,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // shared worktree (no copy-into-siblings/ trick anymore). Some may
         // not exist yet on iter 1 of parallel execution; the agent reads
         // whichever are present at the time.
+        //
+        // Phase 50 follow-up — we briefly experimented with freezing
+        // siblings via a per-drive snapshot, but operator feedback was
+        // explicit: the convergence problem is per-doc attention (the
+        // agent doesn't address its own prior feedback), not cross-doc
+        // moving targets. The other three plan docs converge fine
+        // against live siblings; only architecture.md gets stuck. The
+        // snapshot approach was abandoned.
         var siblingPathsList = string.Join("\n", siblingSpecs.Select(p => $"  - `{p}`"));
 
         var generatorPrompt = $$"""
@@ -650,6 +763,67 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             questions for the next iteration. The orchestrator extracts
             this into the per-iteration UI summary.
 
+            ## How to handle PRIOR EVALUATOR FEEDBACK — CRITICAL
+            When you're iterating on a file that already exists (iter ≥ 2),
+            the evaluator's previous `## What still needs work` list is
+            prepended to this prompt under "## LATEST evaluator feedback".
+            Each item in that list is now formatted as a markdown
+            CHECKBOX (`- [ ] N. <description>`). Score regression most
+            commonly happens when you fix a symptom locally without
+            auditing the doc-wide blast radius, OR when you silently
+            skip items. To avoid both:
+
+            1. **Copy every checkbox into your Iteration Summary and check
+               each one off.** Add an explicit `### Prior feedback
+               resolution` subsection that mirrors EVERY `- [ ]` item from
+               the evaluator's prior list. For each item, replace `- [ ]`
+               with `- [x]` AND append one of:
+                 - `FIXED — <section/file ref> — <one-line description of the fix>`
+                 - `DEFERRED — <reason it's deferred and which iter / pin / question will handle it>`
+                   (only when you genuinely cannot fix it this iter)
+               Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
+               in your summary signals you skipped the item — the
+               evaluator will hold you below pass and the convergence
+               detector will fire after 3-5 iters of skipping, exiting
+               the loop with `stalled-no-convergence`.
+
+               Example:
+                 Evaluator said:  `- [ ] 1. §3.1 has markdown structure error: …`
+                 Your summary:    `- [x] 1. FIXED — §3.1 — split MessengerMessage out into its own H4 block; OperatorBinding table now sits directly under its heading. grep-checked for orphan refs.`
+
+            2. **Doc-wide audit when you rename or restructure.** If your
+               edit changes a field name, type, section heading, or any
+               cross-referenced term:
+                 - BEFORE replying DONE, run `grep -F <old-term>` (via
+                   your shell) against `{{spec.RepoPath}}` AND its sibling
+                   plan docs under `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+                 - Update EVERY remaining reference to the old term, or
+                   if a reference is intentionally untouched, leave a
+                   one-line `> Note: …` callout explaining why.
+                 - Example failure (qq:TELEGRAM-MESSENGER-S iter 43):
+                   the agent renamed `AlertType/Summary` → `Title/Body`
+                   in §4.6 but missed `alertType=Error` in §5.6's example.
+                   The evaluator caught it on the next iter and the score
+                   regressed from 88 → 85.
+
+            3. **Don't introduce structural bugs while patching content.**
+               When inserting a new section between existing headings,
+               verify that no existing field table or block ends up
+               visually under the wrong heading. After inserting a new
+               `#### Foo` block, scroll past it to confirm the
+               immediately-following field table still belongs to its
+               original heading (not your new one).
+
+            4. **If a checkbox you marked `[x] FIXED` in iter N re-appears
+               as `- [ ]` in iter N+1's evaluator feedback**, your prior
+               fix did NOT work. Stop trying the same edit shape. Try a
+               structural change instead: split the section, move the
+               field into a different table, escalate to the operator as
+               an Open Question, or ask the operator to pin a decision.
+               Three consecutive iters with the same checkbox flipping
+               back to `[ ]` will trip the convergence detector and exit
+               the loop.
+
             ## Open questions — structured (REQUIRED when you have any)
             If the story description left ambiguity that you had to guess on,
             do NOT just mention it in prose. Emit a fenced JSON block right
@@ -711,8 +885,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Structure your `notes` field (inside the JSON block below) into
             three labeled parts in this order:
             1. **What improved this iteration** — one bullet list.
-            2. **What still needs work** — one bullet list (be specific:
-               cite section names + sentences).
+            2. **What still needs work** — emit a markdown CHECKBOX list,
+               one item per line, in this exact shape:
+                 `- [ ] 1. <atomic issue + section/line citation>`
+                 `- [ ] 2. <atomic issue + section/line citation>`
+                 `- [ ] 3. …`
+               Each checkbox starts `unchecked` (`[ ]`). The generator
+               echoes these checkboxes into its next-iteration Iteration
+               Summary and flips each to `[x]` with a FIXED / DEFERRED
+               note. Keep items atomic (one issue per checkbox) — never
+               combine two issues into one line, or the generator can't
+               cleanly mark just one of them as fixed.
+
+               ALSO: when scoring iteration N+1, compare the prior
+               iteration's checkboxes against what the generator
+               claimed `[x] FIXED`. Items the generator marked FIXED but
+               are STILL present in the file as you see it MUST appear
+               unchecked again in your new list (cite the file evidence
+               briefly so the loop's convergence detector can see the
+               regression). Items the generator marked `[x] DEFERRED`
+               are acceptable to omit from your next list ONLY when the
+               deferral rationale is sound; otherwise re-include them.
+
             3. **Why this score** — two sentences max.
 
             ## Open-questions hard gate
@@ -1344,6 +1538,63 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "copy results to a workspace" — there is no separate workspace.
             Reply `DONE` when finished.
 
+            ## How to handle PRIOR EVALUATOR / REVIEW FEEDBACK — CRITICAL
+            When you're iterating on a workstream (iter ≥ 2), the
+            evaluator's previous `## Still needs improvement` list is
+            prepended to this prompt under "## LATEST evaluator feedback".
+            Each item in that list is formatted as a markdown CHECKBOX
+            (`- [ ] N. <description>`). Score regression and "fix one
+            place, break another" failures most commonly come from
+            localized edits that miss doc-wide blast radius OR from
+            silently skipping items. To avoid both:
+
+            1. **Copy every checkbox into your Change Summary and check
+               each one off.** Add an explicit `### Prior feedback
+               resolution` subsection in your `## Change Summary` that
+               mirrors EVERY `- [ ]` item from the evaluator's prior
+               list. For each item, replace `- [ ]` with `- [x]` AND
+               append one of:
+                 - `FIXED — <commit / file:line / test name> — <one-line description of the fix>`
+                 - `DEFERRED — <reason it's deferred and which workstream / iter will handle it>`
+                   (only when you genuinely can't fix it this iter)
+               Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
+               in your summary signals you skipped the item. The
+               evaluator will hold you below pass and the convergence
+               detector exits the loop after 3-5 iters of skipping.
+
+               Example:
+                 Evaluator said:  `- [ ] 1. HttpMetricsHandler.cs:42 still buffers; should stream`
+                 Your summary:    `- [x] 1. FIXED — HttpMetricsHandler.cs:42 — replaced ReadAsync into MemoryStream with CopyToAsync; added test ServerSentEventsStreamingTest.NoBuffering`
+
+            2. **Search the whole repo when renaming a symbol.** When
+               your edit renames a type, method, field, config key, or
+               feature flag:
+                 - Run `grep -r '<old-name>' src/ tests/` before claiming
+                   DONE.
+                 - Update every remaining reference, or document why a
+                   reference is intentionally untouched in your Change
+                   Summary.
+                 - The build gate catches compile failures but NOT
+                   silent stale references (e.g. a test asserting the
+                   old name in a string literal, a YAML config still
+                   pointing at the old key).
+
+            3. **Verify the whole test suite passes, not just the file
+               you edited.** Run the workstream's project tests
+               (`dotnet test {project}.csproj`) before DONE. A change
+               that fixes the immediate ask but breaks a sibling test
+               regresses the workstream's score (and trips the
+               build/test gate).
+
+            4. **If a checkbox you marked `[x] FIXED` in iter N re-appears
+               as `- [ ]` in iter N+1's evaluator feedback**, your prior
+               fix did NOT work. Stop trying the same edit shape. Try a
+               structural change instead: split the change across files,
+               raise it as an Open Question for operator clarification,
+               or ask the operator to pin a decision. Three consecutive
+               iters of the same checkbox flipping back to `[ ]` trips
+               the convergence detector and stalls the workstream.
+
             ## Open questions — structured (REQUIRED when you have any)
             If the workstream brief left ambiguity that forced you to guess
             (API shape, dependency choice, error-handling convention, naming),
@@ -1402,8 +1653,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Output
 
             Output **only** a fenced JSON block — no prose outside it. Put
-            your full technical feedback inside the `notes` field. Example
-            shape:
+            your full technical feedback inside the `notes` field. Structure
+            the `notes` content in this order:
+            1. **Improvements this iteration** — bullet list.
+            2. **Still needs improvement** — emit a markdown CHECKBOX list,
+               one item per line, in this exact shape:
+                 `- [ ] 1. <atomic issue + file:line / function / test ref>`
+                 `- [ ] 2. <atomic issue + file:line / function / test ref>`
+                 `- [ ] 3. …`
+               Each checkbox starts `unchecked` (`[ ]`). The generator
+               echoes these checkboxes into its next-iteration Change
+               Summary and flips each to `[x]` with a FIXED / DEFERRED
+               note. Keep items atomic — one issue per checkbox — so the
+               generator can cleanly mark just one of them as fixed
+               without ambiguity.
+
+               When scoring iteration N+1, compare the prior iteration's
+               checkboxes against the actual code/tests as you see them.
+               Items the generator marked `[x] FIXED` but that are STILL
+               broken in the code MUST re-appear unchecked in your new
+               list with a brief evidence citation so the convergence
+               detector can see the regression.
+
+            3. **Why this score** — two sentences max.
+
+            Example shape:
 
             ```json
             {
@@ -2316,13 +2590,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var hasEvalFeedback = !string.IsNullOrWhiteSpace(evalNotes);
 
             string iterPrompt;
-            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback))
+            // Phase 50 — load operator-pinned decisions (binding directives
+            // the operator added via /spawn/pins). Refreshed each iter so a
+            // freshly-added pin takes effect immediately on the next
+            // generator turn. Cheap query — one row read + JSON parse.
+            // Filtered to pins scoped to this work item (workItemId match)
+            // OR globally-scoped pins (workItemId == null).
+            var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
+
+            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback && string.IsNullOrEmpty(decisionPinsBlock)))
             {
-                iterPrompt = generatorPrompt;
+                iterPrompt = string.IsNullOrEmpty(decisionPinsBlock)
+                    ? generatorPrompt
+                    : decisionPinsBlock + "\n────────────────────────────────────────────────────────────\n\n" + generatorPrompt;
             }
             else
             {
                 var sb = new StringBuilder();
+                // Decision pins ALWAYS go first when present — they
+                // override every other piece of guidance (build feedback,
+                // evaluator feedback, brief) because they're the
+                // operator's explicit arbitration on cross-doc loops.
+                if (!string.IsNullOrEmpty(decisionPinsBlock))
+                {
+                    sb.AppendLine(decisionPinsBlock);
+                    sb.AppendLine("────────────────────────────────────────────────────────────");
+                    sb.AppendLine();
+                }
                 if (hasBuildFeedback)
                 {
                     var bf = lastBuildFailure!;
@@ -2366,16 +2660,44 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (hasEvalFeedback)
                 {
                     sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  EVALUATOR FEEDBACK — YOU MUST ADDRESS EVERY ITEM BELOW ║");
+                    sb.AppendLine("║  EVALUATOR FEEDBACK — STRICT PER-ITEM ATTENTION REQUIRED ║");
                     sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
-                    sb.AppendLine($"This is iteration {iter}. Your prior attempts scored below the");
-                    sb.AppendLine("pass threshold. The evaluator's feedback below tells you EXACTLY");
-                    sb.AppendLine("what to fix. Do NOT re-read the original brief and start from");
-                    sb.AppendLine("scratch — read the feedback, open the file, and make TARGETED");
-                    sb.AppendLine("edits that address each critique. If the same critique appears");
-                    sb.AppendLine("in multiple iterations, your prior fix did not work — try a");
-                    sb.AppendLine("fundamentally different approach.");
+                    sb.AppendLine($"This is iteration {iter}. The same critique appearing across multiple");
+                    sb.AppendLine("iters has been observed on architecture.md spawns (DefaultAction in 41/51");
+                    sb.AppendLine("iters, P95 latency in 46/51, /handoff in 32/51) — the agent reads the");
+                    sb.AppendLine("feedback but its edits don't actually resolve the issue. The system now");
+                    sb.AppendLine("treats this failure mode as a HARD STOP: if the same numbered item from");
+                    sb.AppendLine("the prior \"What still needs work\" list re-appears verbatim in the");
+                    sb.AppendLine("evaluator's next review, this loop will exit with");
+                    sb.AppendLine("`stalled-no-convergence` and the operator will be asked to pin a");
+                    sb.AppendLine("decision or restart.");
+                    sb.AppendLine();
+                    sb.AppendLine("═══ MANDATORY PROCESS — DO THIS BEFORE TOUCHING THE FILE ═══");
+                    sb.AppendLine();
+                    sb.AppendLine("1. Read the numbered \"What still needs work\" list below.");
+                    sb.AppendLine("2. For EACH numbered item, pick ONE of these actions:");
+                    sb.AppendLine("   (a) FIX — open the cited section/line, make the targeted edit,");
+                    sb.AppendLine("       then run `grep -F <key-term>` on the file to confirm there");
+                    sb.AppendLine("       are no remaining dangling references that contradict the fix.");
+                    sb.AppendLine("   (b) DEFER — only when the fix is genuinely out of scope for");
+                    sb.AppendLine("       this iter (e.g. requires changing a sibling doc, requires");
+                    sb.AppendLine("       an operator decision). Provide a one-line rationale.");
+                    sb.AppendLine("3. After your edits, write a `### Prior feedback resolution` block");
+                    sb.AppendLine("   in your Iteration Summary listing EVERY numbered item:");
+                    sb.AppendLine("     `1. FIXED — added §X.Y field table; grep-checked no orphan refs`");
+                    sb.AppendLine("     `2. DEFERRED — requires tech-spec edit; raised as Open Question`");
+                    sb.AppendLine("4. If a previously-FIXED item re-appears in the next iter's feedback,");
+                    sb.AppendLine("   your fix was insufficient — try a STRUCTURAL change (re-split the");
+                    sb.AppendLine("   table, move the section, escalate as a pin) instead of another");
+                    sb.AppendLine("   word-tweak. Repeating the same edit shape three times is a strong");
+                    sb.AppendLine("   signal you should defer with an Open Question.");
+                    sb.AppendLine();
+                    sb.AppendLine("Iterations that lack a `### Prior feedback resolution` block, or that");
+                    sb.AppendLine("silently skip numbered items, are wasting tokens. The evaluator can see");
+                    sb.AppendLine("when you've ignored its feedback and will hold you below pass.");
+                    sb.AppendLine();
+                    sb.AppendLine("═══ THE EVALUATOR'S FEEDBACK (read carefully) ═══");
                     sb.AppendLine();
                     sb.AppendLine(evalNotes);
                     sb.AppendLine();
