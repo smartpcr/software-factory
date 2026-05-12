@@ -812,6 +812,37 @@ public static class WorkstreamsEndpoints
         }
     }
 
+    /// <summary>
+    /// Phase 50 — capture variant of <see cref="RunGitQuietAsync"/>. Returns
+    /// (exit-code, stdout, stderr) so callers can parse output (e.g.
+    /// <c>git branch --list</c>, <c>git ls-remote --heads</c>). Never throws.
+    /// </summary>
+    internal static async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureAsync(string cwd, params string[] args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = cwd,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p is null) return (-1, string.Empty, string.Empty);
+            var stdoutTask = p.StandardOutput.ReadToEndAsync();
+            var stderrTask = p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            return (p.ExitCode, await stdoutTask, await stderrTask);
+        }
+        catch (Exception ex)
+        {
+            return (-1, string.Empty, ex.Message);
+        }
+    }
+
     internal static List<string> ParseStringList(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
