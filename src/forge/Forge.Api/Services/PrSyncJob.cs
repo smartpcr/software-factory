@@ -803,6 +803,7 @@ public sealed class PrSyncJob : BackgroundService
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
+                Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
                 using var proc = System.Diagnostics.Process.Start(psi);
                 if (proc is not null) await proc.WaitForExitAsync(ct);
             }
