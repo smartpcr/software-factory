@@ -25,15 +25,53 @@ using Microsoft.Extensions.Hosting;
 /// </summary>
 public sealed class SpawnDependencyScheduler : BackgroundService
 {
+    /// <summary>
+    /// Phase 50 follow-up — per-step watchdog. If any single DriveAsync or
+    /// ReconcileAsync exceeds this duration, the scheduler stops waiting
+    /// and moves on. The orphaned task continues running on the thread
+    /// pool (no cancellation — see "Phase 45 follow-up" rationale in
+    /// <see cref="TickOnceAsync"/>) so an in-flight agent invocation that
+    /// genuinely needs minutes to converge can still finish. The
+    /// invariant this restores: ONE hung await must never prevent the
+    /// next tick from running.
+    ///
+    /// <para>Production observation 2026-05-12 on smartpcr/qq:
+    /// <c>SpawnDependencyScheduler</c> ticked exactly ONCE since process
+    /// restart (verified by grepping the EF Core SQL log for the
+    /// scheduler's two-column projection over story_spawns — appeared
+    /// once at startup, never again over 1h+). One spawn's DriveAsync
+    /// was stuck inside DriveImplementAsync, and the <c>Task.WhenAll</c>
+    /// over all driveTasks blocked the whole scheduler. The qq spawn
+    /// sat at phase=decompose with all 4 plan docs at verdict=pass for
+    /// over an hour, requiring a manual <c>POST /spawn/retry</c> to
+    /// advance.</para>
+    /// </summary>
+    internal static readonly TimeSpan DefaultStuckTaskTimeout = TimeSpan.FromSeconds(60);
+
     private readonly IServiceProvider services;
     private readonly TimeSpan interval;
+    private readonly TimeSpan stuckTaskTimeout;
     private readonly ILogger<SpawnDependencyScheduler>? logger;
 
     public SpawnDependencyScheduler(IServiceProvider services, ILogger<SpawnDependencyScheduler>? logger = null)
+        : this(services, DefaultStuckTaskTimeout, logger)
+    {
+    }
+
+    /// <summary>
+    /// Test-only overload — lets unit tests pass a small timeout (e.g.,
+    /// <c>TimeSpan.FromMilliseconds(200)</c>) so a hung-task test doesn't
+    /// have to wait the production 60s.
+    /// </summary>
+    internal SpawnDependencyScheduler(
+        IServiceProvider services,
+        TimeSpan stuckTaskTimeout,
+        ILogger<SpawnDependencyScheduler>? logger = null)
     {
         this.services = services;
         this.logger = logger;
         this.interval = TimeSpan.FromSeconds(15);
+        this.stuckTaskTimeout = stuckTaskTimeout;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -98,12 +136,84 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         // RealStoryGitOps branchLocks before they touch git, so the
         // worktree never gets two writers. Errors are caught per-task so
         // one spawn's exception doesn't poison the others.
+        //
+        // Phase 50 follow-up — Task.WhenAll only completes when EVERY
+        // task completes, so a single hung Task.Run strands the entire
+        // scheduler. Each step is now wrapped by RunWithTimeoutAsync
+        // (production default: 60s). On timeout the scheduler logs a
+        // warning, attaches a continuation that observes the orphaned
+        // task's eventual outcome (no UnobservedTaskException), and
+        // moves on. Crucially we do NOT cancel the underlying task —
+        // the Phase 45 rationale above still stands; agent invocations
+        // are allowed to run beyond 60s, they just can't strand the
+        // scheduler while they do.
         var driveTasks = active.Select(item => Task.Run(async () =>
         {
             var (sid, spawnId) = item;
+            var driveOk = await this.RunWithTimeoutAsync(
+                "DriveAsync", spawnId, sid,
+                () => orchestrator.DriveAsync(sid, ct), ct);
+
+            // If DriveAsync timed out, skip the reconciler for this tick.
+            // The next tick will pick up a fresh PlanReconciler invocation
+            // against whatever DriveAsync eventually persists (if it ever
+            // returns); racing them in the same tick post-timeout would
+            // burn CPU on stale state.
+            if (!driveOk) return;
+
+            if (reconciler is not null)
+            {
+                await this.RunWithTimeoutAsync(
+                    "PlanReconciler", spawnId, sid,
+                    () => reconciler.ReconcileAsync(spawnId, ct), ct);
+            }
+        }, ct)).ToArray();
+
+        await Task.WhenAll(driveTasks);
+    }
+
+    /// <summary>
+    /// Phase 50 follow-up — race <paramref name="action"/> against a
+    /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/> for
+    /// <see cref="stuckTaskTimeout"/>. Returns <c>true</c> when the action
+    /// completed (successfully or with a caught exception) within the
+    /// budget; <c>false</c> when it timed out. On timeout, attaches a
+    /// continuation that logs the orphaned task's eventual outcome and
+    /// prevents <see cref="TaskScheduler.UnobservedTaskException"/> from
+    /// firing if it later faults.
+    /// <para>Internal so unit tests can drive the same code path with a
+    /// short timeout without going through the orchestrator stack.</para>
+    /// </summary>
+    internal async Task<bool> RunWithTimeoutAsync(
+        string what,
+        string spawnId,
+        string storyId,
+        Func<Task> action,
+        CancellationToken ct)
+    {
+        var started = DateTimeOffset.UtcNow;
+        Task work;
+        try
+        {
+            work = action();
+        }
+        catch (Exception ex)
+        {
+            // Synchronous failure before the task even started (e.g., a
+            // null-deref in the strategy's setup code). Log + treat as
+            // "completed unsuccessfully" so the reconciler still runs.
+            this.logger?.LogWarning(ex,
+                "{What} threw synchronously for spawn {SpawnId} (story {StoryId}); will retry next interval.",
+                what, spawnId, storyId);
+            return true;
+        }
+
+        var winner = await Task.WhenAny(work, Task.Delay(this.stuckTaskTimeout, ct));
+        if (winner == work)
+        {
             try
             {
-                await orchestrator.DriveAsync(sid, ct);
+                await work;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -112,25 +222,38 @@ public sealed class SpawnDependencyScheduler : BackgroundService
             catch (Exception ex)
             {
                 this.logger?.LogWarning(ex,
-                    "DriveAsync failed for spawn {SpawnId} (story {StoryId}); will retry next interval.",
-                    spawnId, sid);
+                    "{What} failed for spawn {SpawnId} (story {StoryId}); will retry next interval.",
+                    what, spawnId, storyId);
             }
+            return true;
+        }
 
-            if (reconciler is not null)
+        // Timeout — log + orphan the task. Background continuation observes
+        // the eventual outcome so an unhandled exception inside the orphan
+        // doesn't crash the process via UnobservedTaskException.
+        var elapsedSec = (int)(DateTimeOffset.UtcNow - started).TotalSeconds;
+        this.logger?.LogWarning(
+            "{What} stuck for spawn {SpawnId} (story {StoryId}); orphaning after {ElapsedSec}s (stuck-task-timeout={TimeoutSec}s). The task continues running in the background; its eventual outcome will be logged.",
+            what, spawnId, storyId, elapsedSec, (int)this.stuckTaskTimeout.TotalSeconds);
+        _ = work.ContinueWith(
+            t =>
             {
-                try
+                if (t.IsFaulted)
                 {
-                    await reconciler.ReconcileAsync(spawnId, ct);
+                    this.logger?.LogWarning(t.Exception,
+                        "Orphaned {What} for spawn {SpawnId} faulted post-timeout.",
+                        what, spawnId);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                else if (t.IsCompletedSuccessfully)
                 {
-                    this.logger?.LogWarning(ex,
-                        "PlanReconciler tick failed for spawn {SpawnId}; will retry next interval.",
-                        spawnId);
+                    this.logger?.LogInformation(
+                        "Orphaned {What} for spawn {SpawnId} eventually completed successfully.",
+                        what, spawnId);
                 }
-            }
-        }, ct)).ToArray();
-
-        await Task.WhenAll(driveTasks);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return false;
     }
 }

@@ -1609,6 +1609,45 @@ public class WorkItemRow
     /// distinguish "step text changed" from "step moved/renamed".
     /// </summary>
     public string? PlanContentHash { get; set; }
+
+    /// <summary>
+    /// Phase 51 — when the DeliverableLoop returns <c>"stalled-budget"</c>
+    /// (per-task <c>MaxTaskBudgetUsd</c> hit), the work item is parked in
+    /// <see cref="ExecutionStatuses.CooldownBudget"/> with this timestamp set
+    /// to <c>UtcNow + Forge:Agents:BudgetCooldown:MaxWait</c> (default 10m).
+    /// <see cref="Services.BudgetCooldownReconciler"/> ticks every 15s and
+    /// resumes the work item under one of two conditions: (a) the operator
+    /// has raised the crew's <c>MaxTaskBudgetUsd</c> so the cumulative cost
+    /// is now under cap — resume immediately, same pair; (b) this timestamp
+    /// has passed without a cap raise — resume with the pair rotated away
+    /// from <see cref="LastPairAgentIdsJson"/>.
+    /// Cleared on resume and on Cancel/Restart.
+    /// </summary>
+    public DateTimeOffset? BudgetCooldownUntilUtc { get; set; }
+
+    /// <summary>
+    /// Phase 51 — JSON-encoded <c>[generatorAgentId, evaluatorAgentId]</c>
+    /// captured at the moment the work item entered cooldown. Used by the
+    /// claim picker to exclude these agents on the cooldown-elapsed resume
+    /// path (fresh pair gets a turn). Null when no prior pair (first run
+    /// or a non-budget terminal verdict).
+    /// </summary>
+    public string? LastPairAgentIdsJson { get; set; }
+
+    /// <summary>
+    /// Phase 51 — start of the current budget window. When the
+    /// cooldown-elapsed recovery fires the reconciler sets this to
+    /// <c>UtcNow</c>; cap-vs-cost comparisons (in
+    /// <see cref="Services.BudgetCooldownReconciler"/> and the
+    /// orchestrator's <c>stalled-budget</c> re-evaluation) only sum
+    /// <c>agent_usage</c> rows with <c>StartedAt &gt;= BudgetWindowStartUtc</c>.
+    /// Lifetime spend remains in the ledger for crew salary roll-ups,
+    /// but each cooldown window grants a fresh $0 starting point so
+    /// recovered tasks aren't permanently locked out by their pre-window
+    /// burn.
+    /// Null = no window has elapsed yet (count from row creation).
+    /// </summary>
+    public DateTimeOffset? BudgetWindowStartUtc { get; set; }
 }
 
 /// <summary>
@@ -1622,6 +1661,15 @@ public static class ExecutionStatuses
     public const string Completed = "completed";
     public const string Failed = "failed";
     public const string Cancelled = "cancelled";
+
+    /// <summary>
+    /// Phase 51 — per-task <c>MaxTaskBudgetUsd</c> cap hit. The work item is
+    /// parked; <see cref="Services.BudgetCooldownReconciler"/> auto-resumes
+    /// when the cap is raised (immediate) or after the cooldown window
+    /// (with pair rotation). Distinct from <see cref="Failed"/> so the
+    /// operator sees an auto-recovery is in flight rather than a dead end.
+    /// </summary>
+    public const string CooldownBudget = "cooldown-budget";
 }
 
 /// <summary>
