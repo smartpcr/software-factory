@@ -248,6 +248,16 @@ builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Servi
 // Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
+// Phase 51 — per-task budget-cap cooldown reconciler (15s tick).
+// Auto-resumes work items parked at ExecutionStatus="cooldown-budget"
+// when (a) the operator raises the crew's MaxTaskBudgetUsd so
+// cumulative cost is back under cap, or (b) the cooldown window
+// (default 10m) elapses — the latter rotates the pair to a fresh
+// generator/evaluator via WorkItemRow.LastPairAgentIdsJson.
+builder.Services.Configure<Forge.Api.Services.BudgetCooldownOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.BudgetCooldownOptions.SectionName));
+builder.Services.AddSingleton<Forge.Api.Services.BudgetCooldownReconciler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BudgetCooldownReconciler>());
 // Phase 29 — async build validation worker.
 builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
 builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();
@@ -460,6 +470,14 @@ using (var scope = app.Services.CreateScope())
     // story_spawns via EF which projects DecisionPinsJson. Single
     // nullable column; safe alongside the other story_spawns migrations.
     await Phase50Migration.ApplyAsync(db);
+    // Phase 51 — BudgetCooldownUntilUtc + LastPairAgentIdsJson on
+    // work_items so the BudgetCooldownReconciler can auto-resume tasks
+    // parked by a stalled-budget verdict (cap raise → immediate, 10m
+    // elapsed → resume with pair rotation). Two nullable columns +
+    // an ExecutionStatus index for the 15-second scan. Order: anywhere
+    // before the reconciler boots is fine; placed next to Phase 50 to
+    // keep the budget/cooldown story local.
+    await Phase51Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
