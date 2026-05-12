@@ -111,7 +111,15 @@ public sealed record DeliverableLoopResult(
     int Iterations,
     int FinalScore,
     IReadOnlyList<long> DeliverableRowIds,
-    decimal TotalCostUsd);
+    decimal TotalCostUsd,
+    /// <summary>
+    /// Phase 52 — when <see cref="FinalVerdict"/> is <c>"sloppy"</c>,
+    /// carries the structured trigger reason
+    /// (<see cref="SloppyReasons.ScorePlateau"/> /
+    /// <see cref="SloppyReasons.TokenCap"/> /
+    /// <see cref="SloppyReasons.IterCap"/>). Null on any other verdict.
+    /// </summary>
+    string? SloppyReason = null);
 
 /// <inheritdoc cref="IDeliverableLoop"/>
 public sealed class DeliverableLoop : IDeliverableLoop
@@ -167,6 +175,27 @@ public sealed class DeliverableLoop : IDeliverableLoop
         EvaluatorScore? lastScore = null;
         var verdict = "iterate";
         var iter = 0;
+
+        // Phase 52 — load WorkItemRow.BudgetWindowStartUtc once (used by
+        // the per-iter sloppy token-cap check). Phase 51 sets this on a
+        // cooldown-elapsed resume to reset the cost meter; Phase 52
+        // honors the same window for the token meter so a reassignment
+        // grants the new pair a fresh $0 / 0-token start.
+        var workItemRow = await this.db.WorkItems
+            .FirstOrDefaultAsync(w => w.Id == request.WorkItemId, ct);
+        var budgetWindowStartUtc = workItemRow?.BudgetWindowStartUtc;
+
+        // Phase 52 — ensure an in-progress AgentPairAssignmentRow exists for
+        // (workItem, current pair). Created lazily when missing (legacy
+        // rows mid-flight at migration time, plan-doc synthetic IDs, etc.).
+        // The reconciler relies on this row being present to stamp
+        // outcome=reassigned-sloppy / terminal-failed on the trigger.
+        var pairAssignmentId = await this.EnsureActivePairAssignmentAsync(
+            request.WorkItemId,
+            request.GeneratorAgentId,
+            request.EvaluatorAgentId,
+            request.CrewId,
+            ct);
 
         // Phase 14.3 / 16.4 — pin the evaluator agent on iter 1 so subsequent
         // rounds reuse the same grader (rubric reproducibility). Generator
@@ -248,7 +277,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
         {
             var persistedTerminal =
                 lastPersisted.Verdict is "pass" or "reject" or "stalled-budget"
-                || (lastPersisted.Verdict == "stalled" && lastPersisted.Iter >= maxIter);
+                || ((lastPersisted.Verdict == "stalled" || lastPersisted.Verdict == "sloppy")
+                    && lastPersisted.Iter >= maxIter);
             if (persistedTerminal)
             {
                 if (lastPersisted.Verdict == "pass")
@@ -278,7 +308,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         }
 
         if (lastPersisted is not null
-            && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget"
+            && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy"
             && lastPersisted.Iter < maxIter)
         {
             iter = lastPersisted.Iter;
@@ -286,7 +316,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // resumed generator turn gets the same history a fresh run
             // would have built up in-memory.
             var seedRows = existingDeliverables
-                .Where(d => d.Verdict is "iterate" or "stalled" or "stalled-budget")
+                .Where(d => d.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy")
                 .OrderBy(d => d.Iter)
                 .ThenBy(d => d.CreatedAt);
             foreach (var d in seedRows)
@@ -408,6 +438,19 @@ public sealed class DeliverableLoop : IDeliverableLoop
             this.db.Deliverables.Add(row);
             await this.db.SaveChangesAsync(ct);
             rowIds.Add(row.Id);
+
+            // Phase 52 — bump pair-assignment running totals on each
+            // iteration so the live UI can read per-pair iters/tokens/cost
+            // without recomputing from agent_usage. Cheap (single UPDATE)
+            // and decoupled from the agent_usage writes above.
+            await this.UpdatePairAssignmentTotalsAsync(
+                pairAssignmentId,
+                iter,
+                gen.InputTokens + eval.InputTokens,
+                gen.OutputTokens + eval.OutputTokens,
+                gen.CostUsd + eval.CostUsd,
+                lastScore.Score,
+                ct);
 
             // Phase 39 (Layer C) — extract structured open questions from the
             // generator's output and persist any new ones. We then read the
@@ -538,6 +581,15 @@ public sealed class DeliverableLoop : IDeliverableLoop
             if (verdict == "pass")
             {
                 await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "active", ct);
+                // Phase 52 — stamp pair-assignment as passed. The audit row
+                // is now closed; the next claim against this work item (if
+                // any) opens a fresh sequence.
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.Passed,
+                    sloppyReason: null,
+                    finalScore: lastScore.Score,
+                    ct);
                 await this.EmitAsync(request.WorkItemId, "task.iteration.passed", new { iter, score = lastScore.Score }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
@@ -546,6 +598,15 @@ public sealed class DeliverableLoop : IDeliverableLoop
             if (verdict == "reject")
             {
                 await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "proposed", ct);
+                // Phase 52 — close the pair-assignment as cancelled (no
+                // reassignment; lead must triage). The audit row reflects
+                // the pair's final score for the cost-vs-quality readout.
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.Cancelled,
+                    sloppyReason: null,
+                    finalScore: lastScore.Score,
+                    ct);
                 await this.EmitAsync(request.WorkItemId, "task.iteration.rejected", new { iter, score = lastScore.Score }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
@@ -588,6 +649,16 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         + " iterations. The agent cannot resolve these unilaterally — operator should either pin a decision via the spawn's decision-pins endpoint, restart the loop with smaller scope, or accept the doc at its current score.";
                     row.Notes = string.IsNullOrEmpty(row.Notes) ? loopNote : row.Notes + "\n\n" + loopNote;
                     await this.db.SaveChangesAsync(ct);
+                    // Phase 52 — close the pair-assignment as cancelled.
+                    // stalled-no-convergence is a cross-doc decision-pin
+                    // signal, not a sloppy pair signal; operator action is
+                    // required, no auto-reassign.
+                    await this.StampPairAssignmentAsync(
+                        pairAssignmentId,
+                        AgentPairAssignmentOutcomes.Cancelled,
+                        sloppyReason: null,
+                        finalScore: lastScore.Score,
+                        ct);
                     await this.EmitAsync(request.WorkItemId, "task.iteration.stalled", new
                     {
                         iter,
@@ -600,22 +671,111 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 }
             }
 
+            // Phase 52 — sloppy detection. Runs after all the existing
+            // terminal gates (pass / reject / stalled-budget / no-convergence)
+            // so we only evaluate it when verdict == "iterate". Two
+            // independent triggers — whichever fires first wins:
+            //   (a) Q52.1 score plateau against personal best.
+            //   (b) Q52.2 generator's cumulative input+output tokens since
+            //       WorkItemRow.BudgetWindowStartUtc exceed
+            //       ScoringConstants.SloppyGeneratorTokenCap.
+            // The detector skips when priorChain.Count < 4 (Q52.1 needs at
+            // least 4 iters to evaluate the plateau condition); the token
+            // cap is checked independently and can fire from iter 1 if the
+            // generator goes wild with context.
+            //
+            // On sloppy, we rewrite the just-persisted deliverable's verdict
+            // to "sloppy" (the verdict-routing in CrewQueueWorker pivots on
+            // this), stamp the pair-assignment row with the trigger reason,
+            // park the work item in pending-reassign so the
+            // SloppyReassignmentReconciler picks it up next tick, and
+            // return. Worktree / transcript / deliverables wipe happens in
+            // the reconciler, not here — keeps the loop's side effects
+            // localized.
+            var scoresInOrder = priorChain.Select(c => c.Score).ToList();
+            var sloppy = await SloppyDetector.CheckAsync(
+                this.db,
+                request.WorkItemId,
+                request.GeneratorAgentId,
+                budgetWindowStartUtc,
+                scoresInOrder,
+                ct);
+            if (sloppy.IsSloppy)
+            {
+                verdict = "sloppy";
+                row.Verdict = verdict;
+                var reasonText = sloppy.Reason switch
+                {
+                    SloppyReasons.TokenCap =>
+                        $"SLOPPY: generator-token cap exceeded — used {sloppy.TotalTokens:N0} input+output tokens against a {ScoringConstants.SloppyGeneratorTokenCap:N0}-token budget since the budget window opened. Reassigning to a fresh pair on the next reconciler tick.",
+                    SloppyReasons.ScorePlateau =>
+                        $"SLOPPY: score plateau detected — the trailing 3 iterations (scores {string.Join(", ", scoresInOrder.TakeLast(3))}) did not surpass the personal best of {sloppy.BestScore} set at iter {sloppy.BestIter}. Reassigning to a fresh pair on the next reconciler tick.",
+                    _ => "SLOPPY: reassigning to a fresh pair on the next reconciler tick.",
+                };
+                row.Notes = string.IsNullOrEmpty(row.Notes) ? reasonText : row.Notes + "\n\n" + reasonText;
+                await this.db.SaveChangesAsync(ct);
+
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.ReassignedSloppy,
+                    sloppyReason: sloppy.Reason,
+                    finalScore: lastScore.Score,
+                    ct);
+
+                // Park the work item for the reconciler. We deliberately do
+                // NOT set ExecutionStatus directly here — the CrewQueueWorker
+                // routes verdict=sloppy → ExecutionStatus=pending-reassign
+                // in the same epilogue path that handles stalled-budget →
+                // cooldown-budget (Phase 51). Keeps the verdict-to-status
+                // mapping in one place.
+
+                await this.EmitAsync(request.WorkItemId, "task.sloppy", new
+                {
+                    iter,
+                    score = lastScore.Score,
+                    reason = sloppy.Reason,
+                    bestIter = sloppy.BestIter,
+                    bestScore = sloppy.BestScore,
+                    totalTokens = sloppy.TotalTokens,
+                    tokenCap = ScoringConstants.SloppyGeneratorTokenCap,
+                    pairAssignmentId,
+                }, ct);
+
+                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost, sloppy.Reason);
+            }
+
             // verdict == "iterate" → loop re-enters
             await this.EmitAsync(request.WorkItemId, "task.iteration.iterated", new { iter, score = lastScore.Score, notes = lastScore.Notes }, ct);
         }
 
-        // Cap hit without pass.
-        verdict = "stalled";
-        // Rewrite the last row's verdict to 'stalled' so it's distinguishable
-        // from a regular iterate row — the row is still iter==MaxIterations.
+        // Cap hit without pass. Phase 52 — convert the legacy "stalled"
+        // verdict to "sloppy" with reason=iter-cap so the reconciler picks
+        // it up like any other sloppy trigger. Slow-progress stalls now
+        // feed the pair-attempt cap (Q52.3 / Q52.5).
+        verdict = "sloppy";
         var lastId = rowIds[rowIds.Count - 1];
         var lastRow = await this.db.Deliverables.FirstAsync(d => d.Id == lastId, ct);
         lastRow.Verdict = verdict;
+        var iterCapNote = $"SLOPPY: iteration cap reached — {iter} iters consumed without a pass (best score {priorChain.Max(c => c.Score)}). Reassigning to a fresh pair on the next reconciler tick.";
+        lastRow.Notes = string.IsNullOrEmpty(lastRow.Notes) ? iterCapNote : lastRow.Notes + "\n\n" + iterCapNote;
         await this.db.SaveChangesAsync(ct);
 
-        await this.EmitAsync(request.WorkItemId, "task.iteration.stalled", new { iter, score = lastScore?.Score ?? 0 }, ct);
+        await this.StampPairAssignmentAsync(
+            pairAssignmentId,
+            AgentPairAssignmentOutcomes.ReassignedSloppy,
+            sloppyReason: SloppyReasons.IterCap,
+            finalScore: lastScore?.Score ?? 0,
+            ct);
 
-        return new DeliverableLoopResult(verdict, iter, lastScore?.Score ?? 0, rowIds, totalCost);
+        await this.EmitAsync(request.WorkItemId, "task.sloppy", new
+        {
+            iter,
+            score = lastScore?.Score ?? 0,
+            reason = SloppyReasons.IterCap,
+            pairAssignmentId,
+        }, ct);
+
+        return new DeliverableLoopResult(verdict, iter, lastScore?.Score ?? 0, rowIds, totalCost, SloppyReasons.IterCap);
     }
 
     /// <summary>
@@ -1008,6 +1168,120 @@ public sealed class DeliverableLoop : IDeliverableLoop
         wi.State = newState;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Phase 52 — ensure exactly one in-progress
+    /// <see cref="AgentPairAssignmentRow"/> exists for the
+    /// <c>(workItemId, generator, evaluator)</c> tuple. Reuses the existing
+    /// row when the pair matches; opens a new row (with the next
+    /// <see cref="AgentPairAssignmentRow.SequenceNo"/>) when no in-progress
+    /// row exists, OR when an in-progress row exists with a DIFFERENT pair
+    /// (Phase 51 cooldown rotation or operator manual-assign already
+    /// switched pairs without going through Phase 52 — close the old row
+    /// as cancelled and open a fresh one).
+    /// </summary>
+    private async Task<long> EnsureActivePairAssignmentAsync(
+        string workItemId,
+        string generatorAgentId,
+        string evaluatorAgentId,
+        string crewId,
+        CancellationToken ct)
+    {
+        var existing = await this.db.AgentPairAssignments
+            .Where(p => p.WorkItemId == workItemId
+                && p.Outcome == AgentPairAssignmentOutcomes.InProgress)
+            .OrderByDescending(p => p.SequenceNo)
+            .FirstOrDefaultAsync(ct);
+
+        if (existing is not null
+            && string.Equals(existing.GeneratorAgentId, generatorAgentId, StringComparison.Ordinal)
+            && string.Equals(existing.EvaluatorAgentId, evaluatorAgentId, StringComparison.Ordinal))
+        {
+            return existing.Id;
+        }
+
+        // Pair changed under us (Phase 51 cooldown rotation, restart, etc).
+        // Close the orphaned row as cancelled so the audit trail accurately
+        // records "the old pair stopped working this row, even though they
+        // didn't formally pass/reject/sloppy". A cancelled row counts in
+        // crew salary but NOT in Phase 14.7 demotion math.
+        if (existing is not null)
+        {
+            existing.Outcome = AgentPairAssignmentOutcomes.Cancelled;
+            existing.EndedAt = DateTimeOffset.UtcNow;
+            await this.db.SaveChangesAsync(ct);
+        }
+
+        var maxSeq = await this.db.AgentPairAssignments
+            .Where(p => p.WorkItemId == workItemId)
+            .Select(p => (int?)p.SequenceNo)
+            .MaxAsync(ct) ?? 0;
+
+        var newRow = new AgentPairAssignmentRow
+        {
+            WorkItemId = workItemId,
+            SequenceNo = maxSeq + 1,
+            GeneratorAgentId = generatorAgentId,
+            EvaluatorAgentId = evaluatorAgentId,
+            CrewId = crewId,
+            StartedAt = DateTimeOffset.UtcNow,
+            Outcome = AgentPairAssignmentOutcomes.InProgress,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        this.db.AgentPairAssignments.Add(newRow);
+        await this.db.SaveChangesAsync(ct);
+        return newRow.Id;
+    }
+
+    /// <summary>
+    /// Phase 52 — bump running totals on the in-progress pair-assignment
+    /// row after one iteration's evaluator scoring completes. Cheap UPDATE
+    /// keyed on the row id from <see cref="EnsureActivePairAssignmentAsync"/>;
+    /// no-op if the row was deleted out from under us (defensive — the
+    /// reconciler might race with a manual cleanup).
+    /// </summary>
+    private async Task UpdatePairAssignmentTotalsAsync(
+        long pairAssignmentId,
+        int iter,
+        long iterInputTokens,
+        long iterOutputTokens,
+        decimal iterCostUsd,
+        int latestScore,
+        CancellationToken ct)
+    {
+        var row = await this.db.AgentPairAssignments
+            .FirstOrDefaultAsync(p => p.Id == pairAssignmentId, ct);
+        if (row is null) return;
+        row.TotalIters = iter;
+        row.TotalInputTokens += iterInputTokens;
+        row.TotalOutputTokens += iterOutputTokens;
+        row.TotalCostUsd += iterCostUsd;
+        row.FinalScore = latestScore; // running tip; final value persists when stamped
+        await this.db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Phase 52 — close the in-progress pair-assignment row with a terminal
+    /// outcome. Stamps <c>EndedAt</c>, <c>Outcome</c>,
+    /// optional <c>SloppyReason</c>, and the final score. No-op when the row
+    /// is missing.
+    /// </summary>
+    private async Task StampPairAssignmentAsync(
+        long pairAssignmentId,
+        string outcome,
+        string? sloppyReason,
+        int finalScore,
+        CancellationToken ct)
+    {
+        var row = await this.db.AgentPairAssignments
+            .FirstOrDefaultAsync(p => p.Id == pairAssignmentId, ct);
+        if (row is null) return;
+        row.Outcome = outcome;
+        row.SloppyReason = sloppyReason;
+        row.FinalScore = finalScore;
+        row.EndedAt = DateTimeOffset.UtcNow;
+        await this.db.SaveChangesAsync(ct);
     }
 
     /// <summary>

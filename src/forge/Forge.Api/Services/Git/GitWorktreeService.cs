@@ -169,6 +169,7 @@ public class GitWorktreeService : IGitWorktreeService
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var proc = Process.Start(psi)!;

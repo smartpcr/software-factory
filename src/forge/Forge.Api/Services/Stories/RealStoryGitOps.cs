@@ -247,12 +247,20 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // a worktree for this base branch (e.g. when the operator chose
         // feature/memory-pressure as their spawn base). Reuse it. Otherwise
         // fall back to a dedicated `merge-{base}` worktree.
+        //
+        // Phase 51 Fix 6b — track whether MergeAsync materialized the
+        // worktree itself (`createdHere=true`) so the post-sync cleanup
+        // can tear down the merge-{base} fallback without nuking a
+        // worktree some other code path (EnsureBranchAsync, plan-doc
+        // workspace) is still using.
         var wtPath = await this.TryFindExistingWorktreeAsync(root, baseBranch, ct);
+        var createdHere = false;
         if (wtPath is null)
         {
             var sanitized = SanitizeBranchSlug($"merge-{baseBranch}");
             wtPath = WorktreePath(root, sanitized);
             await this.EnsureWorktreeAsync(root, wtPath, baseBranch, baseBranch, ct);
+            createdHere = true;
         }
 
         // Phase 45 follow-up — sync-not-re-merge.
@@ -299,6 +307,40 @@ public sealed class RealStoryGitOps : IStoryGitOps
             this.logger?.LogDebug(ex,
                 "MergeAsync ancestor sanity check failed (non-fatal); local sync to origin/{Base} already done.",
                 baseBranch);
+        }
+
+        // Phase 51 Fix 6b — clean up the `spawn-merge-{base}` fallback
+        // worktree we materialized at the top. The local sync is done
+        // (origin is the source of truth) and there's no other reason
+        // to keep the working tree around — leaving it pollutes
+        // `.worktree/` with dirs that accumulate per merge cycle and
+        // were observed on 2026-05-12 as
+        // `spawn-merge-feature-memory-pressure` etc. Only remove when
+        // WE created it; a pre-existing worktree may still be in use by
+        // an EnsureBranchAsync flow or operator inspection.
+        if (createdHere && !string.IsNullOrEmpty(wtPath))
+        {
+            try
+            {
+                await this.RunGitCaptureAsync(root, ct, "worktree", "remove", "--force", wtPath);
+                if (Directory.Exists(wtPath))
+                {
+                    try { Directory.Delete(wtPath, recursive: true); }
+                    catch (IOException ex)
+                    {
+                        this.logger?.LogDebug(ex,
+                            "MergeAsync: could not raw-delete worktree dir {Path} after `git worktree remove`; will be pruned on next claim.",
+                            wtPath);
+                    }
+                }
+                await this.RunGitCaptureAsync(root, ct, "worktree", "prune");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogDebug(ex,
+                    "MergeAsync: best-effort worktree cleanup failed for {Path}; ignoring.",
+                    wtPath);
+            }
         }
     }
 
@@ -1153,6 +1195,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)
