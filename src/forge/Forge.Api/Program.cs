@@ -454,6 +454,12 @@ using (var scope = app.Services.CreateScope())
     // mapped column including StallReason. Without this ordering the
     // prod DB crashes at boot with "no such column: w.StallReason".
     await Phase49Migration.ApplyAsync(db);
+    // Phase 50 — DecisionPinsJson on story_spawns for operator-pinned
+    // decisions that break cross-doc convergence loops. MUST also run
+    // before Phase 38 for the same reason: Phase38Migration reads
+    // story_spawns via EF which projects DecisionPinsJson. Single
+    // nullable column; safe alongside the other story_spawns migrations.
+    await Phase50Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
