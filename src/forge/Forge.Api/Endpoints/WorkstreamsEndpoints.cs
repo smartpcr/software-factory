@@ -326,13 +326,21 @@ public static class WorkstreamsEndpoints
     /// spawn's <c>DecompositionJson</c> (historical record of what the
     /// architect produced — UI sources current state from the Workstreams
     /// table, so a stale entry there isn't load-bearing).</para>
+    ///
+    /// <para>Phase 50 — when <paramref name="deleteRemoteBranch"/> is
+    /// <c>true</c>, also runs <c>git push origin --delete {ws.Branch}</c>
+    /// after the local branch has been removed. Used by the spawn-delete
+    /// endpoint where a "restart from scratch" must wipe the remote
+    /// counterpart so the operator can re-spawn the same story without
+    /// resurrecting the previous attempt's PR branch.</para>
     /// </summary>
-    private static async Task<object> CascadeDeleteWorkstreamAsync(
+    internal static async Task<object> CascadeDeleteWorkstreamAsync(
         ForgeDbContext db,
         IGitWorktreeService git,
         IConfiguration config,
         WorkstreamRow row,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool deleteRemoteBranch = false)
     {
         var id = row.Id;
         var counts = new Dictionary<string, int>();
@@ -433,13 +441,57 @@ public static class WorkstreamsEndpoints
             var cloneRoot = repoRow?.CloneRoot;
             if (!string.IsNullOrEmpty(cloneRoot))
             {
+                // Phase 50 — try EVERY worktree-path convention this codebase
+                // ships with (legacy spawn-, legacy ws-, Phase 49 short slug).
+                // Mirrors the Restart endpoint's defensive sweep. Before this
+                // fix, CascadeDeleteWorkstreamAsync only removed the legacy
+                // `spawn-{branch}` shape, so engineer workstreams created
+                // under the Phase 49 short slug (`stage-1.1-foo/`) survived
+                // delete and surfaced stale commits in the Worktree tab.
+                var candidatePaths = new List<string>();
                 var sanitized = row.Branch.Replace('/', '-');
-                var wtPath = Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
-                if (Directory.Exists(wtPath))
+                candidatePaths.Add(Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}"));
+                var sanitizedId = row.Id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+                candidatePaths.Add(Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}"));
+                if (!string.IsNullOrEmpty(row.StorySpawnId))
                 {
-                    try { await git.RemoveAsync(wtPath, force: true); counts["worktreeRemoved"] = 1; }
-                    catch { counts["worktreeRemoved"] = 0; }
+                    try
+                    {
+                        var siblings = await db.Workstreams.AsNoTracking()
+                            .Where(w => w.StorySpawnId == row.StorySpawnId)
+                            .ToListAsync(ct);
+                        if (siblings.All(w => w.Id != row.Id)) siblings.Add(row);
+                        var newSlug = Forge.Api.Services.Stories.WorkstreamWorktreeSlug.Compute(row, siblings);
+                        candidatePaths.Add(Path.Combine(cloneRoot, ".worktree", newSlug));
+                    }
+                    catch { /* slug computer is best-effort */ }
                 }
+
+                // Run `git worktree prune` first so stale metadata doesn't
+                // block a fresh `worktree add` after a re-spawn.
+                await RunGitQuietAsync(cloneRoot, "worktree", "prune");
+
+                var wtRemoved = 0;
+                foreach (var wtPath in candidatePaths.Distinct())
+                {
+                    // Always try `git worktree remove --force` first — even
+                    // when the dir doesn't exist on disk, git may still
+                    // hold a stale worktree registration that blocks new
+                    // `worktree add` calls with "already exists" errors.
+                    await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath);
+                    if (Directory.Exists(wtPath))
+                    {
+                        try { await git.RemoveAsync(wtPath, force: true); wtRemoved++; }
+                        catch
+                        {
+                            try { Directory.Delete(wtPath, recursive: true); wtRemoved++; }
+                            catch { /* locked files — will be pruned on next claim */ }
+                        }
+                    }
+                }
+                await RunGitQuietAsync(cloneRoot, "worktree", "prune");
+                if (wtRemoved > 0) counts["worktreeRemoved"] = wtRemoved;
+
                 // Delete the local branch. Best-effort — `git branch -D`
                 // refuses if the branch is checked out somewhere; in that
                 // case the worktree-remove above is the meaningful work.
@@ -460,6 +512,17 @@ public static class WorkstreamsEndpoints
                     }
                 }
                 catch { /* best-effort */ }
+
+                // Phase 50 — spawn-delete path also wipes the remote so a
+                // re-spawn of the same story doesn't pull stale history
+                // from origin. Best-effort; failures (no remote, branch
+                // never pushed, no auth) are silent.
+                if (deleteRemoteBranch)
+                {
+                    var rc = await RunGitQuietAsync(cloneRoot, "push", "origin", "--delete", row.Branch);
+                    if (rc == 0) counts["remoteBranchRemoved"] = 1;
+                    else counts["remoteBranchRemoveFailed"] = 1;
+                }
             }
         }
 
@@ -714,7 +777,7 @@ public static class WorkstreamsEndpoints
     /// <see cref="RealStoryGitOps"/>'s <c>SanitizeBranchSlug</c> exactly
     /// so we target the correct worktree directory.
     /// </summary>
-    private static string SanitizeBranchSlug(string branch)
+    internal static string SanitizeBranchSlug(string branch)
     {
         var sb = new System.Text.StringBuilder(branch.Length);
         foreach (var c in branch)
@@ -725,7 +788,7 @@ public static class WorkstreamsEndpoints
     }
 
     /// <summary>Best-effort git command — returns exit code, never throws.</summary>
-    private static async Task<int> RunGitQuietAsync(string cwd, params string[] args)
+    internal static async Task<int> RunGitQuietAsync(string cwd, params string[] args)
     {
         try
         {
@@ -749,7 +812,7 @@ public static class WorkstreamsEndpoints
         }
     }
 
-    private static List<string> ParseStringList(string? json)
+    internal static List<string> ParseStringList(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }

@@ -10,7 +10,9 @@ using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Git;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -67,6 +69,7 @@ public static class StoriesEndpoints
         var grp = app.MapGroup("/api/stories").WithTags("Stories");
 
         grp.MapPost("/{storyId}/spawn", Spawn).WithName("SpawnStory");
+        grp.MapDelete("/{storyId}/spawn", DeleteSpawn).WithName("DeleteStorySpawn");
         grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
@@ -281,6 +284,551 @@ public static class StoriesEndpoints
             });
         }
         return Results.Created($"/api/stories/{storyId}/spawn", ToContract(spawn));
+    }
+
+    /// <summary>
+    /// Phase 50 — DELETE /api/stories/{storyId}/spawn — wipe a story spawn
+    /// and every artifact it produced. Used by the operator's "delete and
+    /// restart from scratch" button on the swarm story-index. Performs in
+    /// order:
+    /// <list type="number">
+    ///   <item>Snapshot every workItem id under the spawn (children + the
+    ///         four plan-doc synthetic ids + the spawn-id used by
+    ///         decompose/qa-features) and every PR id (plan PR, QA PR,
+    ///         each workstream's <c>PrsJson</c> entries which include
+    ///         step-def PRs).</item>
+    ///   <item>Cancel in-flight agent invocations, queue rows, and active
+    ///         agent claims for that id set so no zombie task survives the
+    ///         delete (rubber-duck pass identified plan-doc / claim
+    ///         orphans).</item>
+    ///   <item>Refuse the base-branch deletion when another live spawn
+    ///         shares it (409 — operator must re-call without the flag).</item>
+    ///   <item>Close pending PRs upstream (best-effort), then remove every
+    ///         PR row + comments + build-chain rows from the local DB
+    ///         regardless of merged/abandoned/open state — the user's
+    ///         intent is "restart from scratch", not "preserve history".</item>
+    ///   <item>Cascade-delete each child workstream via
+    ///         <see cref="WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync"/>
+    ///         with <c>deleteRemoteBranch=true</c> so the worktree mount,
+    ///         local branch, and remote branch are all reaped.</item>
+    ///   <item>Cascade-delete the synthetic plan-doc / spawn-id rows
+    ///         (deliverables, transcripts, queue, agent assignments, work
+    ///         items).</item>
+    ///   <item>Remove plan / qa worktrees + branches (local + remote),
+    ///         then PR-derived branches (covers step-def branches that
+    ///         don't live on the workstream row).</item>
+    ///   <item>Wipe on-disk dirs: <c>storyworkspaces/{spawnId}/</c> and
+    ///         <c>attachments/{spawnId}/</c>.</item>
+    ///   <item>Optionally delete the base branch (local + remote) when the
+    ///         operator confirms via <paramref name="deleteBaseBranch"/>
+    ///         AND <c>spawn.BaseBranch != "main"</c>.</item>
+    ///   <item>Remove the <see cref="StorySpawnRow"/> itself (the
+    ///         scheduler tick re-reads spawns each pass and silently
+    ///         skips the now-missing row).</item>
+    ///   <item>Notify SignalR (<c>story-spawn.changed</c> / kind=deleted)
+    ///         so the UI strips the row immediately.</item>
+    /// </list>
+    /// </summary>
+    private static async Task<IResult> DeleteSpawn(
+        HttpContext ctx,
+        string storyId,
+        [FromQuery] bool? deleteBaseBranch,
+        ForgeDbContext db,
+        IGitWorktreeService git,
+        IConfiguration config,
+        IHubContext<ForgeHub> hub,
+        IAgentRunner runner,
+        IEnumerable<IForgeProvider> providers,
+        ILoggerFactory loggerFactory)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (string.IsNullOrWhiteSpace(storyId))
+        {
+            return Results.Problem(title: "storyId is required", statusCode: 400);
+        }
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ctx.RequestAborted);
+        if (spawn is null)
+        {
+            return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+        }
+
+        var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
+        var counts = new Dictionary<string, int>();
+        var alsoDeleteBase = deleteBaseBranch == true;
+
+        // ── 1. Snapshot every relevant id BEFORE we start mutating ──────
+        var workstreams = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id)
+            .ToListAsync(ctx.RequestAborted);
+        var workstreamIds = workstreams.Select(w => w.Id).ToList();
+        counts["workstreams"] = workstreams.Count;
+
+        // Plan-doc work item ids — see CrewStoryArtifactStrategy:494 where
+        // these synthetic ids are minted. Cleaning them here keeps the
+        // task-execution surface (deliverables, queue, transcripts) free
+        // of orphans pointing at a now-deleted spawn.
+        var planDocFiles = new[]
+        {
+            "architecture.md",
+            "tech-spec.md",
+            "implementation-plan.md",
+            "e2e-scenarios.md",
+        };
+        var syntheticIds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            spawn.Id,
+        };
+        foreach (var fn in planDocFiles)
+        {
+            syntheticIds.Add($"plan-doc:{spawn.Id}:{fn}");
+        }
+
+        // Combined id set used for cancel + cascade cleanup. The order
+        // matters: workstream ids go first so the existing
+        // CascadeDeleteWorkstreamAsync owns those; the synthetic loop
+        // below picks up everything else.
+        var allWorkItemIds = new HashSet<string>(workstreamIds, StringComparer.Ordinal);
+        foreach (var sid in syntheticIds) allWorkItemIds.Add(sid);
+
+        // PR ids referenced by the spawn — plan PR, QA PR, every
+        // workstream's PrsJson list (which on a fully-decomposed spawn
+        // includes both impl and step-def PR ids — see
+        // StorySpawnOrchestrator stepDefMerged annotations).
+        var prIds = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(spawn.PlanPrId)) prIds.Add(spawn.PlanPrId);
+        if (!string.IsNullOrEmpty(spawn.QaPrId)) prIds.Add(spawn.QaPrId);
+        foreach (var w in workstreams)
+        {
+            foreach (var p in WorkstreamsEndpoints.ParseStringList(w.PrsJson))
+            {
+                if (!string.IsNullOrEmpty(p)) prIds.Add(p);
+            }
+        }
+
+        // Load actual PR rows up front so we can collect their branch
+        // names for the post-cleanup branch sweep (covers step-def PR
+        // branches like ws/{storyId}/{slug}-steps which aren't stored
+        // on WorkstreamRow.Branch).
+        var prRows = prIds.Count == 0
+            ? new List<PrRow>()
+            : await db.Prs.Where(p => prIds.Contains(p.Id)).ToListAsync(ctx.RequestAborted);
+        counts["prs"] = prRows.Count;
+
+        // ── 2. Base-branch share check (early — refuses BEFORE any
+        // destructive work so the operator can re-call safely) ──────────
+        var baseBranchToDelete = (string?)null;
+        if (alsoDeleteBase
+            && !string.IsNullOrEmpty(spawn.BaseBranch)
+            && !string.Equals(spawn.BaseBranch, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            var sharedCount = await db.StorySpawns
+                .Where(s => s.Id != spawn.Id && s.BaseBranch == spawn.BaseBranch)
+                .CountAsync(ctx.RequestAborted);
+            if (sharedCount > 0)
+            {
+                return Results.Problem(
+                    title: "Base branch is shared",
+                    detail: $"Base branch '{spawn.BaseBranch}' is also used by {sharedCount} other story spawn(s). Re-call without deleteBaseBranch=true, or delete those spawns first.",
+                    statusCode: 409);
+            }
+            baseBranchToDelete = spawn.BaseBranch;
+        }
+
+        // ── 3. Cancel in-flight work — runner, queue, claims ────────────
+        var invocationsCancelled = 0;
+        foreach (var wid in allWorkItemIds)
+        {
+            try { invocationsCancelled += await runner.CancelByTaskAsync(wid, ctx.RequestAborted); }
+            catch { /* best-effort */ }
+        }
+        counts["invocationsCancelled"] = invocationsCancelled;
+
+        var openQueueRows = await db.TaskQueue
+            .Where(q => allWorkItemIds.Contains(q.WorkItemId)
+                && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync(ctx.RequestAborted);
+        var nowOff = DateTimeOffset.UtcNow;
+        foreach (var q in openQueueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = nowOff;
+            q.LastUpdatedAt = nowOff;
+        }
+        counts["queueRowsCancelled"] = openQueueRows.Count;
+
+        // Release any active agent claims (Released==null means the agent
+        // is still "busy" on this work). Without this, the agent capacity
+        // is stranded until the 24 h abandoned-recovery sweep.
+        var openClaims = await db.AgentClaims
+            .Where(c => allWorkItemIds.Contains(c.WorkItemId) && c.ReleasedAt == null)
+            .ToListAsync(ctx.RequestAborted);
+        foreach (var c in openClaims) c.ReleasedAt = nowOff;
+        counts["agentClaimsReleased"] = openClaims.Count;
+
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        // ── 4. Close + remove PRs ───────────────────────────────────────
+        var prsClosedUpstream = 0;
+        var providerList = providers.ToList();
+        foreach (var pr in prRows)
+        {
+            // Close upstream first, but only when the row is still open —
+            // calling close on an already-merged PR is wasteful and noisy.
+            var isPending = !string.Equals(pr.Col, "merged", StringComparison.Ordinal)
+                && !string.Equals(pr.Col, "abandoned", StringComparison.Ordinal);
+            if (isPending && !string.IsNullOrEmpty(pr.Provider))
+            {
+                try
+                {
+                    var provider = providerList.FirstOrDefault(p =>
+                        string.Equals(p.Kind, pr.Provider, StringComparison.OrdinalIgnoreCase) && p.IsConfigured);
+                    if (provider is not null)
+                    {
+                        await provider.ClosePullRequestAsync(pr.Id, ProviderCallContext.Anonymous, ctx.RequestAborted);
+                        prsClosedUpstream++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex,
+                        "DeleteSpawn: best-effort upstream close failed for PR {PrId}; continuing local cleanup.",
+                        pr.Id);
+                }
+            }
+
+            // Wipe local PR comment chain (no FK cascade — see
+            // ForgeDbContext OnModelCreating).
+            var comments = await db.PrComments.Where(c => c.PrId == pr.Id).ToListAsync(ctx.RequestAborted);
+            var commentIds = comments.Select(c => c.Id).ToList();
+            if (commentIds.Count > 0)
+            {
+                var hist = await db.PrCommentHistory.Where(h => commentIds.Contains(h.CommentId)).ToListAsync(ctx.RequestAborted);
+                db.PrCommentHistory.RemoveRange(hist);
+                db.PrComments.RemoveRange(comments);
+            }
+
+            // Wipe build chain rows referencing this PR. Build artifacts
+            // are diagnostic data; once the parent PR is gone they're
+            // dangling and serve no purpose.
+            var builds = await db.Builds.Where(b => b.PrId == pr.Id).ToListAsync(ctx.RequestAborted);
+            if (builds.Count > 0)
+            {
+                var buildIds = builds.Select(b => b.Id).ToList();
+                var stages = await db.BuildStages.Where(s => buildIds.Contains(s.BuildId)).ToListAsync(ctx.RequestAborted);
+                var stageIds = stages.Select(s => s.Id).ToList();
+                if (stageIds.Count > 0)
+                {
+                    var stageLogs = await db.BuildStageLogs.Where(l => stageIds.Contains(l.StageId)).ToListAsync(ctx.RequestAborted);
+                    db.BuildStageLogs.RemoveRange(stageLogs);
+                    var failurePoints = await db.BuildFailurePoints.Where(fp => stageIds.Contains(fp.StageId)).ToListAsync(ctx.RequestAborted);
+                    db.BuildFailurePoints.RemoveRange(failurePoints);
+                }
+                var artifacts = await db.BuildArtifacts.Where(a => buildIds.Contains(a.BuildId)).ToListAsync(ctx.RequestAborted);
+                var artifactIds = artifacts.Select(a => a.Id).ToList();
+                if (artifactIds.Count > 0)
+                {
+                    var artifactFiles = await db.BuildArtifactFiles.Where(f => artifactIds.Contains(f.ArtifactId)).ToListAsync(ctx.RequestAborted);
+                    db.BuildArtifactFiles.RemoveRange(artifactFiles);
+                }
+                var annotations = await db.BuildAnnotations.Where(a => buildIds.Contains(a.BuildId)).ToListAsync(ctx.RequestAborted);
+                db.BuildAnnotations.RemoveRange(annotations);
+                db.BuildArtifacts.RemoveRange(artifacts);
+                db.BuildStages.RemoveRange(stages);
+                db.Builds.RemoveRange(builds);
+            }
+
+            db.Prs.Remove(pr);
+        }
+        counts["prsClosedUpstream"] = prsClosedUpstream;
+
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        // ── 5. Cascade-delete each child workstream (reuses the
+        // existing well-tested helper from WorkstreamsEndpoints with
+        // remote-branch deletion enabled) ───────────────────────────────
+        var wsCleanupCounts = new Dictionary<string, int>();
+        foreach (var ws in workstreams)
+        {
+            try
+            {
+                var rep = await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
+                    db, git, config, ws, ctx.RequestAborted, deleteRemoteBranch: true);
+                if (rep is { } and not null)
+                {
+                    // Best-effort merge of per-workstream counts into a sum.
+                    foreach (var prop in rep.GetType().GetProperties())
+                    {
+                        // Skip — CascadeDeleteWorkstreamAsync returns an
+                        // anonymous object whose props aren't direct ints.
+                        // The interesting "counts" sub-dict is what we want;
+                        // shape is { id, status, counts: Dictionary<string,int> }.
+                        if (prop.Name != "counts") continue;
+                        if (prop.GetValue(rep) is IDictionary<string, int> sub)
+                        {
+                            foreach (var (k, v) in sub)
+                            {
+                                wsCleanupCounts[k] = wsCleanupCounts.GetValueOrDefault(k) + v;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "DeleteSpawn: cascade delete failed for workstream {WsId}; continuing.", ws.Id);
+            }
+        }
+        foreach (var (k, v) in wsCleanupCounts) counts[$"ws.{k}"] = v;
+
+        // ── 6. Cascade-delete synthetic plan-doc / spawn-id rows ────────
+        if (syntheticIds.Count > 0)
+        {
+            var ids = syntheticIds.ToList();
+
+            var deliverables = await db.Deliverables.Where(d => ids.Contains(d.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.Deliverables.RemoveRange(deliverables);
+            counts["synthetic.deliverables"] = deliverables.Count;
+
+            var deliverableQuestions = await db.DeliverableQuestions.Where(q => ids.Contains(q.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.DeliverableQuestions.RemoveRange(deliverableQuestions);
+            counts["synthetic.deliverableQuestions"] = deliverableQuestions.Count;
+
+            var transcript = await db.TaskTranscriptEvents.Where(e => ids.Contains(e.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.TaskTranscriptEvents.RemoveRange(transcript);
+            counts["synthetic.transcriptEvents"] = transcript.Count;
+
+            var queueRows = await db.TaskQueue.Where(q => ids.Contains(q.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            var queueRowIds = queueRows.Select(q => q.Id).ToList();
+            if (queueRowIds.Count > 0)
+            {
+                var queueHistory = await db.TaskQueueHistory.Where(h => queueRowIds.Contains(h.QueueId)).ToListAsync(ctx.RequestAborted);
+                db.TaskQueueHistory.RemoveRange(queueHistory);
+                counts["synthetic.queueHistory"] = queueHistory.Count;
+            }
+            db.TaskQueue.RemoveRange(queueRows);
+            counts["synthetic.queueRows"] = queueRows.Count;
+
+            var agentAssignments = await db.AgentAssignments.Where(a => ids.Contains(a.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.AgentAssignments.RemoveRange(agentAssignments);
+            counts["synthetic.agentAssignments"] = agentAssignments.Count;
+
+            var workItemLinks = await db.WorkItemLinks.Where(l => ids.Contains(l.FromId) || ids.Contains(l.ToId)).ToListAsync(ctx.RequestAborted);
+            db.WorkItemLinks.RemoveRange(workItemLinks);
+            counts["synthetic.workItemLinks"] = workItemLinks.Count;
+
+            var buildFixPending = await db.BuildFixPending.Where(b => ids.Contains(b.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.BuildFixPending.RemoveRange(buildFixPending);
+            counts["synthetic.buildFixPending"] = buildFixPending.Count;
+
+            var workItems = await db.WorkItems.Where(w => ids.Contains(w.Id)).ToListAsync(ctx.RequestAborted);
+            db.WorkItems.RemoveRange(workItems);
+            counts["synthetic.workItems"] = workItems.Count;
+
+            var cards = await db.Cards.Where(c => ids.Contains(c.Id)).ToListAsync(ctx.RequestAborted);
+            db.Cards.RemoveRange(cards);
+            counts["synthetic.cards"] = cards.Count;
+        }
+
+        // Also remove the spawn's STORY work-item if it was synthesized
+        // by the orchestrator — story id is the parent, not in
+        // syntheticIds. Safe to remove because cascade deletes above
+        // already removed every child work-item.
+        var storyWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == spawn.StoryId, ctx.RequestAborted);
+        if (storyWi is not null && string.Equals(storyWi.Provider, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            db.WorkItems.Remove(storyWi);
+            counts["storyWorkItemRemoved"] = 1;
+        }
+
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        // ── 7. Branch + worktree cleanup for plan / qa / PR-derived
+        // branches. Workstream branches were already wiped inside
+        // CascadeDeleteWorkstreamAsync above. ────────────────────────────
+        var repo = string.IsNullOrEmpty(spawn.RepoId)
+            ? null
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
+
+        // Track branches we've already cleaned to avoid duplicate work
+        // (PR branch may equal plan branch on partial failures, etc.).
+        var cleanedBranches = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ws in workstreams)
+        {
+            if (!string.IsNullOrEmpty(ws.Branch)) cleanedBranches.Add(ws.Branch);
+        }
+
+        var storyGitOps = ctx.RequestServices.GetService<IStoryGitOps>();
+
+        // Phase 50 fix — `git worktree list` can be out of sync with what's
+        // actually on disk (e.g., after a process crash or manual rm). The
+        // plan/qa worktrees survived the original cleanup because
+        // RemoveWorktreeAsync silently no-ops when the branch isn't in
+        // `git worktree list --porcelain` output. Defensive cleanup:
+        // (a) try the IStoryGitOps path (handles registered worktrees),
+        // (b) ALSO compute the expected `.worktree/spawn-{sanitized}/`
+        //     path and force-delete the directory if it exists,
+        // (c) prune git's worktree metadata so a re-spawn doesn't get
+        //     "fatal: '...' already exists" on the next `git worktree add`.
+        static string SanitizeForWorktree(string branch)
+        {
+            var sb = new System.Text.StringBuilder(branch.Length);
+            foreach (var c in branch)
+            {
+                sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+            }
+            return sb.ToString().Trim('-');
+        }
+
+        async Task CleanBranchAsync(string? branch)
+        {
+            if (string.IsNullOrEmpty(branch) || !cleanedBranches.Add(branch)) return;
+            if (storyGitOps is not null)
+            {
+                try { await storyGitOps.RemoveWorktreeAsync(repo, branch, ctx.RequestAborted); }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "DeleteSpawn: RemoveWorktreeAsync failed for {Branch}; continuing.", branch);
+                }
+            }
+            if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
+            {
+                // Force-cleanup the expected on-disk worktree path even
+                // when `git worktree list` doesn't know about it. Plan +
+                // QA worktrees use the legacy `spawn-{sanitized}/` shape
+                // (Phase 49 only renamed engineer workstream paths).
+                var sanitized = SanitizeForWorktree(branch);
+                var legacyWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{sanitized}");
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", legacyWtPath);
+                if (Directory.Exists(legacyWtPath))
+                {
+                    try { Directory.Delete(legacyWtPath, recursive: true); }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex,
+                            "DeleteSpawn: could not raw-delete worktree dir {Path}; will be pruned next claim.",
+                            legacyWtPath);
+                    }
+                }
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
+
+                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "branch", "-D", branch);
+                var pushRc = await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "push", "origin", "--delete", branch);
+                if (pushRc != 0)
+                {
+                    // Surface the failure so the operator knows the remote
+                    // copy survived (typical causes: branch never pushed,
+                    // branch protection rejected the delete, no remote auth).
+                    logger.LogWarning(
+                        "DeleteSpawn: `git push origin --delete {Branch}` returned exit code {Code}; remote may still hold the branch.",
+                        branch, pushRc);
+                    counts[$"remoteDeleteFailed:{branch}"] = pushRc;
+                }
+            }
+        }
+
+        await CleanBranchAsync(spawn.PlanBranch);
+        await CleanBranchAsync(spawn.QaBranch);
+        foreach (var pr in prRows)
+        {
+            await CleanBranchAsync(pr.Branch);
+        }
+        counts["branchesCleaned"] = cleanedBranches.Count;
+
+        // ── 8. On-disk dirs ─────────────────────────────────────────────
+        var stateDir = Path.GetDirectoryName(config["Forge:Db:Path"] ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        var spawnSlug = spawn.Id;
+        foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') }.Distinct())
+        {
+            var spawnRoot = Path.Combine(stateDir, "storyworkspaces", slug);
+            if (Directory.Exists(spawnRoot))
+            {
+                try
+                {
+                    Directory.Delete(spawnRoot, recursive: true);
+                    counts["workspacesRemoved"] = counts.GetValueOrDefault("workspacesRemoved") + 1;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex,
+                        "DeleteSpawn: could not delete workspace dir {Path}; continuing.", spawnRoot);
+                }
+            }
+        }
+
+        var attachmentsDir = Path.Combine(stateDir, "attachments", spawn.Id);
+        if (Directory.Exists(attachmentsDir))
+        {
+            try
+            {
+                Directory.Delete(attachmentsDir, recursive: true);
+                counts["attachmentsRemoved"] = 1;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "DeleteSpawn: could not delete attachments dir {Path}; continuing.", attachmentsDir);
+            }
+        }
+
+        // ── 9. Optional base-branch deletion ────────────────────────────
+        if (!string.IsNullOrEmpty(baseBranchToDelete) && repo is not null
+            && !string.IsNullOrEmpty(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
+        {
+            // Base branches don't have spawn-specific worktrees of their
+            // own (the plan/qa/workstream worktrees branched off them);
+            // skip RemoveWorktreeAsync and go straight to the ref delete.
+            //
+            // `git branch -D` against the currently-checked-out branch
+            // fails — the cloneRoot's HEAD is usually `main`, so deleting
+            // a non-main base branch is safe. For a base that IS the
+            // cloneRoot's HEAD, the local delete is a no-op and the
+            // remote push --delete is the meaningful work.
+            var localRc = await WorkstreamsEndpoints.RunGitQuietAsync(
+                repo.CloneRoot, "branch", "-D", baseBranchToDelete);
+            var remoteRc = await WorkstreamsEndpoints.RunGitQuietAsync(
+                repo.CloneRoot, "push", "origin", "--delete", baseBranchToDelete);
+            counts["baseBranchRemoved"] = (remoteRc == 0) ? 1 : 0;
+            if (remoteRc != 0)
+            {
+                // Most common cause: the base branch is protected on the
+                // remote, OR the operator's git auth can't push to it.
+                // Surface this in the response so the UI toast can tell
+                // the operator the spawn was wiped locally but the remote
+                // base branch still exists.
+                logger.LogWarning(
+                    "DeleteSpawn: `git push origin --delete {Branch}` returned exit code {Code}; remote base branch survived.",
+                    baseBranchToDelete, remoteRc);
+                counts[$"remoteDeleteFailed:{baseBranchToDelete}"] = remoteRc;
+            }
+            if (localRc != 0)
+            {
+                logger.LogDebug(
+                    "DeleteSpawn: local `git branch -D {Branch}` returned exit code {Code} (typical when branch is HEAD).",
+                    baseBranchToDelete, localRc);
+            }
+        }
+
+        // ── 10. Delete the spawn row itself ─────────────────────────────
+        db.StorySpawns.Remove(spawn);
+        await db.SaveChangesAsync(ctx.RequestAborted);
+        counts["spawn"] = 1;
+
+        // ── 11. SignalR + result ────────────────────────────────────────
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "deleted", storyId, counts },
+            ctx.RequestAborted);
+
+        return Results.Ok(new
+        {
+            storyId,
+            status = "deleted",
+            baseBranchDeleted = !string.IsNullOrEmpty(baseBranchToDelete),
+            counts,
+        });
     }
 
     private static async Task<IResult> ListSpawns(HttpContext ctx, ForgeDbContext db, [FromQuery] string? phase)
@@ -2336,22 +2884,6 @@ public static class StoriesEndpoints
             && lastEventAt.HasValue
             && DateTimeOffset.UtcNow - lastEventAt.Value < TimeSpan.FromSeconds(90);
 
-        // Lifecycle (Layer A.1): a doc is only "completed" once its plan PR
-        // is merged. A passing evaluator verdict means the iteration loop
-        // ended — but the doc isn't done until the PR closes. Between pass
-        // and merge the status is "awaiting-pr-review" so the operator sees
-        // the loop is finished but the doc hasn't shipped yet.
-        string status;
-        bool planPrMerged = false;
-        if (!string.IsNullOrEmpty(spawn.PlanPrId))
-        {
-            var planPr = await db.Prs.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId);
-            planPrMerged = string.Equals(planPr?.Col, "merged", StringComparison.OrdinalIgnoreCase);
-        }
-        bool lastWasPass = lastDeliverable is not null
-            && string.Equals(lastDeliverable.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
-
         // Count unanswered open questions — blocks pass and should show as
         // stalled so the operator knows to answer before resuming.
         var unansweredQuestions = 0;
@@ -2366,11 +2898,38 @@ public static class StoriesEndpoints
             unansweredQuestions = byExtId.Count(q => q.Answer == null);
         }
 
+        // Status priority:
+        //   1. completed         — terminal: last verdict pass AND plan PR merged.
+        //   2. awaiting-pr-review — terminal: last verdict pass, PR not yet merged.
+        //   3. stalled (questions) — open questions block the pass gate
+        //      (see DeliverableLoop.cs:450 — pass is demoted to iterate when
+        //      unanswered questions exist). The loop is technically still
+        //      iterating (`live`) but it cannot reach a pass until the
+        //      operator answers, so the operator needs to see stalled to
+        //      know action is required. PROMOTED above `live` 2026-05-11
+        //      after observing iter 17-23 / score 82-86 sticking on
+        //      qq:TELEGRAM-MESSENGER-S because of open questions while
+        //      the badge stayed `live`.
+        //   4. live              — runner reports the task is actively executing.
+        //   5. pending           — no deliverables yet.
+        //   6. stalled (verdict) — last verdict was reject/stalled.
+        //   7. iterating         — default for between iterations.
+        string status;
+        bool planPrMerged = false;
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var planPr = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId);
+            planPrMerged = string.Equals(planPr?.Col, "merged", StringComparison.OrdinalIgnoreCase);
+        }
+        bool lastWasPass = lastDeliverable is not null
+            && string.Equals(lastDeliverable.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+
         if (lastWasPass && planPrMerged) status = "completed";
-        else if (isRunnerLive || isRecentEvent) status = "live";
-        else if (lastDeliverable is null) status = "pending";
         else if (lastWasPass) status = "awaiting-pr-review";
         else if (unansweredQuestions > 0) status = "stalled";
+        else if (isRunnerLive || isRecentEvent) status = "live";
+        else if (lastDeliverable is null) status = "pending";
         else if (lastDeliverable.Verdict != null
             && (lastDeliverable.Verdict.StartsWith("stalled", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(lastDeliverable.Verdict, "reject", StringComparison.OrdinalIgnoreCase)))
