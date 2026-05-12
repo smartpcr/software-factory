@@ -133,7 +133,8 @@ public static class StoriesEndpoints
         ForgeDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
-        IConfiguration config)
+        IConfiguration config,
+        ILoggerFactory loggerFactory)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -152,6 +153,30 @@ public static class StoriesEndpoints
                 detail: $"Spawn id {existing.Id} is in phase '{existing.Phase}'.",
                 statusCode: 409);
         }
+
+        // Phase 50 defensive purge — runs ONCE at the moment a new spawn is
+        // about to be created. spawn.Id is deterministic
+        // (`spawn-{safeStoryId}`), so the WorkItemId space
+        // (`plan-doc:spawn-{safeStoryId}:*`) and on-disk paths
+        // (`.worktree/spawn-story-{safeStoryId}-*`, `storyworkspaces/{spawn.Id}/`,
+        // `attachments/{spawn.Id}/`) are PREDICTABLE. If a previous
+        // DeleteSpawn ran but partially failed (HTTP RequestAborted, FK
+        // exception mid-batch, race with an in-flight agent writing a
+        // deliverable AFTER step 6 ran), residual rows / files survive
+        // under those keys and the next re-spawn inherits them — the
+        // pass-verdict guard in ProducePlanFileAsync would return the
+        // stale cached doc, the iterations API would surface days-old
+        // gen/eval rounds, the worktree would still have the old file
+        // (observed 2026-05-11: operator deleted spawn, re-spawned, saw
+        // iterations from several days ago). Purging here makes
+        // "delete + re-spawn" idempotent regardless of what survived
+        // the previous DeleteSpawn.
+        var safeStoryIdForPurge = StoryPaths.Safe(storyId);
+        var deterministicSpawnId = $"spawn-{safeStoryIdForPurge}";
+        await PurgeResidualSpawnDataAsync(
+            db, config, deterministicSpawnId, safeStoryIdForPurge,
+            loggerFactory.CreateLogger("forge.story-spawn.respawn-purge"),
+            ctx.RequestAborted);
 
         // 28.2 — story must exist. Three sources accepted:
         //   1) ProductStoryRow (locally-authored story; description carries the
@@ -294,6 +319,338 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
+    /// Phase 50 — defensive cleanup that runs at re-spawn time to purge
+    /// any residue from a prior incomplete <see cref="DeleteSpawn"/>.
+    /// spawn.Id is deterministic (<c>spawn-{safeStoryId}</c>) so every
+    /// downstream key (plan-doc WorkItemIds, storyworkspaces dir,
+    /// attachments dir, plan/qa branch worktree paths) is predictable
+    /// regardless of whether a prior spawn row exists. Best-effort
+    /// throughout — anything that fails logs a warning and continues so
+    /// the new spawn isn't blocked by stale state that will get fixed
+    /// during normal operation anyway.
+    ///
+    /// <para>This is the BACKSTOP that makes re-spawn safe even when:
+    /// <list type="bullet">
+    /// <item>DeleteSpawn's HTTP request was aborted mid-cleanup (browser
+    ///   closed, network blip, 500-error after some steps ran).</item>
+    /// <item>An in-flight agent committed a new Deliverable AFTER
+    ///   DeleteSpawn's step-6 cancel returned but BEFORE the agent's
+    ///   own write completed — race that surfaces as "old iterations
+    ///   reappear in new spawn".</item>
+    /// <item>The operator never ran DeleteSpawn at all (e.g., DB
+    ///   imported from a backup with spawn rows already missing).</item>
+    /// </list></para>
+    /// </summary>
+    private static async Task PurgeResidualSpawnDataAsync(
+        ForgeDbContext db,
+        IConfiguration config,
+        string deterministicSpawnId,
+        string safeStoryId,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var totalRowsPurged = 0;
+
+        // 1. Synthetic plan-doc + spawn-id work-item ids. Matches the
+        //    same convention DeleteSpawn uses (StoriesEndpoints:380-387).
+        var planDocFiles = new[] { "architecture.md", "tech-spec.md", "implementation-plan.md", "e2e-scenarios.md" };
+        var syntheticIds = new HashSet<string>(StringComparer.Ordinal) { deterministicSpawnId };
+        foreach (var fn in planDocFiles) syntheticIds.Add($"plan-doc:{deterministicSpawnId}:{fn}");
+        var idList = syntheticIds.ToList();
+
+        try
+        {
+            var deliverables = await db.Deliverables.Where(d => idList.Contains(d.WorkItemId)).ToListAsync(ct);
+            db.Deliverables.RemoveRange(deliverables);
+            totalRowsPurged += deliverables.Count;
+
+            var deliverableQuestions = await db.DeliverableQuestions.Where(q => idList.Contains(q.WorkItemId)).ToListAsync(ct);
+            db.DeliverableQuestions.RemoveRange(deliverableQuestions);
+            totalRowsPurged += deliverableQuestions.Count;
+
+            var transcripts = await db.TaskTranscriptEvents.Where(e => idList.Contains(e.WorkItemId)).ToListAsync(ct);
+            db.TaskTranscriptEvents.RemoveRange(transcripts);
+            totalRowsPurged += transcripts.Count;
+
+            var queueRows = await db.TaskQueue.Where(q => idList.Contains(q.WorkItemId)).ToListAsync(ct);
+            var queueIds = queueRows.Select(q => q.Id).ToList();
+            if (queueIds.Count > 0)
+            {
+                var queueHist = await db.TaskQueueHistory.Where(h => queueIds.Contains(h.QueueId)).ToListAsync(ct);
+                db.TaskQueueHistory.RemoveRange(queueHist);
+                totalRowsPurged += queueHist.Count;
+            }
+            db.TaskQueue.RemoveRange(queueRows);
+            totalRowsPurged += queueRows.Count;
+
+            var agentAssignments = await db.AgentAssignments.Where(a => idList.Contains(a.WorkItemId)).ToListAsync(ct);
+            db.AgentAssignments.RemoveRange(agentAssignments);
+            totalRowsPurged += agentAssignments.Count;
+
+            var workItemLinks = await db.WorkItemLinks.Where(l => idList.Contains(l.FromId) || idList.Contains(l.ToId)).ToListAsync(ct);
+            db.WorkItemLinks.RemoveRange(workItemLinks);
+            totalRowsPurged += workItemLinks.Count;
+
+            var buildFixPending = await db.BuildFixPending.Where(b => idList.Contains(b.WorkItemId)).ToListAsync(ct);
+            db.BuildFixPending.RemoveRange(buildFixPending);
+            totalRowsPurged += buildFixPending.Count;
+
+            var workItems = await db.WorkItems.Where(w => idList.Contains(w.Id)).ToListAsync(ct);
+            db.WorkItems.RemoveRange(workItems);
+            totalRowsPurged += workItems.Count;
+
+            var cards = await db.Cards.Where(c => idList.Contains(c.Id)).ToListAsync(ct);
+            db.Cards.RemoveRange(cards);
+            totalRowsPurged += cards.Count;
+
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Phase 50 respawn purge: DB sweep failed for spawn-id '{SpawnId}'; continuing with disk + git sweeps.",
+                deterministicSpawnId);
+        }
+
+        // 2. Orphan workstream rows pointing at the deterministic spawn id.
+        //    Cascade-delete them so their per-workstream worktrees + DB rows
+        //    are reaped via the well-tested helper. This catches the case
+        //    where DeleteSpawn's step-5 partial-failed and left workstream
+        //    rows around — without this, the new spawn's PlanReconciler
+        //    would see "siblings" that don't belong to it.
+        try
+        {
+            var orphanWs = await db.Workstreams.Where(w => w.StorySpawnId == deterministicSpawnId).ToListAsync(ct);
+            if (orphanWs.Count > 0)
+            {
+                logger.LogInformation(
+                    "Phase 50 respawn purge: found {N} orphan workstream rows for spawn-id '{SpawnId}'; cascade-deleting.",
+                    orphanWs.Count, deterministicSpawnId);
+                var git = (Forge.Api.Services.Git.IGitWorktreeService?)null;
+                // CascadeDeleteWorkstreamAsync resolves git internally via its
+                // own IConfiguration; passing null here forces the per-call
+                // best-effort path which is fine since the workstreams may
+                // already have been partially cleaned.
+                foreach (var ws in orphanWs)
+                {
+                    try
+                    {
+                        await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
+                            db, git!, config, ws, ct, deleteRemoteBranch: true);
+                    }
+                    catch (Exception innerEx)
+                    {
+                        logger.LogWarning(innerEx,
+                            "Phase 50 respawn purge: orphan workstream {Id} cascade-delete failed; continuing.",
+                            ws.Id);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Phase 50 respawn purge: orphan workstream sweep failed for spawn-id '{SpawnId}'.",
+                deterministicSpawnId);
+        }
+
+        // 3. On-disk dirs: storyworkspaces/{spawnId}/ and attachments/{spawnId}/
+        //    Mirrors DeleteSpawn step 8.
+        var stateDir = Path.GetDirectoryName(config["Forge:Db:Path"] ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        foreach (var slug in new[] { deterministicSpawnId, deterministicSpawnId.Replace('-', '_') }.Distinct())
+        {
+            var spawnRoot = Path.Combine(stateDir, "storyworkspaces", slug);
+            if (Directory.Exists(spawnRoot))
+            {
+                try
+                {
+                    Directory.Delete(spawnRoot, recursive: true);
+                    logger.LogInformation("Phase 50 respawn purge: removed orphan storyworkspaces dir {Path}.", spawnRoot);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Phase 50 respawn purge: could not delete storyworkspaces dir {Path}.", spawnRoot);
+                }
+            }
+        }
+
+        var attachmentsDir = Path.Combine(stateDir, "attachments", deterministicSpawnId);
+        if (Directory.Exists(attachmentsDir))
+        {
+            try
+            {
+                Directory.Delete(attachmentsDir, recursive: true);
+                logger.LogInformation("Phase 50 respawn purge: removed orphan attachments dir {Path}.", attachmentsDir);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Phase 50 respawn purge: could not delete attachments dir {Path}.", attachmentsDir);
+            }
+        }
+
+        // 4. Disk worktree sweep + remote/local branch sweep. Scoped to
+        //    branch/worktree patterns derived from the safe story id —
+        //    catches plan/qa branches + every workstream branch from
+        //    prior decomposition cycles. Runs against EVERY repo
+        //    referenced by any ProductStoryRow row sharing this storyId
+        //    (typically 1, but a story can be re-pointed at a different
+        //    repo on respawn). Pass `cleanedBranches` so the new spawn
+        //    code doesn't try to push to the just-deleted branches.
+        try
+        {
+            // Resolve the candidate repo via the story → product → repos
+            // path. For locally-authored stories ProductStoryRow doesn't
+            // bind a specific repo, so we scan every repo whose product
+            // matches. Limited to repos with a non-null CloneRoot.
+            var candidateRepos = await db.Repos.AsNoTracking()
+                .Where(r => r.CloneRoot != null && r.CloneRoot != string.Empty)
+                .ToListAsync(ct);
+
+            foreach (var repo in candidateRepos)
+            {
+                if (!Directory.Exists(repo.CloneRoot!)) continue;
+
+                // 4a. Worktree dirs whose name contains the safe story id.
+                //     Catches `spawn-story-{safeStoryId}-*`,
+                //     `spawn-ws-{safeStoryId}-*`,
+                //     `stage-*-{safeStoryId}-*`, etc.
+                var wtRoot = Path.Combine(repo.CloneRoot!, ".worktree");
+                if (Directory.Exists(wtRoot))
+                {
+                    foreach (var dir in Directory.EnumerateDirectories(wtRoot))
+                    {
+                        var name = Path.GetFileName(dir);
+                        if (!name.Contains(safeStoryId, StringComparison.OrdinalIgnoreCase)) continue;
+                        await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot!, "worktree", "remove", "--force", dir);
+                        if (Directory.Exists(dir))
+                        {
+                            try { Directory.Delete(dir, recursive: true); }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex,
+                                    "Phase 50 respawn purge: could not raw-delete worktree {Path} for story '{Story}'.",
+                                    dir, safeStoryId);
+                            }
+                        }
+                    }
+                    await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot!, "worktree", "prune");
+                }
+
+                // 4b. Local branches matching story/{X}/* OR ws/{X}/*.
+                var (lbCode, lbOut, _) = await WorkstreamsEndpoints.RunGitCaptureAsync(
+                    repo.CloneRoot!, "branch", "--list",
+                    $"story/{safeStoryId}/*", $"ws/{safeStoryId}/*");
+                if (lbCode == 0 && !string.IsNullOrWhiteSpace(lbOut))
+                {
+                    foreach (var line in lbOut.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var branch = line.TrimStart('*', ' ', '+', '\t').Trim();
+                        if (string.IsNullOrEmpty(branch)) continue;
+                        await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot!, "branch", "-D", branch);
+                    }
+                }
+
+                // 4c. Remote branches matching the same patterns. Best-effort —
+                //     auth failures here just mean the orchestrator's
+                //     EnsureBranchFreshAsync (Phase 50 first-drive auto-heal)
+                //     will force-reset the tip on the next drive.
+                var (rbCode, rbOut, _) = await WorkstreamsEndpoints.RunGitCaptureAsync(
+                    repo.CloneRoot!, "ls-remote", "--heads", "origin",
+                    $"refs/heads/story/{safeStoryId}/*", $"refs/heads/ws/{safeStoryId}/*");
+                if (rbCode == 0 && !string.IsNullOrWhiteSpace(rbOut))
+                {
+                    foreach (var line in rbOut.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) continue;
+                        var branch = parts[1].StartsWith("refs/heads/", StringComparison.Ordinal)
+                            ? parts[1]["refs/heads/".Length..].Trim()
+                            : parts[1].Trim();
+                        if (string.IsNullOrEmpty(branch)) continue;
+                        await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot!, "push", "origin", "--delete", branch);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Phase 50 respawn purge: disk + git sweep failed for story '{Story}'.",
+                safeStoryId);
+        }
+
+        // 5. Orphan PR rows in DB whose branch matches the storyId pattern.
+        //    DeleteSpawn collects PRs by id (off spawn.PlanPrId / QaPrId /
+        //    workstream.PrsJson). When those pointers were stale (observed
+        //    2026-05-11: spawn.PlanPrId was 'PR #15623333' but the actual
+        //    plan-branch PR row was 'PR #15623095' — id never updated when
+        //    the PR was re-opened), the actual PR row outlived the spawn.
+        try
+        {
+            var orphanPrs = await db.Prs
+                .Where(p => p.Branch.StartsWith($"story/{safeStoryId}/")
+                         || p.Branch.StartsWith($"ws/{safeStoryId}/"))
+                .ToListAsync(ct);
+            if (orphanPrs.Count > 0)
+            {
+                logger.LogInformation(
+                    "Phase 50 respawn purge: removing {N} orphan PR rows whose Branch matches story '{Story}'.",
+                    orphanPrs.Count, safeStoryId);
+                var prIds = orphanPrs.Select(p => p.Id).ToList();
+                var comments = await db.PrComments.Where(c => prIds.Contains(c.PrId)).ToListAsync(ct);
+                var commentIds = comments.Select(c => c.Id).ToList();
+                if (commentIds.Count > 0)
+                {
+                    var hist = await db.PrCommentHistory.Where(h => commentIds.Contains(h.CommentId)).ToListAsync(ct);
+                    db.PrCommentHistory.RemoveRange(hist);
+                    db.PrComments.RemoveRange(comments);
+                }
+                var builds = await db.Builds.Where(b => prIds.Contains(b.PrId)).ToListAsync(ct);
+                if (builds.Count > 0)
+                {
+                    var buildIds = builds.Select(b => b.Id).ToList();
+                    var stages = await db.BuildStages.Where(s => buildIds.Contains(s.BuildId)).ToListAsync(ct);
+                    var stageIds = stages.Select(s => s.Id).ToList();
+                    if (stageIds.Count > 0)
+                    {
+                        var stageLogs = await db.BuildStageLogs.Where(l => stageIds.Contains(l.StageId)).ToListAsync(ct);
+                        db.BuildStageLogs.RemoveRange(stageLogs);
+                        var failurePoints = await db.BuildFailurePoints.Where(fp => stageIds.Contains(fp.StageId)).ToListAsync(ct);
+                        db.BuildFailurePoints.RemoveRange(failurePoints);
+                    }
+                    var artifacts = await db.BuildArtifacts.Where(a => buildIds.Contains(a.BuildId)).ToListAsync(ct);
+                    var artifactIds = artifacts.Select(a => a.Id).ToList();
+                    if (artifactIds.Count > 0)
+                    {
+                        var artifactFiles = await db.BuildArtifactFiles.Where(f => artifactIds.Contains(f.ArtifactId)).ToListAsync(ct);
+                        db.BuildArtifactFiles.RemoveRange(artifactFiles);
+                    }
+                    var annotations = await db.BuildAnnotations.Where(a => buildIds.Contains(a.BuildId)).ToListAsync(ct);
+                    db.BuildAnnotations.RemoveRange(annotations);
+                    db.BuildArtifacts.RemoveRange(artifacts);
+                    db.BuildStages.RemoveRange(stages);
+                    db.Builds.RemoveRange(builds);
+                }
+                db.Prs.RemoveRange(orphanPrs);
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Phase 50 respawn purge: orphan PR sweep failed for story '{Story}'.",
+                safeStoryId);
+        }
+
+        if (totalRowsPurged > 0)
+        {
+            logger.LogInformation(
+                "Phase 50 respawn purge complete for spawn-id '{SpawnId}': {N} residual DB rows reaped before new spawn creation.",
+                deterministicSpawnId, totalRowsPurged);
+        }
+    }
+
+    /// <summary>
     /// Phase 50 — DELETE /api/stories/{storyId}/spawn — wipe a story spawn
     /// and every artifact it produced. Used by the operator's "delete and
     /// restart from scratch" button on the swarm story-index. Performs in
@@ -364,6 +721,17 @@ public static class StoriesEndpoints
 
         var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
         var counts = new Dictionary<string, int>();
+        // Phase 50 — collect remote-delete failures into a structured list
+        // so the response payload can surface them to the operator. The
+        // legacy code stored them as `counts["remoteDeleteFailed:{branch}"]`
+        // which the UI didn't read, and the response's `baseBranchDeleted`
+        // boolean was set off `baseBranchToDelete != null` regardless of
+        // whether the push --delete actually succeeded — i.e., the toast
+        // claimed "base branch removed" even when origin still carried it.
+        // Observed 2026-05-11 on local:HIGH-MEM-CONSUMPTION: re-spawn
+        // inherited stale plan-doc commits because the orphan remote
+        // branch was never reported as a delete failure.
+        var remoteDeleteFailures = new List<string>();
         var alsoDeleteBase = deleteBaseBranch == true;
 
         // ── 1. Snapshot every relevant id BEFORE we start mutating ──────
@@ -733,6 +1101,7 @@ public static class StoriesEndpoints
                         "DeleteSpawn: `git push origin --delete {Branch}` returned exit code {Code}; remote may still hold the branch.",
                         branch, pushRc);
                     counts[$"remoteDeleteFailed:{branch}"] = pushRc;
+                    remoteDeleteFailures.Add(branch);
                 }
             }
         }
@@ -810,6 +1179,7 @@ public static class StoriesEndpoints
                     "DeleteSpawn: `git push origin --delete {Branch}` returned exit code {Code}; remote base branch survived.",
                     baseBranchToDelete, remoteRc);
                 counts[$"remoteDeleteFailed:{baseBranchToDelete}"] = remoteRc;
+                remoteDeleteFailures.Add(baseBranchToDelete);
             }
             if (localRc != 0)
             {
@@ -833,7 +1203,15 @@ public static class StoriesEndpoints
         {
             storyId,
             status = "deleted",
-            baseBranchDeleted = !string.IsNullOrEmpty(baseBranchToDelete),
+            // Phase 50 — `baseBranchDeleted` now reflects whether the
+            // REMOTE delete actually succeeded, not just whether the
+            // operator asked for it. Lying here was the source of the
+            // "delete looked fine but old doc still picked up" report
+            // (operator believed the base branch was gone, then the next
+            // spawn for the same storyId inherited the orphan).
+            baseBranchDeleted = !string.IsNullOrEmpty(baseBranchToDelete)
+                              && !remoteDeleteFailures.Contains(baseBranchToDelete!),
+            remoteDeleteFailures,
             counts,
         });
     }
@@ -1631,6 +2009,14 @@ public static class StoriesEndpoints
     /// block that always clears the pending marker. Shared by the
     /// <c>ResumeArtifact</c> endpoint AND the boot-time recovery sweep so the
     /// cleanup contract is identical.
+    ///
+    /// <para>Phase 50 follow-up — <paramref name="restartFromScratch"/>
+    /// signals that the caller is the operator-clicked Restart path
+    /// (not Resume), so <see cref="IStoryArtifactStrategy.ResumeSingleArtifactAsync"/>
+    /// MUST wipe the on-disk plan doc + any stale per-doc DB rows before
+    /// the architect's first iteration runs. Defaults to <c>false</c> so
+    /// the ordinary Resume endpoint and boot-recovery sweep retain
+    /// resume-mid-iter semantics (file preserved).</para>
     /// </summary>
     internal static async Task RunResumeWithCleanupAsync(
         IServiceScopeFactory scopeFactory,
@@ -1638,7 +2024,8 @@ public static class StoriesEndpoints
         string spawnId,
         string storyId,
         string key,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool restartFromScratch = false)
     {
         try
         {
@@ -1648,7 +2035,7 @@ public static class StoriesEndpoints
             var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == storyId, ct);
             if (spawn is null || story is null) return;
 
-            await strategy.ResumeSingleArtifactAsync(spawn, story, key, ct);
+            await strategy.ResumeSingleArtifactAsync(spawn, story, key, restartFromScratch, ct);
 
             // Phase 42 — when the resumed artifact is implementation-plan.md,
             // re-reconcile workstreams against the (potentially updated) plan
@@ -2148,8 +2535,23 @@ public static class StoriesEndpoints
 
         // (7) Fire-and-forget: re-enter the gen↔eval loop. With no prior
         // deliverables ResumeSingleArtifactAsync starts at iter 1.
+        // Phase 50 follow-up — pass `restartFromScratch: true` so the
+        // strategy wipes the on-disk plan doc + any stale per-doc DB rows
+        // (deliverables/transcripts/queue) BEFORE the architect's first
+        // iteration. The endpoint above already cleaned the DB rows, but
+        // it cannot reliably delete the worktree doc file (the worktree
+        // path is owned by the strategy via EnsureWorktreeAsync; even if
+        // the endpoint deleted it, the subsequent `git checkout {planBranch}`
+        // would restore it from the branch tip). The strategy deletes the
+        // file AFTER EnsureWorktreeAsync runs, which is the only window
+        // where the deletion sticks until iter 1 writes the regenerated
+        // content. Without this flag, Restart was silently degrading to
+        // an incremental edit because `forceResume=true` bypassed the
+        // Phase 50 cleanup block.
         var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
-        _ = Task.Run(() => RunResumeWithCleanupAsync(scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
+        _ = Task.Run(() => RunResumeWithCleanupAsync(
+            scopeFactory, strategy, spawn.Id, storyId, key,
+            CancellationToken.None, restartFromScratch: true));
 
         return Results.Ok(new
         {
