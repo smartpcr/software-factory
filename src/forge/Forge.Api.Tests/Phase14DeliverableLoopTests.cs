@@ -134,21 +134,24 @@ public class Phase14DeliverableLoopTests
         var (f, db, loop) = await SetupAsync(workItemId: "wi-stall");
         try
         {
-            // All 5 iters return 80 (iterate range). Loop should stall on iter 5.
+            // Strict-increasing iterate-range scores (75 → 87) so plateau
+            // doesn't fire at iter 4 and the parser doesn't bottom out into
+            // reject. Iter-cap exhausts at iter 5 with verdict="sloppy".
             var req = new DeliverableLoopRequest(
                 "wi-stall", "crew-x", "gen-1", "eval-1",
                 Generator: (_, _, _) => Task.FromResult(new GeneratorRunOutput("out", 0m)),
-                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(80), 0m)));
+                Evaluator: (iter, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(72 + iter * 3), 0m)));
 
             var result = await loop.RunAsync(req, CancellationToken.None);
 
-            Assert.Equal("stalled", result.FinalVerdict);
+            Assert.Equal("sloppy", result.FinalVerdict);
+            Assert.Equal(SloppyReasons.IterCap, result.SloppyReason);
             Assert.Equal(ScoringConstants.MaxIterations, result.Iterations);
 
             var rows = await db.Deliverables.Where(d => d.WorkItemId == "wi-stall").OrderBy(d => d.Iter).ToListAsync();
             Assert.Equal(5, rows.Count);
-            // Last row's verdict was rewritten to 'stalled'.
-            Assert.Equal("stalled", rows[4].Verdict);
+            // Last row's verdict was rewritten to 'sloppy'.
+            Assert.Equal("sloppy", rows[4].Verdict);
             // Earlier rows stay as 'iterate'.
             Assert.All(rows.Take(4), r => Assert.Equal("iterate", r.Verdict));
         }
