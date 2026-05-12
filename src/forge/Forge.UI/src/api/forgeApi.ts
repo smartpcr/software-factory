@@ -1166,6 +1166,46 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * Phase 50 — operator decision pins. Pin a binding directive that is
+   * prepended to every future iter prompt for every plan-doc / workstream
+   * under this spawn. Used to break cross-doc convergence loops (the
+   * agent re-litigates the same decision because sibling docs change
+   * between iters; see qq:TELEGRAM-MESSENGER-S architecture.md 51 iters
+   * with DefaultAction re-flagged in 41/51).
+   *
+   * Pass `workItemId` to scope the pin to one doc / workstream; omit it
+   * to apply the pin globally across the spawn.
+   */
+  async listStoryDecisionPins(storyId: string): Promise<Array<{
+    id: string;
+    text: string;
+    workItemId: string | null;
+    createdAt: string;
+    createdBy: string;
+  }>> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/pins`);
+  },
+
+  async addStoryDecisionPin(
+    storyId: string,
+    text: string,
+    workItemId?: string,
+  ): Promise<{ id: string; text: string; workItemId: string | null; createdAt: string; createdBy: string }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/pins`, {
+      method: 'POST',
+      body: JSON.stringify({ text, workItemId: workItemId ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async removeStoryDecisionPin(storyId: string, pinId: string): Promise<{ removed: number }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/pins/${encodeURIComponent(pinId)}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/stories/{storyId}/spawn/artifacts/{key}/resume — resume a single doc's gen↔eval loop. */
   async resumeStoryArtifact(storyId: string, key: string): Promise<{ storyId: string; key: string; status: string }> {
     return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/resume`, {
