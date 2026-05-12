@@ -75,13 +75,14 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
   const isLive = status === 'live';
   const isCompleted = status === 'completed';
   const hasIterations = rows.length > 0;
   const canResume = !isLive && !isCompleted && hasIterations;
-  const busy = resuming || cancelling || restarting || accepting;
+  const busy = resuming || cancelling || restarting || accepting || pinning;
 
   async function handleResume() {
     setResuming(true);
@@ -141,6 +142,42 @@ export function DocConversationPane({ storyId, docId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Accept failed', 'danger');
     } finally { setAccepting(false); }
+  }
+
+  /**
+   * Phase 50 — pin an operator decision that the agent must treat as
+   * binding on every future iter. Used to break cross-doc convergence
+   * loops where the agent keeps re-litigating the same decision (e.g.
+   * "DefaultAction lives in sidecar — STOP flipping. tech-spec HC-3 is
+   * authoritative."). The text is collected via window.prompt() — the
+   * existing ConfirmDialog only renders single-line bodies and a
+   * full-fledged textarea modal is out of scope for this quick win.
+   * The pin scopes to this specific doc (workItemId set) so it only
+   * affects this artifact, not unrelated sibling docs.
+   */
+  async function handlePin() {
+    const text = window.prompt(
+      `Pin a binding decision for ${key}.md:\n\n`
+      + `The text below will be prepended to every future iter prompt as an `
+      + `OPERATOR DECISION PIN that the agent must follow. Use this when the `
+      + `same critique keeps appearing across iters (e.g. "DefaultAction lives `
+      + `in sidecar — stop flipping. tech-spec HC-3 is authoritative.").`,
+      '',
+    );
+    if (text === null) return; // cancelled
+    const trimmed = text.trim();
+    if (!trimmed) {
+      showToast('Pin text is empty — nothing to pin.', 'info');
+      return;
+    }
+    setPinning(true);
+    try {
+      const wid = workItemId ?? `plan-doc:spawn-${storyId.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')}:${key}.md`;
+      await forgeApi.addStoryDecisionPin(storyId, trimmed, wid);
+      showToast(`Pinned decision for ${key}.md. Next iter will see it.`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Pin failed', 'danger');
+    } finally { setPinning(false); }
   }
 
   useEffect(() => {
@@ -307,6 +344,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
           onClick={() => void handleRestart()}
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-amber, #ffb347)' }}>
           {restarting ? '⏳…' : '⟲ RESTART'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={busy}
+          title="Pin a binding operator decision the agent must follow on every future iteration. Use when the same critique keeps recurring across iters."
+          onClick={() => void handlePin()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-cyan, #5eead4)' }}>
+          {pinning ? '⏳…' : '📌 PIN'}
         </button>
       </nav>
 
