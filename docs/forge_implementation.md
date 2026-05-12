@@ -5243,6 +5243,77 @@ Feature: Operator-chosen base branch on a story spawn
 
 ---
 
+## Phase 51 — Per-task budget-cap auto-recovery
+
+> Live spec for the auto-resume behavior implemented in `Services/BudgetCooldownReconciler.cs` + `Services/CrewQueueWorker.cs` + `Services/Stories/StorySpawnOrchestrator.cs`. Triggered by `verdict="stalled-budget"` from `DeliverableLoop.cs:554`.
+
+### Lifecycle
+
+A work-item that exhausts `CrewRow.MaxTaskBudgetUsd` is **not** terminal — it parks in `ExecutionStatus = "cooldown-budget"` with two markers:
+
+| Column | Meaning |
+|---|---|
+| `WorkItemRow.BudgetCooldownUntilUtc` | When the cooldown window expires (UtcNow + `Forge:Agents:BudgetCooldown:MaxWait`, default **10 min**). |
+| `WorkItemRow.LastPairAgentIdsJson` | `[generatorId, evaluatorId]` of the pair that was running when the cap was hit — used by the claim picker for rotation. |
+| `WorkItemRow.BudgetWindowStartUtc` | Reset boundary for the cost meter. Cap checks only sum `agent_usage` rows with `StartedAt >= BudgetWindowStartUtc`. Lifetime spend stays in the ledger for crew salary roll-ups. |
+
+### `BudgetCooldownReconciler` (15 s tick)
+
+Scans `ExecutionStatus IN ("cooldown-budget", "failed")`. For each parked row, computes:
+- **Windowed cost** = Σ `agent_usage.CostUsd` WHERE `StartedAt >= BudgetWindowStartUtc` (or all rows if window is null).
+- **Current cap** = `crew.MaxTaskBudgetUsd` (re-read every tick — operator's PATCH wins immediately).
+
+Resume rules:
+
+| Condition | Reason | Pair behavior | Budget meter |
+|---|---|---|---|
+| `windowedCost < currentCap` | `cap-raised` | Keep same pair (`LastPairAgentIdsJson` cleared, prior generator preferred at claim) | Unchanged — operator chose to extend the current window |
+| `BudgetCooldownUntilUtc < UtcNow` OR (Failed row AND `lastDeliv.CreatedAt + MaxWait <= UtcNow`) | `cooldown-elapsed` | **Rotate** — `LastPairAgentIdsJson` preserved so claim picker excludes prior pair | **Reset** — set `BudgetWindowStartUtc = UtcNow`, next attempt starts at $0 |
+| Neither | (parked) | — | — |
+
+Failed-row carry-forward: rows that pre-date Phase 51 (CrewQueueWorker used to route every non-pass verdict to Failed) are picked up via a chain-scan: any deliverable with `Verdict = "stalled-budget"` AND no `Verdict = "pass"` qualifies for both recovery paths. `LastPairAgentIdsJson` is backfilled from the most recent deliverable so rotation has something to exclude.
+
+### `StorySpawnOrchestrator` — mirror logic
+
+`DriveOneWorkstreamImplAsync` previously routed `lastDel.Verdict in {stalled, stalled-budget, reject}` straight to `WorkstreamRow.Status = "stalled"`. Phase 51 special-cases `stalled-budget`:
+- Compute windowed cost vs current cap (same calculation as the reconciler).
+- If `capRaised` — clear `WorkstreamRow.Status = "stalled"`, emit `ws-unstalled-budget-raise`, fall through to `strategy.ProduceWorkstreamChangesAsync` (drives a fresh iteration).
+- If not — fall through to the normal stall path.
+
+Without this mirror, the reconciler clears the workstream stall and the orchestrator immediately re-sets it on the next tick.
+
+### Picker — rotation exclusion
+
+`CrewQueueWorker.SweepClaimsAsync` reads the head row's `WorkItemRow.LastPairAgentIdsJson`. When non-null:
+- Adds both IDs to `busyAgents` so `PairDiversityResolver.PickGenerator` skips them.
+- If the crew lead is in the exclusion set, suppress `leadForPick = null` so the empty-roster Q18.3 fallback doesn't re-pick the lead.
+- Skip the "prefer prior agent" continuity branch — rotation is the explicit intent.
+- Clear `LastPairAgentIdsJson` on a successful pick so boot-recovery / future runs don't keep rotating.
+
+### Seed — operator overrides survive restart
+
+`ForgeSeed.cs` (`EnsureStartupConfigAsync`) previously hard-overwrote `c.MaxTaskBudgetUsd = $2500m` on every boot. Phase 51 changes this to `??=` (only fill when null) so a PATCH to raise the cap survives restart. Same for `DailyBudgetUsd`.
+
+### Config
+
+`Forge:Agents:BudgetCooldown:TickInterval` (default `00:00:15`), `:MaxWait` (default `00:10:00`), `:Enabled` (default true). Tests drop both timeouts to milliseconds and drive `RunOnceAsync` deterministically.
+
+### Telemetry
+
+- `forge.budget.cooldown.resumed` (tagged by `reason = cap-raised | cooldown-elapsed`).
+- `forge.budget.cooldown.skipped` (tagged by `reason = exception | no-deliverable | no-crew`).
+- SignalR events: `task.budget-cooldown` (park), `task.budget-resumed` (resume), `ws-unstalled-budget-raise` (orchestrator un-stall).
+
+### Tests
+
+`Forge.Api.Tests/Phase51BudgetCooldownTests.cs` + `Phase51BudgetCooldownEndToEndTests.cs` cover:
+- Cap raise → resume with same pair (unit + e2e via real `PATCH /api/crews/{id}`).
+- Cooldown elapsed → resume with rotation (unit + e2e via real `CrewQueueWorker.SweepClaimsAsync`).
+- Failed-row carry-forward (legacy data).
+- Still-parked when neither condition met.
+
+---
+
 ## Phase R — Post-implementation refactor (deferred)
 
 > **Do not start until every checkbox in Phases 0–7 is ticked and all fidelity checks are green.** This phase exists only to record the deferred design debt so reviewers know it is acknowledged, not forgotten.
