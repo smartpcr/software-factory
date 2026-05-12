@@ -231,6 +231,111 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Resolve the on-disk state directory (where forge.db lives and
+    /// where storyworkspaces / attachments are rooted). Mirrors the
+    /// same resolution rule the rest of the codebase uses.
+    /// </summary>
+    private string ResolveStateDir()
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var cfg = scope.ServiceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+        var dbPath = cfg?["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        return Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+    }
+
+    /// <summary>
+    /// Phase 50 — render operator-pinned decisions as a prompt block that
+    /// the generator must treat as binding. Pins are stored on the spawn
+    /// as <c>StorySpawnRow.DecisionPinsJson</c>; this helper resolves the
+    /// spawn id from the work item id (plan-doc: prefix → spawn id;
+    /// engineer workstream → walk StorySpawnId), loads the JSON, filters
+    /// by scope (pins with <c>workItemId == null</c> apply globally; pins
+    /// scoped to a specific id only fire for that id), and returns a
+    /// rendered markdown block.
+    ///
+    /// <para>Returns empty string when no pins apply — caller checks for
+    /// non-empty before inserting the block + separator.</para>
+    /// </summary>
+    private async Task<string> BuildDecisionPinsBlockAsync(string workItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return string.Empty;
+
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        // Resolve spawn id: plan-doc:{spawnId}:{file} → spawnId; else
+        // workstream row's StorySpawnId; else workItemId itself (when
+        // the caller passes a spawn id directly, e.g. decompose/qa).
+        string? spawnId = null;
+        if (workItemId.StartsWith("plan-doc:", StringComparison.Ordinal))
+        {
+            var rest = workItemId.Substring("plan-doc:".Length);
+            var lastColon = rest.LastIndexOf(':');
+            spawnId = lastColon > 0 ? rest.Substring(0, lastColon) : rest;
+        }
+        else
+        {
+            var ws = await db.Workstreams.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            spawnId = ws?.StorySpawnId ?? workItemId;
+        }
+        if (string.IsNullOrEmpty(spawnId)) return string.Empty;
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+        if (spawn is null || string.IsNullOrEmpty(spawn.DecisionPinsJson)) return string.Empty;
+
+        List<System.Text.Json.JsonElement>? pins = null;
+        try
+        {
+            pins = System.Text.Json.JsonSerializer.Deserialize<List<System.Text.Json.JsonElement>>(
+                spawn.DecisionPinsJson);
+        }
+        catch { return string.Empty; }
+        if (pins is null || pins.Count == 0) return string.Empty;
+
+        var applicable = new List<System.Text.Json.JsonElement>();
+        foreach (var pin in pins)
+        {
+            var scopedTo = pin.TryGetProperty("workItemId", out var wid)
+                && wid.ValueKind == System.Text.Json.JsonValueKind.String
+                ? wid.GetString()
+                : null;
+            if (string.IsNullOrEmpty(scopedTo)
+                || string.Equals(scopedTo, workItemId, StringComparison.Ordinal))
+            {
+                applicable.Add(pin);
+            }
+        }
+        if (applicable.Count == 0) return string.Empty;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+        sb.AppendLine("║  OPERATOR DECISION PINS — BINDING, OVERRIDES EVERYTHING ║");
+        sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+        sb.AppendLine();
+        sb.AppendLine("The operator has explicitly arbitrated the following decisions");
+        sb.AppendLine("after observing convergence loops in prior iterations. You MUST");
+        sb.AppendLine("treat each pin as a non-negotiable directive that overrides any");
+        sb.AppendLine("sibling-doc text, evaluator critique, or prior chain context.");
+        sb.AppendLine("If a pin contradicts what a sibling doc says, follow the pin");
+        sb.AppendLine("(the sibling doc is wrong and will be corrected separately).");
+        sb.AppendLine();
+        for (var i = 0; i < applicable.Count; i++)
+        {
+            var pin = applicable[i];
+            var text = pin.TryGetProperty("text", out var t)
+                && t.ValueKind == System.Text.Json.JsonValueKind.String
+                ? t.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            sb.AppendLine($"{i + 1}. {text}");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Phase 49 follow-up — resolve the build command the build gates
     /// (per-iter and post-pass) should run for this workstream. The
     /// gates were originally hard-coded to <c>dotnet build</c> at the
@@ -406,12 +511,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// pinned to <c>crew.DefaultEvaluatorAgentId</c> and the parallel
     /// invocations serialise behind a single agent.
     ///
-    /// <para>Disjointness — generator and evaluator rosters do NOT
-    /// overlap. The default evaluator agent leads the evaluator roster;
-    /// remaining evaluator-side seats come from agents not used in the
-    /// generator roster. When the crew is too small to fill both
-    /// rosters, the evaluator roster falls back to the default
-    /// evaluator alone (and parallel docs end up sharing it again).</para>
+    /// <para>Phase 50 fix (2026-05-11) — when the crew has fewer agents
+    /// than docs, the previous algorithm collapsed the evaluator pool to
+    /// <c>{defaultEval}</c> only, so overflow docs (idx ≥ pool.Count)
+    /// landed on a null override → all fell back to
+    /// <c>crew.DefaultEvaluatorAgentId</c>. Operator-reported: same
+    /// evaluator picked across all 4 plan-docs even on a 3-4 agent crew.
+    /// The new algorithm rotates through the full agent list with a
+    /// modulo offset, enforcing <c>gen != eval</c> per doc. The
+    /// generator pool and evaluator pool may now share agents — that's
+    /// fine; the per-agent runner queue serialises concurrent claims on
+    /// the same agent without blocking the orchestrator. With M agents
+    /// the algorithm produces M distinct gen/eval pairs that cycle
+    /// across N docs.</para>
     /// </summary>
     private async Task<(IReadOnlyList<string> Generators, IReadOnlyList<string> Evaluators)>
         LoadArchitectAndEvaluatorRostersAsync(int count, CancellationToken ct)
@@ -435,41 +547,64 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .Select(a => a.Id)
             .ToListAsync(ct);
 
-        // Generator roster: default generator first, then everyone else
-        // (minus the default evaluator so the two rosters don't overlap
-        // by default).
-        var generators = allAgents
-            .Where(a => string.IsNullOrEmpty(defaultEval)
-                || !string.Equals(a, defaultEval, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        if (allAgents.Count == 0)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>());
+        }
+
+        // Generator order: defaultGen first, then everyone else in
+        // stable sort order. Unlike pre-Phase-50, we DO include the
+        // defaultEval in the generator pool — the pairing step below
+        // enforces gen != eval per doc, so disjoint pools aren't
+        // required upstream.
+        var genOrder = allAgents.ToList();
         if (!string.IsNullOrEmpty(defaultGen))
         {
-            generators.Remove(defaultGen);
-            generators.Insert(0, defaultGen);
+            genOrder.Remove(defaultGen);
+            genOrder.Insert(0, defaultGen);
         }
-        var generatorPicks = generators.Take(count).ToList();
-        var generatorSet = new HashSet<string>(generatorPicks, StringComparer.OrdinalIgnoreCase);
 
-        // Evaluator roster: default evaluator first, then any remaining
-        // architect agents not already assigned as generators. When the
-        // crew is too small to fill both, the evaluator side ends up
-        // shorter than count; the caller falls back to the default
-        // evaluator for the over-run docs (they share, which is the
-        // pre-Phase-47 behaviour and not a regression).
-        var evaluators = new List<string>();
+        // Evaluator order: defaultEval first, then everyone else.
+        var evalOrder = allAgents.ToList();
         if (!string.IsNullOrEmpty(defaultEval))
         {
-            evaluators.Add(defaultEval);
-        }
-        foreach (var a in allAgents)
-        {
-            if (generatorSet.Contains(a)) continue;
-            if (evaluators.Contains(a, StringComparer.OrdinalIgnoreCase)) continue;
-            evaluators.Add(a);
-            if (evaluators.Count >= count) break;
+            evalOrder.Remove(defaultEval);
+            evalOrder.Insert(0, defaultEval);
         }
 
-        return (generatorPicks, evaluators);
+        // Per-doc pairing — rotate the generator pool, and pick the
+        // evaluator at a wrap-around offset that guarantees gen != eval
+        // when at least 2 agents exist. Single-agent crews fall through
+        // with eval=null (caller's crew.DefaultEval fallback kicks in;
+        // gen == eval is unavoidable but flagged via empty override).
+        var generators = new List<string>(count);
+        var evaluators = new List<string>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var gen = genOrder[i % genOrder.Count];
+            generators.Add(gen);
+
+            string? eval = null;
+            for (var j = 0; j < evalOrder.Count; j++)
+            {
+                // Start scanning at offset (i+1) so consecutive docs use
+                // different (gen, eval) pairings. j=0..count walks the
+                // roster wrapping around; first non-gen wins.
+                var candidate = evalOrder[(i + 1 + j) % evalOrder.Count];
+                if (!string.Equals(candidate, gen, StringComparison.OrdinalIgnoreCase))
+                {
+                    eval = candidate;
+                    break;
+                }
+            }
+            // eval stays null when the crew has only one agent — the
+            // pairing is impossible. The caller passes the null override
+            // through to InvokeAsync which falls back to crew.DefaultEval
+            // (which equals gen in that degenerate case — unavoidable).
+            evaluators.Add(eval ?? string.Empty);
+        }
+
+        return (generators, evaluators);
     }
 
     private async Task<string> ProducePlanFileAsync(
@@ -482,7 +617,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string worktreePath,
         RepoRow? repo,
         string planBranch,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool restartFromScratch = false)
     {
         // Phase 42 — agent's working dir IS the git worktree root. Doc lives
         // at its real repo path inside the worktree so the agent's tools see
@@ -502,13 +638,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // any path that re-enters the strategy (Resume click, scheduler tick,
         // base-branch-change replay, boot recovery) re-iterates a doc that
         // was already done — burning tokens and confusing the UI's status.
+        List<DeliverableRow> existingDeliverables;
+        using (var passScope = this.scopeFactory.CreateScope())
+        {
+            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            existingDeliverables = await passDb.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == docWorkItemId)
+                .ToListAsync(ct);
+        }
+
         if (!forceResume)
         {
-            using var passScope = this.scopeFactory.CreateScope();
-            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            var latestVerdict = (await passDb.Deliverables.AsNoTracking()
-                    .Where(d => d.WorkItemId == docWorkItemId)
-                    .ToListAsync(ct))
+            var latestVerdict = existingDeliverables
                 .OrderByDescending(d => d.CreatedAt)
                 .FirstOrDefault()?.Verdict;
             if (string.Equals(latestVerdict, "pass", StringComparison.OrdinalIgnoreCase))
@@ -521,6 +662,66 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     spec.FileName, docWorkItemId);
                 return cachedFromDisk;
             }
+        }
+
+        // Phase 50 — fresh-start cleanup. Three distinct leak vectors all
+        // surface here, and the fix is the same: clear the file off disk
+        // (after EnsureWorktreeAsync has re-checked it out from the branch
+        // tip) and purge any stale DB rows BEFORE the architect runs, so
+        // the agent generates from scratch instead of editing the prior
+        // run's content incrementally.
+        //
+        //   (a) Re-spawn after a merged plan PR. The previous spawn's
+        //       plan PR merged `docs/stories/{storyId}/{file}.md` into
+        //       the base branch. EnsureBranchFreshAsync resets the new
+        //       plan branch tip to base — which still carries those
+        //       docs — so the new architect's worktree boots up with
+        //       the OLD plan-doc already on disk. Without this cleanup
+        //       the architect sees an "existing file" and edits it
+        //       incrementally instead of regenerating from the user's
+        //       new story description.
+        //
+        //   (b) DeleteSpawn race. Spawn.Id is deterministic
+        //       (`spawn-{safeStoryId}`), so deliverable WorkItemIds
+        //       collide across spawn lifecycles. If a previous
+        //       DeleteSpawn missed any deliverables (in-flight agent
+        //       writing while the cancel propagated), they'd live on
+        //       under the new spawn's identity. Defensively delete
+        //       every deliverable + transcript + queue row keyed by
+        //       this docWorkItemId so the new architect starts at
+        //       iter 1 with a clean slate even if DeleteSpawn was
+        //       imperfect.
+        //
+        //   (c) Phase 50 follow-up — operator-initiated Restart. The
+        //       RestartArtifact endpoint wipes deliverables/transcripts/
+        //       queue rows and the architect scratch dir, then fires
+        //       ResumeSingleArtifactAsync with `restartFromScratch=true`.
+        //       Previously this cleanup block was gated by
+        //       `if (!forceResume)`, so Restart (forceResume=true)
+        //       bypassed it — leaving the prior 56-iter architecture.md
+        //       on disk for the new "iter 1" to read and incrementally
+        //       edit. Now `restartFromScratch=true` forces the cleanup
+        //       regardless of forceResume; the OR-fallback on
+        //       `existingDeliverables.Count == 0` is belt-and-suspenders
+        //       for the boot-recovery edge case (process killed after
+        //       the Restart endpoint wiped deliverables but before the
+        //       fire-and-forget Resume reached this point —
+        //       StoryResumeRecoveryService doesn't know the resume
+        //       originated from a Restart and re-fires with the default
+        //       `restartFromScratch=false`).
+        //
+        // Trigger condition: `restartFromScratch` (explicit operator signal)
+        // OR `!forceResume && existingDeliverables.Count == 0` (fresh-spawn).
+        // For ordinary Resume (forceResume=true, restartFromScratch=false,
+        // deliverables.Count > 0 because the resume is mid-iter), the
+        // cleanup correctly does NOT trigger — the gen/eval loop's own
+        // resume logic in DeliverableLoop picks up from lastPersisted.Iter.
+        var isFreshFirstIteration = existingDeliverables.Count == 0;
+        var shouldCleanup = restartFromScratch || (!forceResume && isFreshFirstIteration);
+        if (shouldCleanup)
+        {
+            await EnsureFreshDocWorkspaceAsync(
+                this.scopeFactory, this.logger, diskPath, docWorkItemId, restartFromScratch, ct);
         }
 
         // Resume case — historical guard from before the Phase 45 pass-verdict
@@ -548,6 +749,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // shared worktree (no copy-into-siblings/ trick anymore). Some may
         // not exist yet on iter 1 of parallel execution; the agent reads
         // whichever are present at the time.
+        //
+        // Phase 50 follow-up — we briefly experimented with freezing
+        // siblings via a per-drive snapshot, but operator feedback was
+        // explicit: the convergence problem is per-doc attention (the
+        // agent doesn't address its own prior feedback), not cross-doc
+        // moving targets. The other three plan docs converge fine
+        // against live siblings; only architecture.md gets stuck. The
+        // snapshot approach was abandoned.
         var siblingPathsList = string.Join("\n", siblingSpecs.Select(p => $"  - `{p}`"));
 
         var generatorPrompt = $$"""
@@ -620,6 +829,102 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             questions for the next iteration. The orchestrator extracts
             this into the per-iteration UI summary.
 
+            ## How to handle PRIOR EVALUATOR FEEDBACK — CRITICAL
+            When you're iterating on a file that already exists (iter ≥ 2),
+            the evaluator's previous `## What still needs work` list is
+            prepended to this prompt under "## LATEST evaluator feedback".
+            Each item in that list is now formatted as a markdown
+            CHECKBOX (`- [ ] N. <description>`). Score regression most
+            commonly happens when you fix a symptom locally without
+            auditing the doc-wide blast radius, OR when you silently
+            skip items. To avoid both:
+
+            1. **Copy every checkbox into your Iteration Summary and check
+               each one off.** Add an explicit `### Prior feedback
+               resolution` subsection that mirrors EVERY `- [ ]` item from
+               the evaluator's prior list. For each item, replace `- [ ]`
+               with `- [x]` AND append one of:
+                 - `FIXED — <section/file ref> — <one-line description of the fix>`
+                 - `DEFERRED — <reason it's deferred and which iter / pin / question will handle it>`
+                   (only when you genuinely cannot fix it this iter)
+               Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
+               in your summary signals you skipped the item — the
+               evaluator will hold you below pass and the convergence
+               detector will fire after 3-5 iters of skipping, exiting
+               the loop with `stalled-no-convergence`.
+
+               Example:
+                 Evaluator said:  `- [ ] 1. §3.1 has markdown structure error: …`
+                 Your summary:    `- [x] 1. FIXED — §3.1 — split MessengerMessage out into its own H4 block; OperatorBinding table now sits directly under its heading. grep-checked for orphan refs.`
+
+            2. **Doc-wide audit with LITERAL grep — show actual output.**
+               If your edit removed or renamed a phrase, you MUST verify
+               by running `grep -nF "<EXACT phrase from the BEFORE state>"`
+               against `{{spec.RepoPath}}` and PASTE THE ACTUAL OUTPUT
+               in your `[x] FIXED` line — NOT a regex pattern you invent,
+               NOT a paraphrase, NOT a summary. The literal `grep -F`
+               with the exact pre-edit phrase is the only verification
+               that doesn't produce false positives.
+
+               Required format:
+                 `[x] N. FIXED — §X.Y — <description>. Verification:`
+                 ```
+                 $ grep -nF "resolve HumanAction.Value from the stored AgentQuestion JSON" docs/stories/<id>/architecture.md
+                 (empty — phrase removed)
+                 ```
+
+               Or, when SOME hits remain by design (e.g. a `> Note:`
+               callout explaining the retention), paste the hits too:
+                 ```
+                 $ grep -nF "..." docs/stories/<id>/architecture.md
+                 1234:> Note: this section intentionally retains the old term because …
+                 ```
+
+               Why this matters (qq:TELEGRAM-MESSENGER-S iter 56 case study,
+               score regressed because of this exact failure mode):
+                 Agent's claim: `grep-checked: no remaining deserializes.*AgentQuestion.*finds the`
+                 The pattern `deserializes.*AgentQuestion.*finds the` is
+                 a regex the agent INVENTED — it doesn't match the actual
+                 unfixed text "resolve `HumanAction.Value` from the stored
+                 `AgentQuestion` JSON" at §3.1 line 238. The grep returned
+                 empty for the invented pattern, the agent declared success,
+                 and the evaluator caught the unfixed phrase next iter.
+                 The literal `grep -F` of the pre-edit phrase would have
+                 caught the unfixed reference immediately.
+
+               Rules:
+                 - Use `grep -F` (fixed-string), never `grep` (regex) or `grep -E`.
+                 - The phrase is the EXACT string from the file BEFORE your
+                   edit — not a paraphrase, not your own description.
+                 - Run against the file you edited AND its sibling plan docs
+                   under `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+                 - Paste the actual output verbatim. Empty output = `(empty)`.
+                 - When you legitimately retain SOME occurrences, paste the
+                   surviving hits and explain inline.
+                 - Example failure (qq:TELEGRAM-MESSENGER-S iter 43):
+                   the agent renamed `AlertType/Summary` → `Title/Body`
+                   in §4.6 but missed `alertType=Error` in §5.6's example.
+                   The evaluator caught it on the next iter and the score
+                   regressed from 88 → 85.
+
+            3. **Don't introduce structural bugs while patching content.**
+               When inserting a new section between existing headings,
+               verify that no existing field table or block ends up
+               visually under the wrong heading. After inserting a new
+               `#### Foo` block, scroll past it to confirm the
+               immediately-following field table still belongs to its
+               original heading (not your new one).
+
+            4. **If a checkbox you marked `[x] FIXED` in iter N re-appears
+               as `- [ ]` in iter N+1's evaluator feedback**, your prior
+               fix did NOT work. Stop trying the same edit shape. Try a
+               structural change instead: split the section, move the
+               field into a different table, escalate to the operator as
+               an Open Question, or ask the operator to pin a decision.
+               Three consecutive iters with the same checkbox flipping
+               back to `[ ]` will trip the convergence detector and exit
+               the loop.
+
             ## Open questions — structured (REQUIRED when you have any)
             If the story description left ambiguity that you had to guess on,
             do NOT just mention it in prose. Emit a fenced JSON block right
@@ -678,11 +983,68 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               and no contradictions with sibling plan docs that already
               exist on disk).
 
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            DO NOT TRUST the generator's `### Prior feedback resolution`
+            block at face value. For each `[x] N. FIXED — … grep -F "<phrase>" …`
+            claim in the generator's reply, you MUST independently verify
+            against the actual file:
+
+            1. Extract the literal phrase from the generator's claim
+               (the quoted string after `grep -F`).
+            2. Run `grep -nF "<phrase>"` (via your shell) against
+               `{{spec.RepoPath}}` AND the sibling plan docs under
+               `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+            3. If your grep returns any hits the generator did NOT
+               explicitly acknowledge, the claim is FALSE-VERIFIED.
+            4. For every falsely-verified `[x]` claim, add a NEW
+               checkbox to your "What still needs work" list with the
+               literal grep evidence:
+
+                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                  [x] FIXED with grep-checked: "<their pattern>", but
+                  actual grep -nF "<phrase>" shows: <paste the hit
+                  line(s)>. Fix the missed reference and re-verify.`
+
+            Why this matters (qq:TELEGRAM-MESSENGER-S iter 56 case study):
+            the generator claimed `grep-checked: no remaining
+            deserializes.*AgentQuestion.*finds the` — a regex it invented
+            that didn't match the actual unfixed phrase "resolve
+            HumanAction.Value from the stored AgentQuestion JSON" at
+            §3.1 line 238. Without independent re-verification by you,
+            the loop would have iterated on the same phantom-fixed
+            phrase indefinitely.
+
             Structure your `notes` field (inside the JSON block below) into
             three labeled parts in this order:
-            1. **What improved this iteration** — one bullet list.
-            2. **What still needs work** — one bullet list (be specific:
-               cite section names + sentences).
+            1. **What improved this iteration** — one bullet list. Include
+               any `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your
+               own grep.
+            2. **What still needs work** — emit a markdown CHECKBOX list,
+               one item per line, in this exact shape:
+                 `- [ ] 1. <atomic issue + section/line citation>`
+                 `- [ ] 2. <atomic issue + section/line citation>`
+                 `- [ ] 3. …`
+               Each checkbox starts `unchecked` (`[ ]`). The generator
+               echoes these checkboxes into its next-iteration Iteration
+               Summary and flips each to `[x]` with a FIXED / DEFERRED
+               note. Keep items atomic (one issue per checkbox) — never
+               combine two issues into one line, or the generator can't
+               cleanly mark just one of them as fixed.
+
+               Include `UNVERIFIED CLAIM` items here whenever your
+               re-grep contradicts the generator's claim. Cite the
+               specific phrase and line(s) where your grep found hits.
+
+               ALSO: when scoring iteration N+1, compare the prior
+               iteration's checkboxes against what the generator
+               claimed `[x] FIXED`. Items the generator marked FIXED but
+               are STILL present in the file as you see it MUST appear
+               unchecked again in your new list (cite the file evidence
+               briefly so the loop's convergence detector can see the
+               regression). Items the generator marked `[x] DEFERRED`
+               are acceptable to omit from your next list ONLY when the
+               deferral rationale is sound; otherwise re-include them.
+
             3. **Why this score** — two sentences max.
 
             ## Open-questions hard gate
@@ -807,8 +1169,90 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     private static readonly string[] ArchitectDisallowedTools = new[] { "Bash" };
 
+    /// <summary>
+    /// Phase 50 — clear the on-disk plan-doc file and purge any stale per-doc
+    /// DB rows so the architect's next architect invocation regenerates the
+    /// doc from scratch instead of inheriting prior content. Shared by:
+    /// fresh-spawn iter 1 (count==0 + !forceResume), operator-initiated
+    /// Restart (restartFromScratch=true), and boot-recovery edge cases.
+    /// Extracted from <see cref="ProducePlanFileAsync"/> so the cleanup
+    /// contract has a single source of truth and can be unit-tested
+    /// without spinning up the full strategy + agent runner stack.
+    ///
+    /// <para>This runs AFTER <see cref="IStoryGitOps.EnsureWorktreeAsync"/>
+    /// has set up (or restored) the worktree — otherwise the file deletion
+    /// would be undone by the worktree's <c>git checkout</c> re-pulling the
+    /// file from the plan-branch tip. Best-effort: file delete failures are
+    /// logged at warning level but do not throw, so a transient FS lock
+    /// doesn't strand the loop; the agent's iter 1 will then edit the
+    /// stale file instead of regenerating (degraded but not broken).</para>
+    /// </summary>
+    /// <param name="scopeFactory">DI scope factory for the one-shot purge transaction.</param>
+    /// <param name="logger">Optional logger for diagnostics; helper still functions when null.</param>
+    /// <param name="diskPath">Absolute path to the plan doc inside the worktree.</param>
+    /// <param name="docWorkItemId">Synthetic work-item id (<c>plan-doc:{spawn.Id}:{fileName}</c>) used as the DB key for all per-doc rows.</param>
+    /// <param name="restartFromScratch">When true, log as Restart; when false, log as fresh-spawn.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal static async Task EnsureFreshDocWorkspaceAsync(
+        IServiceScopeFactory scopeFactory,
+        ILogger? logger,
+        string diskPath,
+        string docWorkItemId,
+        bool restartFromScratch,
+        CancellationToken ct)
+    {
+        var reason = restartFromScratch ? "Restart" : "fresh-spawn";
+        if (File.Exists(diskPath))
+        {
+            try
+            {
+                File.Delete(diskPath);
+                logger?.LogInformation(
+                    "Phase 50 {Reason} cleanup: removed stale plan doc at {DiskPath} (workItem {WorkItem}) before architect invocation.",
+                    reason, diskPath, docWorkItemId);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex,
+                    "Phase 50 {Reason} cleanup: could not delete stale plan doc at {DiskPath}; architect may inherit prior content.",
+                    reason, diskPath);
+            }
+        }
+
+        // Defensive DB sweep of anything keyed by this docWorkItemId that
+        // survived an upstream cleanup (DeleteSpawn race with in-flight
+        // agent, RestartArtifact endpoint racing with an agent finishing
+        // mid-cancel, etc.). Everything we remove was genuinely "left
+        // over" rather than freshly produced — this runs BEFORE iter 1
+        // starts, so nothing the new architect produces could land in
+        // these tables yet.
+        using var purgeScope = scopeFactory.CreateScope();
+        var purgeDb = purgeScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var staleDeliverables = await purgeDb.Deliverables.Where(d => d.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.Deliverables.RemoveRange(staleDeliverables);
+        var staleQuestions = await purgeDb.DeliverableQuestions.Where(q => q.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.DeliverableQuestions.RemoveRange(staleQuestions);
+        var staleTranscripts = await purgeDb.TaskTranscriptEvents.Where(e => e.WorkItemId == docWorkItemId).ToListAsync(ct);
+        purgeDb.TaskTranscriptEvents.RemoveRange(staleTranscripts);
+        var staleQueue = await purgeDb.TaskQueue.Where(q => q.WorkItemId == docWorkItemId).ToListAsync(ct);
+        var staleQueueIds = staleQueue.Select(q => q.Id).ToList();
+        if (staleQueueIds.Count > 0)
+        {
+            var staleQueueHist = await purgeDb.TaskQueueHistory.Where(h => staleQueueIds.Contains(h.QueueId)).ToListAsync(ct);
+            purgeDb.TaskQueueHistory.RemoveRange(staleQueueHist);
+        }
+        purgeDb.TaskQueue.RemoveRange(staleQueue);
+        if (staleDeliverables.Count > 0 || staleTranscripts.Count > 0 || staleQueue.Count > 0)
+        {
+            await purgeDb.SaveChangesAsync(ct);
+            logger?.LogInformation(
+                "Phase 50 {Reason} cleanup: purged {D} deliverables, {Q} questions, {T} transcripts, {QR} queue rows for {WorkItem}.",
+                reason, staleDeliverables.Count, staleQuestions.Count, staleTranscripts.Count, staleQueue.Count, docWorkItemId);
+        }
+    }
+
     public async Task ResumeSingleArtifactAsync(
-        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, string key, bool restartFromScratch = false, CancellationToken ct = default)
     {
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
@@ -860,6 +1304,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             worktreePath: worktreePath,
             repo: repo,
             planBranch: planBranch,
+            restartFromScratch: restartFromScratch,
             ct: ct);
     }
 
@@ -1314,6 +1759,84 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "copy results to a workspace" — there is no separate workspace.
             Reply `DONE` when finished.
 
+            ## How to handle PRIOR EVALUATOR / REVIEW FEEDBACK — CRITICAL
+            When you're iterating on a workstream (iter ≥ 2), the
+            evaluator's previous `## Still needs improvement` list is
+            prepended to this prompt under "## LATEST evaluator feedback".
+            Each item in that list is formatted as a markdown CHECKBOX
+            (`- [ ] N. <description>`). Score regression and "fix one
+            place, break another" failures most commonly come from
+            localized edits that miss doc-wide blast radius OR from
+            silently skipping items. To avoid both:
+
+            1. **Copy every checkbox into your Change Summary and check
+               each one off.** Add an explicit `### Prior feedback
+               resolution` subsection in your `## Change Summary` that
+               mirrors EVERY `- [ ]` item from the evaluator's prior
+               list. For each item, replace `- [ ]` with `- [x]` AND
+               append one of:
+                 - `FIXED — <commit / file:line / test name> — <one-line description of the fix>`
+                 - `DEFERRED — <reason it's deferred and which workstream / iter will handle it>`
+                   (only when you genuinely can't fix it this iter)
+               Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
+               in your summary signals you skipped the item. The
+               evaluator will hold you below pass and the convergence
+               detector exits the loop after 3-5 iters of skipping.
+
+               Example:
+                 Evaluator said:  `- [ ] 1. HttpMetricsHandler.cs:42 still buffers; should stream`
+                 Your summary:    `- [x] 1. FIXED — HttpMetricsHandler.cs:42 — replaced ReadAsync into MemoryStream with CopyToAsync; added test ServerSentEventsStreamingTest.NoBuffering`
+
+            2. **Repo-wide audit with LITERAL grep — show actual output.**
+               When your edit renames a type, method, field, config key,
+               or feature flag, you MUST verify by running
+               `grep -rnF "<EXACT symbol from the BEFORE state>" src/ tests/`
+               and PASTE THE ACTUAL OUTPUT in your `[x] FIXED` line —
+               NOT a regex pattern you invent, NOT a paraphrase. The
+               literal `grep -F` with the exact pre-edit symbol is the
+               only verification that doesn't produce false positives.
+
+               Required format inside the resolution checklist:
+                 `[x] N. FIXED — <file:line> — <description>. Verification:`
+                 ```
+                 $ grep -rnF "OldSymbolName" src/ tests/
+                 (empty — symbol fully removed)
+                 ```
+
+               When SOME hits remain by design (e.g. a backward-compat
+               adapter), paste them and explain:
+                 ```
+                 $ grep -rnF "OldSymbolName" src/ tests/
+                 src/Compat.cs:23: // legacy alias kept for downstream consumers
+                 ```
+
+               Rules:
+                 - Use `grep -rnF` (fixed-string, recursive, with line numbers),
+                   never plain `grep` or `grep -E`.
+                 - The symbol/string is the EXACT identifier from the
+                   code BEFORE your edit.
+                 - Paste actual output verbatim. Empty output = `(empty)`.
+                 - The build gate catches compile failures but NOT silent
+                   stale references (e.g. a test asserting the old name
+                   in a string literal, a YAML config still pointing at
+                   the old key) — only an exhaustive `grep -F` catches those.
+
+            3. **Verify the whole test suite passes, not just the file
+               you edited.** Run the workstream's project tests
+               (`dotnet test {project}.csproj`) before DONE. A change
+               that fixes the immediate ask but breaks a sibling test
+               regresses the workstream's score (and trips the
+               build/test gate).
+
+            4. **If a checkbox you marked `[x] FIXED` in iter N re-appears
+               as `- [ ]` in iter N+1's evaluator feedback**, your prior
+               fix did NOT work. Stop trying the same edit shape. Try a
+               structural change instead: split the change across files,
+               raise it as an Open Question for operator clarification,
+               or ask the operator to pin a decision. Three consecutive
+               iters of the same checkbox flipping back to `[ ]` trips
+               the convergence detector and stalls the workstream.
+
             ## Open questions — structured (REQUIRED when you have any)
             If the workstream brief left ambiguity that forced you to guess
             (API shape, dependency choice, error-handling convention, naming),
@@ -1362,6 +1885,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               planning artifacts on `main` (architecture.md / implementation-plan.md).
             - Obvious bugs, missing error paths, untested edge cases.
 
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            DO NOT TRUST the generator's `### Prior feedback resolution`
+            block at face value. For each `[x] N. FIXED — … grep -rnF "<phrase>"`
+            claim in the generator's reply, you MUST independently verify
+            against the actual code:
+
+            1. Extract the literal phrase from the generator's claim
+               (the quoted string after `grep -rnF`).
+            2. Run `grep -rnF "<phrase>" src/ tests/` (via your shell).
+            3. If your grep returns any hits the generator did NOT
+               explicitly acknowledge, the claim is FALSE-VERIFIED.
+            4. For every falsely-verified `[x]` claim, add a NEW
+               checkbox to your "Still needs improvement" list with the
+               literal grep evidence:
+
+                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                  [x] FIXED with grep-checked: "<their pattern>", but
+                  actual grep -rnF "<phrase>" src/ tests/ shows: <paste
+                  the hit line(s)>. Fix the missed reference and re-verify.`
+
+            The build gate catches compile failures but NOT silent stale
+            references (e.g. a test asserting the old name in a string
+            literal, a YAML config still pointing at the old key). Your
+            independent re-grep is the only way to catch these.
+
             ## Open-questions hard gate
             If the engineer surfaced open questions in their
             `## Open Questions` JSON block AND the operator hasn't answered
@@ -1372,8 +1920,37 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Output
 
             Output **only** a fenced JSON block — no prose outside it. Put
-            your full technical feedback inside the `notes` field. Example
-            shape:
+            your full technical feedback inside the `notes` field. Structure
+            the `notes` content in this order:
+            1. **Improvements this iteration** — bullet list. Include any
+               `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your own
+               grep.
+            2. **Still needs improvement** — emit a markdown CHECKBOX list,
+               one item per line, in this exact shape:
+                 `- [ ] 1. <atomic issue + file:line / function / test ref>`
+                 `- [ ] 2. <atomic issue + file:line / function / test ref>`
+                 `- [ ] 3. …`
+               Each checkbox starts `unchecked` (`[ ]`). The generator
+               echoes these checkboxes into its next-iteration Change
+               Summary and flips each to `[x]` with a FIXED / DEFERRED
+               note. Keep items atomic — one issue per checkbox — so the
+               generator can cleanly mark just one of them as fixed
+               without ambiguity.
+
+               Include `UNVERIFIED CLAIM` items here whenever your
+               re-grep contradicts the generator's claim. Cite the
+               specific phrase and line(s) where your grep found hits.
+
+               When scoring iteration N+1, compare the prior iteration's
+               checkboxes against the actual code/tests as you see them.
+               Items the generator marked `[x] FIXED` but that are STILL
+               broken in the code MUST re-appear unchecked in your new
+               list with a brief evidence citation so the convergence
+               detector can see the regression.
+
+            3. **Why this score** — two sentences max.
+
+            Example shape:
 
             ```json
             {
@@ -2286,13 +2863,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var hasEvalFeedback = !string.IsNullOrWhiteSpace(evalNotes);
 
             string iterPrompt;
-            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback))
+            // Phase 50 — load operator-pinned decisions (binding directives
+            // the operator added via /spawn/pins). Refreshed each iter so a
+            // freshly-added pin takes effect immediately on the next
+            // generator turn. Cheap query — one row read + JSON parse.
+            // Filtered to pins scoped to this work item (workItemId match)
+            // OR globally-scoped pins (workItemId == null).
+            var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
+
+            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback && string.IsNullOrEmpty(decisionPinsBlock)))
             {
-                iterPrompt = generatorPrompt;
+                iterPrompt = string.IsNullOrEmpty(decisionPinsBlock)
+                    ? generatorPrompt
+                    : decisionPinsBlock + "\n────────────────────────────────────────────────────────────\n\n" + generatorPrompt;
             }
             else
             {
                 var sb = new StringBuilder();
+                // Decision pins ALWAYS go first when present — they
+                // override every other piece of guidance (build feedback,
+                // evaluator feedback, brief) because they're the
+                // operator's explicit arbitration on cross-doc loops.
+                if (!string.IsNullOrEmpty(decisionPinsBlock))
+                {
+                    sb.AppendLine(decisionPinsBlock);
+                    sb.AppendLine("────────────────────────────────────────────────────────────");
+                    sb.AppendLine();
+                }
                 if (hasBuildFeedback)
                 {
                     var bf = lastBuildFailure!;
@@ -2336,16 +2933,44 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (hasEvalFeedback)
                 {
                     sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  EVALUATOR FEEDBACK — YOU MUST ADDRESS EVERY ITEM BELOW ║");
+                    sb.AppendLine("║  EVALUATOR FEEDBACK — STRICT PER-ITEM ATTENTION REQUIRED ║");
                     sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
-                    sb.AppendLine($"This is iteration {iter}. Your prior attempts scored below the");
-                    sb.AppendLine("pass threshold. The evaluator's feedback below tells you EXACTLY");
-                    sb.AppendLine("what to fix. Do NOT re-read the original brief and start from");
-                    sb.AppendLine("scratch — read the feedback, open the file, and make TARGETED");
-                    sb.AppendLine("edits that address each critique. If the same critique appears");
-                    sb.AppendLine("in multiple iterations, your prior fix did not work — try a");
-                    sb.AppendLine("fundamentally different approach.");
+                    sb.AppendLine($"This is iteration {iter}. The same critique appearing across multiple");
+                    sb.AppendLine("iters has been observed on architecture.md spawns (DefaultAction in 41/51");
+                    sb.AppendLine("iters, P95 latency in 46/51, /handoff in 32/51) — the agent reads the");
+                    sb.AppendLine("feedback but its edits don't actually resolve the issue. The system now");
+                    sb.AppendLine("treats this failure mode as a HARD STOP: if the same numbered item from");
+                    sb.AppendLine("the prior \"What still needs work\" list re-appears verbatim in the");
+                    sb.AppendLine("evaluator's next review, this loop will exit with");
+                    sb.AppendLine("`stalled-no-convergence` and the operator will be asked to pin a");
+                    sb.AppendLine("decision or restart.");
+                    sb.AppendLine();
+                    sb.AppendLine("═══ MANDATORY PROCESS — DO THIS BEFORE TOUCHING THE FILE ═══");
+                    sb.AppendLine();
+                    sb.AppendLine("1. Read the numbered \"What still needs work\" list below.");
+                    sb.AppendLine("2. For EACH numbered item, pick ONE of these actions:");
+                    sb.AppendLine("   (a) FIX — open the cited section/line, make the targeted edit,");
+                    sb.AppendLine("       then run `grep -F <key-term>` on the file to confirm there");
+                    sb.AppendLine("       are no remaining dangling references that contradict the fix.");
+                    sb.AppendLine("   (b) DEFER — only when the fix is genuinely out of scope for");
+                    sb.AppendLine("       this iter (e.g. requires changing a sibling doc, requires");
+                    sb.AppendLine("       an operator decision). Provide a one-line rationale.");
+                    sb.AppendLine("3. After your edits, write a `### Prior feedback resolution` block");
+                    sb.AppendLine("   in your Iteration Summary listing EVERY numbered item:");
+                    sb.AppendLine("     `1. FIXED — added §X.Y field table; grep-checked no orphan refs`");
+                    sb.AppendLine("     `2. DEFERRED — requires tech-spec edit; raised as Open Question`");
+                    sb.AppendLine("4. If a previously-FIXED item re-appears in the next iter's feedback,");
+                    sb.AppendLine("   your fix was insufficient — try a STRUCTURAL change (re-split the");
+                    sb.AppendLine("   table, move the section, escalate as a pin) instead of another");
+                    sb.AppendLine("   word-tweak. Repeating the same edit shape three times is a strong");
+                    sb.AppendLine("   signal you should defer with an Open Question.");
+                    sb.AppendLine();
+                    sb.AppendLine("Iterations that lack a `### Prior feedback resolution` block, or that");
+                    sb.AppendLine("silently skip numbered items, are wasting tokens. The evaluator can see");
+                    sb.AppendLine("when you've ignored its feedback and will hold you below pass.");
+                    sb.AppendLine();
+                    sb.AppendLine("═══ THE EVALUATOR'S FEEDBACK (read carefully) ═══");
                     sb.AppendLine();
                     sb.AppendLine(evalNotes);
                     sb.AppendLine();

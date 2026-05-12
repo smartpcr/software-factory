@@ -117,6 +117,9 @@ export function SwarmIndexView() {
   const [filter, setFilter] = useState<PhaseFilter>('all');
   const [search, setSearch] = useState('');
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
+  // Bumped by handlers (e.g. onDeleted) to force the polling effect to
+  // re-fetch immediately instead of waiting for the 15 s tick.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,7 +155,38 @@ export function SwarmIndexView() {
     void load();
     const id = setInterval(() => { void load(); }, 15_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [refreshTick]);
+
+  /**
+   * Optimistic-then-refresh pattern when a row deletes its own spawn.
+   * Drop the row from local state immediately so the UI snaps before the
+   * next list fetch lands, then bump the refresh tick so the effect
+   * re-runs (re-syncing chip counts, picking up any side-effect changes
+   * from the orchestrator). Without the optimistic drop the row would
+   * linger for up to a render cycle while the server's `story-spawn.changed`
+   * SignalR event traverses the wire.
+   */
+  function handleSpawnDeleted(storyId: string) {
+    setSpawns((prev) => prev.filter((s) => s.storyId !== storyId));
+    setDetails((prev) => {
+      if (!(storyId in prev)) return prev;
+      const next = { ...prev };
+      delete next[storyId];
+      return next;
+    });
+    setRefreshTick((t) => t + 1);
+  }
+
+  /**
+   * Phase 50 rollback for the optimistic delete. The row fires `onDeleted`
+   * before awaiting the cascade-delete (which can run 30 s+ for large
+   * spawns); if the server rejects, we bump the refresh tick so the
+   * polling effect re-fetches the live list and the row reappears.
+   */
+  function handleSpawnDeleteFailed(_storyId: string) {
+    setRefreshTick((t) => t + 1);
+  }
+
 
   const counts = useMemo(() => {
     const c: Record<PhaseFilter, number> = {
@@ -281,7 +315,13 @@ export function SwarmIndexView() {
           ) : (
             <div className="story-list">
               {filtered.map((s, i) => (
-                <SwarmStoryRow key={s.storyId} spawn={s} index={i} />
+                <SwarmStoryRow
+                  key={s.storyId}
+                  spawn={s}
+                  index={i}
+                  onDeleted={handleSpawnDeleted}
+                  onDeleteFailed={handleSpawnDeleteFailed}
+                />
               ))}
             </div>
           )}
