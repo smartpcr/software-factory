@@ -708,72 +708,223 @@ public sealed class DeliverableLoop : IDeliverableLoop
     }
 
     /// <summary>
-    /// Phase 50 — token-based convergence detector.Returns
-    /// <c>(looping=true, recurringTopics)</c> when the same set of
-    /// significant tokens (section refs, camelCase identifiers, dotted
-    /// symbols) appears in the evaluator's `What still needs work` block
-    /// across the last 5 iterations.
+    /// Phase 50 — item-text convergence detector. Returns
+    /// <c>(looping=true, recurringTopics)</c> when the evaluator's
+    /// `What still needs work` checkboxes from the latest iter have
+    /// ≥ 55 % Jaccard token overlap with items from at least 2 of the
+    /// last 3 prior iters — i.e. the same ISSUE keeps appearing across
+    /// iters, not just the same section ref.
     ///
-    /// <para>Token extraction picks symbols that look like
-    /// engineer-meaningful identifiers: <c>§N.M</c> section markers,
-    /// dotted names (<c>telegram.send.latency_ms</c>), camelCase
-    /// (<c>DefaultAction</c>), slash names (<c>/handoff</c>). English
-    /// stopwords and short words are dropped. The "topic" is the set
-    /// of these tokens after dedup.</para>
+    /// <para>Each evaluator item is extracted as a single normalized
+    /// string via <see cref="ExtractCheckboxItems"/>, tokenized via
+    /// <see cref="TokenizeItem"/> (lowercase, stopwords dropped,
+    /// section-ref tokens stripped so different issues inside §3.1 don't
+    /// false-match), and compared via <see cref="JaccardSimilarity"/>.</para>
     ///
-    /// <para>Threshold: a topic is "recurring" when it appears in at
-    /// least 3 of the last 4 iterations (75 %). The loop is "looping"
-    /// when ≥ 2 distinct recurring topics exist — a single recurring
-    /// topic might be a genuinely-stuck dimension that one more iter
-    /// could resolve; two or more is a pattern that hasn't been
-    /// converging.</para>
+    /// <para>Threshold: an item is "recurring" when it has Jaccard
+    /// similarity ≥ 0.55 (≥ 55 % token overlap, ignoring stopwords and
+    /// section refs) with at least one item from each of at least 2 of
+    /// the previous 3 iters in the trailing window. The loop is
+    /// "looping" when ≥ 2 distinct items from the latest iter are
+    /// recurring — a single recurring item might be a genuinely-stuck
+    /// issue that the next iter could resolve; two or more is a pattern
+    /// the agent can't fix unilaterally.</para>
     ///
-    /// <para>The function only consumes the trailing 4 chain entries
-    /// (or fewer when chain is shorter). The 4-iter window is the
-    /// minimum that catches "same critique in 3 of last 4" — observed
-    /// on qq:TELEGRAM-MESSENGER-S architecture.md as a stable pattern
-    /// from iter 5 onward. Earlier triggering means earlier operator
-    /// intervention (pin a decision, restart, or accept) instead of
-    /// burning 40+ iters in a loop.</para>
+    /// <para>Phase 50 follow-up (2026-05-11) — the original token-based
+    /// detector produced false positives by counting section refs
+    /// (§3.1, §4.6) as recurring topics when each iter's specific issue
+    /// inside those sections differed. Observed misfire on
+    /// qq:TELEGRAM-MESSENGER-S iter 56: the agent correctly fixed 3 of
+    /// 4 prior items but the section-ref noise tripped the detector.
+    /// The new item-text Jaccard detector only fires when the LITERAL
+    /// item descriptions overlap significantly across iters — i.e. when
+    /// the SAME ISSUE keeps appearing, not just the same section being
+    /// touched.</para>
     /// </summary>
     internal static (bool looping, IReadOnlyList<string> recurringTopics) DetectConvergenceLoop(
         IReadOnlyList<(int Iter, int Score, string Verdict, string Notes)> chain)
     {
         const int WindowSize = 4;
-        const int RecurrenceThreshold = 3;
-        const int MinDistinctTopics = 2;
+        const int MinRecurringItems = 2;
+        const int MinPriorIterMatches = 2;
+        const double SimilarityThreshold = 0.55;
+        const int MinTokensPerItem = 4;
 
-        if (chain.Count < 4) return (false, Array.Empty<string>());
+        if (chain.Count < 3) return (false, Array.Empty<string>());
 
         var window = chain.Skip(Math.Max(0, chain.Count - WindowSize)).ToList();
 
-        // Build token sets per iter.
-        var perIterTokens = window
-            .Select(c => ExtractTopicTokens(c.Notes))
+        // Extract the per-iter "items" — one normalized string per
+        // checkbox / numbered bullet under the evaluator's "What still
+        // needs work" or "Still needs improvement" section.
+        var perIterItems = window
+            .Select(c => ExtractCheckboxItems(c.Notes ?? string.Empty))
             .ToList();
 
-        // Count token recurrence across iters.
-        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var tokenSet in perIterTokens)
+        var latestItems = perIterItems[perIterItems.Count - 1];
+        if (latestItems.Count == 0) return (false, Array.Empty<string>());
+
+        // Pre-tokenize every item once.
+        var latestTokens = latestItems.Select(TokenizeItem).ToList();
+        var priorIterTokens = perIterItems
+            .Take(perIterItems.Count - 1)
+            .Select(items => items.Select(TokenizeItem).ToList())
+            .ToList();
+
+        var recurring = new List<string>();
+        for (var i = 0; i < latestItems.Count; i++)
         {
-            foreach (var token in tokenSet)
+            var li = latestTokens[i];
+            if (li.Count < MinTokensPerItem) continue;
+
+            var priorIterMatches = 0;
+            foreach (var priorItems in priorIterTokens)
             {
-                counts[token] = counts.GetValueOrDefault(token) + 1;
+                var matchedThisIter = false;
+                foreach (var pi in priorItems)
+                {
+                    if (pi.Count < MinTokensPerItem) continue;
+                    if (JaccardSimilarity(li, pi) >= SimilarityThreshold)
+                    {
+                        matchedThisIter = true;
+                        break;
+                    }
+                }
+                if (matchedThisIter) priorIterMatches++;
+            }
+
+            if (priorIterMatches >= MinPriorIterMatches)
+            {
+                var summary = latestItems[i];
+                if (summary.Length > 100) summary = summary[..97] + "...";
+                recurring.Add(summary);
             }
         }
 
-        var recurring = counts
-            .Where(kv => kv.Value >= RecurrenceThreshold)
-            .OrderByDescending(kv => kv.Value)
-            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(kv => kv.Key)
-            .ToList();
-
-        var looping = recurring.Count >= MinDistinctTopics;
+        var looping = recurring.Count >= MinRecurringItems;
         return (looping, recurring);
     }
 
     /// <summary>
+    /// Extract one normalized string per checkbox / numbered / bulleted
+    /// item under the evaluator's "What still needs work" /
+    /// "Still needs improvement" section. Handles all three formats so
+    /// legacy iters without the Phase 50 checkbox format still produce
+    /// useful items.
+    /// </summary>
+    private static IReadOnlyList<string> ExtractCheckboxItems(string notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes)) return Array.Empty<string>();
+
+        // Find the "What still needs work" / "Still needs improvement"
+        // section. Stop at the next H2/H3 heading or the "Why this score"
+        // section.
+        var sectionMatch = System.Text.RegularExpressions.Regex.Match(
+            notes,
+            @"(?ix)
+              (?:what\s+still\s+needs\s+work|still\s+needs\s+improvement)
+              [\s:*]*\n+
+              (?<body>.+?)
+              (?=
+                \n\s*(?:\#{1,4}\s|\*{1,2}\s*why\s+this\s+score)
+                | \Z
+              )",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        var body = sectionMatch.Success ? sectionMatch.Groups["body"].Value : notes;
+
+        var items = new List<string>();
+        // Capture each bullet/numbered/checkbox item, multi-line, until
+        // the next bullet marker or a blank line.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(
+                body,
+                @"(?m)^\s*(?:[-*]\s+(?:\[[\sxX]\]\s+)?|\d+\.\s+)(?<text>.+(?:\n(?!\s*(?:[-*]\s|\d+\.\s|$)).+)*)"))
+        {
+            var text = m.Groups["text"].Value;
+            // Strip leading numbering / checkbox markers that survived
+            // the bullet matcher, collapse whitespace.
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"^\s*\d+\.\s+", "");
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+            if (text.Length >= 25) items.Add(text);
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// Normalise an item to a token set: lowercase, drop punctuation,
+    /// drop stopwords and section-ref tokens (§N.M-style), drop tokens
+    /// shorter than 4 chars. The resulting set is what Jaccard
+    /// similarity compares across iters.
+    /// </summary>
+    private static HashSet<string> TokenizeItem(string text)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text)) return result;
+
+        // Strip section markers — they're recurring noise. Different
+        // issues inside §3.1 shouldn't match just because both mention §3.1.
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(
+            text,
+            @"(?ix)
+              (?:§|\bsection\s+)\s*\d+(?:\.\d+)*
+              | \bline\s+\d+
+              | \bstage\s+\d+(?:\.\d+)?",
+            " ");
+
+        foreach (var raw in System.Text.RegularExpressions.Regex.Split(
+            cleaned.ToLowerInvariant(),
+            @"[^a-z0-9_.\-]+"))
+        {
+            if (raw.Length < 4) continue;
+            if (Stopwords.Contains(raw)) continue;
+            // Strip trailing punctuation/dots that survived the splitter.
+            var tok = raw.Trim('.', '-', '_');
+            if (tok.Length < 4) continue;
+            result.Add(tok);
+        }
+        return result;
+    }
+
+    /// <summary>Jaccard set similarity: |A ∩ B| / |A ∪ B|.</summary>
+    private static double JaccardSimilarity(HashSet<string> a, HashSet<string> b)
+    {
+        if (a.Count == 0 || b.Count == 0) return 0;
+        var intersect = 0;
+        foreach (var token in a)
+        {
+            if (b.Contains(token)) intersect++;
+        }
+        var union = a.Count + b.Count - intersect;
+        return union == 0 ? 0 : (double)intersect / union;
+    }
+
+    /// <summary>
+    /// English stopwords plus doc-template noise that shows up in nearly
+    /// every evaluator note (e.g. "implementation", "section",
+    /// "architecture", "document"). Kept short — common-word subtraction
+    /// is what makes the Jaccard score discriminate on issue-specific
+    /// terms rather than boilerplate framing.
+    /// </summary>
+    private static readonly HashSet<string> Stopwords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "the", "this", "that", "with", "from", "have", "has", "had", "for", "and", "but", "not",
+        "are", "was", "were", "been", "being", "into", "onto", "out", "over", "under",
+        "still", "needs", "work", "what", "improvement", "should", "would", "could", "must",
+        "either", "while", "before", "after", "current", "currently", "currently",
+        "doc", "docs", "document", "documents", "implementation", "plan", "tech", "spec",
+        "scenarios", "architecture", "section", "sentence", "field", "table", "block",
+        "describes", "described", "describes", "states", "says", "say", "saying",
+        "between", "across", "without", "consistent", "alignment", "aligned",
+        "according", "carries", "carrying", "leaves", "leave", "lacks", "lack",
+    };
+
+    /// <summary>
+    /// Phase 50 legacy — kept for the topic-token extraction used by
+    /// older callers; the convergence detector itself now uses
+    /// <see cref="ExtractCheckboxItems"/> + <see cref="JaccardSimilarity"/>.
+    /// </summary>
     /// Extract "topic tokens" from an evaluator notes string. Targets:
     /// <list type="bullet">
     ///   <item>Section refs: <c>§3.1</c>, <c>§10.4</c>, <c>Section 5.5</c>,
