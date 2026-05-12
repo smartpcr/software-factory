@@ -1113,6 +1113,32 @@ export const forgeApi = {
     return fetchJson<StorySpawnDetail>(`/api/stories/${encodeURIComponent(storyId)}/spawn`);
   },
 
+  /**
+   * Phase 50 — DELETE /api/stories/{storyId}/spawn?deleteBaseBranch=… —
+   * wipe a story spawn and every artifact it produced (workstreams,
+   * worktrees, local + remote branches, deliverables, transcripts,
+   * queue rows, agent claims, PRs both upstream-abandoned and
+   * locally-removed, on-disk workspaces and attachments). Used by the
+   * delete button on each row in the swarm story-index.
+   *
+   * <p>When the spawn was opened against a non-`main` base branch and
+   * <code>deleteBaseBranch</code> is true, the base branch is also
+   * deleted (local + remote) — unless another spawn shares it, in
+   * which case the server returns 409 with a human-readable detail.
+   * The caller is expected to fall back to a re-call without the flag
+   * when that happens.</p>
+   */
+  async deleteStorySpawn(
+    storyId: string,
+    deleteBaseBranch: boolean = false,
+  ): Promise<{ storyId: string; status: string; baseBranchDeleted: boolean; counts: Record<string, number> }> {
+    const qs = deleteBaseBranch ? '?deleteBaseBranch=true' : '';
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn${qs}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** PATCH /api/stories/{storyId}/spawn/phase — advance the phase if the gate passes. */
   async advanceStoryPhase(storyId: string, targetPhase: StorySpawnPhase): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/phase`, {
@@ -1245,10 +1271,18 @@ export const forgeApi = {
     workItemId: string | null;
     /** Derived lifecycle: live (events still flowing) → iterating (last
      *  verdict !pass) → awaiting-pr-review (verdict=pass but plan PR not
-     *  merged yet) → completed (PR merged) | pending (no iterations yet). */
+     *  merged yet) → completed (PR merged) | pending (no iterations yet).
+     *  `stalled` wins over `live`/`iterating` when there are open
+     *  questions blocking the pass gate — see DeliverableLoop.cs which
+     *  demotes verdict=pass → iterate while unanswered questions exist. */
     status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
     maxIterations: number;
     budgetSeconds: number;
+    /** Count of unanswered operator questions for this work item. The
+     *  pass gate is hard-blocked while > 0; the UI surfaces this count
+     *  next to the stalled badge so the operator knows how many answers
+     *  the agent is still waiting on. */
+    unansweredQuestions: number;
     /** Latest generator agent name + model, null until first iteration lands. */
     generator: { agentId: string; name: string; model: string | null } | null;
     /** Latest evaluator agent name + model, null until first iteration lands. */
