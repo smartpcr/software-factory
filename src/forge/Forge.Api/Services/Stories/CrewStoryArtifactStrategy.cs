@@ -406,12 +406,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// pinned to <c>crew.DefaultEvaluatorAgentId</c> and the parallel
     /// invocations serialise behind a single agent.
     ///
-    /// <para>Disjointness — generator and evaluator rosters do NOT
-    /// overlap. The default evaluator agent leads the evaluator roster;
-    /// remaining evaluator-side seats come from agents not used in the
-    /// generator roster. When the crew is too small to fill both
-    /// rosters, the evaluator roster falls back to the default
-    /// evaluator alone (and parallel docs end up sharing it again).</para>
+    /// <para>Phase 50 fix (2026-05-11) — when the crew has fewer agents
+    /// than docs, the previous algorithm collapsed the evaluator pool to
+    /// <c>{defaultEval}</c> only, so overflow docs (idx ≥ pool.Count)
+    /// landed on a null override → all fell back to
+    /// <c>crew.DefaultEvaluatorAgentId</c>. Operator-reported: same
+    /// evaluator picked across all 4 plan-docs even on a 3-4 agent crew.
+    /// The new algorithm rotates through the full agent list with a
+    /// modulo offset, enforcing <c>gen != eval</c> per doc. The
+    /// generator pool and evaluator pool may now share agents — that's
+    /// fine; the per-agent runner queue serialises concurrent claims on
+    /// the same agent without blocking the orchestrator. With M agents
+    /// the algorithm produces M distinct gen/eval pairs that cycle
+    /// across N docs.</para>
     /// </summary>
     private async Task<(IReadOnlyList<string> Generators, IReadOnlyList<string> Evaluators)>
         LoadArchitectAndEvaluatorRostersAsync(int count, CancellationToken ct)
@@ -435,41 +442,64 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .Select(a => a.Id)
             .ToListAsync(ct);
 
-        // Generator roster: default generator first, then everyone else
-        // (minus the default evaluator so the two rosters don't overlap
-        // by default).
-        var generators = allAgents
-            .Where(a => string.IsNullOrEmpty(defaultEval)
-                || !string.Equals(a, defaultEval, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        if (allAgents.Count == 0)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>());
+        }
+
+        // Generator order: defaultGen first, then everyone else in
+        // stable sort order. Unlike pre-Phase-50, we DO include the
+        // defaultEval in the generator pool — the pairing step below
+        // enforces gen != eval per doc, so disjoint pools aren't
+        // required upstream.
+        var genOrder = allAgents.ToList();
         if (!string.IsNullOrEmpty(defaultGen))
         {
-            generators.Remove(defaultGen);
-            generators.Insert(0, defaultGen);
+            genOrder.Remove(defaultGen);
+            genOrder.Insert(0, defaultGen);
         }
-        var generatorPicks = generators.Take(count).ToList();
-        var generatorSet = new HashSet<string>(generatorPicks, StringComparer.OrdinalIgnoreCase);
 
-        // Evaluator roster: default evaluator first, then any remaining
-        // architect agents not already assigned as generators. When the
-        // crew is too small to fill both, the evaluator side ends up
-        // shorter than count; the caller falls back to the default
-        // evaluator for the over-run docs (they share, which is the
-        // pre-Phase-47 behaviour and not a regression).
-        var evaluators = new List<string>();
+        // Evaluator order: defaultEval first, then everyone else.
+        var evalOrder = allAgents.ToList();
         if (!string.IsNullOrEmpty(defaultEval))
         {
-            evaluators.Add(defaultEval);
-        }
-        foreach (var a in allAgents)
-        {
-            if (generatorSet.Contains(a)) continue;
-            if (evaluators.Contains(a, StringComparer.OrdinalIgnoreCase)) continue;
-            evaluators.Add(a);
-            if (evaluators.Count >= count) break;
+            evalOrder.Remove(defaultEval);
+            evalOrder.Insert(0, defaultEval);
         }
 
-        return (generatorPicks, evaluators);
+        // Per-doc pairing — rotate the generator pool, and pick the
+        // evaluator at a wrap-around offset that guarantees gen != eval
+        // when at least 2 agents exist. Single-agent crews fall through
+        // with eval=null (caller's crew.DefaultEval fallback kicks in;
+        // gen == eval is unavoidable but flagged via empty override).
+        var generators = new List<string>(count);
+        var evaluators = new List<string>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var gen = genOrder[i % genOrder.Count];
+            generators.Add(gen);
+
+            string? eval = null;
+            for (var j = 0; j < evalOrder.Count; j++)
+            {
+                // Start scanning at offset (i+1) so consecutive docs use
+                // different (gen, eval) pairings. j=0..count walks the
+                // roster wrapping around; first non-gen wins.
+                var candidate = evalOrder[(i + 1 + j) % evalOrder.Count];
+                if (!string.Equals(candidate, gen, StringComparison.OrdinalIgnoreCase))
+                {
+                    eval = candidate;
+                    break;
+                }
+            }
+            // eval stays null when the crew has only one agent — the
+            // pairing is impossible. The caller passes the null override
+            // through to InvokeAsync which falls back to crew.DefaultEval
+            // (which equals gen in that degenerate case — unavoidable).
+            evaluators.Add(eval ?? string.Empty);
+        }
+
+        return (generators, evaluators);
     }
 
     private async Task<string> ProducePlanFileAsync(
