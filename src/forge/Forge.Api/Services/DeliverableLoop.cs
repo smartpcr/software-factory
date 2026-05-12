@@ -414,11 +414,34 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // full unanswered set so the verdict gate below can override
             // pass→iterate. Re-emitted ids in a later iter become new rows so
             // the history is preserved; the wizard dedupes on externalId.
+            //
+            // Phase 50 fix (2026-05-11) — agents re-emit the same
+            // `## Open Questions` block every iter (their prompt template
+            // requires it) even after the operator answered the question.
+            // Without forwarding the answer onto the fresh row, the dedupe
+            // (latest-per-id wins) flips the question back to Answer=null
+            // and the loop blocks pass forever → score plateaus 82-86 with
+            // iter count climbing meaninglessly. Carry forward the latest
+            // non-empty answer for the same ExternalId so the regenerated
+            // row stays "answered" until the operator explicitly clears or
+            // updates it via the wizard.
             var newQuestions = OpenQuestionsExtractor.Extract(gen.OutputText);
             if (newQuestions.Count > 0)
             {
+                var priorAnswers = await this.db.DeliverableQuestions.AsNoTracking()
+                    .Where(q => q.WorkItemId == request.WorkItemId
+                        && q.Answer != null && q.Answer != string.Empty)
+                    .ToListAsync(ct);
+                var priorByExtId = priorAnswers
+                    .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(),
+                        StringComparer.OrdinalIgnoreCase);
+
                 foreach (var q in newQuestions)
                 {
+                    var inheritedAnswer = priorByExtId.TryGetValue(q.ExternalId, out var prev) ? prev : null;
                     this.db.DeliverableQuestions.Add(new DeliverableQuestionRow
                     {
                         WorkItemId = request.WorkItemId,
@@ -427,9 +450,9 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         Text = q.Text,
                         Kind = q.Kind,
                         ChoicesJson = q.Choices is { Count: > 0 } ? JsonSerializer.Serialize(q.Choices) : null,
-                        Answer = null,
-                        AnsweredAt = null,
-                        AnsweredBy = null,
+                        Answer = inheritedAnswer?.Answer,
+                        AnsweredAt = inheritedAnswer?.AnsweredAt,
+                        AnsweredBy = inheritedAnswer?.AnsweredBy,
                         CreatedAt = DateTimeOffset.UtcNow,
                     });
                 }
@@ -437,10 +460,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
             }
 
             // Compute "currently unanswered for this work item" as a hard
-            // gate on the pass verdict. We dedupe by ExternalId taking the
-            // most-recent row so an answered question that wasn't re-emitted
-            // doesn't keep blocking. Any externalId whose latest row has
-            // Answer=null counts as unanswered.
+            // gate on the pass verdict. An externalId is "unanswered" iff
+            // NO row for that id has an Answer set — this means a
+            // re-emitted question (same id, fresh row with Answer=null
+            // because the carry-forward inherited the prior answer onto
+            // the new row) won't flip the gate back to blocking. See
+            // CountUnansweredQuestionsAsync for the full rationale.
             var unansweredCount = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
 
             verdict = lastScore.Verdict;
@@ -549,10 +574,21 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
     /// <summary>
     /// Phase 39 (Layer C) — count <see cref="DeliverableQuestionRow"/> ids
-    /// that are still unanswered for a work item. Dedupe by ExternalId
-    /// taking the most-recent row so an externalId whose latest emission
-    /// has Answer=null counts as "still blocking" even if an older row for
-    /// the same id was answered. Used to override pass→iterate verdicts.
+    /// that are still unanswered for a work item.
+    ///
+    /// <para>Phase 50 fix (2026-05-11) — semantic change: an externalId is
+    /// "unanswered" iff <em>no</em> row for that id has a non-empty
+    /// <see cref="DeliverableQuestionRow.Answer"/>. Previously the count
+    /// took the latest-per-id and treated re-emissions as fresh unanswered
+    /// questions, but agents re-emit the same `## Open Questions` block
+    /// every iter (their prompt template requires it) even after the
+    /// operator answered. The old logic flipped answered questions back
+    /// to unanswered on every iter, hard-demoting `verdict=pass` →
+    /// `iterate` and causing the loop to plateau (observed
+    /// qq:TELEGRAM-MESSENGER-S iter 17 score 86, never reaching the 90
+    /// pass threshold). The new behaviour: once a question is answered,
+    /// it stays answered until the operator explicitly clears the answer
+    /// via the wizard.</para>
     /// </summary>
     public static async Task<int> CountUnansweredQuestionsAsync(
         ForgeDbContext db, string workItemId, CancellationToken ct)
@@ -563,11 +599,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
             .Where(q => q.WorkItemId == workItemId)
             .ToListAsync(ct);
         if (rows.Count == 0) return 0;
-        var latestPerId = rows
+        // An externalId is "answered" if ANY row for that id has a
+        // non-empty Answer. Re-emitted rows in later iters with Answer=null
+        // do NOT flip the id back to unanswered.
+        var unanswered = rows
             .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
-            .ToList();
-        return latestPerId.Count(q => string.IsNullOrEmpty(q.Answer));
+            .Where(g => g.All(q => string.IsNullOrEmpty(q.Answer)))
+            .Count();
+        return unanswered;
     }
 
     /// <summary>
