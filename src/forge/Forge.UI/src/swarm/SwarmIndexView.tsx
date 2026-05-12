@@ -177,6 +177,16 @@ export function SwarmIndexView() {
     setRefreshTick((t) => t + 1);
   }
 
+  /**
+   * Phase 50 rollback for the optimistic delete. The row fires `onDeleted`
+   * before awaiting the cascade-delete (which can run 30 s+ for large
+   * spawns); if the server rejects, we bump the refresh tick so the
+   * polling effect re-fetches the live list and the row reappears.
+   */
+  function handleSpawnDeleteFailed(_storyId: string) {
+    setRefreshTick((t) => t + 1);
+  }
+
 
   const counts = useMemo(() => {
     const c: Record<PhaseFilter, number> = {
@@ -305,7 +315,13 @@ export function SwarmIndexView() {
           ) : (
             <div className="story-list">
               {filtered.map((s, i) => (
-                <SwarmStoryRow key={s.storyId} spawn={s} index={i} onDeleted={handleSpawnDeleted} />
+                <SwarmStoryRow
+                  key={s.storyId}
+                  spawn={s}
+                  index={i}
+                  onDeleted={handleSpawnDeleted}
+                  onDeleteFailed={handleSpawnDeleteFailed}
+                />
               ))}
             </div>
           )}
