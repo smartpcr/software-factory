@@ -466,32 +466,39 @@ public sealed class RealStoryGitOps : IStoryGitOps
             wtPath, ct, "merge-base", "--is-ancestor", $"origin/{upstreamBranch}", "HEAD");
         if (mbCode == 0)
         {
-            if (force)
-            {
-                // Caller (force-merge / story AutoMerge) wants this PR
-                // merged regardless of provider-side stale-mergeable
-                // cache. Source is already a descendant of upstream so
-                // the tree is fine, but the provider may still report
-                // "merge conflicts" from a stale cache. Create an empty
-                // commit + push so the provider sees a NEW source SHA
-                // and recomputes mergeable. Empty commits get squashed
-                // away on PR completion, so they don't pollute base
-                // history.
-                await this.RunGitCaptureAsync(
-                    wtPath, ct,
-                    "-c", "user.email=forge-merger@local",
-                    "-c", "user.name=Forge",
-                    "commit", "--allow-empty", "-m",
-                    $"forge: nudge mergeable on {branch} (origin/{upstreamBranch} already ancestor)");
-                await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
-                this.logger?.LogInformation(
-                    "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}; pushed empty commit to nudge provider mergeable.",
-                    upstreamBranch, branch);
-                return true;
-            }
+            // Phase 50 follow-up — origin/{upstream} is already an ancestor
+            // of HEAD, so the source branch already carries every commit
+            // from upstream. Just return.
+            //
+            // We INTENTIONALLY no longer push an empty commit on the
+            // `force=true` path here, even though we used to. The
+            // historical justification ("nudge provider mergeable past a
+            // stale cache") backfired on GitHub: every empty-commit push
+            // invalidates GitHub's `mergeable` flag to UNKNOWN while it
+            // recomputes in the background. AutoMergeWatcher would push
+            // the nudge, race GitHub's recompute by ~1s, fire PUT
+            // /merge → GitHub returns 405 "Pull Request is not
+            // mergeable", the watcher logs the failure, then ticks again
+            // 15s later and re-invalidates the cache before GitHub
+            // finishes the previous recompute. Observed in production on
+            // smartpcr/qq#1 (2026-05-12) — plan PR sat stranded for 1h+
+            // with all four plan docs at verdict=pass; the AutoMergeWatcher
+            // was self-DDOS-ing GitHub's mergeable computation. The
+            // operator's PR-not-mergeable diagnosis showed both
+            // `mergeable=UNKNOWN` and `mergeStateStatus=UNKNOWN`, with
+            // every empty-commit log line in the server stdout matched
+            // by a 405 within 1s.
+            //
+            // Trade-off accepted: in the rare case where GitHub or ADO
+            // genuinely has a stale `mergeable` from before a real push,
+            // the first MergePullRequestAsync call may 405. AutoMergeWatcher
+            // loops on a 15s tick (no more empty-commit invalidations now),
+            // GitHub's natural recompute completes within seconds, and the
+            // next tick succeeds. Net: 15-30s slower in the rare stale-
+            // cache case; never strands in the (now-removed) self-DDOS loop.
             this.logger?.LogInformation(
-                "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}, skipping.",
-                upstreamBranch, branch);
+                "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}, skipping (force={Force}).",
+                upstreamBranch, branch, force);
             return true;
         }
 
