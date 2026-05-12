@@ -243,7 +243,7 @@ export function PlanView() {
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div className="board-wrap" style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
-          {cards.length === 0 && viewMode !== 'exec' ? (
+          {cards.length === 0 && viewMode === 'board' ? (
             <div className="empty-state">
               <div className="title">No cards in this sprint</div>
               <div className="sub">
