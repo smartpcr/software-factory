@@ -2794,8 +2794,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             ?? evaluatorCrew?.DefaultEvaluatorAgentId
             ?? evaluatorCrew?.Lead;
 
+        // Phase 50 fix (2026-05-11) — pass a real per-claim seed so the
+        // post-default Fisher-Yates shuffle inside PickEvaluator actually
+        // runs. The previous call defaulted seed=0, which skips the
+        // shuffle (guarded by `if (seed != 0)`), so concurrent claims all
+        // picked the same fallback evaluator in roster order. Mirrors the
+        // StorySpawnOrchestrator engineer-pair claim site at line 2317.
         var (picked, _) = PairDiversityResolver.PickEvaluator(
-            roster, busyAgents, defaultEvalAgentId, generatorAgentId);
+            roster, busyAgents, defaultEvalAgentId, generatorAgentId,
+            seed: Random.Shared.Next());
 
         // Q47.3 implication — evaluator diversity is best-effort. If
         // every roster member is busy, fall back to the legacy chain so
