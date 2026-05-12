@@ -258,6 +258,15 @@ builder.Services.Configure<Forge.Api.Services.BudgetCooldownOptions>(
     builder.Configuration.GetSection(Forge.Api.Services.BudgetCooldownOptions.SectionName));
 builder.Services.AddSingleton<Forge.Api.Services.BudgetCooldownReconciler>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BudgetCooldownReconciler>());
+// Phase 52 — sloppy-iteration guard reconciler. Picks up work items
+// parked at ExecutionStatus="pending-reassign" and either rotates them
+// to a fresh pair (with full clean-slate wipe) or marks them
+// terminal-failed when PairAttemptCount has hit MaxPairAttempts. 15s
+// tick by default; tests drop the interval and drive RunOnceAsync.
+builder.Services.Configure<Forge.Api.Services.SloppyReassignmentOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.SloppyReassignmentOptions.SectionName));
+builder.Services.AddSingleton<Forge.Api.Services.SloppyReassignmentReconciler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.SloppyReassignmentReconciler>());
 // Phase 29 — async build validation worker.
 builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
 builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();
@@ -478,6 +487,12 @@ using (var scope = app.Services.CreateScope())
     // before the reconciler boots is fine; placed next to Phase 50 to
     // keep the budget/cooldown story local.
     await Phase51Migration.ApplyAsync(db);
+    // Phase 52 — sloppy-iteration guard. Adds PairAttemptCount /
+    // PriorPairsJson / FailureReason on work_items and the
+    // agent_pair_assignment table. Order matters: must run BEFORE
+    // SloppyReassignmentReconciler boots its first tick (the reconciler
+    // queries the new columns).
+    await Phase52Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
