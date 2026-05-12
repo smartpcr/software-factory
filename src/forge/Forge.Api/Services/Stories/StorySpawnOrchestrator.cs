@@ -334,7 +334,27 @@ public sealed class StorySpawnOrchestrator
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
-                await this.git.EnsureBranchAsync(repo, planBranch, baseBranch, ct);
+                // Phase 50 — first-drive detection. When a fresh spawn is
+                // being driven for the first time (no plan PR yet AND no
+                // plan-doc deliverables yet), force-reset the plan branch
+                // to base so an orphan tip left over on origin by a prior
+                // deleted spawn (whose `git push origin --delete` failed
+                // silently — observed 2026-05-11 local:HIGH-MEM-CONSUMPTION
+                // re-spawn) can't leak old plan-doc commits into the new
+                // architect's worktree. Subsequent drives use the regular
+                // EnsureBranchAsync so the orchestrator's own commits
+                // aren't blown away.
+                var hasAnyPlanDeliverable = await db.Deliverables
+                    .AnyAsync(d => d.WorkItemId.StartsWith($"plan-doc:{spawn.Id}:"), ct);
+                var isFirstDrive = string.IsNullOrEmpty(spawn.PlanPrId) && !hasAnyPlanDeliverable;
+                if (isFirstDrive)
+                {
+                    await this.git.EnsureBranchFreshAsync(repo, planBranch, baseBranch, ct);
+                }
+                else
+                {
+                    await this.git.EnsureBranchAsync(repo, planBranch, baseBranch, ct);
+                }
 
                 await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
 
@@ -373,7 +393,11 @@ public sealed class StorySpawnOrchestrator
                     {
                         spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
                         await db.SaveChangesAsync(ct);
-                        await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, baseBranch, ct);
+                        // Phase 50 — first-time QA branch creation: same
+                        // orphan-heal logic as the plan branch above. The
+                        // QaBranch field is only written once per spawn
+                        // lifetime so this guard is exact.
+                        await this.git.EnsureBranchFreshAsync(repo, spawnRow.QaBranch, baseBranch, ct);
                     }
 
                     await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
