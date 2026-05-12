@@ -468,7 +468,11 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
     {
         var safeStoryId = StoryPaths.Safe(storyId);
         var spawnId = $"spawn-{safeStoryId}";
-        var repoId = $"repo-e2e-{storyId}";
+        // RepoRow is keyed per-fixture (not per-storyId) so multiple
+        // spawns in the same fixture share the row — the
+        // `repos.RemoteUrl` UNIQUE index would otherwise reject the
+        // second insert in the shared-base-branch refusal test.
+        var repoId = $"repo-e2e-{Path.GetFileName(this.remoteDir)}";
         var planBranch = $"story/{storyId}/plan";
         var qaBranch = $"story/{storyId}/qa";
         var ws1Branch = $"ws/{storyId}/stage-1-foo";
