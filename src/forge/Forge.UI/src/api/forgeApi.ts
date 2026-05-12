@@ -1131,7 +1131,7 @@ export const forgeApi = {
   async deleteStorySpawn(
     storyId: string,
     deleteBaseBranch: boolean = false,
-  ): Promise<{ storyId: string; status: string; baseBranchDeleted: boolean; counts: Record<string, number> }> {
+  ): Promise<{ storyId: string; status: string; baseBranchDeleted: boolean; counts: Record<string, number>; remoteDeleteFailures?: string[] }> {
     const qs = deleteBaseBranch ? '?deleteBaseBranch=true' : '';
     return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn${qs}`, {
       method: 'DELETE',

@@ -21,6 +21,25 @@ public interface IStoryGitOps
     Task EnsureBranchAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 50 — like <see cref="EnsureBranchAsync"/> but ALWAYS force-resets
+    /// the branch tip to <paramref name="baseBranch"/>'s tip on origin, even
+    /// when the branch already exists locally or on origin. Used by the
+    /// orchestrator on the FIRST drive of a fresh spawn to auto-heal orphan
+    /// branches that a previously-deleted spawn left behind on origin (the
+    /// <c>git push origin --delete</c> in <c>DeleteSpawn</c> can fail silently
+    /// when the operator's git credential cache is missing; observed
+    /// 2026-05-11 on <c>local:HIGH-MEM-CONSUMPTION</c> — re-spawning the same
+    /// storyId inherited the stale plan-doc commits because
+    /// <see cref="EnsureBranchAsync"/> silently <c>git fetch</c>-ed the
+    /// orphan branch tip). Atomic: a force-push of
+    /// <c>refs/remotes/origin/{base}:refs/heads/{branch}</c> replaces any
+    /// existing tip in one shot under the operator's fresh auth context.
+    /// Also drops the local branch + worktree so downstream
+    /// <see cref="EnsureWorktreeAsync"/> doesn't reuse a stale checkout.
+    /// </summary>
+    Task EnsureBranchFreshAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
     /// Write each <c>files</c> entry into the working tree at the given branch
     /// and commit them with <paramref name="message"/>. Returns the synthetic
     /// commit sha. Tests use this to verify that a merged PR actually carries
