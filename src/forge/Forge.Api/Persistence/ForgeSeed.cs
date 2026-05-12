@@ -1082,8 +1082,14 @@ public static class ForgeSeed
             c.EvaluatorModel          = evalModel;
             c.MaxConcurrent           = maxConcurrent;
             c.WeeklyCap               = weeklyCap;
-            c.DailyBudgetUsd          = dailyBudget;
-            c.MaxTaskBudgetUsd        = perTaskBudget;
+            // Phase 51 — budgets are operator-tunable via PATCH /api/crews/{id}.
+            // The seed only fills in the DEFAULT on a never-set column; if
+            // the operator has already set a value, leave it alone. Without
+            // this guard the operator's raise (e.g. $3000) was reset back
+            // to the $2500 default on every Forge.Api restart, defeating
+            // the auto-recovery contract.
+            c.DailyBudgetUsd          ??= dailyBudget;
+            c.MaxTaskBudgetUsd        ??= perTaskBudget;
             // Phase 47d — pin the rail. Crews always normalise to the
             // canonical pair; agent-level overrides (cleared in 2b below)
             // are the only escape hatch and they're now policy-gated.
