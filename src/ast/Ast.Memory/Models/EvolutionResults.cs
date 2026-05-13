@@ -7,45 +7,29 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Result of community detection via Louvain algorithm.
-/// </summary>
-public record CommunityResult(
-    int CommunitiesDetected,
-    int TopicNodesCreated,
-    int ClusterEdgesCreated
-);
-
-/// <summary>
-/// Result of expertise consolidation.
+/// Result of a consolidation run that merges semantically similar expertise entries.
+/// Per architecture.md §5.3.
 /// </summary>
 public record ConsolidationResult(
     int CandidatesPaired,
     int MergedCount,
-    IReadOnlyList<string> MergedEntryIds
-);
+    int SupersededCount,
+    IReadOnlyList<string> MergedEntryIds);
 
 /// <summary>
-/// Result of expertise decay evaluation.
+/// Result of a decay evaluation run.
+/// Per architecture.md §5.3.
 /// </summary>
 public record DecayResult(
     int EntriesEvaluated,
     int EntriesDecayed,
-    int EntriesArchived
-);
+    int EntriesArchived);
 
 /// <summary>
-/// Options for consolidation.
+/// Result of community detection.
+/// Per architecture.md §5.3.
 /// </summary>
-public record ConsolidationOptions(
-    double SimilarityThreshold = 0.85,
-    int MaxMergesPerRun = 50
-);
-
-/// <summary>
-/// Options for decay evaluation.
-/// </summary>
-public record DecayOptions(
-    int HalfLifeDays = 1095,
-    double CentralityBoostFactor = 0.5,
-    double ArchiveConfidenceFloor = 0.1
-);
+public record CommunityResult(
+    int CommunitiesDetected,
+    int TopicNodesCreated,
+    int ClusterEdgesCreated);

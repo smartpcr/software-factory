@@ -34,23 +34,23 @@ public interface IEvolutionEngine
 
     /// <summary>
     /// LLM-powered merge of semantically similar expertise entries.
-    /// Acquires write-level lock. Creates SUPERSEDES edges from merged
-    /// entry to originals.
+    /// Acquires write-level lock. Creates SUPERSEDES edges from merged entry to originals.
     /// </summary>
     Task<ConsolidationResult> ConsolidateAsync(
         CancellationToken ct = default);
 
     /// <summary>
     /// Evaluate time-based decay and archive entries below ArchiveConfidenceFloor (0.1).
-    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync (§3.6).
+    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync.
     /// </summary>
     Task<DecayResult> DecayStaleExpertiseAsync(
         CancellationToken ct = default);
 
     /// <summary>
-    /// Restore a previously archived expertise entry with new confidence.
+    /// Restore a previously archived expertise entry with the specified confidence.
+    /// Sets Archived to false and Confidence to the given value.
     /// </summary>
-    Task RestoreArchivedExpertiseAsync(
+    Task<ExpertiseEntry> RestoreArchivedExpertiseAsync(
         string expertiseId,
         double restoredConfidence = 0.5,
         CancellationToken ct = default);

@@ -60,8 +60,9 @@ public class ExpertiseEntry
 }
 
 /// <summary>
-/// An agent-authored knowledge entry attached to a code node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node. These are not HypergraphNode instances —
+/// they have their own dedicated storage because their fields (Confidence,
+/// Archived, Embedding, SourceAgent) are core data, not incidental metadata.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
