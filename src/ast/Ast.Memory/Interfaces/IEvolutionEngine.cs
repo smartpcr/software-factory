@@ -38,7 +38,6 @@ public interface IEvolutionEngine
     /// entry to originals.
     /// </summary>
     Task<ConsolidationResult> ConsolidateAsync(
-        ConsolidationOptions options,
         CancellationToken ct = default);
 
     /// <summary>
@@ -46,7 +45,6 @@ public interface IEvolutionEngine
     /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync (§3.6).
     /// </summary>
     Task<DecayResult> DecayStaleExpertiseAsync(
-        DecayOptions? options = null,
         CancellationToken ct = default);
 
     /// <summary>
