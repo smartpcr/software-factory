@@ -12,12 +12,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
-    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
+    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
   </ItemGroup>
 
 </Project>

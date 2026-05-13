@@ -6,78 +6,70 @@
 
 namespace Ast.Memory.Models;
 
+using System;
+using System.Collections.Generic;
+
 /// <summary>
-/// Agent-authored knowledge node. Not a HypergraphNode — has its own
-/// dedicated table with domain-specific columns. See architecture.md §4.2.
+/// Agent-authored knowledge node per architecture §4.2.
+/// Not a <see cref="Ast.Core.HypergraphNode"/> — has its own dedicated table
+/// with core fields (Confidence, Archived, Embedding, SourceAgent).
+/// ID format: "expertise:{kind}:{hash8}".
 /// </summary>
 public sealed class ExpertiseEntry
 {
+    /// <summary>Content-addressable ID: "expertise:{kind}:{hash8}".</summary>
     public string Id { get; init; } = string.Empty;
+
+    /// <summary>Kind of expertise: Pattern, Pitfall, Preference, Insight.</summary>
     public ExpertiseKind Kind { get; init; }
+
+    /// <summary>Headline summary.</summary>
     public string Title { get; init; } = string.Empty;
+
+    /// <summary>Detailed description.</summary>
     public string Body { get; init; } = string.Empty;
+
+    /// <summary>Code node this applies to (canonical ID).</summary>
     public string TargetNodeId { get; init; } = string.Empty;
+
+    /// <summary>"exact" (default) or "subtree".</summary>
     public string Scope { get; init; } = "exact";
+
+    /// <summary>Confidence score 0.0–1.0, default 1.0.</summary>
     public double Confidence { get; set; } = 1.0;
+
+    /// <summary>Soft-delete flag set by DecayService.</summary>
     public bool Archived { get; set; }
+
+    /// <summary>Agent that authored this entry.</summary>
     public string SourceAgent { get; init; } = string.Empty;
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+
+    /// <summary>Supporting references.</summary>
+    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
+
+    /// <summary>Embedding vector of Title + " " + Body. Stored both inline and in vector store.</summary>
     public float[]? Embedding { get; set; }
+
+    /// <summary>SHA-256(Title + Body + TargetNodeId) for dedup.</summary>
     public string ContentHash { get; init; } = string.Empty;
-    public DateTime CreatedAt { get; init; }
-    public DateTime UpdatedAt { get; set; }
+
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
 
 /// <summary>
-/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
+/// A supporting reference for an expertise entry.
 /// </summary>
-public sealed class ExpertiseEntry
+public record Citation(string NodeId, string? CommitSha, string? Snippet);
+
+/// <summary>
+/// Kind of expertise per architecture §4.2.
+/// </summary>
+public enum ExpertiseKind
 {
-    public ExpertiseEntry(
-        ExpertiseKind kind,
-        string title,
-        string body,
-        string targetNodeId,
-        string sourceAgent,
-        string scope = "exact",
-        double confidence = 1.0,
-        IReadOnlyList<Citation>? evidence = null)
-    {
-        this.Kind = kind;
-        this.Title = title ?? throw new ArgumentNullException(nameof(title));
-        this.Body = body ?? throw new ArgumentNullException(nameof(body));
-        this.TargetNodeId = targetNodeId ?? throw new ArgumentNullException(nameof(targetNodeId));
-        this.SourceAgent = sourceAgent ?? throw new ArgumentNullException(nameof(sourceAgent));
-        this.Scope = scope is "exact" or "subtree" ? scope : throw new ArgumentException("Scope must be 'exact' or 'subtree'.", nameof(scope));
-        this.Confidence = Math.Clamp(confidence, 0.0, 1.0);
-        this.Evidence = evidence ?? Array.Empty<Citation>();
-        this.ContentHash = ComputeHash(title, body, targetNodeId);
-        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{this.ContentHash[..8]}";
-        this.CreatedAt = DateTime.UtcNow;
-        this.UpdatedAt = this.CreatedAt;
-    }
-
-    /// <summary>Deterministic ID: expertise:{kind}:{hash8}.</summary>
-    public string Id { get; init; }
-
-    public ExpertiseKind Kind { get; init; }
-    public string Title { get; init; }
-    public string Body { get; init; }
-    public string TargetNodeId { get; init; }
-    public string Scope { get; init; }
-    public double Confidence { get; set; }
-    public bool Archived { get; set; }
-    public string SourceAgent { get; init; }
-    public IReadOnlyList<Citation> Evidence { get; init; }
-    public float[]? Embedding { get; set; }
-    public string ContentHash { get; init; }
-    public DateTime CreatedAt { get; init; }
-    public DateTime UpdatedAt { get; set; }
-
-    private static string ComputeHash(string title, string body, string targetNodeId)
-    {
-        var input = $"{title}{body}{targetNodeId}";
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
+    Pattern,
+    Pitfall,
+    Preference,
+    Insight,
 }
