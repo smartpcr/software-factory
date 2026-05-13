@@ -6,17 +6,20 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Incremental sync: compute git diff between two commits and update graph.
-/// Also supports FileSystemWatcher-based triggers for IDE file saves.
-/// See architecture.md §3.6 and §5.5.
+/// Keeps the memory graph current without full re-extraction.
+/// Per architecture.md §3.6, §5.5.
 /// </summary>
 public interface IIncrementalSync : IDisposable
 {
     /// <summary>
-    /// Compute git diff between two commits and update the graph.
+    /// Computes git diff between two commits and updates the graph:
+    /// upserts/retires nodes and edges, propagates stale markers,
+    /// triggers expertise decay, and re-embeds changed nodes.
     /// </summary>
     Task<SyncResult> ApplyDiffAsync(
         string repoRoot,

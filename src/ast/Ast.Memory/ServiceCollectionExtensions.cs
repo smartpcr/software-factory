@@ -6,52 +6,114 @@
 
 namespace Ast.Memory;
 
+using Ast.GraphDb;
+using Ast.Memory.Evolution;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Ast.Memory.Sync;
+using Ast.Memory.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Neo4j.Driver;
 
 /// <summary>
-/// DI registration for the Ast.Memory subsystem including
-/// IncrementalSync, CommitRegistry, and GitDiffDriver.
+/// DI registration for the Ast.Memory subsystem.
+/// Registers <see cref="IMemoryGraphStore"/>, <see cref="ILlmClient"/>,
+/// and <see cref="IEvolutionEngine"/> with their production implementations.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers IncrementalSync and its dependencies.
-    /// Callers must register <see cref="IMemoryGraphStore"/>,
-    /// <see cref="IExtractionPipeline"/>, <see cref="IEvolutionEngine"/>,
-    /// <c>IEmbeddingGenerator</c> (from Ast.Embedding),
-    /// and <c>IVectorStore</c> (from Ast.VectorDb) in their own DI setup.
-    /// <see cref="ICommitRegistry"/> is registered as <see cref="InMemoryCommitRegistry"/>
-    /// by default; callers should replace it with a durable implementation
-    /// backed by the <c>commits</c> table (§3.2.3) for production.
-    /// Registers <see cref="DefaultSemanticIndexer"/> as the production
-    /// <see cref="ISemanticIndexer"/> implementation that generates embeddings
-    /// via <c>IEmbeddingGenerator</c>, stores vectors in <c>IVectorStore</c>,
-    /// and manages SIMILAR_TO edges per architecture.md §3.1, §5.4.
+    /// Adds the memory graph subsystem with Neo4j backing store.
+    /// This is the production (team / CI) wiring per architecture.md §3.2.1.
+    /// Registers <see cref="IGraphStore"/> (via <see cref="Neo4jGraphStore"/>)
+    /// and wraps it with <see cref="Neo4jMemoryGraphStore"/> for memory-specific operations.
     /// </summary>
-    public static IServiceCollection AddIncrementalSync(this IServiceCollection services)
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureStore">Configure Neo4j connection options.</param>
+    /// <param name="configureMemory">Configure memory options (LLM endpoint, thresholds).</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddMemoryGraph(
+        this IServiceCollection services,
+        Action<Neo4jMemoryStoreOptions> configureStore,
+        Action<MemoryOptions>? configureMemory = null)
     {
-        // Ensure MemoryOptions is available via IOptions<MemoryOptions>.
-        // Configure with defaults; callers can override via services.Configure<MemoryOptions>().
-        services.AddOptions<MemoryOptions>();
-        services.TryAddSingleton<ICommitRegistry, InMemoryCommitRegistry>();
-        services.AddSingleton<GitDiffDriver>();
-        services.AddSingleton<ISemanticIndexer, DefaultSemanticIndexer>();
-        services.AddSingleton<IIncrementalSync, IncrementalSync>();
+        services.Configure(configureStore);
+
+        if (configureMemory is not null)
+        {
+            services.Configure(configureMemory);
+        }
+
+        // Neo4j driver — singleton, thread-safe
+        services.TryAddSingleton<IDriver>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Neo4jMemoryStoreOptions>>().Value;
+            return GraphDatabase.Driver(
+                opts.Uri,
+                AuthTokens.Basic(opts.Username, opts.Password));
+        });
+
+        // Register canonical IGraphStore for delegation (shared driver)
+        services.TryAddSingleton<IGraphStore>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Neo4jMemoryStoreOptions>>().Value;
+            var graphOpts = Microsoft.Extensions.Options.Options.Create(new GraphStoreOptions
+            {
+                Uri = opts.Uri,
+                Username = opts.Username,
+                Password = opts.Password,
+                Database = opts.Database
+            });
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger<Neo4jGraphStore>();
+            return new Neo4jGraphStore(graphOpts, logger);
+        });
+
+        // Production stores and engines
+        services.TryAddSingleton<IMemoryGraphStore, Neo4jMemoryGraphStore>();
+        services.TryAddTransient<IEvolutionEngine, EvolutionEngine>();
+
+        // LLM client — uses a dedicated HttpClient
+        services.TryAddSingleton<ILlmClient>(sp =>
+        {
+            var memoryOptions = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MemoryOptions>>();
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger<OllamaLlmClient>();
+            var httpClient = new HttpClient();
+            return new OllamaLlmClient(httpClient, memoryOptions, logger);
+        });
+
         return services;
     }
 
     /// <summary>
-    /// Registers IncrementalSync with custom <see cref="MemoryOptions"/>.
+    /// Adds the memory graph subsystem with a custom <see cref="IMemoryGraphStore"/>
+    /// implementation (for local/SQLite mode or testing with a real store).
     /// </summary>
-    public static IServiceCollection AddIncrementalSync(
+    /// <typeparam name="TStore">The store implementation type.</typeparam>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureMemory">Configure memory options.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddMemoryGraph<TStore>(
         this IServiceCollection services,
-        Action<MemoryOptions> configureOptions)
+        Action<MemoryOptions>? configureMemory = null)
+        where TStore : class, IMemoryGraphStore
     {
-        services.Configure(configureOptions);
-        return services.AddIncrementalSync();
+        if (configureMemory is not null)
+        {
+            services.Configure(configureMemory);
+        }
+
+        services.TryAddSingleton<IMemoryGraphStore, TStore>();
+        services.TryAddTransient<IEvolutionEngine, EvolutionEngine>();
+
+        services.TryAddSingleton<ILlmClient>(sp =>
+        {
+            var memoryOptions = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MemoryOptions>>();
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger<OllamaLlmClient>();
+            var httpClient = new HttpClient();
+            return new OllamaLlmClient(httpClient, memoryOptions, logger);
+        });
+
+        return services;
     }
 }

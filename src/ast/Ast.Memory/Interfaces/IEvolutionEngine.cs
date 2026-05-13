@@ -6,13 +6,22 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Engine for evolving the memory graph: expertise write-back, consolidation, and decay.
+/// Evolution engine for the memory graph. Handles expertise write-back,
+/// consolidation, decay, and community detection — the mechanisms by
+/// which the graph improves over agent sessions.
 /// </summary>
 public interface IEvolutionEngine
 {
+    /// <summary>
+    /// Write an expertise entry and link it to a code node via an APPLIES_TO edge.
+    /// Deduplicates by content hash: if an identical entry already exists, returns it.
+    /// </summary>
     Task<ExpertiseEntry> RecordExpertiseAsync(
         string targetNodeId,
         ExpertiseKind kind,
@@ -23,19 +32,63 @@ public interface IEvolutionEngine
         IReadOnlyList<Citation>? evidence = null,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// LLM-powered merge of semantically similar expertise entries.
+    /// Acquires write-level lock. Creates SUPERSEDES edges from merged entry to originals.
+    /// </summary>
     Task<ConsolidationResult> ConsolidateAsync(
-        ConsolidationOptions options,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Evaluate time-based decay and archive entries below ArchiveConfidenceFloor (0.1).
+    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync.
+    /// </summary>
     Task<DecayResult> DecayStaleExpertiseAsync(
-        DecayOptions? options = null,
         CancellationToken ct = default);
 
-    Task RestoreArchivedExpertiseAsync(
+    /// <summary>
+    /// Restore a previously archived expertise entry with the specified confidence.
+    /// Sets Archived to false and Confidence to the given value.
+    /// </summary>
+    Task<ExpertiseEntry> RestoreArchivedExpertiseAsync(
         string expertiseId,
         double restoredConfidence = 0.5,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Louvain community detection over CALLS/SIMILAR_TO edges.
+    /// Creates BELONGS_TO_CLUSTER edges and Topic summary nodes in the Semantic layer.
+    /// </summary>
     Task<CommunityResult> DetectCommunitiesAsync(
         CancellationToken ct = default);
+
 }
+
+/// <summary>Options for expertise consolidation.</summary>
+public record ConsolidationOptions(
+    double SimilarityThreshold = 0.85,
+    int MaxMergesPerRun = 50);
+
+/// <summary>Result of expertise consolidation.</summary>
+public record ConsolidationResult(
+    int CandidatesPaired,
+    int MergedCount,
+    IReadOnlyList<string> MergedEntryIds);
+
+/// <summary>Options for time-based expertise decay.</summary>
+public record DecayOptions(
+    int HalfLifeDays = 1095,
+    double CentralityBoostFactor = 0.5,
+    double ArchiveConfidenceFloor = 0.1);
+
+/// <summary>Result of time-based expertise decay evaluation.</summary>
+public record DecayResult(
+    int EntriesEvaluated,
+    int EntriesDecayed,
+    int EntriesArchived);
+
+/// <summary>Result of community detection.</summary>
+public record CommunityResult(
+    int CommunitiesDetected,
+    int TopicNodesCreated,
+    int ClusterEdgesCreated);
