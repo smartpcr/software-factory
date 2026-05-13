@@ -51,6 +51,30 @@ export function WorktreePane({ workItemId }: Props) {
     return null;
   }, [transcript]);
 
+  // Phase 56 — also refetch on uncommitted-file signature change so that
+  // working-tree edits between commits (the common "agent deleted node.rs
+  // mid-iter and never committed" failure mode observed on
+  // failover-cluster:XRAFT stage 3.1 2026-05-13) surface in the
+  // Uncommitted-changes block. Without this trigger, /commits is only
+  // re-queried on HEAD-sha change — so a stuck agent that never commits
+  // can wipe production source files and the Worktree tab stays frozen
+  // on the stale snapshot from the first /commits call.
+  //
+  // Signature combines counts AND the live snap's path lists (when
+  // present, capped to first ~200 entries by the backend) so a swap
+  // (delete A, create B with same total counts) still triggers a
+  // refetch. Falls back to the scalar counts when the tick payload
+  // doesn't carry path arrays (older server build).
+  const dirtySignature = useMemo(() => {
+    if (!snap) return '';
+    // Path-array signature when the backend supplies them — most
+    // accurate. Sorted to be order-independent.
+    const apaths = (snap.branchDiff?.added ?? []).slice().sort().join('|');
+    const mpaths = (snap.branchDiff?.modified ?? []).slice().sort().join('|');
+    const dpaths = (snap.branchDiff?.deleted ?? []).slice().sort().join('|');
+    return `${snap.added}/${snap.modified}/${snap.deleted}#${apaths}#${mpaths}#${dpaths}`;
+  }, [snap]);
+
   useEffect(() => {
     if (!workItemId) return;
     let cancelled = false;
@@ -61,7 +85,7 @@ export function WorktreePane({ workItemId }: Props) {
       .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [workItemId, latestTickSha]);
+  }, [workItemId, latestTickSha, dirtySignature]);
 
   if (!workItemId) {
     return (

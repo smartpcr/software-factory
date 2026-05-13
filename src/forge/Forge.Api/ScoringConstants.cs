@@ -163,4 +163,25 @@ public static class ScoringConstants
     /// Bloat detection is purely advisory — it does not abort the loop.
     /// </summary>
     public const long PromptBloatGrowthThreshold = 30_000;
+
+    /// <summary>
+    /// Phase 56 — catastrophic prompt-size HARD cap. When the
+    /// generator's <c>InputTokens</c> for a single iteration exceed
+    /// this value the deliverable loop terminates the iteration with
+    /// verdict <c>sloppy</c> / reason <c>prompt-bloat</c> and parks
+    /// the work item for sloppy reassignment. Distinct from
+    /// <see cref="PromptBloatGrowthThreshold"/> (which is the
+    /// per-iter delta amber warning); this is the absolute ceiling
+    /// for a single iter's input.
+    /// <para>
+    /// Operator pain (2026-05-13, failover-cluster:XRAFT stage 3.1
+    /// iter 2): generator consumed 4.3M tokens in a single iteration
+    /// after its context window saturated, burning $192 for zero
+    /// committed file changes. The model's nominal context window is
+    /// ~100K-200K tokens; 1M is a 5–10× margin that catches runaway
+    /// context-bloat without false-positive on legitimately large
+    /// codebases.
+    /// </para>
+    /// </summary>
+    public const long PromptBloatHardCapInputTokens = 1_000_000;
 }

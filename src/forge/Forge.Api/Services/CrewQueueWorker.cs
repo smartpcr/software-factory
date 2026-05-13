@@ -1497,6 +1497,60 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
                 }
 
+                // 2026-05-13 root-cause fix: persist the agent's iter work as
+                // a commit on the workstream branch and push it. Without this,
+                // every iter leaves edits uncommitted; the iter N+1 prompt
+                // (CrewQueueWorker.cs:1456-1463) instructs the model to use
+                // `git log --oneline -5` / `git diff HEAD~1` to learn what
+                // the prior iter did — which returns nothing when nothing
+                // was committed, so the model re-discovers and re-edits the
+                // same code from scratch. Observed on failover-cluster:XRAFT
+                // stage 3.1: $96/iter × 2 iters with zero progress. Pushing
+                // also means the pre-dispatch `git reset --hard origin/{branch}`
+                // (RealStoryGitOps.MergeUpstreamIntoBranchAsync) no longer
+                // destroys the work — committed-and-pushed state is what the
+                // reset aligns to. Best-effort: failures log and continue so
+                // a transient push hiccup doesn't fail the iter.
+                if (!string.IsNullOrEmpty(worktreePath))
+                {
+                    try
+                    {
+                        var (statusCode, statusOut, _) = await RunGitAsync(worktreePath, "status", "--porcelain");
+                        if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
+                        {
+                            await RunGitAsync(worktreePath, "add", "-A");
+                            var commitMsg = $"forge[{agentId}] iter {iter}: {workItemId}";
+                            var (commitCode, _, commitErr) = await RunGitAsync(
+                                worktreePath,
+                                "-c", "user.email=forge-engineer@local",
+                                "-c", "user.name=Forge",
+                                "commit", "-m", commitMsg);
+                            if (commitCode != 0)
+                            {
+                                this.logger.LogWarning(
+                                    "Per-iter commit failed for wi={Wi} iter={Iter} branch={Branch}: {Err}",
+                                    workItemId, iter, branchName, commitErr);
+                            }
+                            else
+                            {
+                                var (pushCode, _, pushErr) = await RunGitAsync(worktreePath, "push", "origin", branchName);
+                                if (pushCode != 0)
+                                {
+                                    this.logger.LogWarning(
+                                        "Per-iter push failed for wi={Wi} iter={Iter} branch={Branch}: {Err}",
+                                        workItemId, iter, branchName, pushErr);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger.LogWarning(ex,
+                            "Per-iter commit step threw for wi={Wi} iter={Iter}; continuing.",
+                            workItemId, iter);
+                    }
+                }
+
                 return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
             }
 

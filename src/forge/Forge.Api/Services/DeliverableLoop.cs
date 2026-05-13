@@ -545,6 +545,48 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 lastScore.Score,
                 ct);
 
+            // Phase 56 — catastrophic prompt-bloat HARD cap. Distinct from
+            // the Phase 54 amber-warning growth threshold above (which is
+            // per-iter delta and observe-only): this is the absolute
+            // single-iter input-token ceiling. When the generator's input
+            // for this iteration alone crosses
+            // ScoringConstants.PromptBloatHardCapInputTokens we terminate
+            // the iter immediately with verdict="sloppy" / reason="prompt-bloat"
+            // and route to the SloppyReassignmentReconciler (same path as
+            // the score-plateau / token-cap triggers). Catches the
+            // failover-cluster:XRAFT stage 3.1 iter 2 pattern: 4.3M tokens
+            // / $192 / zero committed files. The check runs after the
+            // deliverable row is persisted (so the iter is in the chain)
+            // but before any further pipeline gates so a runaway iter
+            // can't blow another generator turn.
+            if (gen.InputTokens > ScoringConstants.PromptBloatHardCapInputTokens)
+            {
+                verdict = "sloppy";
+                row.Verdict = verdict;
+                var bloatNote = $"SLOPPY: prompt-bloat hard cap exceeded — generator consumed {gen.InputTokens:N0} input tokens in iter {iter} alone (cap = {ScoringConstants.PromptBloatHardCapInputTokens:N0}). Context window has saturated; further iterations are unlikely to converge. Reassigning to a fresh pair on the next reconciler tick.";
+                row.Notes = string.IsNullOrEmpty(row.Notes) ? bloatNote : row.Notes + "\n\n" + bloatNote;
+                await this.db.SaveChangesAsync(ct);
+
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.ReassignedSloppy,
+                    sloppyReason: SloppyReasons.PromptBloat,
+                    finalScore: lastScore.Score,
+                    ct);
+
+                await this.EmitAsync(request.WorkItemId, "task.sloppy", new
+                {
+                    iter,
+                    score = lastScore.Score,
+                    reason = SloppyReasons.PromptBloat,
+                    inputTokens = gen.InputTokens,
+                    cap = ScoringConstants.PromptBloatHardCapInputTokens,
+                    pairAssignmentId,
+                }, ct);
+
+                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost, SloppyReasons.PromptBloat);
+            }
+
             // Phase 39 (Layer C) — extract structured open questions from the
             // generator's output and persist any new ones. We then read the
             // full unanswered set so the verdict gate below can override

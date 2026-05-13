@@ -62,9 +62,14 @@ public static class WorkstreamsEndpoints
     //   <item>Duration = scored.At − started.At from the transcript
     //   for matching iter number; null when either marker is missing.</item>
     //   <item>filesChanged = count of distinct file paths in
-    //   `task.worktree-changed` events whose At falls in the iter
-    //   window. Empty when the workstream's strategy doesn't emit
-    //   worktree-changed events (plan-doc spawns).</item>
+    //   `task.worktree-tick` events whose At falls in the iter window.
+    //   The tick payload carries `branchDiff.{added,modified,deleted}`
+    //   (committed diff from the fork point) and `paths.{added,
+    //   modified,deleted}` (uncommitted dirty files); we union both so
+    //   the count is non-zero whether the agent has committed yet or
+    //   not. Empty when the workstream has no worktree subscriber
+    //   (plan-doc spawns, or a coding step whose worktree never
+    //   resolved — see CrewQueueWorker.cs:1042-1048).</item>
     // </list>
     private static async Task<IResult> GetIterKpis(
         string id,
@@ -94,7 +99,7 @@ public static class WorkstreamsEndpoints
             .Where(e => e.WorkItemId == id
                 && (e.Kind == "task.iteration.started"
                     || e.Kind == "task.iteration.scored"
-                    || e.Kind == "task.worktree-changed"))
+                    || e.Kind == "task.worktree-tick"))
             .Select(e => new { e.Kind, e.At, e.PayloadJson })
             .ToListAsync(ct);
 
@@ -112,7 +117,7 @@ public static class WorkstreamsEndpoints
             }
         }
         var worktreeChanged = transcript
-            .Where(e => e.Kind == "task.worktree-changed")
+            .Where(e => e.Kind == "task.worktree-tick")
             .Select(e => (e.At, paths: ExtractChangedPaths(e.PayloadJson)))
             .ToList();
 
@@ -198,30 +203,62 @@ public static class WorkstreamsEndpoints
         {
             using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
             var root = doc.RootElement;
-            if (!root.TryGetProperty("paths", out var pathsEl) || pathsEl.ValueKind != System.Text.Json.JsonValueKind.Array)
+            var list = new List<string>();
+
+            // task.worktree-tick shape: `branchDiff` (committed diff vs
+            // fork point) + `paths` (uncommitted dirty), each split into
+            // {added, modified, deleted}. Union both so the count is
+            // non-zero whether the agent has committed yet or not.
+            AppendCategorizedPaths(root, "branchDiff", list);
+            if (root.TryGetProperty("paths", out var pathsEl)
+                && pathsEl.ValueKind == System.Text.Json.JsonValueKind.Object)
             {
-                // Fall back to single-path shape (some emitters use `path`).
-                if (root.TryGetProperty("path", out var single) && single.ValueKind == System.Text.Json.JsonValueKind.String)
-                {
-                    var one = single.GetString();
-                    return string.IsNullOrEmpty(one) ? Array.Empty<string>() : new[] { one };
-                }
-                return Array.Empty<string>();
+                AppendCategorizedPaths(root, "paths", list);
             }
-            var list = new List<string>(pathsEl.GetArrayLength());
-            foreach (var el in pathsEl.EnumerateArray())
+            // Legacy flat shapes used by older emitters / tests:
+            // `paths: ["a", "b"]` or `path: "a"`.
+            else if (pathsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
             {
-                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                foreach (var el in pathsEl.EnumerateArray())
                 {
-                    var p = el.GetString();
-                    if (!string.IsNullOrEmpty(p)) list.Add(p);
+                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var p = el.GetString();
+                        if (!string.IsNullOrEmpty(p)) list.Add(p);
+                    }
                 }
+            }
+            else if (root.TryGetProperty("path", out var single)
+                && single.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var one = single.GetString();
+                if (!string.IsNullOrEmpty(one)) list.Add(one);
             }
             return list;
         }
         catch
         {
             return Array.Empty<string>();
+        }
+    }
+
+    private static void AppendCategorizedPaths(
+        System.Text.Json.JsonElement root, string propertyName, List<string> sink)
+    {
+        if (!root.TryGetProperty(propertyName, out var grp)
+            || grp.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+        foreach (var category in new[] { "added", "modified", "deleted" })
+        {
+            if (!grp.TryGetProperty(category, out var arr)
+                || arr.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var p = el.GetString();
+                    if (!string.IsNullOrEmpty(p)) sink.Add(p);
+                }
+            }
         }
     }
 
