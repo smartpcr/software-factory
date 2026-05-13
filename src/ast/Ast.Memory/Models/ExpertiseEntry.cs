@@ -60,8 +60,9 @@ public class ExpertiseEntry
 }
 
 /// <summary>
-/// An agent-authored knowledge entry attached to a code node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node. These are not HypergraphNode instances —
+/// they have their own dedicated storage because their fields (Confidence,
+/// Archived, Embedding, SourceAgent) are core data, not incidental metadata.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
@@ -78,10 +79,30 @@ public enum ExpertiseKind
     public string Scope { get; init; } = "exact";
     public double Confidence { get; set; } = 1.0;
     public bool Archived { get; set; }
-    public string? SourceAgent { get; init; }
+
+    /// <summary>
+    /// The agent session that authored this entry.
+    /// </summary>
+    public string SourceAgent { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Supporting references for this expertise.
+    /// </summary>
     public IReadOnlyList<Citation> Evidence { get; init; } = [];
+
+    /// <summary>
+    /// Embedding vector of "Title + ' ' + Body".
+    /// </summary>
     public float[]? Embedding { get; set; }
+
+    /// <summary>
+    /// SHA-256 of Title + Body + TargetNodeId for deduplication.
+    /// </summary>
     public string ContentHash { get; init; } = string.Empty;
+
+    /// <summary>
+    /// When this entry was first created.
+    /// </summary>
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
