@@ -49,21 +49,27 @@ internal static class PlanPrMergeReactor
         ILogger? log,
         CancellationToken ct)
     {
-        // Find the spawn that owns this PR (plan PR is the only kind that
-        // gates plan-doc loops — workstream/qa/step-def PRs don't touch
-        // plan-doc work items, so they're handled separately if at all).
-        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.PlanPrId == prId, ct);
-        if (spawn is null) return 0;
+        // Phase 53 — locate the spawn owning this PR using the helper that
+        // covers both the legacy single-PR column (PlanPrId) and the new
+        // sequential-mode JSON column (PlanDocPrsJson[*].PrId).
+        var match = await PlanDocStateHelpers.FindByPrIdAsync(db, prId, ct);
+        if (match is null) return 0;
+        var spawn = match.Value.Spawn;
+        var matchedDocKey = match.Value.DocKey;
 
-        // Match the synthetic id convention used by the architect strategy:
-        //   plan-doc:{spawn.Id}:{file-name}.md
-        // The four well-known files are tech-spec / architecture /
-        // implementation-plan / e2e-scenarios. We don't filter by name —
-        // anything whose id starts with the prefix is a plan-doc loop.
+        // For legacy spawns (matchedDocKey == null) cancel every plan-doc
+        // loop. For sequential spawns cancel only the merged doc's loop —
+        // upstream merges must not interrupt downstream docs that may
+        // already be running.
         var prefix = $"plan-doc:{spawn.Id}:";
-        var docWorkItems = await db.WorkItems
-            .Where(w => w.Id.StartsWith(prefix))
-            .ToListAsync(ct);
+        IQueryable<WorkItemRow> q = db.WorkItems.Where(w => w.Id.StartsWith(prefix));
+        if (matchedDocKey is not null
+            && PlanDocStateHelpers.PlanDocFileName.TryGetValue(matchedDocKey, out var fileName))
+        {
+            var docId = $"plan-doc:{spawn.Id}:{fileName}";
+            q = db.WorkItems.Where(w => w.Id == docId);
+        }
+        var docWorkItems = await q.ToListAsync(ct);
         if (docWorkItems.Count == 0) return 0;
 
         var cancelled = 0;
@@ -89,13 +95,13 @@ internal static class PlanPrMergeReactor
             // fire one final iteration after we already cancelled the
             // running invocation.
             var queueRows = await db.TaskQueue
-                .Where(q => q.WorkItemId == wi.Id && q.State != "completed" && q.State != "cancelled")
+                .Where(qr => qr.WorkItemId == wi.Id && qr.State != "completed" && qr.State != "cancelled")
                 .ToListAsync(ct);
-            foreach (var q in queueRows)
+            foreach (var qrow in queueRows)
             {
-                q.State = "cancelled";
-                q.CompletedAt = DateTimeOffset.UtcNow;
-                q.LastUpdatedAt = DateTimeOffset.UtcNow;
+                qrow.State = "cancelled";
+                qrow.CompletedAt = DateTimeOffset.UtcNow;
+                qrow.LastUpdatedAt = DateTimeOffset.UtcNow;
             }
             cancelled++;
         }

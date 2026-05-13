@@ -1201,13 +1201,53 @@ public sealed class RealStoryGitOps : IStoryGitOps
         using var p = Process.Start(psi)
             ?? throw new InvalidOperationException("git could not be started — is it on PATH?");
 
-        var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = p.StandardError.ReadToEndAsync(ct);
-        await p.WaitForExitAsync(ct);
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-        this.logger?.LogDebug("git {Args} → exit={Exit} cwd={Cwd}", string.Join(' ', args), p.ExitCode, cwd);
-        return (p.ExitCode, stdout, stderr);
+        // Bounded safety net so a credential prompt that goes
+        // unanswered (operator AFK, desktop locked, GCM stuck) can't
+        // strand the worker. Even in FailFast mode this protects
+        // against pathological cases (DNS resolution stalls, broken
+        // network helpers, etc.). Override via the env var below.
+        // Default: 180s — long enough for an interactive sign-in.
+        var timeoutSeconds = 180;
+        var timeoutRaw = Environment.GetEnvironmentVariable("FORGE_GIT_NETWORK_TIMEOUT_SECONDS");
+        if (int.TryParse(timeoutRaw, out var parsed) && parsed > 0) timeoutSeconds = parsed;
+
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        // Start the stream reads WITHOUT the cancellation token so they
+        // naturally drain to EOF when the process exits (whether the
+        // process exited normally or was killed by us on timeout). If
+        // we cancel the reads with linkedCts we'd lose the stderr that
+        // explains the credential issue.
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
+
+        try
+        {
+            await p.WaitForExitAsync(linkedCts.Token);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            this.logger?.LogDebug("git {Args} → exit={Exit} cwd={Cwd}", string.Join(' ', args), p.ExitCode, cwd);
+            return (p.ExitCode, stdout, stderr);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+            // Drain whatever stderr was emitted before the kill — that
+            // is the most useful diagnostic for the operator.
+            string drainedStderr = string.Empty;
+            try { drainedStderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch { /* best-effort */ }
+            throw new TimeoutException(
+                $"git {string.Join(' ', args)} timed out after {timeoutSeconds}s in '{cwd}'. " +
+                $"If this is a credential challenge, run the command interactively first to cache the credential, then retry. " +
+                $"Partial stderr: {drainedStderr}");
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+            throw;
+        }
     }
 
     /// <summary>

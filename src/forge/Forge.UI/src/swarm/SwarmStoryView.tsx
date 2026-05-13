@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
@@ -46,8 +46,24 @@ export function SwarmStoryView() {
 
   // Sync state changes back to URL params (replaceState — no history push).
   function setMode(m: SwarmMode | null) {
+    // A user-driven mode flip (via the nav-bar dropdown — the only caller
+    // of setMode) drops selection back to overview so the master panel
+    // renders cleanly in the new mode. Mode changes that come from URL
+    // restore (useState initializer) or from the load() effect's
+    // phase-derived fallback bypass setMode and use setModeState directly,
+    // which preserves selection — that's intentional and is what enables
+    // rect clicks in StoryDeliveryStrip to land with sel/selId intact.
+    //
+    // Guard on `m !== mode` so re-selecting the currently active mode in
+    // the dropdown does NOT clear the active workstream/doc.
+    const changed = m !== mode;
     setModeState(m);
-    updateParams({ mode: m });
+    if (changed) {
+      setSelectionState({ kind: 'overview', id: null });
+      updateParams({ mode: m, sel: null, selId: null });
+    } else {
+      updateParams({ mode: m });
+    }
   }
   function setSelection(sel: Selection) {
     setSelectionState(sel);
@@ -94,13 +110,14 @@ export function SwarmStoryView() {
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId, tick]);
 
-  // When mode flips via pipeline click (not initial URL restore), drop
-  // selection back to overview so the master panel renders cleanly.
-  const modeRef = useMemo(() => ({ initial: true }), []);
-  useEffect(() => {
-    if (modeRef.initial) { modeRef.initial = false; return; }
-    setSelection({ kind: 'overview', id: null });
-  }, [mode]);
+  // When mode flips via the nav-bar dropdown, setMode resets selection
+  // inline. We intentionally do NOT mirror that into a useEffect on
+  // [mode] — under React 18 StrictMode dev, an effect that mutates a
+  // module-level/useMemo "first-run" flag fires twice on mount and
+  // ends up clearing sel/selId that arrived in the initial URL (the
+  // exact symptom that broke StoryDeliveryStrip rect-click navigation).
+  // Mode changes from useState init / load()'s phase fallback go through
+  // setModeState directly and preserve selection.
 
   if (err) {
     return (

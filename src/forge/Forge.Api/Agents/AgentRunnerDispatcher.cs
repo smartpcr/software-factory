@@ -63,6 +63,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private readonly CopilotServerManager copilotServer;
     private readonly IAuthService? ghAuth;
     private readonly ILogger<AgentRunnerDispatcher> log;
+    private readonly CopilotSessionPool copilotPool;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
 
@@ -83,6 +84,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         IOptions<AgentRunnerOptions> options,
         CopilotServerManager copilotServer,
         IEnumerable<IAuthService> authServices,
+        CopilotSessionPool copilotPool,
         ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
@@ -90,6 +92,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         this.options = options;
         this.copilotServer = copilotServer;
         this.ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");
+        this.copilotPool = copilotPool;
         this.log = log;
     }
 
@@ -123,7 +126,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             {
                 (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, ctx, linked.Token),
                 (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, ctx, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, taskId, agentId, linked.Token),
                 (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, ctx, linked.Token),
                 _ => RunUnsupported(ctx),
             };
@@ -259,6 +262,41 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
         yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
 
+        // Phase 55 / Phase D (docs/forge/sloppy_guard.md) -- when the
+        // caller attached an AgentMemoryHandle with PriorTurns, replay
+        // the full conversation by prepending those turns into the
+        // /v1/messages messages array, and pin a cache breakpoint at
+        // the second-to-last message so every prior turn benefits from
+        // Anthropic's prompt cache (the new user turn at the end is
+        // the cache miss). Without this lever each iter pays full
+        // input cost for the whole history.
+        var priorTurns = context.Memory?.PriorTurns
+            ?? (IReadOnlyList<ConversationTurn>)Array.Empty<ConversationTurn>();
+        var messagesList = new List<object>(priorTurns.Count + 1);
+        foreach (var turn in priorTurns)
+        {
+            messagesList.Add(new { role = turn.Role, content = turn.Content });
+        }
+        messagesList.Add(new { role = "user", content = prompt });
+
+        if (priorTurns.Count > 0 && messagesList.Count >= 2)
+        {
+            var lastPrior = priorTurns[priorTurns.Count - 1];
+            messagesList[messagesList.Count - 2] = new
+            {
+                role = lastPrior.Role,
+                content = new object[]
+                {
+                    new
+                    {
+                        type = "text",
+                        text = lastPrior.Content,
+                        cache_control = new { type = "ephemeral" },
+                    },
+                },
+            };
+        }
+
         var body = new
         {
             model = modelInfo.Id,
@@ -269,7 +307,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             {
                 new { type = "text", text = context.SoulMd, cache_control = new { type = "ephemeral" } },
             },
-            messages = new[] { new { role = "user", content = prompt } },
+            messages = messagesList,
         };
         var payload = JsonSerializer.Serialize(body, JsonOpts);
 
@@ -375,7 +413,25 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
     // ── Claude · CLI (claude --print) ───────────────────────────────────────
 
-    private async IAsyncEnumerable<AgentEvent> RunClaudeCli(
+    private IAsyncEnumerable<AgentEvent> RunClaudeCli(
+        string prompt,
+        AgentContext context,
+        CancellationToken ct)
+    {
+        // Phase 55 (docs/forge/sloppy_guard.md Phase C) — when the caller
+        // attached an AgentMemoryHandle, route to the stream-json runner so
+        // we can pass --resume <sid> and capture the session id the CLI
+        // generates / echoes back. The legacy text-mode path stays the
+        // default for every crew that hasn't opted into agent memory.
+        if (context.Memory is not null)
+        {
+            return this.RunClaudeCliStreamJson(prompt, context, ct);
+        }
+
+        return this.RunClaudeCliText(prompt, context, ct);
+    }
+
+    private async IAsyncEnumerable<AgentEvent> RunClaudeCliText(
         string prompt,
         AgentContext context,
         [EnumeratorCancellation] CancellationToken ct)
@@ -414,6 +470,369 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
         {
             yield return ev;
+        }
+    }
+
+    /// <summary>
+    /// Phase 55 / Phase C — Claude/CLI runner that uses
+    /// <c>--output-format=stream-json --include-partial-messages</c> so we
+    /// can capture the CLI-assigned <c>session_id</c> and pass
+    /// <c>--resume &lt;sid&gt;</c> on subsequent iterations. Parses the
+    /// CLI's NDJSON output line-by-line: init events carry the session id,
+    /// stream_event/text_delta events carry token deltas, the final
+    /// result event carries real input/output token counts and cost. On
+    /// <c>--resume</c> we skip prepending <c>soul.md</c> to the stdin
+    /// prompt — the existing session already has it in conversation history.
+    /// </summary>
+    private async IAsyncEnumerable<AgentEvent> RunClaudeCliStreamJson(
+        string prompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
+
+        var cliPath = ResolveCli(this.options.Value.ClaudeCliPath, "claude");
+        var resumeSessionId = context.Memory?.SessionId;
+        var hasResume = !string.IsNullOrEmpty(resumeSessionId);
+
+        // First-iter: prepend soul.md so the new session sees the system
+        // prompt. On resume: skip — the prior session already injected it,
+        // and re-prepending wastes tokens + may confuse the model.
+        var stdinPrompt = hasResume || string.IsNullOrEmpty(context.SoulMd)
+            ? prompt
+            : $"{context.SoulMd}\n\n---\n\n{prompt}";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = cliPath,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
+        };
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add("--output-format");
+        psi.ArgumentList.Add("stream-json");
+        psi.ArgumentList.Add("--include-partial-messages");
+        psi.ArgumentList.Add("--verbose");
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(context.Model);
+        if (hasResume)
+        {
+            psi.ArgumentList.Add("--resume");
+            psi.ArgumentList.Add(resumeSessionId!);
+        }
+        if (context.DisallowedTools is { Count: > 0 } disallowed)
+        {
+            psi.ArgumentList.Add("--disallowedTools");
+            psi.ArgumentList.Add(string.Join(",", disallowed));
+        }
+
+        await foreach (var ev in this.RunClaudeStreamJsonAsync(psi, stdinPrompt, context, ct))
+        {
+            yield return ev;
+        }
+    }
+
+    private async IAsyncEnumerable<AgentEvent> RunClaudeStreamJsonAsync(
+        ProcessStartInfo psi,
+        string stdinPrompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        Process? process = null;
+        Exception? launchError = null;
+        try { process = Process.Start(psi); }
+        catch (Exception ex) { launchError = ex; }
+
+        if (launchError is not null)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"Failed to launch {psi.FileName}: {launchError.Message}");
+            yield break;
+        }
+        if (process is null)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"Process.Start returned null for {psi.FileName}");
+            yield break;
+        }
+
+        ChildProcessTracker.AddProcess(process);
+
+        var budget = context.WallClockBudget ?? this.options.Value.WallClockBudget;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
+        var effectiveCt = timeoutCts.Token;
+        var timedOut = false;
+
+        string? sessionId = null;
+        long inputTokens = 0;
+        long outputTokens = 0;
+        decimal costUsd = 0m;
+        string? failReason = null;
+        var sessionInfoEmitted = false;
+
+        Task<string>? stderrTask = null;
+        try
+        {
+            using var ctReg = effectiveCt.Register(() =>
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                catch { /* already exited */ }
+            });
+
+            await process.StandardInput.WriteAsync(stdinPrompt);
+            process.StandardInput.Close();
+            stderrTask = process.StandardError.ReadToEndAsync(effectiveCt);
+
+            while (true)
+            {
+                string? line;
+                try
+                {
+                    line = await process.StandardOutput.ReadLineAsync(effectiveCt);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+                {
+                    timedOut = true;
+                    break;
+                }
+                if (line is null) break;
+                if (line.Length == 0) continue;
+
+                AgentEvent? parsed;
+                string? newSession;
+                long? deltaIn = null;
+                long? deltaOut = null;
+                decimal? deltaCost = null;
+                try
+                {
+                    parsed = ParseClaudeStreamJsonLine(line, out newSession, out deltaIn, out deltaOut, out deltaCost);
+                }
+                catch (Exception ex)
+                {
+                    this.log.LogDebug(ex, "Claude stream-json parse failed (line ignored): {Line}", line);
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(newSession))
+                {
+                    sessionId = newSession;
+                    if (!sessionInfoEmitted)
+                    {
+                        sessionInfoEmitted = true;
+                        yield return new AgentEvent(
+                            AgentEventKind.SessionInfo,
+                            DateTimeOffset.UtcNow,
+                            SessionId: sessionId);
+                    }
+                }
+
+                if (deltaIn is long di) inputTokens = di;
+                if (deltaOut is long oc) outputTokens = oc;
+                if (deltaCost is decimal dc) costUsd = dc;
+
+                if (parsed is not null) yield return parsed;
+            }
+
+            if (!timedOut)
+            {
+                try { await process.WaitForExitAsync(effectiveCt); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+                {
+                    timedOut = true;
+                }
+            }
+        }
+        finally
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch { /* best-effort */ }
+        }
+
+        string stderr;
+        try { stderr = stderrTask is null ? string.Empty : await stderrTask; }
+        catch (OperationCanceledException) { stderr = string.Empty; }
+        var exitCode = process.HasExited ? process.ExitCode : -1;
+        process.Dispose();
+
+        if (timedOut)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield break;
+        }
+
+        if (exitCode != 0)
+        {
+            // Surface enough of stderr that the caller can distinguish a
+            // resume-failure (e.g. "session not found") from a generic
+            // crash and clear the stale memory row.
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}",
+                SessionId: sessionId);
+            yield break;
+        }
+
+        if (failReason is not null)
+        {
+            yield return new AgentEvent(AgentEventKind.Failed, DateTimeOffset.UtcNow, Error: failReason);
+            yield break;
+        }
+
+        var modelInfo = this.models.Find(context.Model);
+        // The stream-json `result` event already reports authoritative
+        // counts; ComputeCost on the model row gives us a recomputed cost
+        // when the CLI didn't carry one through (e.g. a backend that
+        // doesn't expose pricing). Prefer the CLI-reported cost when
+        // present so the ledger lines up with the provider's billing.
+        var finalCost = costUsd > 0m ? costUsd : ComputeCost(modelInfo, inputTokens, outputTokens);
+
+        yield return new AgentEvent(
+            AgentEventKind.Finished,
+            DateTimeOffset.UtcNow,
+            InputTokens: inputTokens > 0 ? inputTokens : null,
+            OutputTokens: outputTokens > 0 ? outputTokens : null,
+            CostUsd: finalCost,
+            SessionId: sessionId);
+    }
+
+    /// <summary>
+    /// Phase 55 / Phase C — parser for one line of claude-code's
+    /// <c>--output-format=stream-json --include-partial-messages</c>
+    /// output. Returns an <see cref="AgentEvent"/> when the line maps to
+    /// one (token delta, tool call, etc.) and emits side-channel values
+    /// (session id, final token counts, cost) via out-params so the
+    /// caller can accumulate them outside the event stream. Returns
+    /// <c>null</c> when the line is benign metadata we don't surface
+    /// (init, ping, user-echo, etc.) — the caller should continue
+    /// reading.
+    /// </summary>
+    private static AgentEvent? ParseClaudeStreamJsonLine(
+        string line,
+        out string? sessionId,
+        out long? inputTokens,
+        out long? outputTokens,
+        out decimal? costUsd)
+    {
+        sessionId = null;
+        inputTokens = null;
+        outputTokens = null;
+        costUsd = null;
+
+        using var doc = JsonDocument.Parse(line);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        if (!root.TryGetProperty("type", out var typeEl)) return null;
+        var type = typeEl.GetString();
+
+        if (root.TryGetProperty("session_id", out var sidEl) && sidEl.ValueKind == JsonValueKind.String)
+        {
+            sessionId = sidEl.GetString();
+        }
+
+        switch (type)
+        {
+            case "system":
+                // init carries session_id, cwd, tools. Already captured above.
+                return null;
+
+            case "stream_event":
+            {
+                if (!root.TryGetProperty("event", out var evEl)) return null;
+                if (!evEl.TryGetProperty("type", out var evType)) return null;
+                if (evType.GetString() == "content_block_delta"
+                    && evEl.TryGetProperty("delta", out var delta)
+                    && delta.TryGetProperty("type", out var deltaType)
+                    && deltaType.GetString() == "text_delta"
+                    && delta.TryGetProperty("text", out var textEl))
+                {
+                    var text = textEl.GetString();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        return new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: text);
+                    }
+                }
+                return null;
+            }
+
+            case "assistant":
+            {
+                // Without --include-partial-messages this would be the
+                // primary token source. With partials on, the stream_event
+                // path above carries text deltas and this event still
+                // carries tool_use blocks we surface as ToolCall events.
+                if (!root.TryGetProperty("message", out var msg)) return null;
+                if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return null;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (!part.TryGetProperty("type", out var partType)) continue;
+                    if (partType.GetString() == "tool_use")
+                    {
+                        var toolName = part.TryGetProperty("name", out var nm) ? nm.GetString() : null;
+                        var toolInput = part.TryGetProperty("input", out var inp) ? inp.GetRawText() : null;
+                        return new AgentEvent(
+                            AgentEventKind.ToolCall,
+                            DateTimeOffset.UtcNow,
+                            ToolName: toolName,
+                            ToolPayload: toolInput);
+                    }
+                }
+                return null;
+            }
+
+            case "user":
+                // Echo of tool_result blocks. Surface as ToolResult so the
+                // transcript records the result body.
+            {
+                if (!root.TryGetProperty("message", out var msg)) return null;
+                if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return null;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (!part.TryGetProperty("type", out var partType)) continue;
+                    if (partType.GetString() == "tool_result")
+                    {
+                        var payload = part.TryGetProperty("content", out var c) ? c.GetRawText() : null;
+                        var isError = part.TryGetProperty("is_error", out var er) && er.ValueKind == JsonValueKind.True;
+                        return new AgentEvent(
+                            AgentEventKind.ToolResult,
+                            DateTimeOffset.UtcNow,
+                            ToolPayload: payload,
+                            Error: isError ? "tool reported is_error=true" : null);
+                    }
+                }
+                return null;
+            }
+
+            case "result":
+            {
+                if (root.TryGetProperty("usage", out var usage))
+                {
+                    if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
+                        inputTokens = it.GetInt64();
+                    if (usage.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number)
+                        outputTokens = ot.GetInt64();
+                }
+                if (root.TryGetProperty("total_cost_usd", out var costEl) && costEl.ValueKind == JsonValueKind.Number)
+                {
+                    costUsd = (decimal)costEl.GetDouble();
+                }
+                return null;
+            }
+
+            default:
+                return null;
         }
     }
 
@@ -602,6 +1021,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private async IAsyncEnumerable<AgentEvent> RunCopilotSdk(
         string prompt,
         AgentContext context,
+        string taskId,
+        string agentId,
         [EnumeratorCancellation] CancellationToken ct)
     {
         yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
@@ -642,6 +1063,16 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         long lastEventTicks = DateTimeOffset.UtcNow.Ticks;
         var wasInactive = false;
 
+        // Phase 55 / Phase E -- when the caller attached an
+        // AgentMemoryHandle, route through CopilotSessionPool so iter
+        // N+1 reuses iter N's live session and the in-session
+        // conversation history is preserved. The pool owns disposal;
+        // we release the SendLock at end of this StartAsync call and
+        // skip the inline Dispose path.
+        var isPooledPath = context.Memory is not null;
+        PooledCopilotEntry? pooledEntry = null;
+        var pooledLockAcquired = false;
+
         CopilotSession? session = null;
         IDisposable? subscription = null;
         CopilotClient? client = null;
@@ -676,24 +1107,65 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 };
             }
 
-            // Retry once on connection/launch failures. With the shared server
-            // this mainly covers transient connection errors or server restarts.
-            for (var attempt = 0; attempt < 2; attempt++)
+            if (isPooledPath)
             {
-                try
+                pooledEntry = await this.copilotPool.AcquireAsync(
+                    taskId,
+                    agentId,
+                    async (factoryCt) =>
+                    {
+                        // Same retry-once pattern as the non-pooled path
+                        // below. The factory runs at most once per pool
+                        // key per process lifetime.
+                        CopilotClient? c = null;
+                        for (var attempt = 0; attempt < 2; attempt++)
+                        {
+                            try
+                            {
+                                c = new CopilotClient(clientOptions);
+                                var s = await c.CreateSessionAsync(sessionConfig, factoryCt);
+                                return (c, s);
+                            }
+                            catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                            {
+                                this.log.LogWarning(ex,
+                                    "Copilot SDK connection failed (pool factory attempt 1), retrying after delay");
+                                try { if (c is not null) await c.DisposeAsync(); } catch { }
+                                c = null;
+                                await Task.Delay(2000, factoryCt);
+                            }
+                        }
+                        throw new InvalidOperationException(
+                            "Failed to create Copilot session after retry; pool factory exhausted attempts.");
+                    },
+                    effectiveCt);
+                client = pooledEntry.Client;
+                session = pooledEntry.Session;
+
+                await pooledEntry.SendLock.WaitAsync(effectiveCt);
+                pooledLockAcquired = true;
+            }
+            else
+            {
+                // Retry once on connection/launch failures. With the shared server
+                // this mainly covers transient connection errors or server restarts.
+                for (var attempt = 0; attempt < 2; attempt++)
                 {
-                    client = new CopilotClient(clientOptions);
-                    session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
-                    break;
-                }
-                catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
-                {
-                    this.log.LogWarning(ex,
-                        "Copilot SDK connection failed (attempt 1), retrying after delay");
-                    try { if (client is not null) await client.DisposeAsync(); } catch { }
-                    client = null;
-                    session = null;
-                    await Task.Delay(2000, effectiveCt);
+                    try
+                    {
+                        client = new CopilotClient(clientOptions);
+                        session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
+                        break;
+                    }
+                    catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                    {
+                        this.log.LogWarning(ex,
+                            "Copilot SDK connection failed (attempt 1), retrying after delay");
+                        try { if (client is not null) await client.DisposeAsync(); } catch { }
+                        client = null;
+                        session = null;
+                        await Task.Delay(2000, effectiveCt);
+                    }
                 }
             }
 
@@ -845,13 +1317,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         finally
         {
             subscription?.Dispose();
-            if (session is not null)
+            if (isPooledPath)
             {
-                try { await session.DisposeAsync(); } catch { /* best-effort */ }
+                // Pool owns the session + client; do NOT dispose them
+                // here. Release the SendLock so the next iter for this
+                // (workItem, agent) tuple can run its own SendAsync on
+                // the same live session.
+                if (pooledLockAcquired && pooledEntry is not null)
+                {
+                    try { pooledEntry.SendLock.Release(); }
+                    catch (Exception ex)
+                    {
+                        this.log.LogWarning(ex,
+                            "CopilotSessionPool: SendLock release threw for ({Task}, {Agent}).",
+                            taskId, agentId);
+                    }
+                }
             }
-            if (client is not null)
+            else
             {
-                try { await client.DisposeAsync(); } catch { /* best-effort */ }
+                if (session is not null)
+                {
+                    try { await session.DisposeAsync(); } catch { /* best-effort */ }
+                }
+                if (client is not null)
+                {
+                    try { await client.DisposeAsync(); } catch { /* best-effort */ }
+                }
             }
         }
 

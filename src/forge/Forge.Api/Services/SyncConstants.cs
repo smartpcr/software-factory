@@ -178,4 +178,37 @@ public static class SyncConstants
     /// cancel + restart from the UI to break the loop sooner.
     /// </summary>
     public const int FailureBackoffMaxSeconds = 1800;
+
+    // ─── 2026-05-12 — no-progress backoff (Phase 52 follow-up) ───────────
+    // ImplSpawnGuard pre-Phase-52 only backed off on spawn-finished:false.
+    // A workstream stuck where DriveOneWorkstreamImplAsync returns
+    // successfully but produces NO new deliverable (e.g. the deliverable
+    // loop's terminal short-circuit, or the strategy quietly no-ops) was
+    // re-spawned every tick forever. Observed 2026-05-12 on the XRAFT
+    // stage 3.1 "Raft Node State Machine" workstream: 3,180 events / 7+
+    // hours / score stuck at 78 with iter 3/50. The guard now treats
+    // consecutive spawn-finished:true events that produced no new
+    // deliverable row as "no-progress" and applies escalating backoff,
+    // then routes through Phase 52 reassignment.
+
+    /// <summary>
+    /// Number of consecutive spawn-finished:true events with no new
+    /// deliverable row before the first <c>SkipBackoff</c> kicks in.
+    /// Below this threshold, successful spawns are allowed back-to-back
+    /// (the legitimate case: a fast iteration that produced a deliverable
+    /// but the loop short-circuited on a stable terminal verdict).
+    /// </summary>
+    public const int NoProgressBackoffThreshold = 3;
+
+    /// <summary>
+    /// At this many consecutive no-progress successes, the guard signals
+    /// <c>ShouldTriggerReassign=true</c> so the orchestrator parks the
+    /// work item at <c>ExecutionStatus=pending-reassign</c> and the
+    /// Phase 52 <c>SloppyReassignmentReconciler</c> rotates to a fresh
+    /// pair (full clean-slate wipe + new generator). Backoff still
+    /// applies on the way to this threshold; the reassign trigger is
+    /// the recovery escape hatch when backoff alone hasn't broken the
+    /// loop.
+    /// </summary>
+    public const int NoProgressReassignThreshold = 5;
 }

@@ -515,10 +515,11 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        // Belt-and-suspenders: prevent any credential / terminal prompt so a
-        // network failure can't hang the reconciler.
-        psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-        psi.EnvironmentVariables["GCM_INTERACTIVE"] = "Never";
+        // Belt-and-suspenders: route through GitProcessEnv so the
+        // process-wide prompt policy (FailFast / Interactive) governs
+        // this call site too. Direct env-var setting here previously
+        // forced FailFast unconditionally, escaping the policy.
+        Forge.Api.Services.Git.GitProcessEnv.Apply(psi);
 
         using var p = Process.Start(psi)
             ?? throw new InvalidOperationException("git failed to start");
