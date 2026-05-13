@@ -29,144 +29,54 @@ public sealed class ExpertiseEntry
 }
 
 /// <summary>
-/// Agent-learned expertise attached to a graph node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
-    /// <summary>
-    /// Deterministic ID in the format "expertise:{kind}:{hash8}".
-    /// Hash is the first 8 hex characters of SHA-256(Title + Body + TargetNodeId).
-    /// </summary>
-    public string Id { get; }
-
-    public ExpertiseKind Kind { get; }
-    public string Title { get; }
-    public string Body { get; }
-    public string TargetNodeId { get; }
-
-    private string scope = "exact";
-
-    /// <summary>
-    /// Scope: must be "exact" or "subtree". Default is "exact".
-    /// </summary>
-    public string Scope
+    public ExpertiseEntry(
+        ExpertiseKind kind,
+        string title,
+        string body,
+        string targetNodeId,
+        string sourceAgent,
+        string scope = "exact",
+        double confidence = 1.0,
+        IReadOnlyList<Citation>? evidence = null)
     {
-        get => this.scope;
-        init
-        {
-            if (value is not ("exact" or "subtree"))
-            {
-                throw new ArgumentException($"Scope must be \"exact\" or \"subtree\", got \"{value}\".", nameof(this.Scope));
-            }
-
-            this.scope = value;
-        }
-    }
-
-    private double confidence = 1.0;
-    private bool archived;
-
-    /// <summary>
-    /// Confidence score in [0.0, 1.0]. Default is 1.0.
-    /// This is the stored (event-adjusted) confidence — modified only
-    /// by event-driven decay. Time-based decay computes effective_confidence
-    /// on read and never persists it.
-    /// </summary>
-    public double Confidence
-    {
-        get => this.confidence;
-        init
-        {
-            if (value < 0.0 || value > 1.0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(this.Confidence), value, "Confidence must be between 0.0 and 1.0.");
-            }
-
-            this.confidence = value;
-        }
-    }
-
-    public bool Archived
-    {
-        get => this.archived;
-        init => this.archived = value;
-    }
-
-    /// <summary>
-    /// Applies an event-driven decay factor to the stored confidence.
-    /// Per architecture.md §3.5.1(a), this permanently reduces
-    /// <see cref="Confidence"/> by the given multiplicative factor.
-    /// </summary>
-    internal void ApplyEventDecay(double factor)
-    {
-        if (factor < 0.0 || factor > 1.0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(factor), factor, "Decay factor must be between 0.0 and 1.0.");
-        }
-
-        this.confidence = Math.Max(0.0, this.confidence * factor);
-    }
-
-    /// <summary>
-    /// Marks this entry as archived (soft-delete).
-    /// </summary>
-    internal void MarkArchived()
-    {
-        this.archived = true;
-    }
-    public string SourceAgent { get; }
-    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
-    public float[]? Embedding { get; init; }
-
-    /// <summary>SHA-256 hex of Title + Body (for change detection).</summary>
-    public string ContentHash { get; }
-
-    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
-    public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
-
-    public ExpertiseEntry(ExpertiseKind kind, string title, string body, string targetNodeId, string sourceAgent)
-    {
-        if (string.IsNullOrEmpty(title))
-        {
-            throw new ArgumentException("Title cannot be null or empty.", nameof(title));
-        }
-
-        if (string.IsNullOrEmpty(body))
-        {
-            throw new ArgumentException("Body cannot be null or empty.", nameof(body));
-        }
-
-        if (string.IsNullOrEmpty(targetNodeId))
-        {
-            throw new ArgumentException("TargetNodeId cannot be null or empty.", nameof(targetNodeId));
-        }
-
-        if (string.IsNullOrEmpty(sourceAgent))
-        {
-            throw new ArgumentException("SourceAgent cannot be null or empty.", nameof(sourceAgent));
-        }
-
         this.Kind = kind;
-        this.Title = title;
-        this.Body = body;
-        this.TargetNodeId = targetNodeId;
-        this.SourceAgent = sourceAgent;
-
-        var idHash = ComputeHash8(title + body + targetNodeId);
-        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{idHash}";
-
-        this.ContentHash = ComputeFullHash(title + body + targetNodeId);
+        this.Title = title ?? throw new ArgumentNullException(nameof(title));
+        this.Body = body ?? throw new ArgumentNullException(nameof(body));
+        this.TargetNodeId = targetNodeId ?? throw new ArgumentNullException(nameof(targetNodeId));
+        this.SourceAgent = sourceAgent ?? throw new ArgumentNullException(nameof(sourceAgent));
+        this.Scope = scope is "exact" or "subtree" ? scope : throw new ArgumentException("Scope must be 'exact' or 'subtree'.", nameof(scope));
+        this.Confidence = Math.Clamp(confidence, 0.0, 1.0);
+        this.Evidence = evidence ?? Array.Empty<Citation>();
+        this.ContentHash = ComputeHash(title, body, targetNodeId);
+        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{this.ContentHash[..8]}";
+        this.CreatedAt = DateTime.UtcNow;
+        this.UpdatedAt = this.CreatedAt;
     }
 
-    private static string ComputeHash8(string input)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(bytes)[..8].ToLowerInvariant();
-    }
+    /// <summary>Deterministic ID: expertise:{kind}:{hash8}.</summary>
+    public string Id { get; init; }
 
-    private static string ComputeFullHash(string input)
+    public ExpertiseKind Kind { get; init; }
+    public string Title { get; init; }
+    public string Body { get; init; }
+    public string TargetNodeId { get; init; }
+    public string Scope { get; init; }
+    public double Confidence { get; set; }
+    public bool Archived { get; set; }
+    public string SourceAgent { get; init; }
+    public IReadOnlyList<Citation> Evidence { get; init; }
+    public float[]? Embedding { get; set; }
+    public string ContentHash { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; set; }
+
+    private static string ComputeHash(string title, string body, string targetNodeId)
     {
+        var input = $"{title}{body}{targetNodeId}";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
