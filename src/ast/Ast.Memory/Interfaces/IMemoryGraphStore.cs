@@ -22,7 +22,7 @@ using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
-    // ── §5.1 Layer-filtered queries with temporal support ────────────────
+    // ── Canonical §5.1 — Layer-filtered queries with temporal support ───
 
     /// <summary>
     /// Gets nodes filtered by memory layer with optional temporal snapshot.
@@ -123,50 +123,4 @@ public interface IMemoryGraphStore : IGraphStore
         object detail,
         CancellationToken ct = default);
 
-    // ── Community-detection helpers (used by Stage 5.4) ──────────────────
-
-    /// <summary>
-    /// Gets all nodes in the graph, optionally filtered by node type.
-    /// </summary>
-    Task<IReadOnlyList<HypergraphNode>> GetAllNodesAsync(
-        string? nodeType = null,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets edges matching one or more semantic relation types.
-    /// Bridges canonical edges (by <see cref="HyperedgeType"/> label) AND
-    /// memory-layer edges (by <c>Metadata["SemanticRelation"]</c>).
-    /// </summary>
-    Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
-        IEnumerable<string> semanticRelations,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets all edges of the specified <see cref="HyperedgeType"/> values.
-    /// </summary>
-    Task<IReadOnlyList<Hyperedge>> GetEdgesByTypeAsync(
-        IEnumerable<HyperedgeType> edgeTypes,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Creates or updates a node (non-temporal overload for community detection).
-    /// </summary>
-    Task UpsertNodeAsync(HypergraphNode node, CancellationToken ct = default);
-
-    /// <summary>
-    /// Creates or updates an edge.
-    /// </summary>
-    Task UpsertEdgeAsync(Hyperedge edge, CancellationToken ct = default);
-
-    /// <summary>
-    /// Removes edges matching a semantic relation. Used for idempotent re-clustering.
-    /// </summary>
-    Task RemoveEdgesBySemanticRelationAsync(
-        string semanticRelation,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Removes all nodes of a given type (e.g., "Topic" before re-detection).
-    /// </summary>
-    Task RemoveNodesByTypeAsync(string nodeType, CancellationToken ct = default);
 }
