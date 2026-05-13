@@ -26,10 +26,11 @@ public interface IMemoryGraphStore : IGraphStore
 
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
-        int? atCommitIndex,
-        MemoryNodeFilter? filter,
-        int limit,
-        CancellationToken cancellationToken);
+        int? atCommitIndex = null,
+        int limit = 100,
+        CancellationToken ct = default);
+
+    // ── Edge queries ────────────────────────────────────────────────────
 
     // ── Edge queries ────────────────────────────────────────────────────
 

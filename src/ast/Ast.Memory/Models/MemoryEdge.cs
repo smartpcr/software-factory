@@ -9,11 +9,7 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> providing
-/// strongly-typed accessors for memory-layer edge metadata.
-/// Per architecture.md §4.1 — uses composition, NOT inheritance.
-/// Accepts both code-derived edges (original HyperedgeType) and
-/// memory-only edges (HyperedgeType.MemoryRelation).
+/// Composition wrapper around <see cref="Hyperedge"/> adding memory-specific accessors.
 /// </summary>
 public sealed class MemoryEdge
 {
