@@ -27,11 +27,27 @@ public static class WorkstreamMergeAdvancer
     /// and whose Status is "review" or "merging" → "complete". Returns the
     /// IDs of the workstreams that were advanced (empty when no match).
     /// Caller is responsible for SaveChangesAsync on the supplied context.
+    /// <para>
+    /// 2026-05-13 — active-comments guard. A PR with <c>PrComments.State == "active"</c>
+    /// is NOT closed: the workstream is left on review/merging so the
+    /// orchestrator's <c>DriveReviewAsync</c> fix loop can address the
+    /// comments first. Without this guard, an externally-merged PR (human
+    /// clicked Merge on GitHub UI, ADO auto-merge, etc.) would strand
+    /// reviewer comments by flipping the workstream straight to "complete",
+    /// taking it out of <c>DriveReviewAsync</c>'s scan window. Pairs with
+    /// the equivalent guard on the orchestrator's own external-merge fast
+    /// path so every "advance to complete" decision honors active comments.
+    /// </para>
     /// </summary>
     public static async Task<IReadOnlyList<string>> AdvanceForMergedPrAsync(
         ForgeDbContext db, string prId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(prId)) return Array.Empty<string>();
+
+        // Active-comments guard — never close a PR with unresolved review comments.
+        var hasActiveComments = await db.PrComments.AsNoTracking()
+            .AnyAsync(c => c.PrId == prId && c.State == "active", ct);
+        if (hasActiveComments) return Array.Empty<string>();
 
         var advanced = new List<string>();
         var candidates = await db.Workstreams
@@ -50,7 +66,8 @@ public static class WorkstreamMergeAdvancer
     /// Backfill pass: walk every <c>PrRow</c> with <c>Col="merged"</c> and
     /// advance any matching workstream that's still on review/merging. Run
     /// once on startup to repair rows merged before the per-path advances
-    /// were wired in.
+    /// were wired in. PRs with active comments are deferred (the
+    /// orchestrator's fix loop picks them up on its next tick).
     /// </summary>
     public static async Task<int> BackfillAsync(ForgeDbContext db, CancellationToken ct = default)
     {

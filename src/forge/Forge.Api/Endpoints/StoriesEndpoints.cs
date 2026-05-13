@@ -2767,6 +2767,19 @@ public static class StoriesEndpoints
         var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == workItemId).ToListAsync();
         db.DeliverableQuestions.RemoveRange(questions);
 
+        // (2c) Purge agent_usage rows for this synthetic workItemId so the
+        // cost card resets to $0 on Restart. TaskId == workItemId is
+        // deterministic (`plan-doc:{spawn.Id}:{file}`), identical across
+        // restarts, so old gen/eval ledger rows would otherwise leak onto
+        // the freshly-running iteration's cost rollup. Mirrors:
+        //   - DeleteSpawn synthetic sweep (StoriesEndpoints.cs ~1074)
+        //   - PurgeResidualSpawnDataAsync (StoriesEndpoints.cs ~451)
+        //   - Workstream cancel/restart (WorkstreamsEndpoints.cs ~458, 702)
+        // Without this step, the operator saw $589.85 carried over from
+        // the prior architecture.md run instead of starting fresh.
+        var usage = await db.AgentUsage.Where(u => u.TaskId == workItemId).ToListAsync();
+        db.AgentUsage.RemoveRange(usage);
+
         // (3) Cancel any queued/active TaskQueue rows.
         var queueRows = await db.TaskQueue
             .Where(q => q.WorkItemId == workItemId && q.State != "completed" && q.State != "cancelled")
@@ -2841,6 +2854,7 @@ public static class StoriesEndpoints
             deliverablesCleaned = deliverables.Count,
             eventsCleaned = events.Count,
             questionsCleaned = questions.Count,
+            agentUsageCleaned = usage.Count,
             queueRowsCancelled = queueRows.Count,
         });
     }

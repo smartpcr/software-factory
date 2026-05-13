@@ -303,7 +303,8 @@ public class AgentRuntimeTests
         var copilotServer = new CopilotServerManager(
             Options.Create(new AgentRunnerOptions()),
             NullLogger<CopilotServerManager>.Instance);
-        return new AgentRunnerDispatcher(http, registry, opts, copilotServer, Array.Empty<Forge.Api.Auth.IAuthService>(), log);
+        var copilotPool = new CopilotSessionPool(NullLogger<CopilotSessionPool>.Instance);
+        return new AgentRunnerDispatcher(http, registry, opts, copilotServer, Array.Empty<Forge.Api.Auth.IAuthService>(), copilotPool, log);
     }
 
     private sealed class StubHttpFactory : IHttpClientFactory
