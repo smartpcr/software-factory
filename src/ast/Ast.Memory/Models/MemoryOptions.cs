@@ -8,7 +8,6 @@ namespace Ast.Memory.Models;
 
 /// <summary>
 /// Configuration options for the memory graph system.
-/// All constants from architecture.md §2.4.
 /// </summary>
 public sealed class MemoryOptions
 {

@@ -9,7 +9,7 @@ namespace Ast.Memory.Models;
 using System.Collections.Generic;
 
 /// <summary>
-/// Aggregate statistics for the memory graph.
+/// Statistics about the memory graph, with per-layer node and edge counts.
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
