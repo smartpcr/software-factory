@@ -7,44 +7,59 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Configuration options for the memory graph system.
+/// Configuration options for the agent memory subsystem.
+/// Matches architecture.md §2.4 constants.
 /// </summary>
 public sealed class MemoryOptions
 {
-    /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
+    /// <summary>Cosine similarity threshold for consolidation merges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Confidence multiplier on substantive code change.</summary>
+    /// <summary>Multiplicative decay factor for substantive code changes.</summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Confidence multiplier on whitespace/comment-only change.</summary>
+    /// <summary>Multiplicative decay factor for minor (whitespace/comment) changes.</summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Expertise nodes below this are soft-deleted.</summary>
+    /// <summary>Confidence floor below which expertise is archived.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
-    public double DecayHalfLifeDays { get; set; } = 1095;
+
+    /// <summary>Half-life for time-based decay in days (3 years).</summary>
+    public int DecayHalfLifeDays { get; set; } = 1095;
+
+    /// <summary>Default token budget for context assembly.</summary>
     public int TokenBudgetDefault { get; set; } = 8000;
+
+    /// <summary>Maximum token budget ceiling.</summary>
     public int TokenBudgetCeiling { get; set; } = 32000;
+
+    /// <summary>Debounce interval for incremental sync in milliseconds.</summary>
     public int IncrementalSyncDebounceMs { get; set; } = 1000;
+
+    /// <summary>Boost factor for high-centrality nodes during decay.</summary>
     public double CentralityBoostFactor { get; set; } = 0.5;
 
-    /// <summary>Storage backend selection.</summary>
-    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
-
-    /// <summary>Path to the SQLite database file.</summary>
-    public string? SqlitePath { get; set; }
-
-    /// <summary>Neo4j connection URI.</summary>
-    public string? Neo4jUri { get; set; }
-
-    /// <summary>Qdrant vector-store endpoint.</summary>
-    public string? QdrantEndpoint { get; set; }
-
     /// <summary>
-    /// Operator-configured model name for the Ollama LLM used by
-    /// ConsolidationService and DetectCommunitiesAsync. No hardcoded
-    /// default — depends on what the operator has deployed.
+    /// Model name for the Ollama LLM used by <c>ConsolidationService</c>
+    /// and <c>DetectCommunitiesAsync</c>. Operator-configured — depends on
+    /// what the operator has deployed to their local Ollama instance.
     /// </summary>
     public string? ConsolidationModelName { get; set; }
-    public ScoringWeights Weights { get; set; } = new();
+
+    /// <summary>
+    /// Ollama API endpoint. Defaults to the standard local instance.
+    /// </summary>
+    public string OllamaEndpoint { get; set; } = "http://localhost:11434";
+
+    /// <summary>
+    /// Minimum community size for Topic node creation.
+    /// Communities smaller than this threshold are ignored.
+    /// </summary>
+    public int MinCommunitySize { get; set; } = 5;
+
+    /// <summary>
+    /// Scoring weights used by the Ranker. Sum should equal 1.00.
+    /// Per architecture.md §2.4.
+    /// </summary>
+    public ScoringWeights ScoringWeights { get; set; } = new();
 }
