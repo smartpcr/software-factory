@@ -80,6 +80,10 @@ public enum ExpertiseKind
     public bool Archived { get; set; }
     public string SourceAgent { get; init; } = string.Empty;
     public IReadOnlyList<Citation> Evidence { get; init; } = [];
+
+    /// <summary>
+    /// Embedding vector of "Title + ' ' + Body".
+    /// </summary>
     public float[]? Embedding { get; set; }
 
     public string ContentHash { get; set; } = string.Empty;

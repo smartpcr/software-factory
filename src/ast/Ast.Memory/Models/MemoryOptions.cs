@@ -32,15 +32,37 @@ public sealed class MemoryOptions
     public ScoringWeights Scoring { get; set; } = new();
     public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
+    /// <summary>Scoring weight distribution for relevance ranking.</summary>
+    public ScoringWeights Scoring { get; set; } = new();
+
+    // ── Consolidation ───────────────────────────────────────────────────
+
+    /// <summary>Maximum number of merges per consolidation run.</summary>
+    public int MaxMergesPerRun { get; set; } = 50;
+
+    // ── Vector Collection ───────────────────────────────────────────────
+
+    /// <summary>Name of the vector collection for expertise embeddings.</summary>
+    public string ExpertiseVectorCollection { get; set; } = "memory_expertise";
+
+    // ── Backend ─────────────────────────────────────────────────────────
+
+    /// <summary>Graph storage backend.</summary>
+    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
+
     /// <summary>Path to the SQLite database file.</summary>
     public string? SqlitePath { get; set; }
 
     /// <summary>Neo4j connection URI.</summary>
     public string? Neo4jUri { get; set; }
-    public string? Neo4jUser { get; set; }
-    public string? Neo4jPassword { get; set; }
+
+    /// <summary>Endpoint for Qdrant vector store.</summary>
     public string? QdrantEndpoint { get; set; }
-    public int EmbeddingDimension { get; set; } = 768;
+
+    /// <summary>
+    /// Model name for the Ollama LLM used by ConsolidationService and
+    /// DetectCommunitiesAsync.
+    /// </summary>
     public string? ConsolidationModelName { get; set; }
 
     public ScoringWeights Weights { get; set; } = new();

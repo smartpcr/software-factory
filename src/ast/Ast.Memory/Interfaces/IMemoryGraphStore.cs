@@ -88,9 +88,18 @@ public interface IMemoryGraphStore : IGraphStore
         double minConfidence = 0.0,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Creates or updates an expertise entry.
-    /// </summary>
+    Task<ExpertiseEntry?> GetExpertiseByIdAsync(
+        string expertiseId,
+        CancellationToken ct = default);
+
+    Task<ExpertiseEntry?> GetExpertiseByContentHashAsync(
+        string contentHash,
+        CancellationToken ct = default);
+
+    Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(
+        int limit = 1000,
+        CancellationToken ct = default);
+
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
