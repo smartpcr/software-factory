@@ -6,52 +6,55 @@
 
 namespace Ast.Memory;
 
+using Ast.Memory.Evolution;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Ast.Memory.Sync;
+using Ast.Memory.Schema;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 /// <summary>
-/// DI registration for the Ast.Memory subsystem including
-/// IncrementalSync, CommitRegistry, and GitDiffDriver.
+/// Extension methods for registering the agent memory graph in the DI container.
+/// Per architecture.md §7.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers IncrementalSync and its dependencies.
-    /// Callers must register <see cref="IMemoryGraphStore"/>,
-    /// <see cref="IExtractionPipeline"/>, <see cref="IEvolutionEngine"/>,
-    /// <c>IEmbeddingGenerator</c> (from Ast.Embedding),
-    /// and <c>IVectorStore</c> (from Ast.VectorDb) in their own DI setup.
-    /// <see cref="ICommitRegistry"/> is registered as <see cref="InMemoryCommitRegistry"/>
-    /// by default; callers should replace it with a durable implementation
-    /// backed by the <c>commits</c> table (§3.2.3) for production.
-    /// Registers <see cref="DefaultSemanticIndexer"/> as the production
-    /// <see cref="ISemanticIndexer"/> implementation that generates embeddings
-    /// via <c>IEmbeddingGenerator</c>, stores vectors in <c>IVectorStore</c>,
-    /// and manages SIMILAR_TO edges per architecture.md §3.1, §5.4.
+    /// Registers the memory graph subsystem — <see cref="AnnotationKeyRegistry"/>,
+    /// <see cref="ICentralityProvider"/>, and <see cref="IDecayService"/> —
+    /// using the provided <see cref="MemoryOptions"/>.
+    /// <para>
+    /// Callers must register <see cref="IMemoryGraphStore"/> separately
+    /// (e.g. via a storage-specific extension method) before resolving
+    /// <see cref="IDecayService"/>.
+    /// </para>
     /// </summary>
-    public static IServiceCollection AddIncrementalSync(this IServiceCollection services)
-    {
-        // Ensure MemoryOptions is available via IOptions<MemoryOptions>.
-        // Configure with defaults; callers can override via services.Configure<MemoryOptions>().
-        services.AddOptions<MemoryOptions>();
-        services.TryAddSingleton<ICommitRegistry, InMemoryCommitRegistry>();
-        services.AddSingleton<GitDiffDriver>();
-        services.AddSingleton<ISemanticIndexer, DefaultSemanticIndexer>();
-        services.AddSingleton<IIncrementalSync, IncrementalSync>();
-        return services;
-    }
-
-    /// <summary>
-    /// Registers IncrementalSync with custom <see cref="MemoryOptions"/>.
-    /// </summary>
-    public static IServiceCollection AddIncrementalSync(
+    public static IServiceCollection AddMemoryGraph(
         this IServiceCollection services,
-        Action<MemoryOptions> configureOptions)
+        Action<MemoryOptions> configure)
     {
-        services.Configure(configureOptions);
-        return services.AddIncrementalSync();
+        ArgumentNullException.ThrowIfNull(configure);
+
+        services.Configure(configure);
+        services.AddSingleton<AnnotationKeyRegistry>();
+
+        // Register decay subsystem with fallback centrality provider
+        services.TryAddSingleton<ICentralityProvider, NullCentralityProvider>();
+        services.Configure<DecayServiceOptions>(decayOpts =>
+        {
+            var memOpts = new MemoryOptions();
+            configure(memOpts);
+            decayOpts.DecayHalfLifeDays = memOpts.DecayHalfLifeDays;
+            decayOpts.CentralityBoostFactor = memOpts.CentralityBoostFactor;
+            decayOpts.ArchiveConfidenceFloor = memOpts.ArchiveConfidenceFloor;
+            decayOpts.StaleDecayFactor = memOpts.StaleDecayFactor;
+            decayOpts.MinorDecayFactor = memOpts.MinorDecayFactor;
+        });
+        services.AddSingleton<DecayService>();
+        services.AddSingleton<IDecayService>(sp => sp.GetRequiredService<DecayService>());
+        services.AddSingleton<IIncrementalSyncDecayHook>(sp => sp.GetRequiredService<DecayService>());
+
+        return services;
     }
 }
