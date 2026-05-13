@@ -5,19 +5,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>12</LangVersion>
-    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
+    <AssemblyName>Ast.Memory.UnitTests</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Memory\Ast.Memory.csproj" />
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <Using Include="FluentAssertions" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
   </ItemGroup>
 
 </Project>
