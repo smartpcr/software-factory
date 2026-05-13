@@ -6,30 +6,34 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
-/// Aggregate statistics for the memory graph.
-/// All counts reflect active (non-retired) entities unless noted otherwise.
+/// Statistics about the memory graph per architecture §5.1.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
-    /// <summary>Per-layer breakdown of active node and edge counts.</summary>
-    public IReadOnlyDictionary<string, LayerStatistics> LayerStats { get; init; } =
-        new Dictionary<string, LayerStatistics>();
+    public long TotalNodes { get; set; }
 
-    /// <summary>Total active nodes across all layers.</summary>
-    public int TotalNodes { get; init; }
+    public long TotalEdges { get; set; }
 
-    /// <summary>Total active edges across all layers.</summary>
-    public int TotalEdges { get; init; }
+    public long ActiveNodes { get; set; }
 
-    /// <summary>Total non-archived expertise entries.</summary>
-    public int TotalExpertiseEntries { get; init; }
+    public long RetiredNodes { get; set; }
 
-    /// <summary>Total archived expertise entries.</summary>
-    public int ArchivedExpertiseEntries { get; init; }
+    public long ActiveEdges { get; set; }
 
-    /// <summary>Timestamp of the most recent write operation, if available.</summary>
-    public DateTimeOffset? LastUpdated { get; init; }
+    public long RetiredEdges { get; set; }
+
+    public long ExpertiseEntries { get; set; }
+
+    public long ArchivedExpertise { get; set; }
+
+    public Dictionary<string, long> NodesByLayer { get; set; } = new();
+
+    public Dictionary<string, long> EdgesByRelation { get; set; } = new();
+
+    public Dictionary<string, long> NodesByLanguage { get; set; } = new();
 }
 
 /// <summary>
