@@ -9,28 +9,22 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around HypergraphNode adding memory-specific accessors.
-/// Uses composition, never inheritance. See architecture.md §4.1.
+/// Composition wrapper around <see cref="HypergraphNode"/> adding
+/// memory-specific accessors. Does not subclass — avoids coupling
+/// agent memory semantics to the code-analysis type hierarchy.
+/// Per architecture.md §4.1.
 /// </summary>
 public sealed class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version)
-    {
-        this.Inner = inner;
-        this.Version = version;
-    }
-
+    /// <summary>The underlying hypergraph node.</summary>
     public HypergraphNode Inner { get; }
 
-    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
+    /// <summary>Home layer from Metadata["MemoryLayer"].</summary>
+    public string MemoryLayer => (string)(this.Inner.Metadata["MemoryLayer"] ?? "structural");
 
+    /// <summary>Delegates to Inner.NodeType.</summary>
     public string NodeKind => this.Inner.NodeType;
 
-    public string? ContentHash =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? (string?)v : null;
-
-    /// <summary>
-    /// Nullable — null for External boundary nodes (timeless stubs).
-    /// </summary>
-    public VersionRange? Version { get; }
+    /// <summary>Content hash from metadata, or null if not present.</summary>
+    public string? ContentHash => MetadataHelper.GetOptionalString(this.Inner.Metadata, MemoryMetadataKeys.ContentHash);
 }

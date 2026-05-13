@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -35,6 +36,28 @@ using Microsoft.EntityFrameworkCore;
 public sealed class StorySpawnOrchestrator
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Phase 51 Fix 5 — per-spawn drive lock. Two concurrent
+    /// <see cref="DriveAsync(string, bool, CancellationToken)"/> calls
+    /// race on the unprotected <c>EnsureBranchFreshAsync</c> force-push
+    /// and ADO rejects the second with
+    /// <c>TF401028: The reference has already been updated by another
+    /// client</c>. Concurrent callers happen in production:
+    /// <list type="bullet">
+    /// <item>POST /spawn's background <c>Task.Run</c> (request returned 201).</item>
+    /// <item><c>SpawnDependencyScheduler</c> 15 s tick.</item>
+    /// <item>PATCH /spawn/phase / /spawn/decompose/approve operator actions.</item>
+    /// </list>
+    /// Keyed by deterministic <c>spawn.Id = spawn-{safeStoryId}</c> (not
+    /// <c>storyId</c> — the spawn-id matches the gate's claim semantics
+    /// and is what every other branch/path slug uses). Acquired
+    /// non-blocking via <see cref="SemaphoreSlim.WaitAsync(int)"/> with
+    /// timeout 0 — if held, the current call returns immediately and
+    /// the next scheduler tick / operator action picks up.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> driveLocks =
+        new(StringComparer.Ordinal);
 
     private readonly IServiceProvider services;
     private readonly IStoryArtifactStrategy strategy;
@@ -91,12 +114,34 @@ public sealed class StorySpawnOrchestrator
         // Removing the previous in-line tight loop also lets phase-level
         // assertions in the test suite observe each intermediate state
         // (e.g. spawn at "plan" with PR opened but not yet merged).
-        using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-        var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
-        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
-        if (spawn is null) return;
-        await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
+
+        // Phase 51 Fix 5 — per-spawn drive lock. spawn.Id is deterministic
+        // from storyId (`spawn-{safeStoryId}`) so we can derive it without
+        // a DB round-trip and avoid spending DI scope creation when a
+        // concurrent drive is already in flight.
+        var spawnId = $"spawn-{StoryPaths.Safe(storyId)}";
+        var gate = driveLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(0, ct).ConfigureAwait(false))
+        {
+            this.logger?.LogInformation(
+                "DriveAsync: drive for spawn {SpawnId} already in flight; skipping (next scheduler tick will retry).",
+                spawnId);
+            return;
+        }
+
+        try
+        {
+            using var scope = this.services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+            var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+            if (spawn is null) return;
+            await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>
@@ -2504,7 +2549,7 @@ public sealed class StorySpawnOrchestrator
     /// <c>crew_members</c> rows or every member is busy — the row still
     /// claims and the ledger contention sorts itself out as runs finish.
     /// </summary>
-    private static async Task<string[]> ResolveImplPairAsync(
+    internal static async Task<string[]> ResolveImplPairAsync(
         ForgeDbContext db,
         AgentAllocationLoader allocation,
         HashSet<string> busyAgents,
@@ -2571,19 +2616,30 @@ public sealed class StorySpawnOrchestrator
             .Select(m => m.AgentId)
             .ToListAsync(ct);
 
-        var defaultEval = crew.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.DefaultEvaluatorAgentId
-            ?? evaluatorCrew?.Lead;
+        // 2026-05-12 bug fix — only the operator-configured preferred
+        // evaluator gets first-dibs in PickEvaluator. The previous code
+        // ALSO promoted `evaluatorCrew?.Lead` into this slot, which gave
+        // the night-crew lead unconditional first-dibs and pinned every
+        // engineer claim to the same evaluator (operator-reported: "the
+        // evaluator side always assigns the same agent"). The Lead is
+        // now reserved as a last-resort fallback ONLY when PickEvaluator
+        // returns null because every roster member is busy.
+        var preferredEval = crew.DefaultEvaluatorAgentId
+            ?? evaluatorCrew?.DefaultEvaluatorAgentId;
+        var leadFallback = evaluatorCrew?.Lead;
 
         var (evalAgent, _) = PairDiversityResolver.PickEvaluator(
-            evalRoster, busyAgents, defaultEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
+            evalRoster, busyAgents, preferredEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
 
         // Q47.3 — evaluator diversity is best-effort. If every candidate
         // is busy fall back so the row still claims; ledger contention
-        // sorts itself out as in-flight runs finish.
+        // sorts itself out as in-flight runs finish. Preference order
+        // matches the previous behaviour minus the implicit Lead-as-
+        // first-dibs promotion: operator-configured default first,
+        // crew Lead last.
         if (string.IsNullOrEmpty(evalAgent))
         {
-            evalAgent = defaultEval;
+            evalAgent = preferredEval ?? leadFallback;
         }
 
         if (string.IsNullOrEmpty(evalAgent))

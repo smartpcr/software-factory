@@ -6,15 +6,26 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
-/// Per-layer node/edge counts for the memory graph.
+/// Extended statistics for the memory graph, including layer-specific
+/// counts and expertise metrics.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
-    public long TotalNodes { get; set; }
-    public long TotalEdges { get; set; }
-    public long TotalExpertise { get; set; }
-    public Dictionary<string, long> NodesByLayer { get; set; } = [];
-    public Dictionary<string, long> EdgesByLayer { get; set; } = [];
-    public Dictionary<string, long> NodesByType { get; set; } = [];
+    /// <summary>Total nodes per layer.</summary>
+    public Dictionary<string, int> NodesByLayer { get; set; } = [];
+
+    /// <summary>Total edges per layer.</summary>
+    public Dictionary<string, int> EdgesByLayer { get; set; } = [];
+
+    /// <summary>Total active expertise entries.</summary>
+    public int ActiveExpertiseCount { get; set; }
+
+    /// <summary>Total archived expertise entries.</summary>
+    public int ArchivedExpertiseCount { get; set; }
+
+    /// <summary>Total audit log entries.</summary>
+    public int AuditLogCount { get; set; }
 }
