@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Configuration options for the agent memory system.
 /// Constants and thresholds per architecture.md §2.4.
 /// </summary>
-public class MemoryOptions
+public sealed class MemoryOptions
 {
     /// <summary>
     /// Cosine-similarity floor for <c>SIMILAR_TO</c> edges.

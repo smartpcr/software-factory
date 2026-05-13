@@ -19,7 +19,7 @@ using System.Collections.Generic;
 /// characters of <c>SHA-256(Title + Body + TargetNodeId)</c>.
 /// </para>
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
     /// <summary>Unique ID — format: <c>expertise:{kind}:{hash8}</c>.</summary>
     public string Id { get; set; } = string.Empty;

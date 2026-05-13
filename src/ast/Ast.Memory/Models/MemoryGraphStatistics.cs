@@ -12,7 +12,7 @@ using System.Collections.Generic;
 /// Statistics about the memory graph, extending base graph statistics
 /// with memory-layer-specific breakdowns.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     /// <summary>Total node count.</summary>
     public long TotalNodes { get; set; }
