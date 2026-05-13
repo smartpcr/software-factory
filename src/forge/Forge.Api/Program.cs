@@ -130,17 +130,38 @@ builder.Services.AddCors(options =>
             using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
+            // WAL + synchronous=NORMAL is the canonical SQLite config for
+            // concurrent writers. WAL allows readers to run alongside a
+            // single writer (rollback-journal DELETE mode serializes both),
+            // and synchronous=NORMAL fsyncs only at WAL checkpoints instead
+            // of every commit — the durability window shrinks to a handful
+            // of transactions on power loss, which is well within our
+            // tolerance because every meaningful write is idempotent and
+            // recoverable from the spawn state machine.
+            //
+            // journal_mode is a *persistent* DB property (stored in the
+            // file header), so this bootstrap is correct as a one-shot.
+            // The shutdown handler at the bottom of this file already
+            // calls `PRAGMA wal_checkpoint(TRUNCATE)` so the `-wal`/`-shm`
+            // sidecar files don't accumulate.
+            //
+            // Background: User hit "SQLite Error 5: 'database is locked'"
+            // on plan doc 'architecture' at iter 16 ($852.60 spent) on
+            // 2026-05-13 because the orchestrator's per-iteration SaveChanges
+            // raced with PrSyncJob, the worktree-feed sampler, and the cost
+            // ledger. The Phase 48 fix of bumping `Default Timeout=30`
+            // alone wasn't enough — switching to WAL eliminates reader/
+            // writer contention entirely.
+            cmd.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
             cmd.ExecuteNonQuery();
         }
-        // Phase 48 follow-up — `Default Timeout=30` makes SQLite wait up to
-        // 30 s for a lock before throwing "database is locked". The
-        // orchestrator's tick loop and the queue worker both write to the
-        // shared file; without the timeout, two concurrent writers race
-        // and the second one fails immediately. The user hit this on the
-        // failover-cluster:XRAFT spawn at 17:36 PT 2026-05-09 ("plan
-        // failed: SQLite Error 5: 'database is locked'") because the
-        // regression-to-Plan write coincided with a concurrent operation.
+        // `Default Timeout=30` controls SqliteCommand.CommandTimeout, which
+        // Microsoft.Data.Sqlite uses to call sqlite3_busy_timeout(30000) on
+        // every command — so a contending writer waits up to 30 s before
+        // failing with SQLITE_BUSY. Combined with WAL above, this is
+        // belt-and-braces against the rare case where two writers attempt
+        // the lock simultaneously (WAL still serializes writers, just not
+        // readers vs writers).
         opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
     });
 }
