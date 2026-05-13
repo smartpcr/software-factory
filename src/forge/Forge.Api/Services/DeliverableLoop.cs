@@ -100,10 +100,22 @@ public static class DeliverableKinds
 }
 
 /// <summary>One generator turn's raw output + cost.</summary>
-public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0);
+/// <remarks>
+/// Phase 54 — <paramref name="TurnSamplesJson"/> carries an optional JSON
+/// array of per-<c>AssistantUsageEvent</c> token snapshots from the
+/// underlying SDK. Shape mirrors
+/// <see cref="AgentUsageRow.TurnSamplesJson"/>. Null on CLI runners that
+/// only emit a single cumulative tally. Default null preserves source
+/// compatibility with existing call sites that construct
+/// <c>new GeneratorRunOutput(text, cost, in, out)</c>.
+/// </remarks>
+public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0, string? TurnSamplesJson = null);
 
 /// <summary>One evaluator turn's raw output + cost.</summary>
-public sealed record EvaluatorRunOutput(string AssistantText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0);
+/// <remarks>
+/// Phase 54 — see <see cref="GeneratorRunOutput.TurnSamplesJson"/>.
+/// </remarks>
+public sealed record EvaluatorRunOutput(string AssistantText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0, string? TurnSamplesJson = null);
 
 /// <summary>Final outcome of <see cref="IDeliverableLoop.RunAsync"/>.</summary>
 public sealed record DeliverableLoopResult(
@@ -175,6 +187,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
         EvaluatorScore? lastScore = null;
         var verdict = "iterate";
         var iter = 0;
+
+        // Phase 54 — track prior-iteration cumulative input/output tokens
+        // per role so we can compute deltas and emit
+        // `task.iteration.prompt-growth` + `task.prompt-bloat` events.
+        long priorGenInputTokens = 0;
+        long priorGenOutputTokens = 0;
+        long priorEvalInputTokens = 0;
+        long priorEvalOutputTokens = 0;
 
         // Phase 52 — load WorkItemRow.BudgetWindowStartUtc once (used by
         // the per-iter sloppy token-cap check). Phase 51 sets this on a
@@ -380,12 +400,85 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             // (a) generator
             var gen = await request.Generator(iter, iterPrelude, ct);
-            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, ct);
+            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, gen.TurnSamplesJson, ct);
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
-            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, ct);
+            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, eval.TurnSamplesJson, ct);
+
+            // Phase 54 — compute per-iteration prompt-size growth deltas
+            // (iteration-over-iteration). Emit one summary event per iter
+            // and an amber warning when generator/evaluator inputTokens
+            // jumps more than ScoringConstants.PromptBloatGrowthThreshold.
+            // Iter 1 has no prior, so deltaInputTokens == inputTokens
+            // (operator can read that as "the first sample of the curve").
+            var genDeltaIn = gen.InputTokens - priorGenInputTokens;
+            var genDeltaOut = gen.OutputTokens - priorGenOutputTokens;
+            var evalDeltaIn = eval.InputTokens - priorEvalInputTokens;
+            var evalDeltaOut = eval.OutputTokens - priorEvalOutputTokens;
+            await this.EmitAsync(request.WorkItemId, "task.iteration.prompt-growth", new
+            {
+                iter,
+                generatorAgentId = request.GeneratorAgentId,
+                evaluatorAgentId = pinnedEvaluator,
+                generator = new
+                {
+                    inputTokens = gen.InputTokens,
+                    outputTokens = gen.OutputTokens,
+                    deltaInputTokens = genDeltaIn,
+                    deltaOutputTokens = genDeltaOut,
+                    turnSamplesJson = gen.TurnSamplesJson,
+                },
+                evaluator = new
+                {
+                    inputTokens = eval.InputTokens,
+                    outputTokens = eval.OutputTokens,
+                    deltaInputTokens = evalDeltaIn,
+                    deltaOutputTokens = evalDeltaOut,
+                    turnSamplesJson = eval.TurnSamplesJson,
+                },
+                threshold = ScoringConstants.PromptBloatGrowthThreshold,
+            }, ct);
+
+            // Only fire prompt-bloat for iter >= 2 — the delta on iter 1
+            // is the absolute first-call size, which can be legitimately
+            // large (decision pins + brief + prior PR diff context).
+            // Bloat is iteration-over-iteration GROWTH, not absolute size.
+            if (iter >= 2)
+            {
+                if (genDeltaIn > ScoringConstants.PromptBloatGrowthThreshold)
+                {
+                    await this.EmitAsync(request.WorkItemId, "task.prompt-bloat", new
+                    {
+                        iter,
+                        role = "generator",
+                        agentId = request.GeneratorAgentId,
+                        delta = genDeltaIn,
+                        threshold = ScoringConstants.PromptBloatGrowthThreshold,
+                        inputTokens = gen.InputTokens,
+                        priorInputTokens = priorGenInputTokens,
+                    }, ct);
+                }
+                if (evalDeltaIn > ScoringConstants.PromptBloatGrowthThreshold)
+                {
+                    await this.EmitAsync(request.WorkItemId, "task.prompt-bloat", new
+                    {
+                        iter,
+                        role = "evaluator",
+                        agentId = pinnedEvaluator,
+                        delta = evalDeltaIn,
+                        threshold = ScoringConstants.PromptBloatGrowthThreshold,
+                        inputTokens = eval.InputTokens,
+                        priorInputTokens = priorEvalInputTokens,
+                    }, ct);
+                }
+            }
+
+            priorGenInputTokens = gen.InputTokens;
+            priorGenOutputTokens = gen.OutputTokens;
+            priorEvalInputTokens = eval.InputTokens;
+            priorEvalOutputTokens = eval.OutputTokens;
 
             // 2026-05-07 — when the parser falls back to score 0 / iterate,
             // emit a transcript event carrying the exact AssistantText that
@@ -1289,8 +1382,10 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// <see cref="AgentUsageRow"/> per generator/evaluator turn so the
     /// per-pair salary is reportable separately. <c>category</c> is one
     /// of <c>generator | evaluator | judge</c>.
+    /// Phase 54 — <paramref name="turnSamplesJson"/> carries the optional
+    /// per-<c>AssistantUsageEvent</c> samples produced by the delegate.
     /// </summary>
-    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, long inputTokens, long outputTokens, CancellationToken ct)
+    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, long inputTokens, long outputTokens, string? turnSamplesJson, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(agentId)) return;
         var now = DateTimeOffset.UtcNow;
@@ -1307,6 +1402,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             EndedAt = now,
             Status = "finished",
             CostCategory = category,
+            TurnSamplesJson = turnSamplesJson,
         });
         await this.db.SaveChangesAsync(ct);
     }

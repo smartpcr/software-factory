@@ -235,6 +235,20 @@ builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
         sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
+// Phase 55 (docs/forge/sloppy_guard.md) — cross-iteration memory store.
+// Scoped so it shares the caller's DbContext / transaction; producer for
+// the Memory handle on AgentContext consumed by the runner cells in
+// Phases C/D/E.
+builder.Services.AddScoped<Forge.Api.Services.AgentMemoryStore>();
+// Phase 55 / Phase F — Claude/SDK memory compactor. Scoped because it
+// shares the AgentMemoryStore's scope; depends on IAgentRunner (singleton)
+// and IModelRegistry (singleton) which are safe to capture across scopes.
+builder.Services.AddScoped<Forge.Api.Services.MemoryCompactor>();
+// Phase 55 / Phase G — periodic reaper for stale agent_memory rows.
+// Singleton hosted service; sweeps hourly by default and deletes rows
+// whose UpdatedAt crossed Forge:Memory:RetentionDays.
+builder.Services.AddSingleton<Forge.Api.Services.AgentMemoryReaper>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.AgentMemoryReaper>());
 // Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).
@@ -356,6 +370,11 @@ builder.Services.AddSingleton<CopilotServerManager>();
 // HasExited check that crashes the test host. The dispose path runs whether
 // or not the CLI server was ever started, so the test gate doesn't apply.
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
+// Phase 55 / Phase E (docs/forge/sloppy_guard.md) -- Copilot SDK
+// session pool, keyed by (workItemId, agentId). Singleton so live
+// sessions span the gen-eval loop's iterations; disposed per-work-item
+// from RunGenEvalLoopAsync's finally on terminal verdict.
+builder.Services.AddSingleton<CopilotSessionPool>();
 builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
 // Problem details (RFC-7807). In Development, surface exception messages so
@@ -493,6 +512,18 @@ using (var scope = app.Services.CreateScope())
     // SloppyReassignmentReconciler boots its first tick (the reconciler
     // queries the new columns).
     await Phase52Migration.ApplyAsync(db);
+    // Phase 53 — sequential plan-doc tasks. Adds PlanDocPrsJson on
+    // story_spawns so each plan doc (architecture / tech-spec /
+    // implementation-plan / e2e-scenarios) carries its own branch + PR
+    // state and runs in strict sequence. Legacy spawns keep PlanPrId/
+    // PlanBranch and use the original single-PR path.
+    await Phase53Migration.ApplyAsync(db);
+    await Phase54Migration.ApplyAsync(db);
+    // Phase 55 (docs/forge/sloppy_guard.md) — agent_memory table for
+    // cross-iteration continuity (Layer 2 of the gen-eval memory plan).
+    // Order: any time before the runners boot is fine; placed adjacent to
+    // 53/54 so the post-Phase-52 migration sequence stays grouped.
+    await Phase55Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

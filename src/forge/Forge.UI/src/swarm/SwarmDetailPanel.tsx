@@ -711,6 +711,10 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const [docStatus, setDocStatus] = useState<string>('pending');
   const [docMaxIter, setDocMaxIter] = useState(0);
   const [docCurrentIter, setDocCurrentIter] = useState(0);
+  // Phase 52 — sloppy meters for the highlighted telemetry row.
+  const [docPairAttempt, setDocPairAttempt] = useState(1);
+  const [docMaxAttempts, setDocMaxAttempts] = useState(3);
+  const [docTokens, setDocTokens] = useState(0);
 
   useEffect(() => {
     if (isWorkstream || !selection.id || selection.id === 'doc:decomposition') return;
@@ -726,6 +730,9 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
         setDocStatus(r.status);
         setDocMaxIter(r.maxIterations);
         setDocCurrentIter(r.iterations.length > 0 ? r.iterations[r.iterations.length - 1].iter : 0);
+        setDocPairAttempt(r.pairAttemptCount);
+        setDocMaxAttempts(r.maxPairAttempts);
+        setDocTokens(r.generatorTokensSinceWindow);
       } catch { /* silent */ }
     }
     void load();
@@ -744,6 +751,11 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const currentIter = isWorkstream ? (snapshot?.currentIteration ?? lastDeliverable?.iter ?? 0) : docCurrentIter;
   const executionStatus = isWorkstream ? (snapshot?.executionStatus ?? null) : docStatus;
   const effectiveMaxIter = isWorkstream ? (snapshot?.maxIterations ?? 5) : docMaxIter;
+  // Phase 52 — sloppy meters. For workstreams, sourced from the snapshot;
+  // for plan docs, from the artifact-iterations API.
+  const pairAttempt = isWorkstream ? (snapshot?.pairAttemptCount ?? 1) : docPairAttempt;
+  const maxAttempts = isWorkstream ? (snapshot?.maxPairAttempts ?? 3) : docMaxAttempts;
+  const tokensUsed = isWorkstream ? (snapshot?.generatorTokensSinceWindow ?? 0) : docTokens;
 
   // Prompts from transcript
   const liveForDoc = useTaskLive(!isWorkstream ? workItemId : null);
@@ -890,8 +902,22 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
       {/* Telemetry row */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: 24, marginBottom: 16, fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)' }}>
         <span><span style={{ color: 'var(--sc-muted)' }}>COST</span> <strong style={{ color: 'var(--sc-text)' }}>${totalCost.toFixed(2)}</strong></span>
+        <span title="Generator input+output tokens since the budget window opened.">
+          <span style={{ color: 'var(--sc-muted)' }}>TOKENS</span>{' '}
+          <strong style={{ color: 'var(--sc-text)' }}>
+            {formatTokens(tokensUsed)}
+          </strong>
+        </span>
         {effectiveMaxIter > 0 && (
           <span><span style={{ color: 'var(--sc-muted)' }}>ITER</span> <strong style={{ color: 'var(--sc-text)' }}>{currentIter}/{effectiveMaxIter}</strong></span>
+        )}
+        {pairAttempt > 1 && (
+          <span title={`This work item has been reassigned to a fresh agent pair ${pairAttempt - 1} time(s). After attempt ${maxAttempts} fails sloppy, the reconciler stamps terminal failure.`}>
+            <span style={{ color: 'var(--sc-muted)' }}>ATTEMPT</span>{' '}
+            <strong style={{ color: pairAttempt >= maxAttempts ? 'var(--sc-red)' : 'var(--sc-amber)' }}>
+              {pairAttempt}/{maxAttempts}
+            </strong>
+          </span>
         )}
         {executionStatus && executionStatus !== 'idle' && (
           <span>
@@ -2130,6 +2156,23 @@ function formatElapsed(iso: string): string {
   if (hr  < 48)    return `${hr}h ${min % 60}m`;
   const day = Math.floor(hr / 24);
   return `${day}d`;
+}
+
+/** Compact token formatter for the sloppy-meter readout.
+ *  - >= 1M  → "13.99M" (2 decimals when < 10M, else 1)
+ *  - >= 1K  → "500K" (no decimal when >= 10K, 1 decimal below)
+ *  - else   → raw integer */
+function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0';
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${m.toFixed(m < 10 ? 2 : 1)}M`;
+  }
+  if (n >= 1_000) {
+    const k = n / 1_000;
+    return `${k.toFixed(k < 10 ? 1 : 0)}K`;
+  }
+  return String(Math.round(n));
 }
 
 function prettyId(id: string): string {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { Workstream } from '@/types';
 import { useStateStore } from '@/state/useStateStore';
@@ -18,6 +18,8 @@ import { forgeApi } from '@/api/forgeApi';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
 import { AGENT_ALLOCATION } from '@/agentAllocation';
+import { useTaskLive } from '@/realtime/useTaskLiveStore';
+import type { Card as CardModel, Epic, Pr } from '@/types';
 
 const FILTER_CHIPS: Array<{ key: WorkstreamFilter; label: string; pulse?: boolean }> = [
   { key: 'all',       label: 'All' },
@@ -319,27 +321,23 @@ export function WorkstreamsView() {
               ? { ...ws, status: effectiveStatus }
               : ws;
             return (
-              <div
+              <WorkstreamCardLiveWrap
                 key={ws.id}
-                data-focused={focusedId === ws.id ? 'true' : undefined}
-                style={focusedId === ws.id ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
-              >
-                <WorkstreamCard
-                  ws={effectiveWs}
-                  epic={epics.find((e) => e.id === ws.epic)}
-                  prs={allPrs}
-                  cards={allCards}
-                  onOpen={onOpen}
-                  onSync={(w) => void syncOne(w.id)}
-                  onIde={(w) => useToastStore.getState().show(`Open ${w.name} in IDE — Phase R`, 'info')}
-                  onOpenPr={(w) => void onOpenPr(w)}
-                  liveCount={liveCount}
-                  liveWorkItemId={liveWorkItemId}
-                  onOpenLive={(wid) => navigate(`/work-items/${wid}/live`)}
-                  queuedCount={queuedCount}
-                  onOpenInbox={() => navigate('/inbox')}
-                />
-              </div>
+                ws={effectiveWs}
+                epic={epics.find((e) => e.id === ws.epic)}
+                prs={allPrs}
+                cards={allCards}
+                onOpen={onOpen}
+                onSync={(w) => void syncOne(w.id)}
+                onIde={(w) => useToastStore.getState().show(`Open ${w.name} in IDE — Phase R`, 'info')}
+                onOpenPr={(w) => void onOpenPr(w)}
+                liveCount={liveCount}
+                liveWorkItemId={liveWorkItemId}
+                onOpenLive={(wid) => navigate(`/work-items/${wid}/live`)}
+                queuedCount={queuedCount}
+                onOpenInbox={() => navigate('/inbox')}
+                focused={focusedId === ws.id}
+              />
             );
           })}
           <NewWorkstreamCta onClick={() => setSpawnStoryOpen(true)} />
@@ -357,3 +355,81 @@ export function WorkstreamsView() {
 }
 
 
+/**
+ * Phase 54 — viewport-gated wrapper that subscribes to a workstream's first
+ * in-flight work item live channel ONLY when the card is visible. Avoids
+ * SignalR-group-per-card cost when the user has hundreds of workstreams off
+ * screen. Falls back to `useTaskLive(null)` (no-op) when off-screen or when
+ * no live work item is bound.
+ */
+interface WorkstreamCardLiveWrapProps {
+  ws: Workstream;
+  epic: Epic | undefined;
+  prs: Pr[];
+  cards: CardModel[];
+  onOpen: (ws: Workstream) => void;
+  onSync: (ws: Workstream) => void;
+  onIde?: (ws: Workstream) => void;
+  onOpenPr?: (ws: Workstream) => void;
+  liveCount?: number;
+  liveWorkItemId?: string | null;
+  queuedCount?: number;
+  onOpenInbox?: () => void;
+  onOpenLive?: (workItemId: string) => void;
+  focused?: boolean;
+}
+
+function WorkstreamCardLiveWrap(props: WorkstreamCardLiveWrapProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      // Server-side / older browser fallback — treat as visible.
+      setVisible(true);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => entries.forEach((e) => setVisible(e.isIntersecting)),
+      { threshold: 0.05 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const watchId = visible && props.liveCount && props.liveCount > 0 ? props.liveWorkItemId ?? null : null;
+  const live = useTaskLive(watchId);
+  const growth = live?.snapshot?.promptGrowth ?? [];
+  const latest = growth.length > 0 ? growth[growth.length - 1] : null;
+  const ktok = latest ? Math.max(0, Math.round(latest.generatorInputTokens / 1000)) : null;
+  const iter = latest?.iter ?? null;
+  const bloatRole = latest?.promptBloatRole ?? null;
+
+  return (
+    <div
+      ref={ref}
+      data-focused={props.focused ? 'true' : undefined}
+      style={props.focused ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
+    >
+      <WorkstreamCard
+        ws={props.ws}
+        epic={props.epic}
+        prs={props.prs}
+        cards={props.cards}
+        onOpen={props.onOpen}
+        onSync={props.onSync}
+        onIde={props.onIde}
+        onOpenPr={props.onOpenPr}
+        liveCount={props.liveCount}
+        liveWorkItemId={props.liveWorkItemId}
+        onOpenLive={props.onOpenLive}
+        queuedCount={props.queuedCount}
+        onOpenInbox={props.onOpenInbox}
+        liveLatestPromptKTokens={ktok}
+        liveLatestIter={iter}
+        liveBloatRole={bloatRole ?? null}
+      />
+    </div>
+  );
+}
