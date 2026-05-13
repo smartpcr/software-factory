@@ -383,6 +383,60 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
+    /// Phase 55 — normalize a filesystem path for case-insensitive equality
+    /// comparison on Windows. Returns the absolute, trimmed path with
+    /// platform-native separators. Used by <see cref="IsSamePath"/> to
+    /// detect when a worktree path equals the cloneRoot (and must NEVER
+    /// be deleted).
+    /// </summary>
+    private static string NormalizeAbsolutePath(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return string.Empty;
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    /// <summary>
+    /// Phase 55 — case-insensitive equality on normalized absolute paths.
+    /// `git worktree list --porcelain` emits forward-slashes on Windows
+    /// while callers pass back native separators; both normalize to the
+    /// same canonical form.
+    /// </summary>
+    private static bool IsSamePath(string a, string b) =>
+        string.Equals(NormalizeAbsolutePath(a), NormalizeAbsolutePath(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Phase 55 — structural detection of a main worktree. A linked
+    /// worktree's `.git` entry is a regular file containing
+    /// <c>gitdir: .../worktrees/{slug}</c>; the main worktree's `.git`
+    /// is a real directory holding the actual git metadata. This is the
+    /// symlink/junction-resilient backstop for cases where
+    /// <see cref="IsSamePath"/>'s string comparison may not match
+    /// (e.g., the cloneRoot is reached via a junction whose canonical
+    /// form differs from the path git stored at registration time).
+    /// </summary>
+    private static bool IsMainWorktreeDir(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        try
+        {
+            var dotGit = Path.Combine(path, ".git");
+            return Directory.Exists(dotGit);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Phase 45 — bring <paramref name="baseBranch"/> up to <c>origin/{upstream}</c>
     /// inside a dedicated worktree. Used when the operator changes a spawn's
     /// base branch and we need to pull in any upstream commits before
@@ -664,6 +718,28 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
             this.logger?.LogInformation(
                 "RemoveWorktreeAsync: removing worktree {Path} for branch {Branch}.", existing, branch);
+
+            // Phase 55 — never delete the cloneRoot itself. Two-pronged
+            // detection because `TryFindExistingWorktreeAsync` returns
+            // whatever path `git worktree list --porcelain` emitted, which
+            // can differ from `repo.CloneRoot` by trailing slash, alt
+            // separators, case, or symlink/junction. Belt: normalized path
+            // equality. Suspenders: `.git`-is-a-directory structural check
+            // (linked worktrees have `.git` as a pointer FILE; main
+            // worktrees have it as a real DIR). Either signal means "main
+            // worktree" — and that's the cloneRoot, never ours to delete.
+            // Background: 2026-05-13 DeleteSpawn(BaseBranch=main) reached
+            // here via the now-removed step 6a.1 and wiped the user's
+            // `E:\forge\workflow` (including `.git`).
+            if (IsSamePath(existing, repo.CloneRoot) || IsMainWorktreeDir(existing))
+            {
+                this.logger?.LogError(
+                    "RemoveWorktreeAsync REFUSING to delete main worktree {Path} for branch {Branch}. "
+                    + "This would wipe the cloneRoot (`{Root}`). Bailing.",
+                    existing, branch, repo.CloneRoot);
+                return;
+            }
+
             await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "remove", "--force", existing);
             if (Directory.Exists(existing))
             {
@@ -1009,22 +1085,42 @@ public sealed class RealStoryGitOps : IStoryGitOps
             var existingNormalized = existingOnBranch.Replace('\\', '/');
             if (!string.Equals(wantedNormalized, existingNormalized, StringComparison.OrdinalIgnoreCase))
             {
-                this.logger?.LogInformation(
-                    "Phase 49 worktree migration: branch {Branch} is registered at legacy path {Old}; "
-                    + "removing so it can be re-added at the short path {New}.",
-                    branch, existingOnBranch, wtPath);
-                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", existingOnBranch);
-                if (Directory.Exists(existingOnBranch))
+                // Phase 55 — refuse to delete the cloneRoot itself if
+                // `TryFindExistingWorktreeAsync` returned it (this happens
+                // when the operator manually checked out the main clone
+                // onto a `ws/...` branch, or any base-branch hand-off
+                // where the cloneRoot's HEAD matches the queried branch).
+                // Two-pronged detection mirrors RemoveWorktreeAsync —
+                // normalized path equality + structural `.git`-is-a-dir
+                // check. Background: 2026-05-13 DeleteSpawn(BaseBranch=
+                // main) reached an analogous code path and wiped the
+                // user's `E:\forge\workflow`.
+                if (IsSamePath(existingOnBranch, cloneRoot) || IsMainWorktreeDir(existingOnBranch))
                 {
-                    try { Directory.Delete(existingOnBranch, recursive: true); }
-                    catch (IOException ex)
-                    {
-                        this.logger?.LogWarning(ex,
-                            "Could not delete legacy worktree dir {Path}; git worktree remove may have cleared the registration only.",
-                            existingOnBranch);
-                    }
+                    this.logger?.LogError(
+                        "EnsureWorktreeAsync REFUSING to migrate main worktree {Path} for branch {Branch}. "
+                        + "This would wipe the cloneRoot. Bailing out of migration; reusing main worktree as-is.",
+                        existingOnBranch, branch);
                 }
-                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
+                else
+                {
+                    this.logger?.LogInformation(
+                        "Phase 49 worktree migration: branch {Branch} is registered at legacy path {Old}; "
+                        + "removing so it can be re-added at the short path {New}.",
+                        branch, existingOnBranch, wtPath);
+                    await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", existingOnBranch);
+                    if (Directory.Exists(existingOnBranch))
+                    {
+                        try { Directory.Delete(existingOnBranch, recursive: true); }
+                        catch (IOException ex)
+                        {
+                            this.logger?.LogWarning(ex,
+                                "Could not delete legacy worktree dir {Path}; git worktree remove may have cleared the registration only.",
+                                existingOnBranch);
+                        }
+                    }
+                    await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
+                }
             }
         }
 

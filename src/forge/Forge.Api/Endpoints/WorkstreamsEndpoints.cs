@@ -71,11 +71,15 @@ public static class WorkstreamsEndpoints
         ForgeDbContext db,
         CancellationToken ct)
     {
-        var deliverables = await db.Deliverables.AsNoTracking()
+        // EF/SQLite refuses server-side ORDER BY on DateTimeOffset
+        // (NotSupportedException), so we materialise then sort
+        // client-side. Memory'd in [[feedback_sqlite_no_order_by_datetimeoffset]].
+        var deliverables = (await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == id)
+            .ToListAsync(ct))
             .OrderBy(d => d.Iter)
             .ThenBy(d => d.CreatedAt)
-            .ToListAsync(ct);
+            .ToList();
         if (deliverables.Count == 0)
         {
             return Results.Ok(new { workItemId = id, iters = Array.Empty<object>() });
@@ -376,9 +380,17 @@ public static class WorkstreamsEndpoints
                 ? (agentRow?.EvaluatorModel ?? roleCrew?.EvaluatorModel ?? roleCrew?.Model)
                 : (agentRow?.GeneratorModel ?? roleCrew?.Model);
             var crewOverride = roleCrew?.CompactionTokenThreshold;
-            var effectiveThreshold = !string.IsNullOrEmpty(modelId)
-                ? compactor.ComputeEffectiveThreshold(modelId, crewOverride)
-                : (crewOverride ?? Forge.Api.Services.MemoryCompactor.DefaultThreshold);
+            var detail = !string.IsNullOrEmpty(modelId)
+                ? compactor.ComputeThresholdDetail(modelId, crewOverride)
+                : new Forge.Api.Services.MemoryCompactor.ThresholdDetail(
+                    EffectiveThreshold: crewOverride ?? Forge.Api.Services.MemoryCompactor.DefaultThreshold,
+                    ContextWindowTokens: null,
+                    ContextWindowRatio: compactor.ContextWindowRatio,
+                    DefaultThreshold: Forge.Api.Services.MemoryCompactor.DefaultThreshold,
+                    CrewOverride: crewOverride,
+                    Source: crewOverride.HasValue
+                        ? Forge.Api.Services.MemoryCompactor.ThresholdSource.CrewOverride
+                        : Forge.Api.Services.MemoryCompactor.ThresholdSource.GlobalDefault);
 
             result[row.Role] = new
             {
@@ -395,7 +407,12 @@ public static class WorkstreamsEndpoints
                 hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
                 turnCount,
                 approxInputTokens = row.ApproxInputTokens,
-                effectiveThreshold,
+                effectiveThreshold = detail.EffectiveThreshold,
+                contextWindowTokens = detail.ContextWindowTokens,
+                contextWindowRatio = detail.ContextWindowRatio,
+                defaultThreshold = detail.DefaultThreshold,
+                crewOverride = detail.CrewOverride,
+                thresholdSource = detail.Source.ToString(),
                 lastIter = row.LastIter,
                 createdAt = row.CreatedAt,
                 updatedAt = row.UpdatedAt,
@@ -762,6 +779,27 @@ public static class WorkstreamsEndpoints
         var agentUsage = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync(ct);
         db.AgentUsage.RemoveRange(agentUsage);
         counts["agentUsage"] = agentUsage.Count;
+
+        // Phase 52 follow-up (2026-05-13) — pair-attempt audit rows
+        // (one per (workItem, pair) attempt; Phase 52 schema). Without
+        // this purge the rows are orphaned to a dead WorkItemId and the
+        // Phase 14.16 SloppyRate KPI keeps counting them for the agents
+        // involved, inflating each agent's sloppy rate after every
+        // operator workstream-restart cycle.
+        var pairAssignments = await db.AgentPairAssignments
+            .Where(p => p.WorkItemId == id).ToListAsync(ct);
+        db.AgentPairAssignments.RemoveRange(pairAssignments);
+        counts["pairAssignments"] = pairAssignments.Count;
+
+        // Phase 52 follow-up — agent_claims. DeleteSpawn already releases
+        // open claims (ReleasedAt = now) but never deletes the rows; the
+        // capacity-tracking sweep keeps reading them and the audit grows
+        // unboundedly. Wipe historical claims for this work item — the
+        // ledger of "which agent picked this up" is meaningless once
+        // the work item itself is gone.
+        var agentClaims = await db.AgentClaims.Where(c => c.WorkItemId == id).ToListAsync(ct);
+        db.AgentClaims.RemoveRange(agentClaims);
+        counts["agentClaims"] = agentClaims.Count;
 
         var wsEvents = await db.WsEvents.Where(e => e.Ws == id).ToListAsync(ct);
         db.WsEvents.RemoveRange(wsEvents);

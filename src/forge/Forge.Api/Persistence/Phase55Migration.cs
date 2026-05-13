@@ -112,7 +112,8 @@ public static class Phase55Migration
 
         // Phase 55 / Phase F compaction-trigger override. Null = use the
         // 300K default in MemoryCompactor; the compactor still clamps the
-        // effective trigger down to model.ContextWindow * 0.3 so a
+        // effective trigger down to model.ContextWindow ×
+        // Forge:Compaction:ContextWindowRatio (default 0.5) so a
         // smaller-window evaluator model can never overrun its context.
         await EnsureColumnAsync(conn, "crews", "CompactionTokenThreshold", "INTEGER NULL", ct);
 

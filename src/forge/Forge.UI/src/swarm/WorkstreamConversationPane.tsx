@@ -428,6 +428,7 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           <PromptView
             events={transcript}
             activeIter={activeIterNumber}
+            workItemId={workstreamId}
           />
         ) : isSummaryMode ? (
           <SummaryView

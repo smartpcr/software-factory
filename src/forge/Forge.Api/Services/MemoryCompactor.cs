@@ -11,6 +11,7 @@ using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Microsoft.Extensions.Options;
 
 /// <summary>
 /// Phase 55 / Phase F (docs/forge/sloppy_guard.md) -- bounds the
@@ -24,11 +25,15 @@ using Forge.Api.Realtime;
 /// most-recent <see cref="RecencyKeep"/> turns are kept verbatim.
 ///
 /// <para><b>Effective threshold formula:</b>
-/// <c>min(crew.CompactionTokenThreshold ?? 300_000, model.ContextWindow × 0.3)</c>.
-/// The 30% clamp leaves headroom for the system prompt, the new user
-/// turn, and the model's generated response. Per-crew override exists
-/// because long-context-tier crews (1M Opus) can afford a higher
-/// threshold than mixed-window pairs.</para>
+/// <c>min(crew.CompactionTokenThreshold ?? 300_000,
+/// model.ContextWindow × <see cref="CompactionOptions.ContextWindowRatio"/>)</c>.
+/// The ratio (default <c>0.5</c>, bound from
+/// <c>Forge:Compaction:ContextWindowRatio</c>) leaves headroom for the
+/// system prompt, the new user turn, and the model's generated
+/// response. Per-crew override exists because long-context-tier crews
+/// (1M Opus) can afford a higher absolute floor than mixed-window
+/// pairs. The ratio is operator-tunable so a pool of 1M-context cells
+/// can compact later than a pool of 128K cells without touching code.</para>
 ///
 /// <para><b>Only Claude/SDK is compacted.</b> Claude/CLI's
 /// <c>--resume</c> stores history on disk under
@@ -76,12 +81,14 @@ public sealed class MemoryCompactor
     private readonly IModelRegistry models;
     private readonly TaskChannel taskChannel;
     private readonly ILogger<MemoryCompactor>? logger;
+    private readonly double contextWindowRatio;
 
     public MemoryCompactor(
         AgentMemoryStore store,
         IAgentRunner runner,
         IModelRegistry models,
         TaskChannel taskChannel,
+        IOptions<CompactionOptions> options,
         ILogger<MemoryCompactor>? logger = null)
     {
         this.store = store;
@@ -89,7 +96,29 @@ public sealed class MemoryCompactor
         this.models = models;
         this.taskChannel = taskChannel;
         this.logger = logger;
+        var configured = options?.Value?.ContextWindowRatio ?? 0.5;
+        // Clamp to (0, 1] so a typo can't disable the cap or invert it.
+        if (configured <= 0 || double.IsNaN(configured) || double.IsInfinity(configured))
+        {
+            configured = 0.5;
+        }
+        else if (configured > 1)
+        {
+            configured = 1;
+        }
+
+        this.contextWindowRatio = configured;
     }
+
+    /// <summary>
+    /// The configured fraction of <c>model.ContextWindow</c> used to
+    /// clamp the effective compaction threshold. Mirrors
+    /// <see cref="CompactionOptions.ContextWindowRatio"/> after the
+    /// constructor's defensive clamp. Exposed so the
+    /// <c>/api/workstreams/{id}/memory</c> endpoint can surface the
+    /// ratio in its tooltip payload.
+    /// </summary>
+    public double ContextWindowRatio => this.contextWindowRatio;
 
     /// <summary>
     /// Check the memory row's input-token meter against the effective
@@ -256,17 +285,81 @@ public sealed class MemoryCompactor
 
     /// <summary>
     /// Compute the effective compaction trigger. <c>min(crewOverride
-    /// ?? 300K, model.ContextWindow × 0.3)</c>. When the model isn't
+    /// ?? <see cref="DefaultThreshold"/>, model.ContextWindow ×
+    /// <see cref="ContextWindowRatio"/>)</c>. When the model isn't
     /// found in the registry (e.g. a Copilot-vendor id), the crew
     /// override (or default) wins.
     /// </summary>
     public long ComputeEffectiveThreshold(string modelId, long? crewThresholdOverride)
+        => this.ComputeThresholdDetail(modelId, crewThresholdOverride).EffectiveThreshold;
+
+    /// <summary>
+    /// Compute the effective compaction trigger along with the inputs
+    /// that produced it (model context window, configured ratio, crew
+    /// override, default floor) so callers — primarily the
+    /// <c>/api/workstreams/{id}/memory</c> endpoint — can surface a
+    /// precise tooltip ("clamp by 200K × 0.5 = 100K" vs "crew override
+    /// 42K" vs "global default 300K") without re-deriving the math on
+    /// the client.
+    /// </summary>
+    public ThresholdDetail ComputeThresholdDetail(string modelId, long? crewThresholdOverride)
     {
         var baseThreshold = crewThresholdOverride ?? DefaultThreshold;
         var model = this.models.Find(modelId);
-        if (model is null || model.ContextWindow <= 0) return baseThreshold;
-        var modelCap = (long)(model.ContextWindow * 0.3);
-        return Math.Min(baseThreshold, modelCap);
+        long? contextWindow = (model is not null && model.ContextWindow > 0) ? model.ContextWindow : null;
+        long? modelCap = contextWindow.HasValue
+            ? (long)(contextWindow.Value * this.contextWindowRatio)
+            : null;
+
+        long effective;
+        ThresholdSource source;
+        if (modelCap.HasValue && modelCap.Value < baseThreshold)
+        {
+            effective = modelCap.Value;
+            source = ThresholdSource.ModelWindowClamp;
+        }
+        else
+        {
+            effective = baseThreshold;
+            source = crewThresholdOverride.HasValue
+                ? ThresholdSource.CrewOverride
+                : ThresholdSource.GlobalDefault;
+        }
+
+        return new ThresholdDetail(
+            EffectiveThreshold: effective,
+            ContextWindowTokens: contextWindow,
+            ContextWindowRatio: this.contextWindowRatio,
+            DefaultThreshold: DefaultThreshold,
+            CrewOverride: crewThresholdOverride,
+            Source: source);
+    }
+
+    /// <summary>
+    /// Breakdown of how the compactor arrived at the effective
+    /// threshold for a given (model, crewOverride) pair.
+    /// </summary>
+    public sealed record ThresholdDetail(
+        long EffectiveThreshold,
+        long? ContextWindowTokens,
+        double ContextWindowRatio,
+        long DefaultThreshold,
+        long? CrewOverride,
+        ThresholdSource Source);
+
+    /// <summary>
+    /// Which input pinned the effective compaction threshold.
+    /// </summary>
+    public enum ThresholdSource
+    {
+        /// <summary>No crew override; model-window clamp was looser than the default.</summary>
+        GlobalDefault,
+
+        /// <summary>Crew override was set and tighter than the model-window clamp.</summary>
+        CrewOverride,
+
+        /// <summary>Model context window × ratio was tighter than the crew/default floor.</summary>
+        ModelWindowClamp,
     }
 
     private static string BuildSummarizerPrompt(IReadOnlyList<ConversationTurn> turns)

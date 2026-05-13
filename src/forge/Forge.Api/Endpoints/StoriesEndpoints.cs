@@ -1092,6 +1092,27 @@ public static class StoriesEndpoints
             db.AgentAssignments.RemoveRange(agentAssignments);
             counts["synthetic.agentAssignments"] = agentAssignments.Count;
 
+            // Phase 52 follow-up (2026-05-13) — pair-attempt audit rows
+            // for synthetic plan-doc / spawn-id work items. Same rationale
+            // as the workstream-side cleanup in
+            // CascadeDeleteWorkstreamAsync: leaving these orphaned to a
+            // dead WorkItemId inflates the involved agents' Phase 14.16
+            // SloppyRate after every operator re-spawn cycle.
+            var pairAssignments = await db.AgentPairAssignments
+                .Where(p => ids.Contains(p.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.AgentPairAssignments.RemoveRange(pairAssignments);
+            counts["synthetic.pairAssignments"] = pairAssignments.Count;
+
+            // Phase 52 follow-up — agent_claims for synthetic ids.
+            // DeleteSpawn releases open claims (ReleasedAt = now) at
+            // step 3 above but never deletes the rows; this completes
+            // the wipe so the agent-capacity sweep doesn't keep
+            // re-counting them.
+            var agentClaims = await db.AgentClaims
+                .Where(c => ids.Contains(c.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.AgentClaims.RemoveRange(agentClaims);
+            counts["synthetic.agentClaims"] = agentClaims.Count;
+
             // Phase 50 follow-up (2026-05-12) — cost ledger rows for the
             // synthetic plan-doc / spawn-id work items. TaskId on
             // agent_usage equals the work-item id (DeliverableLoop emits
@@ -1243,26 +1264,28 @@ public static class StoriesEndpoints
         // / `spawn-feature-memory-pressure` / `spawn-merge-feature-memory-pressure`.
         // We always remove the WORKTREE dirs; the base branch's REF
         // delete is still gated by `deleteBase=true` at section 9 below.
+        //
+        // Phase 55 — the previous Fix 6a.1 (`RemoveWorktreeAsync(repo,
+        // spawn.BaseBranch, ...)`) was REMOVED. Its comment claimed it
+        // cleaned the `spawn-{base}` worktree EnsureBranchAsync created,
+        // but Phase 49 long since stopped creating that worktree from
+        // EnsureBranchAsync (RealStoryGitOps.cs:62-119 just pushes a ref).
+        // What it actually did was: ask `git worktree list` for the worktree
+        // on `main`, get back the cloneRoot itself, then
+        // `Directory.Delete(cloneRoot, recursive: true)` → wipe the whole
+        // repo including `.git`. The user observed this on 2026-05-13 when
+        // DeleteSpawn on `code-intelligence:AGENT-MEMORY` wiped
+        // `E:\forge\workflow`. The merge fallback (`spawn-merge-{base}`)
+        // at 6a.1 below and the legacy `spawn-{base}` at 6a.2 below cover
+        // every linked-worktree shape we ever materialize for the base
+        // branch. The main worktree is the cloneRoot and is never owned
+        // by a single spawn.
         if (!string.IsNullOrEmpty(spawn.BaseBranch)
             && repo is not null
             && !string.IsNullOrEmpty(repo.CloneRoot)
             && Directory.Exists(repo.CloneRoot))
         {
-            // 6a.1 — RemoveWorktreeAsync covers the case where the base
-            // branch is checked out in a worktree git knows about
-            // (the `spawn-{base}` path from EnsureBranchAsync).
-            if (storyGitOps is not null)
-            {
-                try { await storyGitOps.RemoveWorktreeAsync(repo, spawn.BaseBranch, ctx.RequestAborted); }
-                catch (Exception ex)
-                {
-                    logger.LogDebug(ex,
-                        "DeleteSpawn: base-branch RemoveWorktreeAsync failed for {Base}; continuing.",
-                        spawn.BaseBranch);
-                }
-            }
-
-            // 6a.2 — Force-cleanup the `spawn-merge-{base}` fallback dir
+            // 6a.1 — Force-cleanup the `spawn-merge-{base}` fallback dir
             // that MergeAsync materialized. Even with Fix 6b removing
             // these post-sync, prior installations left them on disk.
             var mergeSanitized = SanitizeForWorktree($"merge-{spawn.BaseBranch}");
@@ -1283,7 +1306,7 @@ public static class StoriesEndpoints
                 await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
             }
 
-            // 6a.3 — Also force-cleanup the legacy `spawn-{base}` dir
+            // 6a.2 — Also force-cleanup the legacy `spawn-{base}` dir
             // (created pre-Phase 49 by EnsureBranchAsync). RemoveWorktreeAsync
             // skips it if `git worktree list` doesn't know about it.
             var baseSanitized = SanitizeForWorktree(spawn.BaseBranch);

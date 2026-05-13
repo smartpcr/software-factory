@@ -243,6 +243,10 @@ builder.Services.AddScoped<Forge.Api.Services.AgentMemoryStore>();
 // Phase 55 / Phase F — Claude/SDK memory compactor. Scoped because it
 // shares the AgentMemoryStore's scope; depends on IAgentRunner (singleton)
 // and IModelRegistry (singleton) which are safe to capture across scopes.
+// The model-window clamp ratio is operator-tunable via
+// Forge:Compaction:ContextWindowRatio (default 0.5 — see CompactionOptions).
+builder.Services.Configure<Forge.Api.Services.CompactionOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.CompactionOptions.SectionName));
 builder.Services.AddScoped<Forge.Api.Services.MemoryCompactor>();
 // Phase 55 / Phase G — periodic reaper for stale agent_memory rows.
 // Singleton hosted service; sweeps hourly by default and deletes rows
