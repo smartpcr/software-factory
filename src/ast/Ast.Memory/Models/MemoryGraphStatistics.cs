@@ -14,17 +14,18 @@ using System.Collections.Generic;
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
-    public IReadOnlyDictionary<string, LayerStatistics> LayerStats { get; init; } =
-        new Dictionary<string, LayerStatistics>();
+    /// <summary>Total nodes per layer.</summary>
+    public Dictionary<string, int> NodesByLayer { get; set; } = [];
 
-    public int TotalNodes { get; init; }
-    public int TotalEdges { get; init; }
-    public int TotalExpertiseEntries { get; init; }
-    public int ArchivedExpertiseEntries { get; init; }
-    public DateTimeOffset? LastUpdated { get; init; }
+    /// <summary>Total edges per layer.</summary>
+    public Dictionary<string, int> EdgesByLayer { get; set; } = [];
+
+    /// <summary>Total active expertise entries.</summary>
+    public int ActiveExpertiseCount { get; set; }
+
+    /// <summary>Total archived expertise entries.</summary>
+    public int ArchivedExpertiseCount { get; set; }
+
+    /// <summary>Total audit log entries.</summary>
+    public int AuditLogCount { get; set; }
 }
-
-/// <summary>
-/// Node and edge counts for a single memory layer.
-/// </summary>
-public record LayerStatistics(int NodeCount, int EdgeCount);
