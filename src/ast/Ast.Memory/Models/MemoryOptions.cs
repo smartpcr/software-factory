@@ -7,8 +7,8 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Configuration options for the agent memory subsystem.
-/// Matches architecture.md §2.4 constants.
+/// Central configuration for the agent memory subsystem.
+/// All defaults come from architecture.md §2.4.
 /// </summary>
 public sealed class MemoryOptions
 {
@@ -24,20 +24,14 @@ public sealed class MemoryOptions
     /// <summary>Confidence floor below which expertise is archived.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
 
-    /// <summary>Half-life for time-based decay in days (3 years).</summary>
+    /// <summary>Time-based decay half-life in days (3 years).</summary>
     public int DecayHalfLifeDays { get; set; } = 1095;
-
-    /// <summary>Default token budget for context assembly.</summary>
-    public int TokenBudgetDefault { get; set; } = 8000;
-
-    /// <summary>Maximum token budget ceiling.</summary>
-    public int TokenBudgetCeiling { get; set; } = 32000;
-
-    /// <summary>Debounce interval for incremental sync in milliseconds.</summary>
-    public int IncrementalSyncDebounceMs { get; set; } = 1000;
-
-    /// <summary>Boost factor for high-centrality nodes during decay.</summary>
+    public int TokenBudgetDefault { get; set; } = 8_000;
+    public int TokenBudgetCeiling { get; set; } = 32_000;
+    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
     public double CentralityBoostFactor { get; set; } = 0.5;
+    public ScoringWeights Scoring { get; set; } = new();
+    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
     /// <summary>Scoring weight distribution for relevance ranking.</summary>
     public ScoringWeights Scoring { get; set; } = new();

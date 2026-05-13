@@ -20,11 +20,8 @@ using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
-    // ── §5.1 Layer-filtered queries with temporal support ────────────────
+    // ── Canonical §5.1 — Layer-filtered queries with temporal support ───
 
-    /// <summary>
-    /// Gets nodes filtered by memory layer, with optional temporal snapshot.
-    /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
@@ -46,10 +43,15 @@ public interface IMemoryGraphStore : IGraphStore
         int limit,
         CancellationToken cancellationToken);
 
-    // ── §5.1 Temporal-aware upsert and retirement ────────────────────────
+    // ── Canonical §5.1 — Temporal-aware upsert and retirement ──────────
 
     /// <summary>
-    /// Upserts a node with temporal version range.
+    /// Temporal-aware upsert: creates or updates a node with the given version range.
+    /// If a node with the same ID already exists, the store atomically closes the
+    /// previous active version (sets its <c>UntilIndex = version.SinceIndex</c>)
+    /// and activates the new version. This preserves temporal history per §4.3
+    /// without cascading edge retirement — edges reference the logical node ID
+    /// and remain valid for the successor version.
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
@@ -57,7 +59,10 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retires a node at the given commit index (cascades to connected edges).
+    /// Retires a node AND cascades retirement to all connected edges.
+    /// Used when a node is permanently removed (e.g., deleted file, removed symbol).
+    /// Sets UntilIndex on the node and all edges connected to it.
+    /// Per architecture.md §5.1.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
@@ -81,11 +86,8 @@ public interface IMemoryGraphStore : IGraphStore
         IDictionary<string, object?> metadata,
         CancellationToken cancellationToken);
 
-    // ── §5.1 Expertise CRUD ─────────────────────────────────────────────
+    // ── Canonical §5.1 — Expertise CRUD ─────────────────────────────────
 
-    /// <summary>
-    /// Gets non-archived expertise entries targeting the given node.
-    /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
@@ -122,11 +124,8 @@ public interface IMemoryGraphStore : IGraphStore
         int limit,
         CancellationToken cancellationToken);
 
-    // ── §5.1 Statistics and audit ───────────────────────────────────────
+    // ── Canonical §5.1 — Statistics and audit ───────────────────────────
 
-    /// <summary>
-    /// Gets memory-specific graph statistics (per-layer counts, expertise metrics).
-    /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken cancellationToken = default);
 
@@ -139,50 +138,4 @@ public interface IMemoryGraphStore : IGraphStore
         object detail,
         CancellationToken ct = default);
 
-    // ── Community-detection helpers (used by Stage 5.4) ──────────────────
-
-    /// <summary>
-    /// Gets all nodes in the graph, optionally filtered by node type.
-    /// </summary>
-    Task<IReadOnlyList<HypergraphNode>> GetAllNodesAsync(
-        string? nodeType = null,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets edges matching one or more semantic relation types.
-    /// Bridges canonical edges (by <see cref="HyperedgeType"/> label) AND
-    /// memory-layer edges (by <c>Metadata["SemanticRelation"]</c>).
-    /// </summary>
-    Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
-        IEnumerable<string> semanticRelations,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets all edges of the specified <see cref="HyperedgeType"/> values.
-    /// </summary>
-    Task<IReadOnlyList<Hyperedge>> GetEdgesByTypeAsync(
-        IEnumerable<HyperedgeType> edgeTypes,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Creates or updates a node (non-temporal overload for community detection).
-    /// </summary>
-    Task UpsertNodeAsync(HypergraphNode node, CancellationToken ct = default);
-
-    /// <summary>
-    /// Creates or updates an edge.
-    /// </summary>
-    Task UpsertEdgeAsync(Hyperedge edge, CancellationToken ct = default);
-
-    /// <summary>
-    /// Removes edges matching a semantic relation. Used for idempotent re-clustering.
-    /// </summary>
-    Task RemoveEdgesBySemanticRelationAsync(
-        string semanticRelation,
-        CancellationToken ct = default);
-
-    /// <summary>
-    /// Removes all nodes of a given type (e.g., "Topic" before re-detection).
-    /// </summary>
-    Task RemoveNodesByTypeAsync(string nodeType, CancellationToken ct = default);
 }
