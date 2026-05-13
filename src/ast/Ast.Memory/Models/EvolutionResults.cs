@@ -7,25 +7,45 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Options controlling consolidation behavior.
-/// Matches the canonical shape in architecture.md §5.3.
+/// Result of community detection via Louvain algorithm.
 /// </summary>
-/// <param name="SimilarityThreshold">
-/// Per-call cosine-similarity floor override. When <c>null</c>, the service
-/// falls back to <see cref="MemoryOptions.SimilarityThreshold"/> (default 0.85).
-/// </param>
-/// <param name="MaxMergesPerRun">Maximum number of merges per consolidation run.</param>
-public record ConsolidationOptions(
-    double? SimilarityThreshold = null,
-    int MaxMergesPerRun = 50);
+public record CommunityResult(
+    int CommunitiesDetected,
+    int TopicNodesCreated,
+    int ClusterEdgesCreated
+);
 
 /// <summary>
-/// Result of a consolidation run.
+/// Result of expertise consolidation.
 /// </summary>
-/// <param name="CandidatesPaired">Number of candidate pairs evaluated.</param>
-/// <param name="MergedCount">Number of successful merges.</param>
-/// <param name="MergedEntryIds">IDs of the newly created merged entries.</param>
 public record ConsolidationResult(
     int CandidatesPaired,
     int MergedCount,
-    IReadOnlyList<string> MergedEntryIds);
+    IReadOnlyList<string> MergedEntryIds
+);
+
+/// <summary>
+/// Result of expertise decay evaluation.
+/// </summary>
+public record DecayResult(
+    int EntriesEvaluated,
+    int EntriesDecayed,
+    int EntriesArchived
+);
+
+/// <summary>
+/// Options for consolidation.
+/// </summary>
+public record ConsolidationOptions(
+    double SimilarityThreshold = 0.85,
+    int MaxMergesPerRun = 50
+);
+
+/// <summary>
+/// Options for decay evaluation.
+/// </summary>
+public record DecayOptions(
+    int HalfLifeDays = 1095,
+    double CentralityBoostFactor = 0.5,
+    double ArchiveConfidenceFloor = 0.1
+);
