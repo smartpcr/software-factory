@@ -75,6 +75,12 @@ public static class Phase55Migration
         // memory continuity. The runner cells gate their session-resume /
         // history-replay code paths on this column being 1.
         await EnsureColumnAsync(conn, "crews", "EnableAgentMemory", "INTEGER NOT NULL DEFAULT 0", ct);
+
+        // Phase 55 / Phase F compaction-trigger override. Null = use the
+        // 300K default in MemoryCompactor; the compactor still clamps the
+        // effective trigger down to model.ContextWindow * 0.3 so a
+        // smaller-window evaluator model can never overrun its context.
+        await EnsureColumnAsync(conn, "crews", "CompactionTokenThreshold", "INTEGER NULL", ct);
     }
 
     private static async Task<bool> EnsureColumnAsync(

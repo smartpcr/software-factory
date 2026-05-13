@@ -715,7 +715,6 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const [docPairAttempt, setDocPairAttempt] = useState(1);
   const [docMaxAttempts, setDocMaxAttempts] = useState(3);
   const [docTokens, setDocTokens] = useState(0);
-  const [docTokenCap, setDocTokenCap] = useState(500_000);
 
   useEffect(() => {
     if (isWorkstream || !selection.id || selection.id === 'doc:decomposition') return;
@@ -734,7 +733,6 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
         setDocPairAttempt(r.pairAttemptCount);
         setDocMaxAttempts(r.maxPairAttempts);
         setDocTokens(r.generatorTokensSinceWindow);
-        setDocTokenCap(r.generatorTokenCap);
       } catch { /* silent */ }
     }
     void load();
@@ -758,7 +756,6 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const pairAttempt = isWorkstream ? (snapshot?.pairAttemptCount ?? 1) : docPairAttempt;
   const maxAttempts = isWorkstream ? (snapshot?.maxPairAttempts ?? 3) : docMaxAttempts;
   const tokensUsed = isWorkstream ? (snapshot?.generatorTokensSinceWindow ?? 0) : docTokens;
-  const tokenCap = isWorkstream ? (snapshot?.generatorTokenCap ?? 500_000) : docTokenCap;
 
   // Prompts from transcript
   const liveForDoc = useTaskLive(!isWorkstream ? workItemId : null);
@@ -905,14 +902,12 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
       {/* Telemetry row */}
       <div style={{ display: 'flex', justifyContent: 'center', gap: 24, marginBottom: 16, fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)' }}>
         <span><span style={{ color: 'var(--sc-muted)' }}>COST</span> <strong style={{ color: 'var(--sc-text)' }}>${totalCost.toFixed(2)}</strong></span>
-        {tokenCap > 0 && (
-          <span title="Generator input+output tokens since the budget window opened, against the sloppy-detector cap.">
-            <span style={{ color: 'var(--sc-muted)' }}>TOKENS</span>{' '}
-            <strong style={{ color: tokensUsed > tokenCap ? 'var(--sc-red)' : tokensUsed > tokenCap * 0.8 ? 'var(--sc-amber)' : 'var(--sc-text)' }}>
-              {formatTokens(tokensUsed)} / {formatTokens(tokenCap)}
-            </strong>
-          </span>
-        )}
+        <span title="Generator input+output tokens since the budget window opened.">
+          <span style={{ color: 'var(--sc-muted)' }}>TOKENS</span>{' '}
+          <strong style={{ color: 'var(--sc-text)' }}>
+            {formatTokens(tokensUsed)}
+          </strong>
+        </span>
         {effectiveMaxIter > 0 && (
           <span><span style={{ color: 'var(--sc-muted)' }}>ITER</span> <strong style={{ color: 'var(--sc-text)' }}>{currentIter}/{effectiveMaxIter}</strong></span>
         )}

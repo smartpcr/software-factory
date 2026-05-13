@@ -240,6 +240,10 @@ builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Servic
 // the Memory handle on AgentContext consumed by the runner cells in
 // Phases C/D/E.
 builder.Services.AddScoped<Forge.Api.Services.AgentMemoryStore>();
+// Phase 55 / Phase F — Claude/SDK memory compactor. Scoped because it
+// shares the AgentMemoryStore's scope; depends on IAgentRunner (singleton)
+// and IModelRegistry (singleton) which are safe to capture across scopes.
+builder.Services.AddScoped<Forge.Api.Services.MemoryCompactor>();
 // Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).

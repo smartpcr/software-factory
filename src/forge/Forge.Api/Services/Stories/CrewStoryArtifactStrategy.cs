@@ -3479,6 +3479,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         turnCount = newTurns.Count,
                         iter,
                     }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                    // Phase 55 / Phase F -- compact when the memory
+                    // row's input-token meter crosses the effective
+                    // threshold. Runs inline so the next iter's prompt
+                    // sees the compacted shape; cheap (Haiku) but
+                    // not free, so the trigger only fires when actually
+                    // needed.
+                    var compactor = memScope.ServiceProvider.GetRequiredService<MemoryCompactor>();
+                    await compactor.CompactIfNeededAsync(
+                        workItemId, genAgentId, AgentMemoryRoles.Generator,
+                        generatorModelId: genContext.Model,
+                        crewThresholdOverride: crew.CompactionTokenThreshold,
+                        ct: iterCt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -3979,6 +3992,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         turnCount = newTurns.Count,
                         iter,
                     }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+                    // Phase 55 / Phase F -- compact evaluator memory
+                    // against ITS OWN model's context window (often a
+                    // smaller-window model than the generator). The
+                    // evaluator crew's threshold override wins when
+                    // set, else the generator-crew override, else the
+                    // 300K default.
+                    var compactor = memScope.ServiceProvider.GetRequiredService<MemoryCompactor>();
+                    await compactor.CompactIfNeededAsync(
+                        workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
+                        generatorModelId: evalContext.Model,
+                        crewThresholdOverride: evalCrew?.CompactionTokenThreshold ?? crew.CompactionTokenThreshold,
+                        ct: iterCt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

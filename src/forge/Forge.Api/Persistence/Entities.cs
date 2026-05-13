@@ -697,6 +697,20 @@ public class CrewRow
     /// always-on for every crew.
     /// </summary>
     public bool EnableAgentMemory { get; set; }
+
+    /// <summary>
+    /// Phase 55 / Phase F — per-crew override for the input-token
+    /// threshold at which the compactor folds older conversation turns
+    /// into a single summary. Null = use the global 300K default. The
+    /// effective trigger is always clamped down to
+    /// <c>model.ContextWindow × 0.3</c> so a smaller-window evaluator
+    /// model (e.g. 200K Sonnet against a 1M-context generator) never
+    /// blows past its real context budget. Operators tune this when
+    /// they see a crew's compaction summaries lose too much detail —
+    /// drop the threshold to compact later (more verbatim turns
+    /// retained) or raise it on long-context-tier crews.
+    /// </summary>
+    public long? CompactionTokenThreshold { get; set; }
 }
 
 /// <summary>
