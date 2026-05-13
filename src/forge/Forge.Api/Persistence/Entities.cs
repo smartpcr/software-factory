@@ -2501,3 +2501,76 @@ public class WorkstreamDepRow
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Phase 55 (docs/forge/sloppy_guard.md) — persistent cross-iteration
+/// memory for a (work item, agent, role) tuple. Each call to
+/// <c>IAgentRunner.StartAsync</c> opens a fresh provider session by
+/// default, so without this row Layer 2 (Claude/CLI session resume,
+/// Claude/SDK history replay, Copilot/SDK long-lived session) cannot
+/// reconnect across iterations.
+///
+/// <para>One row per <c>(WorkItemId, AgentId, Role)</c> — enforced by a
+/// unique index. A reassigned pair (Phase 52, when re-enabled) starts
+/// with no row because the new agent has a different
+/// <see cref="AgentId"/>; that's the "fresh agent = fresh memory" rule
+/// decided in the plan.</para>
+///
+/// <para>Two payload columns are mutually exclusive in practice but both
+/// nullable on the schema so a single row shape works for every backend
+/// cell:</para>
+/// <list type="bullet">
+/// <item><see cref="SessionId"/> — Claude/CLI's <c>--resume</c> id and
+/// the Copilot SDK's session handle. Opaque to Forge.</item>
+/// <item><see cref="MessagesJson"/> — Claude/SDK's full conversation
+/// history serialized as a JSON array of <c>{role, content, iter,
+/// tokens}</c> turns. Compaction (Phase F) rewrites this in place.</item>
+/// </list>
+/// </summary>
+public class AgentMemoryRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Matches <see cref="DeliverableRow.WorkItemId"/> — workstream id for impl, synthetic plan-doc id for plan/decompose.</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>Agent that owns this conversation. Memory is scoped to the agent so reassigned pairs start fresh.</summary>
+    public string AgentId { get; set; } = string.Empty;
+
+    /// <summary>One of <see cref="AgentMemoryRoles"/>.</summary>
+    public string Role { get; set; } = AgentMemoryRoles.Generator;
+
+    /// <summary><c>"claude"</c> | <c>"copilot"</c>. Snapshot of the backend at row creation; informs which payload column the consumer reads.</summary>
+    public string Backend { get; set; } = string.Empty;
+
+    /// <summary><c>"cli"</c> | <c>"sdk"</c>. Snapshot of the invoke mode at row creation.</summary>
+    public string InvokeMode { get; set; } = string.Empty;
+
+    /// <summary>Provider-native session handle (Claude/CLI <c>--resume</c> id; Copilot/SDK pool key). Null until the first Layer-2 invocation lands.</summary>
+    public string? SessionId { get; set; }
+
+    /// <summary>JSON array of <c>ConversationTurn</c> records. Null when the backend doesn't replay history (CLI / Copilot/SDK).</summary>
+    public string? MessagesJson { get; set; }
+
+    /// <summary>Most recent iteration that wrote to this row. 0 before the first write.</summary>
+    public int LastIter { get; set; }
+
+    /// <summary>Best-effort estimate of input tokens the next invocation will see (sum of prior turns; informs compaction trigger).</summary>
+    public long ApproxInputTokens { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 55 — well-known values for <see cref="AgentMemoryRow.Role"/>.
+/// Memory is keyed on role so a crew's generator and evaluator agents
+/// can each maintain their own continuity without crosstalk.
+/// </summary>
+public static class AgentMemoryRoles
+{
+    public const string Generator = "generator";
+
+    public const string Evaluator = "evaluator";
+}

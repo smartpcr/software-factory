@@ -500,6 +500,11 @@ using (var scope = app.Services.CreateScope())
     // PlanBranch and use the original single-PR path.
     await Phase53Migration.ApplyAsync(db);
     await Phase54Migration.ApplyAsync(db);
+    // Phase 55 (docs/forge/sloppy_guard.md) — agent_memory table for
+    // cross-iteration continuity (Layer 2 of the gen-eval memory plan).
+    // Order: any time before the runners boot is fine; placed adjacent to
+    // 53/54 so the post-Phase-52 migration sequence stays grouped.
+    await Phase55Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

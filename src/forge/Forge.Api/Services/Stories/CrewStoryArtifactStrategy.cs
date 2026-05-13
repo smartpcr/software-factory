@@ -18,7 +18,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
-/// Real-LLM <see cref="IStoryArtifactStrategy"/> — invokes the same
+/// Real-LLM <see cref="IStoryArtifactStrategy"/> -- invokes the same
 /// <see cref="IAgentRunner"/> rail that <c>CrewQueueWorker.RunAgentAsync</c>
 /// uses for live work-item execution. Per-phase agents (Architect / Engineer
 /// / Review / QA) are resolved via the matching <c>crew-{role}</c> row and
@@ -26,7 +26,7 @@ using Microsoft.Extensions.DependencyInjection;
 /// invoke-mode; their <c>soul.md</c> is loaded as the system prompt.
 ///
 /// <para>The agent runs against a per-invocation Forge-managed workspace
-/// (<c>{stateDir}/storyworkspaces/{spawnIdSlug}/{phaseTag}/</c>) — never
+/// (<c>{stateDir}/storyworkspaces/{spawnIdSlug}/{phaseTag}/</c>) -- never
 /// %TEMP%, never the repo root. The agent uses its filesystem tools to
 /// write the expected files at relative paths inside that directory; the
 /// strategy reads them back and returns them to the orchestrator, which
@@ -68,7 +68,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// Single source of truth for the four plan-doc briefs the architect
     /// agent receives in its user prompt. Both <see cref="ProducePlanArtifactsAsync"/>
     /// (full plan run) and <see cref="ResumeSingleArtifactAsync"/> (operator
-    /// re-runs one doc) MUST consume this so the brief stays consistent —
+    /// re-runs one doc) MUST consume this so the brief stays consistent --
     /// the two were drifted in 2026-05-04: Resume was sending a one-liner
     /// brief while the full-run path had been expanded to detail the LIVEDOC
     /// structure, so a Resume click was producing a doc that didn't match
@@ -89,7 +89,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ["implementation-plan"] = ("implementation-plan.md",
                 """
-                This file is a LIVEDOC — it tracks implementation progress with checkboxes.
+                This file is a LIVEDOC -- it tracks implementation progress with checkboxes.
                 Operators tick boxes as work lands; the doc is the source of truth for "what's done".
 
                 Structure MUST follow this hierarchy EXACTLY (Phase 46 layout):
@@ -102,20 +102,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 # Phase 1: {phase name}
 
                 ## Dependencies
-                - _none — start phase_
+                - _none -- start phase_
 
                 ## Stage 1.1: {stage name}
 
                 ### Implementation Steps
-                - [ ] Step description (concrete, actionable — one PR-sized unit of work)
+                - [ ] Step description (concrete, actionable -- one PR-sized unit of work)
                 - [ ] Another step
 
                 ### Dependencies
-                - _none — start stage_
+                - _none -- start stage_
 
                 ### Test Scenarios
-                - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
-                - [ ] Scenario: {name} — …
+                - [ ] Scenario: {name} -- Given {context}, When {action}, Then {expected outcome}
+                - [ ] Scenario: {name} -- …
 
                 ## Stage 1.2: {stage name}
 
@@ -138,10 +138,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Hard requirements (the evaluator will refuse pass if any are violated):
                 - Top-level YAML front-matter (`title:`, `storyId:`) MUST be present so the doc rendering treats phases as root sections.
                 - Each Phase is an H1 (`# Phase N: …`); Stages are H2 (`## Stage N.M: …`); subsections are H3 (`### …`).
-                - Each Phase MUST contain a `## Dependencies` section directly under the H1 heading, before any stage. An empty body MUST read `- _none — start phase_`.
+                - Each Phase MUST contain a `## Dependencies` section directly under the H1 heading, before any stage. An empty body MUST read `- _none -- start phase_`.
                 - Each Stage MUST contain THREE subsections in this exact order: `### Implementation Steps`, `### Dependencies`, `### Test Scenarios`.
-                - Dep refs use anchor form, NOT titles. Stage anchor: `phase-{phase-name-slug}/stage-{stage-name-slug}` (no phase or stage numbers — slugs are derived from the heading name only). Phase anchor: `phase-{phase-name-slug}`.
-                - The `### Dependencies` body MUST list one bullet per upstream stage anchor (e.g. `- phase-foo/stage-bar`). An empty body MUST read `- _none — start stage_`.
+                - Dep refs use anchor form, NOT titles. Stage anchor: `phase-{phase-name-slug}/stage-{stage-name-slug}` (no phase or stage numbers -- slugs are derived from the heading name only). Phase anchor: `phase-{phase-name-slug}`.
+                - The `### Dependencies` body MUST list one bullet per upstream stage anchor (e.g. `- phase-foo/stage-bar`). An empty body MUST read `- _none -- start stage_`.
                 - Phase deps may name a phase anchor (e.g. `- phase-foo`); the orchestrator expands phase deps as "every stage in this phase depends on every stage in the upstream phase".
                 - Stage TITLES must be unique across the entire plan; a duplicate title is rejected as `plan.duplicate_stage_title`.
                 - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. Each step changes ≤ 20 files in the eventual PR.
@@ -166,21 +166,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var specs = BuildPlanDocSpecs(docDir).Values.ToArray();
 
-        // Phase 42 — set up the real git worktree for plan work. All four
+        // Phase 42 -- set up the real git worktree for plan work. All four
         // architects share this worktree (git refuses two worktrees on one
         // branch), with per-iter commits serialised by the IStoryGitOps lock.
         // The agent's working dir is now the actual repo root, so its tools
-        // can read source files / prior docs / etc. — no more isolated
+        // can read source files / prior docs / etc. -- no more isolated
         // scratch dir + sibling-copy trick.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        // Phase 45 — root the worktree at the spawn's chosen base branch
+        // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
 
-        // Phase 43 — copy operator-uploaded attachments into the worktree
+        // Phase 43 -- copy operator-uploaded attachments into the worktree
         // so architect agents can read them with their file tools. Refresh
         // from DB so attachments uploaded after the orchestrator's outer
         // tick loaded `spawn` show up on the next plan drive.
@@ -219,7 +219,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 53 — produce ONE plan doc on the caller-supplied branch + worktree.
+    /// Phase 53 -- produce ONE plan doc on the caller-supplied branch + worktree.
     /// The orchestrator's sequential drive owns branch / worktree / commit /
     /// PR lifecycle; this method only runs the gen↔eval loop and returns
     /// the resulting file content (already written to disk in the worktree
@@ -228,7 +228,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <para>Sibling docs surfaced in the agent prompt are the three other
     /// canonical keys. On a sequential-mode spawn they live on three
     /// different worktrees, but the prompt only needs their repo paths
-    /// (the agent reads them via filesystem tools at runtime — the
+    /// (the agent reads them via filesystem tools at runtime -- the
     /// previously-merged docs are already on this worktree's base, so the
     /// agent's `read` against e.g. `docs/stories/{id}/architecture.md`
     /// resolves directly).</para>
@@ -257,7 +257,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        // Phase 47 / 53 — pick a (generator, evaluator) pair fresh per call.
+        // Phase 47 / 53 -- pick a (generator, evaluator) pair fresh per call.
         // Calling LoadArchitectAndEvaluatorRostersAsync re-queries
         // agent_usage so a long-running upstream doc doesn't re-pin the
         // same agents to the next doc in the chain.
@@ -274,7 +274,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .Select(k => specs[k].RepoPath)
             .ToArray();
 
-        // Phase 43 — refresh attachments snapshot and materialise into the
+        // Phase 43 -- refresh attachments snapshot and materialise into the
         // pre-existing per-doc worktree (orchestrator set it up at
         // StorySpawnOrchestrator.cs:497 before calling us). Sequential plan
         // mode runs one ProduceSinglePlanArtifactAsync per orchestrator tick,
@@ -298,9 +298,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 42 — resolve the <see cref="RepoRow"/> for a spawn so we can
+    /// Phase 42 -- resolve the <see cref="RepoRow"/> for a spawn so we can
     /// drive the real-repo worktree. Returns null when the spawn isn't
-    /// bound to a repo (legacy / synthetic cases — the strategy then
+    /// bound to a repo (legacy / synthetic cases -- the strategy then
     /// falls back to the deterministic-test no-op path that doesn't touch
     /// git). Logged at warning when null + ProducePlan is called so the
     /// operator sees why the worktree tab stays empty.
@@ -327,7 +327,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 50 — render operator-pinned decisions as a prompt block that
+    /// Phase 50 -- render operator-pinned decisions as a prompt block that
     /// the generator must treat as binding. Pins are stored on the spawn
     /// as <c>StorySpawnRow.DecisionPinsJson</c>; this helper resolves the
     /// spawn id from the work item id (plan-doc: prefix → spawn id;
@@ -336,7 +336,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// scoped to a specific id only fire for that id), and returns a
     /// rendered markdown block.
     ///
-    /// <para>Returns empty string when no pins apply — caller checks for
+    /// <para>Returns empty string when no pins apply -- caller checks for
     /// non-empty before inserting the block + separator.</para>
     /// </summary>
     private async Task<string> BuildDecisionPinsBlockAsync(string workItemId, CancellationToken ct)
@@ -394,7 +394,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-        sb.AppendLine("║  OPERATOR DECISION PINS — BINDING, OVERRIDES EVERYTHING ║");
+        sb.AppendLine("║  OPERATOR DECISION PINS -- BINDING, OVERRIDES EVERYTHING ║");
         sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
         sb.AppendLine();
         sb.AppendLine("The operator has explicitly arbitrated the following decisions");
@@ -419,7 +419,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up — resolve the build command the build gates
+    /// Phase 49 follow-up -- resolve the build command the build gates
     /// (per-iter and post-pass) should run for this workstream. The
     /// gates were originally hard-coded to <c>dotnet build</c> at the
     /// call site (<see cref="StoryBuildRunner.RunBuildAsync"/> defaults
@@ -437,7 +437,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     ///         python build) collapse to null so we don't run an
     ///         arbitrary build that may false-pass or false-fail.</item>
     ///   <item>Returns null when no build system can be confidently
-    ///         identified — caller skips the gate with telemetry rather
+    ///         identified -- caller skips the gate with telemetry rather
     ///         than running <c>dotnet build</c> against an unknown
     ///         workspace.</item>
     /// </list></para>
@@ -457,7 +457,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up — resolve the quality-gate commands (run AFTER
+    /// Phase 49 follow-up -- resolve the quality-gate commands (run AFTER
     /// the build succeeds at the post-pass trip point) for this
     /// workstream. Mirrors the upstream-CI shape: a Cargo workspace's
     /// <c>ci.yml</c> runs <c>cargo fmt --check</c> and
@@ -470,7 +470,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// engineer's side BEFORE push so the next iteration self-corrects.
     /// <para>
     /// Resolution: detector-only for now. There is no per-repo override
-    /// column yet — if an operator needs to disable a noisy quality gate
+    /// column yet -- if an operator needs to disable a noisy quality gate
     /// for a specific repo, add a <c>QualityCommandsJson</c> column with
     /// the same null=auto / empty=disabled / populated=override
     /// semantics used elsewhere. Returns an empty list when the workspace
@@ -492,7 +492,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up — resolve the test command for the post-pass
+    /// Phase 49 follow-up -- resolve the test command for the post-pass
     /// test gate. Same precedence as <see cref="ResolveBuildCommand"/>:
     /// operator override on the repo row wins; else
     /// <see cref="BuildSystemDetector.Detect"/> on the worktree picks one
@@ -505,7 +505,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// compiles cleanly and the upstream-CI-mirroring quality gates
     /// (fmt / clippy) pass, this gate ensures the test suite still
     /// passes before Forge opens a PR. Without it the evaluator can
-    /// pass a refactor that compiles but silently broke a unit test —
+    /// pass a refactor that compiles but silently broke a unit test --
     /// the operator only finds out when CI fails on the PR
     /// (observed pre-fix on failover-cluster:XRAFT where the upstream
     /// build was already broken; with this gate the engineer agent
@@ -526,7 +526,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up — deserialize <see cref="WorkstreamRow.AgentsJson"/>
+    /// Phase 49 follow-up -- deserialize <see cref="WorkstreamRow.AgentsJson"/>
     /// into a non-null list. Used at the impl call site to read the
     /// generator + evaluator pair the orchestrator picked at claim time
     /// so RunGenEvalLoopAsync runs against THOSE agents, not the crew's
@@ -540,12 +540,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up — load the same-spawn workstream set and run
+    /// Phase 49 follow-up -- load the same-spawn workstream set and run
     /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the short,
     /// semantic worktree directory name
     /// (<c>stage-{phaseNum}.{stageNum}-{anchorSlug}</c>). Returns null
     /// when the workstream has no <see cref="WorkstreamRow.StorySpawnId"/>
-    /// — the orchestrator-side hot path is never null in production, but
+    /// -- the orchestrator-side hot path is never null in production, but
     /// guard so handcrafted ad-hoc workstreams keep working via the
     /// legacy <c>spawn-{branch-slug}</c> fallback inside
     /// <see cref="RealStoryGitOps.EnsureWorktreeAsync"/>.
@@ -587,14 +587,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 47 — load TWO distinct rosters (generators + evaluators) so
+    /// Phase 47 -- load TWO distinct rosters (generators + evaluators) so
     /// the parallel plan-doc fan-out (4 docs running concurrently via
     /// <c>Task.WhenAll</c>) can assign a different (generator, evaluator)
     /// pair to each doc. Without this, every doc's evaluator side is
     /// pinned to <c>crew.DefaultEvaluatorAgentId</c> and the parallel
     /// invocations serialise behind a single agent.
     ///
-    /// <para>Phase 50 fix (2026-05-11) — when the crew has fewer agents
+    /// <para>Phase 50 fix (2026-05-11) -- when the crew has fewer agents
     /// than docs, the previous algorithm collapsed the evaluator pool to
     /// <c>{defaultEval}</c> only, so overflow docs (idx ≥ pool.Count)
     /// landed on a null override → all fell back to
@@ -602,7 +602,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// evaluator picked across all 4 plan-docs even on a 3-4 agent crew.
     /// The new algorithm rotates through the full agent list with a
     /// modulo offset, enforcing <c>gen != eval</c> per doc. The
-    /// generator pool and evaluator pool may now share agents — that's
+    /// generator pool and evaluator pool may now share agents -- that's
     /// fine; the per-agent runner queue serialises concurrent claims on
     /// the same agent without blocking the orchestrator. With M agents
     /// the algorithm produces M distinct gen/eval pairs that cycle
@@ -637,7 +637,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         // Generator order: defaultGen first, then everyone else in
         // stable sort order. Unlike pre-Phase-50, we DO include the
-        // defaultEval in the generator pool — the pairing step below
+        // defaultEval in the generator pool -- the pairing step below
         // enforces gen != eval per doc, so disjoint pools aren't
         // required upstream.
         var genOrder = allAgents.ToList();
@@ -655,7 +655,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evalOrder.Insert(0, defaultEval);
         }
 
-        // Per-doc pairing — rotate the generator pool, and pick the
+        // Per-doc pairing -- rotate the generator pool, and pick the
         // evaluator at a wrap-around offset that guarantees gen != eval
         // when at least 2 agents exist. Single-agent crews fall through
         // with eval=null (caller's crew.DefaultEval fallback kicks in;
@@ -680,10 +680,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     break;
                 }
             }
-            // eval stays null when the crew has only one agent — the
+            // eval stays null when the crew has only one agent -- the
             // pairing is impossible. The caller passes the null override
             // through to InvokeAsync which falls back to crew.DefaultEval
-            // (which equals gen in that degenerate case — unavoidable).
+            // (which equals gen in that degenerate case -- unavoidable).
             evaluators.Add(eval ?? string.Empty);
         }
 
@@ -704,7 +704,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         CancellationToken ct,
         bool restartFromScratch = false)
     {
-        // Phase 42 — agent's working dir IS the git worktree root. Doc lives
+        // Phase 42 -- agent's working dir IS the git worktree root. Doc lives
         // at its real repo path inside the worktree so the agent's tools see
         // both the doc AND the rest of the codebase (siblings, source files,
         // prior docs) at their real locations.
@@ -713,7 +713,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
 
-        // Phase 45 follow-up — pass-verdict guard. If the latest deliverable
+        // Phase 45 follow-up -- pass-verdict guard. If the latest deliverable
         // for this doc already evaluated to `pass`, do NOT spin up another
         // LLM iteration. The previous file content is already in the worktree;
         // returning it short-circuits the loop. forceResume (operator clicked
@@ -721,7 +721,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // deliverables first, so the check finds none. Without this guard,
         // any path that re-enters the strategy (Resume click, scheduler tick,
         // base-branch-change replay, boot recovery) re-iterates a doc that
-        // was already done — burning tokens and confusing the UI's status.
+        // was already done -- burning tokens and confusing the UI's status.
         List<DeliverableRow> existingDeliverables;
         using (var passScope = this.scopeFactory.CreateScope())
         {
@@ -748,7 +748,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
 
-        // Phase 50 — fresh-start cleanup. Three distinct leak vectors all
+        // Phase 50 -- fresh-start cleanup. Three distinct leak vectors all
         // surface here, and the fix is the same: clear the file off disk
         // (after EnsureWorktreeAsync has re-checked it out from the branch
         // tip) and purge any stale DB rows BEFORE the architect runs, so
@@ -758,8 +758,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         //   (a) Re-spawn after a merged plan PR. The previous spawn's
         //       plan PR merged `docs/stories/{storyId}/{file}.md` into
         //       the base branch. EnsureBranchFreshAsync resets the new
-        //       plan branch tip to base — which still carries those
-        //       docs — so the new architect's worktree boots up with
+        //       plan branch tip to base -- which still carries those
+        //       docs -- so the new architect's worktree boots up with
         //       the OLD plan-doc already on disk. Without this cleanup
         //       the architect sees an "existing file" and edits it
         //       incrementally instead of regenerating from the user's
@@ -776,20 +776,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         //       iter 1 with a clean slate even if DeleteSpawn was
         //       imperfect.
         //
-        //   (c) Phase 50 follow-up — operator-initiated Restart. The
+        //   (c) Phase 50 follow-up -- operator-initiated Restart. The
         //       RestartArtifact endpoint wipes deliverables/transcripts/
         //       queue rows and the architect scratch dir, then fires
         //       ResumeSingleArtifactAsync with `restartFromScratch=true`.
         //       Previously this cleanup block was gated by
         //       `if (!forceResume)`, so Restart (forceResume=true)
-        //       bypassed it — leaving the prior 56-iter architecture.md
+        //       bypassed it -- leaving the prior 56-iter architecture.md
         //       on disk for the new "iter 1" to read and incrementally
         //       edit. Now `restartFromScratch=true` forces the cleanup
         //       regardless of forceResume; the OR-fallback on
         //       `existingDeliverables.Count == 0` is belt-and-suspenders
         //       for the boot-recovery edge case (process killed after
         //       the Restart endpoint wiped deliverables but before the
-        //       fire-and-forget Resume reached this point —
+        //       fire-and-forget Resume reached this point --
         //       StoryResumeRecoveryService doesn't know the resume
         //       originated from a Restart and re-fires with the default
         //       `restartFromScratch=false`).
@@ -798,7 +798,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // OR `!forceResume && existingDeliverables.Count == 0` (fresh-spawn).
         // For ordinary Resume (forceResume=true, restartFromScratch=false,
         // deliverables.Count > 0 because the resume is mid-iter), the
-        // cleanup correctly does NOT trigger — the gen/eval loop's own
+        // cleanup correctly does NOT trigger -- the gen/eval loop's own
         // resume logic in DeliverableLoop picks up from lastPersisted.Iter.
         var isFreshFirstIteration = existingDeliverables.Count == 0;
         var shouldCleanup = restartFromScratch || (!forceResume && isFreshFirstIteration);
@@ -808,7 +808,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 this.scopeFactory, this.logger, diskPath, docWorkItemId, restartFromScratch, ct);
         }
 
-        // Resume case — historical guard from before the Phase 45 pass-verdict
+        // Resume case -- historical guard from before the Phase 45 pass-verdict
         // check above. The pre-Phase-45 logic skipped the gen-eval loop whenever
         // the file existed AND any deliverable existed, regardless of whether
         // the latest verdict was a terminal `pass`. That misfired on the common
@@ -817,7 +817,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // 15s SpawnDependencyScheduler tick re-enters DrivePlanAsync →
         // ProducePlanArtifactsAsync → here. With the old `hasDeliverables`
         // short-circuit the doc was silently abandoned (observed
-        // 2026-05-09 on failover-cluster:XRAFT architecture.md iter 7 — the
+        // 2026-05-09 on failover-cluster:XRAFT architecture.md iter 7 -- the
         // generator started, the process was restarted, and no further iters
         // ever ran because every subsequent tick returned the cached file
         // content). The Phase 45 guard above now correctly handles the
@@ -826,15 +826,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // (DeliverableLoop picks up at the next iter via lastPersisted.Iter)
         // takes over and the doc continues toward `pass`.
 
-        // Phase 43 — build attachment prompt section if the story has uploaded reference docs.
+        // Phase 43 -- build attachment prompt section if the story has uploaded reference docs.
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
-        // Phase 42 — sibling docs live at their real repo paths in the
+        // Phase 42 -- sibling docs live at their real repo paths in the
         // shared worktree (no copy-into-siblings/ trick anymore). Some may
         // not exist yet on iter 1 of parallel execution; the agent reads
         // whichever are present at the time.
         //
-        // Phase 50 follow-up — we briefly experimented with freezing
+        // Phase 50 follow-up -- we briefly experimented with freezing
         // siblings via a per-drive snapshot, but operator feedback was
         // explicit: the convergence problem is per-doc attention (the
         // agent doesn't address its own prior feedback), not cross-doc
@@ -858,13 +858,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Your task
             Produce ONE planning artifact at `{{spec.RepoPath}}` (relative to
             your working directory, which is the repo root). Real,
-            production-quality markdown — not a placeholder, not an outline.
+            production-quality markdown -- not a placeholder, not an outline.
             Anchor every section on the story description's concrete details.
 
             ### Brief for this file
             {{spec.Brief}}
 
-            ## Repository context — IMPORTANT
+            ## Repository context -- IMPORTANT
             Your working directory is a git worktree of the actual repo on
             branch `{{planBranch}}`. You can READ ANY FILE in this repo with
             your filesystem tools. Use that to:
@@ -882,15 +882,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {{siblingPathsList}}
 
             Read whichever already exist (some may not exist yet on iter 1).
-            Don't duplicate their content — reference shared concepts by
+            Don't duplicate their content -- reference shared concepts by
             name. If you spot an inconsistency, note it in your Iteration
             Summary so the next iteration of EITHER doc can align.
 
-            ## How to deliver — CRITICAL
+            ## How to deliver -- CRITICAL
             You MUST invoke your filesystem write tool to save the file at
-            `{{spec.RepoPath}}` (relative to working directory — no leading
+            `{{spec.RepoPath}}` (relative to working directory -- no leading
             slash, no extra path components). Content typed in your chat
-            reply is NOT saved — at end of turn the workspace is checked
+            reply is NOT saved -- at end of turn the workspace is checked
             and an empty file fails this iteration with score 0.
 
             Concretely:
@@ -903,7 +903,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                its byte count matches what you intended.
             3. ONLY THEN reply with the summary below. Your chat reply is
                for the summary; the FILE is the deliverable.
-            4. NEVER delete `{{spec.RepoPath}}` — if you need to restructure,
+            4. NEVER delete `{{spec.RepoPath}}` -- if you need to restructure,
                edit in place. Deleting the file causes the evaluator to
                score 0 and the iteration is wasted.
 
@@ -913,7 +913,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             questions for the next iteration. The orchestrator extracts
             this into the per-iteration UI summary.
 
-            ## How to handle PRIOR EVALUATOR FEEDBACK — CRITICAL
+            ## How to handle PRIOR EVALUATOR FEEDBACK -- CRITICAL
             When you're iterating on a file that already exists (iter ≥ 2),
             the evaluator's previous `## What still needs work` list is
             prepended to this prompt under "## LATEST evaluator feedback".
@@ -928,33 +928,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                resolution` subsection that mirrors EVERY `- [ ]` item from
                the evaluator's prior list. For each item, replace `- [ ]`
                with `- [x]` AND append one of:
-                 - `FIXED — <section/file ref> — <one-line description of the fix>`
-                 - `DEFERRED — <reason it's deferred and which iter / pin / question will handle it>`
+                 - `FIXED -- <section/file ref> -- <one-line description of the fix>`
+                 - `DEFERRED -- <reason it's deferred and which iter / pin / question will handle it>`
                    (only when you genuinely cannot fix it this iter)
                Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
-               in your summary signals you skipped the item — the
+               in your summary signals you skipped the item -- the
                evaluator will hold you below pass and the convergence
                detector will fire after 3-5 iters of skipping, exiting
                the loop with `stalled-no-convergence`.
 
                Example:
                  Evaluator said:  `- [ ] 1. §3.1 has markdown structure error: …`
-                 Your summary:    `- [x] 1. FIXED — §3.1 — split MessengerMessage out into its own H4 block; OperatorBinding table now sits directly under its heading. grep-checked for orphan refs.`
+                 Your summary:    `- [x] 1. FIXED -- §3.1 -- split MessengerMessage out into its own H4 block; OperatorBinding table now sits directly under its heading. grep-checked for orphan refs.`
 
-            2. **Doc-wide audit with LITERAL grep — show actual output.**
+            2. **Doc-wide audit with LITERAL grep -- show actual output.**
                If your edit removed or renamed a phrase, you MUST verify
                by running `grep -nF "<EXACT phrase from the BEFORE state>"`
                against `{{spec.RepoPath}}` and PASTE THE ACTUAL OUTPUT
-               in your `[x] FIXED` line — NOT a regex pattern you invent,
+               in your `[x] FIXED` line -- NOT a regex pattern you invent,
                NOT a paraphrase, NOT a summary. The literal `grep -F`
                with the exact pre-edit phrase is the only verification
                that doesn't produce false positives.
 
                Required format:
-                 `[x] N. FIXED — §X.Y — <description>. Verification:`
+                 `[x] N. FIXED -- §X.Y -- <description>. Verification:`
                  ```
                  $ grep -nF "resolve HumanAction.Value from the stored AgentQuestion JSON" docs/stories/<id>/architecture.md
-                 (empty — phrase removed)
+                 (empty -- phrase removed)
                  ```
 
                Or, when SOME hits remain by design (e.g. a `> Note:`
@@ -968,7 +968,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                score regressed because of this exact failure mode):
                  Agent's claim: `grep-checked: no remaining deserializes.*AgentQuestion.*finds the`
                  The pattern `deserializes.*AgentQuestion.*finds the` is
-                 a regex the agent INVENTED — it doesn't match the actual
+                 a regex the agent INVENTED -- it doesn't match the actual
                  unfixed text "resolve `HumanAction.Value` from the stored
                  `AgentQuestion` JSON" at §3.1 line 238. The grep returned
                  empty for the invented pattern, the agent declared success,
@@ -979,7 +979,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                Rules:
                  - Use `grep -F` (fixed-string), never `grep` (regex) or `grep -E`.
                  - The phrase is the EXACT string from the file BEFORE your
-                   edit — not a paraphrase, not your own description.
+                   edit -- not a paraphrase, not your own description.
                  - Run against the file you edited AND its sibling plan docs
                    under `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
                  - Paste the actual output verbatim. Empty output = `(empty)`.
@@ -1009,7 +1009,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                back to `[ ]` will trip the convergence detector and exit
                the loop.
 
-            ## Open questions — structured (REQUIRED when you have any)
+            ## Open questions -- structured (REQUIRED when you have any)
             If the story description left ambiguity that you had to guess on,
             do NOT just mention it in prose. Emit a fenced JSON block right
             after `## Iteration Summary` so the operator can answer via the
@@ -1029,7 +1029,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             - Re-emit the same `id` if a previous answer wasn't sufficient.
             - Omit the block entirely when you have no questions.
             - The evaluator WILL hold you below pass while any unanswered
-              question exists for this file — surfacing them is how you
+              question exists for this file -- surfacing them is how you
               unblock yourself, not a sign of weakness.
 
             Reply `DONE` after the summary and stop.
@@ -1067,9 +1067,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               and no contradictions with sibling plan docs that already
               exist on disk).
 
-            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS -- REQUIRED FOR ITER ≥ 2
             DO NOT TRUST the generator's `### Prior feedback resolution`
-            block at face value. For each `[x] N. FIXED — … grep -F "<phrase>" …`
+            block at face value. For each `[x] N. FIXED -- … grep -F "<phrase>" …`
             claim in the generator's reply, you MUST independently verify
             against the actual file:
 
@@ -1084,14 +1084,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                checkbox to your "What still needs work" list with the
                literal grep evidence:
 
-                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                 `- [ ] N. UNVERIFIED CLAIM -- generator marked item N as
                   [x] FIXED with grep-checked: "<their pattern>", but
                   actual grep -nF "<phrase>" shows: <paste the hit
                   line(s)>. Fix the missed reference and re-verify.`
 
             Why this matters (qq:TELEGRAM-MESSENGER-S iter 56 case study):
             the generator claimed `grep-checked: no remaining
-            deserializes.*AgentQuestion.*finds the` — a regex it invented
+            deserializes.*AgentQuestion.*finds the` -- a regex it invented
             that didn't match the actual unfixed phrase "resolve
             HumanAction.Value from the stored AgentQuestion JSON" at
             §3.1 line 238. Without independent re-verification by you,
@@ -1100,10 +1100,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             Structure your `notes` field (inside the JSON block below) into
             three labeled parts in this order:
-            1. **What improved this iteration** — one bullet list. Include
+            1. **What improved this iteration** -- one bullet list. Include
                any `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your
                own grep.
-            2. **What still needs work** — emit a markdown CHECKBOX list,
+            2. **What still needs work** -- emit a markdown CHECKBOX list,
                one item per line, in this exact shape:
                  `- [ ] 1. <atomic issue + section/line citation>`
                  `- [ ] 2. <atomic issue + section/line citation>`
@@ -1111,7 +1111,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                Each checkbox starts `unchecked` (`[ ]`). The generator
                echoes these checkboxes into its next-iteration Iteration
                Summary and flips each to `[x]` with a FIXED / DEFERRED
-               note. Keep items atomic (one issue per checkbox) — never
+               note. Keep items atomic (one issue per checkbox) -- never
                combine two issues into one line, or the generator can't
                cleanly mark just one of them as fixed.
 
@@ -1129,7 +1129,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                are acceptable to omit from your next list ONLY when the
                deferral rationale is sound; otherwise re-include them.
 
-            3. **Why this score** — two sentences max.
+            3. **Why this score** -- two sentences max.
 
             ## Open-questions hard gate
             If the generator surfaced open questions in its
@@ -1141,7 +1141,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Output
 
-            Output **only** a fenced JSON block — no prose outside it. Put
+            Output **only** a fenced JSON block -- no prose outside it. Put
             your full review (including the three sections above) inside
             the `notes` field. Example shape:
 
@@ -1162,7 +1162,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
-        // Phase 38 (Layer B.3) — read per-doc points from the real
+        // Phase 38 (Layer B.3) -- read per-doc points from the real
         // WorkItemRow created by the orchestrator before this call. Falls
         // back to story.points/4 (consistent with EnsurePlanDocWorkItemsAsync)
         // when the row is missing (older spawns until Phase38Migration runs).
@@ -1185,11 +1185,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             storyPoints: docPoints,
             generatorAgentOverride: generatorAgentOverride,
             evaluatorAgentOverride: evaluatorAgentOverride,
-            // Phase 41 — revoke shell access. The architect's job is file I/O.
+            // Phase 41 -- revoke shell access. The architect's job is file I/O.
             disallowedTools: ArchitectDisallowedTools,
-            // Phase 41 — restore from snapshot if the generator destroys the file.
+            // Phase 41 -- restore from snapshot if the generator destroys the file.
             protectedFile: diskPath,
-            // Phase 42 — commit the doc per iteration so the Worktree tab
+            // Phase 42 -- commit the doc per iteration so the Worktree tab
             // shows real progress. CommitPathInWorktreeAsync is no-op when
             // content didn't change since last commit. Per-branch lock
             // serialises concurrent architects against the git index.
@@ -1209,7 +1209,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         spec.FileName, iter);
                 }
 
-                // Phase 42 — when the implementation-plan committed, kick the
+                // Phase 42 -- when the implementation-plan committed, kick the
                 // reconciler so workstream rows + workstreams.json track the
                 // latest plan structure (cancel obsolete, add new, re-prompt
                 // in-flight). Best-effort: a reconcile failure must not break
@@ -1244,7 +1244,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 41 — Claude-Code-SDK tool names the architect MUST NOT use when
+    /// Phase 41 -- Claude-Code-SDK tool names the architect MUST NOT use when
     /// producing plan docs. Today: <c>Bash</c> only (the agent has no
     /// legitimate need for a shell when writing a markdown spec, and
     /// permitting it produced an observed delete-then-forget-to-rewrite
@@ -1254,7 +1254,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private static readonly string[] ArchitectDisallowedTools = new[] { "Bash" };
 
     /// <summary>
-    /// Phase 50 — clear the on-disk plan-doc file and purge any stale per-doc
+    /// Phase 50 -- clear the on-disk plan-doc file and purge any stale per-doc
     /// DB rows so the architect's next architect invocation regenerates the
     /// doc from scratch instead of inheriting prior content. Shared by:
     /// fresh-spawn iter 1 (count==0 + !forceResume), operator-initiated
@@ -1264,7 +1264,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// without spinning up the full strategy + agent runner stack.
     ///
     /// <para>This runs AFTER <see cref="IStoryGitOps.EnsureWorktreeAsync"/>
-    /// has set up (or restored) the worktree — otherwise the file deletion
+    /// has set up (or restored) the worktree -- otherwise the file deletion
     /// would be undone by the worktree's <c>git checkout</c> re-pulling the
     /// file from the plan-branch tip. Best-effort: file delete failures are
     /// logged at warning level but do not throw, so a transient FS lock
@@ -1307,7 +1307,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // survived an upstream cleanup (DeleteSpawn race with in-flight
         // agent, RestartArtifact endpoint racing with an agent finishing
         // mid-cancel, etc.). Everything we remove was genuinely "left
-        // over" rather than freshly produced — this runs BEFORE iter 1
+        // over" rather than freshly produced -- this runs BEFORE iter 1
         // starts, so nothing the new architect produces could land in
         // these tables yet.
         using var purgeScope = scopeFactory.CreateScope();
@@ -1353,13 +1353,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .Select(s => s.RepoPath)
             .ToArray();
 
-        // Assign a stable generator per doc key — uses the roster index
+        // Assign a stable generator per doc key -- uses the roster index
         // so each doc gets a different agent even on resume. The key index
         // is deterministic: architecture=0, tech-spec=1, etc.
         var allKeys = specs.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
         var docIndex = allKeys.IndexOf(key);
         if (docIndex < 0) docIndex = 0;
-        // Phase 47 — load BOTH rosters (gen + eval) so a single-doc resume
+        // Phase 47 -- load BOTH rosters (gen + eval) so a single-doc resume
         // doesn't accidentally re-pin the original (potentially still busy)
         // evaluator. The doc keeps its position in both rosters via
         // docIndex so a Restart of doc-3 picks the same gen+eval pair the
@@ -1368,16 +1368,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var generatorOverride = genRoster.Count > docIndex ? genRoster[docIndex] : null;
         var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
 
-        // Phase 42 — same git-worktree plumbing as the full plan run.
+        // Phase 42 -- same git-worktree plumbing as the full plan run.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        // Phase 45 — root the worktree at the spawn's chosen base branch
+        // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
 
-        // Phase 43 — copy operator-uploaded attachments into the worktree.
+        // Phase 43 -- copy operator-uploaded attachments into the worktree.
         // Refresh from DB so attachments uploaded since the orchestrator
         // loaded `spawn` are reflected in this resume run.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
@@ -1399,7 +1399,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
-        // Phase 42 — derive the decomposition directly from the merged
+        // Phase 42 -- derive the decomposition directly from the merged
         // implementation-plan.md. The plan is the contract; the architect's
         // earlier "make up 2-6 workstreams" prompt produced output that
         // could disagree with the plan. Now we read the plan, parse its
@@ -1435,7 +1435,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         if (stages.Count > 0)
         {
-            // Phase 46 — refuse decomposition when the parser surfaced a
+            // Phase 46 -- refuse decomposition when the parser surfaced a
             // structural violation (subsection order, duplicate title).
             // The orchestrator's exception handler captures this in the
             // spawn's LastError so the operator sees the concrete code.
@@ -1445,7 +1445,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     $"Plan refused at decomposition: {string.Join(", ", canonical.ParseErrors)}");
             }
 
-            // Phase 46 — resolve every stage's dep refs (explicit stage
+            // Phase 46 -- resolve every stage's dep refs (explicit stage
             // anchors + phase-anchor cross-product expansion + title
             // fallback) into a flat set of upstream titles. Cycles in the
             // effective DAG throw plan.dep_cycle, surfaced by the caller
@@ -1457,7 +1457,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 resolved.TryGetValue(s.Anchor, out var rd);
                 var deps = rd?.Deps ?? Array.Empty<string>();
                 var unresolved = rd?.UnresolvedDeps ?? Array.Empty<string>();
-                // Phase 46 — cache the phase-{slug} prefix so the swarm
+                // Phase 46 -- cache the phase-{slug} prefix so the swarm
                 // DAG can group cards without re-parsing the plan.
                 var slash = s.Anchor.IndexOf('/');
                 var phaseAnchor = slash > 0 ? s.Anchor[..slash] : s.Anchor;
@@ -1479,10 +1479,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }).ToList();
         }
 
-        // Fallback — plan file is missing or unparseable. Keep the original
+        // Fallback -- plan file is missing or unparseable. Keep the original
         // LLM prompt path so the orchestrator still makes forward progress
         // (the reconciler will re-align the rows once the plan lands).
-        // Phase 46 — artefact is workstreams.yaml; legacy workstreams.json
+        // Phase 46 -- artefact is workstreams.yaml; legacy workstreams.json
         // files in the same workspace are migrated in place on first read.
         var workspace = this.PrepareWorkspace(spawn.Id, "decompose");
         var prompt = $$"""
@@ -1528,7 +1528,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var yamlPath = Path.Combine(workspace, "workstreams.yaml");
         var legacyJsonPath = Path.Combine(workspace, "workstreams.json");
 
-        // Phase 46 — legacy migration. If the architect (or a previous run)
+        // Phase 46 -- legacy migration. If the architect (or a previous run)
         // wrote workstreams.json, read it once, write the YAML equivalent
         // alongside, and use that going forward. Idempotent: a subsequent
         // run sees the YAML and skips JSON entirely.
@@ -1567,7 +1567,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 46 — read a legacy <c>workstreams.json</c> and emit the
+    /// Phase 46 -- read a legacy <c>workstreams.json</c> and emit the
     /// equivalent <c>workstreams.yaml</c>. Records an audit row so the
     /// migration is visible in <c>/audit</c>. Best-effort: a parse
     /// failure leaves both files in place and the caller throws on the
@@ -1603,7 +1603,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             this.logger?.LogWarning(ex,
-                "Phase 46 — failed to migrate legacy workstreams.json at {Path}; the YAML check that follows will throw if the architect didn't write the YAML.",
+                "Phase 46 -- failed to migrate legacy workstreams.json at {Path}; the YAML check that follows will throw if the architect didn't write the YAML.",
                 legacyJsonPath);
         }
     }
@@ -1611,7 +1611,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
-        // Phase 45 follow-up — engineer agent works directly in the
+        // Phase 45 follow-up -- engineer agent works directly in the
         // workstream branch's git worktree (not a scratch sandbox under
         // src/.story-artifacts/). This lets the agent edit existing repo
         // files in place, run real builds against the actual codebase, and
@@ -1627,7 +1627,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
-        // Phase 49 follow-up — compute the short, semantic worktree slug
+        // Phase 49 follow-up -- compute the short, semantic worktree slug
         // (e.g. "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout")
         // so the directory under {cloneRoot}/.worktree/ stays under
         // Windows MAX_PATH once cargo/npm/dotnet build artifacts land
@@ -1638,10 +1638,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
 
-        // Phase 49 follow-up — bring the workstream branch up to date with
+        // Phase 53 -- register `.forge/` in the worktree-local git exclude
+        // so the agent's working-notes file (`.forge/iter-notes.md`) and
+        // any other scratch we write there never lands in the PR diff.
+        // Idempotent; safe to call on every drive.
+        await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
+
+        // Phase 49 follow-up -- bring the workstream branch up to date with
         // the spawn's base branch BEFORE the agent runs. Without this, a
         // workstream whose branch was created before a sibling workstream
-        // merged into base inherits a stale snapshot — observed
+        // merged into base inherits a stale snapshot -- observed
         // 2026-05-10 on failover-cluster:XRAFT: stage 1.2 worktree was at
         // the plan-PR commit (3acba76), stage 1.1's PR had since merged
         // into feature/xraft adding the xraft-core crate, and the
@@ -1655,7 +1661,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // up to date), handles fast-forward, falls back to merge --no-ff
         // with -X ours conflict resolution, and pushes the merge commit
         // back so origin/{branch} also catches up. `force: false` skips
-        // the "nudge empty commit" path since no PR exists yet —
+        // the "nudge empty commit" path since no PR exists yet --
         // there's nothing to make mergeable. Best-effort: a merge
         // failure logs + continues so the agent at least runs against
         // the stale-but-known state rather than blocking the claim.
@@ -1671,7 +1677,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 workstream.Id, workstream.Branch, baseBranch);
         }
 
-        // Phase 43 (extended) — materialise operator-uploaded reference
+        // Phase 43 (extended) -- materialise operator-uploaded reference
         // documents (spec.md, design.md, acs.md, …) into the workstream
         // worktree at `.forge-attachments/` so the engineer agent's file
         // tools can read them. Refresh from DB so attachments uploaded
@@ -1684,7 +1690,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
-        // Look up the work item's description — the operator may have edited
+        // Look up the work item's description -- the operator may have edited
         // it with more specific requirements (e.g. "use C# not TypeScript").
         // Falls back to workstream.Summary when no work item row exists.
         string workItemDescription;
@@ -1698,7 +1704,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 : workstream.Summary ?? string.Empty;
         }
 
-        // Phase 45 follow-up — bake target file paths into the prompt so the
+        // Phase 45 follow-up -- bake target file paths into the prompt so the
         // engineer doesn't have to discover them in a multi-thousand-file
         // enterprise repo before running out of wall budget.
         //
@@ -1709,12 +1715,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         //      stages whose plan body already names the files to touch).
         //   2) if (1) yields nothing, fall back to a small read-only
         //      architect agent that reads the same context and writes a
-        //      targets.json — DiscoverEngineerTargetsAsync. One extra LLM
+        //      targets.json -- DiscoverEngineerTargetsAsync. One extra LLM
         //      call before the engineer iter, but vastly faster than
         //      letting the engineer flail through ls/grep for 6 minutes.
         //
-        // Targets are advisory — the engineer can edit other files when the
-        // implementation legitimately needs them — but giving it a concrete
+        // Targets are advisory -- the engineer can edit other files when the
+        // implementation legitimately needs them -- but giving it a concrete
         // starting set converts "explore a 1000-file repo" into "open these
         // files and start editing", which fits inside the per-iter budget.
         var planStageBody = await this.ReadPlanStageBodyAsync(spawn, workstream, ct);
@@ -1739,7 +1745,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
         var targetsBlock = targets.Count == 0
-            ? "_No specific targets identified — locate the relevant files via `grep`/`ls` against the workstream summary above before editing._"
+            ? "_No specific targets identified -- locate the relevant files via `grep`/`ls` against the workstream summary above before editing._"
             : string.Join("\n", targets.Select(t => $"- `{t}`"));
 
         var generatorPrompt = $$"""
@@ -1753,7 +1759,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {{NonEmpty(spawn.StoryDescription)}}
 
             ## Workstream
-            **{{workstream.Name}}** — {{workstream.Summary}}
+            **{{workstream.Name}}** -- {{workstream.Summary}}
             Branch: `{{workstream.Branch}}` (branched from `{{baseBranch}}`)
 
             ## Detailed requirements
@@ -1767,7 +1773,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             {{targetsBlock}}
 
-            ## Repository context — IMPORTANT
+            ## Repository context -- IMPORTANT
             Your working directory IS a git worktree of the actual repo, on
             branch `{{workstream.Branch}}`. You can READ AND WRITE ANY FILE in
             this repo using your filesystem tools, AND you have a real shell
@@ -1775,12 +1781,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               - **Edit existing source files in place** at the target paths
                 listed above. If the workstream is "Stop body buffering in
                 HttpMetricsHandler", open `HttpMetricsHandler.cs` and modify
-                it directly — do not scaffold a parallel copy.
+                it directly -- do not scaffold a parallel copy.
               - Read the merged plan artifacts under
                 `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/` for context
                 (architecture / tech-spec / implementation-plan / e2e-scenarios).
               - Use `grep -r 'symbol' src/` (via your shell) to locate
-                additional files when the targets list isn't sufficient —
+                additional files when the targets list isn't sufficient --
                 this is far faster than walking the tree with `ls`.
               - Add new files only when the implementation genuinely needs
                 a new file (e.g. a new test class, a new helper).
@@ -1788,7 +1794,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 (`dotnet test {testproj}.csproj`) against the actual project
                 files via your shell to verify your changes.
 
-            DO NOT scaffold a sandbox copy under `src/.story-artifacts/` —
+            DO NOT scaffold a sandbox copy under `src/.story-artifacts/` --
             the previous version of this prompt did that and the changes
             never landed against the real codebase. Edit real files at
             their real paths.
@@ -1807,7 +1813,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 production-code path unless the workstream brief
                 **explicitly** says to delete those files.
               - If you believe an existing file is in your way, raise it
-                as an Open Question at the end of your output and stop —
+                as an Open Question at the end of your output and stop --
                 do NOT act unilaterally.
               - For *integration-test* / *e2e-test* / *qa-test* / *test*
                 workstreams (this one's name contains those words if so),
@@ -1815,7 +1821,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 (e.g. `src/CodeIntelligence.IntegrationTests/`,
                 `src/*.UnitTests/`, `src/*.IntegrationTests/`). Refactoring
                 production code under `src/ast/` or similar to make a test
-                pass is out of scope — propose it as a follow-up workstream
+                pass is out of scope -- propose it as a follow-up workstream
                 via Open Questions.
               - The build gate applies to ALL workstreams, not just test
                 stages: every iter's diff must compile.
@@ -1823,7 +1829,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## You MUST verify your work compiles before claiming DONE
             Before replying `DONE`, run `dotnet build --nologo --verbosity minimal`
             from the worktree root and confirm exit 0. If the build fails,
-            FIX it before responding — do not claim DONE on broken code.
+            FIX it before responding -- do not claim DONE on broken code.
             The Forge build gate will reject and block the workstream
             otherwise.
 
@@ -1832,7 +1838,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             `git reset`, or any other git command that mutates state.
             Forge stages, commits, and pushes your changes for you after
             the evaluator scores the work. Just leave your edits as
-            uncommitted changes in the worktree — that's all Forge needs.
+            uncommitted changes in the worktree -- that's all Forge needs.
             (You may use read-only git commands like `git log`, `git diff`,
             `git blame` if they help you understand existing code.)
 
@@ -1849,18 +1855,43 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Your task
             Produce the source-code changes that implement this workstream per
-            the detailed requirements above. Use real implementation — types,
-            methods, tests — not placeholders. Follow the repository's
+            the detailed requirements above. Use real implementation -- types,
+            methods, tests -- not placeholders. Follow the repository's
             existing conventions, naming, and project layout.
 
             ## How to deliver
             Edit and create files in place inside your working directory
             (which is the git worktree root). Forge picks up every changed
             file via `git status` after you finish, so you don't need to
-            "copy results to a workspace" — there is no separate workspace.
+            "copy results to a workspace" -- there is no separate workspace.
             Reply `DONE` when finished.
 
-            ## How to handle PRIOR EVALUATOR / REVIEW FEEDBACK — CRITICAL
+            ## Working notes -- REQUIRED before `DONE`
+            Before replying `DONE`, write a markdown file at the relative
+            path `.forge/iter-notes.md` capturing your working state. The
+            NEXT iteration's prompt will prepend the contents of this file
+            under `## Notes from prior iteration` -- that is your only
+            continuity channel. Each iter runs in a fresh agent session
+            with no memory of what you read, edited, or decided last iter;
+            this file is how you talk to your future self.
+
+            Keep it terse, bullets not prose, ~50 lines max. Overwrite the
+            file each iter (do not append). Cover:
+              - **Files touched**: paths + one-line "what changed".
+              - **Decisions**: e.g. "chose `Mutex<RaftState>` over `RwLock`
+                because writes dominate"; why each non-obvious choice.
+              - **Dead ends already tried**: approaches that did not work.
+                Future iters MUST NOT re-attempt these.
+              - **Open questions**: anything you needed but could not
+                determine. (Also emit a JSON open-question entry if the
+                next iter is blocked without an operator answer.)
+              - **What's still left**: a short next-iter to-do list so the
+                next session can pick up where this one ended.
+
+            The `.forge/` dir is excluded from the worktree's git index --
+            these notes never land in commits.
+
+            ## How to handle PRIOR EVALUATOR / REVIEW FEEDBACK -- CRITICAL
             When you're iterating on a workstream (iter ≥ 2), the
             evaluator's previous `## Still needs improvement` list is
             prepended to this prompt under "## LATEST evaluator feedback".
@@ -1876,8 +1907,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                mirrors EVERY `- [ ]` item from the evaluator's prior
                list. For each item, replace `- [ ]` with `- [x]` AND
                append one of:
-                 - `FIXED — <commit / file:line / test name> — <one-line description of the fix>`
-                 - `DEFERRED — <reason it's deferred and which workstream / iter will handle it>`
+                 - `FIXED -- <commit / file:line / test name> -- <one-line description of the fix>`
+                 - `DEFERRED -- <reason it's deferred and which workstream / iter will handle it>`
                    (only when you genuinely can't fix it this iter)
                Every checkbox MUST be marked `[x]`. An unchecked `- [ ]`
                in your summary signals you skipped the item. The
@@ -1886,22 +1917,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
                Example:
                  Evaluator said:  `- [ ] 1. HttpMetricsHandler.cs:42 still buffers; should stream`
-                 Your summary:    `- [x] 1. FIXED — HttpMetricsHandler.cs:42 — replaced ReadAsync into MemoryStream with CopyToAsync; added test ServerSentEventsStreamingTest.NoBuffering`
+                 Your summary:    `- [x] 1. FIXED -- HttpMetricsHandler.cs:42 -- replaced ReadAsync into MemoryStream with CopyToAsync; added test ServerSentEventsStreamingTest.NoBuffering`
 
-            2. **Repo-wide audit with LITERAL grep — show actual output.**
+            2. **Repo-wide audit with LITERAL grep -- show actual output.**
                When your edit renames a type, method, field, config key,
                or feature flag, you MUST verify by running
                `grep -rnF "<EXACT symbol from the BEFORE state>" src/ tests/`
-               and PASTE THE ACTUAL OUTPUT in your `[x] FIXED` line —
+               and PASTE THE ACTUAL OUTPUT in your `[x] FIXED` line --
                NOT a regex pattern you invent, NOT a paraphrase. The
                literal `grep -F` with the exact pre-edit symbol is the
                only verification that doesn't produce false positives.
 
                Required format inside the resolution checklist:
-                 `[x] N. FIXED — <file:line> — <description>. Verification:`
+                 `[x] N. FIXED -- <file:line> -- <description>. Verification:`
                  ```
                  $ grep -rnF "OldSymbolName" src/ tests/
-                 (empty — symbol fully removed)
+                 (empty -- symbol fully removed)
                  ```
 
                When SOME hits remain by design (e.g. a backward-compat
@@ -1920,7 +1951,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  - The build gate catches compile failures but NOT silent
                    stale references (e.g. a test asserting the old name
                    in a string literal, a YAML config still pointing at
-                   the old key) — only an exhaustive `grep -F` catches those.
+                   the old key) -- only an exhaustive `grep -F` catches those.
 
             3. **Verify the whole test suite passes, not just the file
                you edited.** Run the workstream's project tests
@@ -1938,7 +1969,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                iters of the same checkbox flipping back to `[ ]` trips
                the convergence detector and stalls the workstream.
 
-            ## Open questions — structured (REQUIRED when you have any)
+            ## Open questions -- structured (REQUIRED when you have any)
             If the workstream brief left ambiguity that forced you to guess
             (API shape, dependency choice, error-handling convention, naming),
             emit a fenced JSON block before `DONE` so the operator can answer
@@ -1962,7 +1993,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
 
             ## Workstream
-            **{{workstream.Name}}** — {{workstream.Summary}}
+            **{{workstream.Name}}** -- {{workstream.Summary}}
 
             ## Detailed requirements
             {{workItemDescription}}
@@ -1973,7 +2004,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Your job
             Read every file the engineer wrote inside the working directory
-            (use your read-only tools — view, ls, grep). Do NOT modify
+            (use your read-only tools -- view, ls, grep). Do NOT modify
             anything; do NOT commit; do NOT push.
 
             Score on:
@@ -1989,9 +2020,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               implementation and the operator's reference docs).
             - Obvious bugs, missing error paths, untested edge cases.
 
-            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS — REQUIRED FOR ITER ≥ 2
+            ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS -- REQUIRED FOR ITER ≥ 2
             DO NOT TRUST the generator's `### Prior feedback resolution`
-            block at face value. For each `[x] N. FIXED — … grep -rnF "<phrase>"`
+            block at face value. For each `[x] N. FIXED -- … grep -rnF "<phrase>"`
             claim in the generator's reply, you MUST independently verify
             against the actual code:
 
@@ -2004,7 +2035,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                checkbox to your "Still needs improvement" list with the
                literal grep evidence:
 
-                 `- [ ] N. UNVERIFIED CLAIM — generator marked item N as
+                 `- [ ] N. UNVERIFIED CLAIM -- generator marked item N as
                   [x] FIXED with grep-checked: "<their pattern>", but
                   actual grep -rnF "<phrase>" src/ tests/ shows: <paste
                   the hit line(s)>. Fix the missed reference and re-verify.`
@@ -2023,13 +2054,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Output
 
-            Output **only** a fenced JSON block — no prose outside it. Put
+            Output **only** a fenced JSON block -- no prose outside it. Put
             your full technical feedback inside the `notes` field. Structure
             the `notes` content in this order:
-            1. **Improvements this iteration** — bullet list. Include any
+            1. **Improvements this iteration** -- bullet list. Include any
                `[x] FIXED` claims you INDEPENDENTLY VERIFIED with your own
                grep.
-            2. **Still needs improvement** — emit a markdown CHECKBOX list,
+            2. **Still needs improvement** -- emit a markdown CHECKBOX list,
                one item per line, in this exact shape:
                  `- [ ] 1. <atomic issue + file:line / function / test ref>`
                  `- [ ] 2. <atomic issue + file:line / function / test ref>`
@@ -2037,7 +2068,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                Each checkbox starts `unchecked` (`[ ]`). The generator
                echoes these checkboxes into its next-iteration Change
                Summary and flips each to `[x]` with a FIXED / DEFERRED
-               note. Keep items atomic — one issue per checkbox — so the
+               note. Keep items atomic -- one issue per checkbox -- so the
                generator can cleanly mark just one of them as fixed
                without ambiguity.
 
@@ -2052,7 +2083,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                list with a brief evidence citation so the convergence
                detector can see the regression.
 
-            3. **Why this score** — two sentences max.
+            3. **Why this score** -- two sentences max.
 
             Example shape:
 
@@ -2065,7 +2096,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             ```
 
-            Dimension caps (each dim must stay within these bounds — values
+            Dimension caps (each dim must stay within these bounds -- values
             outside the cap are silently clamped, which signals rubric drift
             and reduces your authority):
             - correctness: 0..40
@@ -2085,7 +2116,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
-        // Phase 38 (Layer B.3) — read per-workstream points from the real
+        // Phase 38 (Layer B.3) -- read per-workstream points from the real
         // WorkItemRow inserted by DriveDecomposeAsync. Falls back to the
         // story-level points when the row is missing (legacy spawns). Use
         // the same wsPoints for BOTH iter cap and wall-clock budget so a
@@ -2094,11 +2125,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var wsPoints = await this.LookupWorkItemPointsAsync(
             workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
-        // Phase 49 follow-up — read the agent pair the orchestrator picked
+        // Phase 49 follow-up -- read the agent pair the orchestrator picked
         // at claim time (StorySpawnOrchestrator.ResolveImplPairAsync ran
         // PairDiversityResolver against the live busy set). The legacy
         // call to RunGenEvalLoopAsync without overrides made
-        // workstream.AgentsJson a UI-only display field — the actual
+        // workstream.AgentsJson a UI-only display field -- the actual
         // generator/evaluator always came from crew.DefaultGeneratorAgentId
         // / DefaultEvaluatorAgentId, defeating the diversity picker.
         // Pass agents[0] as the generator and agents[1] as the evaluator
@@ -2118,7 +2149,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             storyPoints: wsPoints,
             generatorAgentOverride: assignedGen,
             evaluatorAgentOverride: assignedEval,
-            // Phase 49 — pass the resolved build command so the per-iter
+            // Phase 49 -- pass the resolved build command so the per-iter
             // gate runs the right tool for the repo's ecosystem (cargo /
             // npm / go / mvn / dotnet) instead of always invoking
             // `dotnet build`. Null = no detectable build system, gate
@@ -2126,13 +2157,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             buildCommand: ResolveBuildCommand(repo, workspace),
             ct: ct);
 
-        // Phase 45 follow-up — collect only files the agent actually changed
+        // Phase 45 follow-up -- collect only files the agent actually changed
         // in the worktree (via `git status --porcelain`), not every file in
         // the repo. Read each one back from disk; return the dict keyed by
         // its REAL repo-relative path. The orchestrator's `CommitFilesAsync`
         // re-materialises the same content (idempotent since files already
         // live in the worktree) and produces a single commit.
-        // Phase 49 — diff against the merge target (spawn.BaseBranch)
+        // Phase 49 -- diff against the merge target (spawn.BaseBranch)
         // instead of origin/{ws-branch}. The workstream's contribution
         // to the PR is the cumulative delta from the branch it merges
         // into, not from its own remote tracking ref (which may be
@@ -2146,7 +2177,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             throw new InvalidOperationException(
                 $"Engineer produced no file changes for workstream {workstream.Id}. Worktree: {workspace}, base: {baseBranch}. " +
-                $"The agent finished without editing any files in place — check the transcript for tool-call activity.");
+                $"The agent finished without editing any files in place -- check the transcript for tool-call activity.");
         }
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var rel in changedPaths)
@@ -2161,7 +2192,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"Engineer changed {changedPaths.Count} path(s) but none were readable for workstream {workstream.Id}.");
         }
 
-        // Phase 47e — post-pass build gate. The gen↔eval loop returned a
+        // Phase 47e -- post-pass build gate. The gen↔eval loop returned a
         // diff the evaluator scored; that score does NOT prove the diff
         // compiles. Run the repo's build command on the worktree and
         // refuse to commit if it fails. The text-only evaluator was
@@ -2170,10 +2201,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // compiler is the only honest source of truth for "does this
         // code parse". BuildFailedException is caught by
         // DriveImplementAsync's spawn task and routed to Status="stalled"
-        // (Phase 49 split — was "blocked" before) so the operator can
+        // (Phase 49 split -- was "blocked" before) so the operator can
         // triage.
         //
-        // Phase 49 — resolve the build command per repo (dotnet/cargo/
+        // Phase 49 -- resolve the build command per repo (dotnet/cargo/
         // npm/go/mvn) instead of hard-coding `dotnet build`. A Rust
         // workspace (e.g. failover-cluster:XRAFT) was hitting a 200 ms
         // exit-1 here from `dotnet build` failing to find a .sln,
@@ -2234,7 +2265,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 };
             }
 
-            // Phase 49 follow-up — emit the "passed" event symmetrically
+            // Phase 49 follow-up -- emit the "passed" event symmetrically
             // with the "failed" / "skipped" paths so the Build tab in
             // the Conversation pane can render a green tick. Previously
             // only failure / skipped fired, leaving the operator with
@@ -2248,7 +2279,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 workspace,
             }, ct: ct);
 
-            // Phase 49 follow-up — quality gates after build success.
+            // Phase 49 follow-up -- quality gates after build success.
             // Mirrors the upstream CI shape (`ci.yml` Check job for
             // Cargo workspaces runs fmt + clippy in addition to build).
             // Each quality command runs sequentially; first non-zero
@@ -2259,7 +2290,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // formatting / lint failure. The exception is caught by
             // StorySpawnOrchestrator.DriveImplementAsync and routes the
             // workstream to Status="stalled" with StallReason set.
-            // Quality failures are NOT auto-fixed today — the engineer
+            // Quality failures are NOT auto-fixed today -- the engineer
             // agent must be Restarted; a future enhancement could route
             // them into a dedicated quality-fix loop on the same PR.
             var qualityCommands = ResolveQualityCommands(repo, workspace);
@@ -2272,7 +2303,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: qc);
                 if (qResult.Success)
                 {
-                    // Phase 49 follow-up — emit per-quality-command passed
+                    // Phase 49 follow-up -- emit per-quality-command passed
                     // event so the Build tab can show each gate tick
                     // (fmt ✓, clippy ✓) independently. Without this the
                     // operator only sees the BUILD passed tick + the
@@ -2323,11 +2354,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 };
             }
 
-            // Phase 49 follow-up — post-pass TEST gate. Final gate
+            // Phase 49 follow-up -- post-pass TEST gate. Final gate
             // before Forge opens the PR: build compiles, quality gates
             // (fmt / clippy) are clean, NOW run the test suite to
             // ensure the diff hasn't silently regressed an existing
-            // test. Same UX as build / quality gate failures —
+            // test. Same UX as build / quality gate failures --
             // BuildFailedException(stage="post-pass-test") routes the
             // workstream to Status="stalled" via
             // DriveImplementAsync's catch; no PR is opened.
@@ -2401,7 +2432,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var workspace = this.PrepareWorkspace(spawn.Id, $"review-{Slug(workstream.Id)}-r{round}");
 
-        // Phase 43 (extended) — surface operator attachments to the reviewer
+        // Phase 43 (extended) -- surface operator attachments to the reviewer
         // so divergence between the implementation and the operator's
         // reference docs becomes a review comment. Scratch dir → no git
         // exclude needed; ReadAllFiles filters .forge-attachments/ from any
@@ -2419,7 +2450,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {{spawn.StoryTitle}}
 
             ## Workstream
-            **{{workstream.Name}}** — {{workstream.Summary}}
+            **{{workstream.Name}}** -- {{workstream.Summary}}
             {{attachmentPromptSection}}
             ## Round
             {{round}} (0 = first pass; if there are no real issues, return an
@@ -2427,7 +2458,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Your task
             Produce review comments. Each comment must point at a real
-            file/line and describe a concrete issue worth fixing — not nits.
+            file/line and describe a concrete issue worth fixing -- not nits.
 
             ## How to deliver
             Write a single file `comments.json` inside your working directory
@@ -2445,7 +2476,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Empty array `[]` means approve. Reply `DONE` when finished.
             """;
 
-        // Phase 49 follow-up — emit transcript events under workstream.Id
+        // Phase 49 follow-up -- emit transcript events under workstream.Id
         // (not spawn.Id) so the workstream's Conversation tab can render
         // them in the new Review subtab. Was emitting to spawn.Id and the
         // review activity was invisible to the operator unless they
@@ -2482,7 +2513,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var workspace = this.PrepareWorkspace(spawn.Id, $"fix-{Slug(workstream.Id)}-{Guid.NewGuid():N}");
         var safePath = comment.FilePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
 
-        // Phase 43 (extended) — refresh + copy operator attachments into the
+        // Phase 43 (extended) -- refresh + copy operator attachments into the
         // scratch dir so the engineer can consult reference docs when crafting
         // the fix. Scratch dir (not a git worktree) → AttachmentExcludeMode.None.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
@@ -2499,13 +2530,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Body: {{comment.Body}}
             {{attachmentPromptSection}}
             ## Decide first
-            Read the comment carefully. EVERY comment needs an explicit response —
+            Read the comment carefully. EVERY comment needs an explicit response --
             either a code change OR a written reply explaining why no change is
             needed. Silently resolving without responding is not acceptable.
 
             Choose ONE of two paths:
 
-            ### Path A — Code change
+            ### Path A -- Code change
             Use this when the reviewer's feedback is correct and the file needs
             an update.
 
@@ -2517,15 +2548,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  `reply.md` containing a 1-3 sentence reply for the reviewer
                  summarising what you changed and why.
 
-            ### Path B — Reply only (no code change)
-            Use this when the comment doesn't require a code change — e.g. the
+            ### Path B -- Reply only (no code change)
+            Use this when the comment doesn't require a code change -- e.g. the
             reviewer misread the diff, the behaviour is intentional, the concern
             is addressed elsewhere, or it's out of scope for this PR.
 
               1. **Do NOT write** the fixed file at `{{comment.FilePath}}`.
               2. Write `reply.md` at the working-directory root containing a 1-3
                  sentence reply explaining WHY no change is needed. Be specific
-                 — point at the existing code / test / doc that already addresses
+                 -- point at the existing code / test / doc that already addresses
                  the concern, or explain the design choice.
 
             `reply.md` is **mandatory** in BOTH paths.
@@ -2533,13 +2564,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Reply `DONE` when finished.
             """;
 
-        // Phase 49 follow-up — emit fix events under workstream.Id so the
+        // Phase 49 follow-up -- emit fix events under workstream.Id so the
         // engineer's iteration on review feedback appears in the same
         // Conversation tab as the original impl work.
         await this.InvokeAsync("Engineer", workstream.Id, $"review-fix:{workstream.Id}", prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "review-fix"), ct);
 
-        // reply.md is mandatory — every comment needs a written response.
+        // reply.md is mandatory -- every comment needs a written response.
         var replyFile = Path.Combine(workspace, "reply.md");
         if (!File.Exists(replyFile))
         {
@@ -2549,7 +2580,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         var reply = (await File.ReadAllTextAsync(replyFile, ct)).Trim();
 
-        // Path A (code change) vs Path B (reply only) — determined by
+        // Path A (code change) vs Path B (reply only) -- determined by
         // whether the engineer wrote the fixed file. Empty / missing →
         // reply-only path; present → commit the file content.
         var fixedFile = Path.Combine(workspace, safePath);
@@ -2565,10 +2596,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         StorySpawnRow spawn, WorkItemRow story, IReadOnlyList<WorkstreamRow> workstreams, CancellationToken ct = default)
     {
         var workspace = this.PrepareWorkspace(spawn.Id, "qa");
-        var wsList = string.Join("\n", workstreams.Select(w => $"- `{w.Id}`: {w.Name} — {w.Summary}"));
+        var wsList = string.Join("\n", workstreams.Select(w => $"- `{w.Id}`: {w.Name} -- {w.Summary}"));
         var repoPrefix = $"tests/Features/{StoryPaths.Safe(spawn.StoryId)}";
 
-        // Phase 43 (extended) — operator-uploaded attachments often contain
+        // Phase 43 (extended) -- operator-uploaded attachments often contain
         // acceptance criteria / UX flows the feature files must cover.
         // Refresh + copy into the scratch dir; ReadAllFiles below filters
         // .forge-attachments/* from the deliverable set so QA outputs only
@@ -2593,7 +2624,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Your task
             Produce one Gherkin `.feature` file per workstream that describes
             the user-visible behavior the workstream must deliver. Real
-            scenarios — Given/When/Then — that step definitions can be written
+            scenarios -- Given/When/Then -- that step definitions can be written
             against.
 
             ## How to deliver
@@ -2623,7 +2654,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var workspace = this.PrepareWorkspace(spawn.Id, $"qa-steps-{Slug(workstream.Id)}");
         var repoPrefix = $"tests/Steps/{StoryPaths.Safe(spawn.StoryId)}";
 
-        // Phase 43 (extended) — step-defs implement the feature scenarios; if
+        // Phase 43 (extended) -- step-defs implement the feature scenarios; if
         // the operator's attachments named specific contracts/types, surface
         // them so the steps don't drift from the operator-authored spec.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
@@ -2636,7 +2667,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             feature file of workstream `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
 
             ## Workstream
-            **{{workstream.Name}}** — {{workstream.Summary}}
+            **{{workstream.Name}}** -- {{workstream.Summary}}
             {{attachmentPromptSection}}
             ## How to deliver
             Use your filesystem tools to write step-definition source files
@@ -2664,7 +2695,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
     /// <summary>
     /// Resolve a per-spawn-per-phase workspace under the Forge state directory
-    /// (sibling of the SQLite DB). Idempotent — does NOT wipe an existing
+    /// (sibling of the SQLite DB). Idempotent -- does NOT wipe an existing
     /// workspace so the calling strategy can resume from cached agent output
     /// when a downstream step (commit/push/PR-create) failed and the
     /// orchestrator re-ticks. Each individual producer method is responsible
@@ -2674,7 +2705,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var stateDir = ResolveStateDir(this.config);
 
-        // Check both slug conventions — older workspaces may use dashes
+        // Check both slug conventions -- older workspaces may use dashes
         // (Slug) while newer code uses underscores (SlugForFs). Prefer the
         // existing directory to avoid duplicating workspaces.
         var slugUnderscore = SlugForFs(spawnId);
@@ -2685,7 +2716,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (Directory.Exists(pathDash)) return pathDash;
         if (Directory.Exists(pathUnderscore)) return pathUnderscore;
 
-        // Neither exists — create with the dash convention (matches existing data)
+        // Neither exists -- create with the dash convention (matches existing data)
         Directory.CreateDirectory(pathDash);
         return pathDash;
     }
@@ -2693,7 +2724,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
-        // Phase 45 follow-up — same fix as ProduceWorkstreamChangesAsync.
+        // Phase 45 follow-up -- same fix as ProduceWorkstreamChangesAsync.
         // The "cached workspace" is now the workstream's git worktree on
         // the workstream branch; cached files are uncommitted changes
         // sitting in that worktree from a prior gen-eval pass that already
@@ -2711,12 +2742,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
-        // EnsureWorktreeAsync is idempotent — if the worktree already
+        // EnsureWorktreeAsync is idempotent -- if the worktree already
         // exists from the earlier producer pass, returns its path
         // unchanged. If it doesn't (e.g. operator wiped .worktree/ between
         // ticks), this re-creates it from origin/{branch} which means
-        // changes the agent left uncommitted are gone — handled below.
-        // Phase 49 — pass the same short slug as the producer path so we
+        // changes the agent left uncommitted are gone -- handled below.
+        // Phase 49 -- pass the same short slug as the producer path so we
         // open the same directory the engineer agent wrote into.
         var cachedSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         string workspace;
@@ -2732,7 +2763,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             return dict;
         }
 
-        // Phase 49 — diff against spawn.BaseBranch so cached files
+        // Phase 49 -- diff against spawn.BaseBranch so cached files
         // include the agent's local commits even when origin/{branch}
         // is at an unrelated upstream tip (matches the post-pass
         // commit-scope frame in ProduceWorkstreamChangesAsync).
@@ -2791,7 +2822,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             _ => 1.0,
         };
         var seconds = baseSeconds * multiplier;
-        // Plan docs need a higher floor — the architect must read repo
+        // Plan docs need a higher floor -- the architect must read repo
         // context + siblings + write a large markdown file. 3 minutes
         // (the 0-point default) is too tight and causes timeouts.
         if (prefix == "plan" && seconds < 600)
@@ -2806,7 +2837,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// read-only tools and emits a JSON score. Loop continues until the
     /// evaluator passes or hits <c>ScoringConstants.MaxIterations</c>. All
     /// transcript events are emitted on <paramref name="workItemId"/>'s
-    /// channel so the workstream UI card lights up "live" — single-shot
+    /// channel so the workstream UI card lights up "live" -- single-shot
     /// <see cref="InvokeAsync"/> emits on the spawn id, which doesn't
     /// surface on per-workstream cards.
     /// </summary>
@@ -2820,38 +2851,38 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TimeSpan? budget,
         int storyPoints,
         string? generatorAgentOverride = null,
-        // Phase 47 — evaluator agent override. When set, the crew's
+        // Phase 47 -- evaluator agent override. When set, the crew's
         // DefaultEvaluatorAgentId is temporarily replaced so
         // ResolveAgentRunConfigAsync (useEvaluatorRole=true) picks up
         // the override. Allows the parallel plan-doc fan-out to assign
         // a different evaluator per doc instead of all 4 docs sharing
         // the crew's default evaluator.
         string? evaluatorAgentOverride = null,
-        // Phase 41 — Claude-Code tool names to revoke for this invocation
+        // Phase 41 -- Claude-Code tool names to revoke for this invocation
         // (forwarded to the CLI as `--disallowedTools`). Architect plan-doc
         // generators pass `["Bash"]` so an agent can't `Remove-Item` its
         // own artifact mid-turn.
         IReadOnlyList<string>? disallowedTools = null,
-        // Phase 41 — single artifact to snapshot before each generator turn
+        // Phase 41 -- single artifact to snapshot before each generator turn
         // and restore from snapshot if the agent loses it. Catches the
         // "delete-then-forget-to-rewrite" failure mode regardless of which
         // tool was used to delete (defense in depth alongside disallowedTools).
         string? protectedFile = null,
-        // Phase 42 — invoked after each iteration's deliverable row is
+        // Phase 42 -- invoked after each iteration's deliverable row is
         // persisted. Used by the architect plan path to commit the doc per
         // iteration so the Worktree tab shows real progress. Args are
-        // (iter, verdict). Best-effort — exceptions log but don't break
+        // (iter, verdict). Best-effort -- exceptions log but don't break
         // the loop. Null = no per-iter side effects (engineer crews don't
         // need this; their CommitFilesAsync runs once at the end).
         Func<int, string, Task>? onIterationCompleted = null,
-        // Phase 49 — resolved build command for the per-iter build gate
+        // Phase 49 -- resolved build command for the per-iter build gate
         // (impl phase only). When null, the gate is skipped: either the
         // repo's ecosystem isn't recognised by BuildSystemDetector or
         // the caller is a non-impl phase that doesn't run a build at all
         // (architect plan-doc, decompose, qa, review-fix). Passed through
         // to StoryBuildRunner.RunBuildAsync; null/empty there falls back
         // to `dotnet build`, which is the wrong default for non-.NET
-        // ecosystems — we explicitly skip instead.
+        // ecosystems -- we explicitly skip instead.
         string? buildCommand = null,
         CancellationToken ct = default)
     {
@@ -2881,7 +2912,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await ResolveAgentRunConfigAsync(
             db, crew, useEvaluatorRole: false, workspace, budget, ct);
 
-        // Phase 41 — apply per-loop tool restrictions (Bash revoked for
+        // Phase 41 -- apply per-loop tool restrictions (Bash revoked for
         // architect plan-doc loops). Records are immutable; layer the field
         // on with `with`.
         if (disallowedTools is { Count: > 0 })
@@ -2889,7 +2920,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             genContext = genContext with { DisallowedTools = disallowedTools };
         }
 
-        // Evaluator is best-effort — when crew has no evaluator wiring, the
+        // Evaluator is best-effort -- when crew has no evaluator wiring, the
         // loop's null delegate path returns an auto-pass score so we still
         // exit after one generator iteration.
         string? evalAgentId = null;
@@ -2900,7 +2931,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evalPrefix, ct)
             : crew;
 
-        // Phase 50 follow-up bug fix (operator-reported 2026-05-12) —
+        // Phase 50 follow-up bug fix (operator-reported 2026-05-12) --
         // the evaluator override MUST land on `evalCrew`, which is the
         // row ResolveAgentRunConfigAsync(useEvaluatorRole: true)
         // actually consults via `evalCrew.DefaultEvaluatorAgentId ??
@@ -2944,7 +2975,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // The generator and evaluator MUST run on different models so the
         // evaluator catches blind spots the generator's training distribution
         // can't see. If both resolve to the same model, refuse to dispatch
-        // and surface the misconfiguration on the spawn — silent same-model
+        // and surface the misconfiguration on the spawn -- silent same-model
         // pairs were producing pass-stamped subpar work that no second eye
         // ever caught.
         if (evalContext is not null
@@ -2955,7 +2986,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException(
                 $"Pair-diversity rule violated: generator and evaluator both resolved to model '{genContext.Model}'. " +
                 $"Generator: agent={genAgentId} crew={crew.Id}. Evaluator: agent={evalAgentId} crew={evalCrewId}. " +
-                $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model — typically gpt-5.5/sonnet against an opus generator.");
+                $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model -- typically gpt-5.5/sonnet against an opus generator.");
         }
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
@@ -2971,9 +3002,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorPromptPreview = Trim(evaluatorPrompt, 600),
         }, agentId: genAgentId, crewId: crew.Id, ct: ct);
 
-        // Phase 47 — per-iter no-progress detection. Track consecutive
+        // Phase 47 -- per-iter no-progress detection. Track consecutive
         // iterations whose post-generator worktree has zero uncommitted
-        // changes (impl phase only — plan/decompose write to scratch dirs
+        // changes (impl phase only -- plan/decompose write to scratch dirs
         // that aren't git worktrees, so `git status` would always show 0
         // there and false-trigger the guard). After NoProgressThreshold
         // such iterations in a row, throw NoProgressException so the
@@ -2981,12 +3012,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // burning the full maxIter budget. Set up here, mutated inside
         // GeneratorDelegate's closure.
         var consecutiveNoChange = 0;
-        // Phase 47e — separate counter for "agent edited files but they
+        // Phase 47e -- separate counter for "agent edited files but they
         // don't compile". Tripped after three consecutive broken-build
         // iters; routes to BuildFailedException → blocked. Distinct from
         // no-progress so the operator can tell which failure mode hit.
         var consecutiveBrokenBuild = 0;
-        // Phase 49 follow-up — when the per-iter build gate fails we
+        // Phase 49 follow-up -- when the per-iter build gate fails we
         // capture the result so the NEXT iteration's generator prompt
         // can quote the actual compiler / test output. Without this the
         // generator only sees the evaluator's text-only feedback and
@@ -3004,43 +3035,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
         {
-            // Phase 49 follow-up — assemble the iter prompt from up to
+            // Phase 49 follow-up -- assemble the iter prompt from up to
             // THREE layered sections so the generator sees the most
             // actionable feedback first:
-            //   1. Build / test output from the prior iter (if any) —
+            //   1. Build / test output from the prior iter (if any) --
             //      compiler-truth, highest signal. Forge already
             //      decided this iter's diff doesn't build; the agent
             //      MUST fix that before doing anything else.
-            //   2. Evaluator feedback (if any) — text critique on
+            //   2. Evaluator feedback (if any) -- text critique on
             //      what's wrong with the design / approach. Useful
             //      once the code at least compiles.
-            //   3. The original brief — for reference. Same exact
+            //   3. The original brief -- for reference. Same exact
             //      content as iter 1; never gets "lost" but takes
             //      bottom priority once feedback exists.
             // iter 1 has neither section (1) nor (2), so it sees only
-            // the brief — the unchanged historic shape.
+            // the brief -- the unchanged historic shape.
             var hasBuildFeedback = lastBuildFailure is not null;
             var hasEvalFeedback = !string.IsNullOrWhiteSpace(evalNotes);
 
             string iterPrompt;
-            // Phase 50 — load operator-pinned decisions (binding directives
+            // Phase 50 -- load operator-pinned decisions (binding directives
             // the operator added via /spawn/pins). Refreshed each iter so a
             // freshly-added pin takes effect immediately on the next
-            // generator turn. Cheap query — one row read + JSON parse.
+            // generator turn. Cheap query -- one row read + JSON parse.
             // Filtered to pins scoped to this work item (workItemId match)
             // OR globally-scoped pins (workItemId == null).
             var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
 
-            if (iter == 1 || (!hasBuildFeedback && !hasEvalFeedback && string.IsNullOrEmpty(decisionPinsBlock)))
+            // Phase 53 -- read the agent's own working notes from the prior
+            // iteration. Each iter runs in a fresh agent session (no
+            // provider memory across runner.StartAsync calls), so the only
+            // continuity is what the prior iter wrote to `.forge/iter-notes.md`
+            // in the workspace. See docs/forge/sloppy_guard.md.
+            var priorNotesBlock = await ReadPriorIterNotesAsync(workspace, iterCt);
+            var hasPriorNotes = !string.IsNullOrEmpty(priorNotesBlock);
+
+            if (string.IsNullOrEmpty(decisionPinsBlock) && !hasPriorNotes && !hasBuildFeedback && !hasEvalFeedback)
             {
-                iterPrompt = string.IsNullOrEmpty(decisionPinsBlock)
-                    ? generatorPrompt
-                    : decisionPinsBlock + "\n────────────────────────────────────────────────────────────\n\n" + generatorPrompt;
+                iterPrompt = generatorPrompt;
             }
             else
             {
                 var sb = new StringBuilder();
-                // Decision pins ALWAYS go first when present — they
+                // Decision pins ALWAYS go first when present -- they
                 // override every other piece of guidance (build feedback,
                 // evaluator feedback, brief) because they're the
                 // operator's explicit arbitration on cross-doc loops.
@@ -3050,11 +3087,29 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
                 }
+                if (hasPriorNotes)
+                {
+                    sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+                    sb.AppendLine("║  NOTES FROM PRIOR ITERATION (your own working state)     ║");
+                    sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+                    sb.AppendLine();
+                    sb.AppendLine("You wrote these notes at the end of the prior iter. The agent");
+                    sb.AppendLine("session that produced them is gone -- this file is your only");
+                    sb.AppendLine("memory of what you already learned, decided, or tried.");
+                    sb.AppendLine();
+                    sb.AppendLine(priorNotesBlock);
+                    sb.AppendLine();
+                    sb.AppendLine("Update `.forge/iter-notes.md` again before `DONE` so the next");
+                    sb.AppendLine("iter inherits your latest state.");
+                    sb.AppendLine();
+                    sb.AppendLine("────────────────────────────────────────────────────────────");
+                    sb.AppendLine();
+                }
                 if (hasBuildFeedback)
                 {
                     var bf = lastBuildFailure!;
                     sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  BUILD FAILURE FROM PRIOR ITERATION — FIX THIS FIRST    ║");
+                    sb.AppendLine("║  BUILD FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST    ║");
                     sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
                     sb.AppendLine($"Your iteration {iter - 1} diff DID NOT COMPILE.");
@@ -3064,7 +3119,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine($"  warnings : {bf.WarningCount}");
                     sb.AppendLine($"  duration : {bf.Duration.TotalSeconds:F2}s{(bf.TimedOut ? " (TIMED OUT)" : "")}");
                     sb.AppendLine();
-                    sb.AppendLine("BUILD ERROR OUTPUT (verbatim from the compiler — fix EVERY error):");
+                    sb.AppendLine("BUILD ERROR OUTPUT (verbatim from the compiler -- fix EVERY error):");
                     sb.AppendLine("```");
                     // Cap at ~6000 chars so the prompt stays under most
                     // model context windows even after the rest of the
@@ -3084,7 +3139,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("How to fix:");
                     sb.AppendLine("  1. Read the error output above. The compiler tells you the exact file, line, and reason.");
                     sb.AppendLine("  2. Open the file at the line indicated and make the targeted fix.");
-                    sb.AppendLine("  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build — edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.");
+                    sb.AppendLine("  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build -- edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.");
                     sb.AppendLine($"  4. Run `{lastBuildFailureCommand ?? "the build command"}` yourself before responding to confirm exit 0.");
                     sb.AppendLine();
                     sb.AppendLine("────────────────────────────────────────────────────────────");
@@ -3093,12 +3148,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (hasEvalFeedback)
                 {
                     sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  EVALUATOR FEEDBACK — STRICT PER-ITEM ATTENTION REQUIRED ║");
+                    sb.AppendLine("║  EVALUATOR FEEDBACK -- STRICT PER-ITEM ATTENTION REQUIRED ║");
                     sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
                     sb.AppendLine($"This is iteration {iter}. The same critique appearing across multiple");
                     sb.AppendLine("iters has been observed on architecture.md spawns (DefaultAction in 41/51");
-                    sb.AppendLine("iters, P95 latency in 46/51, /handoff in 32/51) — the agent reads the");
+                    sb.AppendLine("iters, P95 latency in 46/51, /handoff in 32/51) -- the agent reads the");
                     sb.AppendLine("feedback but its edits don't actually resolve the issue. The system now");
                     sb.AppendLine("treats this failure mode as a HARD STOP: if the same numbered item from");
                     sb.AppendLine("the prior \"What still needs work\" list re-appears verbatim in the");
@@ -3106,22 +3161,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("`stalled-no-convergence` and the operator will be asked to pin a");
                     sb.AppendLine("decision or restart.");
                     sb.AppendLine();
-                    sb.AppendLine("═══ MANDATORY PROCESS — DO THIS BEFORE TOUCHING THE FILE ═══");
+                    sb.AppendLine("═══ MANDATORY PROCESS -- DO THIS BEFORE TOUCHING THE FILE ═══");
                     sb.AppendLine();
                     sb.AppendLine("1. Read the numbered \"What still needs work\" list below.");
                     sb.AppendLine("2. For EACH numbered item, pick ONE of these actions:");
-                    sb.AppendLine("   (a) FIX — open the cited section/line, make the targeted edit,");
+                    sb.AppendLine("   (a) FIX -- open the cited section/line, make the targeted edit,");
                     sb.AppendLine("       then run `grep -F <key-term>` on the file to confirm there");
                     sb.AppendLine("       are no remaining dangling references that contradict the fix.");
-                    sb.AppendLine("   (b) DEFER — only when the fix is genuinely out of scope for");
+                    sb.AppendLine("   (b) DEFER -- only when the fix is genuinely out of scope for");
                     sb.AppendLine("       this iter (e.g. requires changing a sibling doc, requires");
                     sb.AppendLine("       an operator decision). Provide a one-line rationale.");
                     sb.AppendLine("3. After your edits, write a `### Prior feedback resolution` block");
                     sb.AppendLine("   in your Iteration Summary listing EVERY numbered item:");
-                    sb.AppendLine("     `1. FIXED — added §X.Y field table; grep-checked no orphan refs`");
-                    sb.AppendLine("     `2. DEFERRED — requires tech-spec edit; raised as Open Question`");
+                    sb.AppendLine("     `1. FIXED -- added §X.Y field table; grep-checked no orphan refs`");
+                    sb.AppendLine("     `2. DEFERRED -- requires tech-spec edit; raised as Open Question`");
                     sb.AppendLine("4. If a previously-FIXED item re-appears in the next iter's feedback,");
-                    sb.AppendLine("   your fix was insufficient — try a STRUCTURAL change (re-split the");
+                    sb.AppendLine("   your fix was insufficient -- try a STRUCTURAL change (re-split the");
                     sb.AppendLine("   table, move the section, escalate as a pin) instead of another");
                     sb.AppendLine("   word-tweak. Repeating the same edit shape three times is a strong");
                     sb.AppendLine("   signal you should defer with an Open Question.");
@@ -3137,22 +3192,29 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
                 }
-                sb.AppendLine("Now here is the original task brief (for reference only — the");
-                sb.AppendLine("feedback above takes priority):");
+                if (hasBuildFeedback || hasEvalFeedback)
+                {
+                    sb.AppendLine("Now here is the original task brief (for reference only -- the");
+                    sb.AppendLine("feedback above takes priority):");
+                }
+                else
+                {
+                    sb.AppendLine("Now here is the original task brief:");
+                }
                 sb.AppendLine("────────────────────────────────────────────────────────────");
                 sb.AppendLine();
                 sb.Append(generatorPrompt);
                 iterPrompt = sb.ToString();
             }
 
-            // Phase 41 — snapshot the protected file before invoking the
+            // Phase 41 -- snapshot the protected file before invoking the
             // generator so an agent that deletes it mid-turn (observed:
             // architect ran `Remove-Item tech-spec.md` then forgot to write
             // it back) gets restored from the prior iteration's content.
             // Also snapshot on iter 1 so we have a baseline if the generator
             // nukes the seed file.
             //
-            // Phase 49 follow-up — the snapshot file MUST be deleted at the
+            // Phase 49 follow-up -- the snapshot file MUST be deleted at the
             // end of every iter, even when the body throws (NoProgressException,
             // BuildFailedException) or the agent's event stream is cancelled
             // mid-await. Previously the cleanup was a trailing best-effort
@@ -3178,7 +3240,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             try
             {
-            // task.prompt — same shape CrewQueueWorker emits, so the live-exec /
+            // task.prompt -- same shape CrewQueueWorker emits, so the live-exec /
             // doc-conv view's latestPrompt extraction works against plan-doc
             // workItemIds the same way it does against work-item runs.
             await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
@@ -3198,7 +3260,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
-            // Phase 54 — capture per-AssistantUsageEvent samples so the
+            // Phase 54 -- capture per-AssistantUsageEvent samples so the
             // per-invocation row on agent_usage retains the sub-invocation
             // curve for richer UI later. Cleared on each invocation; null
             // is preserved if the runner emits no usage event (CLI path).
@@ -3225,7 +3287,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
-                // Phase 54 — a non-zero token tally on a single event is the
+                // Phase 54 -- a non-zero token tally on a single event is the
                 // SDK's per-turn usage report. Record the snapshot so the
                 // post-iter rollup can render a sub-invocation curve.
                 if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
@@ -3241,10 +3303,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
-            // Phase 41 — restore the protected file from snapshot if the
+            // Phase 41 -- restore the protected file from snapshot if the
             // generator destroyed it (deleted OR emptied/truncated). A file
             // that shrinks to <10% of the snapshot size is treated as
-            // truncated — the generator's "rewrite completely" pattern often
+            // truncated -- the generator's "rewrite completely" pattern often
             // hits tool-output limits, leaving an empty or stub file.
             if (!string.IsNullOrEmpty(protectedFile) && !string.IsNullOrEmpty(snapshotPath) && File.Exists(snapshotPath))
             {
@@ -3295,11 +3357,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
-            // Phase 47 — no-progress fail-fast. After the generator finishes
+            // Phase 47 -- no-progress fail-fast. After the generator finishes
             // editing the worktree this iteration, count uncommitted file
             // changes via `git status --porcelain`. If the count is zero for
             // NoProgressThreshold consecutive impl iterations, abort the
-            // gen↔eval loop with a NoProgressException — the orchestrator
+            // gen↔eval loop with a NoProgressException -- the orchestrator
             // catches that and marks the workstream `blocked` instead of
             // letting the loop burn through all 50 iters at $70+/iter on an
             // agent that has stopped producing diffs. Only fires for
@@ -3316,7 +3378,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // git status failed — treat as inconclusive (don't trip
+                    // git status failed -- treat as inconclusive (don't trip
                     // the guard on a transient failure). Reset the counter
                     // so a real no-progress streak starts fresh on the next
                     // successful read.
@@ -3360,20 +3422,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     consecutiveNoChange = 0;
 
-                    // Phase 47e — agent edited files this iter. Validate
+                    // Phase 47e -- agent edited files this iter. Validate
                     // the build BEFORE the evaluator scores the diff. The
                     // evaluator (text-only) was observed scoring 68 on a
                     // diff that deleted EvolutionEngine.cs along with 17
-                    // other production files — the compiler is the only
+                    // other production files -- the compiler is the only
                     // honest check on "does this diff make sense as code".
                     //
-                    // Phase 49 — when buildCommand is null the repo has
+                    // Phase 49 -- when buildCommand is null the repo has
                     // no detectable build system (or the operator hasn't
                     // configured repo.BuildCommand yet). Skip the gate
                     // rather than running `dotnet build` against an
                     // unknown workspace and false-failing in 200 ms.
                     //
-                    // Phase 49 follow-up² — emit telemetry on the
+                    // Phase 49 follow-up² -- emit telemetry on the
                     // skipped + passed paths too, not just failure.
                     // Pre-fix the per-iter gate was silent on success
                     // and silent when buildCommand resolved to null;
@@ -3426,7 +3488,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     if (build is not null && !build.Success)
                     {
                         consecutiveBrokenBuild++;
-                        // Phase 49 follow-up — capture this build's
+                        // Phase 49 follow-up -- capture this build's
                         // output so iter N+1's GeneratorDelegate can
                         // prepend it to the prompt. Cleared back to
                         // null on the FIRST successful build below
@@ -3481,18 +3543,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     else if (build is not null)
                     {
                         consecutiveBrokenBuild = 0;
-                        // Phase 49 follow-up — the agent fixed the
+                        // Phase 49 follow-up -- the agent fixed the
                         // build (or it was never broken). Clear the
                         // feedback so iter N+1 doesn't see stale
                         // compiler output.
                         lastBuildFailure = null;
                         lastBuildFailureCommand = null;
-                        // Phase 49 follow-up² — emit a per-iter passed
+                        // Phase 49 follow-up² -- emit a per-iter passed
                         // tick so the Build tab shows a green dot for
                         // every successful per-iter gate run. Without
                         // this the Build tab is empty for any
                         // long-running workstream that builds cleanly
-                        // each iter — the post-pass passed event only
+                        // each iter -- the post-pass passed event only
                         // fires once at the end of a passing iter, and
                         // a workstream that never reaches `pass`
                         // (verdict=iterate every iter) shows zero
@@ -3528,7 +3590,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             finally
             {
-                // Phase 49 — ALWAYS delete the snapshot file. Runs after
+                // Phase 49 -- ALWAYS delete the snapshot file. Runs after
                 // a clean iter, after a thrown guard (NoProgressException /
                 // BuildFailedException), and after iterCt cancellation.
                 // File.Delete is idempotent on non-existent paths so a
@@ -3545,7 +3607,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             if (string.IsNullOrEmpty(evalAgentId) || evalContext is null)
             {
-                // No evaluator configured — auto-pass so the loop exits after
+                // No evaluator configured -- auto-pass so the loop exits after
                 // one generator iteration.
                 return new EvaluatorRunOutput(
                     "{\"score\":95,\"verdict\":\"pass\",\"notes\":\"No evaluator configured; auto-pass.\"}",
@@ -3569,7 +3631,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
-            // Phase 54 — mirror the generator-side per-AssistantUsageEvent
+            // Phase 54 -- mirror the generator-side per-AssistantUsageEvent
             // sample capture (see GeneratorDelegate above). Evaluator runs
             // are usually single-turn so the array typically has one entry,
             // but we keep the symmetric shape for the snapshot endpoint.
@@ -3609,10 +3671,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
-            // Phase 42 — fire the per-iter post-completion hook AFTER the
+            // Phase 42 -- fire the per-iter post-completion hook AFTER the
             // evaluator has produced its text. The file's on disk; the
             // architect plan path uses this to commit the doc per iter.
-            // Best-effort — exceptions bubble up but the surrounding
+            // Best-effort -- exceptions bubble up but the surrounding
             // try/catch wrapper at the call site keeps the loop alive.
             if (onIterationCompleted is not null)
             {
@@ -3633,7 +3695,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples));
         }
 
-        // Phase 44 — claim agents before starting the gen/eval loop.
+        // Phase 44 -- claim agents before starting the gen/eval loop.
         await this.slots.TryClaimAsync(genAgentId, workItemId, "generator", ct);
         if (evalAgentId is not null)
         {
@@ -3656,7 +3718,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         finally
         {
-            // Phase 44 — always release agents, even on error/cancel.
+            // Phase 44 -- always release agents, even on error/cancel.
             await this.slots.ReleaseAsync(genAgentId, workItemId, ct: CancellationToken.None);
             if (evalAgentId is not null)
             {
@@ -3672,7 +3734,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened — bump max-iterations or restart the architect crew.");
+                $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened -- bump max-iterations or restart the architect crew.");
         }
     }
 
@@ -3688,8 +3750,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// regression test (<c>Phase50PlanDocEvaluatorOverrideTests</c>) can pin
     /// the resolver's contract against a seeded in-memory DB without
     /// constructing the full strategy. The body has no <c>this.</c> usage
-    /// — it's pure on <paramref name="db"/> + <paramref name="crew"/> +
-    /// <c>ForgeSeed.ResolveSoulPath</c> (static) — so making it static is
+    /// -- it's pure on <paramref name="db"/> + <paramref name="crew"/> +
+    /// <c>ForgeSeed.ResolveSoulPath</c> (static) -- so making it static is
     /// safe and keeps the test simple.</para>
     /// </summary>
     internal static async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
@@ -3748,7 +3810,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         => await this.InvokeAsync(team, workItemId, phaseTag, prompt, workspace, budget: null, ct);
 
     /// <summary>
-    /// Phase 49 follow-up — <paramref name="workItemId"/> (formerly named
+    /// Phase 49 follow-up -- <paramref name="workItemId"/> (formerly named
     /// <c>spawnId</c>) is the transcript stream the emitted
     /// <c>story.agent-*</c> events land on. Callers running spawn-scoped
     /// work (decompose, qa-features) pass <c>spawn.Id</c>; callers
@@ -3895,7 +3957,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (path.Length == 0 || path.Length > 200) continue;
                 if (path.StartsWith('/')) continue;
                 if (path.Contains("..", StringComparison.Ordinal)) continue;
-                // Skip docs/stories/... — that's the plan-doc context, not
+                // Skip docs/stories/... -- that's the plan-doc context, not
                 // a code edit target.
                 if (path.StartsWith("docs/stories/", StringComparison.OrdinalIgnoreCase)) continue;
                 if (seen.Add(path)) ordered.Add(path);
@@ -3910,7 +3972,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// (e.g. <c>phase-2/stage-1</c>). Returns the raw markdown for that
     /// stage so target-path extraction can mine it for path mentions.
     /// Returns empty string when the plan can't be read or the anchor
-    /// can't be located — the caller falls back to text-only extraction
+    /// can't be located -- the caller falls back to text-only extraction
     /// and then to the discovery agent.
     /// </summary>
     private async Task<string> ReadPlanStageBodyAsync(
@@ -3937,7 +3999,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Stage anchors are written as `<a id="phase-X/stage-Y"></a>` (or
         // `{#phase-X/stage-Y}` Markdown attribute). Locate the first
         // occurrence; the stage body runs until the next anchor or end of
-        // file. Best-effort — if the anchor format differs, we just return
+        // file. Best-effort -- if the anchor format differs, we just return
         // empty and the discovery agent picks up.
         var anchor = workstream.PlanAnchor;
         var startIdx = planMd.IndexOf(anchor, StringComparison.OrdinalIgnoreCase);
@@ -3958,7 +4020,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// Fallback when regex extraction yields no targets: run a short
     /// read-only architect-style agent that mines the workstream brief +
     /// plan stage for the file paths the engineer should touch first.
-    /// Mirrors the <c>ProduceWorkstreamsAsync</c> sandbox pattern — agent
+    /// Mirrors the <c>ProduceWorkstreamsAsync</c> sandbox pattern -- agent
     /// writes <c>targets.json</c>, we deserialise + return. Single LLM
     /// call with a tight 90-second budget so it doesn't itself eat the
     /// engineer's wall clock.
@@ -3974,7 +4036,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             for story `{{spawn.StoryId}}`.
 
             ## Workstream
-            **{{workstream.Name}}** — {{workstream.Summary}}
+            **{{workstream.Name}}** -- {{workstream.Summary}}
 
             ## Detailed requirements
             {{workItemDescription}}
@@ -3986,7 +4048,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Return the repo-relative file paths the engineer should open
             first to deliver this workstream. Prefer paths the brief or
             plan stage names directly. Do NOT browse the repo, do NOT open
-            files — operate purely from the prose above. Pick at most 8
+            files -- operate purely from the prose above. Pick at most 8
             paths; quality over quantity.
 
             ## How to deliver
@@ -4045,7 +4107,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
         {
             var rel = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
-            // Phase 43 — exclude operator-uploaded attachments and any
+            // Phase 43 -- exclude operator-uploaded attachments and any
             // local git-exclude artifacts that producers may have written
             // into a scratch workspace. These are input context for the
             // agent, never deliverables, and must not leak into committed
@@ -4097,7 +4159,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 38 (Layer B.3) — fetch the WorkItem.Points value the gen↔eval
+    /// Phase 38 (Layer B.3) -- fetch the WorkItem.Points value the gen↔eval
     /// loop should size its iteration budget against. Returns
     /// <paramref name="fallback"/> when the row hasn't been inserted yet
     /// (legacy spawns that predate <c>EnsurePlanDocWorkItemsAsync</c> /
@@ -4115,7 +4177,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 43 (extended) — copies operator-uploaded attachments from the
+    /// Phase 43 (extended) -- copies operator-uploaded attachments from the
     /// canonical storage dir (<c>E:\forge\attachments\{uploadId}\</c>) into
     /// the agent's working directory at <c>.forge-attachments/</c> so the
     /// agent can read them with its file tools. The target dir is rebuilt
@@ -4136,7 +4198,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <param name="excludeMode">
     /// <see cref="AttachmentExcludeMode.GitInfoExclude"/> adds
     /// <c>.forge-attachments/</c> to <c>.git/info/exclude</c> for the
-    /// worktree's git dir (per-worktree local exclude, never committed —
+    /// worktree's git dir (per-worktree local exclude, never committed --
     /// keeps the workstream PR diff free of unrelated <c>.gitignore</c>
     /// mods). <see cref="AttachmentExcludeMode.None"/> is the right
     /// default for non-repo scratch dirs.
@@ -4187,15 +4249,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 File.Copy(sourcePath, destPath, overwrite: true);
                 paths.Add($".forge-attachments/{entry.FileName}");
             }
-            catch { /* best-effort — agent can still work without this file */ }
+            catch { /* best-effort -- agent can still work without this file */ }
         }
 
         return paths;
     }
 
     /// <summary>
+    /// Phase 53 -- read the agent's working-notes file written at the end
+    /// of the prior iteration. Returns the file contents capped at ~8 KB
+    /// when present, empty string otherwise. Best-effort; any I/O failure
+    /// returns empty so the loop falls back to its pre-Phase-53 behaviour.
+    /// See <c>docs/forge/sloppy_guard.md</c> Phase A.
+    /// </summary>
+    private static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workspace)) return string.Empty;
+        var path = Path.Combine(workspace, ".forge", "iter-notes.md");
+        if (!File.Exists(path)) return string.Empty;
+        try
+        {
+            var content = await File.ReadAllTextAsync(path, ct);
+            if (string.IsNullOrWhiteSpace(content)) return string.Empty;
+            const int Cap = 8000;
+            if (content.Length > Cap)
+            {
+                content = content[..Cap]
+                    + "\n…(truncated; full notes in .forge/iter-notes.md)";
+            }
+            return content;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
     /// Resolves the worktree-local git exclude file (<c>info/exclude</c>
-    /// under whatever git dir the worktree maps to — `git worktree add`
+    /// under whatever git dir the worktree maps to -- `git worktree add`
     /// sub-dirs point at <c>{cloneRoot}/.git/worktrees/{name}/</c>, the
     /// main checkout at <c>{cloneRoot}/.git/</c>) and appends the pattern
     /// if not already present. Best-effort: any failure is swallowed so
@@ -4236,7 +4328,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     }
                 }
             }
-            catch { /* swallow — fall back to heuristic */ }
+            catch { /* swallow -- fall back to heuristic */ }
 
             if (string.IsNullOrEmpty(gitDir))
             {
@@ -4280,7 +4372,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 43 — builds the prompt section that tells the agent about
+    /// Phase 43 -- builds the prompt section that tells the agent about
     /// available reference documents. Returns empty string when no
     /// attachments exist.
     /// </summary>
@@ -4302,9 +4394,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var lines = entries.Select(e => $"  - `.forge-attachments/{e.FileName}` ({e.SizeBytes:N0} bytes)");
         return $"""
 
-            ## Story attachments — IMPORTANT
+            ## Story attachments -- IMPORTANT
             The operator uploaded reference documents for this story. Read ALL
-            of them FIRST before writing your artifact — they contain critical
+            of them FIRST before writing your artifact -- they contain critical
             context, requirements, and design constraints that your output must
             reflect. Do NOT ignore them or treat them as optional.
             Paths (relative to your working directory):
@@ -4317,7 +4409,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// Loads the current <see cref="StorySpawnRow.AttachmentsJson"/> from
     /// the DB without tracking. Producer methods call this on entry so the
     /// attachment snapshot reflects any operator uploads that landed after
-    /// the orchestrator's outer tick loaded the spawn — without mutating
+    /// the orchestrator's outer tick loaded the spawn -- without mutating
     /// the orchestrator's tracked spawn instance.
     /// </summary>
     internal async Task<string?> LoadFreshAttachmentsJsonAsync(string spawnId, CancellationToken ct)
@@ -4345,10 +4437,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// updates the worktree's local <c>info/exclude</c>.</summary>
     internal enum AttachmentExcludeMode
     {
-        /// <summary>Scratch dir — skip git exclude work entirely.</summary>
+        /// <summary>Scratch dir -- skip git exclude work entirely.</summary>
         None,
 
-        /// <summary>Real worktree — write to per-worktree <c>info/exclude</c>.</summary>
+        /// <summary>Real worktree -- write to per-worktree <c>info/exclude</c>.</summary>
         GitInfoExclude,
     }
 
