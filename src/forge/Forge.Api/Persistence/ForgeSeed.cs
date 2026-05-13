@@ -1076,12 +1076,26 @@ public static class ForgeSeed
 
         foreach (var c in crews)
         {
-            c.Model                   = runtimeModel;
-            c.ModelInputPricePerMTok  = inputPrice;
-            c.ModelOutputPricePerMTok = outputPrice;
-            c.EvaluatorModel          = evalModel;
-            c.MaxConcurrent           = maxConcurrent;
-            c.WeeklyCap               = weeklyCap;
+            // Operator-tunable runtime fields: only fill in the
+            // DEFAULT on a never-set column. If the operator has
+            // PATCHed the value via /api/crews/{id}, leave it alone.
+            // Without these guards, every Forge.Api restart resets
+            // the operator's selection (e.g. claude-opus-4.7-xhigh
+            // for the eng/arch pair) back to the legacy seed values,
+            // defeating the PATCH contract. Mirror of the Phase 51
+            // budget-tunable fix below.
+            //
+            // Model is non-nullable string with an Entities.cs
+            // default of "claude-opus-4-7"; treat empty/whitespace
+            // as "never set". EvaluatorModel is nullable; treat
+            // null/empty as unset. Decimal/int fields use a
+            // <= 0 sentinel which matches their EF default-on-insert.
+            if (string.IsNullOrWhiteSpace(c.Model)) c.Model = runtimeModel;
+            if (string.IsNullOrWhiteSpace(c.EvaluatorModel)) c.EvaluatorModel = evalModel;
+            if (c.ModelInputPricePerMTok <= 0m) c.ModelInputPricePerMTok = inputPrice;
+            if (c.ModelOutputPricePerMTok <= 0m) c.ModelOutputPricePerMTok = outputPrice;
+            if (c.MaxConcurrent <= 0) c.MaxConcurrent = maxConcurrent;
+            if (c.WeeklyCap <= 0) c.WeeklyCap = weeklyCap;
             // Phase 51 — budgets are operator-tunable via PATCH /api/crews/{id}.
             // The seed only fills in the DEFAULT on a never-set column; if
             // the operator has already set a value, leave it alone. Without
@@ -1093,6 +1107,9 @@ public static class ForgeSeed
             // Phase 47d — pin the rail. Crews always normalise to the
             // canonical pair; agent-level overrides (cleared in 2b below)
             // are the only escape hatch and they're now policy-gated.
+            // This one stays UNCONDITIONAL — the billing-rail policy is
+            // not operator-tunable per-crew; if the operator wants a
+            // different rail they extend Forge:BackendPolicy in appsettings.
             c.Backend                 = policy.Canonical;
             c.InvokeMode              = policy.CanonicalInvokeMode;
         }
