@@ -29,6 +29,15 @@ interface Props {
   queuedCount?: number;
   onOpenInbox?: () => void;
   onOpenLive?: (workItemId: string) => void;
+  /**
+   * Phase 54 — when the workstream has an in-flight deliverable, the
+   * parent view passes the latest prompt-growth sample for the live
+   * work item so the card can render a `📈 {P}K · iter {N}` pill next
+   * to the live badge. Wires through `useTaskLiveStore` snapshot.
+   */
+  liveLatestPromptKTokens?: number | null;
+  liveLatestIter?: number | null;
+  liveBloatRole?: 'generator' | 'evaluator' | null;
 }
 
 function roleFor(id: string): string {
@@ -40,7 +49,7 @@ function roleFor(id: string): string {
 }
 
 // Verbatim port of the prototype's ws-card block (lines 3818-3909).
-export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr, liveCount, liveWorkItemId, onOpenLive, queuedCount, onOpenInbox }: Props) {
+export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr, liveCount, liveWorkItemId, onOpenLive, queuedCount, onOpenInbox, liveLatestPromptKTokens, liveLatestIter, liveBloatRole }: Props) {
   const colorVar = epic ? `var(--${epic.color})` : 'var(--text-tertiary)';
 
   return (
@@ -93,6 +102,27 @@ export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, on
             }} />
             {liveCount} live
           </button>
+        ) : null}
+        {liveCount && liveCount > 0 && typeof liveLatestPromptKTokens === 'number' && typeof liveLatestIter === 'number' ? (
+          <span
+            className="ws-card-prompt-pill"
+            title={liveBloatRole
+              ? `Prompt bloat detected on ${liveBloatRole} at iter ${liveLatestIter}`
+              : `Latest generator input: ${liveLatestPromptKTokens}K tokens at iter ${liveLatestIter}`}
+            style={{
+              marginLeft: 4,
+              fontSize: 10,
+              padding: '2px 6px',
+              borderRadius: 8,
+              border: `1px solid ${liveBloatRole ? '#d8a232' : 'var(--border-subtle)'}`,
+              background: liveBloatRole ? 'rgba(216, 162, 50, 0.12)' : 'var(--surface-muted, transparent)',
+              color: liveBloatRole ? '#d8a232' : 'var(--text-secondary)',
+              fontWeight: 600,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            📈 {liveLatestPromptKTokens}K · iter {liveLatestIter}
+          </span>
         ) : null}
         {queuedCount && queuedCount > 0 ? (
           <button

@@ -272,6 +272,7 @@ public static class AdminEndpoints
             Forge.Api.Services.Stories.IStoryProviderOps provider,
             [FromQuery] string prId,
             [FromQuery] bool? dryRun,
+            [FromQuery] bool? includeActive,
             CancellationToken ct) =>
         {
             if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
@@ -279,6 +280,7 @@ public static class AdminEndpoints
                 return Results.Problem(title: "prId query parameter is required", statusCode: 400);
 
             var dry = dryRun ?? false;
+            var allowActive = includeActive ?? false;
 
             // Find resolved reviewer comments on this PR whose ThreadId
             // has NO reply row (ParentCommentId pointing at them). Those
@@ -292,9 +294,16 @@ public static class AdminEndpoints
 
             var replyParentIds = new HashSet<long>(
                 allComments.Where(c => c.ParentCommentId.HasValue).Select(c => c.ParentCommentId!.Value));
+            // 2026-05-12 — when `includeActive=true`, also surface comments
+            // that were stranded in state="active" because something merged
+            // the PR before the orchestrator's DriveReviewAsync loop could
+            // address them (e.g. AutoMergeWatcher race before its
+            // active-comments guard was added). We post the reply AND flip
+            // the local row to resolved so the UI clears.
             var needsReply = allComments
                 .Where(c => c.AuthorKind == "agent" && c.AuthorId != "eng-default")
-                .Where(c => c.State == "resolved" && !replyParentIds.Contains(c.Id))
+                .Where(c => (c.State == "resolved" || (allowActive && c.State == "active"))
+                    && !replyParentIds.Contains(c.Id))
                 .Where(c => !c.ParentCommentId.HasValue) // top-level only — replies don't need their own reply
                 .ToList();
 
@@ -357,7 +366,25 @@ public static class AdminEndpoints
                     // Backfill ONLY the reply — no commit, the file already
                     // landed via the original commit-only path.
                     var replyId = await provider.ReplyPrCommentAsync(c.Id, fix.ReplyBody, engineerId, ct);
-                    backfilled.Add(new { commentId = c.Id, replyRowId = replyId, file = c.FilePath, line = c.Line, isReplyOnly = fix.IsReplyOnly });
+                    // If the comment was active (stranded — PR merged before
+                    // DriveReviewAsync resolved it), also flip the parent row
+                    // to resolved so the local state matches the UI's
+                    // expectation. Resolved-already rows are no-ops here.
+                    if (c.State == "active")
+                    {
+                        try
+                        {
+                            await provider.ResolvePrCommentAsync(c.Id, engineerId, ct);
+                        }
+                        catch (Exception resolveEx)
+                        {
+                            // Reply landed but resolve flip failed — log and
+                            // continue so the next comment still processes.
+                            failed.Add(new { commentId = c.Id, error = $"reply OK, resolve failed: {resolveEx.Message}" });
+                            continue;
+                        }
+                    }
+                    backfilled.Add(new { commentId = c.Id, replyRowId = replyId, file = c.FilePath, line = c.Line, isReplyOnly = fix.IsReplyOnly, wasActive = c.State == "active" });
                 }
                 catch (Exception ex)
                 {

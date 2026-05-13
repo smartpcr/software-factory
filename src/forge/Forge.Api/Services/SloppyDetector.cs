@@ -128,9 +128,34 @@ public static class SloppyDetector
     }
 
     /// <summary>
-    /// Combined check. Token cap takes precedence on tie (Q52.2 rationale —
-    /// the meter is deterministic; score plateau requires multiple
-    /// iterations to stabilise).
+    /// Combined check. As of 2026-05-13, both Phase 52 sloppy triggers
+    /// (Q52.1 score-plateau and Q52.2 generator-token cap) are DISABLED at
+    /// the operator's direction — the cumulative-token meter doesn't
+    /// reflect actual context size (the protocol re-reads context each
+    /// turn, so cumulative input balloons naturally on long tasks without
+    /// indicating runaway behavior), and score-plateau adds little signal
+    /// once the legacy 5-iter cap and Phase 51 dollar cap are in play.
+    /// <para>
+    /// The helper methods <see cref="CheckTokenCapAsync"/> and
+    /// <see cref="CheckScorePlateau"/> remain available — the UI and debug
+    /// endpoints still consume them to display "tokens used / cap" ratios
+    /// and "personal best" stats. This entrypoint deliberately reports
+    /// <c>IsSloppy=false</c> regardless so the deliverable loop never
+    /// rewrites a verdict to <c>sloppy</c> from these triggers. The
+    /// remaining stall paths are:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Legacy 5-iter cap (<see cref="DeliverableLoop"/> rewrites
+    ///   the last deliverable's verdict to <c>sloppy</c> with
+    ///   <see cref="SloppyReasons.IterCap"/> when iter exhaustion is
+    ///   reached without a pass).</item>
+    ///   <item>Phase 51 dollar cap (<c>crew.MaxTaskBudgetUsd</c>) emits
+    ///   <c>stalled-budget</c> with auto-resume on cap raise / cooldown
+    ///   elapse — the actual economic guardrail.</item>
+    ///   <item><see cref="NoProgressException"/>, build-gate failure, and
+    ///   evaluator <c>reject</c> verdicts all still mark the workstream
+    ///   stalled for operator triage.</item>
+    /// </list>
     /// </summary>
     public static async Task<SloppyCheckResult> CheckAsync(
         ForgeDbContext db,
@@ -140,19 +165,12 @@ public static class SloppyDetector
         IReadOnlyList<int> scoresInOrder,
         CancellationToken ct)
     {
-        var (tokenSloppy, totalTokens) =
+        // Still compute the meters so the result carries display data for
+        // any caller that wants the numbers (UI score panel, debug
+        // endpoints) — but never flip IsSloppy from this method.
+        var (_, totalTokens) =
             await CheckTokenCapAsync(db, workItemId, generatorAgentId, budgetWindowStartUtc, ct);
-        if (tokenSloppy)
-        {
-            return new SloppyCheckResult(true, SloppyReasons.TokenCap, 0, 0, totalTokens);
-        }
-
-        var (plateauSloppy, bestIter, bestScore) = CheckScorePlateau(scoresInOrder);
-        if (plateauSloppy)
-        {
-            return new SloppyCheckResult(true, SloppyReasons.ScorePlateau, bestIter, bestScore, totalTokens);
-        }
-
+        var (_, bestIter, bestScore) = CheckScorePlateau(scoresInOrder);
         return new SloppyCheckResult(false, null, bestIter, bestScore, totalTokens);
     }
 }
