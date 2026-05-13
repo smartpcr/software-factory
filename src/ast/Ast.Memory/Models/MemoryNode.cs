@@ -41,7 +41,7 @@ public sealed class MemoryNode
     /// Content hash for change detection.
     /// </summary>
     public string? ContentHash =>
-        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? v as string : null;
+        this.Inner.Metadata.TryGetValue(MemoryMetadataKeys.ContentHash, out var v) ? (string?)v : null;
 
     /// <summary>
     /// Temporal version range. Null for External boundary nodes (timeless stubs).

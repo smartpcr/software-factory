@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Temporal version range for nodes and edges in the memory graph.
 /// </summary>
 public record VersionRange(
-    string SinceCommit,
+    string Since,
     int SinceIndex,
     string? UntilCommit,
     int? UntilIndex)
