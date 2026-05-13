@@ -1065,10 +1065,8 @@ public static class SloppyReasons
     public const string IterCap = "iter-cap";
 
     /// <summary>
-    /// Phase 56 — generator's input tokens for a single iteration exceeded
-    /// <see cref="ScoringConstants.PromptBloatHardCapInputTokens"/>. Catches the
-    /// runaway context-bloat pattern observed on failover-cluster:XRAFT
-    /// stage 3.1 iter 2 (4.3M tokens / $192 / zero file commits).
+    /// Legacy sloppy reason kept for historical rows written while the
+    /// Phase 56 prompt-bloat hard-stop was enabled.
     /// </summary>
     public const string PromptBloat = "prompt-bloat";
 }
