@@ -30,6 +30,7 @@ public static class MemoryMetadataKeys
     public const string LastTouched = "LastTouched";
     public const string Embedding = "Embedding";
     public const string EmbeddingModel = "EmbeddingModel";
+    public const string EmbeddingStatus = "EmbeddingStatus";
     public const string Package = "Package";
 
     /// <summary>

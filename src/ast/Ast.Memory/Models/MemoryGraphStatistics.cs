@@ -7,7 +7,8 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Per-layer node/edge counts for the memory graph.
+/// Aggregate statistics for the memory graph.
+/// All counts reflect active (non-retired) entities unless noted otherwise.
 /// </summary>
 public class MemoryGraphStatistics
 {

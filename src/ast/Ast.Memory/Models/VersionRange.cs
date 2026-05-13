@@ -11,8 +11,4 @@ namespace Ast.Memory.Models;
 /// Uses dual-axis time: monotonic commit indices for ordering,
 /// plus wall-clock timestamps available via join to the commits table.
 /// </summary>
-public record VersionRange(
-    string SinceCommit,
-    int SinceIndex,
-    string? UntilCommit,
-    int? UntilIndex);
+public record VersionRange(string? Since, int? SinceIndex, string? Until, int? UntilIndex);
