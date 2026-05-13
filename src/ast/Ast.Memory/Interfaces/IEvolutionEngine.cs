@@ -12,15 +12,13 @@ using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Evolution engine — write-back, consolidation, decay, and community
-/// detection. Mechanisms by which the graph improves over sessions.
+/// Manages expertise lifecycle: write-back, consolidation, decay, and community detection.
 /// Per architecture.md §5.3.
 /// </summary>
 public interface IEvolutionEngine
 {
     /// <summary>
     /// Write an expertise entry and link it to a code node via APPLIES_TO edge.
-    /// Per §5.3 canonical signature.
     /// </summary>
     Task<ExpertiseEntry> RecordExpertiseAsync(
         string targetNodeId,
@@ -57,10 +55,37 @@ public interface IEvolutionEngine
 
     /// <summary>
     /// Louvain community detection → Topic nodes + BELONGS_TO_CLUSTER edges.
-    /// Detects communities in the graph based on CALLS and SIMILAR_TO edges,
-    /// creates Topic summary nodes with LLM-generated summaries, and links
-    /// member nodes via BELONGS_TO_CLUSTER edges.
     /// </summary>
     Task<CommunityResult> DetectCommunitiesAsync(
         CancellationToken ct = default);
+
 }
+
+/// <summary>Options for expertise consolidation.</summary>
+public record ConsolidationOptions(
+    double SimilarityThreshold = 0.85,
+    int MaxMergesPerRun = 50);
+
+/// <summary>Result of expertise consolidation.</summary>
+public record ConsolidationResult(
+    int CandidatesPaired,
+    int MergedCount,
+    IReadOnlyList<string> MergedEntryIds);
+
+/// <summary>Options for time-based expertise decay.</summary>
+public record DecayOptions(
+    int HalfLifeDays = 1095,
+    double CentralityBoostFactor = 0.5,
+    double ArchiveConfidenceFloor = 0.1);
+
+/// <summary>Result of time-based expertise decay evaluation.</summary>
+public record DecayResult(
+    int EntriesEvaluated,
+    int EntriesDecayed,
+    int EntriesArchived);
+
+/// <summary>Result of community detection.</summary>
+public record CommunityResult(
+    int CommunitiesDetected,
+    int TopicNodesCreated,
+    int ClusterEdgesCreated);
