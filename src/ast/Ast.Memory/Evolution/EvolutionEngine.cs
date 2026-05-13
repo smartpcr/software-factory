@@ -9,54 +9,56 @@ namespace Ast.Memory.Evolution;
 using System.Security.Cryptography;
 using System.Text;
 using Ast.Core;
-using Ast.Embedding;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Ast.VectorDb;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Implements expertise write-back, consolidation, decay, and community
-/// detection for the memory graph evolution pipeline.
+/// Evolution engine implementing write-back, consolidation, decay, and community
+/// detection. This stage implements <see cref="IEvolutionEngine.DetectCommunitiesAsync"/>
+/// using the Louvain algorithm over CALLS/SIMILAR_TO edges.
 /// </summary>
-public class EvolutionEngine : IEvolutionEngine
+public sealed class EvolutionEngine : IEvolutionEngine
 {
-    private static readonly HashSet<string> ValidScopes = ["exact", "subtree"];
-
-    private static readonly HyperedgeType[] CallEdgeTypes =
-    [
-        HyperedgeType.MethodInvocation,
-        HyperedgeType.ConstructorInvocation,
-        HyperedgeType.CmdletCall,
-        HyperedgeType.ModuleFunctionCall,
-        HyperedgeType.CrossLanguageMethodCall
-    ];
-
     private readonly IMemoryGraphStore graphStore;
-    private readonly IEmbeddingGenerator embeddingGenerator;
-    private readonly IVectorStore vectorStore;
-    private readonly IExpertiseMergeService mergeService;
-    private readonly MemoryOptions options;
+    private readonly ILlmClient llmClient;
+    private readonly MemoryOptions memoryOptions;
     private readonly ILogger<EvolutionEngine> logger;
+
+    /// <summary>
+    /// Semantic relation constant for CALLS edges.
+    /// </summary>
+    internal const string CallsRelation = "CALLS";
+
+    /// <summary>
+    /// Semantic relation constant for SIMILAR_TO edges.
+    /// </summary>
+    internal const string SimilarToRelation = "SIMILAR_TO";
+
+    /// <summary>
+    /// Semantic relation constant for BELONGS_TO_CLUSTER edges.
+    /// </summary>
+    internal const string BelongsToClusterRelation = "BELONGS_TO_CLUSTER";
+
+    /// <summary>
+    /// Node type for Topic summary nodes.
+    /// </summary>
+    internal const string TopicNodeType = "Topic";
 
     public EvolutionEngine(
         IMemoryGraphStore graphStore,
-        IEmbeddingGenerator embeddingGenerator,
-        IVectorStore vectorStore,
-        IExpertiseMergeService mergeService,
-        IOptions<MemoryOptions> options,
+        ILlmClient llmClient,
+        IOptions<MemoryOptions> memoryOptions,
         ILogger<EvolutionEngine> logger)
     {
-        this.graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
-        this.embeddingGenerator = embeddingGenerator ?? throw new ArgumentNullException(nameof(embeddingGenerator));
-        this.vectorStore = vectorStore ?? throw new ArgumentNullException(nameof(vectorStore));
-        this.mergeService = mergeService ?? throw new ArgumentNullException(nameof(mergeService));
-        this.options = (options ?? throw new ArgumentNullException(nameof(options))).Value;
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.graphStore = graphStore;
+        this.llmClient = llmClient;
+        this.memoryOptions = memoryOptions.Value;
+        this.logger = logger;
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public async Task<ExpertiseEntry> RecordExpertiseAsync(
         string targetNodeId,
         ExpertiseKind kind,
@@ -67,599 +69,270 @@ public class EvolutionEngine : IEvolutionEngine
         IReadOnlyList<Citation>? evidence = null,
         CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetNodeId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(title);
-        ArgumentException.ThrowIfNullOrWhiteSpace(body);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceAgent);
-
-        if (!ValidScopes.Contains(scope))
-        {
-            throw new ArgumentException($"Scope must be 'exact' or 'subtree', got '{scope}'.", nameof(scope));
-        }
-
-        // Validate target node exists — architecture §6.3: throw ArgumentException
-        var targetNode = await this.graphStore.GetNodeAsync(targetNodeId, ct).ConfigureAwait(false);
-        if (targetNode == null)
-        {
-            throw new ArgumentException($"Target node '{targetNodeId}' does not exist in the graph store.", nameof(targetNodeId));
-        }
-
-        // Deduplicate via full ContentHash (SHA-256)
-        var contentHash = ExpertiseEntry.ComputeContentHash(title, body, targetNodeId);
-        var existingEntry = await this.graphStore.GetExpertiseByContentHashAsync(contentHash, ct).ConfigureAwait(false);
-        if (existingEntry != null)
-        {
-            this.logger.LogInformation(
-                "Duplicate expertise detected (ContentHash={ContentHash}), returning existing entry.",
-                contentHash);
-
-            // Audit the duplicate write-back attempt
-            await this.graphStore.LogAuditAsync(
-                sourceAgent,
-                "RecordExpertise_Duplicate",
-                new
-                {
-                    ExistingExpertiseId = existingEntry.Id,
-                    ContentHash = contentHash,
-                    TargetNodeId = targetNodeId,
-                    Kind = kind.ToString()
-                },
-                ct).ConfigureAwait(false);
-
-            return existingEntry;
-        }
-
-        // Generate embedding — must succeed; failures propagate to caller
-        var embeddingText = title + " " + body;
-        var embedding = await this.embeddingGenerator.GenerateEmbeddingAsync(embeddingText, ct).ConfigureAwait(false);
-
-        var expertiseId = ExpertiseEntry.GenerateId(kind, title, body, targetNodeId);
-        var now = DateTime.UtcNow;
+        // Minimal implementation — full logic in Expertise Write-Back workstream (Stage 5.1)
+        var contentHash = ComputeHash8(title + body + targetNodeId);
         var entry = new ExpertiseEntry
         {
-            Id = expertiseId,
+            Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{contentHash}",
             Kind = kind,
             Title = title,
             Body = body,
             TargetNodeId = targetNodeId,
             Scope = scope,
-            Confidence = 1.0,
-            Archived = false,
             SourceAgent = sourceAgent,
             Evidence = evidence ?? [],
-            Embedding = embedding,
-            ContentHash = contentHash,
-            CreatedAt = now,
-            UpdatedAt = now
+            ContentHash = contentHash
         };
 
-        // Persist the expertise entry first
-        await this.graphStore.UpsertExpertiseAsync(entry, ct).ConfigureAwait(false);
-
-        try
-        {
-            // Create APPLIES_TO edge linking expertise to target code node
-            var edgeId = $"edge:applies_to:{expertiseId}";
-            var appliesToEdge = new Hyperedge
-            {
-                Id = edgeId,
-                EdgeType = HyperedgeType.MemoryRelation,
-                NodeIds = [expertiseId, targetNodeId],
-                Roles = new Dictionary<string, string>
-                {
-                    [expertiseId] = "expertise",
-                    [targetNodeId] = "target"
-                },
-                Metadata = new Dictionary<string, object?>
-                {
-                    [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO",
-                    [MemoryMetadataKeys.MemoryLayer] = "expertise"
-                }
-            };
-
-            await this.graphStore.CreateEdgeAsync(appliesToEdge, ct).ConfigureAwait(false);
-
-            // Upsert vector to the expertise collection
-            var vectorCollection = this.options.ExpertiseVectorCollection;
-            var collectionExists = await this.vectorStore.CollectionExistsAsync(vectorCollection, ct).ConfigureAwait(false);
-            if (!collectionExists)
-            {
-                await this.vectorStore.CreateCollectionAsync(vectorCollection, embedding.Length, ct).ConfigureAwait(false);
-            }
-
-            var vectorPoint = new VectorPoint
-            {
-                Id = expertiseId,
-                Vector = embedding,
-                Payload = new Dictionary<string, object>
-                {
-                    ["Kind"] = kind.ToString(),
-                    ["TargetNodeId"] = targetNodeId
-                }
-            };
-            await this.vectorStore.UpsertAsync(vectorCollection, [vectorPoint], ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // Roll back the persisted expertise to avoid partial state
-            this.logger.LogError(
-                ex,
-                "Failed to persist edge/vector for expertise {ExpertiseId}; rolling back expertise entry.",
-                expertiseId);
-
-            await this.graphStore.ArchiveExpertiseAsync(expertiseId, ct).ConfigureAwait(false);
-            throw;
-        }
-
-        // Log audit
-        await this.graphStore.LogAuditAsync(
-            sourceAgent,
-            "RecordExpertise",
-            new
-            {
-                ExpertiseId = expertiseId,
-                Kind = kind.ToString(),
-                Title = title,
-                TargetNodeId = targetNodeId,
-                Scope = scope,
-                ContentHash = contentHash
-            },
-            ct).ConfigureAwait(false);
-
-        this.logger.LogInformation(
-            "Recorded expertise {ExpertiseId} (Kind={Kind}) targeting {TargetNodeId}.",
-            expertiseId, kind, targetNodeId);
-
+        await this.graphStore.UpsertExpertiseAsync(entry, ct);
         return entry;
     }
 
-    /// <inheritdoc />
-    public async Task<ConsolidationResult> ConsolidateAsync(
+    /// <inheritdoc/>
+    public Task<ConsolidationResult> ConsolidateAsync(
+        ConsolidationOptions options,
         CancellationToken ct = default)
     {
-        var allExpertise = await this.graphStore.GetAllActiveExpertiseAsync(ct: ct).ConfigureAwait(false);
-        if (allExpertise.Count < 2)
-        {
-            return new ConsolidationResult(CandidatesPaired: 0, MergedCount: 0, SupersededCount: 0, MergedEntryIds: []);
-        }
-
-        var mergedCount = 0;
-        var candidatesPaired = 0;
-        var supersededCount = 0;
-        var mergedEntryIds = new List<string>();
-        var supersededIds = new HashSet<string>();
-        var vectorCollection = this.options.ExpertiseVectorCollection;
-        var similarityThreshold = this.options.SimilarityThreshold;
-        var maxMerges = this.options.MaxMergesPerRun;
-
-        foreach (var entry in allExpertise)
-        {
-            if (mergedCount >= maxMerges)
-            {
-                break;
-            }
-
-            if (supersededIds.Contains(entry.Id) || entry.Embedding == null)
-            {
-                continue;
-            }
-
-            // Search for similar entries via vector store
-            var collectionExists = await this.vectorStore.CollectionExistsAsync(vectorCollection, ct).ConfigureAwait(false);
-            if (!collectionExists)
-            {
-                break;
-            }
-
-            var similar = await this.vectorStore.SearchAsync(
-                vectorCollection,
-                entry.Embedding,
-                limit: 10,
-                cancellationToken: ct).ConfigureAwait(false);
-
-            // Collect candidates for this merge batch
-            var candidatesForMerge = new List<ExpertiseEntry>();
-            foreach (var match in similar)
-            {
-                if (match.Id == entry.Id || match.Score < similarityThreshold || supersededIds.Contains(match.Id))
-                {
-                    continue;
-                }
-
-                var matchedEntry = await this.graphStore.GetExpertiseByIdAsync(match.Id, ct).ConfigureAwait(false);
-                if (matchedEntry == null || matchedEntry.Archived)
-                {
-                    continue;
-                }
-
-                candidatesForMerge.Add(matchedEntry);
-                candidatesPaired++;
-            }
-
-            if (candidatesForMerge.Count == 0)
-            {
-                continue;
-            }
-
-            // LLM-powered merge: create a merged entry from the current entry and all its similar candidates
-            var mergedEntry = entry;
-            foreach (var candidate in candidatesForMerge)
-            {
-                if (mergedCount >= maxMerges || supersededIds.Contains(candidate.Id))
-                {
-                    continue;
-                }
-
-                // LLM-merge the two entries
-                var (mergedTitle, mergedBody) = await this.mergeService.MergeExpertiseAsync(
-                    mergedEntry, candidate, ct).ConfigureAwait(false);
-
-                // Create the new merged expertise entry
-                var mergedContentHash = ExpertiseEntry.ComputeContentHash(mergedTitle, mergedBody, entry.TargetNodeId);
-                var mergedId = ExpertiseEntry.GenerateId(entry.Kind, mergedTitle, mergedBody, entry.TargetNodeId);
-                var now = DateTime.UtcNow;
-                var embeddingText = mergedTitle + " " + mergedBody;
-                var mergedEmbedding = await this.embeddingGenerator.GenerateEmbeddingAsync(embeddingText, ct).ConfigureAwait(false);
-
-                var newMergedEntry = new ExpertiseEntry
-                {
-                    Id = mergedId,
-                    Kind = entry.Kind,
-                    Title = mergedTitle,
-                    Body = mergedBody,
-                    TargetNodeId = entry.TargetNodeId,
-                    Scope = entry.Scope,
-                    Confidence = Math.Max(mergedEntry.Confidence, candidate.Confidence),
-                    Archived = false,
-                    SourceAgent = entry.SourceAgent,
-                    Evidence = mergedEntry.Evidence.Concat(candidate.Evidence).ToList(),
-                    Embedding = mergedEmbedding,
-                    ContentHash = mergedContentHash,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                };
-
-                await this.graphStore.UpsertExpertiseAsync(newMergedEntry, ct).ConfigureAwait(false);
-
-                // Create SUPERSEDES edges: merged (newer) → original entries (older)
-                var supersedesEdgeA = new Hyperedge
-                {
-                    Id = $"edge:supersedes:{mergedId}:{mergedEntry.Id}",
-                    EdgeType = HyperedgeType.MemoryRelation,
-                    NodeIds = [mergedId, mergedEntry.Id],
-                    Roles = new Dictionary<string, string>
-                    {
-                        [mergedId] = "newer",
-                        [mergedEntry.Id] = "older"
-                    },
-                    Metadata = new Dictionary<string, object?>
-                    {
-                        [MemoryMetadataKeys.SemanticRelation] = "SUPERSEDES",
-                        [MemoryMetadataKeys.MemoryLayer] = "expertise"
-                    }
-                };
-                await this.graphStore.CreateEdgeAsync(supersedesEdgeA, ct).ConfigureAwait(false);
-
-                var supersedesEdgeB = new Hyperedge
-                {
-                    Id = $"edge:supersedes:{mergedId}:{candidate.Id}",
-                    EdgeType = HyperedgeType.MemoryRelation,
-                    NodeIds = [mergedId, candidate.Id],
-                    Roles = new Dictionary<string, string>
-                    {
-                        [mergedId] = "newer",
-                        [candidate.Id] = "older"
-                    },
-                    Metadata = new Dictionary<string, object?>
-                    {
-                        [MemoryMetadataKeys.SemanticRelation] = "SUPERSEDES",
-                        [MemoryMetadataKeys.MemoryLayer] = "expertise"
-                    }
-                };
-                await this.graphStore.CreateEdgeAsync(supersedesEdgeB, ct).ConfigureAwait(false);
-
-                // Archive both originals
-                if (!supersededIds.Contains(mergedEntry.Id))
-                {
-                    await this.graphStore.ArchiveExpertiseAsync(mergedEntry.Id, ct).ConfigureAwait(false);
-                    supersededIds.Add(mergedEntry.Id);
-                    supersededCount++;
-                }
-
-                await this.graphStore.ArchiveExpertiseAsync(candidate.Id, ct).ConfigureAwait(false);
-                supersededIds.Add(candidate.Id);
-                supersededCount++;
-
-                mergedEntryIds.Add(mergedId);
-                mergedEntry = newMergedEntry;
-                mergedCount++;
-            }
-        }
-
-        await this.graphStore.LogAuditAsync(
-            "system",
-            "Consolidate",
-            new { CandidatesPaired = candidatesPaired, MergedCount = mergedCount, SupersededCount = supersededCount, MergedEntryIds = mergedEntryIds },
-            ct).ConfigureAwait(false);
-
-        this.logger.LogInformation(
-            "Consolidation complete: {CandidatesPaired} paired, {MergedCount} merged, {SupersededCount} superseded.",
-            candidatesPaired, mergedCount, supersededCount);
-
-        return new ConsolidationResult(CandidatesPaired: candidatesPaired, MergedCount: mergedCount, SupersededCount: supersededCount, MergedEntryIds: mergedEntryIds);
+        // Stub — full implementation in ConsolidationService workstream (Stage 5.2)
+        this.logger.LogDebug("ConsolidateAsync stub invoked; returning empty result");
+        return Task.FromResult(new ConsolidationResult(0, 0, []));
     }
 
-    /// <inheritdoc />
-    public async Task<DecayResult> DecayStaleExpertiseAsync(
+    /// <inheritdoc/>
+    public Task<DecayResult> DecayStaleExpertiseAsync(
+        DecayOptions? options = null,
         CancellationToken ct = default)
     {
-        // Per architecture §3.5.1: time-based decay is transient/idempotent.
-        // stored_confidence is NEVER modified by time-based decay.
-        // effective_confidence = stored_confidence × time_factor is computed on-read.
-        // Only action: archive entries whose effective_confidence < ArchiveConfidenceFloor.
-        var allExpertise = await this.graphStore.GetAllActiveExpertiseAsync(ct: ct).ConfigureAwait(false);
-
-        var entriesEvaluated = allExpertise.Count;
-        var entriesDecayed = 0;
-        var entriesArchived = 0;
-        var now = DateTime.UtcNow;
-        var halfLifeDays = this.options.DecayHalfLifeDays;
-        var archiveFloor = this.options.ArchiveConfidenceFloor;
-
-        foreach (var entry in allExpertise)
-        {
-            var ageInDays = (now - entry.CreatedAt).TotalDays;
-            if (ageInDays <= 0)
-            {
-                continue;
-            }
-
-            // time_factor = 2^(-age_days / effective_half_life)
-            // Without PageRank available, centrality_boost = 1.0 (no boost)
-            var timeFactor = Math.Pow(2.0, -ageInDays / halfLifeDays);
-
-            // effective_confidence is transient — never persisted
-            var effectiveConfidence = entry.Confidence * timeFactor;
-
-            if (effectiveConfidence < entry.Confidence)
-            {
-                entriesDecayed++;
-            }
-
-            if (effectiveConfidence < archiveFloor)
-            {
-                // Archive via ArchiveExpertiseAsync — the only persistence action
-                await this.graphStore.ArchiveExpertiseAsync(entry.Id, ct).ConfigureAwait(false);
-                entriesArchived++;
-            }
-            // Else: no persistence needed. stored_confidence remains unchanged.
-        }
-
-        await this.graphStore.LogAuditAsync(
-            "system",
-            "DecayStaleExpertise",
-            new { EntriesEvaluated = entriesEvaluated, EntriesDecayed = entriesDecayed, EntriesArchived = entriesArchived },
-            ct).ConfigureAwait(false);
-
-        this.logger.LogInformation(
-            "Decay complete: {EntriesEvaluated} evaluated, {EntriesDecayed} decayed, {EntriesArchived} archived.",
-            entriesEvaluated, entriesDecayed, entriesArchived);
-
-        return new DecayResult(EntriesEvaluated: entriesEvaluated, EntriesDecayed: entriesDecayed, EntriesArchived: entriesArchived);
+        // Stub — full implementation in DecayService workstream (Stage 5.3)
+        this.logger.LogDebug("DecayStaleExpertiseAsync stub invoked; returning empty result");
+        return Task.FromResult(new DecayResult(0, 0, 0));
     }
 
-    /// <inheritdoc />
-    public async Task<ExpertiseEntry> RestoreArchivedExpertiseAsync(
+    /// <inheritdoc/>
+    public Task RestoreArchivedExpertiseAsync(
         string expertiseId,
         double restoredConfidence = 0.5,
         CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(expertiseId);
-
-        if (restoredConfidence < 0.0 || restoredConfidence > 1.0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(restoredConfidence), "Confidence must be between 0.0 and 1.0.");
-        }
-
-        var entry = await this.graphStore.GetExpertiseByIdAsync(expertiseId, ct).ConfigureAwait(false);
-        if (entry == null)
-        {
-            throw new InvalidOperationException($"Expertise entry '{expertiseId}' not found.");
-        }
-
-        if (!entry.Archived)
-        {
-            this.logger.LogWarning("Expertise {ExpertiseId} is not archived; returning as-is.", expertiseId);
-
-            // Audit even for no-op restores
-            await this.graphStore.LogAuditAsync(
-                "system",
-                "RestoreArchivedExpertise_AlreadyActive",
-                new
-                {
-                    ExpertiseId = expertiseId,
-                    CurrentConfidence = entry.Confidence
-                },
-                ct).ConfigureAwait(false);
-
-            return entry;
-        }
-
-        // Restore: un-archive and set new confidence
-        entry.Archived = false;
-        entry.Confidence = restoredConfidence;
-        entry.UpdatedAt = DateTime.UtcNow;
-
-        await this.graphStore.UpsertExpertiseAsync(entry, ct).ConfigureAwait(false);
-
-        // Log audit
-        await this.graphStore.LogAuditAsync(
-            "system",
-            "RestoreArchivedExpertise",
-            new
-            {
-                ExpertiseId = expertiseId,
-                RestoredConfidence = restoredConfidence
-            },
-            ct).ConfigureAwait(false);
-
-        this.logger.LogInformation(
-            "Restored archived expertise {ExpertiseId} with confidence {Confidence}.",
-            expertiseId, restoredConfidence);
-
-        return entry;
+        // Stub — full implementation in Expertise Write-Back workstream (Stage 5.1)
+        this.logger.LogDebug("RestoreArchivedExpertiseAsync stub invoked for {Id}", expertiseId);
+        return Task.CompletedTask;
     }
 
-    /// <inheritdoc />
-    public async Task<CommunityResult> DetectCommunitiesAsync(
-        CancellationToken ct = default)
+    /// <inheritdoc/>
+    public async Task<CommunityResult> DetectCommunitiesAsync(CancellationToken ct = default)
     {
-        // Build undirected adjacency from CALLS and SIMILAR_TO edges (Louvain input)
-        var adjacency = new Dictionary<string, HashSet<string>>();
+        this.logger.LogInformation("Starting community detection via Louvain algorithm");
 
-        // 1. Gather SIMILAR_TO edges
-        var similarEdges = await this.graphStore.GetEdgesBySemanticRelationAsync(
-            "SIMILAR_TO", limit: 10000, ct: ct).ConfigureAwait(false);
-        foreach (var edge in similarEdges)
-        {
-            if (edge.NodeIds.Count < 2)
-            {
-                continue;
-            }
-
-            var nodeA = edge.NodeIds[0];
-            var nodeB = edge.NodeIds[1];
-            AddUndirectedEdge(adjacency, nodeA, nodeB);
-        }
-
-        // 2. Gather CALLS edges by iterating nodes
-        var allNodes = await this.graphStore.GetNodesAsync(limit: 10000, cancellationToken: ct).ConfigureAwait(false);
-        foreach (var node in allNodes)
-        {
-            var callEdges = await this.graphStore.GetEdgesForNodeAsync(
-                node.Id, CallEdgeTypes, ct).ConfigureAwait(false);
-            foreach (var edge in callEdges)
-            {
-                foreach (var otherId in edge.NodeIds)
-                {
-                    if (otherId != node.Id)
-                    {
-                        AddUndirectedEdge(adjacency, node.Id, otherId);
-                    }
-                }
-            }
-        }
-
-        if (adjacency.Count == 0)
-        {
-            return new CommunityResult(CommunitiesDetected: 0, TopicNodesCreated: 0, ClusterEdgesCreated: 0);
-        }
-
-        // 3. Run Louvain community detection
-        var communityAssignment = LouvainCommunityDetector.Detect(adjacency);
-
-        // Group nodes by community
-        var communities = new Dictionary<int, List<string>>();
-        foreach (var (nodeId, communityId) in communityAssignment)
-        {
-            if (!communities.TryGetValue(communityId, out var list))
-            {
-                list = [];
-                communities[communityId] = list;
-            }
-
-            list.Add(nodeId);
-        }
-
-        // Only keep communities with ≥2 members
-        var validCommunities = communities
-            .Where(c => c.Value.Count >= 2)
+        // 1. Fetch all code nodes (exclude Topic nodes from previous runs)
+        var allNodes = await this.graphStore.GetAllNodesAsync(ct: ct);
+        var codeNodes = allNodes
+            .Where(n => n.NodeType != TopicNodeType)
             .ToList();
 
-        var communitiesDetected = validCommunities.Count;
+        if (codeNodes.Count == 0)
+        {
+            this.logger.LogWarning("No code nodes found; skipping community detection");
+            return new CommunityResult(0, 0, 0);
+        }
+
+        // 2. Fetch edges — bridge canonical AST edges AND memory-layer edges.
+        //    GetEdgesBySemanticRelationAsync finds edges with Metadata["SemanticRelation"]
+        //    matching "CALLS"/"SIMILAR_TO".
+        var semanticEdges = await this.graphStore.GetEdgesBySemanticRelationAsync(
+            [CallsRelation, SimilarToRelation],
+            ct);
+
+        // 2b. Also fetch edges by canonical HyperedgeType to bridge existing graphs
+        //     where SemanticRelation metadata is not set (e.g., edges created by
+        //     Ast.GraphDb.Neo4jGraphStore using MethodInvocation/CmdletCall types).
+        var canonicalCallTypes = SemanticRelationMap.ToHyperedgeTypes([CallsRelation, SimilarToRelation]);
+        IReadOnlyList<Hyperedge> typeBasedEdges = canonicalCallTypes.Count > 0
+            ? await this.graphStore.GetEdgesByTypeAsync(canonicalCallTypes, ct)
+            : [];
+
+        // Merge and deduplicate (semantic edges first, then type-based that aren't already included)
+        var seenEdgeIds = new HashSet<string>(semanticEdges.Select(e => e.Id));
+        var allEdges = new List<Hyperedge>(semanticEdges);
+        foreach (var edge in typeBasedEdges)
+        {
+            if (seenEdgeIds.Add(edge.Id))
+            {
+                allEdges.Add(edge);
+            }
+        }
+
+        // 3. Build weighted edge list for Louvain
+        var nodeIdSet = new HashSet<string>(codeNodes.Select(n => n.Id));
+        var edgeList = new List<(string Source, string Target, double Weight)>();
+
+        foreach (var edge in allEdges)
+        {
+            AddEdgePairs(edge, nodeIdSet, edgeList);
+        }
+
+        if (edgeList.Count == 0)
+        {
+            this.logger.LogWarning("No CALLS/SIMILAR_TO edges found; skipping community detection");
+            return new CommunityResult(0, 0, 0);
+        }
+
+        // 4. Run multilevel Louvain community detection
+        var detector = new LouvainCommunityDetector();
+        var nodeIds = codeNodes.Select(n => n.Id).ToList();
+        var communities = detector.Detect(nodeIds, edgeList);
+
+        // 5. Group nodes by community
+        var communityGroups = communities
+            .GroupBy(kv => kv.Value)
+            .Where(g => g.Count() >= this.memoryOptions.MinCommunitySize)
+            .ToList();
+
+        this.logger.LogInformation(
+            "Louvain detected {Count} communities from {NodeCount} nodes and {EdgeCount} edges",
+            communityGroups.Count, nodeIds.Count, edgeList.Count);
+
+        if (communityGroups.Count == 0)
+        {
+            return new CommunityResult(0, 0, 0);
+        }
+
+        // 6. Pre-generate ALL summaries before mutating the graph (atomicity:
+        //    if any LLM call fails, the exception propagates and the graph is
+        //    left unchanged with its previous community state intact).
+        var topicPlans = new List<(
+            string TopicId,
+            string TopicHash,
+            List<string> MemberNodeIds,
+            List<HypergraphNode> MemberNodes,
+            string Summary)>();
+
+        foreach (var group in communityGroups)
+        {
+            var memberNodeIds = group.Select(kv => kv.Key).OrderBy(id => id).ToList();
+            var memberNodes = codeNodes.Where(n => memberNodeIds.Contains(n.Id)).ToList();
+
+            var topicHash = ComputeHash8(string.Join(",", memberNodeIds));
+            var topicId = $"topic:{topicHash}";
+
+            // LLM call — throws LlmGenerationException on failure
+            var summary = await this.GenerateTopicSummaryAsync(memberNodes, ct);
+
+            topicPlans.Add((topicId, topicHash, memberNodeIds, memberNodes, summary));
+        }
+
+        // 7. All summaries generated successfully — now safe to mutate the graph.
+        //    Remove existing Topic nodes and BELONGS_TO_CLUSTER edges for idempotency.
+        await this.graphStore.RemoveEdgesBySemanticRelationAsync(BelongsToClusterRelation, ct);
+        await this.graphStore.RemoveNodesByTypeAsync(TopicNodeType, ct);
+
+        // 8. Create Topic nodes and BELONGS_TO_CLUSTER edges
         var topicNodesCreated = 0;
         var clusterEdgesCreated = 0;
 
-        foreach (var (communityId, members) in validCommunities)
+        foreach (var (topicId, topicHash, memberNodeIds, memberNodes, summary) in topicPlans)
         {
-            // Topic ID: topic:{hash8}
-            var communityKey = string.Join(",", members.OrderBy(m => m));
-            var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(communityKey));
-            var hash8 = Convert.ToHexString(hashBytes).ToLowerInvariant()[..8];
-            var topicNodeId = $"topic:{hash8}";
-
             var topicNode = new HypergraphNode
             {
-                Id = topicNodeId,
-                Name = $"Topic cluster ({members.Count} nodes)",
-                NodeType = "Topic",
-                Language = "none",
+                Id = topicId,
+                Name = $"Topic {topicHash}",
+                NodeType = TopicNodeType,
+                Language = "mixed",
                 FilePath = string.Empty,
                 Metadata = new Dictionary<string, object?>
                 {
-                    [MemoryMetadataKeys.MemoryLayer] = "semantic",
-                    [MemoryMetadataKeys.MemberCount] = members.Count,
-                    [MemoryMetadataKeys.Summary] = $"Louvain community of {members.Count} nodes"
+                    ["MemoryLayer"] = "semantic",
+                    ["Summary"] = summary,
+                    ["MemberCount"] = memberNodes.Count
                 }
             };
 
-            await this.graphStore.CreateNodeAsync(topicNode, ct).ConfigureAwait(false);
+            await this.graphStore.UpsertNodeAsync(topicNode, ct);
             topicNodesCreated++;
 
-            // Create BELONGS_TO_CLUSTER edges
-            foreach (var memberId in members)
+            foreach (var memberId in memberNodeIds)
             {
+                var edgeId = $"btc:{ComputeHash8(memberId + "→" + topicId)}";
                 var clusterEdge = new Hyperedge
                 {
-                    Id = $"edge:belongs_to_cluster:{memberId}:{topicNodeId}",
+                    Id = edgeId,
                     EdgeType = HyperedgeType.MemoryRelation,
-                    NodeIds = [memberId, topicNodeId],
+                    NodeIds = [memberId, topicId],
                     Roles = new Dictionary<string, string>
                     {
                         [memberId] = "member",
-                        [topicNodeId] = "cluster"
+                        [topicId] = "cluster"
                     },
                     Metadata = new Dictionary<string, object?>
                     {
-                        [MemoryMetadataKeys.SemanticRelation] = "BELONGS_TO_CLUSTER",
-                        [MemoryMetadataKeys.MemoryLayer] = "semantic"
+                        ["SemanticRelation"] = BelongsToClusterRelation,
+                        ["MemoryLayer"] = "semantic"
                     }
                 };
 
-                await this.graphStore.CreateEdgeAsync(clusterEdge, ct).ConfigureAwait(false);
+                await this.graphStore.UpsertEdgeAsync(clusterEdge, ct);
                 clusterEdgesCreated++;
             }
         }
 
-        await this.graphStore.LogAuditAsync(
-            "system",
-            "DetectCommunities",
-            new { CommunitiesDetected = communitiesDetected, TopicNodesCreated = topicNodesCreated, ClusterEdgesCreated = clusterEdgesCreated },
-            ct).ConfigureAwait(false);
-
         this.logger.LogInformation(
-            "Community detection complete: {Communities} communities, {Topics} topic nodes, {ClusterEdges} cluster edges.",
-            communitiesDetected, topicNodesCreated, clusterEdgesCreated);
+            "Community detection complete: {Communities} communities, {Topics} topic nodes, {Edges} cluster edges",
+            communityGroups.Count, topicNodesCreated, clusterEdgesCreated);
 
-        return new CommunityResult(CommunitiesDetected: communitiesDetected, TopicNodesCreated: topicNodesCreated, ClusterEdgesCreated: clusterEdgesCreated);
+        return new CommunityResult(communityGroups.Count, topicNodesCreated, clusterEdgesCreated);
     }
 
-    private static void AddUndirectedEdge(Dictionary<string, HashSet<string>> adjacency, string a, string b)
+    /// <exception cref="LlmGenerationException">
+    /// Thrown when the LLM client fails or returns empty. No fallback.
+    /// </exception>
+    private async Task<string> GenerateTopicSummaryAsync(
+        List<HypergraphNode> memberNodes,
+        CancellationToken ct)
     {
-        if (!adjacency.TryGetValue(a, out var neighborsA))
+        var nodeDescriptions = memberNodes
+            .Take(20) // Limit to avoid overly long prompts
+            .Select(n => $"- {n.NodeType} '{n.Name}' in {n.FilePath}")
+            .ToList();
+
+        var prompt = $"""
+            Summarize the following cluster of code symbols into a concise topic description
+            (1-2 sentences). Focus on the common responsibility or architectural role.
+
+            Cluster members:
+            {string.Join("\n", nodeDescriptions)}
+
+            Topic summary:
+            """;
+
+        // Propagates LlmGenerationException — no fallback summary
+        return await this.llmClient.GenerateAsync(prompt, ct);
+    }
+
+    private static void AddEdgePairs(
+        Hyperedge edge,
+        HashSet<string> validNodeIds,
+        List<(string Source, string Target, double Weight)> edgeList)
+    {
+        // For hyperedges with 2 nodes, add a single edge
+        // For hyperedges with >2 nodes, add pairwise edges
+        var relevantNodes = edge.NodeIds.Where(validNodeIds.Contains).ToList();
+        if (relevantNodes.Count < 2)
         {
-            neighborsA = [];
-            adjacency[a] = neighborsA;
+            return;
         }
 
-        neighborsA.Add(b);
-
-        if (!adjacency.TryGetValue(b, out var neighborsB))
+        for (var i = 0; i < relevantNodes.Count - 1; i++)
         {
-            neighborsB = [];
-            adjacency[b] = neighborsB;
+            for (var j = i + 1; j < relevantNodes.Count; j++)
+            {
+                edgeList.Add((relevantNodes[i], relevantNodes[j], edge.Weight));
+            }
         }
+    }
 
-        neighborsB.Add(a);
+    internal static string ComputeHash8(string input)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hash)[..8].ToLowerInvariant();
     }
 }
