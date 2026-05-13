@@ -6,10 +6,12 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Engine for retrieving context from the memory graph.
+/// Hybrid retrieval engine for querying the memory graph.
 /// </summary>
 public interface IMemoryRetrievalEngine
 {

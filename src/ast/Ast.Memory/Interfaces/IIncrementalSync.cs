@@ -6,12 +6,12 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Incremental sync: compute git diff between two commits and update graph.
-/// Also supports FileSystemWatcher-based triggers for IDE file saves.
-/// See architecture.md §3.6 and §5.5.
+/// Incremental sync engine for keeping the memory graph up-to-date with VCS changes.
 /// </summary>
 public interface IIncrementalSync : IDisposable
 {
