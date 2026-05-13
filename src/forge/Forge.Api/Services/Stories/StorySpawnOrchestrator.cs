@@ -2461,11 +2461,11 @@ public sealed class StorySpawnOrchestrator
             if (prs.Count == 0) continue;
             var prId = prs[0];
 
-            // 2026-05-13 — Phase 57b — stamp the PR's Review verdict as
+            // 2026-05-13 -- Phase 57b -- stamp the PR's Review verdict as
             // "pending" the first time DriveReviewAsync sees an unreviewed
             // workstream PR. AutoMergeWatcher (15 s tick) used to race the
             // orchestrator's slower reviewer dispatch and merge PRs whose
-            // Review verdict was still null — leaving the reviewer agent's
+            // Review verdict was still null -- leaving the reviewer agent's
             // later-posted comments stranded on a closed PR. AutoMergeWatcher
             // already skips PRs with verdict "pending" / "changes"; flipping
             // the verdict to "pending" the moment we enter the review-scan
@@ -2475,7 +2475,7 @@ public sealed class StorySpawnOrchestrator
             // Only stamp for in-flight ws.Status: "review" / "merging".
             // "complete" workstreams already merged via a non-orchestrator
             // path (human merge upstream, AutoMerge before this fix landed)
-            // should NOT have their historical verdict overwritten —
+            // should NOT have their historical verdict overwritten --
             // late-arriving comments are still handled by the fix loop
             // below regardless of verdict.
             if (w.Status is "review" or "merging")
@@ -2516,6 +2516,21 @@ public sealed class StorySpawnOrchestrator
             // and the merge-history would lie.
             if (activeComments.Count > 0)
             {
+                // Phase 59 — gate the fix loop on PR/worktree liveness.
+                // When the PR is already merged/closed OR the per-stage
+                // worktree on disk was wiped after merge (Phase 49
+                // follow-up), invoking the engineer is pointless: every
+                // CommitFilesAsync would throw, the catch in
+                // RunReviewFixLoopAsync would swallow, and the loop
+                // would burn ~$0.10 per E9 invocation forever without
+                // resolving the comment. Auto-resolve with a system
+                // reply + skip the engineer.
+                if (await this.TrySkipReviewFixOnStalePrAsync(db, spawn, w, prId, activeComments, repo, ct))
+                {
+                    changed = true;
+                    continue;
+                }
+
                 await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
                 changed = true;
                 continue;
@@ -2661,6 +2676,111 @@ public sealed class StorySpawnOrchestrator
     }
 
     /// <summary>
+    /// Phase 59 — gate <see cref="RunReviewFixLoopAsync"/> against PRs that
+    /// can no longer be fixed: either the PR row is terminal
+    /// (<c>pr.Col in {merged, closed}</c>) or the workstream's per-stage
+    /// worktree has been wiped from disk (Phase 49 follow-up runs
+    /// <see cref="IStoryGitOps.RemoveWorktreeAsync"/> after the upstream
+    /// merge). In either case <see cref="IStoryGitOps.CommitFilesAsync"/>
+    /// would throw — the existing per-comment catch swallows the throw
+    /// and <see cref="IStoryProviderOps.ResolvePrCommentAsync"/> is never
+    /// reached, so the comment stays <c>active</c> and the next tick
+    /// repeats the same failing engineer invocation, burning ~$0.10 per
+    /// E9 call indefinitely (observed smartpcr/qq PRs #2 + #3 with 17
+    /// comments stranded across both).
+    ///
+    /// <para>When the gate trips we post a system reply on every active
+    /// comment and resolve it, then emit a single
+    /// <c>task.review-fix-skipped</c> transcript event explaining why.
+    /// Returns <c>true</c> when the caller should skip the engineer pass
+    /// for this PR.</para>
+    /// </summary>
+    private async Task<bool> TrySkipReviewFixOnStalePrAsync(
+        ForgeDbContext db, StorySpawnRow spawn, WorkstreamRow w, string prId,
+        IReadOnlyList<PrCommentRow> activeComments,
+        RepoRow? repo, CancellationToken ct)
+    {
+        if (activeComments.Count == 0) return false;
+
+        var prRow = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == prId, ct);
+        var prTerminal = prRow is not null
+            && (string.Equals(prRow.Col, "merged", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(prRow.Col, "closed", StringComparison.OrdinalIgnoreCase));
+
+        // Empty branch → no possible worktree to commit into, treat as
+        // missing. WorktreeExistsAsync returns false fast on null repo /
+        // missing CloneRoot, true on probe failure (fail-safe).
+        var worktreeExists = !string.IsNullOrEmpty(w.Branch)
+            && await this.git.WorktreeExistsAsync(repo, w.Branch, ct);
+        var worktreeMissing = !worktreeExists;
+
+        if (!prTerminal && !worktreeMissing) return false;
+
+        var col = (prRow?.Col ?? "unknown").ToLowerInvariant();
+        string reason;
+        string replyBody;
+        if (prTerminal && worktreeMissing)
+        {
+            reason = $"pr-{col}-and-worktree-gone";
+            replyBody =
+                $"System: this PR is already {col} and the workstream's worktree has been "
+                + "cleaned up post-merge. No further fix is possible — auto-resolving this comment.";
+        }
+        else if (prTerminal)
+        {
+            reason = $"pr-{col}";
+            replyBody =
+                $"System: this PR is already {col}. No further fix is possible — "
+                + "auto-resolving this comment.";
+        }
+        else
+        {
+            reason = "worktree-missing";
+            replyBody =
+                "System: the workstream's worktree is no longer available on disk. "
+                + "No further fix is possible — auto-resolving this comment.";
+        }
+
+        const string SystemResolver = "system:post-merge-cleanup";
+        var resolved = 0;
+        foreach (var oc in activeComments)
+        {
+            try
+            {
+                await this.provider.ReplyPrCommentAsync(oc.Id, replyBody, SystemResolver, ct);
+                await this.provider.ResolvePrCommentAsync(oc.Id, SystemResolver, ct);
+                resolved++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "TrySkipReviewFixOnStalePrAsync: failed to auto-resolve comment {CommentId} "
+                    + "on PR {PrId} for ws {WsId}; next tick will retry.",
+                    oc.Id, prId, w.Id);
+            }
+        }
+
+        this.logger?.LogInformation(
+            "TrySkipReviewFixOnStalePrAsync: skipped review-fix loop for ws {WsId} PR {PrId} "
+            + "(reason={Reason}, prCol={Col}, worktreeMissing={WtMissing}); auto-resolved "
+            + "{Resolved}/{Total} active comments.",
+            w.Id, prId, reason, col, worktreeMissing, resolved, activeComments.Count);
+
+        await this.EmitSpawnEventAsync(w.Id, "task.review-fix-skipped", new
+        {
+            wsId = w.Id,
+            spawnId = spawn.Id,
+            prId,
+            reason,
+            prCol = col,
+            worktreeMissing,
+            commentCount = activeComments.Count,
+            resolvedCount = resolved,
+        }, ct);
+        return true;
+    }
+
+    /// <summary>
     /// 2026-05-13 — extracted from <see cref="DriveReviewAsync"/>. Runs one
     /// pass of <see cref="IStoryArtifactStrategy.ProduceReviewFixAsync"/>
     /// per active comment on a PR, with per-comment try/catch so a transient
@@ -2684,6 +2804,22 @@ public sealed class StorySpawnOrchestrator
         IReadOnlyList<PrCommentRow> activeComments,
         RepoRow? repo, CancellationToken ct)
     {
+        // Phase 59 — defense in depth. DriveReviewAsync already gates
+        // terminal-PR / missing-worktree cases, but any future caller
+        // (admin endpoint, tests, direct workflow code) that reaches us
+        // bypassing that gate gets the same protection: re-probe and
+        // short-circuit with system-resolved comments. Uses a fresh
+        // scope so we don't leak the orchestrator's db across the call
+        // boundary.
+        using (var scope = this.services.CreateScope())
+        {
+            var dbDefense = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            if (await this.TrySkipReviewFixOnStalePrAsync(dbDefense, spawn, w, prId, activeComments, repo, ct))
+            {
+                return;
+            }
+        }
+
         var engineerId = ParseStringList(w.AgentsJson).FirstOrDefault() ?? "eng-default";
         foreach (var oc in activeComments)
         {

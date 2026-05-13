@@ -1341,9 +1341,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .OrderByDescending(d => d.Id)
                 .Select(d => new { d.CreatedAt })
                 .FirstOrDefaultAsync(ct))?.CreatedAt;
+            // Collapse the nullable to a sentinel so the EF expression tree
+            // has a plain DateTimeOffset>DateTimeOffset compare. SQLite's
+            // EF provider cannot translate `(DateTimeOffset?)e.At > @p` and
+            // crashed the worker mid-iteration on
+            // qq:MICROSOFT-TEAMS-MESS stage 2.1 (2026-05-13 22:41:45).
+            var noteThreshold = lastDelivAt ?? DateTimeOffset.MinValue;
             var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
-                .Where(e => e.WorkItemId == workItemId && e.Kind == "task.operator-note"
-                    && (lastDelivAt == null || e.At > lastDelivAt))
+                .Where(e => e.WorkItemId == workItemId
+                    && e.Kind == "task.operator-note"
+                    && e.At > noteThreshold)
                 .OrderByDescending(e => e.Id)
                 .FirstOrDefaultAsync(ct);
             if (noteEvt is not null)
@@ -1466,6 +1473,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var output = new System.Text.StringBuilder();
                 decimal cost = 0m;
                 long inTok = 0, outTok = 0;
+                // 2026-05-13 root-cause fix — capture the dispatcher's
+                // Failed-event error so the loop can short-circuit before
+                // the evaluator runs against a cap-aborted partial output.
+                // See DeliverableLoop.cs FailureReason short-circuit and
+                // GeneratorFailureKinds.Classify for the receiving end.
+                string? failureReason = null;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -1495,6 +1508,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                     if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                     if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                    if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
+                    {
+                        failureReason = evt.Error;
+                    }
                 }
 
                 // 2026-05-13 root-cause fix: persist the agent's iter work as
@@ -1551,7 +1568,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }
                 }
 
-                return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
+                return new GeneratorRunOutput(
+                    output.ToString(),
+                    cost,
+                    inTok,
+                    outTok,
+                    TurnSamplesJson: null,
+                    FailureReason: failureReason,
+                    FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason));
             }
 
             // Evaluator delegate: invokes the evaluator agent for critical review.

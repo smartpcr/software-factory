@@ -473,6 +473,15 @@ public static class AgentsEndpoints
                 {
                     status = "failed";
                     error = e.Error;
+                    // 2026-05-13 root-cause fix — when AgentRunnerDispatcher
+                    // attaches accumulated usage to a Failed event (max-turns
+                    // cap, hard timeout, transport silent), persist it here
+                    // too. Prior to this, every Failed event silently dropped
+                    // the spend — a 60-turn Copilot/SDK run that hit the
+                    // points-cap wrote $0 to the ad-hoc agent ledger even
+                    // though the operator paid for ~7.5 minutes of real work.
+                    if (e.InputTokens is long fIn && fIn > 0) inputTokens = fIn;
+                    if (e.OutputTokens is long fOut && fOut > 0) outputTokens = fOut;
                 }
             }
         }

@@ -399,7 +399,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
         if (failReason is not null)
         {
-            yield return new AgentEvent(AgentEventKind.Failed, DateTimeOffset.UtcNow, Error: failReason);
+            yield return this.BuildFailedWithUsage(
+                failReason,
+                inputTokens,
+                outputTokens,
+                accumulatedCostUsd: null,
+                promptCharCount: prompt?.Length ?? 0,
+                outputCharCount: 0,
+                modelName: context.Model);
             yield break;
         }
 
@@ -665,10 +672,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
         if (timedOut)
         {
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield return this.BuildFailedWithUsage(
+                error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget",
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: costUsd,
+                promptCharCount: stdinPrompt.Length,
+                outputCharCount: 0,
+                modelName: context.Model,
+                sessionId: sessionId);
             yield break;
         }
 
@@ -677,17 +689,29 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             // Surface enough of stderr that the caller can distinguish a
             // resume-failure (e.g. "session not found") from a generic
             // crash and clear the stale memory row.
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}",
-                SessionId: sessionId);
+            yield return this.BuildFailedWithUsage(
+                error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}",
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: costUsd,
+                promptCharCount: stdinPrompt.Length,
+                outputCharCount: 0,
+                modelName: context.Model,
+                sessionId: sessionId);
             yield break;
         }
 
         if (failReason is not null)
         {
-            yield return new AgentEvent(AgentEventKind.Failed, DateTimeOffset.UtcNow, Error: failReason);
+            yield return this.BuildFailedWithUsage(
+                error: failReason,
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: costUsd,
+                promptCharCount: stdinPrompt.Length,
+                outputCharCount: 0,
+                modelName: context.Model,
+                sessionId: sessionId);
             yield break;
         }
 
@@ -988,19 +1012,27 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
         if (timedOut)
         {
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield return this.BuildFailedWithUsage(
+                error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget",
+                accumulatedInputTokens: 0,
+                accumulatedOutputTokens: 0,
+                accumulatedCostUsd: null,
+                promptCharCount: stdinPrompt.Length,
+                outputCharCount: output.Length,
+                modelName: context.Model);
             yield break;
         }
 
         if (exitCode != 0)
         {
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}");
+            yield return this.BuildFailedWithUsage(
+                error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}",
+                accumulatedInputTokens: 0,
+                accumulatedOutputTokens: 0,
+                accumulatedCostUsd: null,
+                promptCharCount: stdinPrompt.Length,
+                outputCharCount: output.Length,
+                modelName: context.Model);
             yield break;
         }
 
@@ -1349,25 +1381,40 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
         if (wasInactive)
         {
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: failReason ?? $"Copilot transport silent for >{InactivitySdkTimeout.TotalMinutes:0}min");
+            yield return this.BuildFailedWithUsage(
+                error: failReason ?? $"Copilot transport silent for >{InactivitySdkTimeout.TotalMinutes:0}min",
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: null,
+                promptCharCount: prompt?.Length ?? 0,
+                outputCharCount: contentBuilder.Length,
+                modelName: context.Model);
             yield break;
         }
 
         if (timedOut)
         {
-            yield return new AgentEvent(
-                AgentEventKind.Failed,
-                DateTimeOffset.UtcNow,
-                Error: $"Copilot SDK hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield return this.BuildFailedWithUsage(
+                error: $"Copilot SDK hard timeout: exceeded {budget.TotalMinutes:0}m budget",
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: null,
+                promptCharCount: prompt?.Length ?? 0,
+                outputCharCount: contentBuilder.Length,
+                modelName: context.Model);
             yield break;
         }
 
         if (failReason is not null)
         {
-            yield return new AgentEvent(AgentEventKind.Failed, DateTimeOffset.UtcNow, Error: failReason);
+            yield return this.BuildFailedWithUsage(
+                error: failReason,
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: null,
+                promptCharCount: prompt?.Length ?? 0,
+                outputCharCount: contentBuilder.Length,
+                modelName: context.Model);
             yield break;
         }
 
@@ -1404,6 +1451,57 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var input = model.InputPricePerMTok * inputTokens / 1_000_000m;
         var output = model.OutputPricePerMTok * outputTokens / 1_000_000m;
         return Math.Round(input + output, 6);
+    }
+
+    // 2026-05-13 root-cause fix: every Failed yield from a path that has
+    // already done provider work (streamed tokens / executed tool calls)
+    // MUST carry the accumulated usage so the cost ledger and Phase 51
+    // budget meter reflect what the operator actually paid for. Before
+    // this, a Copilot/SDK run that hit the per-task max-turns cap on
+    // turn 60 of a 13-pt workstream wrote `agent_usage(InputTokens=0,
+    // OutputTokens=0, CostUsd=$0)` even though the underlying provider
+    // session burned ~7.5 minutes of real tokens, and the operator
+    // saw a 0-cost generator next to a $7.31 evaluator on the same
+    // iter — creating the impression that the generator "didn't run".
+    //
+    // Use accumulated tokens when the SDK surfaced usage events; fall
+    // back to chars/4 (the same heuristic the Finished path uses) when
+    // the path never received a usage event before failing. Either way
+    // the consumer (PumpEvents / CrewQueueWorker accumulator /
+    // CrewStoryArtifactStrategy generator delegate) now receives a
+    // non-zero estimate instead of silently dropping the spend.
+    // The helper is `internal` (rather than private) so the
+    // Forge.Api.Tests project can pin its behaviour directly via
+    // `Phase58GeneratorCapTests.BuildFailedWithUsage_*`. The CSPROJ
+    // already grants InternalsVisibleTo for Forge.Api.Tests.
+    internal AgentEvent BuildFailedWithUsage(
+        string error,
+        long accumulatedInputTokens,
+        long accumulatedOutputTokens,
+        decimal? accumulatedCostUsd,
+        int promptCharCount,
+        int outputCharCount,
+        string modelName,
+        string? sessionId = null)
+    {
+        var modelInfo = this.models.Find(modelName);
+        var inTok = accumulatedInputTokens > 0
+            ? accumulatedInputTokens
+            : Math.Max(1, promptCharCount / 4);
+        var outTok = accumulatedOutputTokens > 0
+            ? accumulatedOutputTokens
+            : Math.Max(1, outputCharCount / 4);
+        var cost = accumulatedCostUsd is decimal c && c > 0m
+            ? c
+            : ComputeCost(modelInfo, inTok, outTok);
+        return new AgentEvent(
+            AgentEventKind.Failed,
+            DateTimeOffset.UtcNow,
+            Error: error,
+            InputTokens: inTok,
+            OutputTokens: outTok,
+            CostUsd: cost,
+            SessionId: sessionId);
     }
 
     /// <summary>

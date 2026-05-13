@@ -1822,7 +1822,37 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
-        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
+        // Phase 55 follow-up (operator-reported 2026-05-13 on
+        // local:UPDATE-HISTORY-IN-CL → architecture.md stalled at iter 13 /
+        // score 0 / $130.56) -- sequential-mode plan docs MUST use the
+        // canonical `plan-{key}` worktree slug to match what
+        // StorySpawnOrchestrator.RunPlanDocAsync uses. Without this, every
+        // Restart/Resume of a sequential-mode doc resolves wtPath to the
+        // legacy `spawn-{long-branch-slug}` path; EnsureWorktreeAsync
+        // detects the branch already registered to `plan-{key}` and
+        // *migrates* it (`git worktree remove --force` + Directory.Delete
+        // the old path, then re-add at the new path). The next 15 s
+        // scheduler tick re-enters RunPlanDocAsync (the doc isn't `pass`ed
+        // yet) and migrates the worktree back to `plan-{key}`, deleting
+        // the legacy path out from under the still-running architect's
+        // cwd. Generator narration: "The cwd doesn't exist… I'll edit the
+        // existing draft at the spawn-story worktree (the only worktree
+        // with the file)." Evaluator (which resolved its workspace to the
+        // same legacy path before migration): "architecture.md does not
+        // exist at the required path." → identical complaint every iter
+        // → stalled-no-convergence after 7 iters → loop exits with score 0.
+        // Passing the canonical slug here makes Restart/Resume reuse the
+        // exact same worktree the orchestrator owns, so no migration ever
+        // runs. `null` for legacy parallel-mode spawns keeps the historic
+        // shared `spawn-{slug}` worktree (parallel mode shares one
+        // worktree across all four docs, so legacy is the correct slug
+        // there).
+        var worktreeSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key)
+            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
+            : null;
+        var worktreePath = await this.git.EnsureWorktreeAsync(
+            repo, planBranch, worktreeBase, ct, worktreeSlug: worktreeSlug);
 
         // Phase 43 -- copy operator-uploaded attachments into the worktree.
         // Refresh from DB so attachments uploaded since the orchestrator
@@ -2759,6 +2789,50 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<ReviewFix> ProduceReviewFixAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, ReviewCommentContext comment, CancellationToken ct = default)
     {
+        // Phase 59 — deepest defense. If the workstream's PR is already
+        // merged/closed, the engineer's code change would never land
+        // anywhere useful (the upstream is sealed). Short-circuit before
+        // we spin up a workspace, copy attachments, and burn ~$0.10 on
+        // an LLM call whose output is discarded by the orchestrator's
+        // CommitFilesAsync throw. Any direct caller (admin endpoint,
+        // unit tests, future code) gets the same protection.
+        try
+        {
+            using var stalePrScope = this.scopeFactory.CreateScope();
+            var stalePrDb = stalePrScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var prIdList = ParseAgentsList(workstream.PrsJson);
+            if (prIdList.Count > 0)
+            {
+                var firstPrId = prIdList[0];
+                var prRow = await stalePrDb.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == firstPrId, ct);
+                if (prRow is not null
+                    && (string.Equals(prRow.Col, "merged", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(prRow.Col, "closed", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var col = prRow.Col.ToLowerInvariant();
+                    this.logger?.LogInformation(
+                        "ProduceReviewFixAsync: PR {PrId} for ws {WsId} is {Col}; "
+                        + "returning reply-only without invoking engineer.",
+                        firstPrId, workstream.Id, col);
+                    return new ReviewFix(
+                        FilePath: null,
+                        NewContent: null,
+                        ReplyBody: $"System: PR already {col} — no fix to produce.");
+                }
+            }
+        }
+        catch (Exception probeEx) when (probeEx is not OperationCanceledException)
+        {
+            // Fail-open: if the probe itself errored we let the original
+            // flow proceed. The orchestrator's CommitFilesAsync /
+            // RunReviewFixLoopAsync gates will catch the genuinely-stale
+            // case; we only want this layer to AVOID extra work in the
+            // happy detection path, not BLOCK legitimate fixes.
+            this.logger?.LogDebug(probeEx,
+                "ProduceReviewFixAsync: stale-PR probe failed for ws {WsId}; proceeding with normal flow.",
+                workstream.Id);
+        }
+
         var workspace = this.PrepareWorkspace(spawn.Id, $"fix-{Slug(workstream.Id)}-{Guid.NewGuid():N}");
         var safePath = comment.FilePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
 
@@ -3170,7 +3244,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // `crew` here was a no-op for any crew with PairedWithCrewId.
 
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await ResolveAgentRunConfigAsync(
-            db, crew, useEvaluatorRole: false, workspace, budget, ct);
+            db, crew, useEvaluatorRole: false, workspace, budget, ct,
+            // 2026-05-13 root-cause fix -- Phase 21.5 (30 turns / point).
+            // Without this, the dispatcher's global MaxTurns=60 default
+            // capped a 13-pt workstream's generator at turn 60 of an
+            // expected 390 (operator-reported on
+            // qq:TELEGRAM-MESSENGER-S Outbound Sender stage; agent_usage
+            // showed gen=$0/0tok next to eval=$7.31/464K because the
+            // cap-aborted Failed event also dropped accumulated usage --
+            // see AgentRunnerDispatcher.BuildFailedWithUsage for the
+            // companion fix). Mirrors CrewQueueWorker.cs:1250-1252.
+            maxTurns: storyPoints > 0 ? storyPoints * 30 : null);
 
         // Phase 41 -- apply per-loop tool restrictions (Bash revoked for
         // architect plan-doc loops). Records are immutable; layer the field
@@ -3216,7 +3300,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             try
             {
                 var (eId, eCtx, _, _) = await ResolveAgentRunConfigAsync(
-                    db, evalCrew, useEvaluatorRole: true, workspace, budget, ct);
+                    db, evalCrew, useEvaluatorRole: true, workspace, budget, ct,
+                    maxTurns: storyPoints > 0 ? storyPoints * 30 : null);
                 evalAgentId = eId;
                 evalContext = eCtx;
                 evalCrewId = evalCrew.Id;
@@ -3678,6 +3763,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
             string? capturedSessionId = null;
+            // 2026-05-13 root-cause fix -- capture the dispatcher's
+            // Failed-event error so DeliverableLoop can short-circuit
+            // before the evaluator runs against a cap-aborted partial
+            // output. See DeliverableLoop's FailureReason short-circuit
+            // and GeneratorFailureKinds.Classify for the receiving end.
+            string? failureReason = null;
             // Phase 54 -- capture per-AssistantUsageEvent samples so the
             // per-invocation row on agent_usage retains the sub-invocation
             // curve for richer UI later. Cleared on each invocation; null
@@ -3711,6 +3802,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 // Both SessionInfo (early) and Finished (final) may
                 // carry the id; latest wins.
                 if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
+                if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
+                {
+                    failureReason = evt.Error;
+                }
                 // Phase 54 -- a non-zero token tally on a single event is the
                 // SDK's per-turn usage report. Record the snapshot so the
                 // post-iter rollup can render a sub-invocation curve.
@@ -3725,6 +3820,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         atUtc = evt.At,
                     });
                 }
+            }
+
+            // 2026-05-13 root-cause fix -- when the dispatcher emitted a
+            // Failed event (per-task max-turns cap, hard timeout,
+            // transport silent, CLI exit), short-circuit the post-loop
+            // work (commit, build gate, no-progress check, memory
+            // upsert) and surface FailureReason to DeliverableLoop
+            // immediately. Running the build gate / no-progress check
+            // against a cap-aborted partial worktree would either throw
+            // BuildFailedException (drowning the original cap reason)
+            // or pass against incomplete edits (deceptively
+            // "build-clean"). The DeliverableLoop short-circuit handles
+            // the verdict, deliverable row, and pair-assignment stamp;
+            // we only need to deliver the Failure context here. The
+            // `finally` block below still runs (snapshot cleanup is
+            // safe).
+            if (!string.IsNullOrEmpty(failureReason))
+            {
+                return new GeneratorRunOutput(
+                    output.ToString(),
+                    cost,
+                    inTok,
+                    outTok,
+                    TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples),
+                    FailureReason: failureReason,
+                    FailureKind: GeneratorFailureKinds.Classify(failureReason));
             }
 
             // Phase 55 / Phase A.2 -- archive this iter's working
@@ -4068,7 +4189,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 cost,
                 inTok,
                 outTok,
-                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples));
+                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples),
+                FailureReason: failureReason,
+                FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason));
             }
             finally
             {
@@ -4672,7 +4795,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     internal static async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
         ForgeDbContext db, CrewRow crew, bool useEvaluatorRole,
-        string workspace, TimeSpan? budget, CancellationToken ct)
+        string workspace, TimeSpan? budget, CancellationToken ct,
+        // 2026-05-13 root-cause fix -- per-task max-turns cap (Phase 21.5
+        // semantics: 30 turns per story point). Without this, both the
+        // generator and evaluator AgentContext fell back to the global
+        // AgentRunnerOptions.MaxTurns = 60, capping a 13-pt workstream's
+        // gen at turn 60 of an expected 390. Mirrors the
+        // CrewQueueWorker.cs:1250-1252 and 1405/1702 plumbing pattern.
+        // Null preserves prior behaviour (callers that don't know the
+        // points still work; the dispatcher applies its global default).
+        int? maxTurns = null)
     {
         var agentId = useEvaluatorRole
             ? (crew.DefaultEvaluatorAgentId ?? crew.Lead)
@@ -4715,7 +4847,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
             Backend: backend,
             InvokeMode: invokeMode,
-            WallClockBudget: budget);
+            WallClockBudget: budget,
+            MaxTurns: maxTurns);
 
         return (agentId, context, backendStr, invokeStr);
     }

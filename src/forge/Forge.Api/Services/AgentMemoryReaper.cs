@@ -98,8 +98,19 @@ public sealed class AgentMemoryReaper : BackgroundService
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
-        var deleted = await db.AgentMemory
+        // SQLite EF cannot reliably translate DateTimeOffset comparisons
+        // (TEXT-stored ISO 8601 mostly orders correctly, but mixed-nullable
+        // casts trip the provider — see CrewQueueWorker.cs:1346 incident).
+        // Match the project convention: pull ids whose UpdatedAt is < cutoff
+        // client-side, then bulk-delete by primary key.
+        var stale = (await db.AgentMemory.AsNoTracking()
+            .Select(m => new { m.Id, m.UpdatedAt })
+            .ToListAsync(ct))
             .Where(m => m.UpdatedAt < cutoff)
+            .Select(m => m.Id)
+            .ToList();
+        var deleted = stale.Count == 0 ? 0 : await db.AgentMemory
+            .Where(m => stale.Contains(m.Id))
             .ExecuteDeleteAsync(ct);
 
         if (deleted > 0)
