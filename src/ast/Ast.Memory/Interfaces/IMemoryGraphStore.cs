@@ -6,19 +6,24 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
 using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
-/// Persistence contract for the memory graph, extending <see cref="IGraphStore"/>
-/// with temporal queries, expertise CRUD, and audit logging.
+/// Extended graph store for memory layer operations per architecture §5.1.
+/// Extends <see cref="IGraphStore"/>. Implementations: SqliteGraphStore (local), Neo4jMemoryGraphStore (team).
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
+    // Layer-filtered queries with temporal support
+
     /// <summary>
-    /// Gets nodes filtered by memory layer with optional temporal and node-type filters.
+    /// Gets nodes by memory layer with optional temporal and filter criteria.
     /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
@@ -30,14 +35,16 @@ public interface IMemoryGraphStore : IGraphStore
     // ── Edge queries ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Gets edges filtered by semantic relation with optional layer and temporal filters.
+    /// Gets edges by semantic relation with optional layer and temporal criteria.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
-        string? memoryLayer = null,
-        int? atCommitIndex = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default);
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // Temporal-aware upsert and retirement
 
     /// <summary>
     /// Inserts or updates a node with the given version range.
@@ -53,7 +60,8 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken cancellationToken = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Inserts or updates an edge with the given version range.
@@ -77,7 +85,9 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpdateEdgeMetadataAsync(
         string edgeId,
         IDictionary<string, object?> metadata,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
+
+    // Expertise CRUD
 
     /// <summary>
     /// Returns non-archived expertise entries for a target node.
@@ -88,7 +98,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts or updates an expertise entry.
+    /// Upserts an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
@@ -105,9 +115,11 @@ public interface IMemoryGraphStore : IGraphStore
     /// Returns archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
-        string? targetNodeId = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default);
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // Statistics and audit
 
     /// <summary>
     /// Returns aggregate statistics for the memory graph.
@@ -116,7 +128,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Records a mutation in the audit log.
+    /// Logs an audit event.
     /// </summary>
     Task LogAuditAsync(
         string sessionId,
