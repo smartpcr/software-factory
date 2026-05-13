@@ -2724,6 +2724,18 @@ public static class StoriesEndpoints
         var events = await db.TaskTranscriptEvents.Where(e => e.WorkItemId == workItemId).ToListAsync();
         db.TaskTranscriptEvents.RemoveRange(events);
 
+        // (2b) Delete open questions for this artifact. Mirrors
+        // POST /api/workstreams/{id}/restart (WorkstreamsEndpoints.cs §3).
+        // The deeper EnsureFreshDocWorkspaceAsync helper also purges
+        // questions, but it only runs *after* EnsureWorktreeAsync inside
+        // ResumeSingleArtifactAsync — when that step fails (e.g. git fetch
+        // auth failure on the spawn's BaseBranch) the cleanup is skipped
+        // and the operator's stale `Q n` badge never clears. Doing it here
+        // synchronously guarantees Restart = clean slate regardless of
+        // whether the downstream resume succeeds.
+        var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == workItemId).ToListAsync();
+        db.DeliverableQuestions.RemoveRange(questions);
+
         // (3) Cancel any queued/active TaskQueue rows.
         var queueRows = await db.TaskQueue
             .Where(q => q.WorkItemId == workItemId && q.State != "completed" && q.State != "cancelled")
@@ -2797,6 +2809,7 @@ public static class StoriesEndpoints
             status = "restarted",
             deliverablesCleaned = deliverables.Count,
             eventsCleaned = events.Count,
+            questionsCleaned = questions.Count,
             queueRowsCancelled = queueRows.Count,
         });
     }
