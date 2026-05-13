@@ -56,6 +56,8 @@ public sealed class MemoryOptions
     /// Gets or sets the PageRank multiplier for decay slowdown (range 1.0–1.5).
     /// </summary>
     public double CentralityBoostFactor { get; set; } = 0.5;
+    public ScoringWeights Scoring { get; set; } = new();
+    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
     /// <summary>
     /// Gets or sets the storage backend.

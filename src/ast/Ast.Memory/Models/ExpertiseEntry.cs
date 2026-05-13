@@ -51,8 +51,8 @@ public class ExpertiseEntry
     /// <summary>Vector of Title + " " + Body.</summary>
     public float[]? Embedding { get; set; }
 
-    /// <summary>SHA-256(Title + Body + TargetNodeId).</summary>
-    public required string ContentHash { get; init; }
+    /// <summary>SHA-256(Title + Body + TargetNodeId) for dedup.</summary>
+    public string ContentHash { get; init; } = string.Empty;
 
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
@@ -61,6 +61,127 @@ public class ExpertiseEntry
 
 /// <summary>
 /// An expertise node representing agent-authored knowledge about code.
+/// </summary>
+public record Citation(string NodeId, string? CommitSha, string? Snippet);
+
+/// <summary>
+/// Kind of expertise per architecture §4.2.
+/// </summary>
+public enum ExpertiseKind
+{
+    /// <summary>
+    /// Deterministic ID in the format "expertise:{kind}:{hash8}".
+    /// </summary>
+    public string Id { get; }
+
+    public ExpertiseKind Kind { get; }
+    public string Title { get; }
+    public string Body { get; }
+    public string TargetNodeId { get; }
+
+    private string scope = "exact";
+
+    public string Scope
+    {
+        get => this.scope;
+        init
+        {
+            if (value is not ("exact" or "subtree"))
+            {
+                throw new ArgumentException($"Scope must be \"exact\" or \"subtree\", got \"{value}\".", nameof(this.Scope));
+            }
+
+            this.scope = value;
+        }
+    }
+
+    private double confidence = 1.0;
+
+    public double Confidence
+    {
+        get => this.confidence;
+        init
+        {
+            if (value < 0.0 || value > 1.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(this.Confidence), value, "Confidence must be between 0.0 and 1.0.");
+            }
+
+            this.confidence = value;
+        }
+    }
+
+    public bool Archived { get; init; }
+    public string SourceAgent { get; }
+    public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
+    public float[]? Embedding { get; init; }
+
+    /// <summary>SHA-256 hex of Title + Body + TargetNodeId (per architecture.md §4.2, A-18).</summary>
+    public string ContentHash { get; }
+
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    public ExpertiseEntry(ExpertiseKind kind, string title, string body, string targetNodeId, string sourceAgent)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(title);
+        ArgumentException.ThrowIfNullOrEmpty(body);
+        ArgumentException.ThrowIfNullOrEmpty(targetNodeId);
+        ArgumentException.ThrowIfNullOrEmpty(sourceAgent);
+
+        this.Kind = kind;
+        this.Title = title;
+        this.Body = body;
+        this.TargetNodeId = targetNodeId;
+        this.SourceAgent = sourceAgent;
+
+        var idHash = ComputeHash8(title + body + targetNodeId);
+        this.Id = $"expertise:{kind.ToString().ToLowerInvariant()}:{idHash}";
+        this.ContentHash = ComputeFullHash(title + body + targetNodeId);
+    }
+
+    /// <summary>
+    /// Creates a copy with updated confidence and timestamp.
+    /// </summary>
+    public ExpertiseEntry WithConfidence(double newConfidence)
+    {
+        return new ExpertiseEntry(this.Kind, this.Title, this.Body, this.TargetNodeId, this.SourceAgent)
+        {
+            Confidence = Math.Clamp(newConfidence, 0.0, 1.0),
+            Archived = this.Archived,
+            Evidence = this.Evidence,
+            Embedding = this.Embedding,
+            Scope = this.Scope,
+            CreatedAt = this.CreatedAt,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    private static string ComputeHash8(string input)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes)[..8].ToLowerInvariant();
+    }
+
+    public ExpertiseKind Kind { get; init; }
+    public string Title { get; init; }
+    public string Body { get; init; }
+    public string TargetNodeId { get; init; }
+    public string Scope { get; init; }
+    public double Confidence { get; set; }
+    public bool Archived { get; set; }
+    public string? SourceAgent { get; init; }
+    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+    public float[]? Embedding { get; set; }
+    public string ContentHash { get; init; } = string.Empty;
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// An agent-authored knowledge entry attached to a code node.
+/// Per architecture.md §4.2.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
