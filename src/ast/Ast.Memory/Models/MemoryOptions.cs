@@ -12,18 +12,16 @@ namespace Ast.Memory.Models;
 /// </summary>
 public sealed class MemoryOptions
 {
-    // ── Similarity / Decay ──────────────────────────────────────────────
-
-    /// <summary>Cosine-similarity threshold for semantic deduplication.</summary>
+    /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Multiplicative factor applied when a node is stale (no longer in HEAD).</summary>
+    /// <summary>Confidence multiplier on substantive code change.</summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Multiplicative factor applied for minor (whitespace-only) changes.</summary>
+    /// <summary>Confidence multiplier on whitespace/comment-only change.</summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Confidence floor below which expertise entries are auto-archived.</summary>
+    /// <summary>Expertise nodes below this are soft-deleted.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
     public double DecayHalfLifeDays { get; set; } = 1095;
     public int TokenBudgetDefault { get; set; } = 8000;
@@ -31,41 +29,22 @@ public sealed class MemoryOptions
     public int IncrementalSyncDebounceMs { get; set; } = 1000;
     public double CentralityBoostFactor { get; set; } = 0.5;
 
-    /// <summary>Scoring weight distribution for relevance ranking.</summary>
-    public ScoringWeights Scoring { get; set; } = new();
-
-    // ── Backend ─────────────────────────────────────────────────────────
-
-    /// <summary>Graph storage backend.</summary>
+    /// <summary>Storage backend selection.</summary>
     public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
-    /// <summary>File path for the SQLite database (used when Backend is Sqlite).</summary>
+    /// <summary>Path to the SQLite database file.</summary>
     public string? SqlitePath { get; set; }
 
-    /// <summary>Connection URI for Neo4j (used when Backend is Neo4j).</summary>
+    /// <summary>Neo4j connection URI.</summary>
     public string? Neo4jUri { get; set; }
 
-    /// <summary>Neo4j username (used when Backend is Neo4j).</summary>
-    public string? Neo4jUser { get; set; }
-
-    /// <summary>Neo4j password (used when Backend is Neo4j).</summary>
-    public string? Neo4jPassword { get; set; }
-
-    /// <summary>Endpoint for Qdrant vector store.</summary>
+    /// <summary>Qdrant vector-store endpoint.</summary>
     public string? QdrantEndpoint { get; set; }
 
     /// <summary>
-    /// Dimensionality of embedding vectors stored in Qdrant.
-    /// Used by <c>Neo4jMemoryGraphStore.InitializeAsync</c> to create/verify
-    /// the Qdrant collection. Default is 768 (common for sentence-transformers).
-    /// </summary>
-    public int EmbeddingDimension { get; set; } = 768;
-
-    /// <summary>
-    /// Model name for the Ollama LLM used by ConsolidationService and
-    /// DetectCommunitiesAsync. No hardcoded default — the operator must
-    /// configure this to match their locally deployed Ollama model
-    /// at <c>http://localhost:11434</c>.
+    /// Operator-configured model name for the Ollama LLM used by
+    /// ConsolidationService and DetectCommunitiesAsync. No hardcoded
+    /// default — depends on what the operator has deployed.
     /// </summary>
     public string? ConsolidationModelName { get; set; }
     public ScoringWeights Weights { get; set; } = new();
