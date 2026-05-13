@@ -69,11 +69,19 @@ public sealed class TaskChannel
 
         // Persist (best-effort). The scope is freshly created so the helper
         // can be called from background services that don't already have one.
+        // Phase 56 follow-up (operator-reported 2026-05-13 "loading full prompt
+        // never resolves" on qq:MICROSOFT-TEAMS-MESS) -- capture the persisted
+        // row id and ship it on the SignalR broadcast so the live store can
+        // address the row directly via GET /api/work-items/{wi}/transcript/
+        // {eventId:long}. Pre-fix the broadcast omitted id, the client
+        // synthesised one from Date.now()+Math.random() (a float), and the
+        // per-event endpoint's :long route constraint always 404'd.
+        long persistedId = 0;
         try
         {
             using var scope = this.scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
+            var row = new TaskTranscriptEventRow
             {
                 WorkItemId = workItemId,
                 Kind = kind,
@@ -81,8 +89,10 @@ public sealed class TaskChannel
                 CrewId = crewId,
                 PayloadJson = json,
                 At = at,
-            });
+            };
+            db.TaskTranscriptEvents.Add(row);
             await db.SaveChangesAsync(ct);
+            persistedId = row.Id;
 
             // Lazy cap eviction. We only check every ~100th write so the
             // common case is one INSERT, no DELETE.
@@ -96,13 +106,15 @@ public sealed class TaskChannel
             this.logger.LogDebug(ex, "TaskTranscript persist failed for {WorkItemId}", workItemId);
         }
 
-        // Broadcast.
+        // Broadcast. `id` is 0 when the persistence above threw -- the client
+        // treats that as "not addressable" and skips the per-event refetch.
         try
         {
             await this.hub.Clients.Group(GroupName(workItemId)).SendAsync(
                 MethodName,
                 new
                 {
+                    id = persistedId,
                     workItemId,
                     kind,
                     agentId,

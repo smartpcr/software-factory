@@ -11,7 +11,7 @@
 // `GET /api/work-items/{wi}/transcript/{eventId}` per affected event
 // and replace the payload with the untruncated version before render.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 
@@ -84,16 +84,53 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
   // actually click it.
   const [failedById, setFailedById] = useState<Record<number, string>>({});
 
+  // Phase 56 follow-up (operator-reported 2026-05-13: "loading full prompt…
+  // never resolves; no button to click") — refs mirror the bookkeeping
+  // state so the auto-fetch useEffect can read the latest values without
+  // including them in its dependency array. Pre-fix the deps included
+  // `loadingIds`/`failedById`/`fullById` and the effect's first action
+  // was `setLoadingIds(...)`. React then ran the cleanup (`cancelled =
+  // true`) BEFORE the fetch's `.then(...)` resolved, so the post-fetch
+  // setters bailed out — leaving `loadingIds` populated forever and the
+  // "Retry" button (which only renders when `failureReason` is set AND
+  // `isLoadingFull` is false) never appeared.
+  const fullByIdRef = useRef(fullById);
+  const loadingIdsRef = useRef(loadingIds);
+  const failedByIdRef = useRef(failedById);
+  useEffect(() => { fullByIdRef.current = fullById; }, [fullById]);
+  useEffect(() => { loadingIdsRef.current = loadingIds; }, [loadingIds]);
+  useEffect(() => { failedByIdRef.current = failedById; }, [failedById]);
+
   useEffect(() => {
     const needsFetch = forIter.filter((p) => {
-      if (fullById[p.id]) return false;
-      if (loadingIds.has(p.id)) return false;
-      if (failedById[p.id] !== undefined) return false;
+      // Phase 56 follow-up — negative ids are synthesised by the live store
+      // for SignalR events whose persistence step failed (or older server
+      // builds that didn't ship `id`). They are not addressable in the DB,
+      // so the per-event endpoint would always 404. Skip the auto-fetch
+      // and leave the "! truncated" hint visible; the operator can still
+      // manually click "Load full" after a transcript reload (which
+      // re-fetches via /transcript and gets real positive DB ids).
+      if (typeof p.id !== 'number' || p.id <= 0) return false;
+      if (fullByIdRef.current[p.id]) return false;
+      if (loadingIdsRef.current.has(p.id)) return false;
+      if (failedByIdRef.current[p.id] !== undefined) return false;
       return isTruncated(p.payload.systemPrompt) || isTruncated(p.payload.userPrompt);
     });
     if (needsFetch.length === 0) return;
 
-    let cancelled = false;
+    // Phase 56 follow-up #2 — DO NOT cancel in-flight fetches. The original
+    // cancel guard (`let cancelled = false; ... if (cancelled) return;`)
+    // looked correct but the closure-captured flag fires from the cleanup
+    // EVERY time `forIter` changes, which happens on every SignalR push for
+    // this work item. Result: the fetch resolves but its `.then(...)` bails
+    // out before calling `setLoadingIds(prev => prev.delete(id))`, so the
+    // loading flag stays true forever and the operator never sees the
+    // resolved prompt or a Retry button. The dedupe filter above
+    // (`loadingIdsRef.current.has`) already prevents duplicate concurrent
+    // fetches; the per-event cache key (`fullById[id]`) makes idempotent
+    // result writes safe even if the work item changes mid-fetch (the
+    // stale id just sits in the cache, never referenced by the new
+    // workstream's forIter).
     setLoadingIds((prev) => {
       const next = new Set(prev);
       for (const p of needsFetch) next.add(p.id);
@@ -103,7 +140,6 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
     void Promise.allSettled(
       needsFetch.map((p) => forgeApi.getWorkItemTranscriptEvent(workItemId, p.id)),
     ).then((results) => {
-      if (cancelled) return;
       setFullById((prev) => {
         const next = { ...prev };
         results.forEach((r, idx) => {
@@ -131,9 +167,14 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
         return next;
       });
     });
-
-    return () => { cancelled = true; };
-  }, [forIter, workItemId, fullById, loadingIds, failedById]);
+    // Intentionally NOT depending on fullById/loadingIds/failedById — see
+    // the ref-mirror block above. Including them caused the original
+    // cancel-race bug. `forIter` (input data) and `workItemId` (which work
+    // item we're looking at) are the only legitimate inputs that should
+    // retrigger the auto-fetch. No cleanup function — fetches always
+    // settle so the loading indicator clears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forIter, workItemId]);
 
   if (promptEvents.length === 0) {
     return (
@@ -176,6 +217,13 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
         const failureReason = failedById[p.id];
         const wasTruncated = !full
           && (isTruncated(p.payload.systemPrompt) || isTruncated(p.payload.userPrompt));
+        // Phase 56 follow-up — synthetic ids (negative) are not addressable
+        // in the DB. Hide the manual "Load full" button for these so we
+        // don't invite the operator into a guaranteed-404 retry loop. The
+        // "! truncated" hint stays visible (informational only); the next
+        // /transcript reload will replace the synthetic id with the real
+        // positive DB id and the button will re-appear automatically.
+        const isAddressable = typeof p.id === 'number' && p.id > 0;
         const onLoadFull = async () => {
           // Manual click — clear the prior failure marker so the
           // auto-retry guard doesn't immediately short-circuit this
@@ -219,7 +267,8 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
             loadingFull={isLoadingFull}
             stillTruncated={wasTruncated && !isLoadingFull}
             failureReason={!isLoadingFull ? failureReason : undefined}
-            onLoadFull={wasTruncated && !isLoadingFull ? onLoadFull : undefined}
+            onLoadFull={wasTruncated && !isLoadingFull && isAddressable ? onLoadFull : undefined}
+            liveOnly={wasTruncated && !isLoadingFull && !isAddressable}
           />
         );
       })}
@@ -233,12 +282,14 @@ function PromptCard({
   stillTruncated,
   failureReason,
   onLoadFull,
+  liveOnly,
 }: {
   prompt: PromptPayload;
   loadingFull?: boolean;
   stillTruncated?: boolean;
   failureReason?: string;
   onLoadFull?: () => void;
+  liveOnly?: boolean;
 }) {
   const [sysOpen, setSysOpen] = useState(false);
   const role = prompt.role ?? 'unknown';
@@ -307,6 +358,14 @@ function PromptCard({
               >
                 {failureReason ? 'Retry' : 'Load full'}
               </button>
+            )}
+            {liveOnly && (
+              <span
+                title="This event arrived via the live SignalR push and isn't addressable in the DB yet (or the persistence step failed). Reload the page to fetch the persisted row with its full payload."
+                style={{ color: 'var(--text-tertiary, #8d94a3)', fontSize: 10 }}
+              >
+                · live · reload page for full payload
+              </span>
             )}
           </>
         )}

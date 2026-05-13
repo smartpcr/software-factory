@@ -123,6 +123,24 @@ public interface IStoryGitOps
     Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 59 — returns <c>true</c> iff a worktree for <paramref name="branch"/>
+    /// is currently registered with git AND its on-disk directory exists.
+    /// Used by <c>StorySpawnOrchestrator.DriveReviewAsync</c> to gate the
+    /// review-fix loop: when a workstream's PR merges, Phase 49's cleanup
+    /// runs <see cref="RemoveWorktreeAsync"/>, after which any subsequent
+    /// review-fix attempt (e.g. for a late-arriving reviewer comment) would
+    /// fail in <c>CommitFilesAsync</c> because the working tree is gone.
+    /// Probing up front lets the orchestrator skip the fix loop and
+    /// auto-resolve straggler comments instead of burning engineer tokens
+    /// on commits that will throw.
+    /// <para>Best-effort: on any probe failure (transient git invocation
+    /// error, permissions issue) returns <c>true</c> so callers fall back
+    /// to their existing try/catch-around-CommitFilesAsync path. Never
+    /// throws.</para>
+    /// </summary>
+    Task<bool> WorktreeExistsAsync(RepoRow? repo, string branch, CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 42 — stage one repo-relative path in <paramref name="branch"/>'s
     /// worktree and commit. Used by per-iteration plan-doc commits so the
     /// Worktree tab shows real history. Serialized per-branch so concurrent

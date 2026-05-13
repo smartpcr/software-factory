@@ -785,6 +785,40 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
     }
 
+    /// <inheritdoc />
+    public async Task<bool> WorktreeExistsAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+    {
+        // Phase 59 — best-effort probe. Returns false when the repo / branch
+        // / worktree is clearly absent; defaults to true on probe failure so
+        // the caller falls back to its existing try/catch-around-Commit path
+        // rather than mis-classifying a transient git error as "worktree
+        // gone" and auto-resolving a live workstream's reviewer comments.
+        try
+        {
+            if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return false;
+            if (!Directory.Exists(repo.CloneRoot)) return false;
+
+            var existing = await this.TryFindExistingWorktreeAsync(repo.CloneRoot, branch, ct);
+            if (string.IsNullOrEmpty(existing)) return false;
+
+            // Phase 55 — `TryFindExistingWorktreeAsync` may legitimately
+            // return the main worktree (cloneRoot itself) when the operator
+            // checked the clone out onto this branch. That counts as
+            // "worktree exists for the branch" from the orchestrator's
+            // perspective — DriveReviewAsync's CommitFilesAsync will
+            // happily target the main worktree. So no special-casing
+            // needed here.
+            return Directory.Exists(existing);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogDebug(ex,
+                "WorktreeExistsAsync({Branch}) probe failed; assuming present so the caller falls back to its commit-throws path.",
+                branch);
+            return true;
+        }
+    }
+
     public async Task<string> CommitPathInWorktreeAsync(
         RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default)
     {

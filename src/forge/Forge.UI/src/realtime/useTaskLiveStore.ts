@@ -3,6 +3,25 @@ import { create } from 'zustand';
 import { HubConnectionBuilder, LogLevel, HubConnectionState, type HubConnection } from '@microsoft/signalr';
 import { forgeApi } from '@/api/forgeApi';
 
+// Phase 56 follow-up — synthetic id generator for SignalR-pushed events when
+// the server payload is missing the persisted row id (legacy server build,
+// or the persistence step inside TaskChannel.EmitAsync threw). Negative
+// monotonically-decreasing integers so:
+//   1. The value parses as int64 — `/transcript/{eventId:long}` route still
+//      matches at the constraint layer (we get a clean 404 from the handler
+//      instead of a 404 from no-route-matched, which keeps client error
+//      diagnostics readable).
+//   2. The value is distinguishable from real DB ids (which are always
+//      positive AUTOINCREMENT). PromptView's auto-fetch checks `id > 0`
+//      and skips negative ids — they're not addressable, so the per-event
+//      refetch would always 404. The "! truncated" hint stays visible so
+//      the operator knows the live event hasn't been persisted yet.
+let syntheticEventIdCounter = 0;
+export function nextSyntheticEventId(): number {
+  syntheticEventIdCounter -= 1;
+  return syntheticEventIdCounter;
+}
+
 // ─── Types (mirrors Forge.Api/Contracts/TaskExecutionSnapshot) ────────────
 
 export interface TaskTranscriptEvent {
@@ -172,10 +191,24 @@ async function ensureTaskConnection(): Promise<HubConnection> {
     // Phase 16.7 — single SignalR method routes per-work-item events. The
     // payload's `workItemId` discriminator picks which entry the event
     // updates; the `kind` field picks the renderer in the UI.
-    taskConnection.on('task.event', (msg: { workItemId?: string; kind?: string; agentId?: string; crewId?: string; payload?: unknown; at?: string }) => {
+    taskConnection.on('task.event', (msg: { id?: number; workItemId?: string; kind?: string; agentId?: string; crewId?: string; payload?: unknown; at?: string }) => {
       if (!msg?.workItemId || !msg.kind) return;
+      // Phase 56 follow-up (2026-05-13) — TaskChannel.EmitAsync now ships the
+      // persisted row id on every broadcast. Use it when present so the
+      // PromptView's per-event refetch
+      // (GET /api/work-items/{wi}/transcript/{eventId:long}) can resolve the
+      // full untruncated payload. Fallback below is for events from older
+      // server builds OR from an EmitAsync invocation whose persistence step
+      // threw (the SignalR push still happens with id=0 in that case): use a
+      // monotonically decreasing NEGATIVE integer so the value still parses
+      // as :long (route match, not 400/404 from constraint), then PromptView
+      // suppresses the per-event refetch for negative ids since they are
+      // not addressable in the DB.
+      const rawId = typeof msg.id === 'number' && Number.isFinite(msg.id) && msg.id > 0
+        ? msg.id
+        : nextSyntheticEventId();
       const evt: TaskTranscriptEvent = {
-        id: Date.now() + Math.random(), // server doesn't ship the row id; transient ordering is fine
+        id: rawId,
         workItemId: msg.workItemId,
         kind: msg.kind,
         agentId: msg.agentId ?? null,

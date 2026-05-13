@@ -108,8 +108,111 @@ public static class DeliverableKinds
 /// only emit a single cumulative tally. Default null preserves source
 /// compatibility with existing call sites that construct
 /// <c>new GeneratorRunOutput(text, cost, in, out)</c>.
+/// <para>
+/// 2026-05-13 root-cause fix (max-turns cap) — when the generator's
+/// underlying invocation aborted with an <c>AgentEventKind.Failed</c>
+/// event (per-task max-turns cap, hard timeout, transport silent,
+/// non-zero CLI exit), <paramref name="FailureReason"/> carries the
+/// dispatcher's error message and <paramref name="FailureKind"/> a
+/// machine-classifier (see <see cref="GeneratorFailureKinds"/>). The
+/// loop short-circuits on non-null <paramref name="FailureReason"/>:
+/// no evaluator runs, the deliverable lands as <c>verdict="stalled"</c>
+/// with the reason in <see cref="DeliverableRow.Notes"/>, and the
+/// already-accumulated tokens/cost are still persisted to the agent
+/// usage ledger via <c>WriteUsageAsync</c>. Without this, the loop
+/// would feed the partial/corrupt generator output to the evaluator
+/// and queue another iter against the same broken cap (operator-paid
+/// $7.31 evaluator on a $0 cap-aborted generator on
+/// qq:TELEGRAM-MESSENGER-S, 2026-05-13).
+/// </para>
 /// </remarks>
-public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0, string? TurnSamplesJson = null);
+public sealed record GeneratorRunOutput(
+    string OutputText,
+    decimal CostUsd,
+    long InputTokens = 0,
+    long OutputTokens = 0,
+    string? TurnSamplesJson = null,
+    string? FailureReason = null,
+    string? FailureKind = null);
+
+/// <summary>
+/// 2026-05-13 root-cause fix — machine-classifier strings for
+/// <see cref="GeneratorRunOutput.FailureKind"/>. The DeliverableLoop
+/// short-circuit, the live-channel <c>task.iteration.stalled-generator</c>
+/// event, and the Phase 52 pair-assignment outcome ledger all read these
+/// constants so a UI/operator can distinguish "bumped against the per-task
+/// max-turns cap (raise points and Resume)" from a transport hiccup or a
+/// CLI crash without parsing the free-form provider error text.
+/// </summary>
+public static class GeneratorFailureKinds
+{
+    /// <summary>Per-task max-turns cap (Phase 21.5: 30 turns / point).
+    /// Recovery: bump <c>WorkItem.Points</c> or
+    /// <c>TaskQueue.MaxIterOverride</c> and Resume.</summary>
+    public const string MaxTurns = "generator-max-turns";
+
+    /// <summary>Hard wall-clock budget exceeded (per-task wall-clock
+    /// budget defaults to 30 min / point).</summary>
+    public const string Timeout = "generator-timeout";
+
+    /// <summary>Underlying transport went silent for longer than the
+    /// inactivity watchdog (Copilot SDK transport drop / server crash).
+    /// </summary>
+    public const string Inactive = "generator-inactive";
+
+    /// <summary>CLI runner exited with a non-zero code (claude / copilot
+    /// CLI crash, malformed args, mid-stream OOM).</summary>
+    public const string CliExit = "generator-cli-exit";
+
+    /// <summary>Provider HTTP error (Anthropic 4xx/5xx after retries
+    /// exhausted, etc).</summary>
+    public const string ProviderError = "generator-provider-error";
+
+    /// <summary>Catch-all when the dispatcher emitted Failed but the
+    /// error string didn't match any of the more specific patterns.
+    /// </summary>
+    public const string Other = "generator-failed";
+
+    /// <summary>
+    /// Classify a free-form Failed-event error message into one of the
+    /// kinds above. Pattern-matching is conservative: we look for the
+    /// exact phrases the dispatcher emits (see
+    /// <c>AgentRunnerDispatcher.BuildFailedWithUsage</c> call sites).
+    /// Unknown errors fall through to <see cref="Other"/>.
+    /// </summary>
+    public static string Classify(string? error)
+    {
+        if (string.IsNullOrEmpty(error)) return Other;
+        // Copilot SDK / CrewQueueWorker max-turn loop emits
+        // "Max turns ({n}) reached" verbatim (CrewQueueWorker.cs ~1450,
+        // mirrored in the Copilot/SDK loop helpers). Match either
+        // wording to be robust against minor phrasing tweaks.
+        if (error.Contains("Max turns", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("max-turns", StringComparison.OrdinalIgnoreCase))
+        {
+            return MaxTurns;
+        }
+        if (error.Contains("hard timeout", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("exceeded", StringComparison.OrdinalIgnoreCase) && error.Contains("budget", StringComparison.OrdinalIgnoreCase))
+        {
+            return Timeout;
+        }
+        if (error.Contains("transport silent", StringComparison.OrdinalIgnoreCase))
+        {
+            return Inactive;
+        }
+        if (error.Contains(" exit=", StringComparison.OrdinalIgnoreCase))
+        {
+            return CliExit;
+        }
+        if (error.StartsWith("Anthropic ", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("HTTP", StringComparison.OrdinalIgnoreCase) && error.Contains("status", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProviderError;
+        }
+        return Other;
+    }
+}
 
 /// <summary>One evaluator turn's raw output + cost.</summary>
 /// <remarks>
@@ -401,6 +504,97 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // (a) generator
             var gen = await request.Generator(iter, iterPrelude, ct);
             await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, gen.TurnSamplesJson, ct);
+
+            // 2026-05-13 root-cause fix — when the underlying agent
+            // invocation aborted (per-task max-turns cap, hard timeout,
+            // transport silent, CLI crash), the generator delegate now
+            // surfaces the failure on
+            // `GeneratorRunOutput.FailureReason/FailureKind`. Short-
+            // circuit the loop BEFORE the evaluator runs: a cap-aborted
+            // generator either left no edits (empty diff) or partial
+            // uncommitted edits the evaluator would grade on. Either way,
+            // burning $7+/iter of evaluator tokens against a known-broken
+            // generator output is operator-visible waste. Persist a
+            // `verdict="stalled"` deliverable row carrying the failure
+            // reason so the operator sees the dispatch outcome and can
+            // fix root cause (bump points / Resume) before re-running.
+            // Reuse the existing "stalled" verdict so all the existing
+            // exact-match routing in CrewQueueWorker / StorySpawnOrchestrator
+            // / TaskExecutionEndpoints / live-channel timeline continues
+            // to recognize the row as a recoverable stall (Resume path
+            // re-enters the loop at iter+1 once the operator addresses
+            // the root cause).
+            if (!string.IsNullOrEmpty(gen.FailureReason))
+            {
+                var failKind = !string.IsNullOrEmpty(gen.FailureKind)
+                    ? gen.FailureKind!
+                    : GeneratorFailureKinds.Classify(gen.FailureReason);
+                totalCost += gen.CostUsd;
+
+                var stalledNote = $"GENERATOR FAILED ({failKind}): {gen.FailureReason}\n\n"
+                    + "The evaluator was skipped to avoid burning tokens against a "
+                    + "known-broken generator output. Resume after fixing root cause "
+                    + "(e.g., bump WorkItem.Points or TaskQueue.MaxIterOverride for "
+                    + $"`{GeneratorFailureKinds.MaxTurns}`).";
+                if (!string.IsNullOrEmpty(notesForNext))
+                {
+                    stalledNote += "\n\n---\n\n" + notesForNext;
+                }
+                var stalledRow = new DeliverableRow
+                {
+                    WorkItemId = request.WorkItemId,
+                    CrewId = request.CrewId,
+                    GeneratorAgentId = request.GeneratorAgentId,
+                    EvaluatorAgentId = pinnedEvaluator,
+                    Iter = iter,
+                    Score = 0,
+                    DimsJson = "{}",
+                    Verdict = "stalled",
+                    Notes = stalledNote,
+                    GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
+                    GenCostUsd = gen.CostUsd,
+                    EvalCostUsd = 0m,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                };
+                this.db.Deliverables.Add(stalledRow);
+                await this.db.SaveChangesAsync(ct);
+                rowIds.Add(stalledRow.Id);
+
+                await this.UpdatePairAssignmentTotalsAsync(
+                    pairAssignmentId,
+                    iter,
+                    gen.InputTokens,
+                    gen.OutputTokens,
+                    gen.CostUsd,
+                    latestScore: 0,
+                    ct);
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.Cancelled,
+                    sloppyReason: failKind,
+                    finalScore: 0,
+                    ct);
+
+                await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-generator", new
+                {
+                    iter,
+                    failureKind = failKind,
+                    failureReason = gen.FailureReason,
+                    generatorAgentId = request.GeneratorAgentId,
+                    evaluatorAgentId = pinnedEvaluator,
+                    genCostUsd = gen.CostUsd,
+                    genInputTokens = gen.InputTokens,
+                    genOutputTokens = gen.OutputTokens,
+                    totalCostUsd = totalCost,
+                }, ct);
+
+                return new DeliverableLoopResult(
+                    "stalled",
+                    iter,
+                    FinalScore: 0,
+                    rowIds,
+                    totalCost);
+            }
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);

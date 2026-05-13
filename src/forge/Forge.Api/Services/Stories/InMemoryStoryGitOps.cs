@@ -23,6 +23,10 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     // (repoId | "_default") + "@" + branch → tree (path → content)
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> trees = new();
     private readonly ConcurrentDictionary<string, string> tips = new();
+    // Phase 59 — branches whose worktree was explicitly removed via
+    // RemoveWorktreeAsync. Used by WorktreeExistsAsync so tests can model
+    // the "PR merged → worktree wiped" sequence without a real disk.
+    private readonly ConcurrentDictionary<string, bool> removedBranches = new();
 
     public Task EnsureBranchAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
@@ -111,7 +115,25 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     /// throws" which a no-op trivially satisfies.
     /// </summary>
     public Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default)
-        => Task.CompletedTask;
+    {
+        this.removedBranches[Key(repo, branch)] = true;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Phase 59 — in-memory probe. Returns <c>false</c> after the test has
+    /// called <see cref="RemoveWorktreeAsync"/> for this (repo, branch); the
+    /// in-memory tree dictionary by itself can't model "branch exists but
+    /// worktree was wiped", so the explicit remove tracking is the test
+    /// hook. Defaults to <c>true</c> when the branch has any tree row, and
+    /// <c>false</c> when no tree row exists OR a prior remove was recorded.
+    /// </summary>
+    public Task<bool> WorktreeExistsAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+    {
+        var key = Key(repo, branch);
+        if (this.removedBranches.ContainsKey(key)) return Task.FromResult(false);
+        return Task.FromResult(this.trees.ContainsKey(key));
+    }
 
     /// <summary>
     /// In-memory commit — appends the file content to the branch tree. Mirrors
