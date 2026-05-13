@@ -18,5 +18,6 @@ public record ScoringWeights
     public double Recency { get; init; } = 0.15;
     public double Expertise { get; init; } = 0.10;
 
-    public double Sum => this.Structural + this.Semantic + this.Centrality + this.Recency + this.Expertise;
+    /// <summary>Sum of all weights. Should equal 1.00 for a valid configuration.</summary>
+    public double Sum => Structural + Semantic + Centrality + Recency + Expertise;
 }

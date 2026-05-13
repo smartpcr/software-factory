@@ -13,265 +13,173 @@ using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Concrete in-memory implementation of <see cref="IMemoryGraphStore"/>
-/// for integration-style tests that verify real persistence/edge lifecycle
-/// without depending on SQLite or Neo4j.
+/// In-memory implementation of <see cref="IMemoryGraphStore"/> for unit testing.
+/// Only expertise-related methods are fully implemented since that is what
+/// <see cref="Evolution.DecayService"/> consumes.
 /// </summary>
 internal sealed class InMemoryMemoryGraphStore : IMemoryGraphStore
 {
-    private readonly ConcurrentDictionary<string, HypergraphNode> nodes = new();
-    private readonly ConcurrentDictionary<string, Hyperedge> edges = new();
-    private readonly ConcurrentDictionary<string, ExpertiseEntry> expertiseEntries = new();
-    private readonly List<AuditLogEntry> auditLog = [];
+    private readonly ConcurrentDictionary<string, ExpertiseEntry> expertise = new();
+    private readonly ConcurrentDictionary<string, string> appliedContentHashes = new();
 
-    public string Name => "InMemory";
+    // ── Expertise (fully implemented for tests) ─────────────────────────
 
-    // ── Audit log accessors for test assertions ──────────────────────────
-
-    public IReadOnlyList<AuditLogEntry> AuditLog => this.auditLog;
-
-    public IReadOnlyDictionary<string, ExpertiseEntry> ExpertiseEntries => this.expertiseEntries;
-
-    public IReadOnlyDictionary<string, Hyperedge> Edges => this.edges;
-
-    public IReadOnlyDictionary<string, HypergraphNode> Nodes => this.nodes;
-
-    // ── IGraphStore ──────────────────────────────────────────────────────
-
-    public Task CreateNodeAsync(HypergraphNode node, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(
+        CancellationToken cancellationToken)
     {
-        this.nodes[node.Id] = node;
-        return Task.CompletedTask;
-    }
-
-    public Task<int> CreateNodesAsync(IEnumerable<HypergraphNode> nodes, CancellationToken cancellationToken = default)
-    {
-        var count = 0;
-        foreach (var node in nodes)
-        {
-            this.nodes[node.Id] = node;
-            count++;
-        }
-
-        return Task.FromResult(count);
-    }
-
-    public Task CreateEdgeAsync(Hyperedge edge, CancellationToken cancellationToken = default)
-    {
-        this.edges[edge.Id] = edge;
-        return Task.CompletedTask;
-    }
-
-    public Task<int> CreateEdgesAsync(IEnumerable<Hyperedge> edges, CancellationToken cancellationToken = default)
-    {
-        var count = 0;
-        foreach (var edge in edges)
-        {
-            this.edges[edge.Id] = edge;
-            count++;
-        }
-
-        return Task.FromResult(count);
-    }
-
-    public Task<HypergraphNode?> GetNodeAsync(string nodeId, CancellationToken cancellationToken = default)
-    {
-        this.nodes.TryGetValue(nodeId, out var node);
-        return Task.FromResult(node);
-    }
-
-    public Task<IReadOnlyList<HypergraphNode>> GetNodesAsync(
-        NodeFilter? filter = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default)
-    {
-        IReadOnlyList<HypergraphNode> result = this.nodes.Values.Take(limit).ToList();
-        return Task.FromResult(result);
-    }
-
-    public Task<Hyperedge?> GetEdgeAsync(string edgeId, CancellationToken cancellationToken = default)
-    {
-        this.edges.TryGetValue(edgeId, out var edge);
-        return Task.FromResult(edge);
-    }
-
-    public Task<IReadOnlyList<Hyperedge>> GetEdgesForNodeAsync(
-        string nodeId,
-        IEnumerable<HyperedgeType>? edgeTypes = null,
-        CancellationToken cancellationToken = default)
-    {
-        var typeSet = edgeTypes?.ToHashSet();
-        IReadOnlyList<Hyperedge> result = this.edges.Values
-            .Where(e => e.NodeIds.Contains(nodeId) && (typeSet == null || typeSet.Contains(e.EdgeType)))
+        var result = this.expertise.Values
+            .Where(e => !e.Archived)
             .ToList();
-        return Task.FromResult(result);
+        return Task.FromResult<IReadOnlyList<ExpertiseEntry>>(result);
     }
 
-    public Task<IReadOnlyList<GraphPath>> FindPathsAsync(string startNodeId, string endNodeId, int maxDepth = 5, CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<GraphPath>>([]);
-
-    public Task<IReadOnlyList<NodeWithDepth>> GetCallersAsync(string nodeId, int depth = 1, CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<NodeWithDepth>>([]);
-
-    public Task<IReadOnlyList<NodeWithDepth>> GetCalleesAsync(string nodeId, int depth = 1, CancellationToken cancellationToken = default)
-        => Task.FromResult<IReadOnlyList<NodeWithDepth>>([]);
-
-    public Task<ImpactAnalysis> AnalyzeImpactAsync(string nodeId, int maxDepth = 3, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
+        string targetNodeId,
+        double minConfidence,
+        CancellationToken cancellationToken)
     {
-        this.nodes.TryGetValue(nodeId, out var sourceNode);
-        return Task.FromResult(new ImpactAnalysis
-        {
-            SourceNode = sourceNode ?? new HypergraphNode { Id = nodeId, Name = nodeId, NodeType = "Unknown", Language = "Unknown", FilePath = string.Empty }
-        });
-    }
-
-    public Task DeleteNodeAsync(string nodeId, CancellationToken cancellationToken = default)
-    {
-        this.nodes.TryRemove(nodeId, out _);
-        return Task.CompletedTask;
-    }
-
-    public Task ClearAsync(CancellationToken cancellationToken = default)
-    {
-        this.nodes.Clear();
-        this.edges.Clear();
-        this.expertiseEntries.Clear();
-        this.auditLog.Clear();
-        return Task.CompletedTask;
-    }
-
-    public Task<GraphStatistics> GetStatisticsAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(new GraphStatistics { TotalNodes = this.nodes.Count, TotalEdges = this.edges.Count });
-
-    public Task CreateIndexesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-    public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
-
-    // ── IMemoryGraphStore extensions ─────────────────────────────────────
-
-    public Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
-        string memoryLayer, int? atCommitIndex = null, NodeFilter? filter = null, int limit = 100, CancellationToken ct = default)
-    {
-        IReadOnlyList<HypergraphNode> result = this.nodes.Values
-            .Where(n => n.Metadata.TryGetValue(MemoryMetadataKeys.MemoryLayer, out var l) && (string?)l == memoryLayer)
-            .Take(limit)
-            .ToList();
-        return Task.FromResult(result);
-    }
-
-    public Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
-        string semanticRelation, string? memoryLayer = null, int? atCommitIndex = null, int limit = 100, CancellationToken ct = default)
-    {
-        IReadOnlyList<Hyperedge> result = this.edges.Values
-            .Where(e => e.Metadata.TryGetValue(MemoryMetadataKeys.SemanticRelation, out var sr) && (string?)sr == semanticRelation)
-            .Take(limit)
-            .ToList();
-        return Task.FromResult(result);
-    }
-
-    public Task UpsertNodeAsync(HypergraphNode node, VersionRange version, CancellationToken ct = default)
-    {
-        this.nodes[node.Id] = node;
-        return Task.CompletedTask;
-    }
-
-    public Task RetireNodeAsync(string nodeId, int untilCommitIndex, CancellationToken ct = default) => Task.CompletedTask;
-
-    public Task RetireEdgeAsync(string edgeId, int untilCommitIndex, CancellationToken ct = default) => Task.CompletedTask;
-
-    public Task UpdateEdgeMetadataAsync(string edgeId, IDictionary<string, object?> updates, CancellationToken ct = default)
-    {
-        if (this.edges.TryGetValue(edgeId, out var edge))
-        {
-            foreach (var (key, value) in updates)
-            {
-                edge.Metadata[key] = value;
-            }
-        }
-
-        return Task.CompletedTask;
-    }
-
-    // ── Expertise CRUD ──────────────────────────────────────────────────
-
-    public Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(string targetNodeId, double minConfidence = 0.0, CancellationToken ct = default)
-    {
-        IReadOnlyList<ExpertiseEntry> result = this.expertiseEntries.Values
+        var result = this.expertise.Values
             .Where(e => e.TargetNodeId == targetNodeId && !e.Archived && e.Confidence >= minConfidence)
             .ToList();
-        return Task.FromResult(result);
+        return Task.FromResult<IReadOnlyList<ExpertiseEntry>>(result);
     }
 
-    public Task<ExpertiseEntry?> GetExpertiseByIdAsync(string expertiseId, CancellationToken ct = default)
+    public Task UpsertExpertiseAsync(ExpertiseEntry entry, CancellationToken cancellationToken)
     {
-        this.expertiseEntries.TryGetValue(expertiseId, out var entry);
-        return Task.FromResult(entry);
-    }
-
-    public Task<ExpertiseEntry?> GetExpertiseByContentHashAsync(string contentHash, CancellationToken ct = default)
-    {
-        var entry = this.expertiseEntries.Values.FirstOrDefault(e => e.ContentHash == contentHash);
-        return Task.FromResult(entry);
-    }
-
-    public Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(int limit = 1000, CancellationToken ct = default)
-    {
-        IReadOnlyList<ExpertiseEntry> result = this.expertiseEntries.Values
-            .Where(e => !e.Archived)
-            .Take(limit)
-            .ToList();
-        return Task.FromResult(result);
-    }
-
-    public Task UpsertExpertiseAsync(ExpertiseEntry entry, CancellationToken ct = default)
-    {
-        this.expertiseEntries[entry.Id] = entry;
+        this.expertise[entry.Id] = entry;
         return Task.CompletedTask;
     }
 
-    public Task ArchiveExpertiseAsync(string expertiseId, CancellationToken ct = default)
+    public Task ArchiveExpertiseAsync(string expertiseId, CancellationToken cancellationToken)
     {
-        if (this.expertiseEntries.TryGetValue(expertiseId, out var entry))
+        if (this.expertise.TryGetValue(expertiseId, out var entry))
         {
-            entry.Archived = true;
+            entry.MarkArchived();
         }
 
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(string? targetNodeId = null, int limit = 50, CancellationToken ct = default)
+    public Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken)
     {
-        IReadOnlyList<ExpertiseEntry> result = this.expertiseEntries.Values
-            .Where(e => e.Archived && (targetNodeId == null || e.TargetNodeId == targetNodeId))
+        var result = this.expertise.Values
+            .Where(e => e.Archived)
+            .Where(e => targetNodeId == null || e.TargetNodeId == targetNodeId)
             .Take(limit)
             .ToList();
-        return Task.FromResult(result);
+        return Task.FromResult<IReadOnlyList<ExpertiseEntry>>(result);
     }
 
-    public Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(CancellationToken ct = default)
+    // ── Content hash tracking (for idempotent event-driven decay) ──────
+
+    public Task<string?> GetLastAppliedContentHashAsync(string nodeId, CancellationToken cancellationToken)
     {
-        return Task.FromResult(new MemoryGraphStatistics
-        {
-            ActiveExpertiseCount = this.expertiseEntries.Values.Count(e => !e.Archived),
-            ArchivedExpertiseCount = this.expertiseEntries.Values.Count(e => e.Archived),
-            AuditLogCount = this.auditLog.Count
-        });
+        this.appliedContentHashes.TryGetValue(nodeId, out var hash);
+        return Task.FromResult(hash);
     }
 
-    public Task LogAuditAsync(string sessionId, string operation, object detail, CancellationToken ct = default)
+    public Task SetLastAppliedContentHashAsync(string nodeId, string contentHash, CancellationToken cancellationToken)
     {
-        this.auditLog.Add(new AuditLogEntry(sessionId, operation, detail, DateTime.UtcNow));
+        this.appliedContentHashes[nodeId] = contentHash;
         return Task.CompletedTask;
     }
 
-    // ── IDisposable / IAsyncDisposable ───────────────────────────────────
+    // ── Stub implementations (not used by DecayService) ─────────────────
 
-    public void Dispose() { }
+    public string Name => "InMemoryTest";
+
+    public Task<IReadOnlyList<MemoryNode>> GetNodesByLayerAsync(string memoryLayer, int? atCommitIndex, Models.NodeFilter? filter, int limit, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<MemoryNode>>(Array.Empty<MemoryNode>());
+
+    public Task<IReadOnlyList<MemoryEdge>> GetEdgesBySemanticRelationAsync(string semanticRelation, string? memoryLayer, int? atCommitIndex, int limit, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<MemoryEdge>>(Array.Empty<MemoryEdge>());
+
+    public Task UpsertNodeAsync(HypergraphNode node, VersionRange version, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task RetireNodeAsync(string nodeId, int untilCommitIndex, string? untilCommit, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task UpsertEdgeAsync(Hyperedge edge, VersionRange version, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task RetireEdgeAsync(string edgeId, int untilCommitIndex, string? untilCommit, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task UpdateEdgeMetadataAsync(string edgeId, IDictionary<string, object?> metadata, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new MemoryGraphStatistics());
+
+    public Task LogAuditAsync(string sessionId, string operation, object detail, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task CreateNodeAsync(HypergraphNode node, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<int> CreateNodesAsync(IEnumerable<HypergraphNode> nodes, CancellationToken cancellationToken)
+        => Task.FromResult(0);
+
+    public Task CreateEdgeAsync(Hyperedge edge, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<int> CreateEdgesAsync(IEnumerable<Hyperedge> edges, CancellationToken cancellationToken)
+        => Task.FromResult(0);
+
+    public Task<HypergraphNode?> GetNodeAsync(string nodeId, CancellationToken cancellationToken)
+        => Task.FromResult<HypergraphNode?>(null);
+
+    public Task<IReadOnlyList<HypergraphNode>> GetNodesAsync(Ast.GraphDb.NodeFilter? filter, int limit, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<HypergraphNode>>(Array.Empty<HypergraphNode>());
+
+    public Task<Hyperedge?> GetEdgeAsync(string edgeId, CancellationToken cancellationToken)
+        => Task.FromResult<Hyperedge?>(null);
+
+    public Task<IReadOnlyList<Hyperedge>> GetEdgesForNodeAsync(string nodeId, IEnumerable<HyperedgeType>? edgeTypes, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<Hyperedge>>(Array.Empty<Hyperedge>());
+
+    public Task<IReadOnlyList<GraphPath>> FindPathsAsync(string startNodeId, string endNodeId, int maxDepth, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<GraphPath>>(Array.Empty<GraphPath>());
+
+    public Task<IReadOnlyList<NodeWithDepth>> GetCallersAsync(string nodeId, int depth, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<NodeWithDepth>>(Array.Empty<NodeWithDepth>());
+
+    public Task<IReadOnlyList<NodeWithDepth>> GetCalleesAsync(string nodeId, int depth, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<NodeWithDepth>>(Array.Empty<NodeWithDepth>());
+
+    public Task<ImpactAnalysis> AnalyzeImpactAsync(string nodeId, int maxDepth, CancellationToken cancellationToken)
+        => Task.FromResult(new ImpactAnalysis
+        {
+            SourceNode = new HypergraphNode
+            {
+                Id = nodeId,
+                NodeType = "stub",
+                FilePath = "stub",
+                Name = "stub",
+                Language = "stub",
+            },
+        });
+
+    public Task DeleteNodeAsync(string nodeId, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task ClearAsync(CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<GraphStatistics> GetStatisticsAsync(CancellationToken cancellationToken)
+        => Task.FromResult(new GraphStatistics());
+
+    public Task CreateIndexesAsync(CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<bool> IsAvailableAsync(CancellationToken cancellationToken)
+        => Task.FromResult(true);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-}
 
-/// <summary>
-/// Represents a single audit log entry captured by the in-memory store.
-/// </summary>
-internal sealed record AuditLogEntry(string SessionId, string Operation, object Detail, DateTime Timestamp);
+    public void Dispose() { }
+}

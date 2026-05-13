@@ -1,7 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <IsPackable>true</IsPackable>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>Ast.Memory</RootNamespace>
+    <AssemblyName>Ast.Memory</AssemblyName>
+    <Description>Agent memory layer for the code knowledge hypergraph.</Description>
   </PropertyGroup>
 
   <ItemGroup>
