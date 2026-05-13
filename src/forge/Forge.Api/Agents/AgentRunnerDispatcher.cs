@@ -63,6 +63,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private readonly CopilotServerManager copilotServer;
     private readonly IAuthService? ghAuth;
     private readonly ILogger<AgentRunnerDispatcher> log;
+    private readonly CopilotSessionPool copilotPool;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
 
@@ -83,6 +84,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         IOptions<AgentRunnerOptions> options,
         CopilotServerManager copilotServer,
         IEnumerable<IAuthService> authServices,
+        CopilotSessionPool copilotPool,
         ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
@@ -90,6 +92,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         this.options = options;
         this.copilotServer = copilotServer;
         this.ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");
+        this.copilotPool = copilotPool;
         this.log = log;
     }
 
@@ -123,7 +126,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             {
                 (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, ctx, linked.Token),
                 (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, ctx, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, taskId, agentId, linked.Token),
                 (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, ctx, linked.Token),
                 _ => RunUnsupported(ctx),
             };
@@ -1018,6 +1021,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private async IAsyncEnumerable<AgentEvent> RunCopilotSdk(
         string prompt,
         AgentContext context,
+        string taskId,
+        string agentId,
         [EnumeratorCancellation] CancellationToken ct)
     {
         yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
@@ -1058,6 +1063,16 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         long lastEventTicks = DateTimeOffset.UtcNow.Ticks;
         var wasInactive = false;
 
+        // Phase 55 / Phase E -- when the caller attached an
+        // AgentMemoryHandle, route through CopilotSessionPool so iter
+        // N+1 reuses iter N's live session and the in-session
+        // conversation history is preserved. The pool owns disposal;
+        // we release the SendLock at end of this StartAsync call and
+        // skip the inline Dispose path.
+        var isPooledPath = context.Memory is not null;
+        PooledCopilotEntry? pooledEntry = null;
+        var pooledLockAcquired = false;
+
         CopilotSession? session = null;
         IDisposable? subscription = null;
         CopilotClient? client = null;
@@ -1092,24 +1107,65 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 };
             }
 
-            // Retry once on connection/launch failures. With the shared server
-            // this mainly covers transient connection errors or server restarts.
-            for (var attempt = 0; attempt < 2; attempt++)
+            if (isPooledPath)
             {
-                try
+                pooledEntry = await this.copilotPool.AcquireAsync(
+                    taskId,
+                    agentId,
+                    async (factoryCt) =>
+                    {
+                        // Same retry-once pattern as the non-pooled path
+                        // below. The factory runs at most once per pool
+                        // key per process lifetime.
+                        CopilotClient? c = null;
+                        for (var attempt = 0; attempt < 2; attempt++)
+                        {
+                            try
+                            {
+                                c = new CopilotClient(clientOptions);
+                                var s = await c.CreateSessionAsync(sessionConfig, factoryCt);
+                                return (c, s);
+                            }
+                            catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                            {
+                                this.log.LogWarning(ex,
+                                    "Copilot SDK connection failed (pool factory attempt 1), retrying after delay");
+                                try { if (c is not null) await c.DisposeAsync(); } catch { }
+                                c = null;
+                                await Task.Delay(2000, factoryCt);
+                            }
+                        }
+                        throw new InvalidOperationException(
+                            "Failed to create Copilot session after retry; pool factory exhausted attempts.");
+                    },
+                    effectiveCt);
+                client = pooledEntry.Client;
+                session = pooledEntry.Session;
+
+                await pooledEntry.SendLock.WaitAsync(effectiveCt);
+                pooledLockAcquired = true;
+            }
+            else
+            {
+                // Retry once on connection/launch failures. With the shared server
+                // this mainly covers transient connection errors or server restarts.
+                for (var attempt = 0; attempt < 2; attempt++)
                 {
-                    client = new CopilotClient(clientOptions);
-                    session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
-                    break;
-                }
-                catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
-                {
-                    this.log.LogWarning(ex,
-                        "Copilot SDK connection failed (attempt 1), retrying after delay");
-                    try { if (client is not null) await client.DisposeAsync(); } catch { }
-                    client = null;
-                    session = null;
-                    await Task.Delay(2000, effectiveCt);
+                    try
+                    {
+                        client = new CopilotClient(clientOptions);
+                        session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
+                        break;
+                    }
+                    catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                    {
+                        this.log.LogWarning(ex,
+                            "Copilot SDK connection failed (attempt 1), retrying after delay");
+                        try { if (client is not null) await client.DisposeAsync(); } catch { }
+                        client = null;
+                        session = null;
+                        await Task.Delay(2000, effectiveCt);
+                    }
                 }
             }
 
@@ -1261,13 +1317,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         finally
         {
             subscription?.Dispose();
-            if (session is not null)
+            if (isPooledPath)
             {
-                try { await session.DisposeAsync(); } catch { /* best-effort */ }
+                // Pool owns the session + client; do NOT dispose them
+                // here. Release the SendLock so the next iter for this
+                // (workItem, agent) tuple can run its own SendAsync on
+                // the same live session.
+                if (pooledLockAcquired && pooledEntry is not null)
+                {
+                    try { pooledEntry.SendLock.Release(); }
+                    catch (Exception ex)
+                    {
+                        this.log.LogWarning(ex,
+                            "CopilotSessionPool: SendLock release threw for ({Task}, {Agent}).",
+                            taskId, agentId);
+                    }
+                }
             }
-            if (client is not null)
+            else
             {
-                try { await client.DisposeAsync(); } catch { /* best-effort */ }
+                if (session is not null)
+                {
+                    try { await session.DisposeAsync(); } catch { /* best-effort */ }
+                }
+                if (client is not null)
+                {
+                    try { await client.DisposeAsync(); } catch { /* best-effort */ }
+                }
             }
         }
 

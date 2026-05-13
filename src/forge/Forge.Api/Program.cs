@@ -361,6 +361,11 @@ builder.Services.AddSingleton<CopilotServerManager>();
 // HasExited check that crashes the test host. The dispose path runs whether
 // or not the CLI server was ever started, so the test gate doesn't apply.
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
+// Phase 55 / Phase E (docs/forge/sloppy_guard.md) -- Copilot SDK
+// session pool, keyed by (workItemId, agentId). Singleton so live
+// sessions span the gen-eval loop's iterations; disposed per-work-item
+// from RunGenEvalLoopAsync's finally on terminal verdict.
+builder.Services.AddSingleton<CopilotSessionPool>();
 builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
 // Problem details (RFC-7807). In Development, surface exception messages so

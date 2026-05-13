@@ -42,6 +42,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly IConfiguration config;
     private readonly IStoryGitOps git;
     private readonly AgentSlotService slots;
+    private readonly CopilotSessionPool copilotPool;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
     public CrewStoryArtifactStrategy(
@@ -51,6 +52,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         IConfiguration config,
         IStoryGitOps git,
         AgentSlotService slots,
+        CopilotSessionPool copilotPool,
         ILogger<CrewStoryArtifactStrategy>? logger = null)
     {
         this.scopeFactory = scopeFactory;
@@ -59,6 +61,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.config = config;
         this.git = git;
         this.slots = slots;
+        this.copilotPool = copilotPool;
         this.logger = logger;
     }
 
@@ -3002,20 +3005,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model -- typically gpt-5.5/sonnet against an opus generator.");
         }
 
-        // Phase 55 / Phase C+D (docs/forge/sloppy_guard.md) -- decide
-        // per role whether to wire in agent memory. Phase C covered
-        // Claude/CLI (--resume); Phase D extends to Claude/SDK
-        // (conversation history replay against /v1/messages). Phase E
-        // will add Copilot/SDK. Each side is gated on its OWN crew
-        // row (the paired evaluator crew may opt in independently).
-        // When false, the delegate skips the load/upsert pair and the
-        // runner sees a null ctx.Memory -- exactly the pre-Phase-55
-        // shape.
+        // Phase 55 / Phase C+D+E (docs/forge/sloppy_guard.md) --
+        // decide per role whether to wire in agent memory. Phase C
+        // covered Claude/CLI (--resume); Phase D added Claude/SDK
+        // (conversation history replay against /v1/messages); Phase E
+        // adds Copilot/SDK (pooled live session reused across iters).
+        // Copilot/CLI has no equivalent native continuity surface and
+        // falls back to Phase A scratch notes alone. Each side is
+        // gated on its OWN crew row (the paired evaluator crew may
+        // opt in independently). When false, the delegate skips the
+        // load/upsert pair and the runner sees a null ctx.Memory --
+        // exactly the pre-Phase-55 shape.
         var genMemoryEnabled = crew.EnableAgentMemory
-            && genContext.Backend == AgentBackend.Claude;
+            && (genContext.Backend == AgentBackend.Claude
+                || (genContext.Backend == AgentBackend.Copilot
+                    && genContext.InvokeMode == AgentInvokeMode.Sdk));
         var evalMemoryEnabled = (evalCrew?.EnableAgentMemory ?? false)
             && evalContext is not null
-            && evalContext.Backend == AgentBackend.Claude;
+            && (evalContext.Backend == AgentBackend.Claude
+                || (evalContext.Backend == AgentBackend.Copilot
+                    && evalContext.InvokeMode == AgentInvokeMode.Sdk));
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
         {
@@ -4058,6 +4067,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             if (evalAgentId is not null)
             {
                 await this.slots.ReleaseAsync(evalAgentId, workItemId, ct: CancellationToken.None);
+            }
+
+            // Phase 55 / Phase E -- release any pooled Copilot/SDK
+            // sessions for this work item. A new gen-eval loop
+            // (operator Restart, sloppy reassignment, etc.) gets a
+            // fresh session; the in-process pool only exists to span
+            // iterations within ONE attempt. Best-effort; pool's own
+            // catch swallows per-entry dispose failures.
+            if (genMemoryEnabled || evalMemoryEnabled)
+            {
+                try
+                {
+                    await this.copilotPool.DisposeForWorkItemAsync(workItemId, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    this.logger?.LogWarning(ex,
+                        "CopilotSessionPool.DisposeForWorkItemAsync failed for {WorkItem}; entries may leak until process exit.",
+                        workItemId);
+                }
             }
         }
 
