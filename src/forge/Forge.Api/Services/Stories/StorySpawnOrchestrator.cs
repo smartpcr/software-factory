@@ -2427,52 +2427,90 @@ public sealed class StorySpawnOrchestrator
         var changed = false;
         foreach (var w in workstreams)
         {
-            // Promote "merging" workstreams to "complete" once the PR is
-            // actually merged (Col == "merged" in the PR row). Without this,
-            // workstreams stay stuck at "merging" because the only "complete"
-            // transition existed in the QA phase.
+            // 2026-05-13 — include "complete" so late-arriving review comments
+            // on already-merged PRs still get addressed by the fix loop. Without
+            // this, any comment posted after the upstream merge would be
+            // stranded (PrSyncJob imports it with State="active" but the
+            // workstream is out of DriveReviewAsync's scan window).
+            if (w.Status != "review" && w.Status != "merging" && w.Status != "complete") continue;
+
+            var prs = ParseStringList(w.PrsJson);
+            if (prs.Count == 0) continue;
+            var prId = prs[0];
+
+            // Load the comment set up front. The active set drives the
+            // universal guard below; the full set decides whether Step 1
+            // needs to run a reviewer pass.
+            var allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
+            var activeComments = allComments.Where(c => c.State == "active").ToList();
+
+            // ── Universal active-comments guard (2026-05-13) ──────────────
+            // NO workstream advances to "complete" while any reviewer
+            // comment on its PR is still in state="active". This blocks
+            // three previously-leaky paths in one place:
+            //   1. review→merging via Step 3 ApproveAndMergeAsync
+            //      (preserved by Step 3's existing flow — we never reach
+            //      it when activeComments.Count > 0).
+            //   2. review→complete via the external-merge fast-path
+            //      (previously bypassed the comment check — observed
+            //      smartpcr/qq#3, 5 active comments stranded on merge).
+            //   3. merging→complete promotion (same blind spot when a
+            //      reviewer posted comments while the PR row was
+            //      transitioning).
+            // The fix loop also runs on already-"complete" workstreams so
+            // late-arriving comments after the upstream merge still get a
+            // reply + resolution on the thread. ws.Status is intentionally
+            // not regressed back to "review" — the UI chip would flicker
+            // and the merge-history would lie.
+            if (activeComments.Count > 0)
+            {
+                await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
+                changed = true;
+                continue;
+            }
+
+            // No active comments — handle status-specific transitions.
+
+            // "complete" workstreams with no active comments → nothing to do.
+            if (w.Status == "complete") continue;
+
+            // Promote "merging" workstreams to "complete" once the PR row
+            // reaches the terminal merged cache state. Active-comments
+            // guard above already ensures we are not closing on top of
+            // unresolved comments.
             if (w.Status == "merging")
             {
-                var mergingPrs = ParseStringList(w.PrsJson);
-                if (mergingPrs.Count > 0)
+                var prRowMerging = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == prId, ct);
+                if (prRowMerging is not null && string.Equals(prRowMerging.Col, "merged", StringComparison.OrdinalIgnoreCase))
                 {
-                    var prRow = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == mergingPrs[0], ct);
-                    if (prRow is not null && string.Equals(prRow.Col, "merged", StringComparison.OrdinalIgnoreCase))
-                    {
-                        w.Status = "complete";
-                        await db.SaveChangesAsync(ct);
-                        changed = true;
-                        this.logger?.LogInformation(
-                            "Workstream {WsId} PR {PrId} merged — advanced to complete.",
-                            w.Id, mergingPrs[0]);
-                        await EmitChange(hub, "ws-complete", spawn, ct);
+                    w.Status = "complete";
+                    await db.SaveChangesAsync(ct);
+                    changed = true;
+                    this.logger?.LogInformation(
+                        "Workstream {WsId} PR {PrId} merged — advanced to complete.",
+                        w.Id, prId);
+                    await EmitChange(hub, "ws-complete", spawn, ct);
 
-                        // Phase 49 follow-up — workstream PR is merged into
-                        // main; the per-stage worktree on disk is now stale
-                        // (its commits are live on main). Free the disk.
-                        // Best-effort: failures log + continue.
-                        if (repo is not null && !string.IsNullOrEmpty(w.Branch))
-                        {
-                            await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
-                        }
+                    // Phase 49 follow-up — workstream PR is merged into
+                    // main; the per-stage worktree on disk is now stale
+                    // (its commits are live on main). Free the disk.
+                    // Best-effort: failures log + continue.
+                    if (repo is not null && !string.IsNullOrEmpty(w.Branch))
+                    {
+                        await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
                     }
                 }
                 continue;
             }
 
-            if (w.Status != "review") continue;
-            var prs = ParseStringList(w.PrsJson);
-            if (prs.Count == 0) continue;
-            var prId = prs[0];
+            // w.Status == "review" — original Phase 49 flow follows.
 
             // External-merge fast-path: if the PR row reached the terminal
             // "merged" cache state (PrSyncJob maps upstream "completed" /
             // "abandoned" to Col=="merged" with IsActive=false), advance
-            // straight to "complete". Without this, a workstream whose PR
-            // was merged via the upstream UI (GitHub / ADO) instead of the
-            // orchestrator's own ApproveAndMergeAsync flow stays stuck at
-            // "review" forever, because the only path that sets "merging"
-            // is the local approve+merge flow below.
+            // straight to "complete". Active-comments guard above already
+            // ensures we are not stranding reviewer comments — if there
+            // were any, the fix loop has already claimed this tick.
             var prRowAtReview = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == prId, ct);
             if (prRowAtReview is not null && string.Equals(prRowAtReview.Col, "merged", StringComparison.OrdinalIgnoreCase))
             {
@@ -2493,22 +2531,6 @@ public sealed class StorySpawnOrchestrator
                 }
                 continue;
             }
-
-            // Phase 49 follow-up — single resumable fix-loop. The legacy
-            // Round 0 vs Round 1+ split was brittle: Round 0 entered only
-            // when commentRows.Count == 0, posted all comments, then
-            // foreach-ed through them in ONE tick to fix + resolve. If
-            // anything failed mid-foreach (LLM timeout, commit error,
-            // transient SignalR drop), the surviving comments stayed
-            // `active` forever — Round 1+ on the next tick only checked
-            // the merge gate and never resumed the fix loop. This
-            // refactor runs the comment loop on every tick while ANY
-            // `active` comments exist, naturally addressing nested
-            // replies (a reviewer rebuttal posted as a thread reply has
-            // its own `state=active` row and gets picked up the same way
-            // as a top-level comment).
-            var allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
-            var activeComments = allComments.Where(c => c.State == "active").ToList();
 
             // Step 1 — first visit: no comments yet → run the reviewer to
             // post the initial round. ProduceReviewCommentsAsync emits its
@@ -2550,60 +2572,15 @@ public sealed class StorySpawnOrchestrator
                     await this.provider.PostPrCommentAsync(prId, c.FilePath, c.Line, c.Body, reviewer, ct);
                 }
 
-                // Re-load so the fix loop below picks up the freshly-posted rows.
+                // Re-load active comments and run the fix loop on this tick.
                 allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
                 activeComments = allComments.Where(c => c.State == "active").ToList();
-            }
-
-            // Step 2 — fix loop. Runs whenever there are ACTIVE comments
-            // (top-level OR replies). Each comment gets one ProduceReviewFixAsync
-            // call wrapped in its own try/catch so a transient failure on
-            // comment #2 doesn't leave #3 unaddressed. The engineer agent
-            // returns ONE of two shapes per comment (Phase 49):
-            //   • Code change (FilePath + NewContent non-null) → commit
-            //     the file AND post a thread reply summarising the change.
-            //   • Reply only (FilePath / NewContent null) → no commit;
-            //     post the reply explaining why no change is needed.
-            // ReplyBody is ALWAYS present so every reviewer comment gets
-            // an explicit response on the PR thread. ResolvePrCommentAsync
-            // updates the DB row state to "resolved"; the next tick re-queries
-            // and the loop exits when activeComments is empty.
-            if (activeComments.Count > 0)
-            {
-                var engineerId = ParseStringList(w.AgentsJson).FirstOrDefault() ?? "eng-default";
-                foreach (var oc in activeComments)
+                if (activeComments.Count > 0)
                 {
-                    try
-                    {
-                        var fix = await this.strategy.ProduceReviewFixAsync(spawn, w,
-                            new ReviewCommentContext(oc.FilePath ?? string.Empty, oc.Line ?? 0, oc.Body, engineerId), ct);
-
-                        // Path A — commit the code change.
-                        if (!fix.IsReplyOnly)
-                        {
-                            await this.git.CommitFilesAsync(repo, w.Branch,
-                                new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
-                                $"fix({w.Id}): address review comment", ct);
-                        }
-                        // Path A & B — always post the reply so the
-                        // reviewer (and operator) sees an explicit response.
-                        await this.provider.ReplyPrCommentAsync(oc.Id, fix.ReplyBody, engineerId, ct);
-                        // Mark the original reviewer comment resolved so it
-                        // drops out of the active set on the next tick.
-                        await this.provider.ResolvePrCommentAsync(oc.Id, engineerId, ct);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        this.logger?.LogWarning(ex,
-                            "DriveReviewAsync: failed to fix comment {CommentId} on PR {PrId} for ws {WsId}; "
-                            + "will retry next tick. surviving comments will still be processed in this loop.",
-                            oc.Id, prId, w.Id);
-                        // Don't break — continue with the next comment so a
-                        // failure on one doesn't strand the rest.
-                    }
+                    await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
+                    changed = true;
+                    continue;
                 }
-                changed = true;
-                continue;
             }
 
             // Step 3 — no active comments → approve and merge. Phase 49
@@ -2629,6 +2606,64 @@ public sealed class StorySpawnOrchestrator
             }
         }
         return changed;
+    }
+
+    /// <summary>
+    /// 2026-05-13 — extracted from <see cref="DriveReviewAsync"/>. Runs one
+    /// pass of <see cref="IStoryArtifactStrategy.ProduceReviewFixAsync"/>
+    /// per active comment on a PR, with per-comment try/catch so a transient
+    /// failure on comment #2 doesn't strand comments #3..N. The engineer
+    /// agent returns ONE of two shapes per comment (Phase 49):
+    /// <list type="bullet">
+    /// <item>Code change (FilePath + NewContent non-null) → commit the
+    ///   file AND post a thread reply summarising the change.</item>
+    /// <item>Reply only (FilePath / NewContent null) → no commit; post the
+    ///   reply explaining why no change is needed.</item>
+    /// </list>
+    /// ReplyBody is ALWAYS present so every reviewer comment gets an
+    /// explicit response on the PR thread. <see cref="IStoryProviderOps.ResolvePrCommentAsync"/>
+    /// updates the DB row state to "resolved"; the next tick re-queries and
+    /// the loop exits when activeComments is empty. The helper is shared by
+    /// the universal active-comments guard (handles "review" / "merging" /
+    /// "complete" status) and Step 1's post-load freshly-posted-rows path.
+    /// </summary>
+    private async Task RunReviewFixLoopAsync(
+        StorySpawnRow spawn, WorkstreamRow w, string prId,
+        IReadOnlyList<PrCommentRow> activeComments,
+        RepoRow? repo, CancellationToken ct)
+    {
+        var engineerId = ParseStringList(w.AgentsJson).FirstOrDefault() ?? "eng-default";
+        foreach (var oc in activeComments)
+        {
+            try
+            {
+                var fix = await this.strategy.ProduceReviewFixAsync(spawn, w,
+                    new ReviewCommentContext(oc.FilePath ?? string.Empty, oc.Line ?? 0, oc.Body, engineerId), ct);
+
+                // Path A — commit the code change.
+                if (!fix.IsReplyOnly)
+                {
+                    await this.git.CommitFilesAsync(repo, w.Branch,
+                        new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
+                        $"fix({w.Id}): address review comment", ct);
+                }
+                // Path A & B — always post the reply so the reviewer
+                // (and operator) sees an explicit response.
+                await this.provider.ReplyPrCommentAsync(oc.Id, fix.ReplyBody, engineerId, ct);
+                // Mark the original reviewer comment resolved so it
+                // drops out of the active set on the next tick.
+                await this.provider.ResolvePrCommentAsync(oc.Id, engineerId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "DriveReviewAsync: failed to fix comment {CommentId} on PR {PrId} for ws {WsId}; "
+                    + "will retry next tick. surviving comments will still be processed in this loop.",
+                    oc.Id, prId, w.Id);
+                // Don't break — continue with the next comment so a
+                // failure on one doesn't strand the rest.
+            }
+        }
     }
 
     /// <summary>
