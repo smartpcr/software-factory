@@ -52,7 +52,7 @@ pair (Phase 52 path, when re-enabled) starts with fresh memory.
 |---|---|
 | Default state for Phases C / D / E | **Opt-out per crew** (operator decision 2026-05-13; `CrewRow.EnableAgentMemory` defaults `true`). Every supported crew gets memory; flip to `0` per row to disable. `AgentRow.AgentMemoryOverride` can also pin a single agent on/off. Phase A is always-on regardless. |
 | Memory scope | **Per `(workItemId, agentId, role)`** — fresh agent gets fresh memory. |
-| Compaction trigger | **300K input tokens** (fits the 1M-context models in use; capped to `model.ContextWindowTokens × 0.3` for non-1M models so smaller-window evaluators are also safe). |
+| Compaction trigger | **300K input tokens** by default (fits the 1M-context Opus cells in use; capped to `model.ContextWindowTokens × Forge:Compaction:ContextWindowRatio` so smaller-window evaluators are also safe). The ratio defaults to `0.5` and is operator-tunable via `appsettings.json` — see `Services/CompactionOptions.cs`. |
 | Evaluator opt-in | **Yes — both generator and evaluator opt in.** The evaluator's prior-iter "Still needs improvement" checkbox list lives in its own conversation history; without memory the evaluator re-scores from scratch each iter and can't verify whether the agent actually addressed each numbered item. With memory the evaluator sees its own prior critique alongside the ongoing file state — which is the whole point of opting it into Layer 2. The single `CrewRow.EnableAgentMemory` flag covers both sides; paired evaluator crews can opt in or out independently because they have their own row. |
 
 ## Phases
@@ -213,7 +213,8 @@ wallet.
   ends, open questions". Replaces summarized turns with one synthetic
   `{role:"user", content:"<summary>"}` + the most recent 3 verbatim.
 - `effectiveThreshold = min(crew.CompactionTokenThreshold ?? 300_000,
-  model.ContextWindowTokens × 0.3)`.
+  model.ContextWindowTokens × Forge:Compaction:ContextWindowRatio)`
+  (ratio defaults to 0.5; tunable in `appsettings.json`).
 - Telemetry: `task.memory.compacted { compactedTurns, priorTokens,
   newTokens, summaryCostUsd, effectiveThreshold }`.
 

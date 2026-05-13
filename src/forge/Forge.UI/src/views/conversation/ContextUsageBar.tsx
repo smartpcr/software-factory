@@ -15,6 +15,14 @@ interface RoleMemory {
   turnCount: number | null;
   approxInputTokens: number;
   effectiveThreshold: number;
+  // Phase 55 follow-up — server now surfaces the threshold breakdown
+  // so the tooltip can be precise instead of heuristic. Older API
+  // builds won't ship these, hence optional.
+  contextWindowTokens?: number | null;
+  contextWindowRatio?: number;
+  defaultThreshold?: number;
+  crewOverride?: number | null;
+  thresholdSource?: 'GlobalDefault' | 'CrewOverride' | 'ModelWindowClamp';
   lastIter: number;
   createdAt: string;
   updatedAt: string;
@@ -55,7 +63,9 @@ export function ContextUsageBar({ roles }: Props): JSX.Element | null {
 
 function BarRow({ role, mem }: { role: string; mem: RoleMemory }) {
   const used = mem.approxInputTokens;
-  const cap = mem.effectiveThreshold > 0 ? mem.effectiveThreshold : 300_000;
+  const cap = mem.effectiveThreshold > 0
+    ? mem.effectiveThreshold
+    : (mem.defaultThreshold ?? 300_000);
   const pct = Math.min(100, Math.max(0, (used / cap) * 100));
   const tone = pct >= 90 ? 'var(--sc-red, #f87171)'
             : pct >= 70 ? 'var(--sc-amber, #ffb347)'
@@ -103,11 +113,21 @@ function roleOrder(role: string): number {
 }
 
 function roleThresholdSource(mem: RoleMemory): string {
-  // We don't have direct access to the crew override on the client,
-  // but we can hint at whether the threshold matches the global
-  // default (300K) so the operator knows whether the row inherits
-  // or overrides.
-  if (mem.effectiveThreshold === 300_000) return 'global default';
+  // Server (Phase 55 follow-up) computes the precise source. Use it
+  // when present so the tooltip reflects the real math; fall back to
+  // a heuristic only for older API builds.
+  if (mem.thresholdSource === 'ModelWindowClamp' && mem.contextWindowTokens && mem.contextWindowRatio !== undefined) {
+    const pct = Math.round(mem.contextWindowRatio * 100);
+    return `${formatTok(mem.contextWindowTokens)} × ${pct}% model-window clamp`;
+  }
+  if (mem.thresholdSource === 'CrewOverride') {
+    return 'crew override';
+  }
+  if (mem.thresholdSource === 'GlobalDefault') {
+    return 'global default';
+  }
+  // Pre-detail fallback.
+  if (mem.effectiveThreshold === (mem.defaultThreshold ?? 300_000)) return 'global default';
   return 'crew override or model-window clamp';
 }
 

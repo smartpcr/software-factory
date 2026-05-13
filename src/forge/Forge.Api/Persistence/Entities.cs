@@ -705,7 +705,8 @@ public class CrewRow
     /// threshold at which the compactor folds older conversation turns
     /// into a single summary. Null = use the global 300K default. The
     /// effective trigger is always clamped down to
-    /// <c>model.ContextWindow × 0.3</c> so a smaller-window evaluator
+    /// <c>model.ContextWindow × Forge:Compaction:ContextWindowRatio</c>
+    /// (default 0.5) so a smaller-window evaluator
     /// model (e.g. 200K Sonnet against a 1M-context generator) never
     /// blows past its real context budget. Operators tune this when
     /// they see a crew's compaction summaries lose too much detail —
