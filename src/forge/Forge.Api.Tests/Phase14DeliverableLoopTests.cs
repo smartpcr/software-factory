@@ -107,6 +107,30 @@ public class Phase14DeliverableLoopTests
     }
 
     [Fact]
+    public async Task High_SingleIter_Input_Does_Not_Force_Sloppy()
+    {
+        var (f, db, loop) = await SetupAsync(workItemId: "wi-no-hard-cap");
+        try
+        {
+            var req = new DeliverableLoopRequest(
+                "wi-no-hard-cap", "crew-x", "gen-1", "eval-1",
+                Generator: (_, _, _) => Task.FromResult(new GeneratorRunOutput("out", 0m, 2_500_000L, 100)),
+                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(95), 0m, 500, 50)));
+
+            var result = await loop.RunAsync(req, CancellationToken.None);
+
+            Assert.Equal("pass", result.FinalVerdict);
+            Assert.Equal(1, result.Iterations);
+            Assert.Null(result.SloppyReason);
+
+            var rows = await db.Deliverables.Where(d => d.WorkItemId == "wi-no-hard-cap").ToListAsync();
+            Assert.Single(rows);
+            Assert.Equal("pass", rows[0].Verdict);
+        }
+        finally { f.Dispose(); }
+    }
+
+    [Fact]
     public async Task Sub70_On_First_Iter_Rejects_And_Bounces_Work_Item()
     {
         var (f, db, loop) = await SetupAsync(workItemId: "wi-rej", workItemState: "active");

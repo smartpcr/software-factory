@@ -1217,7 +1217,7 @@ public sealed record TaskExecutionSnapshot(
     /// Surfaced so the UI can colour-code amber deltas without its own
     /// constant.
     /// </summary>
-    long PromptBloatGrowthThreshold = 30_000);
+    long PromptBloatGrowthThreshold = 200_000);
 
 /// <summary>
 /// Phase 54 — one entry per iteration in
@@ -1299,5 +1299,4 @@ public sealed record ReassignQueueRequest(string NewCrewId);
 
 /// <summary>Body for <c>POST /api/queue/{id}/cancel</c>.</summary>
 public sealed record CancelQueueRequest(string? Reason = null);
-
 
