@@ -6,9 +6,10 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
 /// Aggregate statistics for the memory graph.
-/// All counts reflect active (non-retired) entities unless noted otherwise.
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
