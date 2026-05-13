@@ -51,8 +51,8 @@ public class ExpertiseEntry
     /// <summary>Vector of Title + " " + Body.</summary>
     public float[]? Embedding { get; set; }
 
-    /// <summary>SHA-256(Title + Body + TargetNodeId).</summary>
-    public required string ContentHash { get; init; }
+    /// <summary>SHA-256(Title + Body + TargetNodeId) for dedup.</summary>
+    public string ContentHash { get; init; } = string.Empty;
 
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 

@@ -22,6 +22,7 @@ public sealed class MemoryEdge
 
     /// <summary>
     /// Temporal version range for this edge. Per architecture.md §4.1.
+    /// Null for edges without version metadata (e.g. External boundary edges).
     /// </summary>
     public VersionRange Version { get; }
 
