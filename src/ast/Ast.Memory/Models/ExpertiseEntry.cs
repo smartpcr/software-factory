@@ -32,7 +32,7 @@ public sealed class ExpertiseEntry
 /// An agent-authored knowledge entry attached to a code node.
 /// Per architecture.md §4.2.
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
     public required string Id { get; init; }
     public required ExpertiseKind Kind { get; init; }

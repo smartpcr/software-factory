@@ -9,7 +9,7 @@ namespace Ast.Memory.Models;
 /// <summary>
 /// Aggregate statistics for the memory graph.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     public Dictionary<string, long> NodeCountByLayer { get; init; } = [];
     public Dictionary<string, long> EdgeCountByLayer { get; init; } = [];
