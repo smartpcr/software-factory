@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Configuration options for the agent memory subsystem.
 /// Matches architecture.md §2.4 constants.
 /// </summary>
-public class MemoryOptions
+public sealed class MemoryOptions
 {
     /// <summary>Cosine similarity threshold for consolidation merges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;

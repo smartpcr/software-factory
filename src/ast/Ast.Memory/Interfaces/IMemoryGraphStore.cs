@@ -50,7 +50,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retires a node at the given commit index (cascades to connected edges).
@@ -67,8 +67,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        string? untilCommit,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates specific metadata fields on an existing edge.
@@ -85,22 +84,22 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence,
-        CancellationToken cancellationToken);
+        double minConfidence = 0.0,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates or updates an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Soft-deletes an expertise entry (sets archived = true).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Returns archived expertise entries, optionally filtered by target node.
@@ -116,7 +115,7 @@ public interface IMemoryGraphStore : IGraphStore
     /// Gets memory-specific graph statistics (per-layer counts, expertise metrics).
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Records an audit entry for a graph mutation.

@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Extended statistics for the memory graph, including layer-specific
 /// counts and expertise metrics.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     public int TotalNodes { get; set; }
     public int TotalEdges { get; set; }

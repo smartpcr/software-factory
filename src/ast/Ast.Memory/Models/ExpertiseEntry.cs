@@ -55,8 +55,7 @@ public sealed class ExpertiseEntry
 }
 
 /// <summary>
-/// Agent-learned expertise attached to a graph node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
