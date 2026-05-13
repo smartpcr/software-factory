@@ -7,7 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Well-known metadata keys for memory graph nodes.
+/// Well-known metadata key constants for the memory graph.
 /// </summary>
 public static class MemoryMetadataKeys
 {
