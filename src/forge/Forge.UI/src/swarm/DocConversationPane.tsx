@@ -13,6 +13,10 @@ import {
   SummaryView,
   countActiveBuildFailures,
   availableTabs,
+  IterKpiStrip,
+  type IterKpi,
+  ContextUsageBar,
+  PromptView,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
@@ -268,6 +272,59 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const loadingOlder = liveEntry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
 
+  // Insight I.2 — per-iter working-notes archive
+  // (`.forge/notes/iter-{N}.md`). Refetched when the iter count changes
+  // so a newly-completed iter's notes appear in the Summary tab without
+  // a manual reload.
+  const [notesByIter, setNotesByIter] = useState<Record<number, { content: string; truncated?: boolean }>>({});
+  useEffect(() => {
+    if (rows.length === 0) {
+      setNotesByIter({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactIterNotes(storyId, key)
+      .then((r) => {
+        if (cancelled) return;
+        const map: Record<number, { content: string; truncated?: boolean }> = {};
+        for (const row of r.iters) {
+          map[row.iter] = { content: row.content, truncated: row.truncated };
+        }
+        setNotesByIter(map);
+      })
+      .catch(() => { if (!cancelled) setNotesByIter({}); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
+  // Insight I.3 — per-iter KPI rollup. Click a chip to filter the
+  // transcript / summary to that iter.
+  const [iterKpis, setIterKpis] = useState<IterKpi[]>([]);
+  useEffect(() => {
+    if (rows.length === 0) {
+      setIterKpis([]);
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactIterKpis(storyId, key)
+      .then((r) => { if (!cancelled) setIterKpis(r.iters); })
+      .catch(() => { if (!cancelled) setIterKpis([]); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
+  // Insight I.4 — ContextUsageBar source. Empty roles → bar collapses.
+  const [memoryRoles, setMemoryRoles] = useState<Parameters<typeof ContextUsageBar>[0]['roles']>({});
+  useEffect(() => {
+    if (rows.length === 0) {
+      setMemoryRoles({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactMemory(storyId, key)
+      .then((r) => { if (!cancelled) setMemoryRoles(r.roles); })
+      .catch(() => { if (!cancelled) setMemoryRoles({}); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
   // Reset selection when filter or doc changes so the latest page is sticky.
   useEffect(() => { setSelectedIter(null); }, [filter, key]);
 
@@ -300,14 +357,45 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const isSummaryMode = filter === 'summary';
   const isWorktreeMode = filter === 'worktree';
   const isBuildMode = filter === 'build';
+  const isPromptMode = filter === 'prompt';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
-  const currentIteration = rows.length > 0 ? rows[rows.length - 1].iter : 0;
+  // KPI strip click jumps the iter pointer. KPI iter values are 1-based;
+  // selectedIter is 0-based, so subtract one.
+  const handleSelectKpiIter = (iter: number) => { setSelectedIter(iter - 1); };
+  // Active iter mapping:
+  //   • summary mode → activeIter indexes summaryIters (deliverables)
+  //   • everything else → activeIter indexes `iterations` (groupByIteration
+  //     of the filtered transcript). Using iterKpis[activeIter] here is
+  //     wrong because the transcript can extend past the last persisted
+  //     Deliverable row (live iter emitted task.iteration.started before
+  //     a deliverable row was written), and the two arrays don't align.
+  const activeIterNumber = (isSummaryMode
+      ? summaryIters[activeIter]?.iter
+      : iterations[activeIter]?.iter)
+    ?? (iterations.length > 0 ? iterations[iterations.length - 1].iter : null)
+    ?? (iterKpis.length > 0 ? iterKpis[iterKpis.length - 1].iter : null);
+
+  // Surface the higher of deliverable-derived iter and transcript-derived
+  // iter so the pager doesn't lag when the loop has emitted
+  // task.iteration.started/scored past the last persisted deliverable
+  // (e.g. stuck in mid-iter when a sloppy-cap fires).
+  const deliverableIter = rows.length > 0 ? rows[rows.length - 1].iter : 0;
+  const transcriptIter = useMemo(() => {
+    let max = 0;
+    for (const e of transcript) {
+      if (e.kind !== 'task.iteration.started' && e.kind !== 'task.iteration.scored') continue;
+      const p = (e.payload ?? {}) as { iter?: number };
+      if (typeof p.iter === 'number' && p.iter > max) max = p.iter;
+    }
+    return max;
+  }, [transcript]);
+  const currentIteration = Math.max(deliverableIter, transcriptIter);
 
   // Reverse-chronological: newest events on top within the active iteration.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
@@ -354,6 +442,14 @@ export function DocConversationPane({ storyId, docId }: Props) {
 
   return (
     <div className="doc-conv doc-conv--quiet">
+      {iterKpis.length > 0 && (
+        <IterKpiStrip
+          iters={iterKpis}
+          activeIter={activeIterNumber}
+          onSelectIter={handleSelectKpiIter}
+        />
+      )}
+      <ContextUsageBar roles={memoryRoles} />
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
           const buildFailCount = f.key === 'build' ? buildFailures : 0;
@@ -487,17 +583,24 @@ export function DocConversationPane({ storyId, docId }: Props) {
         </nav>
       )}
 
-      {/* Body — Summary card | Worktree (commits + file changes) | Build (gates + agent build/test) | transcript list */}
+      {/* Body — Summary card | Worktree (commits + file changes) | Build (gates + agent build/test) | Prompt (verbatim system + user prompt per role) | transcript list */}
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
         {isWorktreeMode ? (
           <WorktreePane workItemId={workItemId} />
         ) : isBuildMode ? (
           <BuildPane workItemId={workItemId} />
+        ) : isPromptMode ? (
+          <PromptView
+            events={transcript}
+            activeIter={activeIterNumber}
+            workItemId={workItemId ?? ''}
+          />
         ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}
             loading={loading}
             dispatched={rows.length > 0 || transcript.length > 0}
+            notesByIter={notesByIter}
           />
         ) : (
           <>

@@ -1476,6 +1476,73 @@ export const forgeApi = {
       `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iterations`);
   },
 
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/iter-kpis — Insight
+   * I.3 for plan-doc tasks. Same shape as
+   * {@link fetchWorkstreamIterKpis} but keyed on the synthetic
+   * `plan-doc:{spawnId}:{filename}` workItemId, so the architect crew's
+   * iterations populate the doc Conversation tab's KPI strip +
+   * sparklines identically to engineer workstreams.
+   */
+  async fetchStoryArtifactIterKpis(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    iters: {
+      iter: number;
+      score: number;
+      verdict: string;
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+      durationMs: number | null;
+      filesChanged: number;
+      createdAt: string;
+    }[];
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iter-kpis`);
+  },
+
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/iter-notes — Insight
+   * I.2 for plan-doc tasks. Reads the architect's per-iter working notes
+   * (`.forge/notes/iter-{N}.md`) under the per-doc worktree
+   * (`.worktree/plan-{key}` — Phase 53 slug).
+   */
+  async fetchStoryArtifactIterNotes(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    iters: { iter: number; content: string; truncated: boolean; lengthBytes: number }[];
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iter-notes`);
+  },
+
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/memory — Insight I.4
+   * / Phase G for plan-doc tasks. Returns the per-role agent_memory rows
+   * + their effective compactor threshold so the doc Conversation tab
+   * can render the ContextUsageBar.
+   */
+  async fetchStoryArtifactMemory(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    roles: Record<string, {
+      agentId: string;
+      backend: string;
+      invokeMode: string;
+      model: string | null;
+      sessionId: string | null;
+      hasMessagesHistory: boolean;
+      turnCount: number | null;
+      approxInputTokens: number;
+      effectiveThreshold: number;
+      lastIter: number;
+      createdAt: string;
+      updatedAt: string;
+    } | undefined>;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/memory`);
+  },
+
   /** GET /api/prs. */
   async getPrs(): Promise<Pr[]> {
     if (useLocalSeed()) return sampleState.prs;

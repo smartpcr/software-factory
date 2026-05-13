@@ -87,6 +87,13 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
+        // Phase 53 follow-up — mirror the workstream-insight surfaces
+        // (Insight I.2/I.3/I.4) onto plan-doc tasks so the Conversation
+        // tab renders the same KPI strip, sparklines, prompt-view + memory
+        // bar for architect docs as for engineer workstreams.
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iter-kpis", GetArtifactIterKpis).WithName("GetStoryArtifactIterKpis");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iter-notes", GetArtifactIterNotes).WithName("GetStoryArtifactIterNotes");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/memory", GetArtifactMemory).WithName("GetStoryArtifactMemory");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/retry", RetryArtifact).WithName("RetryStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
@@ -2268,6 +2275,97 @@ public static class StoriesEndpoints
             new { kind = "spawn-error-dismissed", spawn = ToContract(spawn) });
 
         return Results.Ok(ToContract(spawn));
+    }
+
+    /// <summary>
+    /// Phase 53 follow-up — Insight I.3 surface for plan-doc tasks. Mirrors
+    /// the per-iter KPI rollup that <c>WorkstreamsEndpoints.GetIterKpis</c>
+    /// computes for engineer workstreams, keyed on the synthetic
+    /// <c>plan-doc:{spawn.Id}:{filename}</c> workItemId so the architect
+    /// crew's iterations populate the Conversation tab's KPI strip +
+    /// sparklines identically.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterKpis(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, iters = Array.Empty<object>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetIterKpisAsync(db, workItemId, ct);
+        return Results.Ok(payload);
+    }
+
+    /// <summary>
+    /// Phase 53 follow-up — Insight I.2 surface for plan-doc tasks. Reads
+    /// the architect agent's per-iter working-notes archive under
+    /// <c>{cloneRoot}/.worktree/plan-{docKey}/.forge/notes/iter-{N}.md</c>
+    /// so the Summary card on a doc task surfaces the same "Working notes"
+    /// section that workstreams already render.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterNotes(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, iters = Array.Empty<object>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var resolved = await WorktreePathResolver.ResolveForPlanDocAsync(db, spawn.Id, key, ct);
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetIterNotesAsync(workItemId, resolved.WorktreePath, ct);
+        return Results.Ok(payload);
+    }
+
+    /// <summary>
+    /// Phase 53 follow-up — Insight I.4 / Phase G surface for plan-doc
+    /// tasks. Returns the same <c>roles</c>-keyed payload that the
+    /// workstream memory route returns so the Conversation tab can render
+    /// the ContextUsageBar for architect docs identically to engineer
+    /// workstreams.
+    /// </summary>
+    private static async Task<IResult> GetArtifactMemory(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        Forge.Api.Agents.CopilotSessionPool copilotPool,
+        Forge.Api.Services.MemoryCompactor compactor,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, roles = new Dictionary<string, object?>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetMemoryAsync(db, copilotPool, compactor, workItemId, ct);
+        return Results.Ok(payload);
     }
 
     /// <summary>

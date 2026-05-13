@@ -413,6 +413,14 @@ export function buildPageWindow(total: number, active: number, wing = 2): (numbe
 
 export interface IterationGroup {
   label: string;
+  /**
+   * Iter number parsed from the boundary event payload. Required so the
+   * Conversation tab can route the active-iter cursor through the Prompt /
+   * tools / generator tabs without falling back to <c>iterKpis[i].iter</c>
+   * (which lags behind the live transcript when the loop has emitted
+   * task.iteration.started past the last persisted Deliverable row).
+   */
+  iter: number;
   score: number | null;
   verdict: string | null;
   events: TaskTranscriptEvent[];
@@ -431,14 +439,14 @@ export function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[
   if (events.length === 0) return [];
 
   const groups: IterationGroup[] = [];
-  let current: IterationGroup = { label: 'Iteration 1', score: null, verdict: null, events: [] };
+  let current: IterationGroup = { label: 'Iteration 1', iter: 1, score: null, verdict: null, events: [] };
 
   for (const evt of events) {
     if (evt.kind === 'task.iteration.started') {
       const p = evt.payload as Record<string, unknown> | null;
       const iter = (p?.iter as number) ?? groups.length + 2;
       if (current.events.length > 0) groups.push(current);
-      current = { label: `Iteration ${iter}`, score: null, verdict: null, events: [evt] };
+      current = { label: `Iteration ${iter}`, iter, score: null, verdict: null, events: [evt] };
       continue;
     }
 

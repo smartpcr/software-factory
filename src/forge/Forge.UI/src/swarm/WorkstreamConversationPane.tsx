@@ -285,7 +285,15 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const handleSelectKpiIter = (iter: number) => {
     setSelectedIter(iter - 1);
   };
-  const activeIterNumber = (isSummaryMode ? summaryIters[activeIter]?.iter : iterKpis[activeIter]?.iter)
+  // Active iter mapping — see DocConversationPane.tsx for the rationale.
+  // Non-summary modes index `iterations` (grouped transcript), not
+  // `iterKpis` (deliverables), so the cursor stays in lock-step with what
+  // the operator is actually looking at when the live transcript extends
+  // past the last persisted Deliverable row.
+  const activeIterNumber = (isSummaryMode
+      ? summaryIters[activeIter]?.iter
+      : iterations[activeIter]?.iter)
+    ?? (iterations.length > 0 ? iterations[iterations.length - 1].iter : null)
     ?? (iterKpis.length > 0 ? iterKpis[iterKpis.length - 1].iter : null);
 
   const currentIteration = snapshot?.currentIteration ?? (summaryIters.length > 0 ? summaryIters[summaryIters.length - 1].iter : 0);
