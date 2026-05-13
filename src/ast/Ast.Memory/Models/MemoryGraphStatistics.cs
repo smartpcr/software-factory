@@ -6,21 +6,37 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
-/// Aggregate statistics for the memory graph.
-/// All counts reflect active (non-retired) entities unless noted otherwise.
+/// Statistics about the memory graph per architecture §5.1.
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
-    public int StructuralNodes { get; init; }
-    public int CallChainNodes { get; init; }
-    public int SemanticNodes { get; init; }
-    public int ExpertiseEntries { get; init; }
-    public int StructuralEdges { get; init; }
-    public int CallChainEdges { get; init; }
-    public int SemanticEdges { get; init; }
-    public int ExpertiseEdges { get; init; }
-    public int ArchivedExpertise { get; init; }
-    public int TotalNodes { get; init; }
-    public int TotalEdges { get; init; }
+    public long TotalNodes { get; set; }
+
+    public long TotalEdges { get; set; }
+
+    public long ActiveNodes { get; set; }
+
+    public long RetiredNodes { get; set; }
+
+    public long ActiveEdges { get; set; }
+
+    public long RetiredEdges { get; set; }
+
+    public long ExpertiseEntries { get; set; }
+
+    public long ArchivedExpertise { get; set; }
+
+    public Dictionary<string, long> NodesByLayer { get; set; } = new();
+
+    public Dictionary<string, long> EdgesByRelation { get; set; } = new();
+
+    public Dictionary<string, long> NodesByLanguage { get; set; } = new();
 }
+
+/// <summary>
+/// Node and edge counts for a single memory layer.
+/// </summary>
+public record LayerStatistics(int NodeCount, int EdgeCount);
