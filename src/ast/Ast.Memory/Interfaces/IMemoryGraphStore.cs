@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
+using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
 /// Extended graph store interface for memory-layer operations.
@@ -31,6 +32,8 @@ public interface IMemoryGraphStore : IGraphStore
 
     // ── Edge queries ────────────────────────────────────────────────────
 
+    // ── Edge queries ────────────────────────────────────────────────────
+
     /// <summary>
     /// Gets edges by semantic relation with optional layer and temporal criteria.
     /// </summary>
@@ -44,8 +47,7 @@ public interface IMemoryGraphStore : IGraphStore
     // Temporal-aware upsert and retirement
 
     /// <summary>
-    /// Upserts a node with version range for temporal tracking.
-    /// Serialized via SemaphoreSlim(1,1) (SQLite) or ACID transactions (Neo4j).
+    /// Inserts or updates a node with the given version range.
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
@@ -53,7 +55,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retires a node and cascades retirement to all connected edges.
+    /// Marks a node as retired by setting its UntilCommitIndex.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
@@ -62,7 +64,15 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Retires an edge by setting its UntilIndex.
+    /// Inserts or updates an edge with the given version range.
+    /// </summary>
+    Task UpsertEdgeAsync(
+        Hyperedge edge,
+        VersionRange version,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Marks an edge as retired by setting its UntilCommitIndex.
     /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
@@ -80,8 +90,7 @@ public interface IMemoryGraphStore : IGraphStore
     // Expertise CRUD
 
     /// <summary>
-    /// Gets expertise entries for a target node. Excludes archived entries.
-    /// minConfidence threshold is evaluated against stored confidence.
+    /// Returns non-archived expertise entries for a target node.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
@@ -96,14 +105,14 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Archives an expertise entry (soft-delete).
+    /// Archives an expertise entry.
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gets archived expertise entries.
+    /// Returns archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId,
@@ -113,7 +122,7 @@ public interface IMemoryGraphStore : IGraphStore
     // Statistics and audit
 
     /// <summary>
-    /// Gets memory-specific statistics.
+    /// Returns aggregate statistics for the memory graph.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken cancellationToken = default);
@@ -125,27 +134,5 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken ct = default);
-
-    // Convenience bulk operations (supplement §5.1 for pipeline use)
-
-    /// <summary>
-    /// Bulk upsert nodes. Delegates to individual UpsertNodeAsync calls.
-    /// </summary>
-    Task<int> UpsertNodesAsync(IEnumerable<HypergraphNode> nodes, VersionRange version, CancellationToken ct = default);
-
-    /// <summary>
-    /// Bulk upsert edges.
-    /// </summary>
-    Task<int> UpsertEdgesAsync(IEnumerable<Hyperedge> edges, CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets nodes associated with a given file path.
-    /// </summary>
-    Task<IReadOnlyList<HypergraphNode>> GetNodesByFilePathAsync(string filePath, CancellationToken ct = default);
-
-    /// <summary>
-    /// Gets edges where at least one endpoint is in the given node IDs.
-    /// </summary>
-    Task<IReadOnlyList<Hyperedge>> GetEdgesForNodesAsync(IEnumerable<string> nodeIds, CancellationToken ct = default);
+        CancellationToken cancellationToken);
 }

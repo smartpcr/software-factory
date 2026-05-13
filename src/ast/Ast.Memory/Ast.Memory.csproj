@@ -27,11 +27,30 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
+    <InternalsVisibleTo Include="Ast.Memory.IntegrationTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
     <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
-    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
     <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
     <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
-    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
