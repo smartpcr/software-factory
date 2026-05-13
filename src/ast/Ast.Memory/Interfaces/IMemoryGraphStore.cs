@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
+using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
 /// Memory-aware graph store that extends <see cref="IGraphStore"/> with
@@ -21,6 +22,8 @@ using Ast.Memory.Models;
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
+    // Layer-filtered queries with temporal support
+
     /// <summary>
     /// Gets nodes filtered by memory layer with optional temporal snapshot.
     /// </summary>
@@ -118,5 +121,5 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
 }
