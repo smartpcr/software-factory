@@ -67,7 +67,7 @@ public enum HyperedgeType
     CrossLanguageTypeReference,
     CrossLanguageMethodCall,
 
-    // Memory-only (Evolution Engine, Semantic Indexer)
+    // Memory layer
     MemoryRelation
 }
 
