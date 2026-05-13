@@ -7,6 +7,6 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// A supporting reference for an expertise entry.
+/// A citation referencing a code node as evidence for an expertise entry.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
