@@ -9,7 +9,7 @@ namespace Ast.Memory.Models;
 /// <summary>
 /// Statistics about the memory graph by layer.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     /// <summary>
     /// Gets or sets the total node count.

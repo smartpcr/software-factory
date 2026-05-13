@@ -31,7 +31,7 @@ public sealed class ExpertiseEntry
 /// <summary>
 /// An expertise node representing agent-authored knowledge about code.
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
     /// <summary>
     /// Gets the unique identifier in format "expertise:{kind}:{hash8}".

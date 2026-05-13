@@ -49,7 +49,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retires a node at a specific commit index, cascading to connected edges.
@@ -66,8 +66,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        string? untilCommit,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates metadata on an existing edge.
@@ -85,22 +84,22 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence,
-        CancellationToken cancellationToken);
+        double minConfidence = 0.0,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Inserts or updates an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Archives (soft-deletes) an expertise entry.
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets archived expertise entries, optionally filtered by target node.
@@ -116,7 +115,7 @@ public interface IMemoryGraphStore : IGraphStore
     /// Gets memory-specific graph statistics (node/edge counts by layer).
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Logs an audit trail entry.
@@ -125,5 +124,5 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 }
