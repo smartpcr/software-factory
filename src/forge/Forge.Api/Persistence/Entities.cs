@@ -686,6 +686,17 @@ public class CrewRow
     /// pairs with B, both rows reference each other. Null when standalone.
     /// </summary>
     public string? PairedWithCrewId { get; set; }
+
+    /// <summary>
+    /// Phase 55 (docs/forge/sloppy_guard.md) — per-crew opt-in for Layer 2
+    /// agent-memory continuity (Claude/CLI --resume, Claude/SDK history
+    /// replay, Copilot/SDK long-lived session). Defaults <c>false</c> so
+    /// existing crews behave exactly as they did pre-Phase-55; the
+    /// operator flips this on once a crew is observed to benefit. Phase A
+    /// worktree scratch notes are independent of this flag and stay
+    /// always-on for every crew.
+    /// </summary>
+    public bool EnableAgentMemory { get; set; }
 }
 
 /// <summary>

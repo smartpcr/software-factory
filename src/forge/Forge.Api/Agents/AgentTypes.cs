@@ -60,6 +60,16 @@ public enum AgentEventKind
     Finished,
     Failed,
     Paused,
+
+    /// <summary>
+    /// Phase 55 — provider-native session metadata. The Claude/CLI
+    /// stream-json runner emits one of these when it sees the CLI's
+    /// <c>system / init</c> event so the caller can persist
+    /// <see cref="AgentEvent.SessionId"/> for the next iteration's
+    /// <c>--resume</c>. Copilot/SDK long-lived pool (Phase E) will use
+    /// the same shape.
+    /// </summary>
+    SessionInfo,
 }
 
 /// <summary>
@@ -76,7 +86,16 @@ public sealed record AgentEvent(
     string? Error = null,
     long? InputTokens = null,
     long? OutputTokens = null,
-    decimal? CostUsd = null);
+    decimal? CostUsd = null,
+    /// <summary>
+    /// Phase 55 — provider-native session id surfaced by the runner so
+    /// the gen-eval loop can persist it for the next iteration's
+    /// <c>--resume</c>. Non-null only on
+    /// <see cref="AgentEventKind.SessionInfo"/> and (defensively) on the
+    /// final <see cref="AgentEventKind.Finished"/> event from the
+    /// Claude/CLI stream-json path.
+    /// </summary>
+    string? SessionId = null);
 
 /// <summary>
 /// Phase 11.1 — handle returned by <see cref="IAgentRunner.StartAsync"/>.

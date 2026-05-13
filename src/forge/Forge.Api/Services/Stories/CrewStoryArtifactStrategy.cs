@@ -1869,24 +1869,36 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ## Working notes -- REQUIRED before `DONE`
             Before replying `DONE`, write a markdown file at the relative
-            path `.forge/iter-notes.md` capturing your working state. The
-            NEXT iteration's prompt will prepend the contents of this file
-            under `## Notes from prior iteration` -- that is your only
-            continuity channel. Each iter runs in a fresh agent session
-            with no memory of what you read, edited, or decided last iter;
-            this file is how you talk to your future self.
+            path `.forge/iter-notes.md` capturing THIS iteration's
+            reflection. Each iter runs in a fresh agent session with no
+            memory of what you read, edited, or decided last iter; this
+            file is how you talk to your future self.
 
-            Keep it terse, bullets not prose, ~50 lines max. Overwrite the
-            file each iter (do not append). Cover:
-              - **Files touched**: paths + one-line "what changed".
-              - **Decisions**: e.g. "chose `Mutex<RaftState>` over `RwLock`
-                because writes dominate"; why each non-obvious choice.
-              - **Dead ends already tried**: approaches that did not work.
-                Future iters MUST NOT re-attempt these.
-              - **Open questions**: anything you needed but could not
-                determine. (Also emit a JSON open-question entry if the
-                next iter is blocked without an operator answer.)
-              - **What's still left**: a short next-iter to-do list so the
+            **Forge keeps a history for you.** After every iter, Forge
+            archives the current file to `.forge/notes/iter-{N}.md` and
+            on the next iter prepends the FULL HISTORY (newest first,
+            with `### Iteration N` headers, capped at ~16 KB) into your
+            prompt under `## Notes from prior iteration(s)`. You do NOT
+            need to re-paste prior decisions or dead ends into this
+            iter's file -- Forge stitches them in automatically. Just
+            overwrite `.forge/iter-notes.md` with what's NEW or CHANGED
+            this turn; never try to "carry forward" prior content
+            manually (it'll be duplicated by Forge).
+
+            Keep it terse, bullets not prose, ~50 lines max. Cover what
+            actually happened THIS iter:
+              - **Files touched this iter**: paths + one-line "what changed".
+              - **Decisions made this iter**: e.g. "chose
+                `Mutex<RaftState>` over `RwLock` because writes dominate";
+                why each non-obvious choice. Reference earlier-iter
+                decisions only when you REVISED them.
+              - **Dead ends tried this iter**: approaches that did not
+                work this turn. (Prior iters' dead ends are visible to
+                you under "Notes from prior iterations" -- don't repeat
+                them; just add new ones.)
+              - **Open questions surfaced this iter**: anything new you
+                needed but could not determine.
+              - **What's still left**: short next-iter to-do list so the
                 next session can pick up where this one ended.
 
             The `.forge/` dir is excluded from the worktree's git index --
@@ -2990,6 +3002,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model -- typically gpt-5.5/sonnet against an opus generator.");
         }
 
+        // Phase 55 / Phase C+D (docs/forge/sloppy_guard.md) -- decide
+        // per role whether to wire in agent memory. Phase C covered
+        // Claude/CLI (--resume); Phase D extends to Claude/SDK
+        // (conversation history replay against /v1/messages). Phase E
+        // will add Copilot/SDK. Each side is gated on its OWN crew
+        // row (the paired evaluator crew may opt in independently).
+        // When false, the delegate skips the load/upsert pair and the
+        // runner sees a null ctx.Memory -- exactly the pre-Phase-55
+        // shape.
+        var genMemoryEnabled = crew.EnableAgentMemory
+            && genContext.Backend == AgentBackend.Claude;
+        var evalMemoryEnabled = (evalCrew?.EnableAgentMemory ?? false)
+            && evalContext is not null
+            && evalContext.Backend == AgentBackend.Claude;
+
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
         {
             phase = phaseTag,
@@ -3092,17 +3119,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (hasPriorNotes)
                 {
                     sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  NOTES FROM PRIOR ITERATION (your own working state)     ║");
+                    sb.AppendLine("║  NOTES FROM PRIOR ITERATIONS (your own working state)    ║");
                     sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
-                    sb.AppendLine("You wrote these notes at the end of the prior iter. The agent");
-                    sb.AppendLine("session that produced them is gone -- this file is your only");
-                    sb.AppendLine("memory of what you already learned, decided, or tried.");
+                    sb.AppendLine("You wrote these notes across the prior iterations of this");
+                    sb.AppendLine("workstream, newest first. The agent sessions that produced");
+                    sb.AppendLine("them are gone -- this archive is your only memory of what");
+                    sb.AppendLine("you already learned, decided, or tried. Forge appends a new");
+                    sb.AppendLine("entry every iter; you do NOT need to copy prior entries");
+                    sb.AppendLine("forward yourself.");
                     sb.AppendLine();
                     sb.AppendLine(priorNotesBlock);
                     sb.AppendLine();
-                    sb.AppendLine("Update `.forge/iter-notes.md` again before `DONE` so the next");
-                    sb.AppendLine("iter inherits your latest state.");
+                    sb.AppendLine("Overwrite `.forge/iter-notes.md` with THIS iter's reflection");
+                    sb.AppendLine("only -- Forge will archive it and prepend the cumulative");
+                    sb.AppendLine("history to your next prompt.");
                     sb.AppendLine();
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
@@ -3258,10 +3289,66 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 iter,
             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
-            var invocation = await this.runner.StartAsync(workItemId, genAgentId, iterPrompt, genContext, iterCt);
+            // Phase 55 / Phase C+D -- load the prior iteration's
+            // memory handle (session id for CLI, conversation turns
+            // for SDK) and attach to the runner context. The runner
+            // picks the right strategy based on (Backend, InvokeMode)
+            // -- Claude/CLI uses --resume <sid>, Claude/SDK replays
+            // PriorTurns in the messages array. Per-iter scope so the
+            // AgentMemoryStore writes don't fight the outer scope's
+            // tracked entities.
+            var genContextForIter = genContext;
+            AgentMemoryHandle? loadedGenHandle = null;
+            if (genMemoryEnabled)
+            {
+                try
+                {
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    loadedGenHandle = await memStore.GetHandleAsync(
+                        workItemId, genAgentId, AgentMemoryRoles.Generator, iterCt);
+                    if (loadedGenHandle is not null)
+                    {
+                        genContextForIter = genContextForIter with { Memory = loadedGenHandle };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.resumed", new
+                        {
+                            role = "generator",
+                            agentId = genAgentId,
+                            sessionId = loadedGenHandle.SessionId,
+                            priorTurns = loadedGenHandle.PriorTurns?.Count ?? 0,
+                            iter,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    else
+                    {
+                        // Memory is on but this is the first iter (or a
+                        // prior row was reaped). Pass a non-null but
+                        // empty handle so the runner picks the
+                        // memory-enabled path (stream-json for CLI,
+                        // messages-array build for SDK) and we capture
+                        // the new continuity payload at iter end.
+                        genContextForIter = genContextForIter with { Memory = new AgentMemoryHandle() };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.fresh", new
+                        {
+                            role = "generator",
+                            agentId = genAgentId,
+                            iter,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.GetHandleAsync failed for {WorkItem}/{Agent}/gen; running without memory.",
+                        workItemId, genAgentId);
+                }
+            }
+
+            var invocation = await this.runner.StartAsync(workItemId, genAgentId, iterPrompt, genContextForIter, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
+            string? capturedSessionId = null;
             // Phase 54 -- capture per-AssistantUsageEvent samples so the
             // per-invocation row on agent_usage retains the sub-invocation
             // curve for richer UI later. Cleared on each invocation; null
@@ -3289,6 +3376,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                // Phase 55 / Phase C -- capture session id surfaced by
+                // the Claude/CLI stream-json runner so the post-iter
+                // upsert can persist it for the next iter's --resume.
+                // Both SessionInfo (early) and Finished (final) may
+                // carry the id; latest wins.
+                if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
                 // Phase 54 -- a non-zero token tally on a single event is the
                 // SDK's per-turn usage report. Record the snapshot so the
                 // post-iter rollup can render a sub-invocation curve.
@@ -3302,6 +3395,113 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         outputTokens = evt.OutputTokens ?? 0,
                         atUtc = evt.At,
                     });
+                }
+            }
+
+            // Phase 55 / Phase A.2 -- archive this iter's working
+            // notes so the next iter's prompt sees the FULL history,
+            // not just the last reflection. The agent always writes to
+            // the same well-known path (`.forge/iter-notes.md`) and
+            // doesn't manage iter numbering; Forge owns versioning
+            // here because agents are unreliable at "append, don't
+            // overwrite". Runs BEFORE the memory upsert / build gate
+            // because those may throw and we still want the
+            // reflection preserved even on a failed iter.
+            try
+            {
+                var notesPath = Path.Combine(workspace, ".forge", "iter-notes.md");
+                if (File.Exists(notesPath))
+                {
+                    var archiveDir = Path.Combine(workspace, ".forge", "notes");
+                    Directory.CreateDirectory(archiveDir);
+                    var archivePath = Path.Combine(archiveDir, $"iter-{iter}.md");
+                    File.Copy(notesPath, archivePath, overwrite: true);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogDebug(ex,
+                    "Phase A.2 notes archive failed at iter {Iter} for {WorkItem}; next iter prompt may show fewer iters.",
+                    iter, workItemId);
+            }
+
+            // Phase 55 / Phase C+D -- persist this iter's continuity
+            // payload so the next iter resumes the same conversation.
+            // CLI path: just the session id (Claude Code keeps history
+            // on disk under ~/.claude/projects). SDK path: the full
+            // turn list = priorTurns + new user turn + new assistant
+            // turn, serialised into MessagesJson for the next iter's
+            // /v1/messages replay. Runs BEFORE the protected-file
+            // restore and the no-progress / build-gate guards because
+            // those may throw; the conversation is valid regardless
+            // of whether the diff compiled. Best-effort: an upsert
+            // failure logs but doesn't fail the iter.
+            if (genMemoryEnabled && genContext.InvokeMode == AgentInvokeMode.Sdk)
+            {
+                try
+                {
+                    var priorTurns = loadedGenHandle?.PriorTurns
+                        ?? (IReadOnlyList<ConversationTurn>)Array.Empty<ConversationTurn>();
+                    var assistantText = output.ToString();
+                    var newTurns = new List<ConversationTurn>(priorTurns.Count + 2);
+                    newTurns.AddRange(priorTurns);
+                    newTurns.Add(new ConversationTurn(
+                        Role: "user",
+                        Content: iterPrompt,
+                        Iter: iter,
+                        Tokens: Math.Max(1, iterPrompt.Length / 4)));
+                    newTurns.Add(new ConversationTurn(
+                        Role: "assistant",
+                        Content: assistantText,
+                        Iter: iter,
+                        Tokens: outTok > 0 ? outTok : Math.Max(1, assistantText.Length / 4)));
+
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    await memStore.UpsertWithTurnsAsync(
+                        workItemId, genAgentId, AgentMemoryRoles.Generator,
+                        backend: genBackendStr, invokeMode: genInvokeStr,
+                        sessionId: null, turns: newTurns,
+                        lastIter: iter, ct: iterCt);
+                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    {
+                        role = "generator",
+                        agentId = genAgentId,
+                        turnCount = newTurns.Count,
+                        iter,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.UpsertWithTurnsAsync failed for {WorkItem}/{Agent}/gen at iter {Iter}.",
+                        workItemId, genAgentId, iter);
+                }
+            }
+            else if (genMemoryEnabled && !string.IsNullOrEmpty(capturedSessionId))
+            {
+                try
+                {
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    await memStore.UpsertAsync(
+                        workItemId, genAgentId, AgentMemoryRoles.Generator,
+                        backend: genBackendStr, invokeMode: genInvokeStr,
+                        sessionId: capturedSessionId, messagesJson: null,
+                        lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    {
+                        role = "generator",
+                        agentId = genAgentId,
+                        sessionId = capturedSessionId,
+                        iter,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/gen at iter {Iter}.",
+                        workItemId, genAgentId, iter);
                 }
             }
 
@@ -3629,10 +3829,61 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 iter,
             }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
 
-            var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContext, iterCt);
+            // Phase 55 / Phase C+D -- mirror the generator-side
+            // memory wiring for the evaluator role. The evaluator's
+            // crew opts in independently (paired crews can disagree).
+            // Resumed evaluator sessions inherit the prior iter's
+            // scoring history (CLI: --resume sid; SDK: PriorTurns
+            // replayed) -- the feature the operator explicitly
+            // enabled because the evaluator's "Still needs
+            // improvement" checkbox list must survive into the next
+            // iter to keep convergence detection honest.
+            var evalContextForIter = evalContext;
+            AgentMemoryHandle? loadedEvalHandle = null;
+            if (evalMemoryEnabled)
+            {
+                try
+                {
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    loadedEvalHandle = await memStore.GetHandleAsync(
+                        workItemId, evalAgentId, AgentMemoryRoles.Evaluator, iterCt);
+                    if (loadedEvalHandle is not null)
+                    {
+                        evalContextForIter = evalContextForIter with { Memory = loadedEvalHandle };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.resumed", new
+                        {
+                            role = "evaluator",
+                            agentId = evalAgentId,
+                            sessionId = loadedEvalHandle.SessionId,
+                            priorTurns = loadedEvalHandle.PriorTurns?.Count ?? 0,
+                            iter,
+                        }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                    }
+                    else
+                    {
+                        evalContextForIter = evalContextForIter with { Memory = new AgentMemoryHandle() };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.fresh", new
+                        {
+                            role = "evaluator",
+                            agentId = evalAgentId,
+                            iter,
+                        }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.GetHandleAsync failed for {WorkItem}/{Agent}/eval; running without memory.",
+                        workItemId, evalAgentId);
+                }
+            }
+
+            var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContextForIter, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
+            string? capturedSessionId = null;
             // Phase 54 -- mirror the generator-side per-AssistantUsageEvent
             // sample capture (see GeneratorDelegate above). Evaluator runs
             // are usually single-turn so the array typically has one entry,
@@ -3660,6 +3911,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
                 if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
                 {
                     turnIndex++;
@@ -3670,6 +3922,87 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         outputTokens = evt.OutputTokens ?? 0,
                         atUtc = evt.At,
                     });
+                }
+            }
+
+            // Phase 55 / Phase C+D -- persist the evaluator's iter
+            // continuity payload so the next iter resumes the same
+            // scoring conversation. The evaluator's prior "Still
+            // needs improvement" checkbox list sits in its own
+            // conversation history; without memory it re-scores from
+            // scratch each iter and can't verify whether the
+            // generator actually addressed each item. CLI path
+            // persists session id; SDK path persists the rebuilt turn
+            // list. Best-effort: an upsert failure logs but doesn't
+            // fail the iter.
+            if (evalMemoryEnabled && evalContext.InvokeMode == AgentInvokeMode.Sdk)
+            {
+                try
+                {
+                    var priorTurns = loadedEvalHandle?.PriorTurns
+                        ?? (IReadOnlyList<ConversationTurn>)Array.Empty<ConversationTurn>();
+                    var assistantText = output.ToString();
+                    var newTurns = new List<ConversationTurn>(priorTurns.Count + 2);
+                    newTurns.AddRange(priorTurns);
+                    newTurns.Add(new ConversationTurn(
+                        Role: "user",
+                        Content: evaluatorPrompt,
+                        Iter: iter,
+                        Tokens: Math.Max(1, evaluatorPrompt.Length / 4)));
+                    newTurns.Add(new ConversationTurn(
+                        Role: "assistant",
+                        Content: assistantText,
+                        Iter: iter,
+                        Tokens: outTok > 0 ? outTok : Math.Max(1, assistantText.Length / 4)));
+
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    await memStore.UpsertWithTurnsAsync(
+                        workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
+                        backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                        invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                        sessionId: null, turns: newTurns,
+                        lastIter: iter, ct: iterCt);
+                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    {
+                        role = "evaluator",
+                        agentId = evalAgentId,
+                        turnCount = newTurns.Count,
+                        iter,
+                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.UpsertWithTurnsAsync failed for {WorkItem}/{Agent}/eval at iter {Iter}.",
+                        workItemId, evalAgentId, iter);
+                }
+            }
+            else if (evalMemoryEnabled && !string.IsNullOrEmpty(capturedSessionId))
+            {
+                try
+                {
+                    using var memScope = this.scopeFactory.CreateScope();
+                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                    await memStore.UpsertAsync(
+                        workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
+                        backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                        invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                        sessionId: capturedSessionId, messagesJson: null,
+                        lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    {
+                        role = "evaluator",
+                        agentId = evalAgentId,
+                        sessionId = capturedSessionId,
+                        iter,
+                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/eval at iter {Iter}.",
+                        workItemId, evalAgentId, iter);
                 }
             }
 
@@ -4258,33 +4591,99 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the agent's
-    /// working-notes file written at the end of the prior iteration.
-    /// Returns the file contents capped at ~8 KB when present, empty
-    /// string otherwise. Best-effort; any I/O failure returns empty so
-    /// the loop falls back to its pre-Phase-55 behaviour.
+    /// Phase 55 / Phase A.2 (docs/forge/sloppy_guard.md) -- read the
+    /// archived working-notes history so the next iter's prompt sees
+    /// every prior iter's reflection, not just the last one. Scans
+    /// <c>.forge/notes/iter-*.md</c>, sorts by iter descending (newest
+    /// first), and concatenates with <c>### Iteration N</c> headers,
+    /// hard-capped at 16 KB. When the cap forces older iters out, an
+    /// explicit truncation marker tells the agent how many were
+    /// dropped so it can re-derive context from code if it needs to.
+    ///
+    /// <para>Backward compat: when no archive exists yet but the
+    /// legacy single-file <c>.forge/iter-notes.md</c> is present
+    /// (workstreams mid-flight at the A.1 → A.2 boundary), fall through
+    /// to single-iter mode so continuity isn't lost on the transition.
+    /// The next iter's <see cref="GeneratorDelegate"/> archive step
+    /// will start populating <c>.forge/notes/</c> normally from there.</para>
     /// </summary>
     private static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workspace)) return string.Empty;
-        var path = Path.Combine(workspace, ".forge", "iter-notes.md");
-        if (!File.Exists(path)) return string.Empty;
-        try
+
+        const int TotalCap = 16_000;
+        var archiveDir = Path.Combine(workspace, ".forge", "notes");
+        var entries = new List<(int Iter, string Path)>();
+        if (Directory.Exists(archiveDir))
         {
-            var content = await File.ReadAllTextAsync(path, ct);
-            if (string.IsNullOrWhiteSpace(content)) return string.Empty;
-            const int Cap = 8000;
-            if (content.Length > Cap)
+            foreach (var file in Directory.GetFiles(archiveDir, "iter-*.md"))
             {
-                content = content[..Cap]
-                    + "\n…(truncated; full notes in .forge/iter-notes.md)";
+                var name = Path.GetFileNameWithoutExtension(file);
+                var dashIdx = name.IndexOf('-');
+                if (dashIdx >= 0
+                    && int.TryParse(name[(dashIdx + 1)..], out var n)
+                    && n > 0)
+                {
+                    entries.Add((n, file));
+                }
             }
-            return content;
         }
-        catch (Exception)
+
+        if (entries.Count == 0)
         {
-            return string.Empty;
+            // A.1 fallback for in-flight workstreams.
+            var legacyPath = Path.Combine(workspace, ".forge", "iter-notes.md");
+            if (!File.Exists(legacyPath)) return string.Empty;
+            try
+            {
+                var content = await File.ReadAllTextAsync(legacyPath, ct);
+                if (string.IsNullOrWhiteSpace(content)) return string.Empty;
+                if (content.Length > TotalCap)
+                {
+                    content = content[..TotalCap]
+                        + "\n…(truncated; full notes in .forge/iter-notes.md)";
+                }
+                return content;
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
         }
+
+        entries.Sort((a, b) => b.Iter.CompareTo(a.Iter));
+
+        var sb = new StringBuilder();
+        var included = 0;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var (n, file) = entries[i];
+            string body;
+            try
+            {
+                body = await File.ReadAllTextAsync(file, ct);
+            }
+            catch
+            {
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(body)) continue;
+            body = body.TrimEnd();
+            var section = $"### Iteration {n}\n\n{body}\n\n";
+            if (sb.Length + section.Length > TotalCap)
+            {
+                var dropped = entries.Count - included;
+                if (dropped > 0)
+                {
+                    sb.AppendLine($"_(truncated: {dropped} earlier iteration(s) omitted to keep this section under {TotalCap / 1000} KB; re-derive earlier context from code if needed.)_");
+                }
+                break;
+            }
+            sb.Append(section);
+            included++;
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>

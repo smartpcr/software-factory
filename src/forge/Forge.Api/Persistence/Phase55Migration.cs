@@ -68,6 +68,27 @@ public static class Phase55Migration
             "WorkItemId, AgentId, Role", unique: true, ct);
         await EnsureIndexAsync(conn, "ix_agent_memory_wi", "agent_memory",
             "WorkItemId", unique: false, ct);
+
+        // Phase 55 / Phase C opt-in flag on crews. Default 0 (false) so
+        // existing rows keep their pre-Phase-55 behaviour; an operator
+        // toggles this on once a crew is observed to benefit from Layer-2
+        // memory continuity. The runner cells gate their session-resume /
+        // history-replay code paths on this column being 1.
+        await EnsureColumnAsync(conn, "crews", "EnableAgentMemory", "INTEGER NOT NULL DEFAULT 0", ct);
+    }
+
+    private static async Task<bool> EnsureColumnAsync(
+        SqliteConnection conn, string table, string column, string typeAffinity, CancellationToken ct)
+    {
+        await using var probe = conn.CreateCommand();
+        probe.CommandText = $"SELECT 1 FROM pragma_table_info('{table}') WHERE name = @name";
+        probe.Parameters.AddWithValue("@name", column);
+        if (await probe.ExecuteScalarAsync(ct) is not null) return false;
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {typeAffinity}";
+        await cmd.ExecuteNonQueryAsync(ct);
+        return true;
     }
 
     private static async Task<bool> EnsureTableAsync(
