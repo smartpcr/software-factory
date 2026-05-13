@@ -25,20 +25,20 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
-        int? atCommitIndex = null,
-        NodeFilter? filter = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        int? atCommitIndex,
+        Models.NodeFilter? filter,
+        int limit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets edges filtered by canonical semantic relation name, with optional layer and temporal filtering.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
-        string? memoryLayer = null,
-        int? atCommitIndex = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Temporal-aware upsert of a node with its version range.
@@ -46,7 +46,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires a node at the specified commit index (sets UntilIndex).
@@ -55,7 +55,8 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires an edge at the specified commit index.
@@ -63,51 +64,52 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Updates metadata fields on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
-        IDictionary<string, object?> updates,
-        CancellationToken ct = default);
+        IDictionary<string, object?> metadata,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets non-archived expertise entries for a target node, filtered by minimum stored confidence.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence = 0.0,
-        CancellationToken ct = default);
+        double minConfidence,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Creates or updates an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Archives an expertise entry (soft-delete).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets archived expertise entries, optionally filtered by target node.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
-        string? targetNodeId = null,
-        int limit = 50,
-        CancellationToken ct = default);
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets per-layer statistics about the memory graph.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Logs an audit event for the memory graph.
@@ -116,5 +118,5 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 }

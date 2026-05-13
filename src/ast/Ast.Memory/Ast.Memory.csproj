@@ -1,7 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <IsPackable>true</IsPackable>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>Ast.Memory</RootNamespace>
+    <AssemblyName>Ast.Memory</AssemblyName>
+    <Description>Agent memory layer for the code knowledge hypergraph.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -9,10 +15,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
-    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
-    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
-    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.ML.Tokenizers" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" />
+    <PackageReference Include="System.Text.Json" />
   </ItemGroup>
 
   <ItemGroup>

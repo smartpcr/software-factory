@@ -13,7 +13,10 @@ using Ast.Core;
 /// </summary>
 public sealed class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MemoryNode"/> class.
+    /// </summary>
+    public MemoryNode(HypergraphNode inner)
     {
         this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
         this.Version = version ?? TryExtractVersionRange(inner);
@@ -78,3 +81,30 @@ public sealed class MemoryNode
         return new VersionRange(sinceCommit, sinceIndex, untilCommit, untilIndex);
     }
 }
+
+/// <summary>
+/// A memory node with composite relevance scores, produced by the Ranker.
+/// Per architecture.md §5.3 and §6.2.
+/// </summary>
+/// <param name="Node">The underlying memory node.</param>
+/// <param name="CompositeScore">Weighted composite of all signals.</param>
+/// <param name="StructuralScore">Structural (containment) relevance signal.</param>
+/// <param name="SemanticScore">Embedding-similarity signal.</param>
+/// <param name="CentralityScore">PageRank-light centrality signal.</param>
+/// <param name="RecencyScore">Temporal recency signal.</param>
+/// <param name="ExpertiseScore">Max APPLIES_TO confidence signal.</param>
+/// <param name="RetrievalPath">
+/// Which retrieval mode produced this node. Canonical values from architecture.md §3.3:
+/// <c>StructuralDrill</c>, <c>CallTrace</c>, <c>SemanticSearch</c>, <c>ExpertiseRecall</c>.
+/// When null, the Context Assembler infers the section from <see cref="MemoryNode.MemoryLayer"/>
+/// and node type. Set by the Retrieval Engine.
+/// </param>
+public record ScoredMemoryNode(
+    MemoryNode Node,
+    double CompositeScore,
+    double StructuralScore,
+    double SemanticScore,
+    double CentralityScore,
+    double RecencyScore,
+    double ExpertiseScore,
+    string? RetrievalPath = null);

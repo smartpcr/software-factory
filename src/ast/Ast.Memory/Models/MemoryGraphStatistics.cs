@@ -18,3 +18,8 @@ public class MemoryGraphStatistics
     public long TotalExpertise { get; init; }
     public long ArchivedExpertise { get; init; }
 }
+
+/// <summary>
+/// Node and edge counts for a single memory layer.
+/// </summary>
+public record LayerStatistics(int NodeCount, int EdgeCount);
