@@ -235,6 +235,11 @@ builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
         sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
+// Phase 55 (docs/forge/sloppy_guard.md) — cross-iteration memory store.
+// Scoped so it shares the caller's DbContext / transaction; producer for
+// the Memory handle on AgentContext consumed by the runner cells in
+// Phases C/D/E.
+builder.Services.AddScoped<Forge.Api.Services.AgentMemoryStore>();
 // Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).

@@ -134,4 +134,44 @@ public sealed record AgentContext(
     /// values: <c>"Bash"</c> (revoke shell access entirely),
     /// <c>"WebFetch"</c>, <c>"Task"</c>.
     /// </summary>
-    IReadOnlyList<string>? DisallowedTools = null);
+    IReadOnlyList<string>? DisallowedTools = null,
+    /// <summary>
+    /// Phase 55 (docs/forge/sloppy_guard.md) — cross-iteration memory
+    /// handle. When non-null, the runner for the matching (Backend,
+    /// InvokeMode) cell uses the carried <see cref="AgentMemoryHandle.SessionId"/>
+    /// or <see cref="AgentMemoryHandle.PriorTurns"/> to resume the prior
+    /// iteration's provider session. Null = fresh session (the
+    /// pre-Phase-55 behaviour and the still-current default for every
+    /// cell until Phases C/D/E land). Phase B's
+    /// <c>AgentMemoryStore</c> is the producer; the runner is the
+    /// consumer.
+    /// </summary>
+    AgentMemoryHandle? Memory = null);
+
+/// <summary>
+/// Phase 55 — cross-iteration memory handed to a runner invocation. The
+/// two payload fields are mutually exclusive in practice: CLI / Copilot
+/// SDK paths carry <see cref="SessionId"/>; the Claude SDK path carries
+/// <see cref="PriorTurns"/>. Records that hold both are valid only on
+/// migrations across backends (rare).
+/// </summary>
+/// <param name="SessionId">Provider-native session handle. Null until the first Layer-2 invocation writes a row to <c>agent_memory</c>.</param>
+/// <param name="PriorTurns">Conversation history to replay as the <c>messages</c> array. Null when the backend doesn't need replay.</param>
+public sealed record AgentMemoryHandle(
+    string? SessionId = null,
+    IReadOnlyList<ConversationTurn>? PriorTurns = null);
+
+/// <summary>
+/// Phase 55 — one conversation turn persisted in
+/// <see cref="Forge.Api.Persistence.AgentMemoryRow.MessagesJson"/> and
+/// replayed to the Claude SDK on the next iteration.
+/// </summary>
+/// <param name="Role"><c>"user"</c> or <c>"assistant"</c> — matches Anthropic's <c>messages</c> shape.</param>
+/// <param name="Content">Verbatim turn content. Compaction (Phase F) may rewrite older turns into a single summary user-turn.</param>
+/// <param name="Iter">Iteration that produced this turn. Lets the compactor reason about temporal locality.</param>
+/// <param name="Tokens">Best-effort input+output token count for this turn (used to sum <see cref="Forge.Api.Persistence.AgentMemoryRow.ApproxInputTokens"/>).</param>
+public sealed record ConversationTurn(
+    string Role,
+    string Content,
+    int Iter,
+    long Tokens);

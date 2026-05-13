@@ -1638,10 +1638,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
 
-        // Phase 53 -- register `.forge/` in the worktree-local git exclude
-        // so the agent's working-notes file (`.forge/iter-notes.md`) and
-        // any other scratch we write there never lands in the PR diff.
-        // Idempotent; safe to call on every drive.
+        // Phase 55 (docs/forge/sloppy_guard.md Phase A) -- register
+        // `.forge/` in the worktree-local git exclude so the agent's
+        // working-notes file (`.forge/iter-notes.md`) and any other
+        // scratch we write there never lands in the PR diff. Idempotent;
+        // safe to call on every drive.
         await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
 
         // Phase 49 follow-up -- bring the workstream branch up to date with
@@ -3062,11 +3063,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // OR globally-scoped pins (workItemId == null).
             var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
 
-            // Phase 53 -- read the agent's own working notes from the prior
-            // iteration. Each iter runs in a fresh agent session (no
-            // provider memory across runner.StartAsync calls), so the only
-            // continuity is what the prior iter wrote to `.forge/iter-notes.md`
-            // in the workspace. See docs/forge/sloppy_guard.md.
+            // Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the
+            // agent's own working notes from the prior iteration. Each
+            // iter runs in a fresh agent session (no provider memory
+            // across runner.StartAsync calls), so the only continuity is
+            // what the prior iter wrote to `.forge/iter-notes.md` in the
+            // workspace.
             var priorNotesBlock = await ReadPriorIterNotesAsync(workspace, iterCt);
             var hasPriorNotes = !string.IsNullOrEmpty(priorNotesBlock);
 
@@ -4256,11 +4258,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 53 -- read the agent's working-notes file written at the end
-    /// of the prior iteration. Returns the file contents capped at ~8 KB
-    /// when present, empty string otherwise. Best-effort; any I/O failure
-    /// returns empty so the loop falls back to its pre-Phase-53 behaviour.
-    /// See <c>docs/forge/sloppy_guard.md</c> Phase A.
+    /// Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the agent's
+    /// working-notes file written at the end of the prior iteration.
+    /// Returns the file contents capped at ~8 KB when present, empty
+    /// string otherwise. Best-effort; any I/O failure returns empty so
+    /// the loop falls back to its pre-Phase-55 behaviour.
     /// </summary>
     private static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
     {
