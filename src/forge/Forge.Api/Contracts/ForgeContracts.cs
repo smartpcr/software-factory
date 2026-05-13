@@ -1174,7 +1174,70 @@ public sealed record TaskExecutionSnapshot(
     /// <summary>Total number of transcript events for this work item (supports paging).</summary>
     int TranscriptTotalCount = 0,
     /// <summary>Time budget for this task in seconds (derived from story points × phase multiplier).</summary>
-    int BudgetSeconds = 0);
+    int BudgetSeconds = 0,
+    /// <summary>
+    /// Phase 52 — current pair attempt (1 = original pair, 2 = first
+    /// reassignment, 3 = second). UI surfaces an "ATTEMPT n/m" badge when
+    /// this exceeds 1 so the operator can see at a glance that the work
+    /// item has been rotated to a fresh pair.
+    /// </summary>
+    int PairAttemptCount = 1,
+    /// <summary>
+    /// Phase 52 — maximum allowed pair attempts before the reconciler
+    /// stamps terminal failure. Mirrors <see cref="ScoringConstants.MaxPairAttempts"/>;
+    /// surfaced here so the UI doesn't need its own constant.
+    /// </summary>
+    int MaxPairAttempts = 3,
+    /// <summary>
+    /// Phase 52 — generator-side input+output tokens accrued against this
+    /// work item since <c>WorkItemRow.BudgetWindowStartUtc</c> (or row
+    /// creation if null). This is the EXACT meter the sloppy detector
+    /// gates against — display it next to the cost so the operator can
+    /// see how close the run is to the token-cap trigger.
+    /// </summary>
+    long GeneratorTokensSinceWindow = 0,
+    /// <summary>
+    /// Phase 52 — generator-side token cap (mirrors
+    /// <see cref="ScoringConstants.SloppyGeneratorTokenCap"/>). When
+    /// <see cref="GeneratorTokensSinceWindow"/> exceeds this, the next
+    /// sloppy check parks the work item for reassignment.
+    /// </summary>
+    long GeneratorTokenCap = 500_000,
+    /// <summary>
+    /// Phase 54 — per-iteration prompt-size samples (generator + evaluator)
+    /// computed from the <c>agent_usage</c> ledger ordered by
+    /// <c>StartedAt</c> within each <c>CostCategory</c>. The UI plots the
+    /// growth curve (<c>InputTokens</c> across iterations) and surfaces
+    /// the iteration-over-iteration delta as a warning when it crosses
+    /// <see cref="ScoringConstants.PromptBloatGrowthThreshold"/>.
+    /// </summary>
+    IReadOnlyList<IterationPromptGrowth>? PromptGrowth = null,
+    /// <summary>
+    /// Phase 54 — mirrors <see cref="ScoringConstants.PromptBloatGrowthThreshold"/>.
+    /// Surfaced so the UI can colour-code amber deltas without its own
+    /// constant.
+    /// </summary>
+    long PromptBloatGrowthThreshold = 30_000);
+
+/// <summary>
+/// Phase 54 — one entry per iteration in
+/// <see cref="TaskExecutionSnapshot.PromptGrowth"/>. Generator and
+/// evaluator samples are listed independently because their growth
+/// patterns differ (generator bloats via tool-result accumulation,
+/// evaluator bloats via prior-feedback chain). Token values are the
+/// per-invocation totals from <c>agent_usage</c>; the sub-invocation
+/// breakdown (one entry per SDK <c>AssistantUsageEvent</c>) lives in the
+/// <c>TurnSamplesJson</c> column and is opaque to the contract.
+/// </summary>
+public sealed record IterationPromptGrowth(
+    int Iter,
+    long GeneratorInputTokens,
+    long GeneratorOutputTokens,
+    long EvaluatorInputTokens,
+    long EvaluatorOutputTokens,
+    /// <summary>Raw JSON array of per-AssistantUsageEvent samples; null when not captured.</summary>
+    string? GeneratorTurnSamplesJson = null,
+    string? EvaluatorTurnSamplesJson = null);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

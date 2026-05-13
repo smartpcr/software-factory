@@ -235,7 +235,12 @@ public class Phase52SloppyDetectorTests
         // Defensive: assert the cap value the detector reads matches the
         // ScoringConstants literal. If the spec-consistency test moves the
         // constant, this test fails loudly so the detector's threshold
-        // doesn't drift silently.
+        // doesn't drift silently. The CONSTANT is preserved (UI displays
+        // it as the informational ratio reference); the trigger itself was
+        // disabled in CheckAsync on 2026-05-13 — see the SloppyDetector
+        // class doc for context. CheckTokenCapAsync still returns the
+        // boolean against the constant for any caller that wants the raw
+        // threshold reading.
         Assert.Equal(500_000L, ScoringConstants.SloppyGeneratorTokenCap);
 
         await using var f = new ForgeWebApplicationFactory();
@@ -261,15 +266,22 @@ public class Phase52SloppyDetectorTests
     }
 
     [Fact]
-    public async Task Combined_TokenCap_Wins_Over_Plateau_On_Tie()
+    public async Task Combined_TokenCap_Trigger_Disabled_2026_05_13()
     {
+        // 2026-05-13 — Phase 52 token-cap and score-plateau triggers were
+        // disabled at operator direction. CheckAsync now ALWAYS returns
+        // IsSloppy=false; the cumulative meters are still reported so UI
+        // displays continue to work, but no sloppy verdict is produced
+        // from these signals. The remaining stall paths (iter cap,
+        // Phase 51 dollar cap, no-progress, build-gate, reject) are
+        // unchanged.
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
-        // Token cap exceeded AND plateau condition holds — token cap
-        // should be the reported reason (Q52.2 tie-break).
+        // Token usage well over the cap AND a textbook plateau pattern —
+        // historically both would have fired sloppy; now neither does.
         db.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-both", CrewId = "crew-x", TaskId = "wi-both",
@@ -282,11 +294,16 @@ public class Phase52SloppyDetectorTests
 
         var result = await SloppyDetector.CheckAsync(
             db, "wi-both", "agent-gen-both", budgetWindowStartUtc: null,
-            scoresInOrder: new[] { 78, 78, 78, 78 }, // would also trigger plateau
+            scoresInOrder: new[] { 78, 78, 78, 78 },
             CancellationToken.None);
-        Assert.True(result.IsSloppy);
-        Assert.Equal(SloppyReasons.TokenCap, result.Reason);
+
+        // Trigger disabled — IsSloppy is always false here.
+        Assert.False(result.IsSloppy);
+        Assert.Null(result.Reason);
+        // Metrics still flow through for display purposes.
         Assert.Equal(600_000, result.TotalTokens);
+        Assert.Equal(1, result.BestIter);   // earliest-tied iter per CheckScorePlateau
+        Assert.Equal(78, result.BestScore);
     }
 
     [Fact]
@@ -297,7 +314,9 @@ public class Phase52SloppyDetectorTests
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
-        // Light token usage + strictly-improving scores.
+        // Light token usage + strictly-improving scores — was already
+        // not-sloppy pre-2026-05-13; remains not-sloppy after the
+        // trigger disable.
         db.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-fine", CrewId = "crew-x", TaskId = "wi-fine",
