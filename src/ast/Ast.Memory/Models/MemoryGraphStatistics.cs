@@ -9,34 +9,15 @@ namespace Ast.Memory.Models;
 using System.Collections.Generic;
 
 /// <summary>
-/// Statistics about the memory graph per architecture §5.1.
+/// Statistics about the memory graph, with per-layer node and edge counts.
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
-    public long TotalNodes { get; set; }
-
-    public long TotalEdges { get; set; }
-
-    public long ActiveNodes { get; set; }
-
-    public long RetiredNodes { get; set; }
-
-    public long ActiveEdges { get; set; }
-
-    public long RetiredEdges { get; set; }
-
-    public long ExpertiseEntries { get; set; }
-
-    public long ArchivedExpertise { get; set; }
-
-    public Dictionary<string, long> NodesByLayer { get; set; } = new();
-
-    public Dictionary<string, long> EdgesByRelation { get; set; } = new();
-
-    public Dictionary<string, long> NodesByLanguage { get; set; } = new();
+    public int TotalNodes { get; init; }
+    public int TotalEdges { get; init; }
+    public int TotalExpertise { get; init; }
+    public int ArchivedExpertise { get; init; }
+    public Dictionary<string, int> NodesByLayer { get; init; } = new();
+    public Dictionary<string, int> EdgesByLayer { get; init; } = new();
+    public Dictionary<string, int> NodesByType { get; init; } = new();
 }
-
-/// <summary>
-/// Node and edge counts for a single memory layer.
-/// </summary>
-public record LayerStatistics(int NodeCount, int EdgeCount);

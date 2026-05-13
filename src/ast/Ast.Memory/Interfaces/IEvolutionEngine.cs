@@ -6,10 +6,13 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Engine for evolving the memory graph: expertise write-back, consolidation, and decay.
+/// Evolution engine for expertise write-back, consolidation, decay, and community detection.
 /// </summary>
 public interface IEvolutionEngine
 {
