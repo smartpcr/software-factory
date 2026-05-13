@@ -7,8 +7,8 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Configuration options for the agent memory subsystem.
-/// Matches architecture.md §2.4 constants.
+/// Central configuration for the agent memory subsystem.
+/// All defaults come from architecture.md §2.4.
 /// </summary>
 public sealed class MemoryOptions
 {
@@ -24,42 +24,23 @@ public sealed class MemoryOptions
     /// <summary>Confidence floor below which expertise is archived.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
 
-    /// <summary>Half-life for time-based decay in days (3 years).</summary>
+    /// <summary>Time-based decay half-life in days (3 years).</summary>
     public int DecayHalfLifeDays { get; set; } = 1095;
-
-    /// <summary>Default token budget for context assembly.</summary>
-    public int TokenBudgetDefault { get; set; } = 8000;
-
-    /// <summary>Maximum token budget ceiling.</summary>
-    public int TokenBudgetCeiling { get; set; } = 32000;
-
-    /// <summary>Debounce interval for incremental sync in milliseconds.</summary>
-    public int IncrementalSyncDebounceMs { get; set; } = 1000;
-
-    /// <summary>Boost factor for high-centrality nodes during decay.</summary>
+    public int TokenBudgetDefault { get; set; } = 8_000;
+    public int TokenBudgetCeiling { get; set; } = 32_000;
+    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
     public double CentralityBoostFactor { get; set; } = 0.5;
+    public ScoringWeights Scoring { get; set; } = new();
+    public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
-    /// <summary>
-    /// Model name for the Ollama LLM used by <c>ConsolidationService</c>
-    /// and <c>DetectCommunitiesAsync</c>. Operator-configured — depends on
-    /// what the operator has deployed to their local Ollama instance.
-    /// </summary>
+    /// <summary>Path to the SQLite database file.</summary>
+    public string? SqlitePath { get; set; }
+
+    /// <summary>Neo4j connection URI.</summary>
+    public string? Neo4jUri { get; set; }
+    public string? Neo4jUser { get; set; }
+    public string? Neo4jPassword { get; set; }
+    public string? QdrantEndpoint { get; set; }
+    public int EmbeddingDimension { get; set; } = 768;
     public string? ConsolidationModelName { get; set; }
-
-    /// <summary>
-    /// Ollama API endpoint. Defaults to the standard local instance.
-    /// </summary>
-    public string OllamaEndpoint { get; set; } = "http://localhost:11434";
-
-    /// <summary>
-    /// Minimum community size for Topic node creation.
-    /// Communities smaller than this threshold are ignored.
-    /// </summary>
-    public int MinCommunitySize { get; set; } = 5;
-
-    /// <summary>
-    /// Scoring weights used by the Ranker. Sum should equal 1.00.
-    /// Per architecture.md §2.4.
-    /// </summary>
-    public ScoringWeights ScoringWeights { get; set; } = new();
 }
