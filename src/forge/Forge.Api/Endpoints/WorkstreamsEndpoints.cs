@@ -37,6 +37,7 @@ public static class WorkstreamsEndpoints
         grp.MapDelete("/{id}", Delete).WithName("DeleteWorkstream");
         grp.MapPost("/{id}/pr", OpenPr).WithName("OpenWorkstreamPr");
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
+        grp.MapPost("/{id}/retry", Retry).WithName("RetryWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
         grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
@@ -46,301 +47,37 @@ public static class WorkstreamsEndpoints
     }
 
     // GET /api/workstreams/{id}/iter-kpis — Insight I.3
-    // (docs/forge/workstream-insights.md). Joins deliverables +
-    // agent_usage + task_transcript_event so the Conversation tab's
-    // KPI strip can render per-iter score / token / cost / files /
-    // duration chips and the matching sparklines. One round-trip;
-    // the client doesn't have to re-derive any of these client-side.
-    //
-    // <para>Iter window semantics:</para>
-    // <list type="number">
-    //   <item>Anchor = deliverables.CreatedAt ordered ASC by Iter.</item>
-    //   <item>For iter N: usage rows with StartedAt &gt; iter[N-1].At
-    //   AND StartedAt &lt;= iter[N].At; iter 1's lower bound is the
-    //   FIRST agent_usage.StartedAt for this work item (or
-    //   DateTimeOffset.MinValue if none).</item>
-    //   <item>Duration = scored.At − started.At from the transcript
-    //   for matching iter number; null when either marker is missing.</item>
-    //   <item>filesChanged = count of distinct file paths in
-    //   `task.worktree-tick` events whose At falls in the iter window.
-    //   The tick payload carries `branchDiff.{added,modified,deleted}`
-    //   (committed diff from the fork point) and `paths.{added,
-    //   modified,deleted}` (uncommitted dirty files); we union both so
-    //   the count is non-zero whether the agent has committed yet or
-    //   not. Empty when the workstream has no worktree subscriber
-    //   (plan-doc spawns, or a coding step whose worktree never
-    //   resolved — see CrewQueueWorker.cs:1042-1048).</item>
-    // </list>
+    // (docs/forge/workstream-insights.md). Delegates to
+    // ConversationInsightQueries so the per-doc plan-doc routes on
+    // StoriesEndpoints share the same query body.
     private static async Task<IResult> GetIterKpis(
         string id,
         ForgeDbContext db,
         CancellationToken ct)
     {
-        // EF/SQLite refuses server-side ORDER BY on DateTimeOffset
-        // (NotSupportedException), so we materialise then sort
-        // client-side. Memory'd in [[feedback_sqlite_no_order_by_datetimeoffset]].
-        var deliverables = (await db.Deliverables.AsNoTracking()
-            .Where(d => d.WorkItemId == id)
-            .ToListAsync(ct))
-            .OrderBy(d => d.Iter)
-            .ThenBy(d => d.CreatedAt)
-            .ToList();
-        if (deliverables.Count == 0)
-        {
-            return Results.Ok(new { workItemId = id, iters = Array.Empty<object>() });
-        }
-
-        var usageRows = await db.AgentUsage.AsNoTracking()
-            .Where(u => u.TaskId == id)
-            .Select(u => new { u.StartedAt, u.InputTokens, u.OutputTokens, u.CostUsd })
-            .ToListAsync(ct);
-
-        var transcript = await db.TaskTranscriptEvents.AsNoTracking()
-            .Where(e => e.WorkItemId == id
-                && (e.Kind == "task.iteration.started"
-                    || e.Kind == "task.iteration.scored"
-                    || e.Kind == "task.worktree-tick"))
-            .Select(e => new { e.Kind, e.At, e.PayloadJson })
-            .ToListAsync(ct);
-
-        // Index transcript by kind for cheap per-iter lookups.
-        var startedByIter = new Dictionary<int, DateTimeOffset>();
-        var scoredByIter = new Dictionary<int, DateTimeOffset>();
-        foreach (var e in transcript)
-        {
-            if (e.Kind == "task.iteration.started" || e.Kind == "task.iteration.scored")
-            {
-                int? iter = TryExtractIter(e.PayloadJson);
-                if (iter is null) continue;
-                if (e.Kind == "task.iteration.started") startedByIter[iter.Value] = e.At;
-                else scoredByIter[iter.Value] = e.At;
-            }
-        }
-        var worktreeChanged = transcript
-            .Where(e => e.Kind == "task.worktree-tick")
-            .Select(e => (e.At, paths: ExtractChangedPaths(e.PayloadJson)))
-            .ToList();
-
-        var sortedUsage = usageRows.OrderBy(u => u.StartedAt).ToList();
-        DateTimeOffset? earliestUsage = sortedUsage.Count > 0 ? sortedUsage[0].StartedAt : null;
-
-        var iters = new List<object>(deliverables.Count);
-        DateTimeOffset prevAt = earliestUsage ?? DateTimeOffset.MinValue;
-        foreach (var d in deliverables)
-        {
-            var windowStart = prevAt;
-            var windowEnd = d.CreatedAt;
-
-            long inTok = 0, outTok = 0;
-            decimal cost = 0m;
-            foreach (var u in sortedUsage)
-            {
-                if (u.StartedAt > windowStart && u.StartedAt <= windowEnd)
-                {
-                    inTok += u.InputTokens;
-                    outTok += u.OutputTokens;
-                    cost += u.CostUsd;
-                }
-            }
-
-            int filesChanged = 0;
-            var pathsThisIter = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (at, paths) in worktreeChanged)
-            {
-                if (at > windowStart && at <= windowEnd)
-                {
-                    foreach (var p in paths) pathsThisIter.Add(p);
-                }
-            }
-            filesChanged = pathsThisIter.Count;
-
-            long? durationMs = null;
-            if (startedByIter.TryGetValue(d.Iter, out var s)
-                && scoredByIter.TryGetValue(d.Iter, out var e2))
-            {
-                durationMs = (long)(e2 - s).TotalMilliseconds;
-                if (durationMs < 0) durationMs = null;
-            }
-
-            iters.Add(new
-            {
-                iter = d.Iter,
-                score = d.Score,
-                verdict = d.Verdict,
-                inputTokens = inTok,
-                outputTokens = outTok,
-                costUsd = cost,
-                durationMs,
-                filesChanged,
-                createdAt = d.CreatedAt,
-            });
-            prevAt = windowEnd;
-        }
-
-        return Results.Ok(new { workItemId = id, iters });
-    }
-
-    private static int? TryExtractIter(string payloadJson)
-    {
-        if (string.IsNullOrEmpty(payloadJson)) return null;
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
-            if (!doc.RootElement.TryGetProperty("iter", out var v)) return null;
-            if (v.ValueKind != System.Text.Json.JsonValueKind.Number) return null;
-            return v.GetInt32();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static IReadOnlyList<string> ExtractChangedPaths(string payloadJson)
-    {
-        if (string.IsNullOrEmpty(payloadJson)) return Array.Empty<string>();
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
-            var root = doc.RootElement;
-            var list = new List<string>();
-
-            // task.worktree-tick shape: `branchDiff` (committed diff vs
-            // fork point) + `paths` (uncommitted dirty), each split into
-            // {added, modified, deleted}. Union both so the count is
-            // non-zero whether the agent has committed yet or not.
-            AppendCategorizedPaths(root, "branchDiff", list);
-            if (root.TryGetProperty("paths", out var pathsEl)
-                && pathsEl.ValueKind == System.Text.Json.JsonValueKind.Object)
-            {
-                AppendCategorizedPaths(root, "paths", list);
-            }
-            // Legacy flat shapes used by older emitters / tests:
-            // `paths: ["a", "b"]` or `path: "a"`.
-            else if (pathsEl.ValueKind == System.Text.Json.JsonValueKind.Array)
-            {
-                foreach (var el in pathsEl.EnumerateArray())
-                {
-                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
-                    {
-                        var p = el.GetString();
-                        if (!string.IsNullOrEmpty(p)) list.Add(p);
-                    }
-                }
-            }
-            else if (root.TryGetProperty("path", out var single)
-                && single.ValueKind == System.Text.Json.JsonValueKind.String)
-            {
-                var one = single.GetString();
-                if (!string.IsNullOrEmpty(one)) list.Add(one);
-            }
-            return list;
-        }
-        catch
-        {
-            return Array.Empty<string>();
-        }
-    }
-
-    private static void AppendCategorizedPaths(
-        System.Text.Json.JsonElement root, string propertyName, List<string> sink)
-    {
-        if (!root.TryGetProperty(propertyName, out var grp)
-            || grp.ValueKind != System.Text.Json.JsonValueKind.Object) return;
-        foreach (var category in new[] { "added", "modified", "deleted" })
-        {
-            if (!grp.TryGetProperty(category, out var arr)
-                || arr.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
-            foreach (var el in arr.EnumerateArray())
-            {
-                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
-                {
-                    var p = el.GetString();
-                    if (!string.IsNullOrEmpty(p)) sink.Add(p);
-                }
-            }
-        }
+        var payload = await Forge.Api.Services.ConversationInsightQueries.GetIterKpisAsync(db, id, ct);
+        return Results.Ok(payload);
     }
 
     // GET /api/workstreams/{id}/iter-notes — Insight I.2
-    // (docs/forge/workstream-insights.md). Read-only enumeration of the
-    // agent's per-iter working notes archive
-    // (`.forge/notes/iter-{N}.md`, Phase A.2). Used by SummaryView to
-    // render the "Working notes" section alongside generator/evaluator
-    // markdown so the operator sees what the agent itself reflected on
-    // each iter. Returns empty `iters` when the workstream has no
-    // worktree on disk (yet-to-claim or post-merge cleanup).
+    // (docs/forge/workstream-insights.md). Resolves the worktree via
+    // WorktreePathResolver, then delegates to ConversationInsightQueries
+    // for the directory walk.
     private static async Task<IResult> GetIterNotes(
         string id,
         ForgeDbContext db,
         CancellationToken ct)
     {
-        const int PerIterCap = 16_000;
         var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, id, ct);
-        var iters = new List<object>();
-
-        if (!string.IsNullOrEmpty(resolved.WorktreePath))
-        {
-            var notesDir = Path.Combine(resolved.WorktreePath, ".forge", "notes");
-            if (Directory.Exists(notesDir))
-            {
-                var parsed = new List<(int Iter, string Path)>();
-                foreach (var file in Directory.GetFiles(notesDir, "iter-*.md"))
-                {
-                    var name = Path.GetFileNameWithoutExtension(file);
-                    var dash = name.IndexOf('-');
-                    if (dash >= 0
-                        && int.TryParse(name[(dash + 1)..], out var n)
-                        && n > 0)
-                    {
-                        parsed.Add((n, file));
-                    }
-                }
-                parsed.Sort((a, b) => a.Iter.CompareTo(b.Iter));
-
-                foreach (var (iter, path) in parsed)
-                {
-                    string content;
-                    try
-                    {
-                        content = await File.ReadAllTextAsync(path, ct);
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-                    if (string.IsNullOrWhiteSpace(content)) continue;
-
-                    var truncated = false;
-                    if (content.Length > PerIterCap)
-                    {
-                        content = content[..PerIterCap];
-                        truncated = true;
-                    }
-                    iters.Add(new
-                    {
-                        iter,
-                        content,
-                        truncated,
-                        lengthBytes = content.Length,
-                    });
-                }
-            }
-        }
-
-        return Results.Ok(new
-        {
-            workItemId = id,
-            iters,
-        });
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetIterNotesAsync(id, resolved.WorktreePath, ct);
+        return Results.Ok(payload);
     }
 
-    // GET /api/workstreams/{id}/memory — Phase 55 / Phase G. Read-only
-    // inspection of the (workItemId, agentId, role) memory rows for a
-    // workstream so the Conversation tab can show a "Memory" chip and
-    // an operator can audit session-id / turn-count / approx-token
-    // state from a curl. No auth gate — this is a debug surface, not
-    // a write path.
+    // GET /api/workstreams/{id}/memory — Phase 55 / Phase G. Delegates to
+    // ConversationInsightQueries so the per-doc plan-doc memory route
+    // shares the same body. Crew resolution walks deliverables so the
+    // same code works for engineer workstream ids + plan-doc work items.
     private static async Task<IResult> GetMemory(
         string id,
         ForgeDbContext db,
@@ -348,119 +85,9 @@ public static class WorkstreamsEndpoints
         Forge.Api.Services.MemoryCompactor compactor,
         CancellationToken ct)
     {
-        var rows = await db.AgentMemory.AsNoTracking()
-            .Where(m => m.WorkItemId == id)
-            .ToListAsync(ct);
-
-        // Insight I.4 — resolve each role's model + the relevant crew's
-        // compaction-threshold override so the UI can render a
-        // green/amber/red bar of "tokens used vs compactor trigger".
-        // Look up workstream → crew (for threshold) and agent rows
-        // (for model). We avoid the full ResolveAgentRunConfigAsync
-        // path here because we only need the model id, not the soul or
-        // worktree wiring.
-        var ws = await db.Workstreams.AsNoTracking()
-            .FirstOrDefaultAsync(w => w.Id == id, ct);
-        CrewRow? wsCrew = null;
-        CrewRow? evalCrew = null;
-        if (ws is not null)
-        {
-            // Workstream rows don't carry the crew id directly; we walk
-            // the most recent deliverable row to find which crew owned
-            // the iter, then resolve its paired evaluator (if any) for
-            // the eval-side compaction threshold.
-            var lastDel = (await db.Deliverables.AsNoTracking()
-                .Where(d => d.WorkItemId == id)
-                .ToListAsync(ct))
-                .OrderByDescending(d => d.CreatedAt)
-                .FirstOrDefault();
-            if (lastDel is not null && !string.IsNullOrEmpty(lastDel.CrewId))
-            {
-                wsCrew = await db.Crews.AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.Id == lastDel.CrewId, ct);
-                if (wsCrew is not null && !string.IsNullOrEmpty(wsCrew.PairedWithCrewId))
-                {
-                    evalCrew = await db.Crews.AsNoTracking()
-                        .FirstOrDefaultAsync(c => c.Id == wsCrew.PairedWithCrewId, ct);
-                }
-            }
-        }
-
-        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in rows)
-        {
-            int? turnCount = null;
-            if (!string.IsNullOrEmpty(row.MessagesJson))
-            {
-                try
-                {
-                    using var doc = System.Text.Json.JsonDocument.Parse(row.MessagesJson);
-                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
-                    {
-                        turnCount = doc.RootElement.GetArrayLength();
-                    }
-                }
-                catch
-                {
-                    // corrupt payload — leave turnCount null
-                }
-            }
-
-            // Resolve the model + crew override for THIS role so the
-            // threshold reflects what the compactor will actually use.
-            var agentRow = await db.Agents.AsNoTracking()
-                .FirstOrDefaultAsync(a => a.Id == row.AgentId, ct);
-            var roleCrew = string.Equals(row.Role, "evaluator", StringComparison.OrdinalIgnoreCase)
-                ? (evalCrew ?? wsCrew)
-                : wsCrew;
-            string? modelId = string.Equals(row.Role, "evaluator", StringComparison.OrdinalIgnoreCase)
-                ? (agentRow?.EvaluatorModel ?? roleCrew?.EvaluatorModel ?? roleCrew?.Model)
-                : (agentRow?.GeneratorModel ?? roleCrew?.Model);
-            var crewOverride = roleCrew?.CompactionTokenThreshold;
-            var detail = !string.IsNullOrEmpty(modelId)
-                ? compactor.ComputeThresholdDetail(modelId, crewOverride)
-                : new Forge.Api.Services.MemoryCompactor.ThresholdDetail(
-                    EffectiveThreshold: crewOverride ?? Forge.Api.Services.MemoryCompactor.DefaultThreshold,
-                    ContextWindowTokens: null,
-                    ContextWindowRatio: compactor.ContextWindowRatio,
-                    DefaultThreshold: Forge.Api.Services.MemoryCompactor.DefaultThreshold,
-                    CrewOverride: crewOverride,
-                    Source: crewOverride.HasValue
-                        ? Forge.Api.Services.MemoryCompactor.ThresholdSource.CrewOverride
-                        : Forge.Api.Services.MemoryCompactor.ThresholdSource.GlobalDefault);
-
-            result[row.Role] = new
-            {
-                agentId = row.AgentId,
-                backend = row.Backend,
-                invokeMode = row.InvokeMode,
-                model = modelId,
-                // Truncate session id so a copy/paste from the UI
-                // doesn't accidentally include the full Claude Code
-                // session identifier in logs.
-                sessionId = string.IsNullOrEmpty(row.SessionId)
-                    ? null
-                    : (row.SessionId.Length <= 12 ? row.SessionId : row.SessionId[..12] + "…"),
-                hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
-                turnCount,
-                approxInputTokens = row.ApproxInputTokens,
-                effectiveThreshold = detail.EffectiveThreshold,
-                contextWindowTokens = detail.ContextWindowTokens,
-                contextWindowRatio = detail.ContextWindowRatio,
-                defaultThreshold = detail.DefaultThreshold,
-                crewOverride = detail.CrewOverride,
-                thresholdSource = detail.Source.ToString(),
-                lastIter = row.LastIter,
-                createdAt = row.CreatedAt,
-                updatedAt = row.UpdatedAt,
-            };
-        }
-
-        return Results.Ok(new
-        {
-            workItemId = id,
-            roles = result,
-        });
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetMemoryAsync(db, copilotPool, compactor, id, ct);
+        return Results.Ok(payload);
     }
 
     // POST /api/workstreams/{id}/pr — Phase 6.4. Opens a PR via the named
@@ -1384,6 +1011,145 @@ public static class WorkstreamsEndpoints
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }
         catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Phase 56 -- soft retry. Demote the last deliverable's verdict to
+    /// <c>iterate</c> so the orchestrator's
+    /// <c>DriveOneWorkstreamImplAsync</c> re-enters the gen/eval loop
+    /// instead of treating the row as terminal. Preserves the
+    /// worktree, deliverables, transcript, agent_pair_assignment,
+    /// agent_usage, and any PRs -- the operator's "I want to keep
+    /// going, just take another swing" button vs the heavy
+    /// <see cref="Restart"/> that wipes everything for a clean slate.
+    ///
+    /// <para>Use case: workstream stalled because the post-pass gate
+    /// suite (Phase 56) exhausted recovery attempts, but the agent's
+    /// prior iterations scored close to pass and most of the diff is
+    /// good. Retry demotes verdict pass/stalled → iterate so the next
+    /// orchestrator tick picks up at iter+1 with the gate-failure
+    /// notes already on the row's Notes (flows into the next iter's
+    /// evaluator prompt via <c>FormatPriorChain</c>).</para>
+    ///
+    /// <para>Refused when:
+    /// <list type="bullet">
+    ///   <item>Workstream not found → 404.</item>
+    ///   <item>No prior deliverable → 400 (nothing to demote; use Restart instead).</item>
+    ///   <item>Workstream already in a non-retryable status (<c>cancelled</c>, <c>complete</c>, <c>merging</c>) → 409.</item>
+    /// </list></para>
+    /// </summary>
+    private static async Task<IResult> Retry(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
+        if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
+
+        if (ws.Status is "cancelled" or "complete" or "merging")
+        {
+            return Results.Problem(
+                type: "retry.terminal",
+                title: $"Workstream is in terminal status '{ws.Status}'; cannot retry.",
+                detail: "Use the Cancel/Restart actions instead, or open a new workstream.",
+                statusCode: 409);
+        }
+
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (lastDel is null)
+        {
+            return Results.Problem(
+                type: "retry.no-deliverables",
+                title: "Nothing to retry -- workstream has no prior deliverables.",
+                detail: "Use Restart to dispatch fresh, or wait for the first iteration to land.",
+                statusCode: 400);
+        }
+
+        // (1) Cancel any in-flight runner work and open queue rows. Mirrors
+        // the first two steps of Restart, but preserves everything else.
+        try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
+        catch { /* best-effort */ }
+
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (2) Demote verdict. Either "pass" or "stalled" / "stalled-budget"
+        // → "iterate". "pass" comes from the Phase 56 OnPassValidate throw
+        // path semantically meaning "evaluator scored at pass but the gate
+        // suite rejected it post-pass." "stalled" can land here from
+        // legacy paths or from the orchestrator's terminal-verdict
+        // re-stamping at StorySpawnOrchestrator.cs:2284. Either way,
+        // "iterate" is the only verdict that survives both the
+        // orchestrator's terminal-triage check (line 2154) AND
+        // DeliverableLoop's seeding (line 348) so the next tick
+        // picks up at iter+1 with the full prior chain.
+        var priorVerdict = lastDel.Verdict;
+        var demoted = false;
+        if (lastDel.Verdict is "pass" or "stalled" or "stalled-budget")
+        {
+            lastDel.Verdict = "iterate";
+            var note = $"OPERATOR RETRY -- verdict demoted from '{priorVerdict}' to 'iterate' so the orchestrator re-enters the gen/eval loop at iter+1. Worktree, deliverables, transcript, agent_usage, and PRs preserved.";
+            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
+            demoted = true;
+        }
+
+        // (3) Reset workstream state -- but DO NOT touch worktree/branch/PRs.
+        ws.Status = "active";
+        ws.StallReason = null;
+
+        // (4) Reset work-item ExecutionStatus so the UI un-pulses any
+        // stuck "live" / "failed" badge and the orchestrator's claim
+        // sweep sees a clean row. Mirrors Restart's reset, minus the
+        // PairAttemptCount/BudgetWindowStartUtc/PriorPairsJson wipe
+        // (Retry is a continuation, not a clean slate).
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
+
+        // (5) Emit a workstream-changed event so the live UI picks up the
+        // new status without a manual refresh.
+        await hub.Clients.All.SendAsync("workstream.changed", new
+        {
+            workstreamId = id,
+            status = ws.Status,
+            kind = "retry",
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            iter = lastDel.Iter,
+        });
+
+        return Results.Ok(new
+        {
+            workstreamId = id,
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            demoted,
+            priorIter = lastDel.Iter,
+            priorScore = lastDel.Score,
+            status = ws.Status,
+        });
     }
 
     /// <summary>

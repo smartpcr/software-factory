@@ -1887,9 +1887,10 @@ public sealed class StorySpawnOrchestrator
                 // must Restart (which wipes the worktree + deliverables)
                 // to give the agent a clean slate.
                 this.logger?.LogWarning(
-                    "Workstream {WsId} build gate failed: trippedByConsecutive={Trip} consecutiveBroken={Broken} "
-                    + "lastIter={LastIter} exit={Exit} errors={Errors}. Marking stalled.",
-                    item.ws.Id, bfe.TrippedByConsecutiveIters, bfe.ConsecutiveBrokenIters,
+                    "Workstream {WsId} gate failed: stage={Stage} command={Command} trippedByConsecutive={Trip} "
+                    + "consecutiveBroken={Broken} lastIter={LastIter} exit={Exit} errors={Errors}. Marking stalled.",
+                    item.ws.Id, bfe.Stage ?? "(legacy)", bfe.Command ?? "(legacy)",
+                    bfe.TrippedByConsecutiveIters, bfe.ConsecutiveBrokenIters,
                     bfe.LastIteration, bfe.ExitCode, bfe.ErrorCount);
 
                 using var buildScope = this.services.CreateScope();
@@ -1898,14 +1899,32 @@ public sealed class StorySpawnOrchestrator
                     ws => ws.Id == item.ws.Id, CancellationToken.None);
                 if (buildRow is not null && buildRow.Status is not "cancelled" and not "complete")
                 {
+                    // Phase 56 -- enrich StallReason with the failing
+                    // gate stage + command so the operator can see at a
+                    // glance whether they're looking at a `cargo build`
+                    // failure, a `cargo fmt --check` failure, or a
+                    // `cargo test` regression without having to dig
+                    // into the transcript. Stage is null on legacy
+                    // build-only paths -- fall back to today's text.
+                    var stageLabel = bfe.Stage switch
+                    {
+                        "quality" => "quality (fmt/clippy)",
+                        "test" => "test",
+                        "build" => "build",
+                        _ => "build",
+                    };
+                    var commandSuffix = string.IsNullOrWhiteSpace(bfe.Command)
+                        ? string.Empty
+                        : $" running `{bfe.Command}`";
                     buildRow.Status = WorkstreamStatuses.Stalled;
                     buildRow.StallReason = bfe.TrippedByConsecutiveIters
-                        ? $"Build failed: {bfe.ConsecutiveBrokenIters} consecutive broken-build iterations "
-                            + $"(through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                        ? $"Gate failed ({stageLabel}){commandSuffix}: {bfe.ConsecutiveBrokenIters} consecutive "
+                            + $"failed iterations (through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
                             + $"{bfe.ErrorCount} error(s)). Operator triage required."
-                        : $"Build gate failed at post-pass (iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
-                            + $"{bfe.ErrorCount} error(s)). Evaluator scored at pass, but the build "
-                            + $"didn't compile. Operator triage required.";
+                        : $"Gate ({stageLabel}) rejected pass{commandSuffix} after recovery attempts exhausted "
+                            + $"(through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                            + $"{bfe.ErrorCount} error(s)). Evaluator scored at pass repeatedly but the gate "
+                            + $"kept rejecting the diff. Operator triage required.";
                     await buildDb.SaveChangesAsync(CancellationToken.None);
                     await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
                 }
@@ -1924,6 +1943,10 @@ public sealed class StorySpawnOrchestrator
                     trippedByConsecutiveIters = bfe.TrippedByConsecutiveIters,
                     consecutiveBrokenIters = bfe.ConsecutiveBrokenIters,
                     lastIter = bfe.LastIteration,
+                    // Phase 56 -- surface stage + command in the transcript event
+                    // so the Conversation/Build tab can render which gate broke.
+                    gateStage = bfe.Stage,
+                    gateCommand = bfe.Command,
                 }, CancellationToken.None);
             }
             catch (Exception ex)
@@ -2437,6 +2460,35 @@ public sealed class StorySpawnOrchestrator
             var prs = ParseStringList(w.PrsJson);
             if (prs.Count == 0) continue;
             var prId = prs[0];
+
+            // 2026-05-13 -- Phase 57b -- stamp the PR's Review verdict as
+            // "pending" the first time DriveReviewAsync sees an unreviewed
+            // workstream PR. AutoMergeWatcher (15 s tick) used to race the
+            // orchestrator's slower reviewer dispatch and merge PRs whose
+            // Review verdict was still null -- leaving the reviewer agent's
+            // later-posted comments stranded on a closed PR. AutoMergeWatcher
+            // already skips PRs with verdict "pending" / "changes"; flipping
+            // the verdict to "pending" the moment we enter the review-scan
+            // window closes the race even without the workstream-PR check
+            // in AutoMergeWatcher (which is the primary fix).
+            //
+            // Only stamp for in-flight ws.Status: "review" / "merging".
+            // "complete" workstreams already merged via a non-orchestrator
+            // path (human merge upstream, AutoMerge before this fix landed)
+            // should NOT have their historical verdict overwritten --
+            // late-arriving comments are still handled by the fix loop
+            // below regardless of verdict.
+            if (w.Status is "review" or "merging")
+            {
+                var prRowForVerdict = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+                if (prRowForVerdict is not null
+                    && string.IsNullOrEmpty(prRowForVerdict.ReviewJson))
+                {
+                    prRowForVerdict.ReviewJson = JsonSerializer.Serialize(new { verdict = "pending" });
+                    prRowForVerdict.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+                    await db.SaveChangesAsync(ct);
+                }
+            }
 
             // Load the comment set up front. The active set drives the
             // universal guard below; the full set decides whether Step 1

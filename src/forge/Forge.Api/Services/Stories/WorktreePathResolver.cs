@@ -128,6 +128,71 @@ public static class WorktreePathResolver
     }
 
     /// <summary>
+    /// Phase 53 — try to find the on-disk worktree for a sequential plan
+    /// doc. Returns the per-doc worktree path
+    /// (<c>{cloneRoot}/.worktree/plan-{docKey}</c>) when the spawn's repo
+    /// is bound and the directory exists; otherwise returns
+    /// <see cref="WorktreePathResult.Empty"/>. Callers pass the
+    /// <paramref name="docKey"/> (one of
+    /// <see cref="PlanDocStateHelpers.PlanDocOrder"/>) — the helper
+    /// resolves the slug via
+    /// <see cref="PlanDocStateHelpers.CanonicalDocWorktreeSlug(string)"/>
+    /// so the resolution stays in lock-step with the orchestrator.
+    /// </summary>
+    /// <param name="db">DB context.</param>
+    /// <param name="spawnId">Story spawn id (<see cref="StorySpawnRow.Id"/>).</param>
+    /// <param name="docKey">Plan-doc key — e.g. "architecture",
+    ///   "tech-spec". Must match an entry in
+    ///   <see cref="PlanDocStateHelpers.PlanDocOrder"/>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task<WorktreePathResult> ResolveForPlanDocAsync(
+        ForgeDbContext db, string spawnId, string docKey, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(spawnId) || string.IsNullOrEmpty(docKey))
+        {
+            return WorktreePathResult.Empty;
+        }
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+        if (spawn is null) return WorktreePathResult.Empty;
+
+        if (string.IsNullOrEmpty(spawn.RepoId)) return WorktreePathResult.Empty;
+        var repo = await db.Repos.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot))
+        {
+            return WorktreePathResult.Empty;
+        }
+
+        // The branch we report for the doc is whatever the orchestrator
+        // recorded (or its canonical value if the doc hasn't been started
+        // yet). FindDocBranch handles both legacy + sequential paths.
+        string branch;
+        try
+        {
+            branch = PlanDocStateHelpers.FindDocBranch(spawn, docKey);
+        }
+        catch (ArgumentException)
+        {
+            // Unknown docKey — no worktree to resolve.
+            return WorktreePathResult.Empty;
+        }
+
+        var slug = PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey);
+        var path = Path.Combine(repo.CloneRoot, ".worktree", slug);
+        if (Directory.Exists(path))
+        {
+            return new WorktreePathResult(path, branch, repo.CloneRoot);
+        }
+
+        // Worktree not on disk yet (pre-claim) or cleaned up post-merge.
+        // Surface the branch + cloneRoot so callers can still render
+        // "no worktree attached" with useful context.
+        return new WorktreePathResult(WorktreePath: null, Branch: branch, RepoCloneRoot: repo.CloneRoot);
+    }
+
+    /// <summary>
     /// Mirrors <c>RealStoryGitOps.SanitizeBranchSlug</c> — replaces every
     /// non-alphanumeric / non-<c>-_.</c> character with <c>-</c> and trims
     /// edge dashes. Duplicated so this helper has no I/O dependency on

@@ -16,6 +16,7 @@ using Forge.Api.Providers;
 using Forge.Api.Tests.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -131,6 +132,7 @@ public class Phase50StorySpawnDeleteTests
     private sealed class DeleteSpawnFactory : ForgeWebApplicationFactory
     {
         public RecordingProvider Provider { get; } = new();
+        public string DatabasePath => this.DbPath;
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -623,5 +625,40 @@ public class Phase50StorySpawnDeleteTests
 
         var second = await DeleteAsync(client, storyId);
         Assert.Equal(HttpStatusCode.NotFound, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_retries_on_transient_sqlite_write_lock()
+    {
+        var (factory, client) = NewFactory();
+        using var _f = factory;
+        var storyId = "WI-50041";
+        await SeedSpawnAsync(factory, storyId, wsCount: 1);
+
+        await using var lockConn = new SqliteConnection($"Data Source={factory.DatabasePath};Mode=ReadWrite");
+        await lockConn.OpenAsync();
+        await using (var beginCmd = lockConn.CreateCommand())
+        {
+            beginCmd.CommandText = "BEGIN IMMEDIATE;";
+            await beginCmd.ExecuteNonQueryAsync();
+        }
+
+        // Hold a writer lock long enough for DeleteSpawn's first SaveChanges
+        // attempt to collide, then release so the bounded retry can succeed.
+        var releaseTask = Task.Run(async () =>
+        {
+            await Task.Delay(1200);
+            await using var commitCmd = lockConn.CreateCommand();
+            commitCmd.CommandText = "COMMIT;";
+            await commitCmd.ExecuteNonQueryAsync();
+        });
+
+        var resp = await DeleteAsync(client, storyId, deleteBaseBranch: true);
+        await releaseTask;
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
 }

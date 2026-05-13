@@ -18,6 +18,7 @@ using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -86,7 +87,15 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
+        // Phase 53 follow-up — mirror the workstream-insight surfaces
+        // (Insight I.2/I.3/I.4) onto plan-doc tasks so the Conversation
+        // tab renders the same KPI strip, sparklines, prompt-view + memory
+        // bar for architect docs as for engineer workstreams.
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iter-kpis", GetArtifactIterKpis).WithName("GetStoryArtifactIterKpis");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iter-notes", GetArtifactIterNotes).WithName("GetStoryArtifactIterNotes");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/memory", GetArtifactMemory).WithName("GetStoryArtifactMemory");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/retry", RetryArtifact).WithName("RetryStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/accept", AcceptArtifact).WithName("AcceptStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/restart", RestartArtifact).WithName("RestartStoryArtifact");
@@ -784,6 +793,8 @@ public static class StoriesEndpoints
             return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
         }
 
+        var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
+
         // 2026-05-13 fix — flip phase to "deleting" before any other write so
         // the orchestrator's RunOneStepAsync switch falls through and stops
         // claiming new agents while the delete is in flight. Without this,
@@ -804,7 +815,11 @@ public static class StoriesEndpoints
                 $"delete-started: prevPhase={spawn.Phase} at {DateTimeOffset.UtcNow:O}";
             spawn.Phase = StorySpawnPhases.Deleting;
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ctx.RequestAborted);
+            await SaveChangesWithBusyRetryAsync(
+                db,
+                logger,
+                "delete-start-phase",
+                ctx.RequestAborted);
 
             // Brief drain: any tick already in-flight finishes its
             // SaveChanges before we contend for the write lock. 1 s is
@@ -815,7 +830,6 @@ public static class StoriesEndpoints
             catch (OperationCanceledException) { return Results.StatusCode(499); }
         }
 
-        var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
         var counts = new Dictionary<string, int>();
         // Phase 50 — collect remote-delete failures into a structured list
         // so the response payload can surface them to the operator. The
@@ -944,7 +958,11 @@ public static class StoriesEndpoints
         foreach (var c in openClaims) c.ReleasedAt = nowOff;
         counts["agentClaimsReleased"] = openClaims.Count;
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "cancel-inflight-work",
+            ctx.RequestAborted);
 
         // ── 4. Close + remove PRs ───────────────────────────────────────
         var prsClosedUpstream = 0;
@@ -1020,7 +1038,11 @@ public static class StoriesEndpoints
         }
         counts["prsClosedUpstream"] = prsClosedUpstream;
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-pr-chain",
+            ctx.RequestAborted);
 
         // ── 5. Cascade-delete each child workstream (reuses the
         // existing well-tested helper from WorkstreamsEndpoints with
@@ -1155,7 +1177,11 @@ public static class StoriesEndpoints
             counts["storyWorkItemRemoved"] = 1;
         }
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-synthetic-rows",
+            ctx.RequestAborted);
 
         // ── 7. Branch + worktree cleanup for plan / qa / PR-derived
         // branches. Workstream branches were already wiped inside
@@ -1409,7 +1435,11 @@ public static class StoriesEndpoints
 
         // ── 10. Delete the spawn row itself ─────────────────────────────
         db.StorySpawns.Remove(spawn);
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-spawn-row",
+            ctx.RequestAborted);
         counts["spawn"] = 1;
 
         // ── 11. SignalR + result ────────────────────────────────────────
@@ -1432,6 +1462,58 @@ public static class StoriesEndpoints
             remoteDeleteFailures,
             counts,
         });
+    }
+
+    /// <summary>
+    /// SQLite is single-writer; transient writer collisions can throw
+    /// SQLITE_BUSY / SQLITE_LOCKED even with WAL + busy_timeout configured.
+    /// DeleteSpawn runs several large write batches, so we retry those saves
+    /// with bounded exponential backoff instead of returning a 500 on the
+    /// first collision.
+    /// </summary>
+    private static async Task SaveChangesWithBusyRetryAsync(
+        ForgeDbContext db,
+        ILogger logger,
+        string operation,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 6;
+        var delayMs = 200;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                return;
+            }
+            catch (DbUpdateException ex) when (attempt < maxAttempts && IsSqliteBusy(ex))
+            {
+                logger.LogWarning(ex,
+                    "DeleteSpawn SaveChanges busy (op={Operation}, attempt={Attempt}/{Max}); retrying after {DelayMs}ms.",
+                    operation, attempt, maxAttempts, delayMs);
+                await Task.Delay(delayMs, ct);
+                delayMs = Math.Min(delayMs * 2, 2000);
+            }
+        }
+    }
+
+    private static bool IsSqliteBusy(DbUpdateException ex)
+    {
+        for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
+        {
+            if (cur is SqliteException sq
+                && (sq.SqliteErrorCode == 5
+                    || sq.SqliteErrorCode == 6
+                    || sq.SqliteExtendedErrorCode == 5
+                    || sq.SqliteExtendedErrorCode == 6
+                    || sq.Message.Contains("database is locked", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<IResult> ListSpawns(HttpContext ctx, ForgeDbContext db, [FromQuery] string? phase)
@@ -2196,6 +2278,97 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
+    /// Phase 53 follow-up — Insight I.3 surface for plan-doc tasks. Mirrors
+    /// the per-iter KPI rollup that <c>WorkstreamsEndpoints.GetIterKpis</c>
+    /// computes for engineer workstreams, keyed on the synthetic
+    /// <c>plan-doc:{spawn.Id}:{filename}</c> workItemId so the architect
+    /// crew's iterations populate the Conversation tab's KPI strip +
+    /// sparklines identically.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterKpis(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, iters = Array.Empty<object>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetIterKpisAsync(db, workItemId, ct);
+        return Results.Ok(payload);
+    }
+
+    /// <summary>
+    /// Phase 53 follow-up — Insight I.2 surface for plan-doc tasks. Reads
+    /// the architect agent's per-iter working-notes archive under
+    /// <c>{cloneRoot}/.worktree/plan-{docKey}/.forge/notes/iter-{N}.md</c>
+    /// so the Summary card on a doc task surfaces the same "Working notes"
+    /// section that workstreams already render.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterNotes(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, iters = Array.Empty<object>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var resolved = await WorktreePathResolver.ResolveForPlanDocAsync(db, spawn.Id, key, ct);
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetIterNotesAsync(workItemId, resolved.WorktreePath, ct);
+        return Results.Ok(payload);
+    }
+
+    /// <summary>
+    /// Phase 53 follow-up — Insight I.4 / Phase G surface for plan-doc
+    /// tasks. Returns the same <c>roles</c>-keyed payload that the
+    /// workstream memory route returns so the Conversation tab can render
+    /// the ContextUsageBar for architect docs identically to engineer
+    /// workstreams.
+    /// </summary>
+    private static async Task<IResult> GetArtifactMemory(
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        Forge.Api.Agents.CopilotSessionPool copilotPool,
+        Forge.Api.Services.MemoryCompactor compactor,
+        CancellationToken ct)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new { workItemId = (string?)null, roles = new Dictionary<string, object?>() });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var payload = await Forge.Api.Services.ConversationInsightQueries
+            .GetMemoryAsync(db, copilotPool, compactor, workItemId, ct);
+        return Results.Ok(payload);
+    }
+
+    /// <summary>
     /// Resume a single plan-doc artifact's gen↔eval loop. Unlike RetrySpawn
     /// (which re-drives the full phase pipeline), this re-runs ONLY the
     /// specified doc. Works even when the spawn has advanced past the plan
@@ -2239,6 +2412,173 @@ public static class StoriesEndpoints
             new { kind = "artifact-resumed", storyId, key });
 
         return Results.Ok(new { storyId, key, status = "resuming" });
+    }
+
+    /// <summary>
+    /// Phase 56 -- soft retry for a plan-doc artifact whose gen/eval
+    /// loop hit a terminal verdict (sloppy at iter-cap, stalled,
+    /// or a recovery-exhausted pass). Unlike <see cref="ResumeArtifact"/>
+    /// (which only re-fires the loop -- DeliverableLoop's terminal-replay
+    /// at <c>iter >= maxIter</c> immediately returns the same verdict
+    /// without doing any work), Retry:
+    /// <list type="number">
+    ///   <item>Demotes the last deliverable verdict pass/sloppy/stalled
+    ///         → <c>iterate</c> so DeliverableLoop seeding picks up at
+    ///         iter+1 with the full prior chain.</item>
+    ///   <item>Bumps the iter cap by +5 via <c>TaskQueueRow.MaxIterOverride</c>
+    ///         so <c>iter < maxIter</c> holds and seeding actually
+    ///         triggers (the canonical "operator extended the cap"
+    ///         path, see <see cref="TaskQueueRow.MaxIterOverride"/>).</item>
+    ///   <item>Resets the work-item's ExecutionStatus to <c>queued</c>
+    ///         so the UI badge un-pulses any stuck live state.</item>
+    ///   <item>Fires <see cref="RunResumeWithCleanupAsync"/> in the
+    ///         background -- exact same code path as Resume, just with
+    ///         the demoted verdict + bumped cap baked in.</item>
+    /// </list>
+    /// PRESERVES: worktree, deliverables, transcript, agent_usage,
+    /// costs, plan doc on disk. The architect agent continues
+    /// improving the same doc with the prior critique chain.
+    /// </summary>
+    private static async Task<IResult> RetryArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IStoryArtifactStrategy strategy)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+        if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        var docKey = key.ToLowerInvariant();
+        if (!Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.TryGetValue(
+                docKey, out var fileName))
+        {
+            return Results.Problem(
+                type: "retry.unknown-key",
+                title: $"Unknown plan-doc key '{key}'.",
+                detail: $"Expected one of: {string.Join(", ", Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.Keys)}.",
+                statusCode: 400);
+        }
+
+        var docWorkItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == docWorkItemId)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (lastDel is null)
+        {
+            return Results.Problem(
+                type: "retry.no-deliverables",
+                title: $"Nothing to retry -- doc '{key}' has no prior iterations.",
+                detail: "Use Resume / Restart to dispatch fresh.",
+                statusCode: 400);
+        }
+
+        // (1) Demote verdict. The blocker that prevents Resume from
+        // doing useful work is DeliverableLoop's terminal-replay check
+        // (DeliverableLoop.cs:316-345): when verdict is "stalled"/"sloppy"
+        // AND iter >= maxIter, the loop returns immediately. We need
+        // BOTH (a) verdict NOT in {pass, reject, stalled-budget} AND
+        // (b) iter < maxIter for seeding to fire. Demote to "iterate"
+        // covers (a); the cap bump below covers (b).
+        var priorVerdict = lastDel.Verdict;
+        var demoted = false;
+        if (lastDel.Verdict is "pass" or "stalled" or "sloppy")
+        {
+            lastDel.Verdict = "iterate";
+            var note = $"OPERATOR RETRY (plan-doc {key}.md) -- verdict demoted from '{priorVerdict}' to 'iterate'; iter cap bumped +5 so DeliverableLoop seeding continues at iter+1 instead of terminal-replaying. Doc, prior chain, transcript, and cost ledger preserved.";
+            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
+            demoted = true;
+        }
+
+        // (2) Bump the iter cap via TaskQueueRow.MaxIterOverride. The
+        // DeliverableLoop reads this on every invocation
+        // (DeliverableLoop.cs:260-276) -- it overrides the points-derived
+        // cap. We aim for max(currentOverride, lastIter+5) so a previous
+        // bump isn't accidentally lowered.
+        var existingOverride = await db.TaskQueue
+            .Where(q => q.WorkItemId == docWorkItemId)
+            .OrderByDescending(q => q.Id)
+            .FirstOrDefaultAsync();
+        var pointsDerived = ScoringConstants.MaxIterationsForPoints(
+            Math.Max(1, story.Points));
+        var currentCap = existingOverride?.MaxIterOverride ?? pointsDerived;
+        var newCap = Math.Max(currentCap, lastDel.Iter + 5);
+
+        if (existingOverride is not null && existingOverride.State != "completed")
+        {
+            existingOverride.MaxIterOverride = newCap;
+            existingOverride.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            db.TaskQueue.Add(new TaskQueueRow
+            {
+                WorkItemId = docWorkItemId,
+                TargetKind = "team",
+                TargetId = "Architect",
+                State = TaskQueueStates.Queued,
+                MaxIterOverride = newCap,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                LastUpdatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        // (3) Reset the doc work item's ExecutionStatus so the UI
+        // badge and the orchestrator's claim sweep see a clean row.
+        var docWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == docWorkItemId);
+        if (docWi is not null)
+        {
+            docWi.ExecutionStatus = ExecutionStatuses.Queued;
+            docWi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (4) Clear the spawn's last-error banner so the operator
+        // sees the retry kick off cleanly (same as RetrySpawn).
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+
+        // (5) Mark the doc as pending-resume BEFORE the background task
+        // starts so a crash mid-Retry is recovered by StoryResumeRecoveryService
+        // (matches Phase 41's restart-safe contract on ResumeArtifact).
+        AddResumePending(spawn, key);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await db.SaveChangesAsync();
+
+        // (6) Fire the same background drive as Resume -- DeliverableLoop
+        // now sees verdict="iterate" + new maxIter cap, so seeding takes
+        // over and the loop continues from iter+1.
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        _ = Task.Run(() => RunResumeWithCleanupAsync(
+            scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-retried", storyId, key });
+
+        return Results.Ok(new
+        {
+            storyId,
+            key,
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            demoted,
+            priorIter = lastDel.Iter,
+            priorScore = lastDel.Score,
+            priorMaxIter = currentCap,
+            newMaxIter = newCap,
+            status = "retrying",
+        });
     }
 
     /// <summary>

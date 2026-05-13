@@ -133,6 +133,34 @@ const FORGE_BUILD_FAILURE_KINDS = new Set<string>([
 ]);
 
 /**
+ * Phase 56 — compute the canonical "gate identity" key for an event.
+ * The badge counter keys by this identity so a fresh per-iter PASS
+ * for the quality gate clears any stale post-pass-quality FAIL from
+ * before the workstream recovered. Pre-Phase-56 events have no
+ * <c>gateStage</c> field, so we fall back to mapping the
+ * <c>stage</c> string + event kind.
+ */
+function gateKeyFor(kind: string, payload: Record<string, unknown>): string {
+  // Phase 56 -- preferred path: gateStage is one of "build" | "quality" | "test"
+  // and is semantic across per-iter / post-pass invocations.
+  const gateStage = typeof payload.gateStage === 'string' ? payload.gateStage : null;
+  if (gateStage) return gateStage;
+  // Legacy fallback for events emitted before Phase 56:
+  //   stage="post-pass"           + build-gate kind → "build"
+  //   stage="post-pass"           + test-gate kind  → "test"
+  //   stage="post-pass-quality"                     → "quality"
+  //   stage="per-iter"            + build-gate kind → "build"
+  //   anything else                                 → kind itself
+  const stage = typeof payload.stage === 'string' ? payload.stage : '';
+  if (stage === 'post-pass-quality') return 'quality';
+  if (stage === 'post-pass' || stage === 'per-iter') {
+    if (kind.startsWith('task.test-gate')) return 'test';
+    return 'build';
+  }
+  return kind;
+}
+
+/**
  * Phase 49 follow-up — count active build/test failures in the
  * transcript. Used by the conversation tab strip to render a red
  * "✗ N" badge on the Build tab so the operator sees a stalled
@@ -140,31 +168,35 @@ const FORGE_BUILD_FAILURE_KINDS = new Set<string>([
  *
  * <para>"Active" here means "the last terminal state for that gate
  * is failure". A workstream that had a build-gate.failed earlier
- * but later passed (e.g. operator hit Restart) shows 0 — we walk the
- * transcript forward and clear the failure on any subsequent passed
- * event for the same stage. The set is small (~3 stages: post-pass
- * build, post-pass-quality, post-pass test, plus per-iter aborted)
- * so an O(N) walk is fine.</para>
+ * but later passed (e.g. operator hit Restart, or Phase 56 per-iter
+ * chain ran clean on the next iter) shows 0 — we walk the transcript
+ * forward and clear the failure on any subsequent passed event for
+ * the same gate identity (build / quality / test).</para>
+ *
+ * <para>Phase 56 fix — pre-fix the key was <c>payload.stage</c>, so
+ * an old <c>post-pass-quality</c> FAIL never got cleared by a new
+ * <c>per-iter</c> PASS even though the same fmt command had run
+ * clean. <see cref="gateKeyFor"/> now maps both to <c>"quality"</c>
+ * so subsequent passes correctly overwrite the FAIL state.</para>
  */
 export function countActiveBuildFailures(events: TaskTranscriptEvent[]): number {
-  // Map of "stage" → most recent terminal state ('pass' | 'fail').
-  // Stage is taken from payload.stage (post-pass / post-pass-quality /
-  // post-pass-test) for gate events; the per-iter aborted event
-  // doesn't have a stage so we use the literal kind as the key.
-  const stageState = new Map<string, 'pass' | 'fail'>();
+  // Map of "gate identity" → most recent terminal state ('pass' | 'fail').
+  // Identity is build / quality / test (Phase 56) or stage/kind for
+  // legacy events.
+  const gateState = new Map<string, 'pass' | 'fail'>();
   for (const e of events) {
     if (!FORGE_BUILD_EVENT_KINDS.has(e.kind)) continue;
     const p = (e.payload as Record<string, unknown> | null) ?? {};
-    const stage = (p.stage as string) ?? e.kind;
+    const key = gateKeyFor(e.kind, p);
     if (FORGE_BUILD_FAILURE_KINDS.has(e.kind)) {
-      stageState.set(stage, 'fail');
+      gateState.set(key, 'fail');
     } else if (e.kind === 'task.build-gate.passed' || e.kind === 'task.test-gate.passed') {
-      stageState.set(stage, 'pass');
+      gateState.set(key, 'pass');
     }
     // skipped / detected (warning) don't change terminal state
   }
   let n = 0;
-  for (const v of stageState.values()) if (v === 'fail') n += 1;
+  for (const v of gateState.values()) if (v === 'fail') n += 1;
   return n;
 }
 
@@ -381,6 +413,14 @@ export function buildPageWindow(total: number, active: number, wing = 2): (numbe
 
 export interface IterationGroup {
   label: string;
+  /**
+   * Iter number parsed from the boundary event payload. Required so the
+   * Conversation tab can route the active-iter cursor through the Prompt /
+   * tools / generator tabs without falling back to <c>iterKpis[i].iter</c>
+   * (which lags behind the live transcript when the loop has emitted
+   * task.iteration.started past the last persisted Deliverable row).
+   */
+  iter: number;
   score: number | null;
   verdict: string | null;
   events: TaskTranscriptEvent[];
@@ -399,14 +439,14 @@ export function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[
   if (events.length === 0) return [];
 
   const groups: IterationGroup[] = [];
-  let current: IterationGroup = { label: 'Iteration 1', score: null, verdict: null, events: [] };
+  let current: IterationGroup = { label: 'Iteration 1', iter: 1, score: null, verdict: null, events: [] };
 
   for (const evt of events) {
     if (evt.kind === 'task.iteration.started') {
       const p = evt.payload as Record<string, unknown> | null;
       const iter = (p?.iter as number) ?? groups.length + 2;
       if (current.events.length > 0) groups.push(current);
-      current = { label: `Iteration ${iter}`, score: null, verdict: null, events: [evt] };
+      current = { label: `Iteration ${iter}`, iter, score: null, verdict: null, events: [evt] };
       continue;
     }
 

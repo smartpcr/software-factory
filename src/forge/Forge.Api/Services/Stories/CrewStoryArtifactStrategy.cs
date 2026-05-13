@@ -529,6 +529,315 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 56 — run the unified gate chain (build → quality → test)
+    /// once and return the first failing stage, or null when every
+    /// resolved command exited zero (or was skipped because the
+    /// resolver returned null/empty for that stage).
+    /// <para>The chain SHORT-CIRCUITS on the first failure: if build
+    /// fails, quality + test are NOT run (no point linting code that
+    /// doesn't compile). This matches today's post-pass semantics
+    /// (lines 2211-2440 pre-refactor).</para>
+    /// <para>Each stage emits a discrete telemetry event so the Build
+    /// tab in <c>BuildPane.tsx</c> can render a per-stage timeline.
+    /// Event shape preserves today's keys (<c>task.build-gate.*</c> /
+    /// <c>task.test-gate.*</c>) plus a new <c>gateStage</c> discriminator
+    /// (<c>"build"|"quality"|"test"</c>) so the UI can group ticks.</para>
+    /// <para>Runner exceptions are caught per stage and emitted as
+    /// <c>skipped</c> events rather than failing the chain — matches
+    /// today's defensive shape (lines 3772-3786 pre-refactor) so a
+    /// transient toolchain glitch doesn't burn the consecutive-failure
+    /// streak.</para>
+    /// </summary>
+    /// <param name="stagePrefix">Either <c>"per-iter"</c> or
+    /// <c>"post-pass"</c>; flows into telemetry so the UI can
+    /// distinguish per-iter ticks from the pass-validator's single
+    /// tick.</param>
+    private async Task<GateFailure?> RunGateChainAsync(
+        string workItemId,
+        string workspace,
+        int iter,
+        string stagePrefix,
+        string? buildCommand,
+        IReadOnlyList<string>? qualityCommands,
+        string? testCommand,
+        string? agentId,
+        string? crewId,
+        CancellationToken ct)
+    {
+        // ----- BUILD stage -----
+        if (string.IsNullOrWhiteSpace(buildCommand))
+        {
+            await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
+            {
+                stage = stagePrefix,
+                gateStage = "build",
+                iter,
+                reason = "no build command resolved (set repo.BuildCommand to enable)",
+                workspace,
+            }, agentId: agentId, crewId: crewId, ct: ct);
+        }
+        else
+        {
+            StoryBuildResult? build = null;
+            try
+            {
+                build = await StoryBuildRunner.RunBuildAsync(
+                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: buildCommand);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "{Prefix} build check threw for {Workspace}; skipping this iter's build gate.",
+                    stagePrefix, workspace);
+                await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "build",
+                    iter,
+                    reason = $"build runner threw: {ex.GetType().Name}: {ex.Message}",
+                    buildCommand,
+                    workspace,
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+
+            if (build is not null)
+            {
+                if (!build.Success)
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.build-gate.failed", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "build",
+                        iter,
+                        exitCode = build.ExitCode,
+                        errorCount = build.ErrorCount,
+                        warningCount = build.WarningCount,
+                        durationSec = build.Duration.TotalSeconds,
+                        timedOut = build.TimedOut,
+                        errorSummary = build.ErrorSummary,
+                        buildCommand,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    return new GateFailure("build", buildCommand, build);
+                }
+
+                await this.taskChannel.EmitAsync(workItemId, "task.build-gate.passed", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "build",
+                    iter,
+                    durationSec = build.Duration.TotalSeconds,
+                    warningCount = build.WarningCount,
+                    buildCommand,
+                    workspace,
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+        }
+
+        // ----- QUALITY stage(s) -----
+        if (qualityCommands is { Count: > 0 })
+        {
+            for (var i = 0; i < qualityCommands.Count; i++)
+            {
+                var qc = qualityCommands[i];
+                if (string.IsNullOrWhiteSpace(qc)) continue;
+
+                StoryBuildResult? q = null;
+                try
+                {
+                    q = await StoryBuildRunner.RunBuildAsync(
+                        workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: qc);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "{Prefix} quality check `{Qc}` threw for {Workspace}; skipping.",
+                        stagePrefix, qc, workspace);
+                    await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "quality",
+                        iter,
+                        qualityCommand = qc,
+                        qualityCommandIndex = i,
+                        reason = $"quality runner threw: {ex.GetType().Name}: {ex.Message}",
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    continue;
+                }
+
+                if (q is null) continue;
+
+                if (!q.Success)
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.build-gate.failed", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "quality",
+                        iter,
+                        qualityCommand = qc,
+                        qualityCommandIndex = i,
+                        exitCode = q.ExitCode,
+                        errorCount = q.ErrorCount,
+                        warningCount = q.WarningCount,
+                        durationSec = q.Duration.TotalSeconds,
+                        timedOut = q.TimedOut,
+                        errorSummary = q.ErrorSummary,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    return new GateFailure("quality", qc, q);
+                }
+
+                await this.taskChannel.EmitAsync(workItemId, "task.build-gate.passed", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "quality",
+                    iter,
+                    qualityCommand = qc,
+                    qualityCommandIndex = i,
+                    durationSec = q.Duration.TotalSeconds,
+                    warningCount = q.WarningCount,
+                    workspace,
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+        }
+
+        // ----- TEST stage -----
+        if (string.IsNullOrWhiteSpace(testCommand))
+        {
+            await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+            {
+                stage = stagePrefix,
+                gateStage = "test",
+                iter,
+                reason = "no test command resolved (set repo.TestCommand to enable)",
+                workspace,
+            }, agentId: agentId, crewId: crewId, ct: ct);
+        }
+        else
+        {
+            StoryBuildResult? t = null;
+            try
+            {
+                t = await StoryBuildRunner.RunBuildAsync(
+                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: testCommand);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "{Prefix} test check threw for {Workspace}; skipping.",
+                    stagePrefix, workspace);
+                await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "test",
+                    iter,
+                    reason = $"test runner threw: {ex.GetType().Name}: {ex.Message}",
+                    testCommand,
+                    workspace,
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+
+            if (t is not null)
+            {
+                if (!t.Success)
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.failed", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        exitCode = t.ExitCode,
+                        errorCount = t.ErrorCount,
+                        warningCount = t.WarningCount,
+                        durationSec = t.Duration.TotalSeconds,
+                        timedOut = t.TimedOut,
+                        errorSummary = t.ErrorSummary,
+                        testCommand,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    return new GateFailure("test", testCommand, t);
+                }
+
+                await this.taskChannel.EmitAsync(workItemId, "task.test-gate.passed", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "test",
+                    iter,
+                    durationSec = t.Duration.TotalSeconds,
+                    warningCount = t.WarningCount,
+                    testCommand,
+                    workspace,
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Phase 56 — per-iter wrapper around <see cref="RunGateChainAsync"/>
+    /// with <c>stagePrefix="per-iter"</c>. Kept as a thin shim so the
+    /// GeneratorDelegate call site reads cleanly.
+    /// </summary>
+    private Task<GateFailure?> RunPerIterGateChainAsync(
+        string workItemId,
+        string workspace,
+        int iter,
+        string? buildCommand,
+        IReadOnlyList<string>? qualityCommands,
+        string? testCommand,
+        string? agentId,
+        string? crewId,
+        CancellationToken ct) =>
+        this.RunGateChainAsync(
+            workItemId, workspace, iter, "per-iter",
+            buildCommand, qualityCommands, testCommand,
+            agentId, crewId, ct);
+
+    /// <summary>
+    /// Phase 56 — format a <see cref="GateFailure"/> into the multi-line
+    /// note returned by <c>OnPassValidate</c>. The note ends up on the
+    /// deliverable row's <c>Notes</c> (rejected pass) and flows into the
+    /// next iter's evaluator chain via <c>FormatPriorChain</c>.
+    /// </summary>
+    private static string BuildGateRejectionNote(GateFailure failure, int attempt, int maxAttempts)
+    {
+        var stageBanner = failure.Stage switch
+        {
+            "quality" => "POST-PASS QUALITY GATE REJECTED PASS",
+            "test" => "POST-PASS TEST GATE REJECTED PASS",
+            _ => "POST-PASS BUILD GATE REJECTED PASS",
+        };
+        var sb = new StringBuilder();
+        sb.AppendLine($"{stageBanner} (recovery attempt {attempt}/{maxAttempts})");
+        sb.AppendLine();
+        sb.AppendLine($"Stage    : {failure.Stage}");
+        sb.AppendLine($"Command  : {failure.Command}");
+        sb.AppendLine($"Exit code: {failure.Result.ExitCode}");
+        sb.AppendLine($"Errors   : {failure.Result.ErrorCount}");
+        sb.AppendLine($"Warnings : {failure.Result.WarningCount}");
+        sb.AppendLine($"Duration : {failure.Result.Duration.TotalSeconds:F1}s{(failure.Result.TimedOut ? " (TIMED OUT)" : string.Empty)}");
+        if (!string.IsNullOrWhiteSpace(failure.Result.ErrorSummary))
+        {
+            sb.AppendLine();
+            sb.AppendLine("Error summary:");
+            sb.AppendLine("```");
+            var summary = failure.Result.ErrorSummary;
+            if (summary.Length > 4096)
+            {
+                summary = summary[..4096] + "\n…(truncated)";
+            }
+            sb.AppendLine(summary);
+            sb.AppendLine("```");
+        }
+        sb.AppendLine();
+        sb.AppendLine(
+            "The evaluator scored this iteration at pass, but the post-pass gate suite rejected the diff before the PR could open. The next iteration MUST fix the failing gate before pass is allowed again. The PR will not open until the post-pass gate suite is green.");
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Phase 49 follow-up -- deserialize <see cref="WorkstreamRow.AgentsJson"/>
     /// into a non-null list. Used at the impl call site to read the
     /// generator + evaluator pair the orchestrator picked at claim time
@@ -2201,6 +2510,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // `dotnet build`. Null = no detectable build system, gate
             // is skipped per-iter (mirrors the post-pass skip).
             buildCommand: ResolveBuildCommand(repo, workspace),
+            // Phase 56 -- per-iter quality + test gates chained after
+            // the build gate. Empty / null resolvers fall through to
+            // skipped events. The same resolvers feed the post-pass
+            // gate suite (via OnPassValidate) so per-iter and post-pass
+            // run the IDENTICAL chain -- no chance of post-pass
+            // discovering a failure the per-iter chain didn't catch.
+            qualityCommands: ResolveQualityCommands(repo, workspace),
+            testCommand: ResolveTestCommand(repo, workspace),
             ct: ct);
 
         // Phase 45 follow-up -- collect only files the agent actually changed
@@ -2238,238 +2555,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"Engineer changed {changedPaths.Count} path(s) but none were readable for workstream {workstream.Id}.");
         }
 
-        // Phase 47e -- post-pass build gate. The gen↔eval loop returned a
-        // diff the evaluator scored; that score does NOT prove the diff
-        // compiles. Run the repo's build command on the worktree and
-        // refuse to commit if it fails. The text-only evaluator was
-        // observed (2026-05-09) scoring 68 on a diff that deleted
-        // production EvolutionEngine.cs along with 17 other files; the
-        // compiler is the only honest source of truth for "does this
-        // code parse". BuildFailedException is caught by
-        // DriveImplementAsync's spawn task and routed to Status="stalled"
-        // (Phase 49 split -- was "blocked" before) so the operator can
-        // triage.
-        //
-        // Phase 49 -- resolve the build command per repo (dotnet/cargo/
-        // npm/go/mvn) instead of hard-coding `dotnet build`. A Rust
-        // workspace (e.g. failover-cluster:XRAFT) was hitting a 200 ms
-        // exit-1 here from `dotnet build` failing to find a .sln,
-        // routing every parallel stage to blocked despite passing
-        // evaluator scores. When the build system is unknown or
-        // ambiguous, skip the gate and emit telemetry so the operator
-        // can configure repo.BuildCommand explicitly.
-        var resolvedBuildCommand = ResolveBuildCommand(repo, workspace);
-        if (string.IsNullOrWhiteSpace(resolvedBuildCommand))
-        {
-            var detected = BuildSystemDetector.Detect(workspace);
-            await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.skipped", new
-            {
-                stage = "post-pass",
-                reason = detected.Ambiguous ? "ambiguous-build-system" : "no-build-system-detected",
-                ecosystem = detected.Ecosystem,
-                ambiguous = detected.Ambiguous,
-                ambiguityDetail = detected.AmbiguityDetail,
-                workspace,
-            }, ct: ct);
-            this.logger?.LogInformation(
-                "Post-pass build gate skipped for {WorkItem}: ecosystem={Ecosystem} ambiguous={Ambiguous}. "
-                + "Set repo.BuildCommand explicitly to enable the gate.",
-                workstream.Id, detected.Ecosystem, detected.Ambiguous);
-        }
-        else
-        {
-            var postPassBuild = await StoryBuildRunner.RunBuildAsync(
-                workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: resolvedBuildCommand);
-            if (!postPassBuild.Success)
-            {
-                await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.failed", new
-                {
-                    stage = "post-pass",
-                    exitCode = postPassBuild.ExitCode,
-                    errorCount = postPassBuild.ErrorCount,
-                    warningCount = postPassBuild.WarningCount,
-                    durationSec = postPassBuild.Duration.TotalSeconds,
-                    timedOut = postPassBuild.TimedOut,
-                    errorSummary = postPassBuild.ErrorSummary,
-                    buildCommand = resolvedBuildCommand,
-                    workspace,
-                }, ct: ct);
-
-                throw new BuildFailedException(
-                    $"Workstream {workstream.Id} post-pass build gate failed (exit {postPassBuild.ExitCode}, "
-                    + $"{postPassBuild.ErrorCount} error(s)) running `{resolvedBuildCommand}`. The gen/eval "
-                    + $"loop returned a diff the evaluator scored at pass, but the build shows the diff "
-                    + $"doesn't compile. Refusing to commit broken code.\n\n{postPassBuild.ErrorSummary}")
-                {
-                    ExitCode = postPassBuild.ExitCode,
-                    ErrorCount = postPassBuild.ErrorCount,
-                    WarningCount = postPassBuild.WarningCount,
-                    ErrorSummary = postPassBuild.ErrorSummary,
-                    TrippedByConsecutiveIters = false,
-                    ConsecutiveBrokenIters = 0,
-                    LastIteration = 0,
-                };
-            }
-
-            // Phase 49 follow-up -- emit the "passed" event symmetrically
-            // with the "failed" / "skipped" paths so the Build tab in
-            // the Conversation pane can render a green tick. Previously
-            // only failure / skipped fired, leaving the operator with
-            // no visible "build is healthy" signal between iterations.
-            await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.passed", new
-            {
-                stage = "post-pass",
-                durationSec = postPassBuild.Duration.TotalSeconds,
-                warningCount = postPassBuild.WarningCount,
-                buildCommand = resolvedBuildCommand,
-                workspace,
-            }, ct: ct);
-
-            // Phase 49 follow-up -- quality gates after build success.
-            // Mirrors the upstream CI shape (`ci.yml` Check job for
-            // Cargo workspaces runs fmt + clippy in addition to build).
-            // Each quality command runs sequentially; first non-zero
-            // exit becomes a BuildFailedException with
-            // stage="post-pass-quality" telemetry naming the failed
-            // command, so the operator (and engineer agent on the next
-            // restart) can distinguish a real compile failure from a
-            // formatting / lint failure. The exception is caught by
-            // StorySpawnOrchestrator.DriveImplementAsync and routes the
-            // workstream to Status="stalled" with StallReason set.
-            // Quality failures are NOT auto-fixed today -- the engineer
-            // agent must be Restarted; a future enhancement could route
-            // them into a dedicated quality-fix loop on the same PR.
-            var qualityCommands = ResolveQualityCommands(repo, workspace);
-            for (var i = 0; i < qualityCommands.Count; i++)
-            {
-                var qc = qualityCommands[i];
-                if (string.IsNullOrWhiteSpace(qc)) continue;
-
-                var qResult = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: qc);
-                if (qResult.Success)
-                {
-                    // Phase 49 follow-up -- emit per-quality-command passed
-                    // event so the Build tab can show each gate tick
-                    // (fmt ✓, clippy ✓) independently. Without this the
-                    // operator only sees the BUILD passed tick + the
-                    // final TEST passed tick, with the quality gates
-                    // silently in between.
-                    await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.passed", new
-                    {
-                        stage = "post-pass-quality",
-                        qualityCommand = qc,
-                        qualityCommandIndex = i,
-                        durationSec = qResult.Duration.TotalSeconds,
-                        warningCount = qResult.WarningCount,
-                        buildCommand = resolvedBuildCommand,
-                        workspace,
-                    }, ct: ct);
-                    continue;
-                }
-
-                await this.taskChannel.EmitAsync(workstream.Id, "task.build-gate.failed", new
-                {
-                    stage = "post-pass-quality",
-                    qualityCommand = qc,
-                    qualityCommandIndex = i,
-                    exitCode = qResult.ExitCode,
-                    errorCount = qResult.ErrorCount,
-                    warningCount = qResult.WarningCount,
-                    durationSec = qResult.Duration.TotalSeconds,
-                    timedOut = qResult.TimedOut,
-                    errorSummary = qResult.ErrorSummary,
-                    buildCommand = resolvedBuildCommand,
-                    workspace,
-                }, ct: ct);
-
-                throw new BuildFailedException(
-                    $"Workstream {workstream.Id} post-pass quality gate failed (exit {qResult.ExitCode}) "
-                    + $"running `{qc}`. The build itself passed (`{resolvedBuildCommand}` ok), but the "
-                    + $"upstream-CI-mirroring quality gate rejected the diff. This is what blocks merge "
-                    + $"on the remote (e.g. cargo fmt --check or cargo clippy -D warnings is a required "
-                    + $"status check). Refusing to commit code that the remote will reject.\n\n{qResult.ErrorSummary}")
-                {
-                    ExitCode = qResult.ExitCode,
-                    ErrorCount = qResult.ErrorCount,
-                    WarningCount = qResult.WarningCount,
-                    ErrorSummary = qResult.ErrorSummary,
-                    TrippedByConsecutiveIters = false,
-                    ConsecutiveBrokenIters = 0,
-                    LastIteration = 0,
-                };
-            }
-
-            // Phase 49 follow-up -- post-pass TEST gate. Final gate
-            // before Forge opens the PR: build compiles, quality gates
-            // (fmt / clippy) are clean, NOW run the test suite to
-            // ensure the diff hasn't silently regressed an existing
-            // test. Same UX as build / quality gate failures --
-            // BuildFailedException(stage="post-pass-test") routes the
-            // workstream to Status="stalled" via
-            // DriveImplementAsync's catch; no PR is opened.
-            // <para>Resolution: operator override on
-            // <see cref="RepoRow.TestCommand"/> wins; else
-            // <see cref="BuildSystemDetector"/> picks the ecosystem
-            // default (cargo test, dotnet test {sln}, npm test,
-            // go test ./..., mvn test, pytest). Null → no detectable
-            // test command → skip the gate rather than fail closed.</para>
-            var resolvedTestCommand = ResolveTestCommand(repo, workspace);
-            if (string.IsNullOrWhiteSpace(resolvedTestCommand))
-            {
-                await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.skipped", new
-                {
-                    stage = "post-pass",
-                    reason = "no test command resolved (set repo.TestCommand to enable)",
-                    workspace,
-                }, ct: ct);
-            }
-            else
-            {
-                var testResult = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: resolvedTestCommand);
-                if (!testResult.Success)
-                {
-                    await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.failed", new
-                    {
-                        stage = "post-pass",
-                        exitCode = testResult.ExitCode,
-                        errorCount = testResult.ErrorCount,
-                        warningCount = testResult.WarningCount,
-                        durationSec = testResult.Duration.TotalSeconds,
-                        timedOut = testResult.TimedOut,
-                        errorSummary = testResult.ErrorSummary,
-                        testCommand = resolvedTestCommand,
-                        workspace,
-                    }, ct: ct);
-
-                    throw new BuildFailedException(
-                        $"Workstream {workstream.Id} post-pass test gate failed (exit {testResult.ExitCode}, "
-                        + $"{testResult.ErrorCount} error(s)) running `{resolvedTestCommand}`. The build + "
-                        + $"quality gates passed, but the test suite has regressions. Refusing to commit code "
-                        + $"that breaks tests.\n\n{testResult.ErrorSummary}")
-                    {
-                        ExitCode = testResult.ExitCode,
-                        ErrorCount = testResult.ErrorCount,
-                        WarningCount = testResult.WarningCount,
-                        ErrorSummary = testResult.ErrorSummary,
-                        TrippedByConsecutiveIters = false,
-                        ConsecutiveBrokenIters = 0,
-                        LastIteration = 0,
-                    };
-                }
-
-                await this.taskChannel.EmitAsync(workstream.Id, "task.test-gate.passed", new
-                {
-                    stage = "post-pass",
-                    durationSec = testResult.Duration.TotalSeconds,
-                    warningCount = testResult.WarningCount,
-                    testCommand = resolvedTestCommand,
-                    workspace,
-                }, ct: ct);
-            }
-        }
-
+        // Phase 56 -- post-pass gate suite REMOVED from this method. The
+        // gen/eval loop's pass-validator hook
+        // (DeliverableLoopRequest.OnPassValidate, wired in
+        // RunGenEvalLoopAsync) now owns the only invocation. If any
+        // post-pass gate stage (build / quality / test) fails, the
+        // validator either demotes pass→iterate and loops back (up to
+        // MaxRecoveryAttempts times) or throws BuildFailedException to
+        // route the workstream to stalled. By the time control reaches
+        // here the gen/eval loop has already proven that the diff
+        // passes ALL gates and is safe to commit; no double-check is
+        // needed (and the duplicate check used to throw
+        // BuildFailedException with no recovery loop, stalling
+        // workstreams that the agent could have fixed in another iter).
         return dict;
     }
 
@@ -2974,6 +3072,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // to `dotnet build`, which is the wrong default for non-.NET
         // ecosystems -- we explicitly skip instead.
         string? buildCommand = null,
+        // Phase 56 -- quality-gate commands (cargo fmt --check / cargo
+        // clippy / etc.) chained after the build gate every iter. Empty
+        // = no quality gates run (today's behavior for ecosystems
+        // without universal quality opinions). Resolved by the caller
+        // via ResolveQualityCommands.
+        IReadOnlyList<string>? qualityCommands = null,
+        // Phase 56 -- test command chained after quality gates every
+        // iter. Null = no test gate (today's behavior when neither the
+        // operator nor BuildSystemDetector can resolve one). Resolved
+        // by the caller via ResolveTestCommand.
+        string? testCommand = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -3151,25 +3260,40 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // burning the full maxIter budget. Set up here, mutated inside
         // GeneratorDelegate's closure.
         var consecutiveNoChange = 0;
-        // Phase 47e -- separate counter for "agent edited files but they
-        // don't compile". Tripped after three consecutive broken-build
-        // iters; routes to BuildFailedException → blocked. Distinct from
-        // no-progress so the operator can tell which failure mode hit.
-        var consecutiveBrokenBuild = 0;
-        // Phase 49 follow-up -- when the per-iter build gate fails we
-        // capture the result so the NEXT iteration's generator prompt
-        // can quote the actual compiler / test output. Without this the
-        // generator only sees the evaluator's text-only feedback and
-        // has no way to know its code doesn't compile (the build runs
-        // AFTER the generator returns its diff, so the agent itself
-        // never observes the failure mid-turn unless it volunteered a
-        // build inside the tool stream). Cleared back to null on the
-        // first successful build so a stale failure doesn't haunt the
-        // prompt forever once the agent fixes it.
-        StoryBuildResult? lastBuildFailure = null;
-        string? lastBuildFailureCommand = null;
+        // Phase 56 (was Phase 47e) -- separate counter for "agent edited
+        // files but the unified gate chain (build → quality → test)
+        // tripped". Renamed from consecutiveBrokenBuild because the
+        // per-iter gate now spans more than build alone. Tripped after
+        // three consecutive iters where ANY gate stage failed (build,
+        // fmt/clippy, or test); routes to BuildFailedException →
+        // stalled. Distinct from no-progress so the operator can tell
+        // which failure mode hit. Any iter where all gate stages pass
+        // resets the counter.
+        var consecutiveGateFailure = 0;
+        // Phase 56 (was Phase 49 follow-up) -- when ANY per-iter gate
+        // stage (build/quality/test) fails we capture the failure so
+        // the NEXT iteration's generator prompt can quote the actual
+        // command output. Without this the generator only sees the
+        // evaluator's text-only feedback and has no way to know its
+        // code failed a gate (the gates run AFTER the generator returns
+        // its diff, so the agent itself never observes the failure
+        // mid-turn unless it volunteered the command inside the tool
+        // stream). Cleared back to null on the first successful chain
+        // so a stale failure doesn't haunt the prompt forever once the
+        // agent fixes it.
+        GateFailure? lastGateFailure = null;
         const int NoProgressThreshold = 3;
         const int BuildFailThreshold = 3;
+        // Phase 56 -- post-pass recovery cap. Each time the evaluator
+        // scores ≥ 90 and OnPassValidate's gate suite rejects the
+        // pass, this counter increments. When it reaches the cap, the
+        // validator throws BuildFailedException instead of demoting,
+        // which propagates out of DeliverableLoop.RunAsync exactly like
+        // today's stall path. A successful pass-validator (or a non-
+        // pass iter) does NOT decrement; this is a HARD cap across the
+        // workstream's lifetime within one DeliverableLoop call.
+        var postPassRecoveryAttempts = 0;
+        const int MaxRecoveryAttempts = 3;
         var isImplPhase = phaseTag.StartsWith("impl:", StringComparison.Ordinal);
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
@@ -3177,19 +3301,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // Phase 49 follow-up -- assemble the iter prompt from up to
             // THREE layered sections so the generator sees the most
             // actionable feedback first:
-            //   1. Build / test output from the prior iter (if any) --
-            //      compiler-truth, highest signal. Forge already
-            //      decided this iter's diff doesn't build; the agent
-            //      MUST fix that before doing anything else.
+            //   1. Gate output from the prior iter (if any) --
+            //      compiler / linter / test runner truth, highest
+            //      signal. Forge already decided this iter's diff
+            //      didn't pass the gate; the agent MUST fix that
+            //      before doing anything else.
             //   2. Evaluator feedback (if any) -- text critique on
             //      what's wrong with the design / approach. Useful
-            //      once the code at least compiles.
+            //      once the code at least compiles + lints + tests.
             //   3. The original brief -- for reference. Same exact
             //      content as iter 1; never gets "lost" but takes
             //      bottom priority once feedback exists.
             // iter 1 has neither section (1) nor (2), so it sees only
             // the brief -- the unchanged historic shape.
-            var hasBuildFeedback = lastBuildFailure is not null;
+            // Phase 56 -- "build feedback" generalised to "gate
+            // feedback": build OR quality (fmt/clippy) OR test
+            // failures all flow through this same prepend.
+            var hasGateFeedback = lastGateFailure is not null;
             var hasEvalFeedback = !string.IsNullOrWhiteSpace(evalNotes);
 
             string iterPrompt;
@@ -3210,7 +3338,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var priorNotesBlock = await ReadPriorIterNotesAsync(workspace, iterCt);
             var hasPriorNotes = !string.IsNullOrEmpty(priorNotesBlock);
 
-            if (string.IsNullOrEmpty(decisionPinsBlock) && !hasPriorNotes && !hasBuildFeedback && !hasEvalFeedback)
+            if (string.IsNullOrEmpty(decisionPinsBlock) && !hasPriorNotes && !hasGateFeedback && !hasEvalFeedback)
             {
                 iterPrompt = generatorPrompt;
             }
@@ -3249,21 +3377,61 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
                 }
-                if (hasBuildFeedback)
+                if (hasGateFeedback)
                 {
-                    var bf = lastBuildFailure!;
-                    sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
-                    sb.AppendLine("║  BUILD FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST    ║");
-                    sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+                    // Phase 56 -- generalised from the Phase 47e/49 BUILD
+                    // FAILURE block. The same prepend shape now serves
+                    // build / quality / test gate failures; the stage
+                    // name + the "how to fix" footer vary per stage.
+                    var gf = lastGateFailure!;
+                    var stage = gf.Stage;
+                    var (banner, gateNoun, fixHints) = stage switch
+                    {
+                        "quality" => (
+                            "║  QUALITY GATE FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST  ║",
+                            "FAILED A QUALITY GATE (fmt / clippy / lint)",
+                            new[]
+                            {
+                                "  1. Read the error output above. The linter / formatter names the exact file and line.",
+                                "  2. For `fmt --check` failures, run the formatter's WRITE mode (e.g. `cargo fmt`) yourself; do NOT hand-tweak whitespace.",
+                                "  3. For `clippy -D warnings` failures, treat every warning as an error and address them all -- silencing with `#[allow(...)]` is acceptable ONLY with a one-line justification comment.",
+                                $"  4. Run `{gf.Command}` yourself before responding to confirm exit 0.",
+                            }),
+                        "test" => (
+                            "║  TEST FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST          ║",
+                            "FAILED THE TEST SUITE",
+                            new[]
+                            {
+                                "  1. Read the test output above. The runner names the failing test and the assertion that fired.",
+                                "  2. Decide: is the test wrong, or is the production code wrong? If the test encodes a contract you intentionally changed, update the test AND add a rationale in your Iteration Summary. If the production code regressed an existing contract, fix the production code.",
+                                "  3. Do NOT delete or `#[ignore]` a failing test as a shortcut -- if a test is genuinely obsolete, remove it AND state why in your Iteration Summary.",
+                                $"  4. Run `{gf.Command}` yourself before responding to confirm exit 0.",
+                            }),
+                        _ => (
+                            "║  BUILD FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST         ║",
+                            "DID NOT COMPILE",
+                            new[]
+                            {
+                                "  1. Read the error output above. The compiler tells you the exact file, line, and reason.",
+                                "  2. Open the file at the line indicated and make the targeted fix.",
+                                "  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build -- edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.",
+                                $"  4. Run `{gf.Command}` yourself before responding to confirm exit 0.",
+                            }),
+                    };
+                    var bf = gf.Result;
+                    sb.AppendLine("╔══════════════════════════════════════════════════════════════╗");
+                    sb.AppendLine(banner);
+                    sb.AppendLine("╚══════════════════════════════════════════════════════════════╝");
                     sb.AppendLine();
-                    sb.AppendLine($"Your iteration {iter - 1} diff DID NOT COMPILE.");
-                    sb.AppendLine($"  command  : {lastBuildFailureCommand ?? "<resolved at runtime>"}");
+                    sb.AppendLine($"Your iteration {iter - 1} diff {gateNoun}.");
+                    sb.AppendLine($"  stage    : {stage}");
+                    sb.AppendLine($"  command  : {gf.Command}");
                     sb.AppendLine($"  exit code: {bf.ExitCode}");
                     sb.AppendLine($"  errors   : {bf.ErrorCount}");
                     sb.AppendLine($"  warnings : {bf.WarningCount}");
                     sb.AppendLine($"  duration : {bf.Duration.TotalSeconds:F2}s{(bf.TimedOut ? " (TIMED OUT)" : "")}");
                     sb.AppendLine();
-                    sb.AppendLine("BUILD ERROR OUTPUT (verbatim from the compiler -- fix EVERY error):");
+                    sb.AppendLine("GATE ERROR OUTPUT (verbatim from the command -- fix EVERY error):");
                     sb.AppendLine("```");
                     // Cap at ~6000 chars so the prompt stays under most
                     // model context windows even after the rest of the
@@ -3278,13 +3446,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine(summary);
                     sb.AppendLine("```");
                     sb.AppendLine();
-                    sb.AppendLine($"Three consecutive broken-build iterations will trip the build gate and stall the workstream. You are currently {consecutiveBrokenBuild} of {BuildFailThreshold}.");
+                    sb.AppendLine($"Three consecutive failed-gate iterations (across build/quality/test) will trip the gate threshold and stall the workstream. You are currently {consecutiveGateFailure} of {BuildFailThreshold}.");
                     sb.AppendLine();
                     sb.AppendLine("How to fix:");
-                    sb.AppendLine("  1. Read the error output above. The compiler tells you the exact file, line, and reason.");
-                    sb.AppendLine("  2. Open the file at the line indicated and make the targeted fix.");
-                    sb.AppendLine("  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build -- edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.");
-                    sb.AppendLine($"  4. Run `{lastBuildFailureCommand ?? "the build command"}` yourself before responding to confirm exit 0.");
+                    foreach (var line in fixHints)
+                    {
+                        sb.AppendLine(line);
+                    }
                     sb.AppendLine();
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
@@ -3336,7 +3504,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
                 }
-                if (hasBuildFeedback || hasEvalFeedback)
+                if (hasGateFeedback || hasEvalFeedback)
                 {
                     sb.AppendLine("Now here is the original task brief (for reference only -- the");
                     sb.AppendLine("feedback above takes priority):");
@@ -3784,161 +3952,99 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     consecutiveNoChange = 0;
 
-                    // Phase 47e -- agent edited files this iter. Validate
-                    // the build BEFORE the evaluator scores the diff. The
-                    // evaluator (text-only) was observed scoring 68 on a
-                    // diff that deleted EvolutionEngine.cs along with 17
-                    // other production files -- the compiler is the only
-                    // honest check on "does this diff make sense as code".
+                    // Phase 56 (was Phase 47e/49) -- agent edited files
+                    // this iter. Run the unified gate chain (build →
+                    // quality → test) BEFORE the evaluator scores the
+                    // diff. The evaluator (text-only) was observed
+                    // scoring 68 on a diff that deleted EvolutionEngine.cs
+                    // along with 17 other production files -- the
+                    // compiler / linter / test runner is the only honest
+                    // check on "does this diff make sense as code".
                     //
-                    // Phase 49 -- when buildCommand is null the repo has
-                    // no detectable build system (or the operator hasn't
-                    // configured repo.BuildCommand yet). Skip the gate
-                    // rather than running `dotnet build` against an
-                    // unknown workspace and false-failing in 200 ms.
-                    //
-                    // Phase 49 follow-up² -- emit telemetry on the
-                    // skipped + passed paths too, not just failure.
-                    // Pre-fix the per-iter gate was silent on success
-                    // and silent when buildCommand resolved to null;
-                    // operators looking at the Build tab for a
-                    // long-running workstream saw zero events even
-                    // though the gate had run 20+ times and passed
-                    // every iter. Now every iter that touched files
-                    // emits exactly one task.build-gate.{passed,
-                    // failed,skipped} per the gate's outcome so the
-                    // Build tab shows a continuous green/red/gray
-                    // timeline. The events flag stage="per-iter" so
-                    // the UI can distinguish per-iter ticks from the
-                    // single post-pass tick at the end of the loop.
-                    StoryBuildResult? build = null;
-                    if (string.IsNullOrWhiteSpace(buildCommand))
-                    {
-                        await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
-                        {
-                            stage = "per-iter",
-                            iter,
-                            reason = "no build command resolved (set repo.BuildCommand to enable)",
-                            workspace,
-                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
-                    }
-                    else
-                    {
-                        try
-                        {
-                            build = await StoryBuildRunner.RunBuildAsync(
-                                workspace, iterCt, StoryBuildRunner.DefaultTimeout,
-                                buildCommand: buildCommand);
-                        }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
-                        {
-                            this.logger?.LogWarning(ex,
-                                "Per-iter build check threw for {Workspace}; skipping this iter's build gate.",
-                                workspace);
-                            build = null;
-                            await this.taskChannel.EmitAsync(workItemId, "task.build-gate.skipped", new
-                            {
-                                stage = "per-iter",
-                                iter,
-                                reason = $"build runner threw: {ex.GetType().Name}: {ex.Message}",
-                                buildCommand,
-                                workspace,
-                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
-                        }
-                    }
+                    // The chain short-circuits on the first failing
+                    // stage. A null/skipped stage is treated as "passed
+                    // by virtue of not running" so the chain continues
+                    // to the next stage (matches today's null-build
+                    // skip semantics). Each stage emits its own
+                    // task.{build,test}-gate.{passed,failed,skipped}
+                    // event so the Build tab shows the full timeline.
+                    GateFailure? perIterFailure = await this.RunPerIterGateChainAsync(
+                        workItemId,
+                        workspace,
+                        iter,
+                        buildCommand,
+                        qualityCommands,
+                        testCommand,
+                        genAgentId,
+                        crew.Id,
+                        iterCt);
 
-                    if (build is not null && !build.Success)
+                    if (perIterFailure is not null)
                     {
-                        consecutiveBrokenBuild++;
-                        // Phase 49 follow-up -- capture this build's
-                        // output so iter N+1's GeneratorDelegate can
-                        // prepend it to the prompt. Cleared back to
-                        // null on the FIRST successful build below
-                        // (and on the success branch of changedCount
-                        // == 0 elsewhere) so the agent only sees
-                        // CURRENT build state, not a stale failure
-                        // from a fix it already shipped.
-                        lastBuildFailure = build;
-                        lastBuildFailureCommand = buildCommand;
-                        await this.taskChannel.EmitAsync(workItemId, "task.build-failed.detected", new
+                        consecutiveGateFailure++;
+                        // Capture the failure so iter N+1's
+                        // GeneratorDelegate can prepend it to the
+                        // prompt. Cleared back to null on the next
+                        // all-green iter below so the agent only sees
+                        // CURRENT gate state, not a stale failure from
+                        // a fix it already shipped.
+                        lastGateFailure = perIterFailure;
+
+                        await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.detected", new
                         {
                             stage = "per-iter",
+                            gateStage = perIterFailure.Stage,
                             iter,
-                            consecutiveBrokenBuild,
+                            consecutiveGateFailure,
                             threshold = BuildFailThreshold,
-                            exitCode = build.ExitCode,
-                            errorCount = build.ErrorCount,
-                            warningCount = build.WarningCount,
-                            durationSec = build.Duration.TotalSeconds,
-                            timedOut = build.TimedOut,
-                            errorSummary = build.ErrorSummary,
-                            buildCommand,
+                            exitCode = perIterFailure.Result.ExitCode,
+                            errorCount = perIterFailure.Result.ErrorCount,
+                            warningCount = perIterFailure.Result.WarningCount,
+                            durationSec = perIterFailure.Result.Duration.TotalSeconds,
+                            timedOut = perIterFailure.Result.TimedOut,
+                            errorSummary = perIterFailure.Result.ErrorSummary,
+                            command = perIterFailure.Command,
                             workspace,
                         }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
-                        if (consecutiveBrokenBuild >= BuildFailThreshold)
+                        if (consecutiveGateFailure >= BuildFailThreshold)
                         {
-                            await this.taskChannel.EmitAsync(workItemId, "task.build-failed.aborted", new
+                            await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
                             {
                                 stage = "per-iter",
+                                gateStage = perIterFailure.Stage,
                                 iter,
-                                consecutiveBrokenBuild,
+                                consecutiveGateFailure,
                                 threshold = BuildFailThreshold,
                             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
                             throw new BuildFailedException(
-                                $"Engineer's diff failed `{buildCommand}` in {consecutiveBrokenBuild} consecutive "
-                                + $"iterations (through iter {iter}, exit {build.ExitCode}, "
-                                + $"{build.ErrorCount} error(s)). Aborting gen/eval loop; operator must Restart "
-                                + $"to retry.\n\n{build.ErrorSummary}")
+                                $"Engineer's diff failed `{perIterFailure.Command}` ({perIterFailure.Stage} gate) in "
+                                + $"{consecutiveGateFailure} consecutive iterations (through iter {iter}, exit "
+                                + $"{perIterFailure.Result.ExitCode}, {perIterFailure.Result.ErrorCount} error(s)). "
+                                + $"Aborting gen/eval loop; operator must Restart to retry.\n\n{perIterFailure.Result.ErrorSummary}")
                             {
-                                ExitCode = build.ExitCode,
-                                ErrorCount = build.ErrorCount,
-                                WarningCount = build.WarningCount,
-                                ErrorSummary = build.ErrorSummary,
+                                ExitCode = perIterFailure.Result.ExitCode,
+                                ErrorCount = perIterFailure.Result.ErrorCount,
+                                WarningCount = perIterFailure.Result.WarningCount,
+                                ErrorSummary = perIterFailure.Result.ErrorSummary,
                                 TrippedByConsecutiveIters = true,
-                                ConsecutiveBrokenIters = consecutiveBrokenBuild,
+                                ConsecutiveBrokenIters = consecutiveGateFailure,
                                 LastIteration = iter,
+                                Stage = perIterFailure.Stage,
+                                Command = perIterFailure.Command,
                             };
                         }
                     }
-                    else if (build is not null)
+                    else
                     {
-                        consecutiveBrokenBuild = 0;
-                        // Phase 49 follow-up -- the agent fixed the
-                        // build (or it was never broken). Clear the
-                        // feedback so iter N+1 doesn't see stale
-                        // compiler output.
-                        lastBuildFailure = null;
-                        lastBuildFailureCommand = null;
-                        // Phase 49 follow-up² -- emit a per-iter passed
-                        // tick so the Build tab shows a green dot for
-                        // every successful per-iter gate run. Without
-                        // this the Build tab is empty for any
-                        // long-running workstream that builds cleanly
-                        // each iter -- the post-pass passed event only
-                        // fires once at the end of a passing iter, and
-                        // a workstream that never reaches `pass`
-                        // (verdict=iterate every iter) shows zero
-                        // ticks despite every iter's diff actually
-                        // compiling. Observed 2026-05-11 on
-                        // failover-cluster:XRAFT stage 3.1: 23
-                        // iterations, every diff compiled cleanly via
-                        // the agent's own `cargo build` invocations,
-                        // but the Build tab was completely empty.
-                        await this.taskChannel.EmitAsync(workItemId, "task.build-gate.passed", new
-                        {
-                            stage = "per-iter",
-                            iter,
-                            durationSec = build.Duration.TotalSeconds,
-                            warningCount = build.WarningCount,
-                            buildCommand,
-                            workspace,
-                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                        // All gate stages either passed or were skipped
+                        // (resolver returned null/empty for that stage).
+                        // Reset the streak and clear the carry-forward
+                        // failure so iter N+1 doesn't see stale output.
+                        consecutiveGateFailure = 0;
+                        lastGateFailure = null;
                     }
-                    // build == null → check threw; leave counter as-is.
-                    // (The skipped event above already records the throw
-                    // so the Build tab still has a row for this iter.)
                 }
                 // changedCount == -1 → inconclusive, leave counter as-is.
             }
@@ -4088,36 +4194,43 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 diffHeaderSb.AppendLine("flag the claim as UNVERIFIED in your 'Still needs improvement' list.");
                 diffHeaderSb.AppendLine();
 
-                // Phase 56 — build-status injection. When the prior iter's
-                // build gate failed (lastBuildFailure captured by the
-                // GeneratorDelegate's per-iter gate), the evaluator now
-                // sees the compiler output as ground truth alongside the
-                // diff list. Previously this only fed forward into the
-                // next-iter GENERATOR prompt; the current-iter evaluator
-                // would score the agent's "build clean" narrative without
+                // Phase 56 — gate-status injection. When the prior iter's
+                // per-iter gate chain (build → quality → test) failed,
+                // the evaluator now sees the failing stage + command +
+                // output as ground truth alongside the diff list.
+                // Previously this only fed forward into the next-iter
+                // GENERATOR prompt; the current-iter evaluator would
+                // score the agent's "build clean" narrative without
                 // independent verification.
-                if (lastBuildFailure is not null)
+                if (lastGateFailure is not null)
                 {
-                    diffHeaderSb.AppendLine("## Build status this iter — GROUND TRUTH (from forge per-iter build gate)");
+                    var gf = lastGateFailure;
+                    var failureNoun = gf.Stage switch
+                    {
+                        "quality" => "QUALITY GATE FAILED",
+                        "test" => "TEST GATE FAILED",
+                        _ => "BUILD FAILED",
+                    };
+                    diffHeaderSb.AppendLine("## Gate status this iter — GROUND TRUTH (from forge per-iter gate chain)");
                     diffHeaderSb.AppendLine();
-                    diffHeaderSb.AppendLine($"**BUILD FAILED** running `{lastBuildFailureCommand ?? "(unknown command)"}`");
-                    diffHeaderSb.AppendLine($"Exit code: {lastBuildFailure.ExitCode} · Errors: {lastBuildFailure.ErrorCount} · Warnings: {lastBuildFailure.WarningCount} · Duration: {lastBuildFailure.Duration.TotalSeconds:F1}s");
-                    if (!string.IsNullOrWhiteSpace(lastBuildFailure.ErrorSummary))
+                    diffHeaderSb.AppendLine($"**{failureNoun}** running `{gf.Command}` (stage: `{gf.Stage}`)");
+                    diffHeaderSb.AppendLine($"Exit code: {gf.Result.ExitCode} · Errors: {gf.Result.ErrorCount} · Warnings: {gf.Result.WarningCount} · Duration: {gf.Result.Duration.TotalSeconds:F1}s");
+                    if (!string.IsNullOrWhiteSpace(gf.Result.ErrorSummary))
                     {
                         diffHeaderSb.AppendLine();
                         diffHeaderSb.AppendLine("Error summary:");
                         diffHeaderSb.AppendLine("```");
                         // Cap at 4 KB so the evaluator's prompt doesn't bloat
                         // on a wall-of-errors output.
-                        var capped = lastBuildFailure.ErrorSummary.Length > 4096
-                            ? lastBuildFailure.ErrorSummary[..4096] + "\n…(truncated)"
-                            : lastBuildFailure.ErrorSummary;
+                        var capped = gf.Result.ErrorSummary.Length > 4096
+                            ? gf.Result.ErrorSummary[..4096] + "\n…(truncated)"
+                            : gf.Result.ErrorSummary;
                         diffHeaderSb.AppendLine(capped);
                         diffHeaderSb.AppendLine("```");
                     }
                     diffHeaderSb.AppendLine();
-                    diffHeaderSb.AppendLine("**Score must reflect this**: a broken build is correctness=0 minimum.");
-                    diffHeaderSb.AppendLine("Do NOT pass a diff that doesn't compile, regardless of the generator's narrative.");
+                    diffHeaderSb.AppendLine("**Score must reflect this**: any failed gate is correctness=0 minimum.");
+                    diffHeaderSb.AppendLine("Do NOT pass a diff that doesn't compile, doesn't pass lint/format, or breaks tests, regardless of the generator's narrative.");
                     diffHeaderSb.AppendLine();
                 }
 
@@ -4129,7 +4242,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     workspace,
                     changedFilesCount = changedFiles.Count,
                     truncated,
-                    buildFailedAttached = lastBuildFailure is not null,
+                    gateFailedAttached = lastGateFailure is not null,
+                    gateFailedStage = lastGateFailure?.Stage,
                 }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
             }
 
@@ -4379,6 +4493,101 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         DeliverableLoopResult result;
         try
         {
+            // Phase 56 -- wire pass-validator for impl-phase loops that
+            // have a resolvable build / quality / test command set.
+            // Architect / decompose / QA / review-fix phases skip the
+            // validator entirely (their post-pass-of-generated-doc is
+            // commit-the-file, not run-the-gates), so the loop behaves
+            // exactly as before for them. For impl phases the validator
+            // re-runs the unified gate chain (now identical to what the
+            // per-iter gate runs every iter) and rejects pass on any
+            // failing stage, falling back into iter N+1 with the
+            // failure carried forward through the deliverable Notes →
+            // priorChain → next-iter evaluator prompt path.
+            Func<int, CancellationToken, Task<string?>>? onPassValidate = null;
+            if (isImplPhase &&
+                (!string.IsNullOrWhiteSpace(buildCommand)
+                 || (qualityCommands is { Count: > 0 })
+                 || !string.IsNullOrWhiteSpace(testCommand)))
+            {
+                onPassValidate = async (validIter, validCt) =>
+                {
+                    var failure = await this.RunGateChainAsync(
+                        workItemId,
+                        workspace,
+                        validIter,
+                        stagePrefix: "post-pass",
+                        buildCommand,
+                        qualityCommands,
+                        testCommand,
+                        agentId: genAgentId,
+                        crewId: crew.Id,
+                        ct: validCt);
+
+                    if (failure is null)
+                    {
+                        // All gates green at pass-time: accept the pass.
+                        // Also clear lastGateFailure so any subsequent
+                        // operations on this loop (none today, but
+                        // future hooks) don't see stale state.
+                        return null;
+                    }
+
+                    postPassRecoveryAttempts++;
+                    await this.taskChannel.EmitAsync(workItemId, "task.gate.recovery-attempted", new
+                    {
+                        iter = validIter,
+                        attempt = postPassRecoveryAttempts,
+                        max = MaxRecoveryAttempts,
+                        gateStage = failure.Stage,
+                        command = failure.Command,
+                        exitCode = failure.Result.ExitCode,
+                        errorCount = failure.Result.ErrorCount,
+                        warningCount = failure.Result.WarningCount,
+                        timedOut = failure.Result.TimedOut,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: validCt);
+
+                    if (postPassRecoveryAttempts >= MaxRecoveryAttempts)
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.gate.recovery-exhausted", new
+                        {
+                            iter = validIter,
+                            attempts = postPassRecoveryAttempts,
+                            max = MaxRecoveryAttempts,
+                            gateStage = failure.Stage,
+                            command = failure.Command,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: validCt);
+
+                        throw new BuildFailedException(
+                            $"Workstream {workItemId} post-pass {failure.Stage} gate ({failure.Command}) "
+                            + $"failed on {postPassRecoveryAttempts} consecutive pass attempts (final iter "
+                            + $"{validIter}, exit {failure.Result.ExitCode}, {failure.Result.ErrorCount} "
+                            + $"error(s)). The gen/eval loop kept reaching score≥90 but the post-pass gate "
+                            + $"kept rejecting the diff. Operator must Restart.\n\n{failure.Result.ErrorSummary}")
+                        {
+                            ExitCode = failure.Result.ExitCode,
+                            ErrorCount = failure.Result.ErrorCount,
+                            WarningCount = failure.Result.WarningCount,
+                            ErrorSummary = failure.Result.ErrorSummary,
+                            TrippedByConsecutiveIters = false,
+                            ConsecutiveBrokenIters = 0,
+                            LastIteration = validIter,
+                            Stage = failure.Stage,
+                            Command = failure.Command,
+                        };
+                    }
+
+                    // Seed lastGateFailure so the GeneratorDelegate's
+                    // prompt-prepend on the NEXT iter sees the failing
+                    // gate as if it had tripped per-iter. The per-iter
+                    // gate on the next iter will overwrite this once
+                    // the agent produces a new diff.
+                    lastGateFailure = failure;
+
+                    return BuildGateRejectionNote(failure, postPassRecoveryAttempts, MaxRecoveryAttempts);
+                };
+            }
+
             result = await loop.RunAsync(new DeliverableLoopRequest(
                 WorkItemId: workItemId,
                 CrewId: crew.Id,
@@ -4388,7 +4597,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Evaluator: EvaluatorDelegate,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 EvaluatorCrewId: evalCrewId,
-                WorkItemPoints: storyPoints), ct);
+                WorkItemPoints: storyPoints,
+                OnPassValidate: onPassValidate), ct);
         }
         finally
         {
@@ -5225,4 +5435,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string StoragePath,
         string MimeType,
         long SizeBytes);
+
+    /// <summary>
+    /// Phase 56 — one stage of the unified per-iter / post-pass gate
+    /// chain (build → quality → test) failed. Carries the stage name,
+    /// the exact command that ran, and the underlying
+    /// <see cref="StoryBuildResult"/> so the generator+evaluator prompt
+    /// prepends, the recovery telemetry, and the
+    /// <see cref="BuildFailedException"/> on exhaustion can all
+    /// reference the same data without repeated parsing.
+    /// </summary>
+    /// <param name="Stage">One of <c>"build"</c>, <c>"quality"</c>, <c>"test"</c>.</param>
+    /// <param name="Command">Exact command that ran (e.g. <c>cargo fmt --check --all</c>).</param>
+    /// <param name="Result">Underlying runner result with exit code, error counts, and error summary.</param>
+    private sealed record GateFailure(string Stage, string Command, StoryBuildResult Result);
 }

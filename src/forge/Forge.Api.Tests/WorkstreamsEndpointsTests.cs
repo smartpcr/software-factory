@@ -200,4 +200,172 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         var resp = await client.PostAsync("/api/workstreams/ws-nope/sync", null);
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
     }
+
+    // ── Phase 56: POST /api/workstreams/{id}/retry ─────────────────
+
+    /// <summary>
+    /// Phase 56 — the operator-triggered Retry button demotes the last
+    /// deliverable's verdict to <c>iterate</c> and reactivates the
+    /// workstream so the orchestrator re-enters the gen/eval loop
+    /// (without wiping the worktree / deliverables / PRs the way
+    /// the Restart endpoint does).
+    /// </summary>
+    [Fact]
+    public async Task RetryWorkstream_StalledWithPassVerdict_DemotesToIterateAndActivates()
+    {
+        const string wsId = "ws-retry-stalled-pass";
+
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "retry-test", Branch = "ws/retry-test",
+                    Epic = "EPIC-RETRY", Status = "stalled",
+                    StallReason = "Build gate failed at post-pass — operator triage required.",
+                });
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active", Title = "retry-test",
+                    ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Live,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+                {
+                    WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                    EvaluatorAgentId = "eval-1", Iter = 4, Score = 94,
+                    Verdict = "pass",
+                    Notes = "Original pass note.",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("pass", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("iterate", body.GetProperty("newVerdict").GetString());
+        Assert.True(body.GetProperty("demoted").GetBoolean());
+        Assert.Equal("active", body.GetProperty("status").GetString());
+        Assert.Equal(4, body.GetProperty("priorIter").GetInt32());
+        Assert.Equal(94, body.GetProperty("priorScore").GetInt32());
+
+        using var verifyScope = this.factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal("active", ws.Status);
+        Assert.Null(ws.StallReason);
+
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal(Forge.Api.Persistence.ExecutionStatuses.Queued, wi.ExecutionStatus);
+
+        var deliverables = await verifyDb.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == wsId).ToListAsync();
+        Assert.Single(deliverables);
+        Assert.Equal("iterate", deliverables[0].Verdict);
+        Assert.Equal(94, deliverables[0].Score);
+        Assert.Contains("OPERATOR RETRY", deliverables[0].Notes);
+        Assert.Contains("Original pass note.", deliverables[0].Notes);
+    }
+
+    /// <summary>Retry against workstream with no deliverables → 400.</summary>
+    [Fact]
+    public async Task RetryWorkstream_NoDeliverables_Returns400()
+    {
+        const string wsId = "ws-retry-empty";
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "empty", Branch = "ws/empty",
+                    Epic = "EPIC-RETRY", Status = "stalled",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    /// <summary>Retry against terminal status → 409.</summary>
+    [Fact]
+    public async Task RetryWorkstream_TerminalStatus_Returns409()
+    {
+        const string wsId = "ws-retry-terminal";
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "terminal", Branch = "ws/terminal",
+                    Epic = "EPIC-RETRY", Status = "complete",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+    }
+
+    /// <summary>Retry against an already-iterate row is idempotent (demoted=false).</summary>
+    [Fact]
+    public async Task RetryWorkstream_AlreadyIterate_IsIdempotent()
+    {
+        const string wsId = "ws-retry-idempotent";
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "idempotent", Branch = "ws/idempotent",
+                    Epic = "EPIC-RETRY", Status = "stalled",
+                });
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active", Title = "idempotent",
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+                {
+                    WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                    EvaluatorAgentId = "eval-1", Iter = 2, Score = 75,
+                    Verdict = "iterate",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("iterate", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("iterate", body.GetProperty("newVerdict").GetString());
+        Assert.False(body.GetProperty("demoted").GetBoolean());
+        Assert.Equal("active", body.GetProperty("status").GetString());
+    }
 }

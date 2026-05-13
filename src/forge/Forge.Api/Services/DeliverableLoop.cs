@@ -86,7 +86,25 @@ public sealed record DeliverableLoopRequest(
     /// Work-item story points — used to adjust the reject/iterate threshold.
     /// Higher-point items get a lower reject bar so more iterations are attempted.
     /// </summary>
-    int WorkItemPoints = 1);
+    int WorkItemPoints = 1,
+    /// <summary>
+    /// Phase 56 — pass-validator hook. Invoked when the evaluator returns
+    /// <c>verdict="pass"</c>, BEFORE the loop stamps pair-assignment as
+    /// <c>Passed</c>, sets the work item state to <c>active</c>, or emits
+    /// <c>task.iteration.passed</c>. When the callback returns null or
+    /// whitespace, the pass is accepted and the loop terminates normally.
+    /// When the callback returns a non-empty string, the verdict is
+    /// demoted to <c>iterate</c>, the returned string is appended to the
+    /// deliverable row's <c>Notes</c> (and surfaces in the next iter's
+    /// evaluator chain via <c>FormatPriorChain</c>), and the loop
+    /// continues to iter N+1. Same demotion mechanism as the unanswered-
+    /// questions gate and the checkbox-attention gate elsewhere in this
+    /// file. The callback may also throw <see cref="Stories.BuildFailedException"/>
+    /// (or any other exception) to terminate the loop with that
+    /// exception — used by the post-pass gate-recovery exhaustion path.
+    /// Null = no validator (today's behavior; pass means pass).
+    /// </summary>
+    Func<int, CancellationToken, Task<string?>>? OnPassValidate = null);
 
 /// <summary>
 /// Phase 24 Q24.12 — well-known values for <see cref="DeliverableLoopRequest.Kind"/>.
@@ -845,6 +863,62 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
                         await this.db.SaveChangesAsync(ct);
                     }
+                }
+            }
+
+            // Phase 56 -- pass-validator hook. When the caller wired one,
+            // run it BEFORE stamping pair-assignment Passed / work item
+            // active / task.iteration.passed. A non-empty / non-whitespace
+            // return demotes pass→iterate, appends the returned reason
+            // to the deliverable Notes (and via priorChain to the next
+            // iter's evaluator chain), and continues the loop. Same
+            // demotion mechanism as the unanswered-questions gate above
+            // and the checkbox-attention gate immediately above. The
+            // callback is also allowed to throw -- exceptions propagate
+            // to the caller's catch (which routes the workstream to
+            // stalled) after we DEMOTE THE PERSISTED VERDICT TO
+            // "iterate" so subsequent Resume / orchestrator-tick calls
+            // don't see verdict="pass" (incorrectly routes to
+            // kind=resume-delivery, which now skips both gen/eval AND
+            // gates — committing broken code) or verdict="stalled"
+            // (which StorySpawnOrchestrator.DriveOneWorkstreamImplAsync
+            // line 2154 treats as a TERMINAL triage state, refusing to
+            // re-enter the gen/eval loop until the operator clicks
+            // Retry / Restart). "iterate" is the only verdict where
+            // the orchestrator's "fall through to ProduceWorkstreamChangesAsync"
+            // branch fires AND DeliverableLoop's seeding (line 348)
+            // picks up at iter+1 with the full prior chain. The
+            // BuildFailedException catch in DriveImplementAsync still
+            // flips ws.Status="stalled" via the StallReason path, so
+            // operator action is still required to relaunch -- but the
+            // verdict shape now matches the resumable-iter semantic,
+            // which is what the operator's Retry button needs to flip
+            // ws.Status="active" without also touching the verdict.
+            if (verdict == "pass" && request.OnPassValidate is not null)
+            {
+                string? rejection;
+                try
+                {
+                    rejection = await request.OnPassValidate(iter, ct);
+                }
+                catch (Exception ex)
+                {
+                    verdict = "iterate";
+                    row.Verdict = verdict;
+                    var stallNote = $"GATE EXHAUSTED -- pass rejected, recovery cap hit. {ex.Message}";
+                    row.Notes = string.IsNullOrEmpty(row.Notes) ? stallNote : row.Notes + "\n\n" + stallNote;
+                    lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
+                    try { await this.db.SaveChangesAsync(ct); }
+                    catch { /* best-effort -- exception we're about to re-throw is more important */ }
+                    throw;
+                }
+                if (!string.IsNullOrWhiteSpace(rejection))
+                {
+                    verdict = "iterate";
+                    row.Verdict = verdict;
+                    row.Notes = string.IsNullOrEmpty(row.Notes) ? rejection : row.Notes + "\n\n" + rejection;
+                    lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
+                    await this.db.SaveChangesAsync(ct);
                 }
             }
 

@@ -13,6 +13,10 @@ import {
   SummaryView,
   countActiveBuildFailures,
   availableTabs,
+  IterKpiStrip,
+  type IterKpi,
+  ContextUsageBar,
+  PromptView,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
@@ -73,6 +77,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -82,8 +87,34 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const isLive = status === 'live';
   const isCompleted = status === 'completed';
   const hasIterations = rows.length > 0;
+  // Phase 56 — derive the last verdict directly from deliverables so
+  // the toolbar reflects the actual loop terminal state instead of
+  // relying on the synthetic `status` field (which is influenced by
+  // WorkItem.ExecutionStatus, often left stuck at "live" after a
+  // terminal sloppy / stalled verdict because the architect path
+  // doesn't clear it). Operator-reported 2026-05-13: architecture.md
+  // hit verdict=sloppy at iter 10/10 with ExecutionStatus="live"
+  // still on the row, so the Retry button stayed disabled even
+  // though Retry is exactly what the situation needed.
+  const lastVerdict = rows.length > 0 ? rows[rows.length - 1].verdict : null;
+  const lastVerdictIsTerminalBad = lastVerdict === 'sloppy'
+    || lastVerdict === 'stalled'
+    || lastVerdict === 'stalled-budget'
+    || lastVerdict === 'reject';
   const canResume = !isLive && !isCompleted && hasIterations;
-  const busy = resuming || cancelling || restarting || accepting || pinning;
+  // Phase 56 -- Retry is the soft-recovery affordance for docs that
+  // hit a terminal verdict (sloppy at iter-cap is the dominant case
+  // for plan-docs; the orchestrator banner explicitly tells the
+  // operator "bump max-iterations or restart"). Enabled whenever:
+  //   1. There's at least one prior iteration, AND
+  //   2. The doc isn't terminally complete, AND
+  //   3. Either the run isn't live, OR the last verdict is terminal-
+  //      bad (allows Retry on a row whose ExecutionStatus is stuck
+  //      at "live"/"queued" but whose loop has actually halted).
+  const canRetry = !isCompleted
+    && hasIterations
+    && (!isLive || lastVerdictIsTerminalBad);
+  const busy = resuming || retrying || cancelling || restarting || accepting || pinning;
 
   async function handleResume() {
     setResuming(true);
@@ -93,6 +124,35 @@ export function DocConversationPane({ storyId, docId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
     } finally { setResuming(false); }
+  }
+  async function handleRetry() {
+    const ok = await useConfirmStore.getState().ask({
+      title: `Retry ${key}.md?`,
+      body: 'Soft recovery — demote the last iteration verdict to "iterate" AND bump the iter cap by +5 so the architect agent gets another swing with the prior critique chain intact.',
+      tone: 'info',
+      confirmLabel: '↺ Retry',
+      cancelLabel: 'Cancel',
+      checklist: [
+        `Demote last verdict (sloppy/stalled/pass → iterate) for ${key}.md`,
+        'Bump iter cap by +5 (allows the loop to continue beyond the original cap)',
+        'Reset doc execution status to "queued"',
+        'Clear the orchestrator-halted error banner',
+        'PRESERVE the doc on disk, deliverables, transcript, costs, prior chain',
+        'Re-fire the architect loop (continues at iter+1 with prior critique)',
+      ],
+    });
+    if (!ok) return;
+    setRetrying(true);
+    try {
+      const r = await forgeApi.retryStoryArtifact(storyId, key);
+      showToast(
+        r.demoted
+          ? `Retry queued — verdict ${r.priorVerdict} → ${r.newVerdict}, cap ${r.priorMaxIter} → ${r.newMaxIter}; continuing from iter ${r.priorIter + 1}.`
+          : `Retry queued — cap ${r.priorMaxIter} → ${r.newMaxIter}; continuing from iter ${r.priorIter + 1}.`,
+        'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Retry failed', 'danger');
+    } finally { setRetrying(false); }
   }
   async function handleCancel() {
     setCancelling(true);
@@ -212,6 +272,59 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const loadingOlder = liveEntry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
 
+  // Insight I.2 — per-iter working-notes archive
+  // (`.forge/notes/iter-{N}.md`). Refetched when the iter count changes
+  // so a newly-completed iter's notes appear in the Summary tab without
+  // a manual reload.
+  const [notesByIter, setNotesByIter] = useState<Record<number, { content: string; truncated?: boolean }>>({});
+  useEffect(() => {
+    if (rows.length === 0) {
+      setNotesByIter({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactIterNotes(storyId, key)
+      .then((r) => {
+        if (cancelled) return;
+        const map: Record<number, { content: string; truncated?: boolean }> = {};
+        for (const row of r.iters) {
+          map[row.iter] = { content: row.content, truncated: row.truncated };
+        }
+        setNotesByIter(map);
+      })
+      .catch(() => { if (!cancelled) setNotesByIter({}); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
+  // Insight I.3 — per-iter KPI rollup. Click a chip to filter the
+  // transcript / summary to that iter.
+  const [iterKpis, setIterKpis] = useState<IterKpi[]>([]);
+  useEffect(() => {
+    if (rows.length === 0) {
+      setIterKpis([]);
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactIterKpis(storyId, key)
+      .then((r) => { if (!cancelled) setIterKpis(r.iters); })
+      .catch(() => { if (!cancelled) setIterKpis([]); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
+  // Insight I.4 — ContextUsageBar source. Empty roles → bar collapses.
+  const [memoryRoles, setMemoryRoles] = useState<Parameters<typeof ContextUsageBar>[0]['roles']>({});
+  useEffect(() => {
+    if (rows.length === 0) {
+      setMemoryRoles({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchStoryArtifactMemory(storyId, key)
+      .then((r) => { if (!cancelled) setMemoryRoles(r.roles); })
+      .catch(() => { if (!cancelled) setMemoryRoles({}); });
+    return () => { cancelled = true; };
+  }, [storyId, key, rows.length]);
+
   // Reset selection when filter or doc changes so the latest page is sticky.
   useEffect(() => { setSelectedIter(null); }, [filter, key]);
 
@@ -244,14 +357,45 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const isSummaryMode = filter === 'summary';
   const isWorktreeMode = filter === 'worktree';
   const isBuildMode = filter === 'build';
+  const isPromptMode = filter === 'prompt';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
-  const currentIteration = rows.length > 0 ? rows[rows.length - 1].iter : 0;
+  // KPI strip click jumps the iter pointer. KPI iter values are 1-based;
+  // selectedIter is 0-based, so subtract one.
+  const handleSelectKpiIter = (iter: number) => { setSelectedIter(iter - 1); };
+  // Active iter mapping:
+  //   • summary mode → activeIter indexes summaryIters (deliverables)
+  //   • everything else → activeIter indexes `iterations` (groupByIteration
+  //     of the filtered transcript). Using iterKpis[activeIter] here is
+  //     wrong because the transcript can extend past the last persisted
+  //     Deliverable row (live iter emitted task.iteration.started before
+  //     a deliverable row was written), and the two arrays don't align.
+  const activeIterNumber = (isSummaryMode
+      ? summaryIters[activeIter]?.iter
+      : iterations[activeIter]?.iter)
+    ?? (iterations.length > 0 ? iterations[iterations.length - 1].iter : null)
+    ?? (iterKpis.length > 0 ? iterKpis[iterKpis.length - 1].iter : null);
+
+  // Surface the higher of deliverable-derived iter and transcript-derived
+  // iter so the pager doesn't lag when the loop has emitted
+  // task.iteration.started/scored past the last persisted deliverable
+  // (e.g. stuck in mid-iter when a sloppy-cap fires).
+  const deliverableIter = rows.length > 0 ? rows[rows.length - 1].iter : 0;
+  const transcriptIter = useMemo(() => {
+    let max = 0;
+    for (const e of transcript) {
+      if (e.kind !== 'task.iteration.started' && e.kind !== 'task.iteration.scored') continue;
+      const p = (e.payload ?? {}) as { iter?: number };
+      if (typeof p.iter === 'number' && p.iter > max) max = p.iter;
+    }
+    return max;
+  }, [transcript]);
+  const currentIteration = Math.max(deliverableIter, transcriptIter);
 
   // Reverse-chronological: newest events on top within the active iteration.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
@@ -298,6 +442,14 @@ export function DocConversationPane({ storyId, docId }: Props) {
 
   return (
     <div className="doc-conv doc-conv--quiet">
+      {iterKpis.length > 0 && (
+        <IterKpiStrip
+          iters={iterKpis}
+          activeIter={activeIterNumber}
+          onSelectIter={handleSelectKpiIter}
+        />
+      )}
+      <ContextUsageBar roles={memoryRoles} />
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
           const buildFailCount = f.key === 'build' ? buildFailures : 0;
@@ -343,6 +495,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
           {resuming ? '⏳…' : isLive ? (
             <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
           ) : '↻ RESUME'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={!canRetry || busy}
+          title={isCompleted ? 'Shipped.' : !canRetry ? 'No iterations.' : (isLive && lastVerdictIsTerminalBad ? `Loop halted (verdict=${lastVerdict}) but ExecutionStatus is stuck — soft retry will unstick it.` : 'Soft retry — demote verdict + bump iter cap +5 so the loop continues (vs Restart which wipes to iter 1).')}
+          onClick={() => void handleRetry()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-cyan, #5eead4)' }}>
+          {retrying ? '⏳…' : '↺ RETRY'}
         </button>
         <button type="button" className="doc-conv-resume-btn" disabled={isCompleted || busy}
           title={isCompleted ? 'Shipped.' : 'Cancel running invocations for this doc.'}
@@ -425,17 +583,24 @@ export function DocConversationPane({ storyId, docId }: Props) {
         </nav>
       )}
 
-      {/* Body — Summary card | Worktree (commits + file changes) | Build (gates + agent build/test) | transcript list */}
+      {/* Body — Summary card | Worktree (commits + file changes) | Build (gates + agent build/test) | Prompt (verbatim system + user prompt per role) | transcript list */}
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
         {isWorktreeMode ? (
           <WorktreePane workItemId={workItemId} />
         ) : isBuildMode ? (
           <BuildPane workItemId={workItemId} />
+        ) : isPromptMode ? (
+          <PromptView
+            events={transcript}
+            activeIter={activeIterNumber}
+            workItemId={workItemId ?? ''}
+          />
         ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}
             loading={loading}
             dispatched={rows.length > 0 || transcript.length > 0}
+            notesByIter={notesByIter}
           />
         ) : (
           <>

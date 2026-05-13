@@ -938,6 +938,29 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * POST /api/workstreams/{id}/retry — soft retry. Demotes the last
+   * deliverable's verdict to "iterate" so the orchestrator re-enters
+   * the gen/eval loop at iter+1. Preserves worktree, deliverables,
+   * transcript, agent_usage, and PRs. Use when the workstream stalled
+   * at a high score and most of the diff is salvageable — vs restart,
+   * which wipes everything.
+   */
+  async retryWorkstream(id: string): Promise<{
+    workstreamId: string;
+    priorVerdict: string;
+    newVerdict: string;
+    demoted: boolean;
+    priorIter: number;
+    priorScore: number;
+    status: string;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/workstreams/{id}/cancel — stop the running gen/eval loop. */
   async cancelWorkstream(id: string): Promise<{ id: string; status: string; queueRowsCancelled: number }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/cancel`, {
@@ -1279,6 +1302,32 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * POST /api/stories/{storyId}/spawn/artifacts/{key}/retry — soft retry
+   * for a plan-doc that hit a terminal verdict (sloppy at iter-cap,
+   * stalled, or recovery-exhausted pass). Demotes the verdict to
+   * "iterate" AND bumps the iter cap by +5 so DeliverableLoop seeding
+   * continues from iter+1 instead of terminal-replaying. Preserves
+   * doc, deliverables, transcript, costs.
+   */
+  async retryStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    priorVerdict: string;
+    newVerdict: string;
+    demoted: boolean;
+    priorIter: number;
+    priorScore: number;
+    priorMaxIter: number;
+    newMaxIter: number;
+    status: string;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/stories/{storyId}/spawn/artifacts/{key}/cancel — stop the running gen↔eval loop for a single doc. */
   async cancelStoryArtifact(storyId: string, key: string): Promise<{
     storyId: string;
@@ -1425,6 +1474,73 @@ export const forgeApi = {
   }> {
     return fetchJson(
       `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iterations`);
+  },
+
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/iter-kpis — Insight
+   * I.3 for plan-doc tasks. Same shape as
+   * {@link fetchWorkstreamIterKpis} but keyed on the synthetic
+   * `plan-doc:{spawnId}:{filename}` workItemId, so the architect crew's
+   * iterations populate the doc Conversation tab's KPI strip +
+   * sparklines identically to engineer workstreams.
+   */
+  async fetchStoryArtifactIterKpis(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    iters: {
+      iter: number;
+      score: number;
+      verdict: string;
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+      durationMs: number | null;
+      filesChanged: number;
+      createdAt: string;
+    }[];
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iter-kpis`);
+  },
+
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/iter-notes — Insight
+   * I.2 for plan-doc tasks. Reads the architect's per-iter working notes
+   * (`.forge/notes/iter-{N}.md`) under the per-doc worktree
+   * (`.worktree/plan-{key}` — Phase 53 slug).
+   */
+  async fetchStoryArtifactIterNotes(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    iters: { iter: number; content: string; truncated: boolean; lengthBytes: number }[];
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iter-notes`);
+  },
+
+  /**
+   * GET /api/stories/{storyId}/spawn/artifacts/{key}/memory — Insight I.4
+   * / Phase G for plan-doc tasks. Returns the per-role agent_memory rows
+   * + their effective compactor threshold so the doc Conversation tab
+   * can render the ContextUsageBar.
+   */
+  async fetchStoryArtifactMemory(storyId: string, key: string): Promise<{
+    workItemId: string | null;
+    roles: Record<string, {
+      agentId: string;
+      backend: string;
+      invokeMode: string;
+      model: string | null;
+      sessionId: string | null;
+      hasMessagesHistory: boolean;
+      turnCount: number | null;
+      approxInputTokens: number;
+      effectiveThreshold: number;
+      lastIter: number;
+      createdAt: string;
+      updatedAt: string;
+    } | undefined>;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/memory`);
   },
 
   /** GET /api/prs. */
