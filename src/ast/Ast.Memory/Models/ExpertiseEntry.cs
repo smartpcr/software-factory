@@ -8,14 +8,13 @@ namespace Ast.Memory.Models;
 
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
-/// Agent-authored knowledge node per architecture §4.2.
-/// Not a <see cref="Ast.Core.HypergraphNode"/> — has its own dedicated table
-/// with core fields (Confidence, Archived, Embedding, SourceAgent).
-/// ID format: "expertise:{kind}:{hash8}".
+/// Agent-authored knowledge node linked to code via APPLIES_TO edges.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     /// <summary>Content-addressable ID: "expertise:{kind}:{hash8}".</summary>
     public string Id { get; init; } = string.Empty;
@@ -43,55 +42,30 @@ public sealed class ExpertiseEntry
 
     /// <summary>Agent that authored this entry.</summary>
     public string SourceAgent { get; init; } = string.Empty;
-
-    /// <summary>Supporting references.</summary>
     public IReadOnlyList<Citation> Evidence { get; init; } = Array.Empty<Citation>();
-
-    /// <summary>Embedding vector of Title + " " + Body. Stored both inline and in vector store.</summary>
     public float[]? Embedding { get; set; }
 
     /// <summary>SHA-256(Title + Body + TargetNodeId) for dedup.</summary>
-    public string ContentHash { get; init; } = string.Empty;
-
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
-
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
-}
-
-/// <summary>
-/// An agent-authored knowledge entry attached to a code node.
-/// Per architecture.md §4.2.
-/// </summary>
-public record Citation(string NodeId, string? CommitSha, string? Snippet);
-
-/// <summary>
-/// Kind of expertise per architecture §4.2.
-/// </summary>
-public enum ExpertiseKind
-{
-    public required string Id { get; init; }
-    public required ExpertiseKind Kind { get; init; }
-    public required string Title { get; init; }
-    public required string Body { get; init; }
-    public required string TargetNodeId { get; init; }
-    public string Scope { get; init; } = "exact";
-    public double Confidence { get; set; } = 1.0;
-    public bool Archived { get; set; }
-    public string? SourceAgent { get; init; }
-    public IReadOnlyList<Citation> Evidence { get; init; } = [];
-    public float[]? Embedding { get; set; }
     public string ContentHash { get; init; } = string.Empty;
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// Generates a deterministic ID from kind, title, body, and target node.
+    /// Computes a content-addressable hash for deduplication.
     /// </summary>
-    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
+    public static string ComputeContentHash(string title, string body, string targetNodeId)
     {
         var input = title + body + targetNodeId;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        var hash8 = Convert.ToHexString(hash)[..8].ToLowerInvariant();
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Generates the canonical expertise ID from kind and content hash.
+    /// </summary>
+    public static string GenerateId(ExpertiseKind kind, string contentHash)
+    {
+        var hash8 = contentHash[..8];
         return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
     }
 }
