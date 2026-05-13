@@ -250,4 +250,19 @@ public sealed class BuildFailedException : Exception
 
     /// <summary>The iteration number that triggered the abort.</summary>
     public int LastIteration { get; init; }
+
+    /// <summary>
+    /// Phase 56 — which gate stage tripped: <c>"build"</c>, <c>"quality"</c>
+    /// (fmt/clippy/lint), or <c>"test"</c>. <c>null</c> on legacy /
+    /// build-only paths that pre-date the unified gate chain.
+    /// </summary>
+    public string? Stage { get; init; }
+
+    /// <summary>
+    /// Phase 56 — exact command that tripped the gate (e.g.
+    /// <c>cargo fmt --check --all</c>). Used to enrich the workstream's
+    /// <c>StallReason</c> so operators can see WHICH command failed
+    /// without spelunking the transcript.
+    /// </summary>
+    public string? Command { get; init; }
 }

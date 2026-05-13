@@ -5899,3 +5899,129 @@ by `(StartedAt, Id)`. Empty array when the work item has no usage rows.
 ---
 
 
+
+
+---
+
+## Phase 56 — Gate-failure recovery loop
+
+### Problem
+
+Phase 47e introduced the per-iter build gate; Phase 49 added quality
+(`cargo fmt --check` / `cargo clippy`) and test gates at post-pass.
+The per-iter gate already fed compiler failures back into the next
+iter's generator prompt via `lastBuildFailure` so the agent could fix
+them. The Phase 49 quality and test gates, by contrast, threw
+`BuildFailedException` directly with no recovery — any post-pass
+failure stalled the workstream.
+
+Operator-reported 2026-05-13 on
+`ws-failover-cluster-xraft-phase-raft-consensus-engine-stage-raft-node-state-machine`:
+iter 4 of 50, evaluator score 94, STALLED because
+`cargo fmt --check --all` failed at post-pass. Plenty of iter budget
+left, but no recovery path; the only fix was operator Restart
+(wipes worktree + deliverables + agent_usage).
+
+### Behaviour
+
+1. **Per-iter gate now chains build → quality → test.** The Phase 47e
+   `cargo build` gate inside `GeneratorDelegate` is extended into a
+   chained suite that runs the build command, then every resolved
+   quality command (`cargo fmt --check --all` /
+   `cargo clippy --workspace --all-targets -- -D warnings` /
+   detector-supplied), then the test command. First failing stage
+   short-circuits and is captured into `lastGateFailure: GateFailure?`
+   (Stage / Command / StoryBuildResult). Three consecutive iters
+   with ANY stage failing trips `BuildFailedException` with the
+   failing `Stage` + `Command` populated (same threshold as
+   today's broken-build counter).
+2. **Generator prompt prepend generalised.** Today's
+   `BUILD FAILURE FROM PRIOR ITERATION -- FIX THIS FIRST` block is
+   stage-aware: `QUALITY GATE FAILURE` / `TEST FAILURE` /
+   `BUILD FAILURE` with stage-specific fix hints (for `fmt --check`
+   failures, hints suggest running `cargo fmt` in write mode; for
+   `clippy -D warnings`, hints flag `#[allow(...)]` as a last
+   resort with rationale; for tests, hints distinguish "test wrong"
+   vs "production code wrong").
+3. **Evaluator diff-header generalised.** Today's
+   `## Build status this iter -- GROUND TRUTH` block becomes
+   `## Gate status this iter -- GROUND TRUTH` and names the failing
+   stage + command. Hard rule unchanged: any failed gate forces
+   correctness=0 minimum.
+4. **Post-pass gate recovery hook.** `DeliverableLoopRequest` gains
+   an `OnPassValidate` callback. When the evaluator returns
+   `verdict="pass"`, the loop invokes the callback BEFORE stamping
+   pair-assignment Passed / work item active. A non-empty / non-
+   whitespace return demotes `pass→iterate`, appends the returned
+   text to the deliverable row's `Notes` (which surfaces in the next
+   iter's evaluator chain via `FormatPriorChain`), and the loop
+   continues. Same demotion mechanism as the existing unanswered-
+   questions gate (`DeliverableLoop.cs:611-619`) and the checkbox-
+   attention gate (`DeliverableLoop.cs:638-655`). Callback may also
+   throw `BuildFailedException` to terminate with that exception —
+   exceptions propagate unchanged.
+5. **Recovery cap.** `CrewStoryArtifactStrategy.RunGenEvalLoopAsync`
+   wires `OnPassValidate` to re-run the per-iter gate chain (same
+   `RunGateChainAsync` helper, `stagePrefix="post-pass"`) and
+   track `postPassRecoveryAttempts`. The first 2 post-pass gate
+   failures demote pass→iterate; the 3rd throws
+   `BuildFailedException` with `Stage` + `Command` set. Hard cap
+   of 3 prevents runaway budget burn on permanently-broken-gate
+   scenarios.
+6. **Post-pass gate suite REMOVED from `ProduceWorkstreamChangesAsync`.**
+   Today's lines 2211-2440 (build / quality / test re-run after the
+   gen-eval loop) are deleted. The `OnPassValidate` callback is now
+   the single invocation point, eliminating the double-run and
+   ensuring the recovery loop is always honoured.
+7. **`BuildFailedException` carries `Stage` + `Command`.** Both
+   nullable; populated by Phase 56 throw paths (per-iter 3-strike
+   abort, post-pass recovery exhaustion). Null on legacy build-only
+   call sites. `StorySpawnOrchestrator.DriveImplementAsync`'s catch
+   uses them to enrich the workstream's `StallReason` ("Gate failed
+   (quality (fmt/clippy)) running `cargo fmt --check --all`: …")
+   and the `impl.spawn-finished` transcript event.
+
+### Telemetry
+
+| Event | Payload | When |
+|-------|---------|------|
+| `task.build-gate.passed` (per-iter) | `{ stage="per-iter", gateStage="build" / "quality", iter, durationSec, buildCommand / qualityCommand }` | Each stage that exits 0 |
+| `task.build-gate.failed` (per-iter) | `{ stage="per-iter", gateStage, iter, exitCode, errorCount, errorSummary, command }` | First failing stage in the chain |
+| `task.build-gate.skipped` (per-iter) | `{ stage="per-iter", gateStage, iter, reason }` | Resolver returned null or runner threw |
+| `task.test-gate.passed` / `.failed` / `.skipped` (per-iter) | mirrors build-gate shape with `gateStage="test"` | Test stage outcome |
+| `task.gate-failed.detected` (per-iter) | `{ stage="per-iter", gateStage, iter, consecutiveGateFailure, threshold, exitCode, errorCount, command }` | After a per-iter chain fails (any stage) |
+| `task.gate-failed.aborted` (per-iter) | `{ stage="per-iter", gateStage, iter, consecutiveGateFailure, threshold }` | Immediately before the 3-strike `BuildFailedException` throw |
+| `task.gate.recovery-attempted` (post-pass) | `{ iter, attempt, max, gateStage, command, exitCode, errorCount }` | OnPassValidate demoted pass→iterate |
+| `task.gate.recovery-exhausted` (post-pass) | `{ iter, attempts, max, gateStage, command }` | OnPassValidate is about to throw the final `BuildFailedException` |
+| `impl.spawn-finished` | gains `gateStage` + `gateCommand` keys when `exceptionType=BuildFailedException` | Workstream stalled by gate exhaustion |
+
+The legacy `task.build-gate.*` / `task.test-gate.*` events with
+`stage="post-pass"` keep firing from the `RunGateChainAsync`
+post-pass invocation, so the Build tab in `BuildPane.tsx` renders
+the same per-stage ticks as today (now plus the per-iter quality and
+test ticks the chain emits).
+
+### Code references
+
+- `src/forge/Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs`
+  - `RunGateChainAsync` (new, per-stage chain helper)
+  - `RunPerIterGateChainAsync` (per-iter shim around the chain)
+  - `BuildGateRejectionNote` (formats the validator's rejection text)
+  - `GateFailure` record (private inside the class file)
+  - `GeneratorDelegate` per-iter gate block (now invokes the chain)
+  - Generator prompt prepend (stage-aware `GATE FAILURE` block)
+  - Evaluator diff-header (stage-aware `Gate status` block)
+  - `RunGenEvalLoopAsync` wires `OnPassValidate`
+  - `ProduceWorkstreamChangesAsync` no longer runs post-pass gates
+- `src/forge/Forge.Api/Services/DeliverableLoop.cs` —
+  `OnPassValidate` callback on `DeliverableLoopRequest`, demotion
+  block in `RunAsync` adjacent to the existing question/checkbox
+  gates
+- `src/forge/Forge.Api/Services/Stories/IStoryArtifactStrategy.cs` —
+  `BuildFailedException.Stage` + `.Command`
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs` —
+  `DriveImplementAsync` catch enriches `StallReason` and the
+  spawn-finished event with `Stage` + `Command`
+- `src/forge/Forge.Api.Tests/Phase56GateRecoveryTests.cs` — 8 tests
+  pinning the `OnPassValidate` mechanism + `BuildFailedException`
+  shape

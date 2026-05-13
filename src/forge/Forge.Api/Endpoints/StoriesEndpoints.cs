@@ -18,6 +18,7 @@ using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -784,6 +785,8 @@ public static class StoriesEndpoints
             return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
         }
 
+        var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
+
         // 2026-05-13 fix — flip phase to "deleting" before any other write so
         // the orchestrator's RunOneStepAsync switch falls through and stops
         // claiming new agents while the delete is in flight. Without this,
@@ -804,7 +807,11 @@ public static class StoriesEndpoints
                 $"delete-started: prevPhase={spawn.Phase} at {DateTimeOffset.UtcNow:O}";
             spawn.Phase = StorySpawnPhases.Deleting;
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ctx.RequestAborted);
+            await SaveChangesWithBusyRetryAsync(
+                db,
+                logger,
+                "delete-start-phase",
+                ctx.RequestAborted);
 
             // Brief drain: any tick already in-flight finishes its
             // SaveChanges before we contend for the write lock. 1 s is
@@ -815,7 +822,6 @@ public static class StoriesEndpoints
             catch (OperationCanceledException) { return Results.StatusCode(499); }
         }
 
-        var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
         var counts = new Dictionary<string, int>();
         // Phase 50 — collect remote-delete failures into a structured list
         // so the response payload can surface them to the operator. The
@@ -944,7 +950,11 @@ public static class StoriesEndpoints
         foreach (var c in openClaims) c.ReleasedAt = nowOff;
         counts["agentClaimsReleased"] = openClaims.Count;
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "cancel-inflight-work",
+            ctx.RequestAborted);
 
         // ── 4. Close + remove PRs ───────────────────────────────────────
         var prsClosedUpstream = 0;
@@ -1020,7 +1030,11 @@ public static class StoriesEndpoints
         }
         counts["prsClosedUpstream"] = prsClosedUpstream;
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-pr-chain",
+            ctx.RequestAborted);
 
         // ── 5. Cascade-delete each child workstream (reuses the
         // existing well-tested helper from WorkstreamsEndpoints with
@@ -1155,7 +1169,11 @@ public static class StoriesEndpoints
             counts["storyWorkItemRemoved"] = 1;
         }
 
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-synthetic-rows",
+            ctx.RequestAborted);
 
         // ── 7. Branch + worktree cleanup for plan / qa / PR-derived
         // branches. Workstream branches were already wiped inside
@@ -1409,7 +1427,11 @@ public static class StoriesEndpoints
 
         // ── 10. Delete the spawn row itself ─────────────────────────────
         db.StorySpawns.Remove(spawn);
-        await db.SaveChangesAsync(ctx.RequestAborted);
+        await SaveChangesWithBusyRetryAsync(
+            db,
+            logger,
+            "remove-spawn-row",
+            ctx.RequestAborted);
         counts["spawn"] = 1;
 
         // ── 11. SignalR + result ────────────────────────────────────────
@@ -1432,6 +1454,58 @@ public static class StoriesEndpoints
             remoteDeleteFailures,
             counts,
         });
+    }
+
+    /// <summary>
+    /// SQLite is single-writer; transient writer collisions can throw
+    /// SQLITE_BUSY / SQLITE_LOCKED even with WAL + busy_timeout configured.
+    /// DeleteSpawn runs several large write batches, so we retry those saves
+    /// with bounded exponential backoff instead of returning a 500 on the
+    /// first collision.
+    /// </summary>
+    private static async Task SaveChangesWithBusyRetryAsync(
+        ForgeDbContext db,
+        ILogger logger,
+        string operation,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 6;
+        var delayMs = 200;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                return;
+            }
+            catch (DbUpdateException ex) when (attempt < maxAttempts && IsSqliteBusy(ex))
+            {
+                logger.LogWarning(ex,
+                    "DeleteSpawn SaveChanges busy (op={Operation}, attempt={Attempt}/{Max}); retrying after {DelayMs}ms.",
+                    operation, attempt, maxAttempts, delayMs);
+                await Task.Delay(delayMs, ct);
+                delayMs = Math.Min(delayMs * 2, 2000);
+            }
+        }
+    }
+
+    private static bool IsSqliteBusy(DbUpdateException ex)
+    {
+        for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
+        {
+            if (cur is SqliteException sq
+                && (sq.SqliteErrorCode == 5
+                    || sq.SqliteErrorCode == 6
+                    || sq.SqliteExtendedErrorCode == 5
+                    || sq.SqliteExtendedErrorCode == 6
+                    || sq.Message.Contains("database is locked", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<IResult> ListSpawns(HttpContext ctx, ForgeDbContext db, [FromQuery] string? phase)
