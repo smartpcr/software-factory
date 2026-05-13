@@ -1063,6 +1063,14 @@ public static class SloppyReasons
 
     /// <summary>Phase 14.4 hard 5-iter cap hit without pass. Phase 52 absorbs the legacy <c>stalled</c> path into the same reassignment flow.</summary>
     public const string IterCap = "iter-cap";
+
+    /// <summary>
+    /// Phase 56 — generator's input tokens for a single iteration exceeded
+    /// <see cref="ScoringConstants.PromptBloatHardCapInputTokens"/>. Catches the
+    /// runaway context-bloat pattern observed on failover-cluster:XRAFT
+    /// stage 3.1 iter 2 (4.3M tokens / $192 / zero file commits).
+    /// </summary>
+    public const string PromptBloat = "prompt-bloat";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's

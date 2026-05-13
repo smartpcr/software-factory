@@ -3855,12 +3855,176 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     0m);
             }
 
+            // Phase 56 -- empty-diff guard. Before any LLM cost is incurred,
+            // capture the ground-truth diff state from git itself: what
+            // files has the engineer actually changed in the worktree?
+            // Two failure modes the evaluator was previously blind to:
+            //
+            //   (a) Zero file changes — the agent's narrative ("All edits
+            //       localized to xraft-core/src/node.rs") was pure prose
+            //       with nothing to back it up. Observed 2026-05-13 on
+            //       failover-cluster:XRAFT stage 3.1 iter 2: 4.3M tokens
+            //       / $192 spent / 0 files committed, evaluator scored 89.
+            //       Like a PR reviewer asked to review an empty PR — the
+            //       right answer is REJECT, not score the cover letter.
+            //
+            //   (b) Build broken — the per-iter gate caught it but only
+            //       fed the failure into the NEXT iter's generator prompt.
+            //       The current iter's evaluator was blissfully unaware
+            //       and scored the broken diff against the rubric.
+            //
+            // Both are fixed by injecting structured ground-truth headers
+            // into the evaluator prompt for THIS iter — diff summary first,
+            // build status second. Empty-diff short-circuits with a
+            // synthetic reject output (zero LLM cost). Both non-empty
+            // and empty paths emit telemetry so the operator can audit
+            // when the guard fired.
+            //
+            // Impl phase only: plan-doc / decompose / qa / review-fix
+            // write to scratch dirs that aren't git worktrees, so the
+            // diff call would always return 0 and false-trigger the
+            // reject. Mirrors the no-progress guard's same restriction.
+            string? diffHeader = null;
+            if (isImplPhase)
+            {
+                IReadOnlyList<string> changedFiles;
+                try
+                {
+                    changedFiles = await this.git.GetChangedFilesAsync(
+                        repo: null, worktreePath: workspace, ct: iterCt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogDebug(ex,
+                        "Empty-diff guard: GetChangedFilesAsync threw for {Workspace}; skipping evaluator diff injection.",
+                        workspace);
+                    changedFiles = Array.Empty<string>();
+                }
+
+                if (changedFiles.Count == 0)
+                {
+                    // EMPTY DIFF — short-circuit with synthetic reject. The
+                    // evaluator never runs (zero LLM cost) and the next-iter
+                    // generator sees the explicit feedback in its iter chain.
+                    // Verdict = "iterate" so the loop continues (giving the
+                    // agent another shot) but score = 0 so it's clearly the
+                    // worst possible outcome for this iter. After
+                    // NoProgressThreshold (3) consecutive zero-change iters
+                    // the Phase 47 NoProgressException trips and the
+                    // workstream stalls.
+                    await this.taskChannel.EmitAsync(workItemId, "task.eval.empty-diff", new
+                    {
+                        iter,
+                        workspace,
+                        note = "Engineer produced zero file changes in the worktree this iter; evaluator short-circuited with reject.",
+                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+                    var emptyDiffNotes = $"REJECTED: Engineer produced ZERO file changes in iter {iter}. An empty diff cannot be scored — like a PR reviewer asked to review a PR with no commits. The generator's narrative described work that was never written to disk (or was written and then reverted before the evaluator could see it). Concrete file edits are required before any rubric score is meaningful.\n\nNext iter MUST:\n1. Write code to disk via Edit / Write tools.\n2. Run the repo's build command (`cargo build --workspace` / `dotnet build` / etc.) and quote the output.\n3. List the changed files in the Change Summary section (one path per line).";
+                    var emptyDiffJson = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        score = 0,
+                        verdict = "iterate",
+                        dims = new
+                        {
+                            correctness = 0,
+                            quality = 0,
+                            tests = 0,
+                            scope = 0,
+                            risk = 0,
+                        },
+                        notes = emptyDiffNotes,
+                    });
+                    return new EvaluatorRunOutput(emptyDiffJson, 0m);
+                }
+
+                // Non-empty diff — build a "## Engineer changes this iter"
+                // header to prepend to the evaluator prompt. Cap at 200
+                // paths to keep the prompt size sane on monster diffs.
+                const int MaxPathsInHeader = 200;
+                var truncated = changedFiles.Count > MaxPathsInHeader;
+                var displayList = truncated
+                    ? changedFiles.Take(MaxPathsInHeader).ToList()
+                    : changedFiles;
+                var diffHeaderSb = new StringBuilder();
+                diffHeaderSb.AppendLine($"## Engineer changes this iter — GROUND TRUTH (from `git status --porcelain` + ahead-of-tracking)");
+                diffHeaderSb.AppendLine();
+                diffHeaderSb.AppendLine($"The engineer changed {changedFiles.Count} file(s) this iter:");
+                diffHeaderSb.AppendLine();
+                foreach (var p in displayList)
+                {
+                    diffHeaderSb.Append("- `").Append(p).AppendLine("`");
+                }
+                if (truncated)
+                {
+                    diffHeaderSb.AppendLine($"- … and {changedFiles.Count - MaxPathsInHeader} more (truncated).");
+                }
+                diffHeaderSb.AppendLine();
+                diffHeaderSb.AppendLine("Score against THIS list. Open each file (read-only) and verify the");
+                diffHeaderSb.AppendLine("generator's narrative claims line up with what actually changed.");
+                diffHeaderSb.AppendLine("If the generator claims a file is edited but it's not in this list,");
+                diffHeaderSb.AppendLine("flag the claim as UNVERIFIED in your 'Still needs improvement' list.");
+                diffHeaderSb.AppendLine();
+
+                // Phase 56 — build-status injection. When the prior iter's
+                // build gate failed (lastBuildFailure captured by the
+                // GeneratorDelegate's per-iter gate), the evaluator now
+                // sees the compiler output as ground truth alongside the
+                // diff list. Previously this only fed forward into the
+                // next-iter GENERATOR prompt; the current-iter evaluator
+                // would score the agent's "build clean" narrative without
+                // independent verification.
+                if (lastBuildFailure is not null)
+                {
+                    diffHeaderSb.AppendLine("## Build status this iter — GROUND TRUTH (from forge per-iter build gate)");
+                    diffHeaderSb.AppendLine();
+                    diffHeaderSb.AppendLine($"**BUILD FAILED** running `{lastBuildFailureCommand ?? "(unknown command)"}`");
+                    diffHeaderSb.AppendLine($"Exit code: {lastBuildFailure.ExitCode} · Errors: {lastBuildFailure.ErrorCount} · Warnings: {lastBuildFailure.WarningCount} · Duration: {lastBuildFailure.Duration.TotalSeconds:F1}s");
+                    if (!string.IsNullOrWhiteSpace(lastBuildFailure.ErrorSummary))
+                    {
+                        diffHeaderSb.AppendLine();
+                        diffHeaderSb.AppendLine("Error summary:");
+                        diffHeaderSb.AppendLine("```");
+                        // Cap at 4 KB so the evaluator's prompt doesn't bloat
+                        // on a wall-of-errors output.
+                        var capped = lastBuildFailure.ErrorSummary.Length > 4096
+                            ? lastBuildFailure.ErrorSummary[..4096] + "\n…(truncated)"
+                            : lastBuildFailure.ErrorSummary;
+                        diffHeaderSb.AppendLine(capped);
+                        diffHeaderSb.AppendLine("```");
+                    }
+                    diffHeaderSb.AppendLine();
+                    diffHeaderSb.AppendLine("**Score must reflect this**: a broken build is correctness=0 minimum.");
+                    diffHeaderSb.AppendLine("Do NOT pass a diff that doesn't compile, regardless of the generator's narrative.");
+                    diffHeaderSb.AppendLine();
+                }
+
+                diffHeader = diffHeaderSb.ToString();
+
+                await this.taskChannel.EmitAsync(workItemId, "task.eval.diff-injected", new
+                {
+                    iter,
+                    workspace,
+                    changedFilesCount = changedFiles.Count,
+                    truncated,
+                    buildFailedAttached = lastBuildFailure is not null,
+                }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+            }
+
+            // Phase 56 — prepend the ground-truth diff header to the
+            // evaluator's user prompt for THIS iter. The base evaluatorPrompt
+            // (workstream brief + rubric + instructions) stays unchanged so
+            // the evaluator's task definition is stable across iters; only
+            // the iter-specific ground-truth header varies.
+            var iterEvaluatorPrompt = diffHeader is null
+                ? evaluatorPrompt
+                : diffHeader + "\n" + evaluatorPrompt;
+
             await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
             {
                 agentId = evalAgentId,
                 crewId = evalCrewId,
                 systemPrompt = string.IsNullOrEmpty(evalContext.SoulMd) ? (string?)null : evalContext.SoulMd,
-                userPrompt = evaluatorPrompt,
+                userPrompt = iterEvaluatorPrompt,
                 model = evalContext.Model,
                 backend = evalContext.Backend.ToString().ToLowerInvariant(),
                 invokeMode = evalContext.InvokeMode.ToString().ToLowerInvariant(),
@@ -3918,7 +4082,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
-            var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContextForIter, iterCt);
+            var invocation = await this.runner.StartAsync(workItemId, evalAgentId, iterEvaluatorPrompt, evalContextForIter, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
@@ -3985,9 +4149,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     newTurns.AddRange(priorTurns);
                     newTurns.Add(new ConversationTurn(
                         Role: "user",
-                        Content: evaluatorPrompt,
+                        Content: iterEvaluatorPrompt,
                         Iter: iter,
-                        Tokens: Math.Max(1, evaluatorPrompt.Length / 4)));
+                        Tokens: Math.Max(1, iterEvaluatorPrompt.Length / 4)));
                     newTurns.Add(new ConversationTurn(
                         Role: "assistant",
                         Content: assistantText,

@@ -513,6 +513,27 @@ public sealed class RealStoryGitOps : IStoryGitOps
             wtPath, ct, "ls-remote", "--heads", "origin", branch);
         var branchOnOrigin = existsCode == 0 && !string.IsNullOrWhiteSpace(existsOut);
 
+        // 2026-05-13 — early ancestor check, before any destructive
+        // operation. The function's documented contract (see
+        // CrewStoryArtifactStrategy.cs:1664 "MergeUpstreamIntoBranchAsync
+        // is idempotent (no-op when already up to date)") only became
+        // true after this reorder: previously the `git reset --hard
+        // origin/{branch}` below ran first and only then noticed the
+        // merge was a no-op, vaporising local commits whose push hadn't
+        // landed yet. With per-iter commit+push in CrewQueueWorker the
+        // common case is "pushed, ancestor passes, nothing to do" —
+        // short-circuit here so the reset is reached only when a real
+        // merge is needed.
+        var (mbCodeEarly, _, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "merge-base", "--is-ancestor", $"origin/{upstreamBranch}", "HEAD");
+        if (mbCodeEarly == 0)
+        {
+            this.logger?.LogInformation(
+                "MergeUpstreamIntoBranchAsync: origin/{Upstream} already ancestor of {Branch}, skipping (force={Force}, no reset).",
+                upstreamBranch, branch, force);
+            return true;
+        }
+
         if (branchOnOrigin)
         {
             await this.GitAsync(wtPath, ct, "fetch", "origin", branch);

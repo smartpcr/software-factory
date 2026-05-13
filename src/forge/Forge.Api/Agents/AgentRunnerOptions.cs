@@ -46,6 +46,28 @@ public sealed class AgentRunnerOptions
     /// <summary>Extra args passed to the copilot SDK / CLI. Defaults to <c>["--yolo"]</c>.</summary>
     public string[] CopilotCliExtraArgs { get; set; } = new[] { "--yolo" };
 
-    /// <summary>Max agent turns (tool-call rounds) per invocation. Default 500.</summary>
-    public int MaxTurns { get; set; } = 500;
+    /// <summary>
+    /// Max agent turns (tool-call rounds) per invocation.
+    /// <para>
+    /// A "turn" here is one <c>ToolExecutionCompleteEvent</c> — a single
+    /// successful tool round-trip. The cap fires inside
+    /// <c>AgentRunnerDispatcher.RunCopilotSdk</c> / <c>RunClaudeSdk</c> by
+    /// short-circuiting the SDK's event stream with <c>failReason = "Max
+    /// turns (N) reached"</c>.
+    /// </para>
+    /// <para>
+    /// Phase 56 — lowered from 500 → 60 (operator pain 2026-05-13,
+    /// failover-cluster:XRAFT stage 3.1 iter 2: a single generator turn
+    /// consumed 4.3M tokens / $192 doing hundreds of tool calls,
+    /// because <c>work_item.Points == 0</c> on synthetic workstream IDs
+    /// → <c>taskMaxTurns</c> resolved null → the runner used this
+    /// global default of 500). 60 is "comfortably handles a real iter
+    /// shape" (Read a few files, ~20 Edit/Write rounds, a couple of
+    /// Bash invocations for builds/tests) while making a runaway
+    /// agent-loop terminate within ~600K tokens worst case instead of
+    /// 5M. Work items with explicit points still get <c>points * 30</c>
+    /// from <c>CrewQueueWorker</c>, which dominates this when set.
+    /// </para>
+    /// </summary>
+    public int MaxTurns { get; set; } = 60;
 }

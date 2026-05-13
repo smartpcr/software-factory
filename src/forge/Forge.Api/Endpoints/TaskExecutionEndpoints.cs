@@ -504,7 +504,19 @@ public static class TaskExecutionEndpoints
         // get accurate counts. Treat a tick with no BranchDiff as
         // "stale shape" and force a fresh disk sample below so the
         // operator sees correct numbers on first open.
-        var diskSampleNeeded = worktree is null || worktree.BranchDiff is null;
+        var latestActivityAt = transcriptRows
+            .Where(e => !string.Equals(e.Kind, "task.worktree-tick", StringComparison.Ordinal))
+            .Select(e => (DateTimeOffset?)e.At)
+            .Concat(deliverableRows.Select(d => (DateTimeOffset?)d.CreatedAt))
+            .Concat(usage.Select(u => (DateTimeOffset?)(u.EndedAt ?? u.StartedAt)))
+            .Where(t => t is not null)
+            .Max();
+
+        var cachedTickIsStale = lastTick is not null
+            && latestActivityAt is not null
+            && latestActivityAt > lastTick.At;
+
+        var diskSampleNeeded = worktree is null || worktree.BranchDiff is null || cachedTickIsStale;
 
         // Fallback: read worktree directly from disk using the path from
         // the started event or derived from the work item's repo + branch.
