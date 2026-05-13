@@ -12,13 +12,15 @@ using System.Threading.Tasks;
 using Ast.Memory.Models;
 
 /// <summary>
-/// Manages expertise lifecycle: write-back, consolidation, decay, and community detection.
-/// Per architecture.md §5.3.
+/// Evolution engine for the memory graph. Handles expertise write-back,
+/// consolidation, decay, and community detection — the mechanisms by
+/// which the graph improves over agent sessions.
 /// </summary>
 public interface IEvolutionEngine
 {
     /// <summary>
-    /// Write an expertise entry and link it to a code node via APPLIES_TO edge.
+    /// Write an expertise entry and link it to a code node via an APPLIES_TO edge.
+    /// Deduplicates by content hash: if an identical entry already exists, returns it.
     /// </summary>
     Task<ExpertiseEntry> RecordExpertiseAsync(
         string targetNodeId,
@@ -32,29 +34,30 @@ public interface IEvolutionEngine
 
     /// <summary>
     /// LLM-powered merge of semantically similar expertise entries.
-    /// Acquires write-level lock. Creates SUPERSEDES edges from merged
-    /// entry to originals.
+    /// Acquires write-level lock. Creates SUPERSEDES edges from merged entry to originals.
     /// </summary>
     Task<ConsolidationResult> ConsolidateAsync(
         CancellationToken ct = default);
 
     /// <summary>
     /// Evaluate time-based decay and archive entries below ArchiveConfidenceFloor (0.1).
-    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync (§3.6).
+    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync.
     /// </summary>
     Task<DecayResult> DecayStaleExpertiseAsync(
         CancellationToken ct = default);
 
     /// <summary>
-    /// Restore a previously archived expertise entry with new confidence.
+    /// Restore a previously archived expertise entry with the specified confidence.
+    /// Sets Archived to false and Confidence to the given value.
     /// </summary>
-    Task RestoreArchivedExpertiseAsync(
+    Task<ExpertiseEntry> RestoreArchivedExpertiseAsync(
         string expertiseId,
         double restoredConfidence = 0.5,
         CancellationToken ct = default);
 
     /// <summary>
-    /// Louvain community detection → Topic nodes + BELONGS_TO_CLUSTER edges.
+    /// Louvain community detection over CALLS/SIMILAR_TO edges.
+    /// Creates BELONGS_TO_CLUSTER edges and Topic summary nodes in the Semantic layer.
     /// </summary>
     Task<CommunityResult> DetectCommunitiesAsync(
         CancellationToken ct = default);
