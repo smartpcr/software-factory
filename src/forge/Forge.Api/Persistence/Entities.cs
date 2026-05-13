@@ -688,15 +688,17 @@ public class CrewRow
     public string? PairedWithCrewId { get; set; }
 
     /// <summary>
-    /// Phase 55 (docs/forge/sloppy_guard.md) — per-crew opt-in for Layer 2
+    /// Phase 55 (docs/forge/sloppy_guard.md) — per-crew toggle for Layer 2
     /// agent-memory continuity (Claude/CLI --resume, Claude/SDK history
-    /// replay, Copilot/SDK long-lived session). Defaults <c>false</c> so
-    /// existing crews behave exactly as they did pre-Phase-55; the
-    /// operator flips this on once a crew is observed to benefit. Phase A
-    /// worktree scratch notes are independent of this flag and stay
-    /// always-on for every crew.
+    /// replay, Copilot/SDK long-lived session). Defaults <c>true</c>
+    /// (operator decision flipped 2026-05-13 from opt-in to opt-out):
+    /// every supported crew gets memory unless explicitly disabled;
+    /// agents can also override per-row via
+    /// <see cref="AgentRow.AgentMemoryOverride"/>. Phase A worktree
+    /// scratch notes are independent of this flag and stay always-on
+    /// for every crew.
     /// </summary>
-    public bool EnableAgentMemory { get; set; }
+    public bool EnableAgentMemory { get; set; } = true;
 
     /// <summary>
     /// Phase 55 / Phase F — per-crew override for the input-token

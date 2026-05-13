@@ -50,7 +50,7 @@ pair (Phase 52 path, when re-enabled) starts with fresh memory.
 
 | Decision | Value |
 |---|---|
-| Default state for Phases C / D / E | **Opt-in per crew** (`CrewRow.EnableAgentMemory` defaults `false`). Phase A is always-on. |
+| Default state for Phases C / D / E | **Opt-out per crew** (operator decision 2026-05-13; `CrewRow.EnableAgentMemory` defaults `true`). Every supported crew gets memory; flip to `0` per row to disable. `AgentRow.AgentMemoryOverride` can also pin a single agent on/off. Phase A is always-on regardless. |
 | Memory scope | **Per `(workItemId, agentId, role)`** — fresh agent gets fresh memory. |
 | Compaction trigger | **300K input tokens** (fits the 1M-context models in use; capped to `model.ContextWindowTokens × 0.3` for non-1M models so smaller-window evaluators are also safe). |
 | Evaluator opt-in | **Yes — both generator and evaluator opt in.** The evaluator's prior-iter "Still needs improvement" checkbox list lives in its own conversation history; without memory the evaluator re-scores from scratch each iter and can't verify whether the agent actually addressed each numbered item. With memory the evaluator sees its own prior critique alongside the ongoing file state — which is the whole point of opting it into Layer 2. The single `CrewRow.EnableAgentMemory` flag covers both sides; paired evaluator crews can opt in or out independently because they have their own row. |

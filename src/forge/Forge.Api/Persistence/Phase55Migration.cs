@@ -69,12 +69,46 @@ public static class Phase55Migration
         await EnsureIndexAsync(conn, "ix_agent_memory_wi", "agent_memory",
             "WorkItemId", unique: false, ct);
 
-        // Phase 55 / Phase C opt-in flag on crews. Default 0 (false) so
-        // existing rows keep their pre-Phase-55 behaviour; an operator
-        // toggles this on once a crew is observed to benefit from Layer-2
-        // memory continuity. The runner cells gate their session-resume /
-        // history-replay code paths on this column being 1.
-        await EnsureColumnAsync(conn, "crews", "EnableAgentMemory", "INTEGER NOT NULL DEFAULT 0", ct);
+        // Phase 55 toggle on crews. Operator decision (2026-05-13)
+        // flipped this from opt-in (DEFAULT 0) to opt-out (DEFAULT 1):
+        // every supported crew gets memory unless explicitly disabled.
+        // Fresh installs land with 1; existing installs that picked up
+        // the original DEFAULT 0 get the one-time backfill below so
+        // their crew rows match the new default. The runner cells gate
+        // their session-resume / history-replay code paths on this
+        // column being 1.
+        var columnAdded = await EnsureColumnAsync(
+            conn, "crews", "EnableAgentMemory", "INTEGER NOT NULL DEFAULT 1", ct);
+
+        // Phase G follow-up backfill. Only runs once -- guarded by an
+        // idempotency row -- so operator opt-outs (SET EnableAgentMemory
+        // = 0) made AFTER this backfill stick across reboots. Skip the
+        // backfill entirely on fresh installs where the column was just
+        // added (every row inherits DEFAULT 1 already).
+        if (!columnAdded)
+        {
+            const string BackfillKey = "phase55-backfill-enable-agent-memory-default-on";
+            await using var probe = conn.CreateCommand();
+            probe.CommandText = "SELECT 1 FROM idempotency WHERE Key = @key";
+            probe.Parameters.AddWithValue("@key", BackfillKey);
+            var alreadyDone = await probe.ExecuteScalarAsync(ct) is not null;
+            if (!alreadyDone)
+            {
+                await using var update = conn.CreateCommand();
+                update.CommandText = "UPDATE crews SET EnableAgentMemory = 1 WHERE EnableAgentMemory = 0";
+                var rows = await update.ExecuteNonQueryAsync(ct);
+
+                await using var record = conn.CreateCommand();
+                record.CommandText = """
+                    INSERT INTO idempotency (Key, At, Status, ContentType, Body)
+                    VALUES (@key, @at, 200, 'text/plain', @body)
+                    """;
+                record.Parameters.AddWithValue("@key", BackfillKey);
+                record.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+                record.Parameters.AddWithValue("@body", $"backfilled {rows} crew row(s) to EnableAgentMemory=1");
+                await record.ExecuteNonQueryAsync(ct);
+            }
+        }
 
         // Phase 55 / Phase F compaction-trigger override. Null = use the
         // 300K default in MemoryCompactor; the compactor still clamps the
