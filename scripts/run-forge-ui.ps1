@@ -201,6 +201,16 @@ if ($targetServer) {
     Write-Host "🚀 Starting Forge.Api on http://localhost:$ApiPort ..." -ForegroundColor Yellow
     $serverLog = Join-Path $RepoRoot 'forge-server-stdout.log'
     $serverErr = Join-Path $RepoRoot 'forge-server-stderr.log'
+
+    # Interactive desktop run — allow Git Credential Manager to pop its
+    # browser / system credential dialog when a fetch/push hits a
+    # private remote. Default policy (FailFast) is for unattended
+    # service deployments and would error out with "Cannot prompt
+    # because user interactivity has been disabled". The per-call
+    # timeout in RealStoryGitOps.RunGitCaptureAsync (180s by default)
+    # bounds the wait if the operator walks away from the prompt.
+    $env:FORGE_GIT_PROMPT_POLICY = 'Interactive'
+
     Start-Process -FilePath $serverExe `
         -ArgumentList "--environment","Development" `
         -WorkingDirectory $RepoRoot `

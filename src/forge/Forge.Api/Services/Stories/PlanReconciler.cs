@@ -92,7 +92,7 @@ public sealed class PlanReconciler
             return null;
         }
 
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
         var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
 
         // The repo + branch may not exist yet (e.g. spawn created but plan

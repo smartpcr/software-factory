@@ -75,6 +75,9 @@ public class ForgeDbContext : DbContext
     /// <summary>Phase 52 — one row per (work_item, pair) attempt; sloppy-rate KPI source.</summary>
     public DbSet<AgentPairAssignmentRow> AgentPairAssignments => this.Set<AgentPairAssignmentRow>();
 
+    /// <summary>Phase 55 — per (work_item, agent, role) cross-iteration memory (session ids / conversation history).</summary>
+    public DbSet<AgentMemoryRow> AgentMemory => this.Set<AgentMemoryRow>();
+
     /// <summary>Phase 39 (Layer C) — open questions emitted by generators, answered by operator via wizard.</summary>
     public DbSet<DeliverableQuestionRow> DeliverableQuestions => this.Set<DeliverableQuestionRow>();
 
@@ -267,6 +270,14 @@ public class ForgeDbContext : DbContext
         mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.WorkItemId, x.SequenceNo }).IsUnique();
         mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.GeneratorAgentId, x.CreatedAt });
         mb.Entity<AgentPairAssignmentRow>().HasIndex(x => new { x.EvaluatorAgentId, x.CreatedAt });
+
+        // Phase 55 — agent_memory (per work-item, agent, role; Layer 2 of the
+        // gen-eval memory plan in docs/forge/sloppy_guard.md). One row per
+        // tuple, replaced in place across iters; reassigned pairs get a new
+        // row because the AgentId differs.
+        mb.Entity<AgentMemoryRow>().ToTable("agent_memory").HasKey(x => x.Id);
+        mb.Entity<AgentMemoryRow>().HasIndex(x => new { x.WorkItemId, x.AgentId, x.Role }).IsUnique();
+        mb.Entity<AgentMemoryRow>().HasIndex(x => x.WorkItemId);
 
         // Phase 39 (Layer C) — open questions emitted by generators.
         mb.Entity<DeliverableQuestionRow>().ToTable("deliverable_questions").HasKey(x => x.Id);

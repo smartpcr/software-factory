@@ -44,6 +44,15 @@ internal static class ImplSpawnGuard
     public const string SpawnStartedKind = "task.impl.spawn-started";
     public const string SpawnFinishedKind = "task.impl.spawn-finished";
 
+    /// <summary>
+    /// Phase 52 follow-up — emitted by the orchestrator on the FIRST
+    /// no-progress backoff for a workstream so the operator sees one
+    /// clear signal in the conversation tab (rather than a cluster of
+    /// raw spawn-started/finished pairs). Subsequent ticks within the
+    /// same no-progress run reuse the backoff path silently.
+    /// </summary>
+    public const string SpawnNoProgressKind = "task.impl.spawn-no-progress";
+
     public enum Decision
     {
         /// <summary>No prior in-flight or backoff blocking — caller may spawn.</summary>
@@ -54,9 +63,39 @@ internal static class ImplSpawnGuard
 
         /// <summary>The most recent finished spawn failed and the backoff window has not yet elapsed.</summary>
         SkipBackoff,
+
+        /// <summary>
+        /// Phase 52 follow-up — consecutive successful spawns produced no new
+        /// deliverable. Same skip semantics as <see cref="SkipBackoff"/>;
+        /// distinct value so telemetry / log filters can separate the
+        /// two failure modes.
+        /// </summary>
+        SkipNoProgressBackoff,
     }
 
-    public sealed record Result(Decision Outcome, string Reason);
+    /// <summary>
+    /// Result of one guard evaluation.
+    /// </summary>
+    /// <param name="Outcome">Decision the caller must obey.</param>
+    /// <param name="Reason">Human-readable explanation for logs / telemetry.</param>
+    /// <param name="ConsecutiveNoProgress">
+    /// Phase 52 follow-up — count of consecutive spawn-finished:true events
+    /// whose corresponding spawn-started fired AFTER the latest
+    /// deliverable's <c>CreatedAt</c>. Zero on the happy path; non-zero
+    /// when the workstream is stuck in a re-spawn loop without new work.
+    /// </param>
+    /// <param name="ShouldTriggerReassign">
+    /// Phase 52 follow-up — true when <see cref="ConsecutiveNoProgress"/>
+    /// has reached <see cref="SyncConstants.NoProgressReassignThreshold"/>.
+    /// Caller routes the work item through the Phase 52
+    /// <c>SloppyReassignmentReconciler</c>: set ExecutionStatus=pending-reassign,
+    /// append the current pair to PriorPairsJson, skip this tick.
+    /// </param>
+    public sealed record Result(
+        Decision Outcome,
+        string Reason,
+        int ConsecutiveNoProgress = 0,
+        bool ShouldTriggerReassign = false);
 
     /// <summary>
     /// Decide whether a fresh impl spawn is allowed for <paramref name="workstreamId"/>.
@@ -71,13 +110,20 @@ internal static class ImplSpawnGuard
         // Pull the small set of impl-spawn events for this WI in one query —
         // there's typically a handful of rows; sorting in memory avoids
         // index dependence on (WorkItemId, Kind, Id) which we don't have today.
-        var events = await db.TaskTranscriptEvents.AsNoTracking()
+        var eventRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == workstreamId
                      && (e.Kind == SpawnStartedKind || e.Kind == SpawnFinishedKind))
             .OrderByDescending(e => e.Id)
             .Take(64)
             .Select(e => new { e.Id, e.Kind, e.At, e.PayloadJson })
             .ToListAsync(ct);
+
+        // Materialize to a named tuple list so the no-progress helper can
+        // index into it without dynamic-typing the anonymous projection
+        // (DLR over internal anonymous types is brittle).
+        var events = eventRows
+            .Select(e => (Id: e.Id, Kind: e.Kind, At: e.At, PayloadJson: e.PayloadJson))
+            .ToList();
 
         if (events.Count == 0)
         {
@@ -89,13 +135,13 @@ internal static class ImplSpawnGuard
 
         // Case A — never started (only stray finishes? impossible in practice
         // but defensive). Allow.
-        if (latestStart is null)
+        if (latestStart.Id == 0)
         {
             return new Result(Decision.Allow, "no spawn-started event");
         }
 
         // Case B — finished after the most recent start → not in flight.
-        var finishedAfterStart = latestFinish is not null && latestFinish.Id > latestStart.Id;
+        var finishedAfterStart = latestFinish.Id != 0 && latestFinish.Id > latestStart.Id;
 
         if (!finishedAfterStart)
         {
@@ -124,10 +170,73 @@ internal static class ImplSpawnGuard
         }
 
         // Case C — most recent attempt finished. Decide based on success/fail.
-        var lastFailed = LastSpawnFailed(latestFinish!.PayloadJson);
+        var lastFailed = LastSpawnFailed(latestFinish.PayloadJson);
         if (!lastFailed)
         {
-            return new Result(Decision.Allow, "previous spawn finished successfully");
+            // Phase 52 follow-up — even success isn't a free pass. If the
+            // recent spawn(s) didn't actually produce a new deliverable
+            // row, the orchestrator is in a "successful no-op" loop and
+            // we must apply the same escalating backoff as the failure
+            // path. Count consecutive spawn-finished:true events whose
+            // matching spawn-started fired AFTER the latest deliverable's
+            // CreatedAt (i.e. spawns that ran without producing
+            // deliverable progress).
+            //
+            // SQLite cannot ORDER BY DateTimeOffset — materialize the
+            // CreatedAt values then sort client-side. Matches the
+            // convention used elsewhere in this codebase.
+            var deliverableTimestamps = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == workstreamId)
+                .Select(d => d.CreatedAt)
+                .ToListAsync(ct);
+            DateTimeOffset? latestDeliverableAt = deliverableTimestamps.Count == 0
+                ? null
+                : deliverableTimestamps.Max();
+
+            var consecutiveNoProgress = CountConsecutiveNoProgressSuccesses(events, latestDeliverableAt);
+            if (consecutiveNoProgress >= SyncConstants.NoProgressReassignThreshold)
+            {
+                // Hand off to Phase 52 reassignment. We still RETURN a
+                // skip decision so this tick doesn't fire — the
+                // orchestrator's reassign-routing block runs as a side
+                // effect of seeing ShouldTriggerReassign=true.
+                return new Result(
+                    Decision.SkipNoProgressBackoff,
+                    $"no-progress reassign: {consecutiveNoProgress} consecutive successful spawns without new deliverable (>= {SyncConstants.NoProgressReassignThreshold} threshold); routing through Phase 52",
+                    consecutiveNoProgress,
+                    ShouldTriggerReassign: true);
+            }
+
+            if (consecutiveNoProgress >= SyncConstants.NoProgressBackoffThreshold)
+            {
+                // Escalating backoff. Re-use the failure backoff curve
+                // (Base × N, capped at Max) so the operator sees the same
+                // escalation shape they're already used to.
+                var backoffSeconds = Math.Min(
+                    SyncConstants.FailureBackoffMaxSeconds,
+                    SyncConstants.FailureBackoffBaseSeconds * consecutiveNoProgress);
+                var sinceFinish = (now - latestFinish.At).TotalSeconds;
+                if (sinceFinish < backoffSeconds)
+                {
+                    return new Result(
+                        Decision.SkipNoProgressBackoff,
+                        $"no-progress backoff: {sinceFinish:0}s since last success < {backoffSeconds}s ({consecutiveNoProgress} consecutive no-progress successes)",
+                        consecutiveNoProgress,
+                        ShouldTriggerReassign: false);
+                }
+                // Cool-down elapsed — allow one probe spawn.
+                return new Result(
+                    Decision.Allow,
+                    $"no-progress cool-down elapsed: {sinceFinish:0}s >= {backoffSeconds}s ({consecutiveNoProgress} consecutive no-progress); allowing probe",
+                    consecutiveNoProgress,
+                    ShouldTriggerReassign: false);
+            }
+
+            return new Result(
+                Decision.Allow,
+                "previous spawn finished successfully",
+                consecutiveNoProgress,
+                ShouldTriggerReassign: false);
         }
 
         // Failure backoff. Count consecutive failed-finishes from the most
@@ -141,20 +250,73 @@ internal static class ImplSpawnGuard
             else break;
         }
 
-        var backoffSeconds = Math.Min(
+        var backoffSec = Math.Min(
             SyncConstants.FailureBackoffMaxSeconds,
             SyncConstants.FailureBackoffBaseSeconds * Math.Max(1, consecutiveFailures));
         var sinceFailure = (now - latestFinish.At).TotalSeconds;
-        if (sinceFailure < backoffSeconds)
+        if (sinceFailure < backoffSec)
         {
             return new Result(
                 Decision.SkipBackoff,
-                $"failure backoff: {sinceFailure:0}s since last failure < {backoffSeconds}s ({consecutiveFailures} consecutive)");
+                $"failure backoff: {sinceFailure:0}s since last failure < {backoffSec}s ({consecutiveFailures} consecutive)");
         }
 
         return new Result(
             Decision.Allow,
-            $"failure backoff elapsed: {sinceFailure:0}s >= {backoffSeconds}s ({consecutiveFailures} consecutive failures)");
+            $"failure backoff elapsed: {sinceFailure:0}s >= {backoffSec}s ({consecutiveFailures} consecutive failures)");
+    }
+
+    /// <summary>
+    /// Phase 52 follow-up — count the most-recent consecutive run of
+    /// spawn-finished:true events whose matching spawn-started fired
+    /// AFTER <paramref name="latestDeliverableAt"/>. The count resets when
+    /// we encounter a start with no matching finish (in-flight, not
+    /// counted), a finish with success=false (handled by the failure
+    /// backoff path, not counted here), or a spawn-started.At &lt;=
+    /// <paramref name="latestDeliverableAt"/> (this spawn's window
+    /// contained a deliverable — progress).
+    /// </summary>
+    /// <param name="events">
+    /// Spawn-started + spawn-finished events for the workstream, sorted
+    /// descending by Id (most-recent first).
+    /// </param>
+    private static int CountConsecutiveNoProgressSuccesses(
+        IReadOnlyList<(long Id, string Kind, DateTimeOffset At, string PayloadJson)> events,
+        DateTimeOffset? latestDeliverableAt)
+    {
+        // When there's no deliverable at all, treat as "infinitely old"
+        // so any successful spawn counts as no-progress. (Brand-new
+        // workstreams whose first iteration is still in flight take the
+        // SkipInFlight branch above, not this one.)
+        var threshold = latestDeliverableAt ?? DateTimeOffset.MinValue;
+
+        var count = 0;
+        for (var i = 0; i < events.Count; i++)
+        {
+            var ev = events[i];
+            if (ev.Kind != SpawnFinishedKind) continue;
+
+            // Look for the matching spawn-started (largest Id < finish.Id).
+            DateTimeOffset? startedAt = null;
+            for (var j = i + 1; j < events.Count; j++)
+            {
+                if (events[j].Kind != SpawnStartedKind) continue;
+                startedAt = events[j].At;
+                break;
+            }
+            if (startedAt is null) break; // no matching start — stop scanning
+
+            // A failure-finish belongs to the failure-backoff path; don't
+            // count, and break (the streak doesn't extend through a fail).
+            if (LastSpawnFailed(ev.PayloadJson)) break;
+
+            // Spawn started BEFORE the latest deliverable → its window may
+            // have produced the deliverable. Real progress; stop counting.
+            if (startedAt.Value <= threshold) break;
+
+            count++;
+        }
+        return count;
     }
 
     /// <summary>
