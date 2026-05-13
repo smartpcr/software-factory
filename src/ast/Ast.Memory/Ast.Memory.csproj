@@ -11,13 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
     <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
-    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
   </ItemGroup>
 
   <ItemGroup>

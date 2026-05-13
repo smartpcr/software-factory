@@ -5,9 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>12</LangVersion>
-    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
+    <AssemblyName>Ast.Memory.UnitTests</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
