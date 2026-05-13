@@ -58,7 +58,8 @@ public sealed class ExpertiseEntry
 }
 
 /// <summary>
-/// A supporting reference for an expertise entry.
+/// An agent-authored knowledge entry attached to a code node.
+/// Per architecture.md §4.2.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 

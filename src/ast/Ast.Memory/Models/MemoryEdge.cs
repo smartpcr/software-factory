@@ -12,6 +12,8 @@ using Ast.Core;
 /// Composition wrapper around <see cref="Hyperedge"/> providing
 /// strongly-typed accessors for memory-layer edge metadata.
 /// Per architecture.md §4.1 — uses composition, NOT inheritance.
+/// Accepts both code-derived edges (original HyperedgeType) and
+/// memory-only edges (HyperedgeType.MemoryRelation).
 /// </summary>
 public sealed class MemoryEdge
 {
@@ -29,38 +31,23 @@ public sealed class MemoryEdge
     public MemoryEdge(Hyperedge inner, VersionRange version)
     {
         this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        ValidateEdgeType(inner);
         this.Version = version ?? throw new ArgumentNullException(nameof(version));
     }
 
     /// <summary>
     /// Creates a MemoryEdge by wrapping a Hyperedge and extracting VersionRange
-    /// from its Metadata dictionary (SinceCommit, SinceIndex, UntilCommit, UntilIndex).
-    /// When temporal metadata is absent, Version defaults to an empty range.
-    /// Throws <see cref="InvalidOperationException"/> when temporal metadata is malformed.
-    /// Throws <see cref="ArgumentException"/> if the edge type is not <see cref="HyperedgeType.MemoryRelation"/>.
+    /// from its Metadata dictionary.
     /// </summary>
     public MemoryEdge(Hyperedge inner)
     {
         this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        ValidateEdgeType(inner);
         this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata)
             ?? new VersionRange(null, null, null, null);
     }
 
-    /// <summary>Semantic relation type from metadata (e.g. "APPLIES_TO", "CALLS").</summary>
+    /// <summary>Semantic relation type from metadata (e.g. "CALLS", "EXTENDS").</summary>
     public string SemanticRelation => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.SemanticRelation);
 
     /// <summary>Memory layer from metadata.</summary>
     public string MemoryLayer => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
-
-    private static void ValidateEdgeType(Hyperedge inner)
-    {
-        if (inner.EdgeType != HyperedgeType.MemoryRelation)
-        {
-            throw new ArgumentException(
-                $"MemoryEdge requires EdgeType MemoryRelation, got {inner.EdgeType}.",
-                nameof(inner));
-        }
-    }
 }

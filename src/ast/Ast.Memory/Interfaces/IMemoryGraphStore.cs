@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
+using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
 /// Extended graph store interface for memory-layer operations.
@@ -30,9 +31,11 @@ public interface IMemoryGraphStore : IGraphStore
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex,
-        Models.NodeFilter? filter,
+        MemoryNodeFilter? filter,
         int limit,
         CancellationToken cancellationToken);
+
+    // ── Edge queries ────────────────────────────────────────────────────
 
     /// <summary>
     /// Gets edges matching a semantic relation, optionally filtered by layer
