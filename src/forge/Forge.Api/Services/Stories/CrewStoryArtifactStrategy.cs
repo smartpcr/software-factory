@@ -3016,11 +3016,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // opt in independently). When false, the delegate skips the
         // load/upsert pair and the runner sees a null ctx.Memory --
         // exactly the pre-Phase-55 shape.
-        var genMemoryEnabled = crew.EnableAgentMemory
+        // Phase 55 / Phase G -- merge crew default with per-agent
+        // override. Agent override takes precedence when non-null so
+        // an operator can flip a single agent on/off without touching
+        // the rest of the crew (e.g. A/B comparing memory-enabled
+        // generator against a non-memory sibling).
+        var genAgentRow = await db.Agents.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == genAgentId, ct);
+        AgentRow? evalAgentRow = null;
+        if (!string.IsNullOrEmpty(evalAgentId))
+        {
+            evalAgentRow = await db.Agents.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.Id == evalAgentId, ct);
+        }
+        var genCrewWantsMemory = genAgentRow?.AgentMemoryOverride ?? crew.EnableAgentMemory;
+        var evalCrewWantsMemory = evalAgentRow?.AgentMemoryOverride
+            ?? (evalCrew?.EnableAgentMemory ?? false);
+
+        var genMemoryEnabled = genCrewWantsMemory
             && (genContext.Backend == AgentBackend.Claude
                 || (genContext.Backend == AgentBackend.Copilot
                     && genContext.InvokeMode == AgentInvokeMode.Sdk));
-        var evalMemoryEnabled = (evalCrew?.EnableAgentMemory ?? false)
+        var evalMemoryEnabled = evalCrewWantsMemory
             && evalContext is not null
             && (evalContext.Backend == AgentBackend.Claude
                 || (evalContext.Backend == AgentBackend.Copilot

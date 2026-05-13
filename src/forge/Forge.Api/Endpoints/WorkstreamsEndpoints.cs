@@ -38,8 +38,71 @@ public static class WorkstreamsEndpoints
         grp.MapPost("/{id}/pr", OpenPr).WithName("OpenWorkstreamPr");
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
+        grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
 
         return app;
+    }
+
+    // GET /api/workstreams/{id}/memory — Phase 55 / Phase G. Read-only
+    // inspection of the (workItemId, agentId, role) memory rows for a
+    // workstream so the Conversation tab can show a "Memory" chip and
+    // an operator can audit session-id / turn-count / approx-token
+    // state from a curl. No auth gate — this is a debug surface, not
+    // a write path.
+    private static async Task<IResult> GetMemory(
+        string id,
+        ForgeDbContext db,
+        Forge.Api.Agents.CopilotSessionPool copilotPool)
+    {
+        var rows = await db.AgentMemory.AsNoTracking()
+            .Where(m => m.WorkItemId == id)
+            .ToListAsync();
+
+        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            int? turnCount = null;
+            if (!string.IsNullOrEmpty(row.MessagesJson))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(row.MessagesJson);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        turnCount = doc.RootElement.GetArrayLength();
+                    }
+                }
+                catch
+                {
+                    // corrupt payload — leave turnCount null
+                }
+            }
+
+            result[row.Role] = new
+            {
+                agentId = row.AgentId,
+                backend = row.Backend,
+                invokeMode = row.InvokeMode,
+                // Truncate session id so a copy/paste from the UI
+                // doesn't accidentally include the full Claude Code
+                // session identifier in logs.
+                sessionId = string.IsNullOrEmpty(row.SessionId)
+                    ? null
+                    : (row.SessionId.Length <= 12 ? row.SessionId : row.SessionId[..12] + "…"),
+                hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
+                turnCount,
+                approxInputTokens = row.ApproxInputTokens,
+                lastIter = row.LastIter,
+                createdAt = row.CreatedAt,
+                updatedAt = row.UpdatedAt,
+            };
+        }
+
+        return Results.Ok(new
+        {
+            workItemId = id,
+            roles = result,
+        });
     }
 
     // POST /api/workstreams/{id}/pr — Phase 6.4. Opens a PR via the named

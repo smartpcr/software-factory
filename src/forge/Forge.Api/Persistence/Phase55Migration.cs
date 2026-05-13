@@ -81,6 +81,11 @@ public static class Phase55Migration
         // effective trigger down to model.ContextWindow * 0.3 so a
         // smaller-window evaluator model can never overrun its context.
         await EnsureColumnAsync(conn, "crews", "CompactionTokenThreshold", "INTEGER NULL", ct);
+
+        // Phase 55 / Phase G per-agent override (NULL = inherit crew). Lets
+        // an operator flip one agent in a crew on/off without touching the
+        // rest. SQLite has no native nullable bool; we map NULL/0/1.
+        await EnsureColumnAsync(conn, "agents", "AgentMemoryOverride", "INTEGER NULL", ct);
     }
 
     private static async Task<bool> EnsureColumnAsync(

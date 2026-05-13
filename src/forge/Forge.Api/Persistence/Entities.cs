@@ -849,6 +849,16 @@ public class AgentRow
     /// regular agents; leads/evaluators may have higher capacity.
     /// </summary>
     public int MaxConcurrentTasks { get; set; } = 1;
+
+    /// <summary>
+    /// Phase 55 / Phase G — per-agent override for the crew's
+    /// <see cref="CrewRow.EnableAgentMemory"/> flag. Null = inherit
+    /// from the crew (the default). Set explicitly when an operator
+    /// wants to flip a single agent on or off without touching the
+    /// rest of the crew — useful for A/B comparing a memory-enabled
+    /// agent against a non-memory sibling on the same workstream type.
+    /// </summary>
+    public bool? AgentMemoryOverride { get; set; }
 }
 
 /// <summary>
