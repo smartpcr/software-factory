@@ -377,6 +377,44 @@ public static class TaskExecutionEndpoints
         long evalIn  = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.InputTokens);
         long evalOut = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.OutputTokens);
 
+        // Phase 54 — per-iteration prompt-size samples. Pair generator+
+        // evaluator usage rows by their ordinal position within each
+        // CostCategory (ordered by StartedAt) — the loop writes them in
+        // strict gen→eval sequence per iteration, so positions align with
+        // iterations 1..N. Missing-side rows (e.g. eval skipped on first
+        // run) get a zero-token placeholder so the UI sparkline still has
+        // a stable x-axis.
+        var genUsage  = usage.Where(u => u.CostCategory == "generator").OrderBy(u => u.StartedAt).ThenBy(u => u.Id).ToList();
+        var evalUsage = usage.Where(u => u.CostCategory == "evaluator").OrderBy(u => u.StartedAt).ThenBy(u => u.Id).ToList();
+        var iterCount = Math.Max(genUsage.Count, evalUsage.Count);
+        var promptGrowth = new List<IterationPromptGrowth>(iterCount);
+        for (int i = 0; i < iterCount; i++)
+        {
+            var g = i < genUsage.Count ? genUsage[i] : null;
+            var e = i < evalUsage.Count ? evalUsage[i] : null;
+            promptGrowth.Add(new IterationPromptGrowth(
+                Iter: i + 1,
+                GeneratorInputTokens: g?.InputTokens ?? 0,
+                GeneratorOutputTokens: g?.OutputTokens ?? 0,
+                EvaluatorInputTokens: e?.InputTokens ?? 0,
+                EvaluatorOutputTokens: e?.OutputTokens ?? 0,
+                GeneratorTurnSamplesJson: g?.TurnSamplesJson,
+                EvaluatorTurnSamplesJson: e?.TurnSamplesJson));
+        }
+
+        // Phase 52 — windowed generator tokens for the sloppy-cap meter the
+        // UI displays. Uses the SAME (agentId + BudgetWindowStartUtc) filter
+        // as SloppyDetector.CheckTokenCapAsync so the displayed
+        // tokens-used/cap ratio matches the actual gate. Cumulative genIn/
+        // genOut (above) include prior reassigned pairs and are kept for
+        // backwards compatibility.
+        long generatorTokensSinceWindow = 0;
+        if (!string.IsNullOrEmpty(generatorAgentId))
+        {
+            (_, generatorTokensSinceWindow) = await SloppyDetector.CheckTokenCapAsync(
+                db, id, generatorAgentId, wi?.BudgetWindowStartUtc, ct);
+        }
+
         // Crew budget (today's spend vs. daily cap, if any).
         // Also resolve evaluatorCrewId from the generator crew's pair when not
         // yet known from deliverables (pre-first-iteration state).
@@ -619,7 +657,13 @@ public static class TaskExecutionEndpoints
             // The runtime PATCH override on the queue row still wins.
             MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
             TranscriptTotalCount: transcriptTotalCount,
-            BudgetSeconds: budgetSeconds);
+            BudgetSeconds: budgetSeconds,
+            PairAttemptCount: wi?.PairAttemptCount ?? 1,
+            MaxPairAttempts: ScoringConstants.MaxPairAttempts,
+            GeneratorTokensSinceWindow: generatorTokensSinceWindow,
+            GeneratorTokenCap: ScoringConstants.SloppyGeneratorTokenCap,
+            PromptGrowth: promptGrowth,
+            PromptBloatGrowthThreshold: ScoringConstants.PromptBloatGrowthThreshold);
 
         return Results.Ok(snap);
     }
@@ -1019,21 +1063,59 @@ public static class TaskExecutionEndpoints
         string? worktreePath;
         if (id.StartsWith("plan-doc:", StringComparison.Ordinal))
         {
-            // Extract `spawn-{storyId}` from `plan-doc:{spawnId}:{file}`.
-            var spawnId = id.Substring("plan-doc:".Length);
-            var lastColon = spawnId.LastIndexOf(':');
-            if (lastColon > 0) spawnId = spawnId.Substring(0, lastColon);
+            // Extract `spawn-{storyId}` and the file name from
+            // `plan-doc:{spawnId}:{file}`.
+            var afterPrefix = id.Substring("plan-doc:".Length);
+            var lastColon = afterPrefix.LastIndexOf(':');
+            string spawnId;
+            string? planDocKey = null;
+            if (lastColon > 0)
+            {
+                spawnId = afterPrefix.Substring(0, lastColon);
+                var fileName = afterPrefix.Substring(lastColon + 1);
+                // Strip ".md" to derive the canonical doc key.
+                if (fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    planDocKey = fileName.Substring(0, fileName.Length - 3).ToLowerInvariant();
+                }
+            }
+            else
+            {
+                spawnId = afterPrefix;
+            }
             // Look up the spawn so we use its real PlanBranch (preserves
             // any custom branch name the orchestrator picked at spawn time).
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
-            branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
-            // Plan-doc paths still use the legacy `spawn-{slug}` shape
-            // (Phase 49 only renamed engineer workstream paths; plan-doc
-            // names were already short).
-            var sanitizedBranch = SanitizeBranchSlug(branch);
-            worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
-                : null;
+            // Phase 53 — sequential-mode spawns put each doc on its own
+            // branch and worktree. FindDocBranch resolves both legacy
+            // (PlanBranch) and sequential (per-doc) cases.
+            if (spawn is not null && planDocKey is not null
+                && Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.ContainsKey(planDocKey))
+            {
+                branch = Forge.Api.Services.Stories.PlanDocStateHelpers.FindDocBranch(spawn, planDocKey);
+                if (Forge.Api.Services.Stories.PlanDocStateHelpers.IsSequentialMode(spawn))
+                {
+                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                        ? Path.Combine(cloneRoot, ".worktree",
+                            Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey))
+                        : null;
+                }
+                else
+                {
+                    var sanitizedBranch = SanitizeBranchSlug(branch);
+                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                        ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                        : null;
+                }
+            }
+            else
+            {
+                branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
+                var sanitizedBranch = SanitizeBranchSlug(branch);
+                worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                    ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                    : null;
+            }
         }
         else
         {

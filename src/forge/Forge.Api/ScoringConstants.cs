@@ -149,4 +149,18 @@ public static class ScoringConstants
     /// (symmetric with the existing <c>RejectRate &gt; 0.10</c> rule).
     /// </summary>
     public const double SloppyRiskRate = 0.15;
+
+    // ── Phase 54 — per-turn prompt-size growth guard ────────────────────
+
+    /// <summary>
+    /// Phase 54 — input-token growth threshold (per iteration, per role)
+    /// that triggers a <c>task.prompt-bloat</c> warning event. Under the
+    /// Phase 54 "1 invocation = 1 turn" definition, growth is computed as
+    /// <c>inputTokens[iter N] - inputTokens[iter N-1]</c> for the same role
+    /// (generator / evaluator) on the same work item. When the delta
+    /// exceeds this cap the loop emits an amber warning so the operator
+    /// can spot context-bloat before the SloppyDetector's 500K cap fires.
+    /// Bloat detection is purely advisory — it does not abort the loop.
+    /// </summary>
+    public const long PromptBloatGrowthThreshold = 30_000;
 }

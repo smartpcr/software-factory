@@ -88,6 +88,27 @@ public class AutoMergeWatcher : BackgroundService
                 // owner pre-authorised destructive resolution, so we let the
                 // -X ours path try when the provider rejects with a conflict.
 
+                // 2026-05-12 — DO NOT merge while reviewer comments are still
+                // unresolved. The story orchestrator's DriveReviewAsync runs
+                // a parallel review-fix loop that posts replies + flips the
+                // local PrCommentRow.State to "resolved" only after the
+                // engineer has addressed each comment. AutoMergeWatcher used
+                // to race ahead of that loop and merge with active comments
+                // stranded on the PR (observed on smartpcr/qq#3 — 5 active
+                // top-level comments, merged at 18:41 UTC). Cooperate with
+                // the orchestrator: any active comment blocks the merge until
+                // the orchestrator's loop resolves them (or operator clears).
+                var hasActiveComments = await db.PrComments
+                    .AsNoTracking()
+                    .AnyAsync(c => c.PrId == row.Id && c.State == "active", ct);
+                if (hasActiveComments)
+                {
+                    this.logger.LogDebug(
+                        "forge.auto-merge.skipped pr={Pr} reason=active-comments",
+                        pr.Id);
+                    continue;
+                }
+
                 // Pick the provider from the PR's own provider field (was
                 // hard-coded github→ado fallback, which broke ADO-only
                 // multi-repo deployments).

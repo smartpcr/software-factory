@@ -686,6 +686,33 @@ public class CrewRow
     /// pairs with B, both rows reference each other. Null when standalone.
     /// </summary>
     public string? PairedWithCrewId { get; set; }
+
+    /// <summary>
+    /// Phase 55 (docs/forge/sloppy_guard.md) — per-crew toggle for Layer 2
+    /// agent-memory continuity (Claude/CLI --resume, Claude/SDK history
+    /// replay, Copilot/SDK long-lived session). Defaults <c>true</c>
+    /// (operator decision flipped 2026-05-13 from opt-in to opt-out):
+    /// every supported crew gets memory unless explicitly disabled;
+    /// agents can also override per-row via
+    /// <see cref="AgentRow.AgentMemoryOverride"/>. Phase A worktree
+    /// scratch notes are independent of this flag and stay always-on
+    /// for every crew.
+    /// </summary>
+    public bool EnableAgentMemory { get; set; } = true;
+
+    /// <summary>
+    /// Phase 55 / Phase F — per-crew override for the input-token
+    /// threshold at which the compactor folds older conversation turns
+    /// into a single summary. Null = use the global 300K default. The
+    /// effective trigger is always clamped down to
+    /// <c>model.ContextWindow × 0.3</c> so a smaller-window evaluator
+    /// model (e.g. 200K Sonnet against a 1M-context generator) never
+    /// blows past its real context budget. Operators tune this when
+    /// they see a crew's compaction summaries lose too much detail —
+    /// drop the threshold to compact later (more verbatim turns
+    /// retained) or raise it on long-context-tier crews.
+    /// </summary>
+    public long? CompactionTokenThreshold { get; set; }
 }
 
 /// <summary>
@@ -824,6 +851,16 @@ public class AgentRow
     /// regular agents; leads/evaluators may have higher capacity.
     /// </summary>
     public int MaxConcurrentTasks { get; set; } = 1;
+
+    /// <summary>
+    /// Phase 55 / Phase G — per-agent override for the crew's
+    /// <see cref="CrewRow.EnableAgentMemory"/> flag. Null = inherit
+    /// from the crew (the default). Set explicitly when an operator
+    /// wants to flip a single agent on or off without touching the
+    /// rest of the crew — useful for A/B comparing a memory-enabled
+    /// agent against a non-memory sibling on the same workstream type.
+    /// </summary>
+    public bool? AgentMemoryOverride { get; set; }
 }
 
 /// <summary>
@@ -1179,6 +1216,20 @@ public class AgentUsageRow
     /// to that value.
     /// </summary>
     public string CostCategory { get; set; } = "generator";
+
+    /// <summary>
+    /// Phase 54 — JSON array of per-turn token snapshots for the invocation
+    /// that wrote this row. Shape is
+    /// <c>[{ "turnIndex": int, "inputTokens": long, "outputTokens": long,
+    /// "atUtc": "iso8601" }, ...]</c>. Under the Phase 54 "1 invocation =
+    /// 1 turn" definition the array is either null (pre-Phase-54 rows / CLI
+    /// runners with no per-event usage) or carries a single sample whose
+    /// values mirror <see cref="InputTokens"/> + <see cref="OutputTokens"/>.
+    /// Reserved for richer sub-invocation samples (one entry per
+    /// <c>AssistantUsageEvent</c> from the Copilot SDK) when the turn
+    /// granularity is bumped.
+    /// </summary>
+    public string? TurnSamplesJson { get; set; }
 }
 
 /// <summary>
@@ -2367,6 +2418,22 @@ public class StorySpawnRow
     /// <summary>PR id for the QA feature files; null until the QA PR is opened.</summary>
     public string? QaPrId { get; set; }
 
+    /// <summary>
+    /// Phase 53 — sequential plan-doc state. Ordered JSON array; each entry
+    /// captures one plan doc's branch and PR:
+    /// <c>[{ "key": "architecture", "branch": "story/{id}/plan-architecture", "prId": "..." | null }, ...]</c>.
+    /// Order is canonical: <c>architecture → tech-spec → implementation-plan
+    /// → e2e-scenarios</c>. Doc N+1's gen↔eval loop only starts after
+    /// doc N's <c>prId</c> references a PR with <c>Col='merged'</c> AND
+    /// the latest doc deliverable carries <c>Verdict='pass'</c>.
+    ///
+    /// <para><c>null</c> on legacy spawns (created before Phase 53); they
+    /// continue to drive the single-PR <see cref="PlanPrId"/> path. New
+    /// spawns initialise to <c>"[]"</c> at create time so the
+    /// orchestrator's discriminator is unambiguous.</para>
+    /// </summary>
+    public string? PlanDocPrsJson { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -2470,4 +2537,77 @@ public class WorkstreamDepRow
     public string DependsOnId { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 55 (docs/forge/sloppy_guard.md) — persistent cross-iteration
+/// memory for a (work item, agent, role) tuple. Each call to
+/// <c>IAgentRunner.StartAsync</c> opens a fresh provider session by
+/// default, so without this row Layer 2 (Claude/CLI session resume,
+/// Claude/SDK history replay, Copilot/SDK long-lived session) cannot
+/// reconnect across iterations.
+///
+/// <para>One row per <c>(WorkItemId, AgentId, Role)</c> — enforced by a
+/// unique index. A reassigned pair (Phase 52, when re-enabled) starts
+/// with no row because the new agent has a different
+/// <see cref="AgentId"/>; that's the "fresh agent = fresh memory" rule
+/// decided in the plan.</para>
+///
+/// <para>Two payload columns are mutually exclusive in practice but both
+/// nullable on the schema so a single row shape works for every backend
+/// cell:</para>
+/// <list type="bullet">
+/// <item><see cref="SessionId"/> — Claude/CLI's <c>--resume</c> id and
+/// the Copilot SDK's session handle. Opaque to Forge.</item>
+/// <item><see cref="MessagesJson"/> — Claude/SDK's full conversation
+/// history serialized as a JSON array of <c>{role, content, iter,
+/// tokens}</c> turns. Compaction (Phase F) rewrites this in place.</item>
+/// </list>
+/// </summary>
+public class AgentMemoryRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Matches <see cref="DeliverableRow.WorkItemId"/> — workstream id for impl, synthetic plan-doc id for plan/decompose.</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>Agent that owns this conversation. Memory is scoped to the agent so reassigned pairs start fresh.</summary>
+    public string AgentId { get; set; } = string.Empty;
+
+    /// <summary>One of <see cref="AgentMemoryRoles"/>.</summary>
+    public string Role { get; set; } = AgentMemoryRoles.Generator;
+
+    /// <summary><c>"claude"</c> | <c>"copilot"</c>. Snapshot of the backend at row creation; informs which payload column the consumer reads.</summary>
+    public string Backend { get; set; } = string.Empty;
+
+    /// <summary><c>"cli"</c> | <c>"sdk"</c>. Snapshot of the invoke mode at row creation.</summary>
+    public string InvokeMode { get; set; } = string.Empty;
+
+    /// <summary>Provider-native session handle (Claude/CLI <c>--resume</c> id; Copilot/SDK pool key). Null until the first Layer-2 invocation lands.</summary>
+    public string? SessionId { get; set; }
+
+    /// <summary>JSON array of <c>ConversationTurn</c> records. Null when the backend doesn't replay history (CLI / Copilot/SDK).</summary>
+    public string? MessagesJson { get; set; }
+
+    /// <summary>Most recent iteration that wrote to this row. 0 before the first write.</summary>
+    public int LastIter { get; set; }
+
+    /// <summary>Best-effort estimate of input tokens the next invocation will see (sum of prior turns; informs compaction trigger).</summary>
+    public long ApproxInputTokens { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 55 — well-known values for <see cref="AgentMemoryRow.Role"/>.
+/// Memory is keyed on role so a crew's generator and evaluator agents
+/// can each maintain their own continuity without crosstalk.
+/// </summary>
+public static class AgentMemoryRoles
+{
+    public const string Generator = "generator";
+
+    public const string Evaluator = "evaluator";
 }
