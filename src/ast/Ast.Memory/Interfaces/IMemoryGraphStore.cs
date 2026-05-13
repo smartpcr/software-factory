@@ -18,8 +18,10 @@ using Ast.Memory.Models;
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
+    // Layer-filtered queries with temporal support
+
     /// <summary>
-    /// Gets nodes filtered by memory layer with optional temporal and node-type filters.
+    /// Gets nodes by memory layer with optional temporal and filter criteria.
     /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
@@ -30,17 +32,20 @@ public interface IMemoryGraphStore : IGraphStore
     // ── Edge queries ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Gets edges filtered by semantic relation with optional layer and temporal filters.
+    /// Gets edges by semantic relation with optional layer and temporal criteria.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
-        string? memoryLayer = null,
-        int? atCommitIndex = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default);
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // Temporal-aware upsert and retirement
 
     /// <summary>
-    /// Inserts or updates a node with temporal version range.
+    /// Upserts a node with version range for temporal tracking.
+    /// Serialized via SemaphoreSlim(1,1) (SQLite) or ACID transactions (Neo4j).
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
@@ -48,19 +53,13 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts or updates an edge.
-    /// </summary>
-    Task UpsertEdgeAsync(
-        Hyperedge edge,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Retires a node by setting its UntilIndex.
+    /// Retires a node and cascades retirement to all connected edges.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken cancellationToken = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires an edge by setting its UntilIndex.
@@ -76,10 +75,13 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpdateEdgeMetadataAsync(
         string edgeId,
         IDictionary<string, object?> metadata,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
+
+    // Expertise CRUD
 
     /// <summary>
-    /// Gets non-archived expertise entries targeting a node, filtered by minimum confidence.
+    /// Gets expertise entries for a target node. Excludes archived entries.
+    /// minConfidence threshold is evaluated against stored confidence.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
@@ -87,7 +89,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts or updates an expertise entry.
+    /// Upserts an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
@@ -101,25 +103,49 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gets archived expertise entries, optionally filtered by target node.
+    /// Gets archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
-        string? targetNodeId = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default);
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
+
+    // Statistics and audit
 
     /// <summary>
-    /// Gets per-layer statistics for the memory graph.
+    /// Gets memory-specific statistics.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Records a mutation in the audit log.
+    /// Logs an audit event.
     /// </summary>
     Task LogAuditAsync(
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken = default);
+        CancellationToken ct = default);
+
+    // Convenience bulk operations (supplement §5.1 for pipeline use)
+
+    /// <summary>
+    /// Bulk upsert nodes. Delegates to individual UpsertNodeAsync calls.
+    /// </summary>
+    Task<int> UpsertNodesAsync(IEnumerable<HypergraphNode> nodes, VersionRange version, CancellationToken ct = default);
+
+    /// <summary>
+    /// Bulk upsert edges.
+    /// </summary>
+    Task<int> UpsertEdgesAsync(IEnumerable<Hyperedge> edges, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets nodes associated with a given file path.
+    /// </summary>
+    Task<IReadOnlyList<HypergraphNode>> GetNodesByFilePathAsync(string filePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets edges where at least one endpoint is in the given node IDs.
+    /// </summary>
+    Task<IReadOnlyList<Hyperedge>> GetEdgesForNodesAsync(IEnumerable<string> nodeIds, CancellationToken ct = default);
 }
