@@ -313,6 +313,40 @@ public class Phase50StorySpawnDeleteTests
             ReleasedAt = null,
         });
 
+        // Phase 50 follow-up (2026-05-12) — cost ledger rows. DeliverableLoop
+        // emits one AgentUsageRow per gen/eval invocation with
+        // TaskId = workItemId, and the operator-facing doc / workstream
+        // cost cards sum these for the doc's deterministic plan-doc id.
+        // Without the purge, re-spawning the same story leaks the prior
+        // cycle's $$$ totals onto the brand-new doc cards.
+        db.AgentUsage.Add(new AgentUsageRow
+        {
+            AgentId = "agent-arch",
+            CrewId = "crew-arch",
+            TaskId = planDocId,
+            Model = "stub",
+            InputTokens = 1000,
+            OutputTokens = 2000,
+            CostUsd = 12.34m,
+            StartedAt = DateTimeOffset.UtcNow,
+            Status = "ok",
+        });
+        for (var i = 0; i < wsCount; i++)
+        {
+            db.AgentUsage.Add(new AgentUsageRow
+            {
+                AgentId = $"agent-{i + 1}",
+                CrewId = "crew-eng",
+                TaskId = wsIds[i],
+                Model = "stub",
+                InputTokens = 500,
+                OutputTokens = 1500,
+                CostUsd = 7.89m,
+                StartedAt = DateTimeOffset.UtcNow,
+                Status = "ok",
+            });
+        }
+
         await db.SaveChangesAsync();
         return (spawnId, wsIds, prIds.ToArray());
     }
@@ -453,6 +487,18 @@ public class Phase50StorySpawnDeleteTests
         var planDocId = $"plan-doc:{spawnId}:architecture.md";
         Assert.False(await verifyDb.Deliverables.AnyAsync(d => d.WorkItemId == planDocId));
         Assert.False(await verifyDb.TaskTranscriptEvents.AnyAsync(e => e.WorkItemId == planDocId));
+
+        // Phase 50 follow-up (2026-05-12) — operator reported re-spawned
+        // story showed ~$1300-$2000 per plan-doc card BEFORE any LLM ran.
+        // The deterministic spawn id meant new TaskIds collided 1:1 with
+        // old `agent_usage` rows. Assert the cost ledger is now purged for
+        // BOTH the synthetic plan-doc id and every workstream id (the
+        // latter via CascadeDeleteWorkstreamAsync).
+        Assert.False(await verifyDb.AgentUsage.AnyAsync(u => u.TaskId == planDocId));
+        foreach (var wsId in wsIds)
+        {
+            Assert.False(await verifyDb.AgentUsage.AnyAsync(u => u.TaskId == wsId));
+        }
     }
 
     [Fact]
