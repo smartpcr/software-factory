@@ -124,6 +124,40 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 53 — sequential plan-doc entry point. The orchestrator calls
+    /// this once per doc on the doc's own branch + worktree; the
+    /// deterministic strategy returns the static content matching the
+    /// full-run output for the requested key.
+    /// </summary>
+    public async Task<(string RepoPath, string Content)> ProduceSinglePlanArtifactAsync(
+        StorySpawnRow spawn,
+        WorkItemRow story,
+        string docKey,
+        string worktreePath,
+        string planBranch,
+        RepoRow? repo,
+        bool forceResume = false,
+        CancellationToken ct = default)
+    {
+        if (!PlanDocStateHelpers.PlanDocFileName.ContainsKey(docKey))
+        {
+            throw new ArgumentException($"Unknown plan-doc key '{docKey}'.", nameof(docKey));
+        }
+        var fileName = PlanDocStateHelpers.PlanDocFileName[docKey];
+        var repoPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/{fileName}";
+
+        // Reuse the same deterministic content as the full plan-run path so
+        // tests asserting file content stay byte-identical between the
+        // legacy single-PR and Phase 53 sequential paths.
+        var full = await this.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
+        if (!full.TryGetValue(repoPath, out var content))
+        {
+            content = $"# {fileName} — {story.Title}\n\n(deterministic stub)\n";
+        }
+        return (repoPath, content);
+    }
+
+    /// <summary>
     /// Test hook — counter of <see cref="ResumeSingleArtifactAsync"/> invocations
     /// keyed by <c>{spawnId}:{key}</c>. Reset between tests via <see cref="Reset"/>.
     /// </summary>

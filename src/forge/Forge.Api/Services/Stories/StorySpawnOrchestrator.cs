@@ -284,6 +284,365 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
+        // Phase 53 — sequential plan-doc path. Detection is strictly by
+        // column presence: sequential-mode spawns are initialised with
+        // PlanDocPrsJson = "[]" at spawn-create time, legacy rows
+        // (created before Phase 53 shipped) carry null. No row ever flips
+        // between paths mid-life, so the discriminator is unambiguous.
+        if (PlanDocStateHelpers.IsSequentialMode(spawn))
+        {
+            return await this.DrivePlanSequentialAsync(db, hub, spawn, story, repo, forceResume, ct);
+        }
+        return await this.DrivePlanLegacyAsync(db, hub, spawn, story, repo, forceResume, ct);
+    }
+
+    /// <summary>
+    /// Phase 53 — sequential drive. Plan docs run one at a time in canonical
+    /// order (architecture → tech-spec → implementation-plan → e2e-scenarios).
+    /// Each doc gets its own branch (<c>story/{id}/plan-{key}</c>), its own
+    /// worktree (<c>.worktree/plan-{key}</c>), and its own PR. Doc N+1's
+    /// gen↔eval loop only starts after doc N's PR is merged AND its latest
+    /// deliverable verdict is <c>pass</c>.
+    /// </summary>
+    private async Task<bool> DrivePlanSequentialAsync(
+        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
+    {
+        var baseBranch = BaseBranchOf(spawn);
+        await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
+
+        // Same plan-phase invariant as the legacy path: no workstream may
+        // be active while Phase=Plan. Cancels stale picks from a regressed
+        // implement→plan transition.
+        await this.EnforcePlanPhaseInvariantAsync(db, spawn, ct);
+
+        // Ensure backing WorkItemRows for each plan doc exist (deliverables /
+        // transcripts / queue rows all key on plan-doc:{spawn.Id}:{file}).
+        await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
+
+        var states = PlanDocStateHelpers.GetPlanDocStates(spawn).ToList();
+        var docOrder = PlanDocStateHelpers.PlanDocOrder;
+        for (var i = 0; i < docOrder.Count; i++)
+        {
+            var docKey = docOrder[i];
+            var entry = states.FirstOrDefault(e =>
+                string.Equals(e.Key, docKey, StringComparison.OrdinalIgnoreCase));
+            var prevMerged = i == 0 || await IsDocCompleteAsync(db, spawn, docOrder[i - 1], ct);
+
+            if (entry is null || entry.Branch is null)
+            {
+                // Doc N has no branch yet. Wait for doc N-1 to be complete
+                // (PR merged AND deliverable verdict=pass).
+                if (!prevMerged)
+                {
+                    // Surface a soft error so the operator sees why the chain isn't moving.
+                    if (i > 0)
+                    {
+                        await PersistLastErrorAsync(db, spawn.Id,
+                            $"Plan chain waiting on '{docOrder[i - 1]}' to complete (PR merged + verdict=pass) before starting '{docKey}'.",
+                            hub, ct);
+                    }
+                    return false;
+                }
+
+                // Crash-recovery anchor: persist {branch, prId=null} BEFORE
+                // any git work so a crash mid-iter resumes idempotently.
+                var newBranch = PlanDocStateHelpers.CanonicalDocBranch(spawn.StoryId, docKey);
+                states = ReplaceOrAppend(states, new PlanDocPrEntry(docKey, newBranch, PrId: null));
+                var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                PlanDocStateHelpers.SetPlanDocStates(spawnRow, states);
+                spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                await ClearLastErrorAsync(db, spawnRow, ct);
+                await db.SaveChangesAsync(ct);
+                entry = new PlanDocPrEntry(docKey, newBranch, PrId: null);
+            }
+
+            if (entry.PrId is null)
+            {
+                // Branch is recorded but PR not yet opened. Either first
+                // run for this doc, or resume after a crash between
+                // commit and PR open. Both paths re-enter
+                // ProduceSinglePlanArtifactAsync — the strategy's
+                // workspace-cache short-circuit + pass-verdict guard
+                // keep the work idempotent.
+                try
+                {
+                    return await this.RunPlanDocAsync(db, hub, spawn, story, repo, baseBranch,
+                        docKey, entry.Branch!, forceResume, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogError(ex,
+                        "Plan doc '{Doc}' production failed for spawn {SpawnId} ({StoryId}).",
+                        docKey, spawn.Id, spawn.StoryId);
+                    await PersistLastErrorAsync(db, spawn.Id,
+                        $"plan doc '{docKey}' failed: {FlattenMessage(ex)}", hub, ct);
+                    return false;
+                }
+            }
+
+            // PR exists — auto-approve + merge if not merged yet.
+            var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId, ct);
+            if (pr is null)
+            {
+                // PR row vanished (manual DB edit / external cleanup). Clear
+                // the prId so the next tick re-opens. Surface so the operator
+                // sees the recovery action.
+                await PersistLastErrorAsync(db, spawn.Id,
+                    $"plan doc '{docKey}' PR row {entry.PrId} not found; clearing for re-open.", hub, ct);
+                states = ReplaceOrAppend(states, new PlanDocPrEntry(docKey, entry.Branch, PrId: null));
+                var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                PlanDocStateHelpers.SetPlanDocStates(sRow, states);
+                sRow.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+                return false;
+            }
+
+            if (!string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+            {
+                // Phase 53 mirrors the "no human gate on plan PRs" rule —
+                // architect crew is the authority; auto-approve + merge.
+                // Also gate on verdict=pass: an externally-merged PR with
+                // a stalled verdict still holds the chain. The merge happens
+                // here on the same tick whenever both gates open.
+                if (!await IsDocVerdictPassAsync(db, spawn, docKey, ct))
+                {
+                    await PersistLastErrorAsync(db, spawn.Id,
+                        $"plan doc '{docKey}' verdict not 'pass'; PR merge blocked until gen-eval loop reaches pass.",
+                        hub, ct);
+                    return false;
+                }
+                var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
+                try
+                {
+                    await this.ApproveAndMergeAsync(entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
+                    var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                    await ClearLastErrorAsync(db, sRow, ct);
+                    await db.SaveChangesAsync(ct);
+                    await EmitChange(hub, "plan-doc-pr-merged", sRow, ct);
+                    return true;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "Plan doc '{Doc}' PR {PrId} auto-merge failed; surfacing to operator.",
+                        docKey, entry.PrId);
+                    await PersistLastErrorAsync(db, spawn.Id,
+                        $"plan doc '{docKey}' PR merge failed: {FlattenMessage(ex)}", hub, ct);
+                    return false;
+                }
+            }
+
+            // PR merged. Free the worktree disk for this doc (forensic-only
+            // now that the content is on base). Best-effort: failures here
+            // log + continue.
+            if (repo is not null && !string.IsNullOrEmpty(entry.Branch))
+            {
+                await this.git.RemoveWorktreeAsync(repo, entry.Branch!, ct);
+            }
+            // Continue to the next doc on the same tick — quick walk
+            // through already-completed docs is cheap.
+        }
+
+        // All four docs merged. Re-verify the all-passed gate (catches a
+        // deliverable that got hand-edited away from pass between merges).
+        var gate = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        if (!gate.AllPassed)
+        {
+            await PersistLastErrorAsync(db, spawn.Id,
+                $"Plan docs not all passed; phase advance blocked: {string.Join(", ", gate.NonPassedKeys)}",
+                hub, ct);
+            return false;
+        }
+
+        var spawnAdvance = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+        spawnAdvance.Phase = StorySpawnPhases.Decompose;
+        spawnAdvance.UpdatedAt = DateTimeOffset.UtcNow;
+        await ClearLastErrorAsync(db, spawnAdvance, ct);
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "phase-advanced", spawnAdvance, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 53 — one drive of a single plan doc: ensure branch + worktree
+    /// at the chosen base, run the gen↔eval loop via the strategy, commit
+    /// the result, merge upstream base in, and open (or recover) the per-doc
+    /// PR. Persists state writes between each step so a crash leaves an
+    /// unambiguous recovery anchor in <c>PlanDocPrsJson</c>.
+    /// </summary>
+    private async Task<bool> RunPlanDocAsync(
+        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
+        string docKey, string docBranch, bool forceResume, CancellationToken ct)
+    {
+        // First-drive of THIS doc on a fresh spawn: orphan-heal the branch.
+        // The hasAnyPlanDeliverable check mirrors the legacy DrivePlanAsync
+        // (line 392-402) but scoped to this doc only.
+        var docWorkItemId = $"plan-doc:{spawn.Id}:{PlanDocStateHelpers.PlanDocFileName[docKey]}";
+        var hasAnyDeliverable = await db.Deliverables
+            .AnyAsync(d => d.WorkItemId == docWorkItemId, ct);
+        var isFirstDrive = !hasAnyDeliverable;
+        if (isFirstDrive)
+        {
+            await this.git.EnsureBranchFreshAsync(repo, docBranch, baseBranch, ct);
+        }
+        else
+        {
+            await this.git.EnsureBranchAsync(repo, docBranch, baseBranch, ct);
+        }
+
+        // Worktree at the doc's canonical slug. Base is spawn.BaseBranch
+        // which by this point includes all upstream-merged plan docs.
+        var worktreePath = await this.git.EnsureWorktreeAsync(
+            repo, docBranch, baseBranch, ct,
+            worktreeSlug: PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey));
+
+        // Produce the doc content via the strategy. ProduceSinglePlanArtifactAsync
+        // writes the file into the worktree as a side-effect (the agent's
+        // file-write tool) AND returns the content string.
+        var (repoPath, content) = await this.strategy.ProduceSinglePlanArtifactAsync(
+            spawn, story, docKey, worktreePath, docBranch, repo, forceResume, ct);
+
+        // Commit. CommitFilesAsync is no-op when the file content hasn't
+        // changed since the per-iter commit (the strategy commits per iter
+        // via CommitPathInWorktreeAsync). This final commit is a belt-and-
+        // suspenders write that catches "agent edited file mid-iter but
+        // per-iter commit was skipped".
+        await this.git.CommitFilesAsync(repo, docBranch,
+            new Dictionary<string, string>(StringComparer.Ordinal) { [repoPath] = content },
+            forceResume
+                ? $"plan-{docKey}: resume iteration for story {GitSafe(spawn.StoryId)}"
+                : $"plan-{docKey}: artifact for story {GitSafe(spawn.StoryId)}",
+            ct);
+
+        // Merge upstream base in (picks up any sibling docs merged while
+        // this one was iterating, plus any concurrent changes from other
+        // streams of work).
+        await this.git.MergeUpstreamIntoBranchAsync(repo, docBranch, baseBranch, ct: ct);
+
+        // Idempotent PR open: if a PR already exists for this branch (e.g.
+        // crash between OpenPrAsync and SaveChangesAsync on a prior tick),
+        // reuse it. Otherwise open a fresh one.
+        var existing = await db.Prs.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Branch == docBranch
+                && p.Col != "merged" && p.Col != "closed", ct);
+        string prId;
+        if (existing is not null)
+        {
+            prId = existing.Id;
+        }
+        else
+        {
+            prId = await this.provider.OpenPrAsync(new StoryPrRequest(
+                Branch: docBranch,
+                BaseBranch: baseBranch,
+                Title: $"[plan-{docKey}] {story.Title}",
+                Body: $"Planning artifact `{PlanDocStateHelpers.PlanDocFileName[docKey]}` for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
+                Repo: repo,
+                WorkItemId: docWorkItemId,
+                Workstream: null,
+                Epic: spawn.StoryId,
+                AutoMerge: AutoMergeOf(spawn)), ct);
+        }
+
+        // Persist the prId. From now on the next tick takes the "PR exists"
+        // branch above and either merges or short-circuits.
+        var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+        var states = PlanDocStateHelpers.GetPlanDocStates(spawnRow).ToList();
+        states = ReplaceOrAppend(states, new PlanDocPrEntry(docKey, docBranch, prId));
+        PlanDocStateHelpers.SetPlanDocStates(spawnRow, states);
+        spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+
+        // Phase 53 — once any plan doc PR is opened, ensure the QA branch
+        // also exists (the legacy DrivePlanAsync did this on first plan PR
+        // open; QA is a separate downstream branch keyed off the spawn).
+        if (string.IsNullOrEmpty(spawnRow.QaBranch))
+        {
+            spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
+            await this.git.EnsureBranchFreshAsync(repo, spawnRow.QaBranch, baseBranch, ct);
+        }
+
+        await ClearLastErrorAsync(db, spawnRow, ct);
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "plan-doc-pr-opened", spawnRow, ct);
+        return true;
+    }
+
+    /// <summary>
+    /// Phase 53 — true when the latest deliverable for <paramref name="docKey"/>
+    /// has verdict=pass. Sibling to <see cref="ArePlanDocsAllPassedAsync"/>
+    /// but scoped to one doc; used to gate the per-doc PR-merge step in the
+    /// sequential drive.
+    /// </summary>
+    private static async Task<bool> IsDocVerdictPassAsync(
+        ForgeDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+    {
+        if (!PlanDocStateHelpers.PlanDocFileName.TryGetValue(docKey, out var fileName)) return false;
+        var docId = $"plan-doc:{spawn.Id}:{fileName}";
+        // Materialize then order client-side: SQLite EF Core can't translate
+        // ORDER BY on DateTimeOffset (the same workaround
+        // ArePlanDocsAllPassedAsync uses for the multi-doc gate).
+        var rows = await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == docId)
+            .ToListAsync(ct);
+        var latest = rows
+            .OrderByDescending(d => d.Iter)
+            .ThenByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        return latest is not null
+            && string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Phase 53 — true when <paramref name="docKey"/> is COMPLETE: its
+    /// recorded PR is merged AND its latest deliverable verdict is pass.
+    /// Used by the sequential drive to gate the next doc's start.
+    /// </summary>
+    private static async Task<bool> IsDocCompleteAsync(
+        ForgeDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+    {
+        var entry = PlanDocStateHelpers.GetEntry(spawn, docKey);
+        if (entry.PrId is null) return false;
+        var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId, ct);
+        if (pr is null || !string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase)) return false;
+        return await IsDocVerdictPassAsync(db, spawn, docKey, ct);
+    }
+
+    /// <summary>
+    /// Phase 53 — replace the entry matching <c>entry.Key</c> in
+    /// <paramref name="states"/> with <paramref name="replacement"/>, or
+    /// append when no entry exists for the key. Preserves the input
+    /// ordering; canonical ordering is re-applied by
+    /// <see cref="PlanDocStateHelpers.SetPlanDocStates"/> on serialize.
+    /// </summary>
+    private static List<PlanDocPrEntry> ReplaceOrAppend(
+        List<PlanDocPrEntry> states, PlanDocPrEntry replacement)
+    {
+        var idx = states.FindIndex(e =>
+            string.Equals(e.Key, replacement.Key, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0)
+        {
+            states[idx] = replacement;
+        }
+        else
+        {
+            states.Add(replacement);
+        }
+        return states;
+    }
+
+    // ── plan (legacy) ────────────────────────────────────────────────────────
+    /// <summary>
+    /// Legacy single-PR plan drive. Retained for spawns created before
+    /// Phase 53 shipped (rows with <see cref="StorySpawnRow.PlanDocPrsJson"/>
+    /// null). All new spawns route through
+    /// <see cref="DrivePlanSequentialAsync"/>.
+    /// </summary>
+    private async Task<bool> DrivePlanLegacyAsync(
+        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
+    {
         var baseBranch = BaseBranchOf(spawn);
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
 
@@ -612,8 +971,8 @@ public sealed class StorySpawnOrchestrator
     /// </summary>
     private static readonly string[] PlanDocFileNames = new[]
     {
-        "tech-spec.md",
         "architecture.md",
+        "tech-spec.md",
         "implementation-plan.md",
         "e2e-scenarios.md",
     };
@@ -1307,6 +1666,17 @@ public sealed class StorySpawnOrchestrator
             // events and returns SkipInFlight (budget+slack window) or
             // SkipBackoff (consecutive-failures window) when appropriate.
             // See ImplSpawnGuard for the full state machine.
+            //
+            // 2026-05-12 (Phase 52 follow-up) — the guard now ALSO detects
+            // "successful no-op" loops where the orchestrator keeps
+            // re-spawning successfully but no new deliverable rows appear.
+            // Observed on XRAFT stage 3.1: 3,180 spawn events over 7+ hours
+            // with iter stuck at 3/50 because the previous fix path
+            // (success=true always allowed) had no signal that work wasn't
+            // progressing. On hitting NoProgressReassignThreshold the guard
+            // sets ShouldTriggerReassign=true; we park the work item at
+            // pending-reassign so Phase 52's SloppyReassignmentReconciler
+            // rotates to a fresh pair on the next tick.
             var wsPointsForGuard = await LookupWorkstreamPointsAsync(db, w.Id, spawn.StoryPoints, ct);
             var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct);
             if (guardDecision.Outcome != ImplSpawnGuard.Decision.Allow)
@@ -1314,6 +1684,34 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogDebug(
                     "Workstream {WsId} skipped this tick: {Outcome} — {Reason}",
                     w.Id, guardDecision.Outcome, guardDecision.Reason);
+
+                // Phase 52 follow-up — Level 3 escalation. After
+                // NoProgressReassignThreshold consecutive successful spawns
+                // produced no deliverable, route the workstream's work item
+                // through Phase 52 reassignment so a fresh pair takes over
+                // with a clean slate. Idempotent: if the work item is
+                // already pending-reassign or terminally failed we no-op.
+                if (guardDecision.ShouldTriggerReassign)
+                {
+                    await this.TryRouteToSloppyReassignAsync(db, w, guardDecision.ConsecutiveNoProgress, ct);
+                }
+                else if (guardDecision.Outcome == ImplSpawnGuard.Decision.SkipNoProgressBackoff
+                    && guardDecision.ConsecutiveNoProgress == SyncConstants.NoProgressBackoffThreshold)
+                {
+                    // First tick on which the backoff kicks in — emit a
+                    // single visibility event so the operator can see the
+                    // stuck state in the conversation tab without scrolling
+                    // through hundreds of raw spawn-started/finished pairs.
+                    await this.EmitSpawnEventAsync(w.Id, ImplSpawnGuard.SpawnNoProgressKind, new
+                    {
+                        wsId = w.Id,
+                        spawnId = spawn.Id,
+                        consecutiveNoProgress = guardDecision.ConsecutiveNoProgress,
+                        backoffThreshold = SyncConstants.NoProgressBackoffThreshold,
+                        reassignThreshold = SyncConstants.NoProgressReassignThreshold,
+                        reason = guardDecision.Reason,
+                    }, ct);
+                }
                 continue;
             }
 
@@ -1601,6 +1999,100 @@ public sealed class StorySpawnOrchestrator
         }
     }
 
+    /// <summary>
+    /// Phase 52 follow-up — route a workstream that's been stuck in a
+    /// successful no-op respawn loop through the
+    /// <c>SloppyReassignmentReconciler</c>. Idempotent: a workstream
+    /// already in <c>pending-reassign</c>, <c>failed</c>, or terminal-
+    /// failed state is left alone.
+    ///
+    /// <para>Steps:</para>
+    /// <list type="number">
+    ///   <item>Load the work item row (workstream id == work item id for
+    ///   spawn-flow stage rows; the column is the canonical link).</item>
+    ///   <item>If already <c>pending-reassign</c> / <c>failed</c> / no
+    ///   row → no-op.</item>
+    ///   <item>Append the workstream's current pair (from
+    ///   <c>AgentsJson</c>) to <c>PriorPairsJson</c> so the resolver
+    ///   excludes them on the next claim.</item>
+    ///   <item>Set <c>ExecutionStatus=pending-reassign</c> and emit a
+    ///   <c>task.sloppy-parked</c> event so the conversation tab shows
+    ///   the routing.</item>
+    /// </list>
+    /// </summary>
+    private async Task TryRouteToSloppyReassignAsync(
+        Forge.Api.Persistence.ForgeDbContext db,
+        Forge.Api.Persistence.WorkstreamRow w,
+        int consecutiveNoProgress,
+        CancellationToken ct)
+    {
+        var wiRow = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+        if (wiRow is null) return;
+
+        // Idempotent guard — don't double-park or override a terminal state.
+        if (wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.PendingReassign
+            || wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.Failed)
+        {
+            return;
+        }
+
+        // Append the workstream's currently-assigned pair to PriorPairsJson.
+        // AgentsJson is a JSON array of agent ids; we use the first two as
+        // (generator, evaluator) per Phase 47's pair-assignment convention.
+        string[]? currentPair = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrEmpty(w.AgentsJson) ? "[]" : w.AgentsJson);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                var arr = doc.RootElement.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.String)
+                    .Select(e => e.GetString() ?? string.Empty)
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Take(2)
+                    .ToArray();
+                if (arr.Length == 2) currentPair = arr;
+            }
+        }
+        catch (JsonException) { /* malformed — skip pair capture */ }
+
+        if (currentPair is not null)
+        {
+            var priorPairs = new List<string[]>();
+            if (!string.IsNullOrWhiteSpace(wiRow.PriorPairsJson))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<string[]>>(wiRow.PriorPairsJson);
+                    if (parsed is not null) priorPairs = parsed;
+                }
+                catch (JsonException) { /* malformed — start fresh */ }
+            }
+            var alreadyLast = priorPairs.Count > 0
+                && priorPairs[priorPairs.Count - 1].Length == 2
+                && string.Equals(priorPairs[priorPairs.Count - 1][0], currentPair[0], StringComparison.Ordinal)
+                && string.Equals(priorPairs[priorPairs.Count - 1][1], currentPair[1], StringComparison.Ordinal);
+            if (!alreadyLast) priorPairs.Add(currentPair);
+            wiRow.PriorPairsJson = JsonSerializer.Serialize(priorPairs);
+        }
+
+        wiRow.ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.PendingReassign;
+        wiRow.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        this.logger?.LogWarning(
+            "Workstream {WsId} routed to Phase 52 reassignment after {N} consecutive no-progress successful spawns",
+            w.Id, consecutiveNoProgress);
+
+        await this.EmitSpawnEventAsync(w.Id, "task.sloppy-parked", new
+        {
+            wsId = w.Id,
+            consecutiveNoProgress,
+            reason = $"orchestrator re-spawn loop without new deliverables; routing to SloppyReassignmentReconciler ({consecutiveNoProgress} consecutive no-progress successes)",
+            priorPair = currentPair,
+        }, ct);
+    }
+
     private static string TrimStack(string? stack, int maxChars)
     {
         if (string.IsNullOrEmpty(stack)) return string.Empty;
@@ -1676,9 +2168,18 @@ public sealed class StorySpawnOrchestrator
                     wiSloppy?.PairAttemptCount ?? 0, ScoringConstants.MaxPairAttempts, atCap);
                 if (!atCap)
                 {
-                    // Reconciler in flight — wait for next tick. Do NOT
-                    // mark stalled (the reconciler will requeue within
-                    // ~15s).
+                    // Phase 52 hand-off: park the work item at
+                    // pending-reassign so SloppyReassignmentReconciler
+                    // picks it up on its next 15 s tick and rotates to a
+                    // fresh pair. Without this, ExecutionStatus stays at
+                    // "queued" (set by the queue worker when it enqueued
+                    // the row) and the reconciler's scan
+                    // (WHERE ExecutionStatus = "pending-reassign") never
+                    // finds it — observed 2026-05-13 on the XRAFT stage
+                    // 3.1 workstream looping after restart. Idempotent:
+                    // TryRouteToSloppyReassignAsync no-ops when already
+                    // in pending-reassign / failed state.
+                    await this.TryRouteToSloppyReassignAsync(db2, w, consecutiveNoProgress: 0, ct);
                     return;
                 }
                 // At cap. The reconciler's MarkTerminalFailedAsync stamps

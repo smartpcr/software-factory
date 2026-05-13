@@ -944,6 +944,97 @@ function TokensTab(props: { snap: TaskTranscriptEvent extends never ? never : im
           </div>
         </div>
       )}
+      <PromptGrowthPanel snap={snap} />
+    </div>
+  );
+}
+
+/**
+ * Phase 54 — prompt-size growth across iterations. Renders two inline
+ * SVG sparklines (generator + evaluator) plotting `inputTokens` per
+ * iteration. Numeric readout shows the latest absolute value and the
+ * delta vs. the previous iteration; the delta is coloured amber when
+ * |delta| > snap.promptBloatGrowthThreshold OR when a `task.prompt-bloat`
+ * warning fired for that iteration (carries through `promptBloatRole`).
+ */
+function PromptGrowthPanel(props: { snap: import('@/realtime/useTaskLiveStore').TaskExecutionSnapshot }): JSX.Element | null {
+  const { snap } = props;
+  const series = snap.promptGrowth ?? [];
+  if (series.length === 0) return null;
+  const threshold = snap.promptBloatGrowthThreshold ?? 30_000;
+  return (
+    <div className="live-exec__prompt-growth" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
+      <div className="live-exec__prompt-growth-title" style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+        Prompt size across iterations
+      </div>
+      <PromptGrowthRow
+        label="Generator"
+        series={series}
+        accessor={(g) => g.generatorInputTokens}
+        threshold={threshold}
+        warnRole="generator"
+      />
+      <PromptGrowthRow
+        label="Evaluator"
+        series={series}
+        accessor={(g) => g.evaluatorInputTokens}
+        threshold={threshold}
+        warnRole="evaluator"
+      />
+      <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 6 }}>
+        amber Δ ≥ {threshold.toLocaleString()} input tokens (iteration-over-iteration)
+      </div>
+    </div>
+  );
+}
+
+function PromptGrowthRow(props: {
+  label: string;
+  series: import('@/realtime/useTaskLiveStore').IterationPromptGrowth[];
+  accessor: (g: import('@/realtime/useTaskLiveStore').IterationPromptGrowth) => number;
+  threshold: number;
+  warnRole: 'generator' | 'evaluator';
+}): JSX.Element {
+  const { label, series, accessor, threshold, warnRole } = props;
+  const values = series.map(accessor);
+  const latest = values[values.length - 1] ?? 0;
+  const prev = values.length >= 2 ? values[values.length - 2] : 0;
+  const delta = latest - prev;
+  const latestIter = series[series.length - 1];
+  const hadBloat = latestIter?.promptBloatRole === warnRole;
+  const amber = (values.length >= 2 && Math.abs(delta) >= threshold) || hadBloat;
+  const max = Math.max(1, ...values);
+  const W = 200;
+  const H = 36;
+  const points = values.map((v, i) => {
+    const x = values.length === 1 ? W / 2 : (i / (values.length - 1)) * W;
+    const y = H - (v / max) * (H - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+      <span style={{ width: 70, fontSize: 11, color: 'var(--text-secondary)' }}>{label}</span>
+      <svg width={W} height={H} aria-hidden="true" style={{ flexShrink: 0 }}>
+        {values.length === 1 ? (
+          <circle cx={W / 2} cy={H - (values[0] / max) * (H - 4) - 2} r={2} fill="var(--graph-line, #6aa3ff)" />
+        ) : (
+          <polyline
+            points={points}
+            fill="none"
+            stroke={amber ? '#d8a232' : 'var(--graph-line, #6aa3ff)'}
+            strokeWidth={1.5}
+          />
+        )}
+      </svg>
+      <span style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums', color: 'var(--text-primary)', minWidth: 80, textAlign: 'right' }}>
+        {latest.toLocaleString()}
+      </span>
+      <span
+        title={hadBloat ? 'task.prompt-bloat fired for this iteration' : undefined}
+        style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums', color: amber ? '#d8a232' : 'var(--text-tertiary)', minWidth: 60, textAlign: 'right' }}
+      >
+        {values.length >= 2 ? `${delta >= 0 ? '+' : ''}${delta.toLocaleString()}` : '—'}
+      </span>
     </div>
   );
 }
