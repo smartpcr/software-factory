@@ -15,15 +15,15 @@ using Ast.Memory.Models;
 using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
-/// Extended graph store interface for memory-layer operations.
+/// Persistence contract for the agent memory hypergraph.
+/// Extends <see cref="IGraphStore"/> with memory-specific operations
+/// for versioned nodes/edges, expertise, auditing, and statistics.
+/// Per architecture.md §5.1 — signatures match the canonical spec exactly.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
-    // Layer-filtered queries with temporal support
+    // ── Canonical §5.1 — Layer-filtered queries with temporal support ───
 
-    /// <summary>
-    /// Gets nodes by memory layer with optional temporal and filter criteria.
-    /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
@@ -35,7 +35,8 @@ public interface IMemoryGraphStore : IGraphStore
     // ── Edge queries ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Gets edges by semantic relation with optional layer and temporal criteria.
+    /// Gets edges matching a semantic relation, optionally filtered by layer
+    /// and temporal snapshot. Per §5.1 canonical signature.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
@@ -44,10 +45,15 @@ public interface IMemoryGraphStore : IGraphStore
         int limit,
         CancellationToken cancellationToken);
 
-    // Temporal-aware upsert and retirement
+    // ── Canonical §5.1 — Temporal-aware upsert and retirement ──────────
 
     /// <summary>
-    /// Inserts or updates a node with the given version range.
+    /// Temporal-aware upsert: creates or updates a node with the given version range.
+    /// If a node with the same ID already exists, the store atomically closes the
+    /// previous active version (sets its <c>UntilIndex = version.SinceIndex</c>)
+    /// and activates the new version. This preserves temporal history per §4.3
+    /// without cascading edge retirement — edges reference the logical node ID
+    /// and remain valid for the successor version.
     /// </summary>
     Task UpsertNodeAsync(
         HypergraphNode node,
@@ -55,7 +61,10 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Marks a node as retired by setting its UntilCommitIndex.
+    /// Retires a node AND cascades retirement to all connected edges.
+    /// Used when a node is permanently removed (e.g., deleted file, removed symbol).
+    /// Sets UntilIndex on the node and all edges connected to it.
+    /// Per architecture.md §5.1.
     /// </summary>
     Task RetireNodeAsync(
         string nodeId,
@@ -64,15 +73,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Inserts or updates an edge with the given version range.
-    /// </summary>
-    Task UpsertEdgeAsync(
-        Hyperedge edge,
-        VersionRange version,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Marks an edge as retired by setting its UntilCommitIndex.
+    /// Retires an edge at the given commit index.
     /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
@@ -80,59 +81,54 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Updates metadata on an existing edge.
+    /// Updates specific metadata fields on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
         IDictionary<string, object?> metadata,
         CancellationToken cancellationToken);
 
-    // Expertise CRUD
+    // ── Canonical §5.1 — Expertise CRUD ─────────────────────────────────
 
-    /// <summary>
-    /// Returns non-archived expertise entries for a target node.
-    /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Upserts an expertise entry.
+    /// Creates or updates an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Archives an expertise entry.
+    /// Soft-deletes an expertise entry (sets archived = true).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns archived expertise entries.
+    /// Returns archived expertise entries, optionally filtered by target node.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId,
         int limit,
         CancellationToken cancellationToken);
 
-    // Statistics and audit
+    // ── Canonical §5.1 — Statistics and audit ───────────────────────────
 
-    /// <summary>
-    /// Returns aggregate statistics for the memory graph.
-    /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Logs an audit event.
+    /// Records an audit entry for a graph mutation.
     /// </summary>
     Task LogAuditAsync(
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken);
+        CancellationToken ct = default);
+
 }

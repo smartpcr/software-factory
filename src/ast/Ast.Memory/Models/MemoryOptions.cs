@@ -7,28 +7,30 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Configuration options for the memory graph system.
+/// Central configuration for the agent memory subsystem.
+/// All defaults come from architecture.md §2.4.
 /// </summary>
 public sealed class MemoryOptions
 {
-    /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
+    /// <summary>Cosine similarity threshold for consolidation merges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Confidence multiplier on substantive code change.</summary>
+    /// <summary>Multiplicative decay factor for substantive code changes.</summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Confidence multiplier on whitespace/comment-only change.</summary>
+    /// <summary>Multiplicative decay factor for minor (whitespace/comment) changes.</summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Expertise nodes below this are soft-deleted.</summary>
+    /// <summary>Confidence floor below which expertise is archived.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
-    public double DecayHalfLifeDays { get; set; } = 1095;
-    public int TokenBudgetDefault { get; set; } = 8000;
-    public int TokenBudgetCeiling { get; set; } = 32000;
-    public int IncrementalSyncDebounceMs { get; set; } = 1000;
-    public double CentralityBoostFactor { get; set; } = 0.5;
 
-    /// <summary>Storage backend selection.</summary>
+    /// <summary>Time-based decay half-life in days (3 years).</summary>
+    public int DecayHalfLifeDays { get; set; } = 1095;
+    public int TokenBudgetDefault { get; set; } = 8_000;
+    public int TokenBudgetCeiling { get; set; } = 32_000;
+    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
+    public double CentralityBoostFactor { get; set; } = 0.5;
+    public ScoringWeights Scoring { get; set; } = new();
     public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
     /// <summary>Path to the SQLite database file.</summary>
@@ -36,15 +38,9 @@ public sealed class MemoryOptions
 
     /// <summary>Neo4j connection URI.</summary>
     public string? Neo4jUri { get; set; }
-
-    /// <summary>Qdrant vector-store endpoint.</summary>
+    public string? Neo4jUser { get; set; }
+    public string? Neo4jPassword { get; set; }
     public string? QdrantEndpoint { get; set; }
-
-    /// <summary>
-    /// Operator-configured model name for the Ollama LLM used by
-    /// ConsolidationService and DetectCommunitiesAsync. No hardcoded
-    /// default — depends on what the operator has deployed.
-    /// </summary>
+    public int EmbeddingDimension { get; set; } = 768;
     public string? ConsolidationModelName { get; set; }
-    public ScoringWeights Weights { get; set; } = new();
 }
