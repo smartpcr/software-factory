@@ -25,34 +25,6 @@ public sealed class MemoryNode
     /// <summary>Delegates to Inner.NodeType.</summary>
     public string NodeKind => this.Inner.NodeType;
 
-    /// <summary>Content hash for change detection.</summary>
-    public string? ContentHash => this.Inner.Metadata.TryGetValue("ContentHash", out var v)
-        ? (string?)v : null;
-
-    /// <summary>Nullable — null for External boundary nodes (timeless stubs).</summary>
-    public VersionRange? Version { get; }
-}
-
-/// <summary>
-/// Composition wrapper around <see cref="Hyperedge"/> adding
-/// memory-specific accessors.
-/// Per architecture.md §4.1.
-/// </summary>
-public sealed class MemoryEdge
-{
-    public MemoryEdge(Hyperedge inner, VersionRange version)
-    {
-        this.Inner = inner;
-        this.Version = version;
-    }
-
-    public Hyperedge Inner { get; }
-
-    /// <summary>Semantic relation from Metadata["SemanticRelation"].</summary>
-    public string SemanticRelation => (string)(this.Inner.Metadata["SemanticRelation"] ?? string.Empty);
-
-    /// <summary>Home layer from Metadata["MemoryLayer"].</summary>
-    public string MemoryLayer => (string)(this.Inner.Metadata["MemoryLayer"] ?? string.Empty);
-
-    public VersionRange Version { get; }
+    /// <summary>Content hash from metadata, or null if not present.</summary>
+    public string? ContentHash => MetadataHelper.GetOptionalString(this.Inner.Metadata, MemoryMetadataKeys.ContentHash);
 }

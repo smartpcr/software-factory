@@ -13,12 +13,12 @@ using Ast.Memory.Models;
 
 /// <summary>
 /// Orchestrates the extraction pipeline: StructureBuilder → CallChainAnalyzer → SemanticIndexer.
-/// Per architecture §5.4.
+/// Per architecture.md §5.4.
 /// </summary>
 public interface IExtractionPipeline
 {
     /// <summary>
-    /// Full extraction from repo root.
+    /// Full extraction of a repository.
     /// </summary>
     Task<ExtractionResult> ExtractAsync(
         string repoRoot,
@@ -26,7 +26,7 @@ public interface IExtractionPipeline
         CancellationToken ct = default);
 
     /// <summary>
-    /// Incremental extraction of specific changed files.
+    /// Re-extract only the specified files (used by IncrementalSync).
     /// </summary>
     Task<ExtractionResult> ExtractFilesAsync(
         string repoRoot,
