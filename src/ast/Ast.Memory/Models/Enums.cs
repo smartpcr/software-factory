@@ -11,9 +11,16 @@ namespace Ast.Memory.Models;
 /// </summary>
 public enum ExpertiseKind
 {
+    /// <summary>A recurring design or implementation pattern worth reusing.</summary>
     Pattern,
+
+    /// <summary>A known hazard, footgun, or fragile assumption.</summary>
     Pitfall,
+
+    /// <summary>A team or codebase convention / style preference.</summary>
     Preference,
+
+    /// <summary>A general insight or observation about code behavior.</summary>
     Insight
 }
 

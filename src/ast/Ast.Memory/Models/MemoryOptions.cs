@@ -12,16 +12,16 @@ namespace Ast.Memory.Models;
 /// </summary>
 public sealed class MemoryOptions
 {
-    /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
+    /// <summary>Cosine similarity threshold for consolidation merges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Confidence multiplier on substantive code change.</summary>
+    /// <summary>Multiplicative decay factor for substantive code changes.</summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Confidence multiplier on whitespace/comment-only change.</summary>
+    /// <summary>Multiplicative decay factor for minor (whitespace/comment) changes.</summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Expertise nodes below this are soft-deleted.</summary>
+    /// <summary>Confidence floor below which expertise is archived.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
 
     /// <summary>Time-based decay half-life in days (3 years).</summary>

@@ -35,7 +35,8 @@ public interface IMemoryGraphStore : IGraphStore
     // ── Edge queries ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Gets edges by semantic relation with optional layer and temporal criteria.
+    /// Gets edges matching a semantic relation, optionally filtered by layer
+    /// and temporal snapshot. Per §5.1 canonical signature.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
@@ -72,15 +73,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Inserts or updates an edge with the given version range.
-    /// </summary>
-    Task UpsertEdgeAsync(
-        Hyperedge edge,
-        VersionRange version,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Marks an edge as retired by setting its UntilCommitIndex.
+    /// Retires an edge at the given commit index.
     /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
@@ -88,7 +81,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Updates metadata on an existing edge.
+    /// Updates specific metadata fields on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
@@ -103,21 +96,21 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Upserts an expertise entry.
+    /// Creates or updates an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Archives an expertise entry.
+    /// Soft-deletes an expertise entry (sets archived = true).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns archived expertise entries.
+    /// Returns archived expertise entries, optionally filtered by target node.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId,
@@ -130,7 +123,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Logs an audit event.
+    /// Records an audit entry for a graph mutation.
     /// </summary>
     Task LogAuditAsync(
         string sessionId,
