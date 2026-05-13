@@ -946,6 +946,71 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * GET /api/workstreams/{id}/iter-notes — Insight I.2
+   * (docs/forge/workstream-insights.md). Returns the agent's
+   * `.forge/notes/iter-*.md` archive for the workstream, sorted
+   * ascending. Content capped at ~16 KB per iter on the server side
+   * (`truncated: true` when the cap clipped output).
+   */
+  async fetchWorkstreamIterNotes(id: string): Promise<{
+    workItemId: string;
+    iters: { iter: number; content: string; truncated: boolean; lengthBytes: number }[];
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/iter-notes`);
+  },
+
+  /**
+   * GET /api/workstreams/{id}/iter-kpis — Insight I.3
+   * (docs/forge/workstream-insights.md). Returns per-iter rollup of
+   * score / token usage / cost / files-changed / duration so the
+   * Conversation tab can render the IterKpiStrip + sparklines.
+   * Iter window mapping is computed server-side from deliverable
+   * timestamps so the client doesn't have to re-derive.
+   */
+  async fetchWorkstreamIterKpis(id: string): Promise<{
+    workItemId: string;
+    iters: {
+      iter: number;
+      score: number;
+      verdict: string;
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+      durationMs: number | null;
+      filesChanged: number;
+      createdAt: string;
+    }[];
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/iter-kpis`);
+  },
+
+  /**
+   * GET /api/workstreams/{id}/memory — Phase 55 / Phase G with Phase
+   * F effectiveThreshold added by Insight I.4. Returns the per-role
+   * agent_memory rows + their effective compactor threshold so the
+   * UI can render the ContextUsageBar.
+   */
+  async fetchWorkstreamMemory(id: string): Promise<{
+    workItemId: string;
+    roles: Record<string, {
+      agentId: string;
+      backend: string;
+      invokeMode: string;
+      model: string | null;
+      sessionId: string | null;
+      hasMessagesHistory: boolean;
+      turnCount: number | null;
+      approxInputTokens: number;
+      effectiveThreshold: number;
+      lastIter: number;
+      createdAt: string;
+      updatedAt: string;
+    } | undefined>;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/memory`);
+  },
+
   /** GET /api/audit. */
   async listAudit(take = 200): Promise<AuditEntry[]> {
     return fetchJson<AuditEntry[]>(`/api/audit?take=${take}`);

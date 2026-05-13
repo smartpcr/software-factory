@@ -784,6 +784,37 @@ public static class StoriesEndpoints
             return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
         }
 
+        // 2026-05-13 fix — flip phase to "deleting" before any other write so
+        // the orchestrator's RunOneStepAsync switch falls through and stops
+        // claiming new agents while the delete is in flight. Without this,
+        // the cascade wipe of deliverables un-passes Phase 48's plan-doc
+        // gate, which regresses the phase to Plan, which re-claims 4 plan-
+        // doc agents (architect / tech-spec / impl-plan / e2e) — observed
+        // on code-intelligence:AGENT-MEMORY: 5 active claims appeared
+        // within 2 s of the first SaveChanges and held the SQLite write
+        // lock long enough for the later cleanup SaveChanges to 500 with
+        // "An error occurred while saving the entity changes".
+        //
+        // Also persist any leftover Phase value into PrevPhase via the
+        // LastError column so the operator can correlate post-mortem (no
+        // schema change — repurposing the existing free-form field).
+        if (!string.Equals(spawn.Phase, StorySpawnPhases.Deleting, StringComparison.Ordinal))
+        {
+            spawn.LastError =
+                $"delete-started: prevPhase={spawn.Phase} at {DateTimeOffset.UtcNow:O}";
+            spawn.Phase = StorySpawnPhases.Deleting;
+            spawn.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ctx.RequestAborted);
+
+            // Brief drain: any tick already in-flight finishes its
+            // SaveChanges before we contend for the write lock. 1 s is
+            // longer than the orchestrator's longest single write (worst
+            // case is a transcript-event append) but short enough that
+            // the operator doesn't notice. Skipped on cancellation.
+            try { await Task.Delay(TimeSpan.FromSeconds(1), ctx.RequestAborted); }
+            catch (OperationCanceledException) { return Results.StatusCode(499); }
+        }
+
         var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
         var counts = new Dictionary<string, int>();
         // Phase 50 — collect remote-delete failures into a structured list

@@ -12,6 +12,7 @@ import {
   TranscriptLine,
   SummaryView,
   countActiveBuildFailures,
+  availableTabs,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
@@ -260,6 +261,22 @@ export function DocConversationPane({ storyId, docId }: Props) {
   // opened it yet. Same shape as WorkstreamConversationPane.
   const buildFailures = useMemo(() => countActiveBuildFailures(transcript), [transcript]);
 
+  // Insight I.1 (docs/forge/workstream-insights.md) — strip tabs that
+  // have no content for this doc's current state. Plan-doc spawns
+  // don't carry crewId (architect plan-doc workItemIds emit untagged
+  // events), so the gen/eval columns fall back to agent-id matching.
+  const visibleTabs = useMemo(
+    () => availableTabs(transcript, rows.length, null, null, generator?.agentId ?? null, evaluator?.agentId ?? null),
+    [transcript, rows.length, generator?.agentId, evaluator?.agentId],
+  );
+  const filtersToRender = useMemo(() => FILTERS.filter((f) => visibleTabs.has(f.key)), [visibleTabs]);
+
+  useEffect(() => {
+    if (!visibleTabs.has(filter) && filtersToRender.length > 0) {
+      setFilter(filtersToRender[0].key);
+    }
+  }, [visibleTabs, filter, filtersToRender]);
+
   // Empty / loading guard. The pane is also reachable when the doc hasn't
   // produced any iterations yet — show the same prompt-y empty state as
   // before in that case.
@@ -282,7 +299,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
   return (
     <div className="doc-conv doc-conv--quiet">
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
-        {FILTERS.map((f) => {
+        {filtersToRender.map((f) => {
           const buildFailCount = f.key === 'build' ? buildFailures : 0;
           return (
             <button

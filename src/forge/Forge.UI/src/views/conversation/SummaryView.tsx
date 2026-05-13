@@ -7,8 +7,18 @@ export function SummaryView(props: {
   deliverable: DeliverableShape | null;
   loading: boolean;
   dispatched: boolean;
+  /**
+   * Insight I.2 (docs/forge/workstream-insights.md) — agent-authored
+   * working notes for this iter, sourced from
+   * `.forge/notes/iter-{N}.md` via
+   * `GET /api/workstreams/{id}/iter-notes`. Keyed by iter number; the
+   * "Working notes" section renders only when an entry exists for the
+   * active deliverable's iter. Omit the prop entirely on surfaces
+   * where the archive isn't available (e.g. plan-doc spawns).
+   */
+  notesByIter?: Record<number, { content: string; truncated?: boolean }>;
 }): JSX.Element {
-  const { deliverable, loading, dispatched } = props;
+  const { deliverable, loading, dispatched, notesByIter } = props;
   if (!deliverable) {
     return (
       <div className="live-exec__empty">
@@ -26,6 +36,8 @@ export function SummaryView(props: {
   const d = deliverable;
   const hasGen  = !!(d.generatorSummary && d.generatorSummary.trim());
   const hasEval = !!(d.notes && d.notes.trim());
+  const iterNote = notesByIter?.[d.iter];
+  const hasIterNote = !!(iterNote && iterNote.content && iterNote.content.trim());
 
   return (
     <div className="live-exec__summary-view">
@@ -42,6 +54,21 @@ export function SummaryView(props: {
             : <em>(not provided this iteration)</em>}
         </div>
       </section>
+      {hasIterNote && (
+        <section className="live-exec__summary-section" data-role="working-notes">
+          <div className="live-exec__summary-section__label">
+            Working notes (iter {d.iter})
+            {iterNote!.truncated && (
+              <span style={{ marginLeft: 8, color: 'var(--text-tertiary)', fontSize: 10, fontWeight: 'normal' }}>
+                · truncated to 16&nbsp;KB
+              </span>
+            )}
+          </div>
+          <div className="live-exec__summary-section__body markdown-body">
+            <ReactMarkdown>{iterNote!.content}</ReactMarkdown>
+          </div>
+        </section>
+      )}
       <section className="live-exec__summary-section" data-role="evaluator">
         <div className="live-exec__summary-section__label">Evaluator summary</div>
         <div className="live-exec__summary-section__body markdown-body">

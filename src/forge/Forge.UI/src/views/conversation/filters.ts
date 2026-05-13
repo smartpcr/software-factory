@@ -39,7 +39,7 @@ import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
  * has review activity, so unstarted / pre-review workstreams don't
  * surface an empty tab.
  */
-export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'build' | 'review' | 'summary';
+export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'build' | 'review' | 'summary' | 'prompt';
 
 export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -49,6 +49,7 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'worktree',  label: 'Worktree' },
   { key: 'build',     label: 'Build' },
   { key: 'review',    label: 'Review' },
+  { key: 'prompt',    label: 'Prompt' },
   { key: 'summary',   label: 'Summary' },
 ];
 
@@ -180,6 +181,10 @@ export function filterEvents(
   // returning [] here prevents the transcript list from rendering anything
   // when the caller forgets to branch.
   if (f === 'worktree') return [];
+  // `prompt` is rendered by PromptView (Insight I.4) which walks the
+  // full transcript itself; return the unfiltered list so the view has
+  // every task.prompt event and can group by iter on its own.
+  if (f === 'prompt') return events.filter((e) => e.kind === 'task.prompt');
   // `build` is rendered specially by BuildPane (Phase 49 follow-up).
   // The pane needs the events to render its status cards, so unlike
   // `worktree` we DO return the filtered list here — and BuildPane
@@ -263,6 +268,93 @@ export function filterEvents(
     });
   }
   return events;
+}
+
+/**
+ * Insight I.1 (docs/forge/workstream-insights.md) — decide which tabs
+ * have content worth showing for this workstream's current state.
+ * Returns the set of FilterKey values that should appear in the tab
+ * strip; the strip filters FILTERS through this set before render so
+ * an unstarted workstream doesn't surface empty Build / Review / Tools
+ * tabs the operator can't click into.
+ *
+ * <para>Strict rule, locked 2026-05-13: a tab appears only when at
+ * least one event matches its filter. `summary` is the one exception
+ * that uses deliverables count instead of transcript events. `all` is
+ * the catch-all and always available so the operator never lands on a
+ * blank view.</para>
+ */
+export function availableTabs(
+  events: TaskTranscriptEvent[],
+  deliverablesCount: number,
+  genCrewId?: string | null,
+  evalCrewId?: string | null,
+  genAgentId?: string | null,
+  evalAgentId?: string | null,
+): Set<FilterKey> {
+  const set = new Set<FilterKey>();
+  set.add('all');
+
+  if (deliverablesCount > 0) set.add('summary');
+
+  // Walk transcript once, mark each tab as it sees a matching event.
+  // Bail early once everything's on (cheap fixed-size set).
+  let hasGen = false;
+  let hasEval = false;
+  let hasTools = false;
+  let hasWorktree = false;
+  let hasBuild = false;
+  let hasReview = false;
+  let hasPrompt = false;
+  const allOn = () => hasGen && hasEval && hasTools && hasWorktree && hasBuild && hasReview && hasPrompt;
+
+  for (const e of events) {
+    if (allOn()) break;
+    const p = (e.payload as Record<string, unknown> | null) ?? {};
+    const agent = e.agentId || (p.agentId as string) || null;
+    const crew = e.crewId || (p.crewId as string) || null;
+    const phase = (p.phase as string) ?? null;
+    const isIterEvt = e.kind.startsWith('task.iteration');
+    const isToolEvt = e.kind === 'task.tool-call' || e.kind === 'task.toolcall'
+                   || e.kind === 'task.tool-result' || e.kind === 'task.toolresult';
+    const isReviewEvt = crew === 'crew-rev'
+      || (phase ? (phase.startsWith('review:') || phase.startsWith('review-fix:')) : false);
+    const isWorktreeEvt = e.kind === 'task.worktree-changed'
+      || e.kind === 'task.recovery'
+      || e.kind === 'task.no-progress.detected'
+      || e.kind === 'task.no-progress.aborted';
+    const isPromptEvt = e.kind === 'task.prompt';
+
+    if (!hasReview && isReviewEvt) hasReview = true;
+    if (!hasPrompt && isPromptEvt) hasPrompt = true;
+
+    // Don't bleed review-loop events into generator/evaluator gates.
+    if (!isReviewEvt) {
+      if (!hasGen) {
+        if (isIterEvt) hasGen = true;
+        else if (genCrewId && crew === genCrewId) hasGen = true;
+        else if (genAgentId && agent === genAgentId) hasGen = true;
+      }
+      if (!hasEval) {
+        if (isIterEvt) hasEval = true;
+        else if (evalCrewId && crew === evalCrewId) hasEval = true;
+        else if (evalAgentId && agent === evalAgentId) hasEval = true;
+      }
+    }
+
+    if (!hasTools && isToolEvt) hasTools = true;
+    if (!hasBuild && isBuildEvent(e)) hasBuild = true;
+    if (!hasWorktree && isWorktreeEvt) hasWorktree = true;
+  }
+
+  if (hasGen) set.add('generator');
+  if (hasEval) set.add('evaluator');
+  if (hasTools) set.add('tools');
+  if (hasWorktree) set.add('worktree');
+  if (hasBuild) set.add('build');
+  if (hasReview) set.add('review');
+  if (hasPrompt) set.add('prompt');
+  return set;
 }
 
 /// Build a windowed page list: first, last, and a window around the

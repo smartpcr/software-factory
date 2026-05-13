@@ -12,6 +12,11 @@ import {
   TranscriptLine,
   SummaryView,
   countActiveBuildFailures,
+  availableTabs,
+  IterKpiStrip,
+  type IterKpi,
+  ContextUsageBar,
+  PromptView,
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
@@ -117,11 +122,12 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const isSummaryMode = filter === 'summary';
   const isWorktreeMode = filter === 'worktree';
   const isBuildMode = filter === 'build';
+  const isPromptMode = filter === 'prompt';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -130,6 +136,106 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   // transcript (not the filtered slice) so failures stay visible even
   // when the operator has another filter active.
   const buildFailures = useMemo(() => countActiveBuildFailures(transcript), [transcript]);
+
+  // Insight I.1 (docs/forge/workstream-insights.md) — only render a
+  // tab when its underlying filter has at least one matching event
+  // (or, for `summary`, at least one deliverable). `all` is always
+  // available so the operator never lands on an empty strip.
+  const visibleTabs = useMemo(
+    () => availableTabs(transcript, summaryIters.length, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId),
+    [transcript, summaryIters.length, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId],
+  );
+  const filtersToRender = useMemo(() => FILTERS.filter((f) => visibleTabs.has(f.key)), [visibleTabs]);
+
+  // When the active filter becomes hidden (e.g. operator was on Build,
+  // then Restart cleared the transcript) fall back to the first
+  // available tab so the view doesn't render blank.
+  useEffect(() => {
+    if (!visibleTabs.has(filter) && filtersToRender.length > 0) {
+      setFilter(filtersToRender[0].key);
+    }
+  }, [visibleTabs, filter, filtersToRender]);
+
+  // Insight I.2 — fetch the agent's per-iter working notes archive
+  // (`.forge/notes/iter-*.md`). Refreshed whenever the iter count
+  // changes so a newly-completed iter's notes appear in the Summary
+  // tab without a manual reload. Best-effort: a 404 / fetch failure
+  // just leaves the section absent.
+  const [notesByIter, setNotesByIter] = useState<Record<number, { content: string; truncated?: boolean }>>({});
+  useEffect(() => {
+    if (summaryIters.length === 0) {
+      setNotesByIter({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchWorkstreamIterNotes(workstreamId)
+      .then((r) => {
+        if (cancelled) return;
+        const map: Record<number, { content: string; truncated?: boolean }> = {};
+        for (const row of r.iters) {
+          map[row.iter] = { content: row.content, truncated: row.truncated };
+        }
+        setNotesByIter(map);
+      })
+      .catch(() => {
+        if (!cancelled) setNotesByIter({});
+      });
+    return () => { cancelled = true; };
+  }, [workstreamId, summaryIters.length]);
+
+  // Insight I.3 — per-iter KPI rollup (score / tokens / cost / files
+  // / duration). Refetched when iter count changes so every newly-
+  // completed iter populates a chip; rendered as a strip above the
+  // tab nav. Click a chip → setSelectedIter scrolls the active iter.
+  const [iterKpis, setIterKpis] = useState<IterKpi[]>([]);
+  useEffect(() => {
+    if (summaryIters.length === 0) {
+      setIterKpis([]);
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchWorkstreamIterKpis(workstreamId)
+      .then((r) => {
+        if (cancelled) return;
+        setIterKpis(r.iters);
+      })
+      .catch(() => {
+        if (!cancelled) setIterKpis([]);
+      });
+    return () => { cancelled = true; };
+  }, [workstreamId, summaryIters.length]);
+
+  // Insight I.4 — context-usage bar source. Same refresh trigger as
+  // iter-kpis so an operator who watches the loop sees the bar tick
+  // up alongside the chips. Empty roles → ContextUsageBar returns
+  // null and the row collapses.
+  const [memoryRoles, setMemoryRoles] = useState<Parameters<typeof ContextUsageBar>[0]['roles']>({});
+  useEffect(() => {
+    if (summaryIters.length === 0) {
+      setMemoryRoles({});
+      return;
+    }
+    let cancelled = false;
+    void forgeApi.fetchWorkstreamMemory(workstreamId)
+      .then((r) => {
+        if (cancelled) return;
+        setMemoryRoles(r.roles);
+      })
+      .catch(() => {
+        if (!cancelled) setMemoryRoles({});
+      });
+    return () => { cancelled = true; };
+  }, [workstreamId, summaryIters.length]);
+
+  // When the KPI strip is clicked, jump the active iter pointer to
+  // the chosen iter. selectedIter is 0-indexed; iter chip values are
+  // 1-indexed, so subtract one. Falls through cleanly to the
+  // existing pager / Summary logic.
+  const handleSelectKpiIter = (iter: number) => {
+    setSelectedIter(iter - 1);
+  };
+  const activeIterNumber = (isSummaryMode ? summaryIters[activeIter]?.iter : iterKpis[activeIter]?.iter)
+    ?? (iterKpis.length > 0 ? iterKpis[iterKpis.length - 1].iter : null);
 
   const currentIteration = snapshot?.currentIteration ?? (summaryIters.length > 0 ? summaryIters[summaryIters.length - 1].iter : 0);
   const maxIterations = snapshot?.maxIterations ?? 0;
@@ -191,8 +297,16 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           )}
         </div>
       )}
+      {iterKpis.length > 0 && (
+        <IterKpiStrip
+          iters={iterKpis}
+          activeIter={activeIterNumber}
+          onSelectIter={handleSelectKpiIter}
+        />
+      )}
+      <ContextUsageBar roles={memoryRoles} />
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
-        {FILTERS.map((f) => {
+        {filtersToRender.map((f) => {
           // Phase 49 follow-up — show a red "✗N" badge on the Build
           // tab when at least one build / test / quality gate is
           // currently in a failed terminal state. Helps the operator
@@ -310,11 +424,17 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           <WorktreePane workItemId={workstreamId} />
         ) : isBuildMode ? (
           <BuildPane workItemId={workstreamId} />
+        ) : isPromptMode ? (
+          <PromptView
+            events={transcript}
+            activeIter={activeIterNumber}
+          />
         ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}
             loading={live?.loading === true}
             dispatched={transcript.length > 0 || summaryIters.length > 0}
+            notesByIter={notesByIter}
           />
         ) : (
           <>

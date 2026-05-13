@@ -39,8 +39,259 @@ public static class WorkstreamsEndpoints
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
+        grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
+        grp.MapGet("/{id}/iter-kpis", GetIterKpis).WithName("GetWorkstreamIterKpis");
 
         return app;
+    }
+
+    // GET /api/workstreams/{id}/iter-kpis — Insight I.3
+    // (docs/forge/workstream-insights.md). Joins deliverables +
+    // agent_usage + task_transcript_event so the Conversation tab's
+    // KPI strip can render per-iter score / token / cost / files /
+    // duration chips and the matching sparklines. One round-trip;
+    // the client doesn't have to re-derive any of these client-side.
+    //
+    // <para>Iter window semantics:</para>
+    // <list type="number">
+    //   <item>Anchor = deliverables.CreatedAt ordered ASC by Iter.</item>
+    //   <item>For iter N: usage rows with StartedAt &gt; iter[N-1].At
+    //   AND StartedAt &lt;= iter[N].At; iter 1's lower bound is the
+    //   FIRST agent_usage.StartedAt for this work item (or
+    //   DateTimeOffset.MinValue if none).</item>
+    //   <item>Duration = scored.At − started.At from the transcript
+    //   for matching iter number; null when either marker is missing.</item>
+    //   <item>filesChanged = count of distinct file paths in
+    //   `task.worktree-changed` events whose At falls in the iter
+    //   window. Empty when the workstream's strategy doesn't emit
+    //   worktree-changed events (plan-doc spawns).</item>
+    // </list>
+    private static async Task<IResult> GetIterKpis(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var deliverables = await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == id)
+            .OrderBy(d => d.Iter)
+            .ThenBy(d => d.CreatedAt)
+            .ToListAsync(ct);
+        if (deliverables.Count == 0)
+        {
+            return Results.Ok(new { workItemId = id, iters = Array.Empty<object>() });
+        }
+
+        var usageRows = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.TaskId == id)
+            .Select(u => new { u.StartedAt, u.InputTokens, u.OutputTokens, u.CostUsd })
+            .ToListAsync(ct);
+
+        var transcript = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(e => e.WorkItemId == id
+                && (e.Kind == "task.iteration.started"
+                    || e.Kind == "task.iteration.scored"
+                    || e.Kind == "task.worktree-changed"))
+            .Select(e => new { e.Kind, e.At, e.PayloadJson })
+            .ToListAsync(ct);
+
+        // Index transcript by kind for cheap per-iter lookups.
+        var startedByIter = new Dictionary<int, DateTimeOffset>();
+        var scoredByIter = new Dictionary<int, DateTimeOffset>();
+        foreach (var e in transcript)
+        {
+            if (e.Kind == "task.iteration.started" || e.Kind == "task.iteration.scored")
+            {
+                int? iter = TryExtractIter(e.PayloadJson);
+                if (iter is null) continue;
+                if (e.Kind == "task.iteration.started") startedByIter[iter.Value] = e.At;
+                else scoredByIter[iter.Value] = e.At;
+            }
+        }
+        var worktreeChanged = transcript
+            .Where(e => e.Kind == "task.worktree-changed")
+            .Select(e => (e.At, paths: ExtractChangedPaths(e.PayloadJson)))
+            .ToList();
+
+        var sortedUsage = usageRows.OrderBy(u => u.StartedAt).ToList();
+        DateTimeOffset? earliestUsage = sortedUsage.Count > 0 ? sortedUsage[0].StartedAt : null;
+
+        var iters = new List<object>(deliverables.Count);
+        DateTimeOffset prevAt = earliestUsage ?? DateTimeOffset.MinValue;
+        foreach (var d in deliverables)
+        {
+            var windowStart = prevAt;
+            var windowEnd = d.CreatedAt;
+
+            long inTok = 0, outTok = 0;
+            decimal cost = 0m;
+            foreach (var u in sortedUsage)
+            {
+                if (u.StartedAt > windowStart && u.StartedAt <= windowEnd)
+                {
+                    inTok += u.InputTokens;
+                    outTok += u.OutputTokens;
+                    cost += u.CostUsd;
+                }
+            }
+
+            int filesChanged = 0;
+            var pathsThisIter = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (at, paths) in worktreeChanged)
+            {
+                if (at > windowStart && at <= windowEnd)
+                {
+                    foreach (var p in paths) pathsThisIter.Add(p);
+                }
+            }
+            filesChanged = pathsThisIter.Count;
+
+            long? durationMs = null;
+            if (startedByIter.TryGetValue(d.Iter, out var s)
+                && scoredByIter.TryGetValue(d.Iter, out var e2))
+            {
+                durationMs = (long)(e2 - s).TotalMilliseconds;
+                if (durationMs < 0) durationMs = null;
+            }
+
+            iters.Add(new
+            {
+                iter = d.Iter,
+                score = d.Score,
+                verdict = d.Verdict,
+                inputTokens = inTok,
+                outputTokens = outTok,
+                costUsd = cost,
+                durationMs,
+                filesChanged,
+                createdAt = d.CreatedAt,
+            });
+            prevAt = windowEnd;
+        }
+
+        return Results.Ok(new { workItemId = id, iters });
+    }
+
+    private static int? TryExtractIter(string payloadJson)
+    {
+        if (string.IsNullOrEmpty(payloadJson)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty("iter", out var v)) return null;
+            if (v.ValueKind != System.Text.Json.JsonValueKind.Number) return null;
+            return v.GetInt32();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<string> ExtractChangedPaths(string payloadJson)
+    {
+        if (string.IsNullOrEmpty(payloadJson)) return Array.Empty<string>();
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("paths", out var pathsEl) || pathsEl.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                // Fall back to single-path shape (some emitters use `path`).
+                if (root.TryGetProperty("path", out var single) && single.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var one = single.GetString();
+                    return string.IsNullOrEmpty(one) ? Array.Empty<string>() : new[] { one };
+                }
+                return Array.Empty<string>();
+            }
+            var list = new List<string>(pathsEl.GetArrayLength());
+            foreach (var el in pathsEl.EnumerateArray())
+            {
+                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var p = el.GetString();
+                    if (!string.IsNullOrEmpty(p)) list.Add(p);
+                }
+            }
+            return list;
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    // GET /api/workstreams/{id}/iter-notes — Insight I.2
+    // (docs/forge/workstream-insights.md). Read-only enumeration of the
+    // agent's per-iter working notes archive
+    // (`.forge/notes/iter-{N}.md`, Phase A.2). Used by SummaryView to
+    // render the "Working notes" section alongside generator/evaluator
+    // markdown so the operator sees what the agent itself reflected on
+    // each iter. Returns empty `iters` when the workstream has no
+    // worktree on disk (yet-to-claim or post-merge cleanup).
+    private static async Task<IResult> GetIterNotes(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        const int PerIterCap = 16_000;
+        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, id, ct);
+        var iters = new List<object>();
+
+        if (!string.IsNullOrEmpty(resolved.WorktreePath))
+        {
+            var notesDir = Path.Combine(resolved.WorktreePath, ".forge", "notes");
+            if (Directory.Exists(notesDir))
+            {
+                var parsed = new List<(int Iter, string Path)>();
+                foreach (var file in Directory.GetFiles(notesDir, "iter-*.md"))
+                {
+                    var name = Path.GetFileNameWithoutExtension(file);
+                    var dash = name.IndexOf('-');
+                    if (dash >= 0
+                        && int.TryParse(name[(dash + 1)..], out var n)
+                        && n > 0)
+                    {
+                        parsed.Add((n, file));
+                    }
+                }
+                parsed.Sort((a, b) => a.Iter.CompareTo(b.Iter));
+
+                foreach (var (iter, path) in parsed)
+                {
+                    string content;
+                    try
+                    {
+                        content = await File.ReadAllTextAsync(path, ct);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                    if (string.IsNullOrWhiteSpace(content)) continue;
+
+                    var truncated = false;
+                    if (content.Length > PerIterCap)
+                    {
+                        content = content[..PerIterCap];
+                        truncated = true;
+                    }
+                    iters.Add(new
+                    {
+                        iter,
+                        content,
+                        truncated,
+                        lengthBytes = content.Length,
+                    });
+                }
+            }
+        }
+
+        return Results.Ok(new
+        {
+            workItemId = id,
+            iters,
+        });
     }
 
     // GET /api/workstreams/{id}/memory — Phase 55 / Phase G. Read-only
@@ -52,11 +303,47 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> GetMemory(
         string id,
         ForgeDbContext db,
-        Forge.Api.Agents.CopilotSessionPool copilotPool)
+        Forge.Api.Agents.CopilotSessionPool copilotPool,
+        Forge.Api.Services.MemoryCompactor compactor,
+        CancellationToken ct)
     {
         var rows = await db.AgentMemory.AsNoTracking()
             .Where(m => m.WorkItemId == id)
-            .ToListAsync();
+            .ToListAsync(ct);
+
+        // Insight I.4 — resolve each role's model + the relevant crew's
+        // compaction-threshold override so the UI can render a
+        // green/amber/red bar of "tokens used vs compactor trigger".
+        // Look up workstream → crew (for threshold) and agent rows
+        // (for model). We avoid the full ResolveAgentRunConfigAsync
+        // path here because we only need the model id, not the soul or
+        // worktree wiring.
+        var ws = await db.Workstreams.AsNoTracking()
+            .FirstOrDefaultAsync(w => w.Id == id, ct);
+        CrewRow? wsCrew = null;
+        CrewRow? evalCrew = null;
+        if (ws is not null)
+        {
+            // Workstream rows don't carry the crew id directly; we walk
+            // the most recent deliverable row to find which crew owned
+            // the iter, then resolve its paired evaluator (if any) for
+            // the eval-side compaction threshold.
+            var lastDel = (await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == id)
+                .ToListAsync(ct))
+                .OrderByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
+            if (lastDel is not null && !string.IsNullOrEmpty(lastDel.CrewId))
+            {
+                wsCrew = await db.Crews.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == lastDel.CrewId, ct);
+                if (wsCrew is not null && !string.IsNullOrEmpty(wsCrew.PairedWithCrewId))
+                {
+                    evalCrew = await db.Crews.AsNoTracking()
+                        .FirstOrDefaultAsync(c => c.Id == wsCrew.PairedWithCrewId, ct);
+                }
+            }
+        }
 
         var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
@@ -78,11 +365,27 @@ public static class WorkstreamsEndpoints
                 }
             }
 
+            // Resolve the model + crew override for THIS role so the
+            // threshold reflects what the compactor will actually use.
+            var agentRow = await db.Agents.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.Id == row.AgentId, ct);
+            var roleCrew = string.Equals(row.Role, "evaluator", StringComparison.OrdinalIgnoreCase)
+                ? (evalCrew ?? wsCrew)
+                : wsCrew;
+            string? modelId = string.Equals(row.Role, "evaluator", StringComparison.OrdinalIgnoreCase)
+                ? (agentRow?.EvaluatorModel ?? roleCrew?.EvaluatorModel ?? roleCrew?.Model)
+                : (agentRow?.GeneratorModel ?? roleCrew?.Model);
+            var crewOverride = roleCrew?.CompactionTokenThreshold;
+            var effectiveThreshold = !string.IsNullOrEmpty(modelId)
+                ? compactor.ComputeEffectiveThreshold(modelId, crewOverride)
+                : (crewOverride ?? Forge.Api.Services.MemoryCompactor.DefaultThreshold);
+
             result[row.Role] = new
             {
                 agentId = row.AgentId,
                 backend = row.Backend,
                 invokeMode = row.InvokeMode,
+                model = modelId,
                 // Truncate session id so a copy/paste from the UI
                 // doesn't accidentally include the full Claude Code
                 // session identifier in logs.
@@ -92,6 +395,7 @@ public static class WorkstreamsEndpoints
                 hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
                 turnCount,
                 approxInputTokens = row.ApproxInputTokens,
+                effectiveThreshold,
                 lastIter = row.LastIter,
                 createdAt = row.CreatedAt,
                 updatedAt = row.UpdatedAt,

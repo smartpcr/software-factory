@@ -2516,6 +2516,23 @@ public static class StorySpawnPhases
     public const string Done = "done";
 
     /// <summary>
+    /// Terminal sentinel set by <see cref="Forge.Api.Endpoints.StoriesEndpoints.DeleteSpawn"/>
+    /// at the top of the delete pipeline. The orchestrator's <c>switch</c>
+    /// on <see cref="StorySpawnRow.Phase"/> does not match this value, so
+    /// <see cref="Forge.Api.Services.Stories.StorySpawnOrchestrator.RunOneStepAsync"/>
+    /// no-ops and returns <c>false</c> — preventing the regression-to-Plan
+    /// cascade from re-claiming plan-doc agents while the delete is wiping
+    /// deliverables. Without this, observed 2026-05-13 on
+    /// <c>code-intelligence:AGENT-MEMORY</c>: DELETE wiped
+    /// <c>agent_usage</c> + deliverables → Phase 48 gate regressed
+    /// <c>implement</c> → <c>plan</c> → 5 plan-doc agents got re-claimed
+    /// (architecture/tech-spec/impl-plan/e2e × parallel) → SQLite write-lock
+    /// contention crashed the DELETE's SaveChangesAsync with
+    /// <c>An error occurred while saving the entity changes</c>.
+    /// </summary>
+    public const string Deleting = "deleting";
+
+    /// <summary>
     /// Ordered phase list. Phase rollback is rejected (Phase 28 non-goal),
     /// so an advance is allowed only when the target index is exactly
     /// current + 1, or terminal "done" when the completion check passes.
