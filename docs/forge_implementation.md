@@ -4682,6 +4682,16 @@ Feature: Implementation-plan hierarchy & sizing limits
 
 Upload flow: `POST /api/stories/upload` stores files on disk and returns upload ids; the PATCH `/api/products/{id}/stories/{storyId}` endpoint accepts `uploadIds` / `removeFileNames` to attach/detach files from the story. `CrewStoryArtifactStrategy.CopyAttachmentsToWorktreeAsync` copies attachments into the plan worktree so architect agents can read them with file tools.
 
+**Phase 43 extension — workstream / QA / review attachment propagation.** The initial Phase 43 wiring only ran inside the plan-doc producers, so once a spawn moved past the architecture phase the attachments stopped flowing — engineer, QA, step-def, review-comment and review-fix producers all ran without them, and operator-uploaded reference docs were silently dropped between phases. Every producer now:
+1. Refreshes the snapshot via `LoadFreshAttachmentsJsonAsync(spawn.Id, ct)` — a no-tracking `ForgeDbContext` read that picks up uploads which landed after the orchestrator's outer tick loaded the spawn, without mutating the orchestrator's tracked instance (the spawn is loaded without `AsNoTracking` in `StorySpawnOrchestrator`, so mutating it would risk an unintended `SaveChangesAsync`).
+2. Copies the files into `{workspace}/.forge-attachments/{fileName}` via `CopyAttachmentsToWorktreeAsync`.
+3. Interpolates `BuildAttachmentPromptSection(attachmentsJson)` into the producer's system prompt (both generator and evaluator for the engineer workstream loop; evaluator also gains an explicit scoring bullet on attachment consistency).
+
+Two ergonomic guards keep the propagation clean:
+
+- **Per-worktree `.git/info/exclude`** instead of `.gitignore`. The exclude pattern is resolved via `git rev-parse --git-dir` (so `git worktree add` sub-checkouts hit `{cloneRoot}/.git/worktrees/{slug}/info/exclude`, while the main checkout hits `{cloneRoot}/.git/info/exclude`) and appended idempotently with a `.forge-attachments/` line. `info/exclude` is never versioned, so `git add -A` in `RealStoryGitOps.CommitFilesAsync` cannot drag the attachment dir or a `.gitignore` mod into the workstream PR diff. Scratch dirs (QA/step-def/review producers from `PrepareWorkspace`) are not git repos, so the exclude write is suppressed via `AttachmentExcludeMode.None`.
+- **`ReadAllFiles` filter.** QA, step-def, review-comment and review-fix producers harvest deliverables by recursing the workspace, so unfiltered they would have committed attachments back as `tests/Features/{storyId}/.forge-attachments/spec.md`. `ReadAllFiles` now skips any path starting with `.forge-attachments/`.
+
 ### Operator accept (manual pass override)
 
 `POST /api/stories/{storyId}/spawn/artifacts/{key}/accept` — manually marks a plan-doc artifact as passed despite its evaluator score being below the 90-point pass threshold. The operator overrides the evaluator verdict: the latest deliverable is flipped to `pass`, any in-flight invocations and queued rows are cancelled, and the doc transitions to the `awaiting-pr-review` lifecycle stage. **Idempotent:** calling accept on an already-passed doc re-triggers the PR merge flow without re-flipping the verdict.
