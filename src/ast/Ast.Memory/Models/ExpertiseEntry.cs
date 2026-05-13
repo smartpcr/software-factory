@@ -8,6 +8,8 @@ namespace Ast.Memory.Models;
 
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
 /// Agent-authored knowledge node — per architecture.md §4.2.
@@ -19,7 +21,7 @@ using System.Collections.Generic;
 /// characters of <c>SHA-256(Title + Body + TargetNodeId)</c>.
 /// </para>
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     /// <summary>Unique ID — format: <c>expertise:{kind}:{hash8}</c>.</summary>
     public string Id { get; set; } = string.Empty;

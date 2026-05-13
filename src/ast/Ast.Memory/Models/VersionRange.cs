@@ -11,7 +11,7 @@ namespace Ast.Memory.Models;
 /// Tracks the commit index range during which the entity is/was active.
 /// </summary>
 public record VersionRange(
-    string SinceCommit,
+    string Since,
     int SinceIndex,
     string? UntilCommit = null,
     int? UntilIndex = null)
