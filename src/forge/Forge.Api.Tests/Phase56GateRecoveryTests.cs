@@ -231,6 +231,61 @@ public class Phase56GateRecoveryTests
             Assert.Same(thrown, caught);
             Assert.Equal("quality", caught.Stage);
             Assert.Equal("cargo fmt --check --all", caught.Command);
+
+            // Phase 56 follow-up -- before the exception propagates, the
+            // loop must persist the deliverable row with Verdict="iterate"
+            // (NOT the original "pass" set at row creation, and NOT
+            // "stalled" which StorySpawnOrchestrator.DriveOneWorkstreamImplAsync
+            // line 2154 treats as a TERMINAL triage state that refuses
+            // to re-enter the gen/eval loop). With verdict="iterate",
+            // the operator's Retry button (which just flips
+            // ws.Status="active") triggers the orchestrator's else
+            // branch at line 2293 → ProduceWorkstreamChangesAsync →
+            // RunGenEvalLoopAsync → DeliverableLoop seeding (line 348)
+            // picks up at iter+1 with the full prior chain so the agent
+            // gets another shot at fixing the gate. The exception
+            // message is also captured in Notes so the next iter's
+            // evaluator sees why the prior pass got rejected.
+            var rows = await db.Deliverables
+                .Where(d => d.WorkItemId == "wi-validator-throw")
+                .ToListAsync();
+            Assert.Single(rows);
+            Assert.Equal("iterate", rows[0].Verdict);
+            Assert.Contains("GATE EXHAUSTED", rows[0].Notes ?? string.Empty);
+            Assert.Contains(thrown.Message, rows[0].Notes ?? string.Empty);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// When the validator throws a non-<see cref="BuildFailedException"/>
+    /// (e.g. unexpected runner crash), the same demote-then-rethrow path
+    /// fires: row.Verdict="iterate" lands on disk before the exception
+    /// propagates. Pins that the catch is generic — operators see the
+    /// row as recoverable via Retry regardless of which exception type
+    /// the validator threw.
+    /// </summary>
+    [Fact]
+    public async Task PassValidator_GenericThrow_AlsoDemotes()
+    {
+        var (f, db, loop) = await SetupAsync("wi-validator-generic");
+        try
+        {
+            var req = new DeliverableLoopRequest(
+                "wi-validator-generic", "crew-x", "gen-1", "eval-1",
+                Generator: (_, _, _) => Task.FromResult(new GeneratorRunOutput("out", 0m)),
+                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(95), 0m)),
+                OnPassValidate: (_, _) => throw new InvalidOperationException("runner crashed"));
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => loop.RunAsync(req, CancellationToken.None));
+
+            var rows = await db.Deliverables
+                .Where(d => d.WorkItemId == "wi-validator-generic")
+                .ToListAsync();
+            Assert.Single(rows);
+            Assert.Equal("iterate", rows[0].Verdict);
+            Assert.Contains("runner crashed", rows[0].Notes ?? string.Empty);
         }
         finally { f.Dispose(); }
     }

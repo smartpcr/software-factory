@@ -938,6 +938,29 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * POST /api/workstreams/{id}/retry — soft retry. Demotes the last
+   * deliverable's verdict to "iterate" so the orchestrator re-enters
+   * the gen/eval loop at iter+1. Preserves worktree, deliverables,
+   * transcript, agent_usage, and PRs. Use when the workstream stalled
+   * at a high score and most of the diff is salvageable — vs restart,
+   * which wipes everything.
+   */
+  async retryWorkstream(id: string): Promise<{
+    workstreamId: string;
+    priorVerdict: string;
+    newVerdict: string;
+    demoted: boolean;
+    priorIter: number;
+    priorScore: number;
+    status: string;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/workstreams/{id}/cancel — stop the running gen/eval loop. */
   async cancelWorkstream(id: string): Promise<{ id: string; status: string; queueRowsCancelled: number }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/cancel`, {
@@ -1274,6 +1297,32 @@ export const forgeApi = {
   /** POST /api/stories/{storyId}/spawn/artifacts/{key}/resume — resume a single doc's gen↔eval loop. */
   async resumeStoryArtifact(storyId: string, key: string): Promise<{ storyId: string; key: string; status: string }> {
     return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/resume`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * POST /api/stories/{storyId}/spawn/artifacts/{key}/retry — soft retry
+   * for a plan-doc that hit a terminal verdict (sloppy at iter-cap,
+   * stalled, or recovery-exhausted pass). Demotes the verdict to
+   * "iterate" AND bumps the iter cap by +5 so DeliverableLoop seeding
+   * continues from iter+1 instead of terminal-replaying. Preserves
+   * doc, deliverables, transcript, costs.
+   */
+  async retryStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    priorVerdict: string;
+    newVerdict: string;
+    demoted: boolean;
+    priorIter: number;
+    priorScore: number;
+    priorMaxIter: number;
+    newMaxIter: number;
+    status: string;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/retry`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });

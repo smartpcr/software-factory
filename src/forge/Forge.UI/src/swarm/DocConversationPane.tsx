@@ -73,6 +73,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -82,8 +83,34 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const isLive = status === 'live';
   const isCompleted = status === 'completed';
   const hasIterations = rows.length > 0;
+  // Phase 56 — derive the last verdict directly from deliverables so
+  // the toolbar reflects the actual loop terminal state instead of
+  // relying on the synthetic `status` field (which is influenced by
+  // WorkItem.ExecutionStatus, often left stuck at "live" after a
+  // terminal sloppy / stalled verdict because the architect path
+  // doesn't clear it). Operator-reported 2026-05-13: architecture.md
+  // hit verdict=sloppy at iter 10/10 with ExecutionStatus="live"
+  // still on the row, so the Retry button stayed disabled even
+  // though Retry is exactly what the situation needed.
+  const lastVerdict = rows.length > 0 ? rows[rows.length - 1].verdict : null;
+  const lastVerdictIsTerminalBad = lastVerdict === 'sloppy'
+    || lastVerdict === 'stalled'
+    || lastVerdict === 'stalled-budget'
+    || lastVerdict === 'reject';
   const canResume = !isLive && !isCompleted && hasIterations;
-  const busy = resuming || cancelling || restarting || accepting || pinning;
+  // Phase 56 -- Retry is the soft-recovery affordance for docs that
+  // hit a terminal verdict (sloppy at iter-cap is the dominant case
+  // for plan-docs; the orchestrator banner explicitly tells the
+  // operator "bump max-iterations or restart"). Enabled whenever:
+  //   1. There's at least one prior iteration, AND
+  //   2. The doc isn't terminally complete, AND
+  //   3. Either the run isn't live, OR the last verdict is terminal-
+  //      bad (allows Retry on a row whose ExecutionStatus is stuck
+  //      at "live"/"queued" but whose loop has actually halted).
+  const canRetry = !isCompleted
+    && hasIterations
+    && (!isLive || lastVerdictIsTerminalBad);
+  const busy = resuming || retrying || cancelling || restarting || accepting || pinning;
 
   async function handleResume() {
     setResuming(true);
@@ -93,6 +120,35 @@ export function DocConversationPane({ storyId, docId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
     } finally { setResuming(false); }
+  }
+  async function handleRetry() {
+    const ok = await useConfirmStore.getState().ask({
+      title: `Retry ${key}.md?`,
+      body: 'Soft recovery — demote the last iteration verdict to "iterate" AND bump the iter cap by +5 so the architect agent gets another swing with the prior critique chain intact.',
+      tone: 'info',
+      confirmLabel: '↺ Retry',
+      cancelLabel: 'Cancel',
+      checklist: [
+        `Demote last verdict (sloppy/stalled/pass → iterate) for ${key}.md`,
+        'Bump iter cap by +5 (allows the loop to continue beyond the original cap)',
+        'Reset doc execution status to "queued"',
+        'Clear the orchestrator-halted error banner',
+        'PRESERVE the doc on disk, deliverables, transcript, costs, prior chain',
+        'Re-fire the architect loop (continues at iter+1 with prior critique)',
+      ],
+    });
+    if (!ok) return;
+    setRetrying(true);
+    try {
+      const r = await forgeApi.retryStoryArtifact(storyId, key);
+      showToast(
+        r.demoted
+          ? `Retry queued — verdict ${r.priorVerdict} → ${r.newVerdict}, cap ${r.priorMaxIter} → ${r.newMaxIter}; continuing from iter ${r.priorIter + 1}.`
+          : `Retry queued — cap ${r.priorMaxIter} → ${r.newMaxIter}; continuing from iter ${r.priorIter + 1}.`,
+        'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Retry failed', 'danger');
+    } finally { setRetrying(false); }
   }
   async function handleCancel() {
     setCancelling(true);
@@ -343,6 +399,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
           {resuming ? '⏳…' : isLive ? (
             <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
           ) : '↻ RESUME'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={!canRetry || busy}
+          title={isCompleted ? 'Shipped.' : !canRetry ? 'No iterations.' : (isLive && lastVerdictIsTerminalBad ? `Loop halted (verdict=${lastVerdict}) but ExecutionStatus is stuck — soft retry will unstick it.` : 'Soft retry — demote verdict + bump iter cap +5 so the loop continues (vs Restart which wipes to iter 1).')}
+          onClick={() => void handleRetry()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-cyan, #5eead4)' }}>
+          {retrying ? '⏳…' : '↺ RETRY'}
         </button>
         <button type="button" className="doc-conv-resume-btn" disabled={isCompleted || busy}
           title={isCompleted ? 'Shipped.' : 'Cancel running invocations for this doc.'}

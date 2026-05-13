@@ -84,6 +84,41 @@ public class AutoMergeWatcher : BackgroundService
                 if (decision.Required) continue;
                 if (pr.Build?.Status is not null && pr.Build.Status != "passing") continue;
                 if (pr.Review?.Verdict is "changes" or "pending") continue;
+
+                // 2026-05-13 — Phase 57b — refuse to merge a Forge-managed
+                // workstream PR whose reviewer agent has not run yet
+                // (Review verdict is null). Today's existing guard above
+                // only catches "changes" / "pending" verdicts; a null
+                // verdict slipped past, letting AutoMergeWatcher's 15 s
+                // tick race ahead of the orchestrator's slower
+                // DriveReviewAsync reviewer dispatch. Observed on
+                // failover-cluster:XRAFT PR #9 2026-05-13: AutoMergeWatcher
+                // auto-merged immediately after the build came back
+                // passing; Shen Gongbao (the reviewer agent) then posted
+                // 3 substantive comments on the already-merged PR, leaving
+                // them stranded as state="active" with no fix path (the
+                // workstream had advanced to "complete" and the worktree
+                // was removed). Operator-created PRs without a workstream
+                // keep the permissive null-verdict semantics — no
+                // orchestrator owns them. Companion to
+                // <see cref="StorySpawnOrchestrator.DriveReviewAsync"/>
+                // which stamps Review = "pending" the first time it sees
+                // an unreviewed workstream PR, so this guard is
+                // belt-and-suspenders against the very first tick where
+                // the orchestrator hasn't seen the PR yet either.
+                if (pr.Review is null)
+                {
+                    var isWorkstreamPr = await db.Workstreams
+                        .AsNoTracking()
+                        .AnyAsync(w => w.PrsJson.Contains(row.Id), ct);
+                    if (isWorkstreamPr)
+                    {
+                        this.logger.LogDebug(
+                            "forge.auto-merge.skipped pr={Pr} reason=reviewer-not-run",
+                            pr.Id);
+                        continue;
+                    }
+                }
                 // Conflicts are NOT a skip when AutoMerge is on — the story
                 // owner pre-authorised destructive resolution, so we let the
                 // -X ours path try when the provider rejects with a conflict.

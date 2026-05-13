@@ -6025,3 +6025,475 @@ test ticks the chain emits).
 - `src/forge/Forge.Api.Tests/Phase56GateRecoveryTests.cs` — 8 tests
   pinning the `OnPassValidate` mechanism + `BuildFailedException`
   shape
+
+
+## Phase 57b — AutoMergeWatcher reviewer-race fix (hotfix)
+
+### Problem
+
+`AutoMergeWatcher` (15 s tick) raced the orchestrator's slower
+`DriveReviewAsync` reviewer dispatch and auto-merged Forge-managed
+workstream PRs before the reviewer agent had a chance to run. The
+existing verdict guard at `AutoMergeWatcher.cs:86` only skipped
+verdicts `"changes"` / `"pending"` — a null verdict (reviewer
+never ran) slipped through. Once the PR was merged, the reviewer
+agent's later-posted comments landed on a closed PR with no fix path
+(the workstream had advanced to `complete` and the worktree was
+already removed by the post-merge cleanup at
+`StorySpawnOrchestrator.cs:2519-2524`).
+
+Operator-reported 2026-05-13 on
+`failover-cluster:XRAFT` PR `smartpcr/failover-cluster#9` (workstream
+`ws-failover-cluster-xraft-phase-raft-consensus-engine-stage-raft-node-state-machine`):
+PR `MERGED`, 3 substantive review comments by Shen Gongbao (agent
+`R3`) on `node.rs:371`, `node.rs:426`, `node.rs:457` all in
+state `active` / `NEEDS RESPONSE` 2 minutes after merge with no
+recovery path.
+
+### Behaviour
+
+1. **AutoMergeWatcher refuses to merge workstream PRs with null Review
+   verdict.** `AutoMergeWatcher.cs` adds a workstream-membership check
+   immediately after the existing verdict guard: if `pr.Review is null`
+   AND `db.Workstreams` has any row whose `PrsJson` contains the PR
+   id, skip with `reason=reviewer-not-run`. Operator-created PRs
+   (no workstream association) keep the historical permissive
+   null-verdict-OK semantics — no orchestrator owns them.
+2. **DriveReviewAsync stamps `Review.verdict = "pending"` on first
+   sight of an unreviewed workstream PR.** `StorySpawnOrchestrator.cs`
+   `DriveReviewAsync` writes `{ verdict: "pending" }` to the PR row's
+   `ReviewJson` immediately when the workstream enters the review-scan
+   window (`status is "review" or "merging"`) and `ReviewJson` is
+   empty. Belt-and-suspenders alongside change #1: the existing
+   `"pending"` skip in AutoMergeWatcher catches the race even before
+   #1's workstream check has rows to query. `complete` workstreams
+   are not retro-stamped — their historical verdict is preserved.
+
+Net effect: workstream PRs cannot auto-merge until the reviewer agent
+has explicitly run and posted a verdict. Existing approved-and-merge
+path (`ApproveAndMergeAsync`) is unaffected.
+
+### Implementation steps
+
+- [x] **57b.1** `AutoMergeWatcher.cs` — workstream-membership check after
+  the existing verdict guard (`pr.Review is null` + workstream PrsJson
+  contains the row id → skip with `reason=reviewer-not-run`).
+  Preserves operator-PR semantics (non-workstream null-verdict still
+  merges).
+- [x] **57b.2** `StorySpawnOrchestrator.DriveReviewAsync` — stamps
+  `ReviewJson = { verdict: "pending" }` on first sight of an
+  unreviewed workstream PR (`ws.Status is "review" or "merging"` +
+  `ReviewJson` is empty). Belt-and-suspenders to the existing
+  watcher pending-skip guard.
+- [x] **57b.3** Append Phase 57b section to
+  `docs/forge_implementation.md` after Phase 56.
+- [x] **57b.4** `dotnet build` + `dotnet test --filter
+  FullyQualifiedName~AutoMergeReviewerRace` — all 4 tests green
+  (2.0s wall-clock).
+- [x] **57b.5** Stop Forge.Api (PID 50396) + restart via
+  `scripts/run-forge-ui.ps1 -ServerOnly` (PID 52692) — operator
+  approved per-restart, OpenAPI returns 200, route table loaded.
+
+### Test scenarios (`AutoMergeReviewerRaceTests.cs`)
+
+- [x] **57b.T1** Workstream PR with `Review=null` + `Build=passing` +
+  `AutoMerge=true` → **not merged** by watcher; PR row stays
+  unmerged. (`Workstream_Pr_With_Null_Review_Is_Not_Merged_By_Watcher`)
+- [x] **57b.T2** Workstream PR with `Review.verdict="pending"` → **not
+  merged** (pins the existing pending-skip contract Fix B relies on).
+  (`Workstream_Pr_With_Pending_Review_Is_Not_Merged_By_Watcher`)
+- [x] **57b.T3** Workstream PR with `Review.verdict="approved"` + no
+  active comments → **merged** (no regression on happy path).
+  (`Workstream_Pr_With_Approved_Review_Is_Merged_By_Watcher`)
+- [x] **57b.T4** Non-workstream PR with `Review=null` +
+  `AutoMerge=true` → **still merges** (preserves operator-created PR
+  semantics — the fix only narrows behavior for spawn-owned PRs).
+  (`NonWorkstream_Pr_With_Null_Review_Still_Merges`)
+
+### Telemetry
+
+| Event | Payload | When |
+|-------|---------|------|
+| `forge.auto-merge.skipped` | `{ pr, reason: "reviewer-not-run" }` | Watcher tick observes a workstream PR with null Review verdict |
+
+### Code references
+
+- `src/forge/Forge.Api/Providers/AutoMergeWatcher.cs` — workstream-PR
+  guard inserted after the existing verdict-pending check.
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs`
+  `DriveReviewAsync` — `ReviewJson = '{ "verdict": "pending" }'` stamp
+  on first sight of an unreviewed workstream PR.
+- `src/forge/Forge.Api.Tests/AutoMergeReviewerRaceTests.cs` — 4
+  regression tests covering null/pending/approved workstream PRs +
+  the operator-PR permissive path.
+
+### Deferred (Bug 2 follow-up)
+
+Late-arriving review comments on already-merged PRs (when the
+workstream is `complete` and the worktree was removed by
+`StorySpawnOrchestrator.cs:2519-2524`) still cannot be auto-resolved
+— `ProduceReviewFixAsync` needs the worktree on disk. For PRs that
+hit this state before Phase 57b shipped, manual reply/resolve via the
+provider UI is the workaround. Lazy-rematerialize-worktree-for-review-fix
+is tracked as a `forge_v2.md` candidate.
+
+Cross-references: Phase 24 (PR sync + comment lifecycle), Phase 28
+(story-driven spawn — the orchestrator owning the reviewer dispatch),
+`WorkstreamMergeAdvancer` (active-comments guard 2026-05-13 — same
+race class, different code path).
+
+
+## Phase 57 — Operator cap-override (per-task max-iter / budget-window / sloppy-terminal reset)
+
+### Problem
+
+When a `DeliverableLoop` task halts on `verdict=sloppy`
+(iter-cap, score-plateau, token-cap) or `verdict=stalled-budget`,
+today's only recovery paths are:
+
+1. **Restart** (`POST /api/workstreams/{id}/restart` or
+   `POST /api/stories/{storyId}/spawn/artifacts/{key}/restart`) —
+   destructive: wipes deliverables, transcript, agent_usage, worktree,
+   open PR, score history. The operator loses ~all signal.
+2. **Crew config bump** (raise `crew.MaxTaskBudgetUsd` for budget
+   stalls; raise `ScoringConstants.MaxIterations` for iter caps) —
+   coarse, applies to every future task on the crew, not just this
+   halted row.
+3. **`PATCH /api/work-items/{id}/execution { MaxIterations }`**
+   (Phase 20) — writes `TaskQueue.MaxIterOverride` but doesn't
+   re-enqueue, doesn't reset budget window, doesn't clear
+   sloppy-terminal state, has no audit trail, no UI. Plan-doc tasks
+   halted by `spawn.LastError` stay halted even after the PATCH;
+   plan-doc tasks call `DeliverableLoop.RunAsync` directly
+   (`CrewStoryArtifactStrategy.RunGenEvalLoopAsync` ~line 1489) and
+   have NO TaskQueue row, so PATCH /execution 404s for them.
+
+Operator screenshot 2026-05-13 on `code-intelligence:AGENT-MEMORY`
+plan-doc `architecture.md`:
+
+> "Gen-eval loop for plan:architecture.md ended with verdict=sloppy
+> after 10 iterations (final score 86). The plan PR will not be opened
+> — bump max-iterations or restart the architect crew."
+
+Score 86 after 10 iters is plenty workable; the operator wants iters
+11+ to converge without losing the prior chain.
+
+### Resolved decisions
+
+- **Scope** — both plan-doc and workstream coding tasks.
+- **Reset-budget-window default** — smart (ON only if cumulative cost
+  since `BudgetWindowStartUtc` >= crew `MaxTaskBudgetUsd`).
+- **Clear-sloppy-terminal default** — smart (ON only if
+  `PairAttemptCount >= MaxPairAttempts`).
+- **Audit history** — yes; new `work_item_override_history` table
+  + GET endpoint feeds the modal's prior-overrides list. Also writes
+  to the generic `forge_actions` audit table for the `/api/audit`
+  view (Phase 7.5).
+- **Authorization** — `RequireWriter` (mirrors Restart). Stronger
+  product-owner gating deferred until `ForgeUser` grows a real role
+  gate.
+
+### Behaviour
+
+Add a **non-destructive sibling of Restart**:
+`POST /api/work-items/{id}/override` that:
+
+1. Bumps a NEW `WorkItem.MaxIterOverride` column (NOT
+   `TaskQueue.MaxIterOverride` — plan-doc tasks have no queue row).
+   `DeliverableLoop` reads `WorkItem.MaxIterOverride` first, falls
+   back to `TaskQueue.MaxIterOverride`, then to
+   `PointsToMaxIter(points)`.
+2. Modifies `DeliverableLoop.cs:314-320` terminal short-circuit so
+   `stalled-budget` is terminal only when `BudgetWindowStartUtc`
+   is null OR `BudgetWindowStartUtc <= lastPersisted.CreatedAt`
+   (window is stale). After the override resets the window, the
+   resume branch at line 348-365 takes over.
+3. Sets a NEW `WorkItem.OverrideContinuePair` boolean.
+   `StorySpawnOrchestrator.DriveOneWorkstreamImpl`
+   (lines 2181-2206) currently routes `verdict=sloppy` with
+   `PairAttemptCount < cap` to `TryRouteToSloppyReassignAsync` —
+   losing the current pair's context. With
+   `OverrideContinuePair=true`, the orchestrator skips the reassign
+   branch and falls through to `ProduceWorkstreamChangesAsync`;
+   the flag auto-clears after the next deliverable persists.
+4. Optionally resets `WorkItem.BudgetWindowStartUtc = now` and
+   `WorkItem.BudgetCooldownUntilUtc = null` (mirrors
+   `BudgetCooldownReconciler.TryResumeAsync`).
+5. Optionally resets sloppy-terminal state
+   (`PairAttemptCount=1`, `FailureReason=null`,
+   `PriorPairsJson=null`, `LastPairAgentIdsJson=null`).
+6. **Preserves** deliverables, transcript, agent_usage, worktree,
+   open PR, score history.
+7. Resets `ExecutionStatus` to `queued` for workstreams /
+   `idle` for plan-docs (NEVER `pending-reassign`).
+8. Clears `spawn.LastError` + `LastErrorAt` when they reference
+   this WorkItemId.
+9. **Cancels in-flight invocation first** (mirrors RestartArtifact
+   line 2846): `await runner.CancelByTaskAsync(workItemId, ct)`.
+   For workstream tasks, also flips active TaskQueue rows to
+   `cancelled`.
+10. Re-enters the loop:
+    - **Plan-doc**: call `AddResumePending(spawn, key)` +
+      SaveChanges, then fire-and-forget
+      `RunResumeWithCleanupAsync(restartFromScratch:false)`. The
+      resume-pending marker is required so `StoryResumeRecoveryService`
+      re-fires on a process crash mid-resume.
+    - **Workstream**: emit `ws-changed` SignalR; orchestrator's
+      `DriveOneWorkstreamImpl` reads `wi.OverrideContinuePair` on
+      the next tick and skips the sloppy-reassign branch.
+11. Writes `work_item_override_history` row + generic
+    `forge_actions` audit row.
+12. Emits `task.override-applied` SignalR event with before/after
+    snapshot.
+
+Phase 52 invariant "no sloppy stretch"
+(forge_implementation.md §5463-5464) is explicitly superseded by
+Phase 57 for the operator-override case; auto-recovery
+(SloppyReassignmentReconciler / BudgetCooldownReconciler) is
+unchanged.
+
+### Endpoint contract
+
+`POST /api/work-items/{id}/override`
+
+```jsonc
+{
+  "maxIterations": 20,           // optional, 1-50, null = leave unchanged
+  "resetBudgetWindow": true,     // optional, default false
+  "clearSloppyTerminal": true,   // optional, default false
+  "reason": "Score 86 -- let it converge."   // required, 10-500 chars
+}
+```
+
+Response 200:
+
+```jsonc
+{
+  "workItemId": "plan-doc:sp-abc:architecture.md",
+  "kind": "plan-doc",
+  "before": { "maxIterations": 10, "budgetWindowStartUtc": "...",
+              "pairAttemptCount": 3, "executionStatus": "stalled",
+              "lastVerdict": "sloppy", "lastIter": 10 },
+  "after":  { "maxIterations": 20, "budgetWindowStartUtc": "now",
+              "pairAttemptCount": 1, "executionStatus": "idle" },
+  "resumeScheduled": true
+}
+```
+
+Error responses:
+- 400 `maxIterations out of 1-50 range`
+- 400 `reason must be 10-500 chars`
+- 400 `at least one of maxIterations / resetBudgetWindow /
+  clearSloppyTerminal must be set`
+- 403 `RequireWriter` failed
+- 404 `work item {id} not found`
+- 409 `last deliverable is "pass" -- use Restart`
+- 409 `last deliverable is "reject" -- operator triage required`
+
+`GET /api/work-items/{id}/overrides` returns prior override-history
+rows newest-first for the modal's history list.
+
+### Schema migration -- `Phase57Migration.cs`
+
+Two changes, both idempotent (`EnsureColumnAsync` + `EnsureTableAsync`
+pattern matching `Phase51Migration` / `Phase52Migration`):
+
+1. Extend `work_items` with three new columns:
+   - `MaxIterOverride INTEGER NULL`
+   - `OverrideContinuePair INTEGER NOT NULL DEFAULT 0`
+   - `OverrideAppliedAt TEXT NULL`
+2. Create `work_item_override_history` table:
+
+```sql
+CREATE TABLE IF NOT EXISTS work_item_override_history (
+  Id INTEGER PRIMARY KEY AUTOINCREMENT,
+  WorkItemId TEXT NOT NULL,
+  AppliedAt TEXT NOT NULL,
+  AppliedBy TEXT NULL,
+  MaxIterBefore INTEGER NULL,
+  MaxIterAfter INTEGER NULL,
+  ResetBudgetWindow INTEGER NOT NULL,
+  ClearSloppyTerminal INTEGER NOT NULL,
+  ContinuePair INTEGER NOT NULL,
+  PairAttemptCountBefore INTEGER NULL,
+  BudgetWindowStartUtcBefore TEXT NULL,
+  ExecutionStatusBefore TEXT NULL,
+  LastVerdictBefore TEXT NULL,
+  LastIterBefore INTEGER NULL,
+  Reason TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_wi_override_history_wid
+  ON work_item_override_history (WorkItemId, AppliedAt DESC);
+```
+
+### Steps
+
+- [ ] **57.1** `Phase57Migration.cs` — ALTER TABLE work_items
+  ADD three columns + CREATE TABLE work_item_override_history with
+  index. Wire into `Program.cs` migration chain after
+  `Phase56Migration`.
+- [ ] **57.2** Extend `WorkItemRow` (`MaxIterOverride`,
+  `OverrideContinuePair`, `OverrideAppliedAt`) + add
+  `WorkItemOverrideHistoryRow` entity + `DbSet` on
+  `ForgeDbContext`. `OnModelCreating` maps to
+  `work_item_override_history` table with the index.
+- [ ] **57.3** Modify `DeliverableLoop.cs` (a) after line 251
+  `maxIter` resolution, read `WorkItem.MaxIterOverride` BEFORE the
+  queue-row read (priority: WI > queue > points). (b) Modify terminal
+  short-circuit at lines 314-320 so `stalled-budget` is terminal
+  only when window is null OR stale. Pin both with unit tests.
+- [ ] **57.4** Modify `StorySpawnOrchestrator.DriveOneWorkstreamImpl`
+  (lines 2181-2206 sloppy branch). Before the `PairAttemptCount`
+  check, read `wi.OverrideContinuePair`. If true: clear sloppy
+  stall-state, fall through past the reassign branch into
+  `ProduceWorkstreamChangesAsync`. After the next deliverable
+  persists (in `RunGenEvalLoopAsync` post-iter callback), auto-clear
+  `wi.OverrideContinuePair = false` + `wi.OverrideAppliedAt = null`.
+  Log the override-honor decision.
+- [ ] **57.5** Add `OverrideRequest`, `OverrideResponse`,
+  `OverrideHistoryEntry`, `OverrideBeforeAfter` records to
+  `ForgeContracts.cs`. Regen TS via `npm run gen:api`.
+- [ ] **57.6** Add `POST /api/work-items/{id}/override` +
+  `GET /api/work-items/{id}/overrides` to
+  `TaskExecutionEndpoints.cs`. RequireWriter, validate body,
+  409 on pass/reject, cancel-in-flight, capture before-snapshot,
+  apply mutations in transaction, write history + audit rows,
+  SaveChanges, emit SignalR. Plan-doc:
+  `AddResumePending` + fire-and-forget `RunResumeWithCleanupAsync`.
+  Workstream: emit `ws-changed`.
+- [ ] **57.7** Author the 4 test files listed under **Test scenarios**
+  below: `Phase57OverrideEndpointTests.cs`,
+  `Phase57OverrideHistoryTests.cs`,
+  `Phase57DeliverableLoopResumeTests.cs`,
+  `Phase57OrchestratorContinuePairTests.cs`.
+- [ ] **57.8** `forgeApi.overrideWorkItem` +
+  `forgeApi.listOverrideHistory` in
+  `src/forge/Forge.UI/src/api/forgeApi.ts`.
+- [ ] **57.9** `OverrideModal.tsx` —
+  `src/forge/Forge.UI/src/swarm/OverrideModal.tsx`. Header, context
+  strip (iter X/Y, score Z, cost $W, sloppy reason), max-iter
+  number input, reset-budget checkbox with smart-default + subline,
+  clear-sloppy checkbox with smart-default + subline, required reason
+  textarea (10-500 chars), collapsible prior-override history list,
+  Cancel + `Override & continue` buttons.
+- [ ] **57.10** Wire `⇪ OVERRIDE` button into
+  `DocConversationPane.tsx` between RESTART and PIN
+  (line ~365). `disabled={busy}`.
+- [ ] **57.11** Wire `⇪ OVERRIDE` button into
+  `WorkstreamConversationPane.tsx` (line ~368, mirror of 57.10).
+- [ ] **57.12** Wire `⇪ OVERRIDE` button into
+  `LiveExecutionView.tsx` for sloppy / stalled-budget rows (next to
+  the existing Resume button, which today excludes sloppy verdicts).
+- [ ] **57.13** Add inline `⇪ override` button to
+  `SwarmStoryView.tsx > SpawnErrorBanner` between dismiss and retry.
+  Parse the failing workItemId from the error message
+  (`plan-doc:{spawnId}:{file}.md` or `ws-{slug}`) + fall back to
+  a workItemId prop.
+- [ ] **57.14** Playwright override flow (plan-doc + workstream +
+  SpawnErrorBanner) + screenshot fidelity (new button does not
+  reflow toolbar in light/dark).
+- [ ] **57.15** `dotnet build` + `dotnet test --filter
+  FullyQualifiedName~Phase57` + `cd src/forge/Forge.UI && npm run build`.
+- [ ] **57.16** STOP — request operator approval to restart
+  Forge.Api so the new migration runs and the endpoint goes live.
+
+### Test scenarios
+
+#### `Phase57OverrideEndpointTests.cs` — endpoint contract
+
+- [ ] **57.T1** Override on `sloppy` workstream task → `WorkItem.MaxIterOverride` bumped, `OverrideContinuePair=true`, `OverrideAppliedAt=now`, `ExecutionStatus="queued"`, audit + history rows written, `ws-changed` SignalR emitted.
+- [ ] **57.T2** Override on `sloppy` plan-doc task (no TaskQueue row) → same WI-level mutations, plus `AddResumePending(spawn, key)` called and `RunResumeWithCleanupAsync(restartFromScratch:false)` scheduled.
+- [ ] **57.T3** Override on `stalled-budget` task with `resetBudgetWindow=true` → `BudgetWindowStartUtc=now`, `BudgetCooldownUntilUtc=null`, cumulative-cost meter reads 0 since the new window.
+- [ ] **57.T4** Override on task with `clearSloppyTerminal=true` → `PairAttemptCount=1`, `PriorPairsJson=null`, `FailureReason=null`, `LastPairAgentIdsJson=null`.
+- [ ] **57.T5** Override on `pass` verdict → **409** with `last deliverable is "pass" -- use Restart`.
+- [ ] **57.T6** Override on `reject` verdict → **409** with `last deliverable is "reject" -- operator triage required`.
+- [ ] **57.T7** Override with no fields set (all three optional fields null/false) → **400** `at least one of … must be set`.
+- [ ] **57.T8** Override with `reason` < 10 chars or > 500 chars → **400** `reason must be 10-500 chars`.
+- [ ] **57.T9** Override with `maxIterations=0` or `maxIterations=51` → **400** `maxIterations out of 1-50 range`.
+- [ ] **57.T10** Override on missing work item → **404**.
+- [ ] **57.T11** Override without `X-Forge-User` header → **403** RequireWriter.
+- [ ] **57.T12** Override on mid-flight task (ExecutionStatus=`live`, AgentSlot has open claim) → `runner.CancelByTaskAsync` invoked, active TaskQueue rows flipped to `cancelled`, then mutations apply (no 409 race).
+- [ ] **57.T13** Override clears `spawn.LastError` + `LastErrorAt` when the error message references the workItemId; otherwise leaves them untouched.
+- [ ] **57.T14** Override does **NOT** delete deliverables, transcript events, `agent_usage` rows, or the worktree (the destructive set Restart wipes).
+
+#### `Phase57OverrideHistoryTests.cs` — audit trail
+
+- [ ] **57.T15** Two overrides on the same work item produce two `work_item_override_history` rows; `GET /overrides` returns them newest-first.
+- [ ] **57.T16** History row captures full before-snapshot (`MaxIterBefore`, `PairAttemptCountBefore`, `BudgetWindowStartUtcBefore`, `ExecutionStatusBefore`, `LastVerdictBefore`, `LastIterBefore`) and the mutation flags (`ResetBudgetWindow`, `ClearSloppyTerminal`, `ContinuePair`).
+- [ ] **57.T17** Override also writes a `forge_actions` row of kind `work_item.override_applied` so the global `/api/audit` view picks it up.
+
+#### `Phase57DeliverableLoopResumeTests.cs` — loop integration
+
+- [ ] **57.T18** Persisted `sloppy` at iter 10 + `WorkItem.MaxIterOverride=20` → `DeliverableLoop` resumes at iter 11, prior chain seeded from iters 1-10, score history preserved.
+- [ ] **57.T19** `WorkItem.MaxIterOverride` takes precedence over `TaskQueue.MaxIterOverride` when both are set; queue-row value is the fallback when WI value is null.
+- [ ] **57.T20** Persisted `stalled-budget` + `BudgetWindowStartUtc > lastPersisted.CreatedAt` (fresh window) → terminal short-circuit is **NOT** taken; resume branch runs and the loop continues.
+- [ ] **57.T21** Persisted `stalled-budget` + null `BudgetWindowStartUtc` OR `BudgetWindowStartUtc <= lastPersisted.CreatedAt` (stale window) → terminal short-circuit IS taken (legacy semantic preserved when override has not run).
+
+#### `Phase57OrchestratorContinuePairTests.cs` — sloppy-reassign skip
+
+- [ ] **57.T22** `WorkItem.OverrideContinuePair=true` + last verdict `sloppy` + `PairAttemptCount=1` → `DriveOneWorkstreamImpl` does NOT call `TryRouteToSloppyReassignAsync`; falls through to `ProduceWorkstreamChangesAsync`.
+- [ ] **57.T23** After the next deliverable persists in `RunGenEvalLoopAsync` post-iter callback, `OverrideContinuePair` is auto-cleared back to `false` and `OverrideAppliedAt` is set back to `null`.
+- [ ] **57.T24** `OverrideContinuePair=false` + last verdict `sloppy` + `PairAttemptCount=1` → existing reassign behavior unchanged (regression pin so the override path does not leak into the default path).
+
+#### `Forge.UI.Tests/` — Playwright + fidelity
+
+- [ ] **57.T25** Halted plan-doc → click `⇪ OVERRIDE` → fill modal (maxIter=20, reason) → submit → toast appears → iteration pager shows iter 11.
+- [ ] **57.T26** Halted workstream → same flow against `WorkstreamConversationPane`.
+- [ ] **57.T27** Halted workstream surfaced in `LiveExecutionView` → `⇪ OVERRIDE` button visible next to Resume for sloppy/stalled-budget rows; same flow.
+- [ ] **57.T28** `SpawnErrorBanner` inline `⇪ override` button → opens the same modal pre-scoped to the failing artifact via parsed workItemId.
+- [ ] **57.T29** Screenshot fidelity: new button does not reflow the toolbar in light or dark theme (regenerate baseline once, no diffs after).
+
+### Backward compatibility
+
+- `PATCH /api/work-items/{id}/execution { MaxIterations }` (Phase
+  20) stays as-is. It is **NOT** a strict subset of POST /override:
+  - PATCH writes to `TaskQueue.MaxIterOverride` (queue-scoped).
+  - POST writes to `WorkItem.MaxIterOverride` (work-item-scoped,
+    survives queue row recycling).
+  - PATCH supports `null` to clear; POST rejects no-op.
+  - PATCH has no auth gate today; POST requires writer.
+  - PATCH 404s on plan-doc tasks; POST works for both kinds.
+- `DeliverableLoop` resolution order:
+  `WorkItem.MaxIterOverride` > `TaskQueue.MaxIterOverride` >
+  `PointsToMaxIter(points)`.
+- Existing Restart flows unchanged. Operator guidance in the modal:
+  "Override = keep deliverables + transcript; Restart = clean slate."
+
+### Out of scope
+
+- Cross-task batch override ("override all stalled rows in this
+  spawn") — `forge_v2.md` candidate.
+- Auto-override-on-detect (e.g. "if score > 80 and iter-cap hit,
+  auto-bump by 5") — too easy to runaway-burn budget; explicit
+  operator action only.
+- Cost ledger refund — `agent_usage` stays as-is; the override
+  means "more iters allowed", not "rewind cost".
+- Crew-level cap edits — `/settings/crews` already exposes
+  `MaxTaskBudgetUsd` for that.
+- Re-materialize a deleted worktree to address late-arriving review
+  comments after a workstream went `complete` (the Bug 2
+  follow-up identified during the Phase 57b hotfix) — separate
+  `forge_v2.md` candidate.
+
+### Code references
+
+- `src/forge/Forge.Api/Persistence/Phase57Migration.cs` (new)
+- `src/forge/Forge.Api/Persistence/Entities.cs` —
+  `WorkItemRow` extension + `WorkItemOverrideHistoryRow`
+- `src/forge/Forge.Api/Services/DeliverableLoop.cs` —
+  WI-level override read + `stalled-budget` relaxed terminal
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs` —
+  `DriveOneWorkstreamImpl` honors `OverrideContinuePair`;
+  auto-clear in `RunGenEvalLoopAsync` post-iter callback
+- `src/forge/Forge.Api/Contracts/ForgeContracts.cs` — override
+  request/response/history records
+- `src/forge/Forge.Api/Endpoints/TaskExecutionEndpoints.cs` —
+  POST /override + GET /overrides
+- `src/forge/Forge.UI/src/swarm/OverrideModal.tsx` (new)
+- `src/forge/Forge.UI/src/swarm/DocConversationPane.tsx`,
+  `WorkstreamConversationPane.tsx`,
+  `src/forge/Forge.UI/src/views/LiveExecutionView.tsx`,
+  `src/forge/Forge.UI/src/swarm/SwarmStoryView.tsx` —
+  4 UI surface wires
+- `src/forge/Forge.Api.Tests/Phase57*.cs` (4 new files)
+- `src/forge/Forge.UI.Tests/` — Playwright override flow

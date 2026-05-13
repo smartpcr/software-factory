@@ -2461,6 +2461,35 @@ public sealed class StorySpawnOrchestrator
             if (prs.Count == 0) continue;
             var prId = prs[0];
 
+            // 2026-05-13 — Phase 57b — stamp the PR's Review verdict as
+            // "pending" the first time DriveReviewAsync sees an unreviewed
+            // workstream PR. AutoMergeWatcher (15 s tick) used to race the
+            // orchestrator's slower reviewer dispatch and merge PRs whose
+            // Review verdict was still null — leaving the reviewer agent's
+            // later-posted comments stranded on a closed PR. AutoMergeWatcher
+            // already skips PRs with verdict "pending" / "changes"; flipping
+            // the verdict to "pending" the moment we enter the review-scan
+            // window closes the race even without the workstream-PR check
+            // in AutoMergeWatcher (which is the primary fix).
+            //
+            // Only stamp for in-flight ws.Status: "review" / "merging".
+            // "complete" workstreams already merged via a non-orchestrator
+            // path (human merge upstream, AutoMerge before this fix landed)
+            // should NOT have their historical verdict overwritten —
+            // late-arriving comments are still handled by the fix loop
+            // below regardless of verdict.
+            if (w.Status is "review" or "merging")
+            {
+                var prRowForVerdict = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+                if (prRowForVerdict is not null
+                    && string.IsNullOrEmpty(prRowForVerdict.ReviewJson))
+                {
+                    prRowForVerdict.ReviewJson = JsonSerializer.Serialize(new { verdict = "pending" });
+                    prRowForVerdict.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+                    await db.SaveChangesAsync(ct);
+                }
+            }
+
             // Load the comment set up front. The active set drives the
             // universal guard below; the full set decides whether Step 1
             // needs to run a reviewer pass.

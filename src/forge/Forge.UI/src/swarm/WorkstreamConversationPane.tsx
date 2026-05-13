@@ -49,6 +49,7 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
@@ -58,7 +59,27 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
   const isComplete = executionStatus === 'completed';
   const isLive = executionStatus === 'live' || executionStatus === 'queued';
+  // Phase 56 -- terminal-bad verdicts must enable Retry even when
+  // ExecutionStatus is stuck at "live"/"queued" (architect and
+  // engineer paths can both leave this dangling after a terminal
+  // sloppy/stalled verdict; cf. DocConversationPane.tsx). Without
+  // this guard the operator sees "● LIVE" on the disabled Retry
+  // button even though the loop has actually halted.
+  const lastVerdictIsTerminalBad = lastDeliverable !== null && (
+    lastDeliverable.verdict === 'sloppy'
+    || lastDeliverable.verdict === 'stalled'
+    || lastDeliverable.verdict === 'stalled-budget'
+    || lastDeliverable.verdict === 'reject');
   const canResume = !isComplete && !isLive && lastDeliverable !== null;
+  // Phase 56 -- Retry is the soft recovery affordance for stalled
+  // workstreams that hit a gate-exhausted state but have salvageable
+  // work. Demotes verdict to "iterate" and reactivates the row WITHOUT
+  // wiping deliverables/worktree/PRs (vs Restart's full reset).
+  // Enabled when: has deliverable AND not terminal-complete AND
+  // (not live OR last verdict is terminal-bad).
+  const canRetry = !isComplete
+    && lastDeliverable !== null
+    && (!isLive || lastVerdictIsTerminalBad);
 
   async function handleResume() {
     setResuming(true);
@@ -94,6 +115,36 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Restart failed', 'danger');
     } finally { setRestarting(false); }
+  }
+  async function handleRetry() {
+    const ok = await useConfirmStore.getState().ask({
+      title: 'Retry workstream?',
+      body: 'Soft recovery — demote the last deliverable verdict to "iterate" so the orchestrator re-enters the gen↔eval loop at iter+1. The agent gets another swing with all prior context intact.',
+      tone: 'info',
+      confirmLabel: '↻ Retry',
+      cancelLabel: 'Cancel',
+      checklist: [
+        'Demote last deliverable verdict (pass / stalled → iterate)',
+        'Reset workstream status to "active"',
+        'Clear stall reason',
+        'Cancel any in-flight runner work',
+        'PRESERVE deliverables, transcript, agent_usage, costs, PRs',
+        'PRESERVE the worktree on disk and the branch',
+        'Re-drive the orchestrator (next tick continues at iter+1 with prior chain)',
+      ],
+    });
+    if (!ok) return;
+    setRetrying(true);
+    try {
+      const r = await forgeApi.retryWorkstream(workstreamId);
+      showToast(
+        r.demoted
+          ? `Retry queued — verdict ${r.priorVerdict} → ${r.newVerdict} (resuming after iter ${r.priorIter}, score ${r.priorScore}).`
+          : `Retry queued — verdict already ${r.newVerdict}; just reactivated.`,
+        'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Retry failed', 'danger');
+    } finally { setRetrying(false); }
   }
   async function handleCancel() {
     setCancelling(true);
@@ -350,20 +401,26 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           );
         })}
         <span style={{ flex: 1 }} />
-        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming || cancelling || restarting}
+        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming || cancelling || restarting || retrying}
           title={isComplete ? 'Completed.' : isLive ? 'Running.' : !canResume ? 'No iterations yet.' : 'Resume loop.'}
           onClick={() => void handleResume()} style={{ margin: '0 2px', padding: '4px 10px' }}>
           {resuming ? '⏳…' : isLive ? (
             <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
           ) : '↻ RESUME'}
         </button>
-        <button type="button" className="doc-conv-resume-btn" disabled={isComplete || cancelling || restarting || resuming}
+        <button type="button" className="doc-conv-resume-btn" disabled={!canRetry || retrying || resuming || cancelling || restarting}
+          title={isComplete ? 'Completed.' : isLive ? 'Running.' : !canRetry ? 'No iterations yet.' : 'Soft retry — demote verdict to iterate and resume at iter+1 (keeps worktree, deliverables, PRs).'}
+          onClick={() => void handleRetry()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-cyan, #5eead4)' }}>
+          {retrying ? '⏳…' : '↺ RETRY'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={isComplete || cancelling || restarting || resuming || retrying}
           title="Cancel queued tasks." onClick={() => void handleCancel()}
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-red, #ff6b80)' }}>
           {cancelling ? '⏳…' : '✕ CANCEL'}
         </button>
-        <button type="button" className="doc-conv-resume-btn" disabled={cancelling || restarting || resuming}
-          title="Restart from iter 1." onClick={() => void handleRestart()}
+        <button type="button" className="doc-conv-resume-btn" disabled={cancelling || restarting || resuming || retrying}
+          title="Restart from iter 1 (wipes worktree, deliverables, PRs)." onClick={() => void handleRestart()}
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-amber, #ffb347)' }}>
           {restarting ? '⏳…' : '⟲ RESTART'}
         </button>

@@ -88,6 +88,7 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/retry", RetryArtifact).WithName("RetryStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/accept", AcceptArtifact).WithName("AcceptStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/restart", RestartArtifact).WithName("RestartStoryArtifact");
@@ -2313,6 +2314,173 @@ public static class StoriesEndpoints
             new { kind = "artifact-resumed", storyId, key });
 
         return Results.Ok(new { storyId, key, status = "resuming" });
+    }
+
+    /// <summary>
+    /// Phase 56 -- soft retry for a plan-doc artifact whose gen/eval
+    /// loop hit a terminal verdict (sloppy at iter-cap, stalled,
+    /// or a recovery-exhausted pass). Unlike <see cref="ResumeArtifact"/>
+    /// (which only re-fires the loop -- DeliverableLoop's terminal-replay
+    /// at <c>iter >= maxIter</c> immediately returns the same verdict
+    /// without doing any work), Retry:
+    /// <list type="number">
+    ///   <item>Demotes the last deliverable verdict pass/sloppy/stalled
+    ///         → <c>iterate</c> so DeliverableLoop seeding picks up at
+    ///         iter+1 with the full prior chain.</item>
+    ///   <item>Bumps the iter cap by +5 via <c>TaskQueueRow.MaxIterOverride</c>
+    ///         so <c>iter < maxIter</c> holds and seeding actually
+    ///         triggers (the canonical "operator extended the cap"
+    ///         path, see <see cref="TaskQueueRow.MaxIterOverride"/>).</item>
+    ///   <item>Resets the work-item's ExecutionStatus to <c>queued</c>
+    ///         so the UI badge un-pulses any stuck live state.</item>
+    ///   <item>Fires <see cref="RunResumeWithCleanupAsync"/> in the
+    ///         background -- exact same code path as Resume, just with
+    ///         the demoted verdict + bumped cap baked in.</item>
+    /// </list>
+    /// PRESERVES: worktree, deliverables, transcript, agent_usage,
+    /// costs, plan doc on disk. The architect agent continues
+    /// improving the same doc with the prior critique chain.
+    /// </summary>
+    private static async Task<IResult> RetryArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IStoryArtifactStrategy strategy)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+        if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        var docKey = key.ToLowerInvariant();
+        if (!Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.TryGetValue(
+                docKey, out var fileName))
+        {
+            return Results.Problem(
+                type: "retry.unknown-key",
+                title: $"Unknown plan-doc key '{key}'.",
+                detail: $"Expected one of: {string.Join(", ", Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.Keys)}.",
+                statusCode: 400);
+        }
+
+        var docWorkItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == docWorkItemId)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (lastDel is null)
+        {
+            return Results.Problem(
+                type: "retry.no-deliverables",
+                title: $"Nothing to retry -- doc '{key}' has no prior iterations.",
+                detail: "Use Resume / Restart to dispatch fresh.",
+                statusCode: 400);
+        }
+
+        // (1) Demote verdict. The blocker that prevents Resume from
+        // doing useful work is DeliverableLoop's terminal-replay check
+        // (DeliverableLoop.cs:316-345): when verdict is "stalled"/"sloppy"
+        // AND iter >= maxIter, the loop returns immediately. We need
+        // BOTH (a) verdict NOT in {pass, reject, stalled-budget} AND
+        // (b) iter < maxIter for seeding to fire. Demote to "iterate"
+        // covers (a); the cap bump below covers (b).
+        var priorVerdict = lastDel.Verdict;
+        var demoted = false;
+        if (lastDel.Verdict is "pass" or "stalled" or "sloppy")
+        {
+            lastDel.Verdict = "iterate";
+            var note = $"OPERATOR RETRY (plan-doc {key}.md) -- verdict demoted from '{priorVerdict}' to 'iterate'; iter cap bumped +5 so DeliverableLoop seeding continues at iter+1 instead of terminal-replaying. Doc, prior chain, transcript, and cost ledger preserved.";
+            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
+            demoted = true;
+        }
+
+        // (2) Bump the iter cap via TaskQueueRow.MaxIterOverride. The
+        // DeliverableLoop reads this on every invocation
+        // (DeliverableLoop.cs:260-276) -- it overrides the points-derived
+        // cap. We aim for max(currentOverride, lastIter+5) so a previous
+        // bump isn't accidentally lowered.
+        var existingOverride = await db.TaskQueue
+            .Where(q => q.WorkItemId == docWorkItemId)
+            .OrderByDescending(q => q.Id)
+            .FirstOrDefaultAsync();
+        var pointsDerived = ScoringConstants.MaxIterationsForPoints(
+            Math.Max(1, story.Points));
+        var currentCap = existingOverride?.MaxIterOverride ?? pointsDerived;
+        var newCap = Math.Max(currentCap, lastDel.Iter + 5);
+
+        if (existingOverride is not null && existingOverride.State != "completed")
+        {
+            existingOverride.MaxIterOverride = newCap;
+            existingOverride.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            db.TaskQueue.Add(new TaskQueueRow
+            {
+                WorkItemId = docWorkItemId,
+                TargetKind = "team",
+                TargetId = "Architect",
+                State = TaskQueueStates.Queued,
+                MaxIterOverride = newCap,
+                EnqueuedAt = DateTimeOffset.UtcNow,
+                LastUpdatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        // (3) Reset the doc work item's ExecutionStatus so the UI
+        // badge and the orchestrator's claim sweep see a clean row.
+        var docWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == docWorkItemId);
+        if (docWi is not null)
+        {
+            docWi.ExecutionStatus = ExecutionStatuses.Queued;
+            docWi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (4) Clear the spawn's last-error banner so the operator
+        // sees the retry kick off cleanly (same as RetrySpawn).
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+
+        // (5) Mark the doc as pending-resume BEFORE the background task
+        // starts so a crash mid-Retry is recovered by StoryResumeRecoveryService
+        // (matches Phase 41's restart-safe contract on ResumeArtifact).
+        AddResumePending(spawn, key);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await db.SaveChangesAsync();
+
+        // (6) Fire the same background drive as Resume -- DeliverableLoop
+        // now sees verdict="iterate" + new maxIter cap, so seeding takes
+        // over and the loop continues from iter+1.
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        _ = Task.Run(() => RunResumeWithCleanupAsync(
+            scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-retried", storyId, key });
+
+        return Results.Ok(new
+        {
+            storyId,
+            key,
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            demoted,
+            priorIter = lastDel.Iter,
+            priorScore = lastDel.Score,
+            priorMaxIter = currentCap,
+            newMaxIter = newCap,
+            status = "retrying",
+        });
     }
 
     /// <summary>

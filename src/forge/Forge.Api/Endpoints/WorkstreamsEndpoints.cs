@@ -37,6 +37,7 @@ public static class WorkstreamsEndpoints
         grp.MapDelete("/{id}", Delete).WithName("DeleteWorkstream");
         grp.MapPost("/{id}/pr", OpenPr).WithName("OpenWorkstreamPr");
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
+        grp.MapPost("/{id}/retry", Retry).WithName("RetryWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
         grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
@@ -1384,6 +1385,145 @@ public static class WorkstreamsEndpoints
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }
         catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Phase 56 -- soft retry. Demote the last deliverable's verdict to
+    /// <c>iterate</c> so the orchestrator's
+    /// <c>DriveOneWorkstreamImplAsync</c> re-enters the gen/eval loop
+    /// instead of treating the row as terminal. Preserves the
+    /// worktree, deliverables, transcript, agent_pair_assignment,
+    /// agent_usage, and any PRs -- the operator's "I want to keep
+    /// going, just take another swing" button vs the heavy
+    /// <see cref="Restart"/> that wipes everything for a clean slate.
+    ///
+    /// <para>Use case: workstream stalled because the post-pass gate
+    /// suite (Phase 56) exhausted recovery attempts, but the agent's
+    /// prior iterations scored close to pass and most of the diff is
+    /// good. Retry demotes verdict pass/stalled → iterate so the next
+    /// orchestrator tick picks up at iter+1 with the gate-failure
+    /// notes already on the row's Notes (flows into the next iter's
+    /// evaluator prompt via <c>FormatPriorChain</c>).</para>
+    ///
+    /// <para>Refused when:
+    /// <list type="bullet">
+    ///   <item>Workstream not found → 404.</item>
+    ///   <item>No prior deliverable → 400 (nothing to demote; use Restart instead).</item>
+    ///   <item>Workstream already in a non-retryable status (<c>cancelled</c>, <c>complete</c>, <c>merging</c>) → 409.</item>
+    /// </list></para>
+    /// </summary>
+    private static async Task<IResult> Retry(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
+        if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
+
+        if (ws.Status is "cancelled" or "complete" or "merging")
+        {
+            return Results.Problem(
+                type: "retry.terminal",
+                title: $"Workstream is in terminal status '{ws.Status}'; cannot retry.",
+                detail: "Use the Cancel/Restart actions instead, or open a new workstream.",
+                statusCode: 409);
+        }
+
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (lastDel is null)
+        {
+            return Results.Problem(
+                type: "retry.no-deliverables",
+                title: "Nothing to retry -- workstream has no prior deliverables.",
+                detail: "Use Restart to dispatch fresh, or wait for the first iteration to land.",
+                statusCode: 400);
+        }
+
+        // (1) Cancel any in-flight runner work and open queue rows. Mirrors
+        // the first two steps of Restart, but preserves everything else.
+        try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
+        catch { /* best-effort */ }
+
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (2) Demote verdict. Either "pass" or "stalled" / "stalled-budget"
+        // → "iterate". "pass" comes from the Phase 56 OnPassValidate throw
+        // path semantically meaning "evaluator scored at pass but the gate
+        // suite rejected it post-pass." "stalled" can land here from
+        // legacy paths or from the orchestrator's terminal-verdict
+        // re-stamping at StorySpawnOrchestrator.cs:2284. Either way,
+        // "iterate" is the only verdict that survives both the
+        // orchestrator's terminal-triage check (line 2154) AND
+        // DeliverableLoop's seeding (line 348) so the next tick
+        // picks up at iter+1 with the full prior chain.
+        var priorVerdict = lastDel.Verdict;
+        var demoted = false;
+        if (lastDel.Verdict is "pass" or "stalled" or "stalled-budget")
+        {
+            lastDel.Verdict = "iterate";
+            var note = $"OPERATOR RETRY -- verdict demoted from '{priorVerdict}' to 'iterate' so the orchestrator re-enters the gen/eval loop at iter+1. Worktree, deliverables, transcript, agent_usage, and PRs preserved.";
+            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
+            demoted = true;
+        }
+
+        // (3) Reset workstream state -- but DO NOT touch worktree/branch/PRs.
+        ws.Status = "active";
+        ws.StallReason = null;
+
+        // (4) Reset work-item ExecutionStatus so the UI un-pulses any
+        // stuck "live" / "failed" badge and the orchestrator's claim
+        // sweep sees a clean row. Mirrors Restart's reset, minus the
+        // PairAttemptCount/BudgetWindowStartUtc/PriorPairsJson wipe
+        // (Retry is a continuation, not a clean slate).
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
+
+        // (5) Emit a workstream-changed event so the live UI picks up the
+        // new status without a manual refresh.
+        await hub.Clients.All.SendAsync("workstream.changed", new
+        {
+            workstreamId = id,
+            status = ws.Status,
+            kind = "retry",
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            iter = lastDel.Iter,
+        });
+
+        return Results.Ok(new
+        {
+            workstreamId = id,
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            demoted,
+            priorIter = lastDel.Iter,
+            priorScore = lastDel.Score,
+            status = ws.Status,
+        });
     }
 
     /// <summary>
