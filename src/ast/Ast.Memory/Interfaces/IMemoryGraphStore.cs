@@ -26,20 +26,20 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
-        int? atCommitIndex = null,
-        NodeFilter? filter = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        int? atCommitIndex,
+        Models.NodeFilter? filter,
+        int limit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets edges by semantic relation with optional layer and temporal criteria.
     /// </summary>
     Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
-        string? memoryLayer = null,
-        int? atCommitIndex = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
 
     // Temporal-aware upsert and retirement
 
@@ -50,7 +50,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires a node and cascades retirement to all connected edges.
@@ -58,7 +58,8 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires an edge by setting its UntilIndex.
@@ -66,15 +67,16 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Updates metadata on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
-        IDictionary<string, object?> updates,
-        CancellationToken ct = default);
+        IDictionary<string, object?> metadata,
+        CancellationToken cancellationToken);
 
     // Expertise CRUD
 
@@ -84,30 +86,30 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence = 0.0,
-        CancellationToken ct = default);
+        double minConfidence,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Upserts an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Archives an expertise entry (soft-delete).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Gets archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
-        string? targetNodeId = null,
-        int limit = 50,
-        CancellationToken ct = default);
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
 
     // Statistics and audit
 
@@ -115,7 +117,7 @@ public interface IMemoryGraphStore : IGraphStore
     /// Gets memory-specific statistics.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Logs an audit event.

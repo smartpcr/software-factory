@@ -35,3 +35,8 @@ public class MemoryGraphStatistics
 
     public Dictionary<string, long> NodesByLanguage { get; set; } = new();
 }
+
+/// <summary>
+/// Node and edge counts for a single memory layer.
+/// </summary>
+public record LayerStatistics(int NodeCount, int EdgeCount);
