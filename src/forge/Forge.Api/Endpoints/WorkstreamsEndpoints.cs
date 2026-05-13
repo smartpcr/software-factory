@@ -38,8 +38,71 @@ public static class WorkstreamsEndpoints
         grp.MapPost("/{id}/pr", OpenPr).WithName("OpenWorkstreamPr");
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
+        grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
 
         return app;
+    }
+
+    // GET /api/workstreams/{id}/memory — Phase 55 / Phase G. Read-only
+    // inspection of the (workItemId, agentId, role) memory rows for a
+    // workstream so the Conversation tab can show a "Memory" chip and
+    // an operator can audit session-id / turn-count / approx-token
+    // state from a curl. No auth gate — this is a debug surface, not
+    // a write path.
+    private static async Task<IResult> GetMemory(
+        string id,
+        ForgeDbContext db,
+        Forge.Api.Agents.CopilotSessionPool copilotPool)
+    {
+        var rows = await db.AgentMemory.AsNoTracking()
+            .Where(m => m.WorkItemId == id)
+            .ToListAsync();
+
+        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            int? turnCount = null;
+            if (!string.IsNullOrEmpty(row.MessagesJson))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(row.MessagesJson);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        turnCount = doc.RootElement.GetArrayLength();
+                    }
+                }
+                catch
+                {
+                    // corrupt payload — leave turnCount null
+                }
+            }
+
+            result[row.Role] = new
+            {
+                agentId = row.AgentId,
+                backend = row.Backend,
+                invokeMode = row.InvokeMode,
+                // Truncate session id so a copy/paste from the UI
+                // doesn't accidentally include the full Claude Code
+                // session identifier in logs.
+                sessionId = string.IsNullOrEmpty(row.SessionId)
+                    ? null
+                    : (row.SessionId.Length <= 12 ? row.SessionId : row.SessionId[..12] + "…"),
+                hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
+                turnCount,
+                approxInputTokens = row.ApproxInputTokens,
+                lastIter = row.LastIter,
+                createdAt = row.CreatedAt,
+                updatedAt = row.UpdatedAt,
+            };
+        }
+
+        return Results.Ok(new
+        {
+            workItemId = id,
+            roles = result,
+        });
     }
 
     // POST /api/workstreams/{id}/pr — Phase 6.4. Opens a PR via the named
@@ -383,6 +446,19 @@ public static class WorkstreamsEndpoints
         db.AgentAssignments.RemoveRange(agentAssignments);
         counts["agentAssignments"] = agentAssignments.Count;
 
+        // Phase 50 follow-up (2026-05-12) — cost ledger rows. TaskId on
+        // agent_usage equals the work-item id (DeliverableLoop emits
+        // each gen/eval invocation with TaskId = workItemId). Without
+        // this purge, deleting a workstream and re-decomposing into
+        // another workstream with the same phase/stage slug (very
+        // common — operator iterates on a plan) inherits the old
+        // cost ledger and the doc / workstream cards show stale dollar
+        // totals (operator-reported: re-spawned story showed
+        // ~$1300-$2000 per plan-doc card before any LLM had run).
+        var agentUsage = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync(ct);
+        db.AgentUsage.RemoveRange(agentUsage);
+        counts["agentUsage"] = agentUsage.Count;
+
         var wsEvents = await db.WsEvents.Where(e => e.Ws == id).ToListAsync(ct);
         db.WsEvents.RemoveRange(wsEvents);
         counts["wsEvents"] = wsEvents.Count;
@@ -603,6 +679,29 @@ public static class WorkstreamsEndpoints
         var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == id).ToListAsync();
         db.DeliverableQuestions.RemoveRange(questions);
 
+        // ── 3b. Wipe Phase 52 pair-attempt history + cost ledger ────────
+        // Operator-observed 2026-05-13: Restart used to leave
+        // agent_pair_assignment, agent_usage, WorkItemRow.PairAttemptCount,
+        // and WorkItemRow.BudgetWindowStartUtc untouched. That left a
+        // freshly-restarted workstream born at PairAttemptCount=3 with the
+        // prior pairs locked into PriorPairsJson and ~$3,600 of historical
+        // generator spend already metered into the dollar/token caps. The
+        // SloppyReassignmentReconciler then refused to pick any pair and
+        // the orchestrator went straight to terminal-stall on the very
+        // first sloppy hit.
+        //
+        // Wiping these on Restart matches the spec's intent: Restart is
+        // the explicit operator unblock that gives the work item a clean
+        // slate. agent_usage rows are deleted (not just cutoff via
+        // BudgetWindowStartUtc) so the workstream's cost card shows $0
+        // for the new attempt — operators were also seeing stale $-totals
+        // on stalled rows post-Restart.
+        var pairRows = await db.AgentPairAssignments.Where(p => p.WorkItemId == id).ToListAsync();
+        db.AgentPairAssignments.RemoveRange(pairRows);
+
+        var usageRows = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync();
+        db.AgentUsage.RemoveRange(usageRows);
+
         // ── 4. Close upstream PRs and deactivate local rows ─────────────
         var prIds = ParseStringList(ws.PrsJson);
         foreach (var prId in prIds)
@@ -660,6 +759,24 @@ public static class WorkstreamsEndpoints
             wi.ExecutionStatus = ExecutionStatuses.Queued;
             wi.TrialCount = 0;
             wi.AssignedAgentJson = null;
+
+            // Phase 52 reset — pair-attempt counter, prior-pair exclusion
+            // list, terminal failure reason, and the dollar/token budget
+            // window all return to their post-claim defaults so the new
+            // run is genuinely a clean slate. Without these, a Restart on
+            // a row that hit MaxPairAttempts (3) stays terminal-failed and
+            // the reconciler/orchestrator refuse to drive it forward.
+            // PairAttemptCount = 1 matches the Phase 52 migration default
+            // and the "first pair currently working" semantic — only
+            // SloppyReassignmentReconciler increments it (newAttempt = +1
+            // per rotation), so resetting to 1 gives the new pair a full
+            // 3-attempt budget before the cap re-applies.
+            wi.PairAttemptCount = 1;
+            wi.PriorPairsJson = null;
+            wi.FailureReason = null;
+            wi.LastPairAgentIdsJson = null;
+            wi.BudgetWindowStartUtc = DateTimeOffset.UtcNow;
+
             wi.UpdatedAt = DateTimeOffset.UtcNow;
 
             // Refresh DescriptionMd from the current story description
@@ -805,8 +922,25 @@ public static class WorkstreamsEndpoints
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return -1;
-            await p.WaitForExitAsync();
-            return p.ExitCode;
+
+            // Bounded wait — covers the original 2026-05-12 hang path
+            // (push --delete against msazure.visualstudio.com) for both
+            // FailFast (DNS/network stalls) and Interactive (unanswered
+            // GCM prompt) policies. Default 180s; tunable via env.
+            var timeoutSeconds = 180;
+            var timeoutRaw = Environment.GetEnvironmentVariable("FORGE_GIT_NETWORK_TIMEOUT_SECONDS");
+            if (int.TryParse(timeoutRaw, out var parsed) && parsed > 0) timeoutSeconds = parsed;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            try
+            {
+                await p.WaitForExitAsync(timeoutCts.Token);
+                return p.ExitCode;
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                return -1;
+            }
         }
         catch
         {
@@ -835,10 +969,30 @@ public static class WorkstreamsEndpoints
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return (-1, string.Empty, string.Empty);
+
+            // See RunGitQuietAsync — same timeout rationale.
+            var timeoutSeconds = 180;
+            var timeoutRaw = Environment.GetEnvironmentVariable("FORGE_GIT_NETWORK_TIMEOUT_SECONDS");
+            if (int.TryParse(timeoutRaw, out var parsed) && parsed > 0) timeoutSeconds = parsed;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+
+            // No ct on the read tasks — they drain to EOF naturally
+            // when the process exits / is killed, preserving stderr.
             var stdoutTask = p.StandardOutput.ReadToEndAsync();
             var stderrTask = p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            return (p.ExitCode, await stdoutTask, await stderrTask);
+            try
+            {
+                await p.WaitForExitAsync(timeoutCts.Token);
+                return (p.ExitCode, await stdoutTask, await stderrTask);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                string drainedStderr = string.Empty;
+                try { drainedStderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { /* best-effort */ }
+                return (-1, string.Empty, $"git {string.Join(' ', args)} timed out after {timeoutSeconds}s. Partial stderr: {drainedStderr}");
+            }
         }
         catch (Exception ex)
         {

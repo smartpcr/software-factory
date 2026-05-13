@@ -30,6 +30,33 @@ public interface IStoryArtifactStrategy
         StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 53 — produce ONE plan-doc artifact on a caller-owned branch
+    /// + worktree. Used by the orchestrator's sequential plan path: it
+    /// creates the per-doc branch + worktree, calls this once for the
+    /// active doc, then commits + opens the per-doc PR itself. Returns
+    /// the repo-relative file path and the file content.
+    ///
+    /// <para><paramref name="docKey"/> is one of
+    /// <c>architecture</c> / <c>tech-spec</c> / <c>implementation-plan</c>
+    /// / <c>e2e-scenarios</c> (the canonical order in
+    /// <see cref="PlanDocStateHelpers.PlanDocOrder"/>).
+    /// <paramref name="forceResume"/> behaves identically to its
+    /// <see cref="ProducePlanArtifactsAsync"/> counterpart but is scoped
+    /// to the single active doc — already-merged upstream docs are not
+    /// touched. Sibling docs for the agent prompt are computed from the
+    /// other three canonical keys.</para>
+    /// </summary>
+    Task<(string RepoPath, string Content)> ProduceSinglePlanArtifactAsync(
+        StorySpawnRow spawn,
+        WorkItemRow story,
+        string docKey,
+        string worktreePath,
+        string planBranch,
+        RepoRow? repo,
+        bool forceResume = false,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Resume a single plan-doc artifact's gen↔eval loop. Unlike
     /// <see cref="ProducePlanArtifactsAsync"/> (which runs all 4 docs),
     /// this re-runs only the specified <paramref name="key"/> with
