@@ -40,4 +40,15 @@
     <PackageReference Include="System.Data.SQLite.Core" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ast.Memory.Tests" />
+    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
+    <InternalsVisibleTo Include="Ast.Memory.IntegrationTests" />
+  </ItemGroup>
+
 </Project>

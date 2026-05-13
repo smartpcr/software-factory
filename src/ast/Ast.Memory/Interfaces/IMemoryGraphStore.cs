@@ -101,6 +101,9 @@ public interface IMemoryGraphStore : IGraphStore
         double minConfidence,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Inserts or updates an expertise entry (keyed by <see cref="ExpertiseEntry.Id"/>).
+    /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken);
