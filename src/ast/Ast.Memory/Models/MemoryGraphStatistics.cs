@@ -9,22 +9,39 @@ namespace Ast.Memory.Models;
 using System.Collections.Generic;
 
 /// <summary>
-/// Statistics about the memory graph, with per-layer node and edge counts.
+/// Extended statistics for the memory graph, including layer-specific
+/// counts and expertise metrics.
 /// </summary>
 public sealed class MemoryGraphStatistics
 {
-    /// <summary>Total nodes per layer.</summary>
-    public Dictionary<string, int> NodesByLayer { get; set; } = [];
+    public int TotalNodes { get; set; }
+    public int TotalEdges { get; set; }
+    public int StructuralNodes { get; set; }
+    public int CallChainEdges { get; set; }
+    public int SemanticEdges { get; set; }
+    public int TopicNodes { get; set; }
+    public int ExpertiseEntries { get; set; }
+    public int ArchivedExpertise { get; set; }
+    public int ClusterEdges { get; set; }
+}
 
-    /// <summary>Total edges per layer.</summary>
-    public Dictionary<string, int> EdgesByLayer { get; set; } = [];
+/// <summary>
+/// Scoring weights for the Ranker, per architecture.md §2.4.
+/// </summary>
+public class ScoringWeights
+{
+    /// <summary>Inverse BFS distance from seed (Structural layer).</summary>
+    public double Structural { get; set; } = 0.30;
 
-    /// <summary>Total active expertise entries.</summary>
-    public int ActiveExpertiseCount { get; set; }
+    /// <summary>Cosine similarity of query embedding to node embedding.</summary>
+    public double Semantic { get; set; } = 0.25;
 
-    /// <summary>Total archived expertise entries.</summary>
-    public int ArchivedExpertiseCount { get; set; }
+    /// <summary>Normalized fan-in from CALLS edges (PageRank-light).</summary>
+    public double Centrality { get; set; } = 0.20;
 
-    /// <summary>Total audit log entries.</summary>
-    public int AuditLogCount { get; set; }
+    /// <summary>Recency of node relative to HEAD commit.</summary>
+    public double Recency { get; set; } = 0.15;
+
+    /// <summary>Max effective confidence of non-archived APPLIES_TO expertise.</summary>
+    public double Expertise { get; set; } = 0.10;
 }
