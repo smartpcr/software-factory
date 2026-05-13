@@ -10,9 +10,6 @@ namespace Ast.Memory.Models;
 /// Result of a consolidation run that merges semantically similar expertise entries.
 /// Per architecture.md §5.3.
 /// </summary>
-/// <param name="CandidatesPaired">Number of candidate pairs evaluated.</param>
-/// <param name="MergedCount">Number of successful merges.</param>
-/// <param name="MergedEntryIds">IDs of the newly created merged entries.</param>
 public record ConsolidationResult(
     int CandidatesPaired,
     int MergedCount,

@@ -14,5 +14,6 @@ namespace Ast.Memory.Models;
 public record VersionRange(
     string Since,
     int SinceIndex,
-    string? Until,
-    int? UntilIndex);
+    string? UntilCommit = null,
+    int? UntilIndex = null
+);
