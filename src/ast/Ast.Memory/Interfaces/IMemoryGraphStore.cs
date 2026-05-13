@@ -15,8 +15,7 @@ using Ast.Memory.Models;
 using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
-/// Extended graph store for memory layer operations per architecture §5.1.
-/// Extends <see cref="IGraphStore"/>. Implementations: SqliteGraphStore (local), Neo4jMemoryGraphStore (team).
+/// Extended graph store interface for memory-layer operations.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
