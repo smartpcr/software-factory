@@ -14,7 +14,7 @@ namespace Ast.Memory.Models;
 /// <param name="UntilCommit">Git commit SHA at which this entity was retired (null = still active).</param>
 /// <param name="UntilIndex">Commit index at which this entity was retired (null = still active).</param>
 public record VersionRange(
-    string SinceCommit,
+    string Since,
     int SinceIndex,
     string? UntilCommit = null,
     int? UntilIndex = null);
