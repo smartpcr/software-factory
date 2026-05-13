@@ -15,10 +15,8 @@ using Ast.Memory.Models;
 using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
-/// Persistence contract for the agent memory hypergraph.
-/// Extends <see cref="IGraphStore"/> with memory-specific operations
-/// for versioned nodes/edges, expertise, auditing, and statistics.
-/// Per architecture.md §5.1 — signatures match the canonical spec exactly.
+/// Extended graph store for the memory layer. Adds temporal queries,
+/// expertise CRUD, and audit logging on top of the base IGraphStore.
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
@@ -95,9 +93,18 @@ public interface IMemoryGraphStore : IGraphStore
         double minConfidence = 0.0,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Creates or updates an expertise entry.
-    /// </summary>
+    Task<ExpertiseEntry?> GetExpertiseByIdAsync(
+        string expertiseId,
+        CancellationToken ct = default);
+
+    Task<ExpertiseEntry?> GetExpertiseByContentHashAsync(
+        string contentHash,
+        CancellationToken ct = default);
+
+    Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(
+        int limit = 1000,
+        CancellationToken ct = default);
+
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
