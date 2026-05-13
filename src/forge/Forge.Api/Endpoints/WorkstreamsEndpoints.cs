@@ -818,8 +818,25 @@ public static class WorkstreamsEndpoints
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return -1;
-            await p.WaitForExitAsync();
-            return p.ExitCode;
+
+            // Bounded wait — covers the original 2026-05-12 hang path
+            // (push --delete against msazure.visualstudio.com) for both
+            // FailFast (DNS/network stalls) and Interactive (unanswered
+            // GCM prompt) policies. Default 180s; tunable via env.
+            var timeoutSeconds = 180;
+            var timeoutRaw = Environment.GetEnvironmentVariable("FORGE_GIT_NETWORK_TIMEOUT_SECONDS");
+            if (int.TryParse(timeoutRaw, out var parsed) && parsed > 0) timeoutSeconds = parsed;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            try
+            {
+                await p.WaitForExitAsync(timeoutCts.Token);
+                return p.ExitCode;
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                return -1;
+            }
         }
         catch
         {
@@ -848,10 +865,30 @@ public static class WorkstreamsEndpoints
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return (-1, string.Empty, string.Empty);
+
+            // See RunGitQuietAsync — same timeout rationale.
+            var timeoutSeconds = 180;
+            var timeoutRaw = Environment.GetEnvironmentVariable("FORGE_GIT_NETWORK_TIMEOUT_SECONDS");
+            if (int.TryParse(timeoutRaw, out var parsed) && parsed > 0) timeoutSeconds = parsed;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+
+            // No ct on the read tasks — they drain to EOF naturally
+            // when the process exits / is killed, preserving stderr.
             var stdoutTask = p.StandardOutput.ReadToEndAsync();
             var stderrTask = p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            return (p.ExitCode, await stdoutTask, await stderrTask);
+            try
+            {
+                await p.WaitForExitAsync(timeoutCts.Token);
+                return (p.ExitCode, await stdoutTask, await stderrTask);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                string drainedStderr = string.Empty;
+                try { drainedStderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch { /* best-effort */ }
+                return (-1, string.Empty, $"git {string.Join(' ', args)} timed out after {timeoutSeconds}s. Partial stderr: {drainedStderr}");
+            }
         }
         catch (Exception ex)
         {
