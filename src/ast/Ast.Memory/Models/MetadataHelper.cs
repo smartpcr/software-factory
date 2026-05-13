@@ -20,4 +20,32 @@ internal static class MetadataHelper
 
         return value.ToString()!;
     }
+
+    internal static string? GetOptionalString(Dictionary<string, object?> metadata, string key)
+    {
+        if (metadata.TryGetValue(key, out var value) && value is not null)
+        {
+            return value.ToString();
+        }
+
+        return null;
+    }
+
+    internal static double GetOptionalDouble(Dictionary<string, object?> metadata, string key, double defaultValue = 0.0)
+    {
+        if (metadata.TryGetValue(key, out var value) && value is not null)
+        {
+            return value switch
+            {
+                double d => d,
+                float f => f,
+                int i => i,
+                long l => l,
+                string s when double.TryParse(s, out var parsed) => parsed,
+                _ => Convert.ToDouble(value)
+            };
+        }
+
+        return defaultValue;
+    }
 }
