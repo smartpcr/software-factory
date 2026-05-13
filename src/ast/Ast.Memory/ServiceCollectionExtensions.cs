@@ -6,6 +6,7 @@
 
 namespace Ast.Memory;
 
+using Ast.GraphDb;
 using Ast.Memory.Evolution;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;

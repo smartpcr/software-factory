@@ -59,6 +59,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
   </ItemGroup>
 
 </Project>

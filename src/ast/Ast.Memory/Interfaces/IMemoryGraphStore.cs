@@ -73,7 +73,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Updates metadata on an existing edge.
+    /// Updates specific metadata fields on an existing edge.
     /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
@@ -91,18 +91,9 @@ public interface IMemoryGraphStore : IGraphStore
         double minConfidence = 0.0,
         CancellationToken cancellationToken = default);
 
-    Task<ExpertiseEntry?> GetExpertiseByIdAsync(
-        string expertiseId,
-        CancellationToken ct = default);
-
-    Task<ExpertiseEntry?> GetExpertiseByContentHashAsync(
-        string contentHash,
-        CancellationToken ct = default);
-
-    Task<IReadOnlyList<ExpertiseEntry>> GetAllActiveExpertiseAsync(
-        int limit = 1000,
-        CancellationToken ct = default);
-
+    /// <summary>
+    /// Creates or updates an expertise entry.
+    /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
@@ -115,7 +106,7 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns archived expertise entries.
+    /// Returns archived expertise entries, optionally filtered by target node.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId,
@@ -137,5 +128,52 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken);
+        CancellationToken ct = default);
+
+    // ── Community-detection helpers (used by Stage 5.4) ──────────────────
+
+    /// <summary>
+    /// Gets all nodes in the graph, optionally filtered by node type.
+    /// </summary>
+    Task<IReadOnlyList<HypergraphNode>> GetAllNodesAsync(
+        string? nodeType = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets edges matching one or more semantic relation types.
+    /// Bridges canonical edges (by <see cref="HyperedgeType"/> label) AND
+    /// memory-layer edges (by <c>Metadata["SemanticRelation"]</c>).
+    /// </summary>
+    Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
+        IEnumerable<string> semanticRelations,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets all edges of the specified <see cref="HyperedgeType"/> values.
+    /// </summary>
+    Task<IReadOnlyList<Hyperedge>> GetEdgesByTypeAsync(
+        IEnumerable<HyperedgeType> edgeTypes,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates or updates a node (non-temporal overload for community detection).
+    /// </summary>
+    Task UpsertNodeAsync(HypergraphNode node, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates or updates an edge.
+    /// </summary>
+    Task UpsertEdgeAsync(Hyperedge edge, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes edges matching a semantic relation. Used for idempotent re-clustering.
+    /// </summary>
+    Task RemoveEdgesBySemanticRelationAsync(
+        string semanticRelation,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes all nodes of a given type (e.g., "Topic" before re-detection).
+    /// </summary>
+    Task RemoveNodesByTypeAsync(string nodeType, CancellationToken ct = default);
 }
