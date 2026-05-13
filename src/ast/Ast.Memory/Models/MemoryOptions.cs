@@ -7,12 +7,10 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Single source of truth for all configurable memory-graph parameters.
-/// Corresponds to architecture.md §2.4 — Constants &amp; Thresholds.
-/// Implementations read from this class; DI registers it via
-/// <c>IOptions&lt;MemoryOptions&gt;</c>.
+/// Configuration options for the memory graph system.
+/// All constants from architecture.md §2.4.
 /// </summary>
-public class MemoryOptions
+public sealed class MemoryOptions
 {
     /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
@@ -25,23 +23,10 @@ public class MemoryOptions
 
     /// <summary>Expertise nodes below this are soft-deleted.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
-
-    /// <summary>Time-based decay half-life in days (3 years).</summary>
-    public int DecayHalfLifeDays { get; set; } = 1095;
-
-    /// <summary>Per-query default token budget (Budget Controller).</summary>
-    public int TokenBudgetDefault { get; set; } = 8_000;
-
-    /// <summary>Maximum allowed token budget (Budget Controller).</summary>
-    public int TokenBudgetCeiling { get; set; } = 32_000;
-
-    /// <summary>Debounce for file-system watcher in milliseconds.</summary>
-    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
-
-    /// <summary>
-    /// Multiplied by normalized PageRank and added to 1.0 to form centrality_boost
-    /// (range 1.0–1.5). See architecture.md §3.5.1.
-    /// </summary>
+    public double DecayHalfLifeDays { get; set; } = 1095;
+    public int TokenBudgetDefault { get; set; } = 8000;
+    public int TokenBudgetCeiling { get; set; } = 32000;
+    public int IncrementalSyncDebounceMs { get; set; } = 1000;
     public double CentralityBoostFactor { get; set; } = 0.5;
 
     /// <summary>Storage backend selection.</summary>
@@ -62,16 +47,5 @@ public class MemoryOptions
     /// default — depends on what the operator has deployed.
     /// </summary>
     public string? ConsolidationModelName { get; set; }
-}
-
-/// <summary>
-/// Storage backend selection for the memory graph.
-/// </summary>
-public enum MemoryBackend
-{
-    /// <summary>Local SQLite storage.</summary>
-    Sqlite,
-
-    /// <summary>Neo4j graph database.</summary>
-    Neo4j
+    public ScoringWeights Weights { get; set; } = new();
 }

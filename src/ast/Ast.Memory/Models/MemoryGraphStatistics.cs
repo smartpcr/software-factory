@@ -11,7 +11,7 @@ using System.Collections.Generic;
 /// <summary>
 /// Statistics about the memory graph per architecture §5.1.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     public long TotalNodes { get; set; }
 

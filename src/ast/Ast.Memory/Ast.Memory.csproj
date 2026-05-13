@@ -15,6 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
@@ -28,6 +34,10 @@
     <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
     <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
     <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ast.Memory.UnitTests" />
   </ItemGroup>
 
   <ItemGroup>

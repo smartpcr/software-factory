@@ -50,7 +50,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retires a node and cascades retirement to all connected edges.
@@ -67,8 +67,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        string? untilCommit,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates metadata on an existing edge.
@@ -86,22 +85,22 @@ public interface IMemoryGraphStore : IGraphStore
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence,
-        CancellationToken cancellationToken);
+        double minConfidence = 0.0,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Upserts an expertise entry.
     /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Archives an expertise entry (soft-delete).
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets archived expertise entries.
@@ -117,7 +116,7 @@ public interface IMemoryGraphStore : IGraphStore
     /// Gets memory-specific statistics.
     /// </summary>
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Logs an audit event.
