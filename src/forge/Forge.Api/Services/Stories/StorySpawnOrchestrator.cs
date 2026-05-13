@@ -1764,9 +1764,18 @@ public sealed class StorySpawnOrchestrator
                     wiSloppy?.PairAttemptCount ?? 0, ScoringConstants.MaxPairAttempts, atCap);
                 if (!atCap)
                 {
-                    // Reconciler in flight — wait for next tick. Do NOT
-                    // mark stalled (the reconciler will requeue within
-                    // ~15s).
+                    // Phase 52 hand-off: park the work item at
+                    // pending-reassign so SloppyReassignmentReconciler
+                    // picks it up on its next 15 s tick and rotates to a
+                    // fresh pair. Without this, ExecutionStatus stays at
+                    // "queued" (set by the queue worker when it enqueued
+                    // the row) and the reconciler's scan
+                    // (WHERE ExecutionStatus = "pending-reassign") never
+                    // finds it — observed 2026-05-13 on the XRAFT stage
+                    // 3.1 workstream looping after restart. Idempotent:
+                    // TryRouteToSloppyReassignAsync no-ops when already
+                    // in pending-reassign / failed state.
+                    await this.TryRouteToSloppyReassignAsync(db2, w, consecutiveNoProgress: 0, ct);
                     return;
                 }
                 // At cap. The reconciler's MarkTerminalFailedAsync stamps
