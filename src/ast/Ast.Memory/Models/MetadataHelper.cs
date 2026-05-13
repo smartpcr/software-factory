@@ -20,14 +20,4 @@ internal static class MetadataHelper
 
         return value.ToString()!;
     }
-
-    internal static string? GetOptionalString(Dictionary<string, object?> metadata, string key)
-    {
-        if (metadata.TryGetValue(key, out var value) && value is not null)
-        {
-            return value.ToString();
-        }
-
-        return null;
-    }
 }

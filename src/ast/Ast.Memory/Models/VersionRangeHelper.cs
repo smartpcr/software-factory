@@ -11,6 +11,12 @@ namespace Ast.Memory.Models;
 /// </summary>
 internal static class VersionRangeHelper
 {
+    /// <summary>
+    /// Extracts a <see cref="VersionRange"/> from a metadata dictionary.
+    /// Returns null when no temporal metadata is present at all (truly timeless).
+    /// Accepts partial temporal data — e.g. <c>UntilIndex</c> without <c>SinceIndex</c>
+    /// (External boundary nodes may acquire an until_index via retirement).
+    /// </summary>
     internal static VersionRange? ExtractVersion(Dictionary<string, object?> metadata)
     {
         bool hasSinceCommit = metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var sinceObj) && sinceObj is not null;
@@ -18,9 +24,8 @@ internal static class VersionRangeHelper
         bool hasUntilCommit = metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var untilObj) && untilObj is not null;
         bool hasUntilIndex = metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var untilIndexObj) && untilIndexObj is not null;
 
-        // Per architecture.md §4.3: SinceCommit and SinceIndex are required
-        // for a valid VersionRange. External nodes have VersionRange = null.
-        if (!hasSinceCommit || !hasSinceIndex)
+        // Truly timeless: no temporal fields at all
+        if (!hasSinceCommit && !hasSinceIndex && !hasUntilCommit && !hasUntilIndex)
         {
             return null;
         }
