@@ -1114,10 +1114,76 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // resume logic in DeliverableLoop picks up from lastPersisted.Iter.
         var isFreshFirstIteration = existingDeliverables.Count == 0;
         var shouldCleanup = restartFromScratch || (!forceResume && isFreshFirstIteration);
+
+        // Phase 53 — resolve this doc's position in the canonical sequence so
+        // both the fresh-start cleanup AND the evaluator prompt can split
+        // siblings into upstream (authoritative) vs downstream (stale legacy
+        // residue, ignore). Declared here at the top of the routine because
+        // both the cleanup block AND the evaluator prompt builder consume it.
+        var docKey = Path.GetFileNameWithoutExtension(spec.FileName).ToLowerInvariant();
+        var docOrder = PlanDocStateHelpers.PlanDocOrder;
+        var docIdx = -1;
+        for (var i = 0; i < docOrder.Count; i++)
+        {
+            if (string.Equals(docOrder[i], docKey, StringComparison.OrdinalIgnoreCase))
+            {
+                docIdx = i;
+                break;
+            }
+        }
+        var isSequential = PlanDocStateHelpers.IsSequentialMode(spawn);
+        var docDir = (Path.GetDirectoryName(spec.RepoPath) ?? string.Empty).Replace('\\', '/');
+
         if (shouldCleanup)
         {
             await EnsureFreshDocWorkspaceAsync(
                 this.scopeFactory, this.logger, diskPath, docWorkItemId, restartFromScratch, ct);
+
+            // Phase 53 follow-up — wipe stale DOWNSTREAM sibling docs from
+            // disk on fresh-start under sequential mode. They get there
+            // because the previous end-to-end spawn merged all four plan
+            // docs into the base branch; the new per-doc branch is forked
+            // from base, so the architect's worktree boots up with the
+            // OLD downstream docs already on disk. Without this sweep the
+            // generator references them and the evaluator scores down for
+            // stale-text contradictions — neither has any way to fix
+            // downstream files in this PR (cross-branch edits are
+            // reverted by the worktree's checkout of the doc's branch).
+            //
+            // Best-effort: file delete failures are logged but do not
+            // throw. The evaluator prompt (sequentialDocPolicy) also
+            // tells gpt-5.5 to ignore downstream contradictions, so a
+            // failed sweep is degraded but not broken.
+            if (isSequential && docIdx >= 0)
+            {
+                var downstreamKeysForCleanup = new List<string>();
+                for (var i = docIdx + 1; i < docOrder.Count; i++)
+                {
+                    downstreamKeysForCleanup.Add(docOrder[i]);
+                }
+                foreach (var k in downstreamKeysForCleanup)
+                {
+                    var siblingFile = PlanDocStateHelpers.PlanDocFileName[k];
+                    var siblingDiskPath = Path.Combine(
+                        worktreePath,
+                        docDir.Replace('/', Path.DirectorySeparatorChar),
+                        siblingFile);
+                    if (!File.Exists(siblingDiskPath)) continue;
+                    try
+                    {
+                        File.Delete(siblingDiskPath);
+                        this.logger?.LogInformation(
+                            "Phase 53 fresh-start cleanup: removed stale downstream sibling {Sibling} for architect run on {Doc} (workItem {WorkItem}).",
+                            siblingFile, spec.FileName, docWorkItemId);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "Phase 53 fresh-start cleanup: could not delete stale downstream sibling {Sibling}; evaluator may see contradictory text (mitigated by sequentialDocPolicy prompt guidance).",
+                            siblingDiskPath);
+                    }
+                }
+            }
         }
 
         // Resume case -- historical guard from before the Phase 45 pass-verdict
@@ -1154,6 +1220,71 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // against live siblings; only architecture.md gets stuck. The
         // snapshot approach was abandoned.
         var siblingPathsList = string.Join("\n", siblingSpecs.Select(p => $"  - `{p}`"));
+
+        // Phase 53 — split sibling docs into UPSTREAM (already-merged → authoritative
+        // source-of-truth) and DOWNSTREAM (not yet written; on-disk copies are stale
+        // residues from a prior spawn that will be regenerated against THIS doc once
+        // it merges). Under sequential mode the evaluator must score on upstream
+        // consistency only — flagging downstream contradictions wastes an iteration
+        // because the architect agent has no path to fix downstream files in this PR.
+        // Under legacy parallel mode (PlanDocPrsJson is null) all four docs ship in
+        // one PR, so siblings are peers and the original cross-doc check applies.
+        // (docKey, docOrder, docIdx, isSequential, docDir declared above the
+        //  cleanup block; reused here to build the evaluator's policy section.)
+        string sequentialDocPolicy = string.Empty;
+        string upstreamPathsList = string.Empty;
+        if (isSequential && docIdx >= 0)
+        {
+            var upstreamKeys = new List<string>();
+            for (var i = 0; i < docIdx; i++) upstreamKeys.Add(docOrder[i]);
+            var downstreamKeys = new List<string>();
+            for (var i = docIdx + 1; i < docOrder.Count; i++) downstreamKeys.Add(docOrder[i]);
+
+            upstreamPathsList = upstreamKeys.Count > 0
+                ? string.Join("\n", upstreamKeys.Select(k =>
+                    $"  - `{docDir}/{PlanDocStateHelpers.PlanDocFileName[k]}` ({k})"))
+                : "  _(none — this is the first doc in the sequence)_";
+            var downstreamPathsList = downstreamKeys.Count > 0
+                ? string.Join("\n", downstreamKeys.Select(k =>
+                    $"  - `{docDir}/{PlanDocStateHelpers.PlanDocFileName[k]}` ({k})"))
+                : "  _(none — this is the last doc in the sequence)_";
+
+            sequentialDocPolicy = $$"""
+
+                ## Sequential plan-doc mode (Phase 53) — READ CAREFULLY
+                The four plan docs ship in a strict sequence, ONE PR per doc:
+                `architecture → tech-spec → implementation-plan → e2e-scenarios`.
+                This run scores **`{{spec.FileName}}`** only. The other docs split
+                into two categories:
+
+                **Upstream (already merged, authoritative source-of-truth):**
+                {{upstreamPathsList}}
+
+                **Downstream (will be regenerated AFTER this PR merges — IGNORE for scoring):**
+                {{downstreamPathsList}}
+
+                ### What this means for your scoring
+                - DO score down for contradictions between this doc and any
+                  UPSTREAM doc above — those are merged, immutable, and the
+                  architect MUST anchor to them.
+                - DO **NOT** score down for contradictions between this doc and
+                  any DOWNSTREAM doc. Downstream files on disk are stale
+                  residues from a prior end-to-end spawn that pre-dates the
+                  current architecture. The orchestrator will regenerate every
+                  downstream doc against THIS merged file in a subsequent
+                  spawn. Flagging a downstream-doc mismatch wastes an
+                  iteration — the architect agent CANNOT fix downstream
+                  files in this PR (the worktree is scoped to this doc's
+                  branch; cross-branch edits would be reverted).
+                - DO confirm internal consistency *within* this doc, and
+                  anchoring to the actual source under `src/`.
+
+                If you grep for verification, scope the search to this file
+                + upstream docs only. Treat any downstream-doc hit as
+                pre-existing legacy text, not as a bug in this draft.
+
+                """;
+        }
 
         var generatorPrompt = $$"""
             You are the Architect agent for Forge story `{{spawn.StoryId}}`.
@@ -1366,7 +1497,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             `{{spec.RepoPath}}`. You can also READ source files / prior
             docs / sibling plan docs to verify the draft anchors to real
             code structure (vs invented module names).
-
+            {{sequentialDocPolicy}}
             ## Your job
             Read the draft at `{{spec.RepoPath}}` using your read-only tools
             (view / ls / grep). Do NOT modify the file. Score on:
@@ -1375,9 +1506,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             - Production-quality markdown (no placeholders, no outline-only
               sections, no "TODO" markers).
             - Coverage of the file's stated brief.
-            - Internal consistency (no contradictions between sections,
-              and no contradictions with sibling plan docs that already
-              exist on disk).
+            - Internal consistency (no contradictions between sections
+              of THIS doc). Cross-doc consistency rules are governed by
+              the "Sequential plan-doc mode" section above — read it
+              and apply ONLY the upstream-doc check, never a downstream
+              one.
 
             ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS -- REQUIRED FOR ITER ≥ 2
             DO NOT TRUST the generator's `### Prior feedback resolution`
@@ -1388,8 +1521,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             1. Extract the literal phrase from the generator's claim
                (the quoted string after `grep -F`).
             2. Run `grep -nF "<phrase>"` (via your shell) against
-               `{{spec.RepoPath}}` AND the sibling plan docs under
-               `docs/stories/{{StoryPaths.Safe(spawn.StoryId)}}/`.
+               `{{spec.RepoPath}}` and the UPSTREAM plan docs listed in
+               "Sequential plan-doc mode" above. Do NOT grep downstream
+               docs — hits there are pre-existing legacy text, not a
+               regression in this draft.
             3. If your grep returns any hits the generator did NOT
                explicitly acknowledge, the claim is FALSE-VERIFIED.
             4. For every falsely-verified `[x]` claim, add a NEW
