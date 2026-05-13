@@ -9,7 +9,10 @@ namespace Ast.Memory.Models;
 using Ast.Core;
 
 /// <summary>
-/// Composition wrapper around <see cref="HypergraphNode"/> adding memory-specific accessors.
+/// Composition wrapper around <see cref="HypergraphNode"/> adding
+/// memory-specific accessors. Does not subclass — avoids coupling
+/// agent memory semantics to the code-analysis type hierarchy.
+/// Per architecture.md §4.1.
 /// </summary>
 public sealed class MemoryNode
 {
