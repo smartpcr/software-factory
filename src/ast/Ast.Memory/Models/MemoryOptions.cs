@@ -7,45 +7,41 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Central configuration for the agent memory subsystem.
-/// All defaults come from architecture.md §2.4.
-/// Designed for use with <c>IOptions&lt;MemoryOptions&gt;</c>.
+/// Single source of truth for all configurable memory-graph parameters.
+/// Corresponds to architecture.md §2.4 — Constants &amp; Thresholds.
+/// Implementations read from this class; DI registers it via
+/// <c>IOptions&lt;MemoryOptions&gt;</c>.
 /// </summary>
 public class MemoryOptions
 {
-    // ── Similarity / Decay ──────────────────────────────────────────────
-
-    /// <summary>Cosine-similarity threshold for semantic deduplication.</summary>
+    /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
 
-    /// <summary>Multiplicative factor applied when a node is stale (no longer in HEAD).</summary>
+    /// <summary>Confidence multiplier on substantive code change.</summary>
     public double StaleDecayFactor { get; set; } = 0.5;
 
-    /// <summary>Multiplicative factor applied for minor (whitespace-only) changes.</summary>
+    /// <summary>Confidence multiplier on whitespace/comment-only change.</summary>
     public double MinorDecayFactor { get; set; } = 0.9;
 
-    /// <summary>Confidence floor below which expertise entries are auto-archived.</summary>
+    /// <summary>Expertise nodes below this are soft-deleted.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
 
-    /// <summary>Half-life in days for time-based confidence decay (≈3 years).</summary>
+    /// <summary>Time-based decay half-life in days (3 years).</summary>
     public int DecayHalfLifeDays { get; set; } = 1095;
 
-    // ── Token Budgets ───────────────────────────────────────────────────
-
-    /// <summary>Default token budget for context retrieval.</summary>
+    /// <summary>Per-query default token budget (Budget Controller).</summary>
     public int TokenBudgetDefault { get; set; } = 8_000;
 
-    /// <summary>Hard ceiling on token budget regardless of caller request.</summary>
+    /// <summary>Maximum allowed token budget (Budget Controller).</summary>
     public int TokenBudgetCeiling { get; set; } = 32_000;
 
-    // ── Sync ────────────────────────────────────────────────────────────
-
-    /// <summary>Debounce interval in milliseconds for incremental sync.</summary>
+    /// <summary>Debounce for file-system watcher in milliseconds.</summary>
     public int IncrementalSyncDebounceMs { get; set; } = 1_000;
 
-    // ── Scoring ─────────────────────────────────────────────────────────
-
-    /// <summary>Additive boost applied to nodes with high centrality.</summary>
+    /// <summary>
+    /// Multiplied by normalized PageRank and added to 1.0 to form centrality_boost
+    /// (range 1.0–1.5). See architecture.md §3.5.1.
+    /// </summary>
     public double CentralityBoostFactor { get; set; } = 0.5;
 
     /// <summary>Scoring weight distribution for relevance ranking.</summary>
@@ -66,10 +62,10 @@ public class MemoryOptions
     /// <summary>Graph storage backend.</summary>
     public MemoryBackend Backend { get; set; } = MemoryBackend.Sqlite;
 
-    /// <summary>File path for the SQLite database (used when Backend is Sqlite).</summary>
+    /// <summary>Path to the SQLite database file.</summary>
     public string? SqlitePath { get; set; }
 
-    /// <summary>Connection URI for Neo4j (used when Backend is Neo4j).</summary>
+    /// <summary>Neo4j connection URI.</summary>
     public string? Neo4jUri { get; set; }
 
     /// <summary>Endpoint for Qdrant vector store.</summary>
