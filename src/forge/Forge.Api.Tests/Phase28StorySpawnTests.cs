@@ -118,7 +118,12 @@ public class Phase28StorySpawnTests
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
+        // Phase 53 — these tests seed the legacy single-PR plan flow.
+        // Clear PlanDocPrsJson so the orchestrator routes to DrivePlanLegacyAsync,
+        // and populate PlanBranch (new spawn-create leaves it null).
         s.PlanPrId = prId;
+        s.PlanBranch = $"story/{storyId}/plan";
+        s.PlanDocPrsJson = null;
         if (await db.Prs.AnyAsync(p => p.Id == prId))
         {
             var pr = await db.Prs.FirstAsync(p => p.Id == prId);
@@ -216,8 +221,10 @@ public class Phase28StorySpawnTests
             Assert.Equal("WI-50001", spawn.StoryId);
             Assert.Equal("Multi-region failover", spawn.StoryTitle);
             Assert.Equal(StorySpawnPhases.Plan, spawn.Phase);
-            Assert.Equal("story/WI-50001/plan", spawn.PlanBranch);
+            // Phase 53 — new spawns use per-doc branches via PlanDocPrsJson; PlanBranch is null.
+            Assert.Null(spawn.PlanBranch);
             Assert.Null(spawn.PlanPrId);
+            Assert.Equal("[]", spawn.PlanDocPrsJson);
             Assert.Null(spawn.DecompositionJson);
             Assert.Null(spawn.QaBranch);
             Assert.Null(spawn.QaPrId);
@@ -562,7 +569,7 @@ public class Phase28StorySpawnTests
     // 28.3 — Plan phase
     // -----------------------------------------------------------------------
 
-    /// <summary>28.3 — Spawn creates a planning branch.</summary>
+    /// <summary>28.3 — Spawn initializes plan-doc PR state for the sequential flow.</summary>
     [Fact]
     public async Task Plan_Spawn_Creates_Planning_Branch()
     {
@@ -572,7 +579,10 @@ public class Phase28StorySpawnTests
             await SeedStoryAsync(f, "WI-50010", "Plan branch");
             await SpawnAsync(c, "WI-50010");
             var spawn = await GetSpawnAsync(f, "WI-50010");
-            Assert.Equal("story/WI-50010/plan", spawn!.PlanBranch);
+            // Phase 53 — sequential mode: per-doc branches replace PlanBranch.
+            // PlanBranch stays null on new spawns; PlanDocPrsJson is initialised.
+            Assert.Null(spawn!.PlanBranch);
+            Assert.Equal("[]", spawn.PlanDocPrsJson);
         }
         finally { f.Dispose(); }
     }
@@ -1139,11 +1149,15 @@ public class Phase28StorySpawnTests
 
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-50047-am-pr");
-            Assert.False(string.IsNullOrEmpty(spawn.PlanPrId),
-                "Plan PR should have been opened by the orchestrator drive.");
-            var planPr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == spawn.PlanPrId);
+
+            // Phase 53 — sequential mode: drive opens architecture's PR first.
+            // AutoMerge propagation now lives on that per-doc PR.
+            var entry = PlanDocStateHelpers.GetEntry(spawn, "architecture");
+            Assert.False(string.IsNullOrEmpty(entry.PrId),
+                "First plan-doc (architecture) PR should have been opened by the orchestrator drive.");
+            var planPr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == entry.PrId);
             Assert.True(planPr.AutoMerge,
-                "Plan PR must inherit AutoMerge=true even when targeting 'main'.");
+                "Plan-doc PR must inherit AutoMerge=true even when targeting 'main'.");
         }
         finally { f.Dispose(); }
     }
