@@ -146,9 +146,10 @@ public enum ExpertiseKind
     /// <summary>
     /// Generates the ID for an expertise entry.
     /// </summary>
-    public static string GenerateId(ExpertiseKind kind, string contentHash)
+    public static string GenerateId(ExpertiseKind kind, string title, string body, string targetNodeId)
     {
-        var hash8 = contentHash[..8];
+        var hash = ComputeContentHash(title, body, targetNodeId);
+        var hash8 = hash[..8];
         return $"expertise:{kind.ToString().ToLowerInvariant()}:{hash8}";
     }
 }
