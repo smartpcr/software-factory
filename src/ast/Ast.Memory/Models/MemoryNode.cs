@@ -13,12 +13,7 @@ using Ast.Core;
 /// </summary>
 public sealed class MemoryNode
 {
-    public MemoryNode(HypergraphNode inner, VersionRange? version)
-    {
-        this.Inner = inner;
-        this.Version = version;
-    }
-
+    /// <summary>The underlying hypergraph node.</summary>
     public HypergraphNode Inner { get; }
 
     public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;

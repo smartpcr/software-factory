@@ -13,17 +13,11 @@ using Ast.Core;
 /// </summary>
 public sealed class MemoryEdge
 {
-    public MemoryEdge(Hyperedge inner, VersionRange version)
-    {
-        this.Inner = inner;
-        this.Version = version;
-    }
-
+    /// <summary>The underlying hyperedge.</summary>
     public Hyperedge Inner { get; }
 
-    public string SemanticRelation => (string)this.Inner.Metadata[MemoryMetadataKeys.SemanticRelation]!;
-
-    public string MemoryLayer => (string)this.Inner.Metadata[MemoryMetadataKeys.MemoryLayer]!;
-
+    /// <summary>
+    /// Temporal version range for this edge. Per architecture.md §4.1.
+    /// </summary>
     public VersionRange Version { get; }
 }
