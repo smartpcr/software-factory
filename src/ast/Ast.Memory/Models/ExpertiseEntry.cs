@@ -33,7 +33,7 @@ public sealed class ExpertiseEntry
 /// they have their own dedicated storage because their fields (Confidence,
 /// Archived, Embedding, SourceAgent) are core data, not incidental metadata.
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
     /// <summary>
     /// Unique identifier in the format "expertise:{kind}:{hash8}".

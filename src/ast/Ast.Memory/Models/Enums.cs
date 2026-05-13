@@ -7,8 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// Classifies the kind of expertise an agent has learned.
-/// Per architecture.md §2.1.
+/// Kind of expertise entry authored by an agent.
 /// </summary>
 public enum ExpertiseKind
 {
@@ -26,8 +25,7 @@ public enum ExpertiseKind
 }
 
 /// <summary>
-/// Determines how memory is retrieved from the graph.
-/// Per architecture.md §5.3.
+/// Retrieval mode for memory queries.
 /// </summary>
 public enum RetrievalMode
 {
@@ -39,8 +37,7 @@ public enum RetrievalMode
 }
 
 /// <summary>
-/// Backend storage engine for memory persistence.
-/// Per architecture.md §2.1.
+/// Backend for the memory graph store.
 /// </summary>
 public enum MemoryBackend
 {

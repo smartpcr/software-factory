@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Aggregate statistics for the memory graph.
 /// All counts reflect active (non-retired) entities unless noted otherwise.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     /// <summary>Total nodes per layer.</summary>
     public Dictionary<string, int> NodesByLayer { get; set; } = [];
