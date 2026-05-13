@@ -9,7 +9,7 @@ namespace Ast.Memory.Models;
 /// <summary>
 /// Aggregate statistics for the memory graph.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
     public IReadOnlyDictionary<string, LayerStatistics> LayerStats { get; init; } =
         new Dictionary<string, LayerStatistics>();

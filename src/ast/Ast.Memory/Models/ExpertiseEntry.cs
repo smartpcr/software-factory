@@ -29,10 +29,9 @@ public sealed class ExpertiseEntry
 }
 
 /// <summary>
-/// Agent-learned expertise attached to a graph node.
-/// Per architecture.md §4.2.
+/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
 /// </summary>
-public class ExpertiseEntry
+public sealed class ExpertiseEntry
 {
     /// <summary>
     /// Deterministic ID in the format "expertise:{kind}:{hash8}".
@@ -128,8 +127,23 @@ public class ExpertiseEntry
         return Convert.ToHexString(bytes)[..8].ToLowerInvariant();
     }
 
-    private static string ComputeFullHash(string input)
+    public ExpertiseKind Kind { get; init; }
+    public string Title { get; init; }
+    public string Body { get; init; }
+    public string TargetNodeId { get; init; }
+    public string Scope { get; init; }
+    public double Confidence { get; set; }
+    public bool Archived { get; set; }
+    public string SourceAgent { get; init; }
+    public IReadOnlyList<Citation> Evidence { get; init; }
+    public float[]? Embedding { get; set; }
+    public string ContentHash { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; set; }
+
+    private static string ComputeHash(string title, string body, string targetNodeId)
     {
+        var input = $"{title}{body}{targetNodeId}";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }

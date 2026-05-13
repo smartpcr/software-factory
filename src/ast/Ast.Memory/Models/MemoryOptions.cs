@@ -10,7 +10,7 @@ namespace Ast.Memory.Models;
 /// Central configuration for the agent memory subsystem.
 /// All defaults come from architecture.md §2.4.
 /// </summary>
-public class MemoryOptions
+public sealed class MemoryOptions
 {
     /// <summary>Cosine-similarity floor for SIMILAR_TO and DERIVED_FROM edges.</summary>
     public double SimilarityThreshold { get; set; } = 0.85;
