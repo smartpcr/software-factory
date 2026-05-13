@@ -6,6 +6,8 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
 /// Extended statistics for the memory graph, including layer-specific
 /// counts and expertise metrics.

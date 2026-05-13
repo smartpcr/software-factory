@@ -6,6 +6,9 @@
 
 namespace Ast.Memory.Models;
 
+using System;
+using System.Collections.Generic;
+
 /// <summary>
 /// Agent-authored knowledge nodes. These are not HypergraphNode instances — they
 /// have their own dedicated table because their fields (Confidence, Archived,
@@ -55,7 +58,7 @@ public sealed class ExpertiseEntry
 }
 
 /// <summary>
-/// Agent-authored knowledge node linked to a code entity via APPLIES_TO edges.
+/// A supporting reference for an expertise entry.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
