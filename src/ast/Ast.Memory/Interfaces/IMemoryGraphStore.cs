@@ -22,17 +22,23 @@ public interface IMemoryGraphStore : IGraphStore
 
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
-        int? atCommitIndex = null,
-        NodeFilter? filter = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        int? atCommitIndex,
+        Models.NodeFilter? filter,
+        int limit,
+        CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
+    // ── Edge queries ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns active edges matching the given semantic relation,
+    /// optionally scoped to a memory layer and/or point-in-time commit index.
+    /// </summary>
+    Task<IReadOnlyList<MemoryEdge>> GetEdgesBySemanticRelationAsync(
         string semanticRelation,
-        string? memoryLayer = null,
-        int? atCommitIndex = null,
-        int limit = 100,
-        CancellationToken ct = default);
+        string? memoryLayer,
+        int? atCommitIndex,
+        int limit,
+        CancellationToken cancellationToken);
 
     // ── Canonical §5.1 — Temporal-aware upsert and retirement ──────────
 
@@ -47,7 +53,7 @@ public interface IMemoryGraphStore : IGraphStore
     Task UpsertNodeAsync(
         HypergraphNode node,
         VersionRange version,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Retires a node AND cascades retirement to all connected edges.
@@ -58,43 +64,75 @@ public interface IMemoryGraphStore : IGraphStore
     Task RetireNodeAsync(
         string nodeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
+    // ── Edge mutations ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Inserts or updates an edge with the given version range and
+    /// populates the edge-node join table.
+    /// </summary>
+    Task UpsertEdgeAsync(
+        Hyperedge edge,
+        VersionRange version,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Marks an edge as retired by setting its UntilCommitIndex
+    /// and optionally UntilCommit SHA.
+    /// </summary>
     Task RetireEdgeAsync(
         string edgeId,
         int untilCommitIndex,
-        CancellationToken ct = default);
+        string? untilCommit,
+        CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Merges the supplied metadata entries into an existing edge.
+    /// </summary>
     Task UpdateEdgeMetadataAsync(
         string edgeId,
-        IDictionary<string, object?> updates,
-        CancellationToken ct = default);
+        IDictionary<string, object?> metadata,
+        CancellationToken cancellationToken);
 
     // ── Canonical §5.1 — Expertise CRUD ─────────────────────────────────
 
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
-        double minConfidence = 0.0,
-        CancellationToken ct = default);
+        double minConfidence,
+        CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Inserts or updates an expertise entry (keyed by <see cref="ExpertiseEntry.Id"/>).
+    /// </summary>
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Sets <see cref="ExpertiseEntry.Archived"/> to true for the specified entry.
+    /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Returns archived expertise entries, optionally filtered to a target node.
+    /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
-        string? targetNodeId = null,
-        int limit = 50,
-        CancellationToken ct = default);
+        string? targetNodeId,
+        int limit,
+        CancellationToken cancellationToken);
 
     // ── Canonical §5.1 — Statistics and audit ───────────────────────────
 
     Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
-        CancellationToken ct = default);
+        CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Appends an immutable audit record for the given operation.
+    /// </summary>
     Task LogAuditAsync(
         string sessionId,
         string operation,
