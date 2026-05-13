@@ -104,6 +104,135 @@ public class Phase28OrchestratorTests
         await sched.TickOnceAsync();
     }
 
+    /// <summary>
+    /// Phase 53 — drive the plan phase to completion in deterministic tests.
+    ///
+    /// <para>
+    /// Sequential-mode spawns (PlanDocPrsJson != null) need the orchestrator
+    /// to be ticked between each doc transition: doc N's PR must be merged
+    /// AND its latest deliverable verdict must be "pass" before doc N+1's
+    /// branch is created. The deterministic test strategy doesn't run the
+    /// real gen↔eval loop (no DeliverableLoop invocation) so verdict=pass
+    /// rows never get written organically — this helper seeds them
+    /// per-doc so the orchestrator's <c>IsDocVerdictPassAsync</c> gate
+    /// releases.
+    /// </para>
+    ///
+    /// <para>
+    /// Each iteration: re-read spawn, seed verdict=pass for every doc that
+    /// has an opened PR, merge any unmerged PRs, then tick the
+    /// orchestrator so the next doc's branch+PR open. Loops until all
+    /// four doc PRs are merged or <c>maxIterations</c> is hit (12 ticks
+    /// is well above the worst-case 8 needed for the four docs to walk
+    /// through open → merge transitions).
+    /// </para>
+    ///
+    /// <para>
+    /// Legacy-mode spawns (PlanDocPrsJson == null) keep the original one-
+    /// merge behavior so tests that flipped a spawn back to legacy via
+    /// <c>SetPlanPrAsync</c> still drive the single PR through.
+    /// </para>
+    /// </summary>
+    internal static async Task MergeAllPlanPrsAsync(ForgeWebApplicationFactory f, string storyId)
+    {
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
+        var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
+        var sched = scope.ServiceProvider.GetRequiredService<SpawnDependencyScheduler>();
+
+        var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+
+        if (!PlanDocStateHelpers.IsSequentialMode(spawn))
+        {
+            // Legacy path — single PR + branch.
+            if (!string.IsNullOrEmpty(spawn.PlanPrId) && !string.IsNullOrEmpty(spawn.PlanBranch))
+            {
+                await prov.MergePrAsync(spawn.PlanPrId!);
+                await git.MergeAsync(null, spawn.PlanBranch!, "main");
+            }
+            return;
+        }
+
+        const int maxIterations = 12;
+        for (var iter = 0; iter < maxIterations; iter++)
+        {
+            spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+            var states = PlanDocStateHelpers.GetPlanDocStates(spawn).ToList();
+
+            // Seed verdict=pass + merge any opened PRs.
+            var anyUnmerged = false;
+            var mergedCount = 0;
+            foreach (var docKey in PlanDocStateHelpers.PlanDocOrder)
+            {
+                var entry = states.FirstOrDefault(e =>
+                    string.Equals(e.Key, docKey, StringComparison.OrdinalIgnoreCase));
+                if (entry is null || string.IsNullOrEmpty(entry.PrId) || string.IsNullOrEmpty(entry.Branch))
+                {
+                    anyUnmerged = true;
+                    continue;
+                }
+
+                await SeedPlanDocVerdictPassAsync(db, spawn.Id, docKey);
+
+                var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == entry.PrId);
+                if (pr is null || !string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    await prov.MergePrAsync(entry.PrId!);
+                    await git.MergeAsync(null, entry.Branch!, "main");
+                }
+                mergedCount++;
+            }
+
+            if (mergedCount == PlanDocStateHelpers.PlanDocOrder.Count && !anyUnmerged)
+            {
+                // All four PRs are merged. Stop here so the spawn stays at
+                // phase=plan; tests that PATCH /spawn/phase to advance can
+                // still do so without tripping the "phase rollback not
+                // allowed" guard. Tests that want phase=decompose+ should
+                // invoke TickAsync after this helper returns.
+                return;
+            }
+
+            // Tick the orchestrator so it opens the next doc's branch+PR
+            // (or, if PR is opened but not merged, performs the auto-merge
+            // it skipped because verdict wasn't pass yet).
+            await sched.TickOnceAsync();
+        }
+    }
+
+    /// <summary>
+    /// Phase 53 — seed a passing terminal deliverable for one plan doc so
+    /// the orchestrator's <c>IsDocVerdictPassAsync</c> gate releases. The
+    /// deterministic test strategy doesn't run the gen↔eval loop, so
+    /// without this seed the orchestrator would block on every plan-doc
+    /// auto-merge step. Idempotent: skips when a pass row already exists.
+    /// </summary>
+    private static async Task SeedPlanDocVerdictPassAsync(
+        ForgeDbContext db, string spawnId, string docKey)
+    {
+        if (!PlanDocStateHelpers.PlanDocFileName.TryGetValue(docKey, out var fileName)) return;
+        var docId = $"plan-doc:{spawnId}:{fileName}";
+        var alreadyPass = await db.Deliverables.AnyAsync(d =>
+            d.WorkItemId == docId && d.Verdict == "pass");
+        if (alreadyPass) return;
+        db.Deliverables.Add(new DeliverableRow
+        {
+            WorkItemId = docId,
+            CrewId = "crew-arch",
+            GeneratorAgentId = "G",
+            EvaluatorAgentId = "E",
+            Iter = 1,
+            Score = 95,
+            DimsJson = "{}",
+            Verdict = "pass",
+            Notes = string.Empty,
+            GeneratorSummary = string.Empty,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
     [Fact]
     public async Task Spawn_With_Orchestrator_Auto_Opens_Plan_Pr_And_Commits_Artifacts()
     {
@@ -114,23 +243,49 @@ public class Phase28OrchestratorTests
             var resp = await c.PostAsJsonAsync("/api/stories/WI-70001/spawn", new { }, JsonOpts);
             Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
+            // Phase 53 — sequential plan-doc mode. Spawn-create kicks the
+            // orchestrator which opens architecture's PR. Drive forward
+            // through the four-doc chain (helper ticks + seeds + merges
+            // until all four are merged).
+            await MergeAllPlanPrsAsync(f, "WI-70001");
+
             var spawn = await ReadSpawnAsync(f, "WI-70001");
             Assert.Equal("plan", spawn.Phase);
-            Assert.Equal("story/WI-70001/plan", spawn.PlanBranch);
-            Assert.False(string.IsNullOrEmpty(spawn.PlanPrId), "Plan PR id was not populated");
 
-            // 28.3.5 / 28.10.2 — files committed to the plan branch.
+            // Sequential mode: per-doc branches exist, each PR is merged,
+            // and each doc's file is on main.
+            // Legacy mode (back-compat): the single PlanBranch + PlanPrId.
             using var scope = f.Services.CreateScope();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            foreach (var p in new[]
+            if (PlanDocStateHelpers.IsSequentialMode(spawn))
             {
-                "docs/stories/WI-70001/tech-spec.md",
-                "docs/stories/WI-70001/architecture.md",
-                "docs/stories/WI-70001/implementation-plan.md",
-                "docs/stories/WI-70001/e2e-scenarios.md",
-            })
+                foreach (var docKey in PlanDocStateHelpers.PlanDocOrder)
+                {
+                    var entry = PlanDocStateHelpers.GetEntry(spawn, docKey);
+                    Assert.False(string.IsNullOrEmpty(entry.Branch),
+                        $"plan-doc branch for '{docKey}' was not populated");
+                    Assert.False(string.IsNullOrEmpty(entry.PrId),
+                        $"plan-doc PR id for '{docKey}' was not populated");
+                    var fileName = PlanDocStateHelpers.PlanDocFileName[docKey];
+                    var path = $"docs/stories/WI-70001/{fileName}";
+                    Assert.True(await git.FileExistsAsync(null, "main", path),
+                        $"missing merged file {path}");
+                }
+            }
+            else
             {
-                Assert.True(await git.FileExistsAsync(null, "story/WI-70001/plan", p), $"missing {p}");
+                Assert.Equal("story/WI-70001/plan", spawn.PlanBranch);
+                Assert.False(string.IsNullOrEmpty(spawn.PlanPrId), "Plan PR id was not populated");
+                foreach (var p in new[]
+                {
+                    "docs/stories/WI-70001/tech-spec.md",
+                    "docs/stories/WI-70001/architecture.md",
+                    "docs/stories/WI-70001/implementation-plan.md",
+                    "docs/stories/WI-70001/e2e-scenarios.md",
+                })
+                {
+                    Assert.True(await git.FileExistsAsync(null, "story/WI-70001/plan", p), $"missing {p}");
+                }
             }
         }
         finally { f.Dispose(); }
@@ -146,14 +301,8 @@ public class Phase28OrchestratorTests
             await c.PostAsJsonAsync("/api/stories/WI-70002/spawn", new { }, JsonOpts);
             var spawn = await ReadSpawnAsync(f, "WI-70002");
 
-            // Merge the plan PR (production: review/merge approves; tests do it directly).
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(spawn.PlanPrId!);
-                await git.MergeAsync(null, spawn.PlanBranch!, "main");
-            }
+            // Phase 53 — merge every plan PR (sequential mode opens four).
+            await MergeAllPlanPrsAsync(f, "WI-70002");
 
             var advance = await c.PatchAsync("/api/stories/WI-70002/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
@@ -179,13 +328,7 @@ public class Phase28OrchestratorTests
 
             // Roll plan PR through merge.
             var s = await ReadSpawnAsync(f, "WI-70003");
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(s.PlanPrId!);
-                await git.MergeAsync(null, s.PlanBranch!, "main");
-            }
+            await MergeAllPlanPrsAsync(f, "WI-70003");
             await c.PatchAsync("/api/stories/WI-70003/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70003/spawn/decompose/approve", null);
@@ -227,13 +370,7 @@ public class Phase28OrchestratorTests
             await SeedStoryAsync(f, "WI-70004", "Review loop");
             await c.PostAsJsonAsync("/api/stories/WI-70004/spawn", new { }, JsonOpts);
             var s = await ReadSpawnAsync(f, "WI-70004");
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(s.PlanPrId!);
-                await git.MergeAsync(null, s.PlanBranch!, "main");
-            }
+            await MergeAllPlanPrsAsync(f, "WI-70004");
             await c.PatchAsync("/api/stories/WI-70004/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70004/spawn/decompose/approve", null);
@@ -286,13 +423,7 @@ public class Phase28OrchestratorTests
             await c.PostAsJsonAsync("/api/stories/WI-70005/spawn", new { }, JsonOpts);
             var s = await ReadSpawnAsync(f, "WI-70005");
 
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(s.PlanPrId!);
-                await git.MergeAsync(null, s.PlanBranch!, "main");
-            }
+            await MergeAllPlanPrsAsync(f, "WI-70005");
             await c.PatchAsync("/api/stories/WI-70005/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70005/spawn/decompose/approve", null);
@@ -332,13 +463,7 @@ public class Phase28OrchestratorTests
             await c.PostAsJsonAsync("/api/stories/WI-70006/spawn", new { }, JsonOpts);
             var s = await ReadSpawnAsync(f, "WI-70006");
 
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(s.PlanPrId!);
-                await git.MergeAsync(null, s.PlanBranch!, "main");
-            }
+            await MergeAllPlanPrsAsync(f, "WI-70006");
             await c.PatchAsync("/api/stories/WI-70006/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70006/spawn/decompose/approve", null);
@@ -379,13 +504,7 @@ public class Phase28OrchestratorTests
             await SeedStoryAsync(f, "WI-70007", "Closure");
             await c.PostAsJsonAsync("/api/stories/WI-70007/spawn", new { }, JsonOpts);
             var s = await ReadSpawnAsync(f, "WI-70007");
-            using (var scope = f.Services.CreateScope())
-            {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                await prov.MergePrAsync(s.PlanPrId!);
-                await git.MergeAsync(null, s.PlanBranch!, "main");
-            }
+            await MergeAllPlanPrsAsync(f, "WI-70007");
             await c.PatchAsync("/api/stories/WI-70007/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70007/spawn/decompose/approve", null);
@@ -422,14 +541,11 @@ public class Phase28OrchestratorTests
             // Simulate a crash mid-flight — flip phase to decompose without
             // approving. A scheduler tick should still drive the spawn (it
             // generates the decomposition; later approval unblocks implement).
+            await MergeAllPlanPrsAsync(f, "WI-70008");
             using (var scope = f.Services.CreateScope())
             {
-                var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
-                var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
                 var ss = await scope.ServiceProvider.GetRequiredService<ForgeDbContext>().StorySpawns
                     .FirstAsync(x => x.StoryId == "WI-70008");
-                await prov.MergePrAsync(ss.PlanPrId!);
-                await git.MergeAsync(null, ss.PlanBranch!, "main");
                 ss.Phase = "decompose";
                 await scope.ServiceProvider.GetRequiredService<ForgeDbContext>().SaveChangesAsync();
             }
@@ -504,29 +620,63 @@ public class Phase28OrchestratorTests
             Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
             var spawn = await ReadSpawnAsync(f, storyId);
-            Assert.Equal("plan", spawn.Phase);
-            Assert.False(string.IsNullOrEmpty(spawn.PlanPrId),
-                "Plan PR id was not populated — orchestrator likely bailed because the story isn't a WorkItem.");
             Assert.Equal(desc, spawn.StoryDescription);
             Assert.Equal(10, spawn.StoryPoints);
             Assert.Equal("agent memory", spawn.StoryTitle);
 
-            // The four planning artifacts should exist on the plan branch.
+            // Phase 53 — sequential mode: spawn-create's inline drive opens
+            // architecture's PR, and the operator-reported regression
+            // (orchestrator silently bailing on ProductStory ids) is gated
+            // exactly there. Assert architecture's PR is opened immediately.
+            // For legacy seeded spawns, the single PlanPrId would carry it.
+            if (PlanDocStateHelpers.IsSequentialMode(spawn))
+            {
+                var arch = PlanDocStateHelpers.GetEntry(spawn, "architecture");
+                Assert.False(string.IsNullOrEmpty(arch.PrId),
+                    "architecture plan-doc PR was not populated — orchestrator likely bailed because the story isn't a WorkItem.");
+            }
+            else
+            {
+                Assert.False(string.IsNullOrEmpty(spawn.PlanPrId),
+                    "Plan PR id was not populated — orchestrator likely bailed because the story isn't a WorkItem.");
+            }
+
+            // Drive the rest of the chain so all four artifacts land on
+            // main; assert each file is present at its canonical path on
+            // the per-doc branch (sequential) or on the single plan
+            // branch (legacy).
+            await MergeAllPlanPrsAsync(f, storyId);
+
             // The orchestrator sanitises the story id (`:` is illegal in a
             // git ref / Windows path) via StoryPaths.Safe before computing
             // the branch + commit dir, so test paths must be sanitised too.
             var safeStoryId = StoryPaths.Safe(storyId);
             using var scope = f.Services.CreateScope();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            foreach (var p in new[]
+            var spawnAfter = await ReadSpawnAsync(f, storyId);
+            if (PlanDocStateHelpers.IsSequentialMode(spawnAfter))
             {
-                $"docs/stories/{safeStoryId}/tech-spec.md",
-                $"docs/stories/{safeStoryId}/architecture.md",
-                $"docs/stories/{safeStoryId}/implementation-plan.md",
-                $"docs/stories/{safeStoryId}/e2e-scenarios.md",
-            })
+                foreach (var docKey in PlanDocStateHelpers.PlanDocOrder)
+                {
+                    var entry = PlanDocStateHelpers.GetEntry(spawnAfter, docKey);
+                    var fileName = PlanDocStateHelpers.PlanDocFileName[docKey];
+                    var path = $"docs/stories/{safeStoryId}/{fileName}";
+                    Assert.True(await git.FileExistsAsync(null, entry.Branch!, path),
+                        $"missing {path} on branch {entry.Branch}");
+                }
+            }
+            else
             {
-                Assert.True(await git.FileExistsAsync(null, $"story/{safeStoryId}/plan", p), $"missing {p}");
+                foreach (var p in new[]
+                {
+                    $"docs/stories/{safeStoryId}/tech-spec.md",
+                    $"docs/stories/{safeStoryId}/architecture.md",
+                    $"docs/stories/{safeStoryId}/implementation-plan.md",
+                    $"docs/stories/{safeStoryId}/e2e-scenarios.md",
+                })
+                {
+                    Assert.True(await git.FileExistsAsync(null, $"story/{safeStoryId}/plan", p), $"missing {p}");
+                }
             }
         }
         finally { f.Dispose(); }
@@ -648,11 +798,27 @@ public class Phase28OrchestratorTests
             var spawn = await ReadSpawnAsync(f, "WI-70102");
             Assert.Equal("release/2026-q2", spawn.BaseBranch);
 
-            // Plan PR was opened against the custom base branch, not main.
-            Assert.False(string.IsNullOrEmpty(spawn.PlanPrId));
+            // Phase 53 — sequential mode: spawn-create's inline drive opens
+            // architecture's PR against the custom base. Legacy mode: the
+            // single PlanPrId carries it. Either way the PR's Base must
+            // match the operator-chosen branch.
+            string? planPrId;
+            if (PlanDocStateHelpers.IsSequentialMode(spawn))
+            {
+                var arch = PlanDocStateHelpers.GetEntry(spawn, "architecture");
+                Assert.False(string.IsNullOrEmpty(arch.PrId),
+                    "architecture plan-doc PR was not populated");
+                planPrId = arch.PrId;
+            }
+            else
+            {
+                Assert.False(string.IsNullOrEmpty(spawn.PlanPrId));
+                planPrId = spawn.PlanPrId;
+            }
+
             using var scope = f.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            var pr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == spawn.PlanPrId);
+            var pr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == planPrId);
             Assert.Equal("release/2026-q2", pr.Base);
         }
         finally { f.Dispose(); }

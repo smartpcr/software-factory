@@ -182,9 +182,9 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     /// Unpaired crew sanity check. When a crew has no
     /// <see cref="CrewRow.PairedWithCrewId"/>, the fix's helper logic
     /// (<c>target = evalCrew ?? crew</c>) collapses to a write on
-    /// <paramref name="crew"/> itself, so the resolver still picks
-    /// up the override. Pins this back-compat path against
-    /// accidental regressions.
+    /// <c>crew</c> itself, so the resolver still picks up the
+    /// override. Pins this back-compat path against accidental
+    /// regressions.
     /// </summary>
     [Fact]
     public async Task ResolveAgentRunConfig_EvalOverride_UnpairedCrew_HonorsOverride()

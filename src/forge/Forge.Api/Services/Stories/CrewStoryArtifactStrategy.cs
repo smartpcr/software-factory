@@ -215,6 +215,75 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 53 — produce ONE plan doc on the caller-supplied branch + worktree.
+    /// The orchestrator's sequential drive owns branch / worktree / commit /
+    /// PR lifecycle; this method only runs the gen↔eval loop and returns
+    /// the resulting file content (already written to disk in the worktree
+    /// by the architect agent).
+    ///
+    /// <para>Sibling docs surfaced in the agent prompt are the three other
+    /// canonical keys. On a sequential-mode spawn they live on three
+    /// different worktrees, but the prompt only needs their repo paths
+    /// (the agent reads them via filesystem tools at runtime — the
+    /// previously-merged docs are already on this worktree's base, so the
+    /// agent's `read` against e.g. `docs/stories/{id}/architecture.md`
+    /// resolves directly).</para>
+    /// </summary>
+    public async Task<(string RepoPath, string Content)> ProduceSinglePlanArtifactAsync(
+        StorySpawnRow spawn,
+        WorkItemRow story,
+        string docKey,
+        string worktreePath,
+        string planBranch,
+        RepoRow? repo,
+        bool forceResume = false,
+        CancellationToken ct = default)
+    {
+        if (!PlanDocStateHelpers.PlanDocFileName.ContainsKey(docKey))
+        {
+            throw new ArgumentException($"Unknown plan-doc key '{docKey}'.", nameof(docKey));
+        }
+
+        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var specs = BuildPlanDocSpecs(docDir);
+        if (!specs.TryGetValue(docKey, out var spec))
+        {
+            throw new InvalidOperationException($"BuildPlanDocSpecs missing entry for '{docKey}'.");
+        }
+
+        var budget = BudgetForPhase(spawn.StoryPoints, "plan");
+
+        // Phase 47 / 53 — pick a (generator, evaluator) pair fresh per call.
+        // Calling LoadArchitectAndEvaluatorRostersAsync re-queries
+        // agent_usage so a long-running upstream doc doesn't re-pin the
+        // same agents to the next doc in the chain.
+        var (generatorAgentIds, evaluatorAgentIds) =
+            await this.LoadArchitectAndEvaluatorRostersAsync(1, ct);
+
+        // Siblings are the three non-active canonical keys, in canonical
+        // order. The agent's filesystem tools resolve them against the
+        // worktree (previously-merged docs are on base; the current
+        // worktree base is `spawn.BaseBranch`, which already contains
+        // any upstream merged doc).
+        var siblingSpecs = PlanDocStateHelpers.PlanDocOrder
+            .Where(k => !string.Equals(k, docKey, StringComparison.OrdinalIgnoreCase))
+            .Select(k => specs[k].RepoPath)
+            .ToArray();
+
+        var content = await this.ProducePlanFileAsync(
+            spawn, story, spec, budget, forceResume,
+            generatorAgentOverride: generatorAgentIds.Count > 0 ? generatorAgentIds[0] : null,
+            evaluatorAgentOverride: evaluatorAgentIds.Count > 0 ? evaluatorAgentIds[0] : null,
+            siblingSpecs: siblingSpecs,
+            worktreePath: worktreePath,
+            repo: repo,
+            planBranch: planBranch,
+            ct);
+
+        return (spec.RepoPath, content);
+    }
+
+    /// <summary>
     /// Phase 42 — resolve the <see cref="RepoRow"/> for a spawn so we can
     /// drive the real-repo worktree. Returns null when the spawn isn't
     /// bound to a repo (legacy / synthetic cases — the strategy then

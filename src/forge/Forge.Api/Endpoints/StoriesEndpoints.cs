@@ -275,9 +275,13 @@ public static class StoriesEndpoints
             // default. The flag is honoured for any base (including "main") —
             // the operator is responsible for arming it intentionally.
             AutoMerge = req?.AutoMerge ?? defaultAutoMergeFromStory,
-            // Branch must use the sanitized id — `:` is illegal in Windows
-            // worktree paths and crashes the orchestrator on commit.
-            PlanBranch = $"story/{safeStoryId}/plan",
+            // Phase 53 — sequential plan-doc state. Initialised to "[]" so
+            // PlanDocStateHelpers.IsSequentialMode returns true; the
+            // orchestrator's DrivePlanAsync routes to DrivePlanSequentialAsync.
+            // PlanBranch is intentionally NOT set (legacy spawns from before
+            // Phase 53 shipped will have PlanDocPrsJson=null and PlanBranch
+            // set, which routes to DrivePlanLegacyAsync).
+            PlanDocPrsJson = "[]",
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -433,6 +437,20 @@ public static class StoriesEndpoints
             var agentAssignments = await db.AgentAssignments.Where(a => idList.Contains(a.WorkItemId)).ToListAsync(ct);
             db.AgentAssignments.RemoveRange(agentAssignments);
             totalRowsPurged += agentAssignments.Count;
+
+            // Phase 50 follow-up (2026-05-12) — purge cost ledger rows
+            // for the synthetic plan-doc / spawn-id work items. Same
+            // reason as the DeleteSpawn-side equivalent: spawn.Id is
+            // deterministic, so without this the new spawn inherits the
+            // prior spawn's cost rows and the four plan-doc cards
+            // surface ~$1300-$2000 totals BEFORE any architect has
+            // produced a single iteration. CascadeDeleteWorkstreamAsync
+            // (called for orphan workstreams further down) cleans the
+            // workstream-keyed rows; this only covers the synthetic
+            // plan-doc + spawn ids.
+            var agentUsage = await db.AgentUsage.Where(u => idList.Contains(u.TaskId)).ToListAsync(ct);
+            db.AgentUsage.RemoveRange(agentUsage);
+            totalRowsPurged += agentUsage.Count;
 
             var workItemLinks = await db.WorkItemLinks.Where(l => idList.Contains(l.FromId) || idList.Contains(l.ToId)).ToListAsync(ct);
             db.WorkItemLinks.RemoveRange(workItemLinks);
@@ -822,6 +840,11 @@ public static class StoriesEndpoints
         var prIds = new HashSet<string>(StringComparer.Ordinal);
         if (!string.IsNullOrEmpty(spawn.PlanPrId)) prIds.Add(spawn.PlanPrId);
         if (!string.IsNullOrEmpty(spawn.QaPrId)) prIds.Add(spawn.QaPrId);
+        // Phase 53 — sequential plan-doc PRs (one per doc on the spawn).
+        foreach (var pdoc in PlanDocStateHelpers.GetPlanDocStates(spawn))
+        {
+            if (!string.IsNullOrEmpty(pdoc.PrId)) prIds.Add(pdoc.PrId!);
+        }
         foreach (var w in workstreams)
         {
             foreach (var p in WorkstreamsEndpoints.ParseStringList(w.PrsJson))
@@ -1038,6 +1061,20 @@ public static class StoriesEndpoints
             db.AgentAssignments.RemoveRange(agentAssignments);
             counts["synthetic.agentAssignments"] = agentAssignments.Count;
 
+            // Phase 50 follow-up (2026-05-12) — cost ledger rows for the
+            // synthetic plan-doc / spawn-id work items. TaskId on
+            // agent_usage equals the work-item id (DeliverableLoop emits
+            // each gen/eval invocation with TaskId = workItemId).
+            // Without this purge, re-spawning the same story (spawn.Id
+            // is deterministic, plan-doc work-item ids are derived from
+            // it) inherits the old cost ledger and DOC cards open
+            // showing stale dollar totals before any LLM has run on the
+            // new spawn (operator-reported: re-spawned story showed
+            // ~$1300-$2000 per plan-doc card with PENDING status).
+            var agentUsage = await db.AgentUsage.Where(u => ids.Contains(u.TaskId)).ToListAsync(ctx.RequestAborted);
+            db.AgentUsage.RemoveRange(agentUsage);
+            counts["synthetic.agentUsage"] = agentUsage.Count;
+
             var workItemLinks = await db.WorkItemLinks.Where(l => ids.Contains(l.FromId) || ids.Contains(l.ToId)).ToListAsync(ctx.RequestAborted);
             db.WorkItemLinks.RemoveRange(workItemLinks);
             counts["synthetic.workItemLinks"] = workItemLinks.Count;
@@ -1155,6 +1192,11 @@ public static class StoriesEndpoints
 
         await CleanBranchAsync(spawn.PlanBranch);
         await CleanBranchAsync(spawn.QaBranch);
+        // Phase 53 — clean every sequential plan-doc branch as well.
+        foreach (var pdoc in PlanDocStateHelpers.GetPlanDocStates(spawn))
+        {
+            await CleanBranchAsync(pdoc.Branch);
+        }
         foreach (var pr in prRows)
         {
             await CleanBranchAsync(pr.Branch);
@@ -1852,6 +1894,17 @@ public static class StoriesEndpoints
                 mergedBranches.Add(plan.Branch);
             }
         }
+        // Phase 53 — sequential plan-doc PRs: replay merged ones too.
+        foreach (var pdoc in PlanDocStateHelpers.GetPlanDocStates(spawn))
+        {
+            if (string.IsNullOrEmpty(pdoc.PrId)) continue;
+            var pdocPr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pdoc.PrId, ct);
+            if (pdocPr is not null && string.Equals(pdocPr.Col, "merged", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(pdocPr.Branch))
+            {
+                mergedBranches.Add(pdocPr.Branch);
+            }
+        }
         if (!string.IsNullOrEmpty(spawn.QaPrId))
         {
             var qa = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.QaPrId, ct);
@@ -1902,6 +1955,14 @@ public static class StoriesEndpoints
             var plan = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId, ct);
             if (plan is not null && !string.Equals(plan.Col, "merged", StringComparison.OrdinalIgnoreCase))
                 openPrIds.Add(plan.Id);
+        }
+        // Phase 53 — sequential plan-doc PRs: retarget any still-open ones.
+        foreach (var pdoc in PlanDocStateHelpers.GetPlanDocStates(spawn))
+        {
+            if (string.IsNullOrEmpty(pdoc.PrId)) continue;
+            var pdocPr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pdoc.PrId, ct);
+            if (pdocPr is not null && !string.Equals(pdocPr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                openPrIds.Add(pdocPr.Id);
         }
         if (!string.IsNullOrEmpty(spawn.QaPrId))
         {
@@ -2410,8 +2471,19 @@ public static class StoriesEndpoints
         var capturedStoryId = storyId;
         var capturedSpawnId = spawn.Id;
         var capturedRepoId = spawn.RepoId;
-        var capturedPlanBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
-        var capturedPlanPrId = spawn.PlanPrId;
+        // Phase 53 — resolve the per-doc branch + PR (sequential mode) or
+        // fall back to the legacy single-PR branch (legacy mode). The
+        // accept-artifact flow then merges THIS doc's branch into the
+        // spawn's base, not a global plan branch.
+        var capturedDocKey = key.ToLowerInvariant();
+        var capturedIsSequential = PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(capturedDocKey);
+        var capturedPlanBranch = capturedIsSequential
+            ? PlanDocStateHelpers.FindDocBranch(spawn, capturedDocKey)
+            : (spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan");
+        var capturedPlanPrId = capturedIsSequential
+            ? PlanDocStateHelpers.GetEntry(spawn, capturedDocKey).PrId
+            : spawn.PlanPrId;
         var capturedStoryTitle = spawn.StoryTitle ?? storyId;
         var capturedBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         _ = Task.Run(async () =>
@@ -2498,7 +2570,28 @@ public static class StoriesEndpoints
                     var spawnRow = await scopeDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == capturedSpawnId);
                     if (spawnRow is not null)
                     {
-                        spawnRow.PlanPrId = prId;
+                        // Phase 53 — for sequential-mode spawns, persist the
+                        // new PR id under the right doc key in the JSON
+                        // column. For legacy spawns, fall back to PlanPrId.
+                        if (capturedIsSequential)
+                        {
+                            var states = PlanDocStateHelpers.GetPlanDocStates(spawnRow).ToList();
+                            var idx = states.FindIndex(e =>
+                                string.Equals(e.Key, capturedDocKey, StringComparison.OrdinalIgnoreCase));
+                            if (idx >= 0)
+                            {
+                                states[idx] = states[idx] with { PrId = prId };
+                            }
+                            else
+                            {
+                                states.Add(new PlanDocPrEntry(capturedDocKey, capturedPlanBranch, prId));
+                            }
+                            PlanDocStateHelpers.SetPlanDocStates(spawnRow, states);
+                        }
+                        else
+                        {
+                            spawnRow.PlanPrId = prId;
+                        }
                         spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
                         await scopeDb.SaveChangesAsync();
                     }
@@ -2597,6 +2690,28 @@ public static class StoriesEndpoints
 
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // Phase 53 — reject restart of an already-merged plan-doc PR.
+        // Re-running a merged upstream doc would invalidate every
+        // downstream doc generated against it; unwinding downstream state
+        // is a v2 feature. Operator recovery path = delete-spawn +
+        // re-create.
+        if (PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key.ToLowerInvariant()))
+        {
+            var entry = PlanDocStateHelpers.GetEntry(spawn, key.ToLowerInvariant());
+            if (!string.IsNullOrEmpty(entry.PrId))
+            {
+                var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId);
+                if (pr is not null && string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Problem(
+                        title: "Plan doc PR already merged",
+                        detail: $"doc '{key}' PR {entry.PrId} is already merged; restart not supported. Delete + re-create the spawn instead.",
+                        statusCode: 409);
+                }
+            }
+        }
 
         // (1) Kill in-flight invocations first so the cleanup below isn't
         // racing with new events.
@@ -2769,7 +2884,35 @@ public static class StoriesEndpoints
         {
             case StorySpawnPhases.Decompose:
                 {
-                    // 28.3 — plan PR must be merged.
+                    // 28.3 — plan PR(s) must be merged.
+                    // Phase 53 — sequential-mode spawns require all four
+                    // plan-doc PRs to be merged. Legacy spawns require the
+                    // single PlanPrId.
+                    if (PlanDocStateHelpers.IsSequentialMode(spawn))
+                    {
+                        var states = PlanDocStateHelpers.GetPlanDocStates(spawn);
+                        foreach (var docKey in PlanDocStateHelpers.PlanDocOrder)
+                        {
+                            var entry = states.FirstOrDefault(e =>
+                                string.Equals(e.Key, docKey, StringComparison.OrdinalIgnoreCase));
+                            if (entry is null || string.IsNullOrEmpty(entry.PrId))
+                            {
+                                return Results.Problem(
+                                    title: "All plan-doc PRs must be merged before advancing",
+                                    detail: $"Plan doc '{docKey}' has no PR yet.",
+                                    statusCode: 422);
+                            }
+                            var pdocPr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId);
+                            if (pdocPr is null || !IsPrMerged(pdocPr))
+                            {
+                                return Results.Problem(
+                                    title: "All plan-doc PRs must be merged before advancing",
+                                    detail: $"Plan doc '{docKey}' PR {entry.PrId} is not yet merged.",
+                                    statusCode: 422);
+                            }
+                        }
+                        return null;
+                    }
                     if (string.IsNullOrEmpty(spawn.PlanPrId))
                     {
                         return Results.Problem(
@@ -3106,6 +3249,12 @@ public static class StoriesEndpoints
             {
                 branch = spawn.PlanBranch,
                 pr = spawn.PlanPrId,
+                // Phase 53 — per-doc PRs (null when legacy).
+                docs = PlanDocStateHelpers.IsSequentialMode(spawn)
+                    ? (object)PlanDocStateHelpers.GetPlanDocStates(spawn)
+                        .Select(e => new { key = e.Key, branch = e.Branch, prId = e.PrId })
+                        .ToArray()
+                    : null,
                 files = planArtifacts,
             },
             decompose = new
@@ -3189,8 +3338,15 @@ public static class StoriesEndpoints
             ? repo.CloneRoot
             : ForgeSeed.FindRepoRoot();
 
-        var planBranch = spawn.PlanBranch ?? $"story/{safeStoryId}/plan";
-        var worktreePath = ComputeWorktreePath(cloneRoot, planBranch);
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
+        // Phase 53 — sequential-mode docs live in `.worktree/plan-{key}`
+        // (canonical worktree slug). Legacy spawns continue to use the
+        // hash-derived `spawn-{branch-slug}` layout via ComputeWorktreePath.
+        var isSequential = PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key);
+        var worktreePath = isSequential
+            ? Path.Combine(cloneRoot, ".worktree", PlanDocStateHelpers.CanonicalDocWorktreeSlug(key))
+            : ComputeWorktreePath(cloneRoot, planBranch);
         var worktreeFilePath = Path.Combine(worktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
 
         // (1) Worktree — live agent state. Highest priority.
@@ -3228,9 +3384,9 @@ public static class StoriesEndpoints
 
         // (3) Plan branch — pushed but not merged. `git show` against the
         // local clone reads the branch tip without mutating the working tree.
-        if (!string.IsNullOrEmpty(spawn.PlanBranch))
+        if (!string.IsNullOrEmpty(planBranch))
         {
-            var fromBranch = await TryGitShowAsync(cloneRoot, spawn.PlanBranch!, relPath);
+            var fromBranch = await TryGitShowAsync(cloneRoot, planBranch, relPath);
             if (fromBranch is not null)
             {
                 return Results.Ok(new
@@ -3240,7 +3396,7 @@ public static class StoriesEndpoints
                     content = fromBranch,
                     lastModifiedAt = (string?)null,
                     exists = true,
-                    source = $"branch:{spawn.PlanBranch}",
+                    source = $"branch:{planBranch}",
                 });
             }
         }
@@ -3460,7 +3616,23 @@ public static class StoriesEndpoints
         //   7. iterating         — default for between iterations.
         string status;
         bool planPrMerged = false;
-        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        // Phase 53 — when the spawn is in sequential mode, the relevant
+        // "plan PR merged" gate for THIS doc is the doc's own PR, not the
+        // legacy spawn.PlanPrId column. The `key` route param maps 1:1 to
+        // the doc key.
+        var docKeyForStatus = key.ToLowerInvariant();
+        if (PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(docKeyForStatus))
+        {
+            var docEntry = PlanDocStateHelpers.GetEntry(spawn, docKeyForStatus);
+            if (!string.IsNullOrEmpty(docEntry.PrId))
+            {
+                var docPr = await db.Prs.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == docEntry.PrId);
+                planPrMerged = string.Equals(docPr?.Col, "merged", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        else if (!string.IsNullOrEmpty(spawn.PlanPrId))
         {
             var planPr = await db.Prs.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId);
@@ -3732,6 +3904,14 @@ public static class StoriesEndpoints
         autoMerge = row.AutoMerge,
         planBranch = row.PlanBranch,
         planPrId = row.PlanPrId,
+        // Phase 53 — sequential plan-doc PRs. Null on legacy spawns;
+        // non-null array on new spawns. UI prefers this list over the
+        // single planPrId/planBranch when populated.
+        planDocPrs = PlanDocStateHelpers.IsSequentialMode(row)
+            ? (object)PlanDocStateHelpers.GetPlanDocStates(row)
+                .Select(e => new { key = e.Key, branch = e.Branch, prId = e.PrId })
+                .ToArray()
+            : null,
         decompositionJson = row.DecompositionJson,
         decompositionApproved = row.DecompositionApproved,
         qaBranch = row.QaBranch,

@@ -5585,3 +5585,178 @@ Anything else that surfaces during Phases 0–7 goes into a `Refactor backlog` s
 
 ---
 
+## Phase 53 — Sequential plan-doc tasks (one worktree + one PR per doc)
+
+Phase 53 replaces the legacy "all four plan docs in one PR" flow with a strict
+sequential pipeline: each of the four plan docs gets its own branch, its own
+worktree, and its own PR. Doc *N+1* never starts until doc *N*'s PR is merged.
+
+### Resolved decisions
+
+| Question | Resolution |
+|----------|-----------|
+| Completion gate between docs | **PR merged** (architecture PR must merge before tech-spec begins). Latest deliverable verdict=pass is also required — an externally-merged PR with a stalled verdict holds the chain. |
+| Base chain | Each per-doc branch is created from `spawn.BaseBranch` and the orchestrator runs `MergeUpstreamIntoBranchAsync` before opening the PR, so prior merged docs are pulled in via the base. |
+| Branch naming | `story/{storyId}/plan-architecture`, `story/{storyId}/plan-tech-spec`, `story/{storyId}/plan-implementation-plan`, `story/{storyId}/plan-e2e-scenarios`. |
+| Worktree slug | `plan-architecture`, `plan-tech-spec`, `plan-implementation-plan`, `plan-e2e-scenarios` under `.worktree/`. |
+| Failure behaviour | Hold the chain and surface `LastError`. The orchestrator does **not** skip past a stalled doc; the operator clicks **Restart** on the held doc and the chain resumes. |
+| Existing spawns | Untouched. Spawns created before Phase 53 (with non-null `PlanPrId` + null `PlanDocPrsJson`) continue on `DrivePlanLegacyAsync`. The new shape applies to fresh spawns only. |
+| Restart of a merged upstream doc | **Rejected with 409.** Re-running merged upstream would invalidate every downstream doc generated against it; unwinding state is a `forge_v2.md` candidate. Operator recovery = delete-spawn + re-create. |
+
+### Canonical doc order
+
+```
+architecture → tech-spec → implementation-plan → e2e-scenarios
+```
+
+`PlanDocStateHelpers.PlanDocOrder` is the single source of truth. The `PlanDocFileNames` list in `StorySpawnOrchestrator` has been reordered to match; persistence keys (`plan-doc:{spawnId}:{fileName}`) are by-name, so the reorder is safe.
+
+### Schema delta — `Phase53Migration`
+
+Adds one column to `StorySpawnRow`:
+
+```csharp
+/// <summary>
+/// Phase 53 — sequential plan-doc state. JSON array, ordered by
+/// PlanDocOrder. Each entry: { "key": "...", "branch": "...", "prId": "..." | null }.
+/// Null on legacy spawns (which keep using PlanBranch/PlanPrId).
+/// "[]" on new spawns at create time.
+/// </summary>
+public string? PlanDocPrsJson { get; set; }
+```
+
+- The migration class is named `Phase53Migration` because Phase 51 + Phase 52
+  migration names are already taken (budget cooldown + sloppy-iteration guard).
+  The class name diverges from the spec phase number by design.
+- `PlanBranch` + `PlanPrId` are retained for back-compat with legacy spawns.
+- `StoriesEndpoints.CreateSpawnAsync` no longer sets `PlanBranch` on new
+  spawns and initialises `PlanDocPrsJson = "[]"`. Pre-existing rows remain
+  `PlanDocPrsJson = null` + `PlanBranch = "story/.../plan"` → legacy path.
+
+### Discriminator
+
+The choice between legacy and sequential paths is by `PlanDocPrsJson` column
+presence — not by any phase or migration flag. No row ever transitions
+between paths mid-life:
+
+| `PlanDocPrsJson` | Path |
+|------------------|------|
+| `null` | `DrivePlanLegacyAsync` (existing single-PR flow) |
+| non-null (including `"[]"`) | `DrivePlanSequentialAsync` (Phase 53) |
+
+### Orchestrator state machine (`DrivePlanSequentialAsync`)
+
+Per tick:
+
+```text
+docs = PlanDocOrder
+states = GetPlanDocStates(spawn)
+for each doc in order:
+    state = states.find(doc) or null
+
+    if state == null:
+        if N > 0:
+            prev = states.find(docs[N-1])
+            if prev == null or not prMerged(prev.prId): return false
+            if not verdictIsPass(prev.docKey):           return false
+        # Persist BEFORE running so a crash mid-iter has a recovery anchor.
+        branch = $"story/{storyId}/plan-{doc}"
+        states.append({ key: doc, branch, prId: null })
+        SetPlanDocStates(spawn, states); save()
+
+    if state.prId == null:
+        ensureBranchFresh(branch, base=spawn.BaseBranch)
+        worktree = ensureWorktree(branch, slug=$"plan-{doc}")
+        content = strategy.ProduceSinglePlanArtifactAsync(...)
+        commit(branch, {docPath: content})
+        mergeUpstreamIntoBranch(branch, base=spawn.BaseBranch)
+        # Idempotent PR-open: recover from a crash between OpenPrAsync
+        # and SaveChangesAsync.
+        existing = db.Prs.firstOrDefault(p => p.Branch == branch
+                                          && p.Col != "merged"
+                                          && p.Col != "closed")
+        prId = existing?.Id ?? OpenPrAsync(branch, base, $"[plan-{doc}] {story.Title}")
+        state.prId = prId; save()
+        return true  # one drive per tick
+
+    pr = db.Prs.find(state.prId)
+    if pr.Col != "merged":
+        try approveAndMerge(state.prId, branch, reviewer, repo, base)
+        catch: persistLastError(); return false
+        return true  # one drive per tick
+
+    removeWorktree(branch)
+    continue
+
+# All four merged. Verify the all-passed gate (catches operator-edited
+# deliverables) and advance phase.
+gate = ArePlanDocsAllPassedAsync(db, spawn, ct)
+if not gate.AllPassed:
+    persistLastError()
+    return false
+
+spawn.Phase = Decompose
+return true
+```
+
+### Key invariants
+
+- **Crash-recovery anchor.** The `states.append` save happens BEFORE any git
+  work — a crash after persisting `{branch, prId: null}` resumes idempotently
+  on the next tick.
+- **Idempotent PR open.** Before calling `OpenPrAsync` we query for an
+  existing open PR on the same branch. Recovers from a crash between
+  `OpenPrAsync` and `SaveChangesAsync`.
+- **Per-doc gate is verdict + merge.** A doc only counts as "completed" when
+  the latest deliverable verdict=pass AND the PR is merged. An externally
+  merged PR with a stalled verdict holds the chain.
+- **`forceResume` applies only to the active doc.** Already-merged upstream
+  docs are not re-generated.
+- **No "skip stalled doc" path.** Failures are held + surfaced as `LastError`.
+
+### Call-site updates
+
+| Site | File | Change |
+|------|------|--------|
+| Spawn-create | `StoriesEndpoints.CreateSpawnAsync` | `PlanDocPrsJson="[]"`, `PlanBranch=null` for new spawns. |
+| Spawn-delete | `StoriesEndpoints.DeleteSpawnAsync` | Collects every `PlanDocPrsJson[].PrId` + `Branch` alongside legacy `PlanPrId` / `PlanBranch`. |
+| PR-merge reactor | `PlanPrMergeReactor` | Uses `PlanDocStateHelpers.FindByPrIdAsync(...)` (handles both legacy and per-doc PR ids). Cancels only the matching doc's work item in sequential mode. |
+| AcceptArtifact | `StoriesEndpoints` | Resolves per-doc captured branch + PR + persists into the JSON column. |
+| RestartArtifact | `StoriesEndpoints` | Rejects with 409 when the doc's PR is already merged. |
+| CheckGateAsync (decompose) | `StoriesEndpoints` | Sequential mode requires all four PRs merged. |
+| Artifact content endpoint | `StoriesEndpoints` | Uses `FindDocBranch` + per-doc worktree path. |
+| Worktree diff endpoint | `TaskExecutionEndpoints` | Parses doc key from `plan-doc:{spawnId}:{file}` and routes through `FindDocBranch` + `CanonicalDocWorktreeSlug`. |
+| Per-task status | `StoriesEndpoints` | Per-doc `planPrMerged`. |
+| Rebase base-branch | `StoriesEndpoints` | Per-doc PR collection. |
+| `PlanReconciler` | `PlanReconciler.cs:95` | Uses `FindDocBranch("implementation-plan")` so reconciliation reads the right branch for both legacy and new spawns. |
+| `StorySpawnDto` | DTO | Adds `planDocPrs: PlanDocPrEntry[]`. Legacy `planPrId` / `planBranch` remain for back-compat. |
+| Plan-status endpoint | `StoriesEndpoints` | Adds a `docs` payload listing the per-doc PRs. |
+
+### Strategy
+
+`IStoryArtifactStrategy.ProduceSinglePlanArtifactAsync(spawn, story, docKey, worktreePath, planBranch, repo, forceResume, ct)` returns the file content for one doc. The orchestrator owns commit + PR-open. `ProducePlanArtifactsAsync` is retained on the interface for the legacy path + back-compat tests.
+
+### Restart / Resume
+
+- `ResumeSingleArtifactAsync(key, restartFromScratch=false)` on a doc whose
+  PR is **open**: re-runs gen↔eval on the doc's branch; commits push to the
+  existing PR.
+- `ResumeSingleArtifactAsync(key, restartFromScratch=true)` on a doc whose PR
+  is **open**: delete the on-disk doc + purge per-doc deliverables /
+  transcripts / queue rows, then re-run on the doc's branch. The existing PR
+  is preserved.
+- **On a doc whose PR is already merged**: rejected with `409 "doc {key} PR
+  already merged; restart not supported in v1"`. Operator recovery =
+  delete-spawn + re-create.
+
+### Out of scope (Phase 53)
+
+- Cross-doc parallelism within the sequence (always strict serial).
+- Per-doc reviewer crew (the same evaluator crew is picked for each doc by
+  `LoadArchitectAndEvaluatorRostersAsync`).
+- Re-running a merged upstream doc with downstream invalidation.
+- Per-doc `AutoMerge` opt-out (the spawn-level setting propagates to every
+  doc PR identically).
+
+---
+

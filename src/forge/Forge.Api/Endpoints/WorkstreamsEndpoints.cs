@@ -383,6 +383,19 @@ public static class WorkstreamsEndpoints
         db.AgentAssignments.RemoveRange(agentAssignments);
         counts["agentAssignments"] = agentAssignments.Count;
 
+        // Phase 50 follow-up (2026-05-12) — cost ledger rows. TaskId on
+        // agent_usage equals the work-item id (DeliverableLoop emits
+        // each gen/eval invocation with TaskId = workItemId). Without
+        // this purge, deleting a workstream and re-decomposing into
+        // another workstream with the same phase/stage slug (very
+        // common — operator iterates on a plan) inherits the old
+        // cost ledger and the doc / workstream cards show stale dollar
+        // totals (operator-reported: re-spawned story showed
+        // ~$1300-$2000 per plan-doc card before any LLM had run).
+        var agentUsage = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync(ct);
+        db.AgentUsage.RemoveRange(agentUsage);
+        counts["agentUsage"] = agentUsage.Count;
+
         var wsEvents = await db.WsEvents.Where(e => e.Ws == id).ToListAsync(ct);
         db.WsEvents.RemoveRange(wsEvents);
         counts["wsEvents"] = wsEvents.Count;

@@ -2367,6 +2367,22 @@ public class StorySpawnRow
     /// <summary>PR id for the QA feature files; null until the QA PR is opened.</summary>
     public string? QaPrId { get; set; }
 
+    /// <summary>
+    /// Phase 53 — sequential plan-doc state. Ordered JSON array; each entry
+    /// captures one plan doc's branch and PR:
+    /// <c>[{ "key": "architecture", "branch": "story/{id}/plan-architecture", "prId": "..." | null }, ...]</c>.
+    /// Order is canonical: <c>architecture → tech-spec → implementation-plan
+    /// → e2e-scenarios</c>. Doc N+1's gen↔eval loop only starts after
+    /// doc N's <c>prId</c> references a PR with <c>Col='merged'</c> AND
+    /// the latest doc deliverable carries <c>Verdict='pass'</c>.
+    ///
+    /// <para><c>null</c> on legacy spawns (created before Phase 53); they
+    /// continue to drive the single-PR <see cref="PlanPrId"/> path. New
+    /// spawns initialise to <c>"[]"</c> at create time so the
+    /// orchestrator's discriminator is unambiguous.</para>
+    /// </summary>
+    public string? PlanDocPrsJson { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

@@ -1036,21 +1036,59 @@ public static class TaskExecutionEndpoints
         string? worktreePath;
         if (id.StartsWith("plan-doc:", StringComparison.Ordinal))
         {
-            // Extract `spawn-{storyId}` from `plan-doc:{spawnId}:{file}`.
-            var spawnId = id.Substring("plan-doc:".Length);
-            var lastColon = spawnId.LastIndexOf(':');
-            if (lastColon > 0) spawnId = spawnId.Substring(0, lastColon);
+            // Extract `spawn-{storyId}` and the file name from
+            // `plan-doc:{spawnId}:{file}`.
+            var afterPrefix = id.Substring("plan-doc:".Length);
+            var lastColon = afterPrefix.LastIndexOf(':');
+            string spawnId;
+            string? planDocKey = null;
+            if (lastColon > 0)
+            {
+                spawnId = afterPrefix.Substring(0, lastColon);
+                var fileName = afterPrefix.Substring(lastColon + 1);
+                // Strip ".md" to derive the canonical doc key.
+                if (fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    planDocKey = fileName.Substring(0, fileName.Length - 3).ToLowerInvariant();
+                }
+            }
+            else
+            {
+                spawnId = afterPrefix;
+            }
             // Look up the spawn so we use its real PlanBranch (preserves
             // any custom branch name the orchestrator picked at spawn time).
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
-            branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
-            // Plan-doc paths still use the legacy `spawn-{slug}` shape
-            // (Phase 49 only renamed engineer workstream paths; plan-doc
-            // names were already short).
-            var sanitizedBranch = SanitizeBranchSlug(branch);
-            worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
-                : null;
+            // Phase 53 — sequential-mode spawns put each doc on its own
+            // branch and worktree. FindDocBranch resolves both legacy
+            // (PlanBranch) and sequential (per-doc) cases.
+            if (spawn is not null && planDocKey is not null
+                && Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.ContainsKey(planDocKey))
+            {
+                branch = Forge.Api.Services.Stories.PlanDocStateHelpers.FindDocBranch(spawn, planDocKey);
+                if (Forge.Api.Services.Stories.PlanDocStateHelpers.IsSequentialMode(spawn))
+                {
+                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                        ? Path.Combine(cloneRoot, ".worktree",
+                            Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey))
+                        : null;
+                }
+                else
+                {
+                    var sanitizedBranch = SanitizeBranchSlug(branch);
+                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                        ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                        : null;
+                }
+            }
+            else
+            {
+                branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
+                var sanitizedBranch = SanitizeBranchSlug(branch);
+                worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                    ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                    : null;
+            }
         }
         else
         {

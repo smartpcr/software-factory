@@ -493,6 +493,12 @@ using (var scope = app.Services.CreateScope())
     // SloppyReassignmentReconciler boots its first tick (the reconciler
     // queries the new columns).
     await Phase52Migration.ApplyAsync(db);
+    // Phase 53 — sequential plan-doc tasks. Adds PlanDocPrsJson on
+    // story_spawns so each plan doc (architecture / tech-spec /
+    // implementation-plan / e2e-scenarios) carries its own branch + PR
+    // state and runs in strict sequence. Legacy spawns keep PlanPrId/
+    // PlanBranch and use the original single-PR path.
+    await Phase53Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
