@@ -6,9 +6,13 @@
 
 namespace Ast.Memory.Interfaces;
 
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Ast.Core;
 using Ast.GraphDb;
 using Ast.Memory.Models;
+using MemoryNodeFilter = Ast.Memory.Models.NodeFilter;
 
 /// <summary>
 /// Memory-layer facade over the graph store (architecture.md §5.1).
@@ -20,6 +24,8 @@ using Ast.Memory.Models;
 /// </summary>
 public interface IMemoryGraphStore : IGraphStore
 {
+    // Layer-filtered queries with temporal support
+
     /// <summary>
     /// Gets nodes filtered by memory layer with optional temporal and criteria filtering.
     /// </summary>
@@ -90,14 +96,14 @@ public interface IMemoryGraphStore : IGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Archives an expertise entry (soft-delete).
+    /// Archives an expertise entry.
     /// </summary>
     Task ArchiveExpertiseAsync(
         string expertiseId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gets archived expertise entries, optionally filtered by target node.
+    /// Returns archived expertise entries.
     /// </summary>
     Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
         string? targetNodeId,
@@ -117,5 +123,5 @@ public interface IMemoryGraphStore : IGraphStore
         string sessionId,
         string operation,
         object detail,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken);
 }

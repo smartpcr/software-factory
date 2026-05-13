@@ -6,6 +6,8 @@
 
 namespace Ast.Memory.Models;
 
+using System.Collections.Generic;
+
 /// <summary>
 /// Per-layer node and edge counts for the memory graph.
 /// </summary>
