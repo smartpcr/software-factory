@@ -8,7 +8,6 @@
     <RootNamespace>Ast.Memory.UnitTests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

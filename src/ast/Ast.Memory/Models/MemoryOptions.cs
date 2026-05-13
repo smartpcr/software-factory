@@ -22,23 +22,10 @@ public sealed class MemoryOptions
 
     /// <summary>Expertise nodes below this are soft-deleted.</summary>
     public double ArchiveConfidenceFloor { get; set; } = 0.1;
-
-    /// <summary>Time-based decay half-life in days (3 years).</summary>
-    public int DecayHalfLifeDays { get; set; } = 1095;
-
-    /// <summary>Per-query default token budget (Budget Controller).</summary>
-    public int TokenBudgetDefault { get; set; } = 8_000;
-
-    /// <summary>Maximum allowed token budget (Budget Controller).</summary>
-    public int TokenBudgetCeiling { get; set; } = 32_000;
-
-    /// <summary>Debounce for file-system watcher in milliseconds.</summary>
-    public int IncrementalSyncDebounceMs { get; set; } = 1_000;
-
-    /// <summary>
-    /// Multiplied by normalized PageRank and added to 1.0 to form centrality_boost
-    /// (range 1.0–1.5). See architecture.md §3.5.1.
-    /// </summary>
+    public double DecayHalfLifeDays { get; set; } = 1095;
+    public int TokenBudgetDefault { get; set; } = 8000;
+    public int TokenBudgetCeiling { get; set; } = 32000;
+    public int IncrementalSyncDebounceMs { get; set; } = 1000;
     public double CentralityBoostFactor { get; set; } = 0.5;
 
     /// <summary>Storage backend selection.</summary>
