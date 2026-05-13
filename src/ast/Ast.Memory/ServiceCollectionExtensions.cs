@@ -116,15 +116,4 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
-
-    /// <summary>
-    /// Registers IncrementalSync with custom <see cref="MemoryOptions"/>.
-    /// </summary>
-    public static IServiceCollection AddIncrementalSync(
-        this IServiceCollection services,
-        Action<MemoryOptions> configureOptions)
-    {
-        services.Configure(configureOptions);
-        return services.AddIncrementalSync();
-    }
 }
