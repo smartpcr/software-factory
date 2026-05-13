@@ -1262,6 +1262,17 @@ public sealed class StorySpawnOrchestrator
             // events and returns SkipInFlight (budget+slack window) or
             // SkipBackoff (consecutive-failures window) when appropriate.
             // See ImplSpawnGuard for the full state machine.
+            //
+            // 2026-05-12 (Phase 52 follow-up) — the guard now ALSO detects
+            // "successful no-op" loops where the orchestrator keeps
+            // re-spawning successfully but no new deliverable rows appear.
+            // Observed on XRAFT stage 3.1: 3,180 spawn events over 7+ hours
+            // with iter stuck at 3/50 because the previous fix path
+            // (success=true always allowed) had no signal that work wasn't
+            // progressing. On hitting NoProgressReassignThreshold the guard
+            // sets ShouldTriggerReassign=true; we park the work item at
+            // pending-reassign so Phase 52's SloppyReassignmentReconciler
+            // rotates to a fresh pair on the next tick.
             var wsPointsForGuard = await LookupWorkstreamPointsAsync(db, w.Id, spawn.StoryPoints, ct);
             var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct);
             if (guardDecision.Outcome != ImplSpawnGuard.Decision.Allow)
@@ -1269,6 +1280,34 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogDebug(
                     "Workstream {WsId} skipped this tick: {Outcome} — {Reason}",
                     w.Id, guardDecision.Outcome, guardDecision.Reason);
+
+                // Phase 52 follow-up — Level 3 escalation. After
+                // NoProgressReassignThreshold consecutive successful spawns
+                // produced no deliverable, route the workstream's work item
+                // through Phase 52 reassignment so a fresh pair takes over
+                // with a clean slate. Idempotent: if the work item is
+                // already pending-reassign or terminally failed we no-op.
+                if (guardDecision.ShouldTriggerReassign)
+                {
+                    await this.TryRouteToSloppyReassignAsync(db, w, guardDecision.ConsecutiveNoProgress, ct);
+                }
+                else if (guardDecision.Outcome == ImplSpawnGuard.Decision.SkipNoProgressBackoff
+                    && guardDecision.ConsecutiveNoProgress == SyncConstants.NoProgressBackoffThreshold)
+                {
+                    // First tick on which the backoff kicks in — emit a
+                    // single visibility event so the operator can see the
+                    // stuck state in the conversation tab without scrolling
+                    // through hundreds of raw spawn-started/finished pairs.
+                    await this.EmitSpawnEventAsync(w.Id, ImplSpawnGuard.SpawnNoProgressKind, new
+                    {
+                        wsId = w.Id,
+                        spawnId = spawn.Id,
+                        consecutiveNoProgress = guardDecision.ConsecutiveNoProgress,
+                        backoffThreshold = SyncConstants.NoProgressBackoffThreshold,
+                        reassignThreshold = SyncConstants.NoProgressReassignThreshold,
+                        reason = guardDecision.Reason,
+                    }, ct);
+                }
                 continue;
             }
 
@@ -1554,6 +1593,100 @@ public sealed class StorySpawnOrchestrator
                 "Failed to emit {Kind} for {WsId}; in-flight guard may double-spawn next tick.",
                 kind, wsId);
         }
+    }
+
+    /// <summary>
+    /// Phase 52 follow-up — route a workstream that's been stuck in a
+    /// successful no-op respawn loop through the
+    /// <c>SloppyReassignmentReconciler</c>. Idempotent: a workstream
+    /// already in <c>pending-reassign</c>, <c>failed</c>, or terminal-
+    /// failed state is left alone.
+    ///
+    /// <para>Steps:</para>
+    /// <list type="number">
+    ///   <item>Load the work item row (workstream id == work item id for
+    ///   spawn-flow stage rows; the column is the canonical link).</item>
+    ///   <item>If already <c>pending-reassign</c> / <c>failed</c> / no
+    ///   row → no-op.</item>
+    ///   <item>Append the workstream's current pair (from
+    ///   <c>AgentsJson</c>) to <c>PriorPairsJson</c> so the resolver
+    ///   excludes them on the next claim.</item>
+    ///   <item>Set <c>ExecutionStatus=pending-reassign</c> and emit a
+    ///   <c>task.sloppy-parked</c> event so the conversation tab shows
+    ///   the routing.</item>
+    /// </list>
+    /// </summary>
+    private async Task TryRouteToSloppyReassignAsync(
+        Forge.Api.Persistence.ForgeDbContext db,
+        Forge.Api.Persistence.WorkstreamRow w,
+        int consecutiveNoProgress,
+        CancellationToken ct)
+    {
+        var wiRow = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+        if (wiRow is null) return;
+
+        // Idempotent guard — don't double-park or override a terminal state.
+        if (wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.PendingReassign
+            || wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.Failed)
+        {
+            return;
+        }
+
+        // Append the workstream's currently-assigned pair to PriorPairsJson.
+        // AgentsJson is a JSON array of agent ids; we use the first two as
+        // (generator, evaluator) per Phase 47's pair-assignment convention.
+        string[]? currentPair = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrEmpty(w.AgentsJson) ? "[]" : w.AgentsJson);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                var arr = doc.RootElement.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.String)
+                    .Select(e => e.GetString() ?? string.Empty)
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Take(2)
+                    .ToArray();
+                if (arr.Length == 2) currentPair = arr;
+            }
+        }
+        catch (JsonException) { /* malformed — skip pair capture */ }
+
+        if (currentPair is not null)
+        {
+            var priorPairs = new List<string[]>();
+            if (!string.IsNullOrWhiteSpace(wiRow.PriorPairsJson))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<string[]>>(wiRow.PriorPairsJson);
+                    if (parsed is not null) priorPairs = parsed;
+                }
+                catch (JsonException) { /* malformed — start fresh */ }
+            }
+            var alreadyLast = priorPairs.Count > 0
+                && priorPairs[priorPairs.Count - 1].Length == 2
+                && string.Equals(priorPairs[priorPairs.Count - 1][0], currentPair[0], StringComparison.Ordinal)
+                && string.Equals(priorPairs[priorPairs.Count - 1][1], currentPair[1], StringComparison.Ordinal);
+            if (!alreadyLast) priorPairs.Add(currentPair);
+            wiRow.PriorPairsJson = JsonSerializer.Serialize(priorPairs);
+        }
+
+        wiRow.ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.PendingReassign;
+        wiRow.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        this.logger?.LogWarning(
+            "Workstream {WsId} routed to Phase 52 reassignment after {N} consecutive no-progress successful spawns",
+            w.Id, consecutiveNoProgress);
+
+        await this.EmitSpawnEventAsync(w.Id, "task.sloppy-parked", new
+        {
+            wsId = w.Id,
+            consecutiveNoProgress,
+            reason = $"orchestrator re-spawn loop without new deliverables; routing to SloppyReassignmentReconciler ({consecutiveNoProgress} consecutive no-progress successes)",
+            priorPair = currentPair,
+        }, ct);
     }
 
     private static string TrimStack(string? stack, int maxChars)
