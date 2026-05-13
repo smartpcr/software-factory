@@ -13,7 +13,7 @@ namespace Ast.Memory.Models;
 /// Per architecture.md §4.3.
 /// </summary>
 public record VersionRange(
-    string SinceCommit,
+    string Since,
     int SinceIndex,
     string? UntilCommit = null,
     int? UntilIndex = null

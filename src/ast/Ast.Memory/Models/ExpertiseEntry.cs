@@ -8,6 +8,8 @@ namespace Ast.Memory.Models;
 
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
 /// Agent-authored knowledge nodes. These are not HypergraphNode instances — they
@@ -15,7 +17,7 @@ using System.Collections.Generic;
 /// Embedding, SourceAgent) are core data, not incidental metadata.
 /// Per architecture.md §4.2.
 /// </summary>
-public sealed class ExpertiseEntry
+public class ExpertiseEntry
 {
     /// <summary>Format: "expertise:{kind}:{hash8}".</summary>
     public required string Id { get; init; }
