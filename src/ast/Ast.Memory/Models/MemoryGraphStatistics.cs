@@ -10,29 +10,17 @@ namespace Ast.Memory.Models;
 /// Aggregate statistics for the memory graph.
 /// All counts reflect active (non-retired) entities unless noted otherwise.
 /// </summary>
-public class MemoryGraphStatistics
+public sealed class MemoryGraphStatistics
 {
-    /// <summary>Per-layer breakdown of active node and edge counts.</summary>
-    public IReadOnlyDictionary<string, LayerStatistics> LayerStats { get; init; } =
-        new Dictionary<string, LayerStatistics>();
-
-    /// <summary>Total active nodes across all layers.</summary>
+    public int StructuralNodes { get; init; }
+    public int CallChainNodes { get; init; }
+    public int SemanticNodes { get; init; }
+    public int ExpertiseEntries { get; init; }
+    public int StructuralEdges { get; init; }
+    public int CallChainEdges { get; init; }
+    public int SemanticEdges { get; init; }
+    public int ExpertiseEdges { get; init; }
+    public int ArchivedExpertise { get; init; }
     public int TotalNodes { get; init; }
-
-    /// <summary>Total active edges across all layers.</summary>
     public int TotalEdges { get; init; }
-
-    /// <summary>Total non-archived expertise entries.</summary>
-    public int TotalExpertiseEntries { get; init; }
-
-    /// <summary>Total archived expertise entries.</summary>
-    public int ArchivedExpertiseEntries { get; init; }
-
-    /// <summary>Timestamp of the most recent write operation, if available.</summary>
-    public DateTimeOffset? LastUpdated { get; init; }
 }
-
-/// <summary>
-/// Node and edge counts for a single memory layer.
-/// </summary>
-public record LayerStatistics(int NodeCount, int EdgeCount);
