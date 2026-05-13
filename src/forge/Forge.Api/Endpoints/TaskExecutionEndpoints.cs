@@ -377,6 +377,31 @@ public static class TaskExecutionEndpoints
         long evalIn  = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.InputTokens);
         long evalOut = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.OutputTokens);
 
+        // Phase 54 — per-iteration prompt-size samples. Pair generator+
+        // evaluator usage rows by their ordinal position within each
+        // CostCategory (ordered by StartedAt) — the loop writes them in
+        // strict gen→eval sequence per iteration, so positions align with
+        // iterations 1..N. Missing-side rows (e.g. eval skipped on first
+        // run) get a zero-token placeholder so the UI sparkline still has
+        // a stable x-axis.
+        var genUsage  = usage.Where(u => u.CostCategory == "generator").OrderBy(u => u.StartedAt).ThenBy(u => u.Id).ToList();
+        var evalUsage = usage.Where(u => u.CostCategory == "evaluator").OrderBy(u => u.StartedAt).ThenBy(u => u.Id).ToList();
+        var iterCount = Math.Max(genUsage.Count, evalUsage.Count);
+        var promptGrowth = new List<IterationPromptGrowth>(iterCount);
+        for (int i = 0; i < iterCount; i++)
+        {
+            var g = i < genUsage.Count ? genUsage[i] : null;
+            var e = i < evalUsage.Count ? evalUsage[i] : null;
+            promptGrowth.Add(new IterationPromptGrowth(
+                Iter: i + 1,
+                GeneratorInputTokens: g?.InputTokens ?? 0,
+                GeneratorOutputTokens: g?.OutputTokens ?? 0,
+                EvaluatorInputTokens: e?.InputTokens ?? 0,
+                EvaluatorOutputTokens: e?.OutputTokens ?? 0,
+                GeneratorTurnSamplesJson: g?.TurnSamplesJson,
+                EvaluatorTurnSamplesJson: e?.TurnSamplesJson));
+        }
+
         // Phase 52 — windowed generator tokens for the sloppy-cap meter the
         // UI displays. Uses the SAME (agentId + BudgetWindowStartUtc) filter
         // as SloppyDetector.CheckTokenCapAsync so the displayed
@@ -636,7 +661,9 @@ public static class TaskExecutionEndpoints
             PairAttemptCount: wi?.PairAttemptCount ?? 1,
             MaxPairAttempts: ScoringConstants.MaxPairAttempts,
             GeneratorTokensSinceWindow: generatorTokensSinceWindow,
-            GeneratorTokenCap: ScoringConstants.SloppyGeneratorTokenCap);
+            GeneratorTokenCap: ScoringConstants.SloppyGeneratorTokenCap,
+            PromptGrowth: promptGrowth,
+            PromptBloatGrowthThreshold: ScoringConstants.PromptBloatGrowthThreshold);
 
         return Results.Ok(snap);
     }

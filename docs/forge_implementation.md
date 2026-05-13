@@ -5770,3 +5770,122 @@ return true
 
 ---
 
+## Phase 54 — Per-iteration prompt-size growth metric
+
+### Problem
+
+`DeliverableLoop` reports cumulative cost + tokens per role across all
+iterations, but the operator has no signal for **how much the input prompt
+grows iteration-over-iteration**. Each iteration adds the prior chain
+(`(iter, score, verdict, notes)`) to the next generator turn — that chain
+accretes monotonically. By iter 5–8 the generator can be paying for tens
+of thousands of input tokens of feedback the model has already seen and
+the prompt-cache should be absorbing. The existing SloppyDetector 500K
+cap (`Forge:Agents:SloppyGeneratorTokenCap`) is the only guardrail and it
+fires after the bloat has already happened.
+
+### Behaviour
+
+Per iteration, after generator + evaluator both finish:
+
+1. The loop reads the running `priorGenInputTokens` /
+   `priorEvalInputTokens` (initialised to 0 for iter 1).
+2. Computes `deltaInputTokens = thisIter.InputTokens - priorIter.InputTokens`
+   (and same for output) for each role.
+3. Emits `task.iteration.prompt-growth` carrying the absolute totals plus
+   the deltas plus the optional `TurnSamplesJson` (per-AssistantUsageEvent
+   sub-invocation breakdown from the SDK).
+4. If `iter >= 2` AND `deltaInputTokens > ScoringConstants.PromptBloatGrowthThreshold`
+   (default 30 000), also emits `task.prompt-bloat` with the role, delta,
+   and threshold. **Iter 1 never fires bloat** — the first absolute size
+   can legitimately be large (decision pins + brief + prior PR diff
+   context); bloat is iter-over-iter growth, not absolute size.
+5. Updates the prior-token tracking to this iter's value.
+
+The new event kinds are persisted to `task_transcript_event` (Phase 16.7
+infrastructure) and broadcast to the SignalR group `task.{workItemId}`.
+
+### Storage
+
+`agent_usage.TurnSamplesJson` is a new nullable column added by
+`Phase54Migration`. The column carries an opaque JSON array of
+per-AssistantUsageEvent samples emitted by the dispatcher:
+
+```json
+[ { "turnIndex": 1, "inputTokens": 12345, "outputTokens": 678, "atUtc": "..." } ]
+```
+
+Under the user's `turn_definition = full-invocation` choice the array has
+exactly one entry per row (one row per generator/evaluator invocation,
+one invocation per iteration). The shape is forward-compatible with a
+future sub-invocation granularity bump that would emit multiple entries
+without a schema change. CLI runners that only produce a single
+cumulative tally write `null`.
+
+### Threshold
+
+`ScoringConstants.PromptBloatGrowthThreshold = 30_000L` — fires the
+amber warning when an iteration adds more than 30K input tokens vs the
+previous iteration. Tuned to the typical Phase 14 chain growth: a normal
+iter pulls in 500–2K notes-for-next characters (≈ 5–10K tokens); 30K is
+a clear sign the prior-chain has spiralled (e.g. the generator started
+quoting back the entire feedback log).
+
+### Surfaces
+
+**Live Execution Tokens tab (`LiveExecutionView.PromptGrowthPanel`)** —
+two inline SVG sparklines (gen + eval) plotting `inputTokens` vs `iter`,
+with numeric readout `latest +Δ` coloured amber when `|Δ| ≥ threshold`
+OR when the iteration carries a `task.prompt-bloat` flag.
+
+**Workstream card (`WorkstreamCard.ws-card-prompt-pill`)** — when the
+card is visible AND the workstream has a live work item, a compact
+`📈 {P}K · iter {N}` pill renders next to the live badge. The pill is
+amber when the latest iter fired a bloat warning. `WorkstreamsView`
+gates the per-card live subscription on an `IntersectionObserver`
+threshold of `0.05`, so off-screen cards do NOT join the SignalR group.
+
+**Snapshot endpoint** —
+`GET /api/work-items/{id}/execution` returns a new
+`PromptGrowth: IterationPromptGrowth[]` array on `TaskExecutionSnapshot`,
+backfilled from `agent_usage` rows grouped by `CostCategory` and ordered
+by `(StartedAt, Id)`. Empty array when the work item has no usage rows.
+
+### Files touched
+
+| File | Change |
+| --- | --- |
+| `Persistence/Phase54Migration.cs` | New — `ALTER TABLE AgentUsage ADD COLUMN TurnSamplesJson TEXT NULL`. |
+| `Persistence/Entities.cs` | Adds `AgentUsageRow.TurnSamplesJson?`. |
+| `Program.cs` | Wires `Phase54Migration.ApplyAsync` after Phase 53. |
+| `ScoringConstants.cs` | Adds `PromptBloatGrowthThreshold = 30_000L`. |
+| `Services/DeliverableLoop.cs` | Extends `GeneratorRunOutput` / `EvaluatorRunOutput` with `TurnSamplesJson`; extends `WriteUsageAsync` to persist it; adds prior-token tracking + emit blocks. |
+| `Services/Stories/CrewStoryArtifactStrategy.cs` | Captures per-`AssistantUsageEvent` samples in `GeneratorDelegate` + `EvaluatorDelegate`. |
+| `Contracts/ForgeContracts.cs` | Adds `IterationPromptGrowth` + extends `TaskExecutionSnapshot`. |
+| `Endpoints/TaskExecutionEndpoints.cs` | Backfills `PromptGrowth` from `agent_usage` in `GetExecution`. |
+| `Forge.UI/src/realtime/useTaskLiveStore.ts` | Adds `IterationPromptGrowth` + event handlers for `task.iteration.prompt-growth` and `task.prompt-bloat`. |
+| `Forge.UI/src/views/LiveExecutionView.tsx` | New `PromptGrowthPanel` in the Tokens tab. |
+| `Forge.UI/src/views/WorkstreamsView.tsx` | `WorkstreamCardLiveWrap` viewport-gated subscription per card. |
+| `Forge.UI/src/workstreams/WorkstreamCard.tsx` | New `ws-card-prompt-pill` next to the live badge. |
+| `Forge.Api.Tests/Phase54PromptGrowthTests.cs` | New — WriteUsage persistence + event emission + snapshot endpoint coverage. |
+
+### Out of scope (Phase 54)
+
+- **Sub-invocation turn granularity** — today's `full-invocation` choice
+  means 1 iter = 1 turn per role. The `TurnSamplesJson` column is ready
+  for finer granularity but the sparkline draws across iterations only.
+- **CLI-runner tool-cycle estimation** — not needed under
+  `full-invocation`; the CLI runners already emit one usage tally per
+  invocation. Deferred to a follow-up if/when we expand granularity.
+- **Cache-creation / cache-read token breakdown** — orthogonal
+  prompt-cache observability work; not blocked by Phase 54.
+- **Per-turn live-tail of a single in-flight invocation** — would
+  require the dispatcher to emit `task.turn-usage` events mid-stream;
+  out of scope for the iteration-level rollup.
+- **Persisting the growth metric to a dedicated table** — kept in the
+  existing `agent_usage` + `task_transcript_event` tables to avoid
+  schema churn; can be promoted later if analytics need it.
+
+---
+
+

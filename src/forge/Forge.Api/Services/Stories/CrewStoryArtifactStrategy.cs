@@ -3198,6 +3198,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
+            // Phase 54 — capture per-AssistantUsageEvent samples so the
+            // per-invocation row on agent_usage retains the sub-invocation
+            // curve for richer UI later. Cleared on each invocation; null
+            // is preserved if the runner emits no usage event (CLI path).
+            var turnSamples = new List<object>();
+            int turnIndex = 0;
             await foreach (var evt in invocation.Events.WithCancellation(iterCt))
             {
                 await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
@@ -3219,6 +3225,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                // Phase 54 — a non-zero token tally on a single event is the
+                // SDK's per-turn usage report. Record the snapshot so the
+                // post-iter rollup can render a sub-invocation curve.
+                if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
+                {
+                    turnIndex++;
+                    turnSamples.Add(new
+                    {
+                        turnIndex,
+                        inputTokens = evt.InputTokens ?? 0,
+                        outputTokens = evt.OutputTokens ?? 0,
+                        atUtc = evt.At,
+                    });
+                }
             }
 
             // Phase 41 — restore the protected file from snapshot if the
@@ -3499,7 +3519,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 // changedCount == -1 → inconclusive, leave counter as-is.
             }
 
-            return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
+            return new GeneratorRunOutput(
+                output.ToString(),
+                cost,
+                inTok,
+                outTok,
+                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples));
             }
             finally
             {
@@ -3544,6 +3569,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var output = new StringBuilder();
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
+            // Phase 54 — mirror the generator-side per-AssistantUsageEvent
+            // sample capture (see GeneratorDelegate above). Evaluator runs
+            // are usually single-turn so the array typically has one entry,
+            // but we keep the symmetric shape for the snapshot endpoint.
+            var turnSamples = new List<object>();
+            int turnIndex = 0;
             await foreach (var evt in invocation.Events.WithCancellation(iterCt))
             {
                 await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
@@ -3565,6 +3596,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
+                {
+                    turnIndex++;
+                    turnSamples.Add(new
+                    {
+                        turnIndex,
+                        inputTokens = evt.InputTokens ?? 0,
+                        outputTokens = evt.OutputTokens ?? 0,
+                        atUtc = evt.At,
+                    });
+                }
             }
 
             // Phase 42 — fire the per-iter post-completion hook AFTER the
@@ -3583,7 +3625,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
-            return new EvaluatorRunOutput(output.ToString(), cost, inTok, outTok);
+            return new EvaluatorRunOutput(
+                output.ToString(),
+                cost,
+                inTok,
+                outTok,
+                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples));
         }
 
         // Phase 44 — claim agents before starting the gen/eval loop.

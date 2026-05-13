@@ -1179,6 +1179,20 @@ public class AgentUsageRow
     /// to that value.
     /// </summary>
     public string CostCategory { get; set; } = "generator";
+
+    /// <summary>
+    /// Phase 54 — JSON array of per-turn token snapshots for the invocation
+    /// that wrote this row. Shape is
+    /// <c>[{ "turnIndex": int, "inputTokens": long, "outputTokens": long,
+    /// "atUtc": "iso8601" }, ...]</c>. Under the Phase 54 "1 invocation =
+    /// 1 turn" definition the array is either null (pre-Phase-54 rows / CLI
+    /// runners with no per-event usage) or carries a single sample whose
+    /// values mirror <see cref="InputTokens"/> + <see cref="OutputTokens"/>.
+    /// Reserved for richer sub-invocation samples (one entry per
+    /// <c>AssistantUsageEvent</c> from the Copilot SDK) when the turn
+    /// granularity is bumped.
+    /// </summary>
+    public string? TurnSamplesJson { get; set; }
 }
 
 /// <summary>

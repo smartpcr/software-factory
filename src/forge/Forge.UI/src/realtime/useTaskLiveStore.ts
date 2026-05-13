@@ -99,6 +99,30 @@ export interface TaskExecutionSnapshot {
   generatorTokensSinceWindow?: number;
   /** Phase 52 — generator token cap (`ScoringConstants.SloppyGeneratorTokenCap`). */
   generatorTokenCap?: number;
+  /**
+   * Phase 54 — per-iteration prompt-size samples used by the Tokens-tab
+   * sparkline and the workstream-card pill. Indexed by iter (1-based).
+   * Populated from the agent_usage ledger on snapshot fetch and updated
+   * in-place when `task.iteration.prompt-growth` events arrive.
+   */
+  promptGrowth?: IterationPromptGrowth[];
+  /** Phase 54 — mirror of `ScoringConstants.PromptBloatGrowthThreshold`. */
+  promptBloatGrowthThreshold?: number;
+}
+
+/** Phase 54 — one entry in `TaskExecutionSnapshot.promptGrowth`. */
+export interface IterationPromptGrowth {
+  iter: number;
+  generatorInputTokens: number;
+  generatorOutputTokens: number;
+  evaluatorInputTokens: number;
+  evaluatorOutputTokens: number;
+  /** Raw JSON array of per-AssistantUsageEvent samples; null when not captured. */
+  generatorTurnSamplesJson?: string | null;
+  evaluatorTurnSamplesJson?: string | null;
+  /** Set when a `task.prompt-bloat` warning fires for this iteration. */
+  promptBloatRole?: 'generator' | 'evaluator';
+  promptBloatDelta?: number;
 }
 
 // ─── Store (one entry per work-item) ──────────────────────────────────────
@@ -344,6 +368,40 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
           if (patched.evaluatorModel !== p.model) { patched.evaluatorModel = p.model; snap = patched; }
         } else {
           if (patched.generatorModel !== p.model) { patched.generatorModel = p.model; snap = patched; }
+        }
+      }
+      // Phase 54 — per-iteration prompt-size growth + bloat warnings.
+      if (evt.kind === 'task.iteration.prompt-growth' && typeof p.iter === 'number' && snap) {
+        const iter = p.iter as number;
+        const gen = (p.generator ?? {}) as Record<string, unknown>;
+        const ev  = (p.evaluator ?? {}) as Record<string, unknown>;
+        const sample: IterationPromptGrowth = {
+          iter,
+          generatorInputTokens:  typeof gen.inputTokens === 'number'  ? gen.inputTokens  : 0,
+          generatorOutputTokens: typeof gen.outputTokens === 'number' ? gen.outputTokens : 0,
+          evaluatorInputTokens:  typeof ev.inputTokens === 'number'   ? ev.inputTokens   : 0,
+          evaluatorOutputTokens: typeof ev.outputTokens === 'number'  ? ev.outputTokens  : 0,
+          generatorTurnSamplesJson: typeof gen.turnSamplesJson === 'string' ? (gen.turnSamplesJson as string) : null,
+          evaluatorTurnSamplesJson: typeof ev.turnSamplesJson === 'string'  ? (ev.turnSamplesJson as string)  : null,
+        };
+        const cur = snap.promptGrowth ?? [];
+        const existingIdx = cur.findIndex((g) => g.iter === iter);
+        const next = existingIdx >= 0
+          ? cur.map((g, i) => i === existingIdx ? { ...g, ...sample } : g)
+          : [...cur, sample].sort((a, b) => a.iter - b.iter);
+        snap = { ...snap, promptGrowth: next };
+      }
+      if (evt.kind === 'task.prompt-bloat' && typeof p.iter === 'number' && snap) {
+        const iter = p.iter as number;
+        const role = p.role === 'evaluator' ? 'evaluator' : 'generator';
+        const delta = typeof p.delta === 'number' ? p.delta : 0;
+        const cur = snap.promptGrowth ?? [];
+        const existingIdx = cur.findIndex((g) => g.iter === iter);
+        if (existingIdx >= 0) {
+          const next = cur.map((g, i) => i === existingIdx
+            ? { ...g, promptBloatRole: role as 'generator' | 'evaluator', promptBloatDelta: delta }
+            : g);
+          snap = { ...snap, promptGrowth: next };
         }
       }
     }

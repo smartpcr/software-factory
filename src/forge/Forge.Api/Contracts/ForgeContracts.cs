@@ -1202,7 +1202,42 @@ public sealed record TaskExecutionSnapshot(
     /// <see cref="GeneratorTokensSinceWindow"/> exceeds this, the next
     /// sloppy check parks the work item for reassignment.
     /// </summary>
-    long GeneratorTokenCap = 500_000);
+    long GeneratorTokenCap = 500_000,
+    /// <summary>
+    /// Phase 54 — per-iteration prompt-size samples (generator + evaluator)
+    /// computed from the <c>agent_usage</c> ledger ordered by
+    /// <c>StartedAt</c> within each <c>CostCategory</c>. The UI plots the
+    /// growth curve (<c>InputTokens</c> across iterations) and surfaces
+    /// the iteration-over-iteration delta as a warning when it crosses
+    /// <see cref="ScoringConstants.PromptBloatGrowthThreshold"/>.
+    /// </summary>
+    IReadOnlyList<IterationPromptGrowth>? PromptGrowth = null,
+    /// <summary>
+    /// Phase 54 — mirrors <see cref="ScoringConstants.PromptBloatGrowthThreshold"/>.
+    /// Surfaced so the UI can colour-code amber deltas without its own
+    /// constant.
+    /// </summary>
+    long PromptBloatGrowthThreshold = 30_000);
+
+/// <summary>
+/// Phase 54 — one entry per iteration in
+/// <see cref="TaskExecutionSnapshot.PromptGrowth"/>. Generator and
+/// evaluator samples are listed independently because their growth
+/// patterns differ (generator bloats via tool-result accumulation,
+/// evaluator bloats via prior-feedback chain). Token values are the
+/// per-invocation totals from <c>agent_usage</c>; the sub-invocation
+/// breakdown (one entry per SDK <c>AssistantUsageEvent</c>) lives in the
+/// <c>TurnSamplesJson</c> column and is opaque to the contract.
+/// </summary>
+public sealed record IterationPromptGrowth(
+    int Iter,
+    long GeneratorInputTokens,
+    long GeneratorOutputTokens,
+    long EvaluatorInputTokens,
+    long EvaluatorOutputTokens,
+    /// <summary>Raw JSON array of per-AssistantUsageEvent samples; null when not captured.</summary>
+    string? GeneratorTurnSamplesJson = null,
+    string? EvaluatorTurnSamplesJson = null);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

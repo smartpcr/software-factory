@@ -616,6 +616,29 @@ public static class WorkstreamsEndpoints
         var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == id).ToListAsync();
         db.DeliverableQuestions.RemoveRange(questions);
 
+        // ── 3b. Wipe Phase 52 pair-attempt history + cost ledger ────────
+        // Operator-observed 2026-05-13: Restart used to leave
+        // agent_pair_assignment, agent_usage, WorkItemRow.PairAttemptCount,
+        // and WorkItemRow.BudgetWindowStartUtc untouched. That left a
+        // freshly-restarted workstream born at PairAttemptCount=3 with the
+        // prior pairs locked into PriorPairsJson and ~$3,600 of historical
+        // generator spend already metered into the dollar/token caps. The
+        // SloppyReassignmentReconciler then refused to pick any pair and
+        // the orchestrator went straight to terminal-stall on the very
+        // first sloppy hit.
+        //
+        // Wiping these on Restart matches the spec's intent: Restart is
+        // the explicit operator unblock that gives the work item a clean
+        // slate. agent_usage rows are deleted (not just cutoff via
+        // BudgetWindowStartUtc) so the workstream's cost card shows $0
+        // for the new attempt — operators were also seeing stale $-totals
+        // on stalled rows post-Restart.
+        var pairRows = await db.AgentPairAssignments.Where(p => p.WorkItemId == id).ToListAsync();
+        db.AgentPairAssignments.RemoveRange(pairRows);
+
+        var usageRows = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync();
+        db.AgentUsage.RemoveRange(usageRows);
+
         // ── 4. Close upstream PRs and deactivate local rows ─────────────
         var prIds = ParseStringList(ws.PrsJson);
         foreach (var prId in prIds)
@@ -673,6 +696,24 @@ public static class WorkstreamsEndpoints
             wi.ExecutionStatus = ExecutionStatuses.Queued;
             wi.TrialCount = 0;
             wi.AssignedAgentJson = null;
+
+            // Phase 52 reset — pair-attempt counter, prior-pair exclusion
+            // list, terminal failure reason, and the dollar/token budget
+            // window all return to their post-claim defaults so the new
+            // run is genuinely a clean slate. Without these, a Restart on
+            // a row that hit MaxPairAttempts (3) stays terminal-failed and
+            // the reconciler/orchestrator refuse to drive it forward.
+            // PairAttemptCount = 1 matches the Phase 52 migration default
+            // and the "first pair currently working" semantic — only
+            // SloppyReassignmentReconciler increments it (newAttempt = +1
+            // per rotation), so resetting to 1 gives the new pair a full
+            // 3-attempt budget before the cap re-applies.
+            wi.PairAttemptCount = 1;
+            wi.PriorPairsJson = null;
+            wi.FailureReason = null;
+            wi.LastPairAgentIdsJson = null;
+            wi.BudgetWindowStartUtc = DateTimeOffset.UtcNow;
+
             wi.UpdatedAt = DateTimeOffset.UtcNow;
 
             // Refresh DescriptionMd from the current story description

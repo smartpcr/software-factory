@@ -499,6 +499,7 @@ using (var scope = app.Services.CreateScope())
     // state and runs in strict sequence. Legacy spawns keep PlanPrId/
     // PlanBranch and use the original single-PR path.
     await Phase53Migration.ApplyAsync(db);
+    await Phase54Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
