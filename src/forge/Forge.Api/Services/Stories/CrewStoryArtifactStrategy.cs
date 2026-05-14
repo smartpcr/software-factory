@@ -1815,8 +1815,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var generatorOverride = genRoster.Count > docIndex ? genRoster[docIndex] : null;
         var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
 
-        // Phase 42 -- same git-worktree plumbing as the full plan run.
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 53 follow-up — sequential-mode plan docs live on their own
+        // per-doc branch (`story/{safe}/plan-{key}`), never on a combined
+        // `.../plan`. `spawn.PlanBranch` stays null in sequential mode and
+        // the persisted per-doc branch lives in `PlanDocPrsJson` (one entry
+        // per canonical key, populated by RunPlanDocAsync via
+        // `CanonicalDocBranch`). Using the legacy `spawn.PlanBranch ??
+        // "story/.../plan"` fallback here would route EnsureWorktreeAsync's
+        // `git checkout -B story/.../plan origin/story/.../plan` against a
+        // branch that never existed — `fatal: 'origin/story/.../plan' is
+        // not a commit` (exit 128). Observed 2026-05-14 on
+        // code-intelligence:AGENT-MEMORY → architecture Resume.
+        //
+        // PlanDocStateHelpers.FindDocBranch already encapsulates the
+        // sequential-vs-legacy split: legacy spawns (PlanDocPrsJson null)
+        // return the same `spawn.PlanBranch ?? "story/.../plan"` fallback
+        // as before, sequential spawns return the persisted per-doc branch
+        // (or the canonical `plan-{docKey}` shape if the entry hasn't been
+        // started yet). No regression for legacy spawns.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
