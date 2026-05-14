@@ -1758,7 +1758,11 @@ public static class StoriesEndpoints
         {
             var depWs = all.FirstOrDefault(w => w.Id == dep);
             if (depWs is null) continue;
-            if (depWs.Status != "complete")
+            // Phase 63 — historic and cancelled deps count as satisfied
+            // (mirrors the orchestrator's claim-sweep dep check).
+            if (depWs.Status is not "complete"
+                and not WorkstreamStatuses.Historic
+                and not "cancelled")
             {
                 return baseStatus == "planning" ? "blocked" : baseStatus;
             }

@@ -1658,10 +1658,22 @@ public sealed class StorySpawnOrchestrator
             // zero stale-base races.
             if (depsByWs.TryGetValue(w.Id, out var depIds) && depIds.Count > 0)
             {
+                // Phase 63 — "historic" and "cancelled" deps are treated
+                // as satisfied. Historic workstreams belong to a superseded
+                // decomposition whose code has already been merged or made
+                // irrelevant by the new plan. Cancelled workstreams were
+                // explicitly terminated by the operator. Without this,
+                // FK dep edges from new workstreams to old (historic)
+                // workstream IDs permanently block the entire DAG (observed
+                // 2026-05-14 on qq:MICROSOFT-TEAMS-MESS: 16 workstreams
+                // stuck behind 3 historic deps from the old
+                // messaging-abstractions-and-data-model phase).
                 var blocking = depIds
                     .Select(id => workstreams.FirstOrDefault(ww => ww.Id == id))
                     .Where(ww => ww is not null)
-                    .Where(ww => ww!.Status != "complete")
+                    .Where(ww => ww!.Status is not "complete"
+                        and not WorkstreamStatuses.Historic
+                        and not "cancelled")
                     .ToList();
                 if (blocking.Count > 0) continue;
             }
