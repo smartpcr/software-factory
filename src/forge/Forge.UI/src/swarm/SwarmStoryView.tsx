@@ -118,6 +118,52 @@ export function SwarmStoryView() {
   // exact symptom that broke StoryDeliveryStrip rect-click navigation).
   // Mode changes from useState init / load()'s phase fallback go through
   // setModeState directly and preserve selection.
+  //
+  // ── URL → local state sync ────────────────────────────────────────
+  // The four pieces of local state above are initialised from
+  // searchParams via `useState(() => …)` — initialisers only run on
+  // mount. When the URL changes AFTER mount (e.g. operator clicks a
+  // stage card in the DecompositionDiagram DAG and we navigate to the
+  // same `/workstreams/:storyId` route with different query params),
+  // React Router updates `searchParams` but local state does NOT
+  // re-read the initialiser, so the page renders the OLD mode /
+  // selection — symptom: "url change, page not loaded".
+  //
+  // This effect reconciles state ← URL on every searchParams change.
+  // The diff guards (`if (urlMode !== mode)` etc.) are mandatory:
+  // - They prevent feedback loops with the state → URL writers
+  //   (setMode / setSelection / setTab call updateParams which calls
+  //   setSearchParams, which re-fires this effect; without the guard
+  //   we'd setModeState(currentMode) → re-render → no-op cycle, but
+  //   it still wastes work).
+  // - They keep StrictMode-safe: the dev double-mount fires this
+  //   effect twice with the same searchParams; first run sets state
+  //   if needed, second run sees state already matches and no-ops.
+  //
+  // Depending on [searchParams] (not [mode]) is also intentional —
+  // this avoids the StrictMode trap that broke rect-click navigation
+  // (the warning above), because searchParams is a stable React
+  // Router ref that only ticks when the URL actually changes.
+  useEffect(() => {
+    const urlMode = (searchParams.get('mode') as SwarmMode | null) ?? null;
+    const urlSelKind = searchParams.get('sel') as Selection['kind'] | null;
+    const urlSelId = searchParams.get('selId');
+    const urlTab = (searchParams.get('tab') as DetailTab) || 'overview';
+    const urlMasterCollapsed = searchParams.get('master') !== 'open';
+
+    if (urlMode !== mode) setModeState(urlMode);
+
+    const wantSel: Selection = urlSelKind
+      ? { kind: urlSelKind, id: urlSelId ?? null }
+      : { kind: 'overview', id: null };
+    if (wantSel.kind !== selection.kind || wantSel.id !== selection.id) {
+      setSelectionState(wantSel);
+    }
+
+    if (urlTab !== tab) setTabState(urlTab);
+    if (urlMasterCollapsed !== masterCollapsed) setMasterCollapsed(urlMasterCollapsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   if (err) {
     return (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import type { Build, PrComment, StoryAttachment } from '@/types';
@@ -1749,6 +1749,20 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
 function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
   const storyId = detail.spawn.storyId;
   const ws = detail.workstreams;
+  const navigate = useNavigate();
+
+  // Clicking a stage card jumps to the workstream-detail page with the
+  // master pane open and that workstream pre-selected on the conversation
+  // tab. URL shape mirrors the WorkItemDetailPanel "◇ Workstream" link at
+  // workitems/WorkItemDetailPanel.tsx:732 so deep-links from anywhere in
+  // the app converge on the same target. Param order matches the
+  // operator-specified template in the Phase 63 ask
+  // (mode=impl → master=open → sel=phase → selId).
+  const openWorkstream = useCallback((workstreamId: string) => {
+    const target = `/workstreams/${encodeURIComponent(storyId)}`
+      + `?mode=impl&master=open&sel=phase&selId=${encodeURIComponent(workstreamId)}`;
+    navigate(target);
+  }, [navigate, storyId]);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadWsDagCollapsed(storyId));
   useEffect(() => { setCollapsed(loadWsDagCollapsed(storyId)); }, [storyId]);
@@ -1975,6 +1989,7 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
             onToggle={() => togglePhase(g.anchor)}
             registerCardRef={registerCardRef}
             registerHeaderRef={registerHeaderRef}
+            onStageClick={openWorkstream}
           />
         ))}
       </div>
@@ -1984,7 +1999,7 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
 
 function WsPhaseContainer({
   group, phaseIndex, byId, phaseAnchorOf, stageNumOf, collapsed, onToggle,
-  registerCardRef, registerHeaderRef,
+  registerCardRef, registerHeaderRef, onStageClick,
 }: {
   group: WsPhaseGroup;
   phaseIndex: number;
@@ -1995,6 +2010,7 @@ function WsPhaseContainer({
   onToggle: () => void;
   registerCardRef: (id: string, el: HTMLElement | null) => void;
   registerHeaderRef: (anchor: string, el: HTMLElement | null) => void;
+  onStageClick: (workstreamId: string) => void;
 }) {
   const layout = useMemo(() => layoutPhase(group.items), [group.items]);
   const activeInPhase = group.items.filter((w) => w.status === 'active').length;
@@ -2043,6 +2059,7 @@ function WsPhaseContainer({
               phaseAnchorOf={phaseAnchorOf}
               stageNumOf={stageNumOf}
               registerCardRef={registerCardRef}
+              onClick={onStageClick}
             />
           ))}
         </div>
@@ -2052,7 +2069,7 @@ function WsPhaseContainer({
 }
 
 function WsStageCard({
-  ws, left, top, byId, phaseAnchorOf, stageNumOf, registerCardRef,
+  ws, left, top, byId, phaseAnchorOf, stageNumOf, registerCardRef, onClick,
 }: {
   ws: StorySpawnDetail['workstreams'][number];
   left: number;
@@ -2061,6 +2078,7 @@ function WsStageCard({
   phaseAnchorOf: Map<string, string>;
   stageNumOf: Map<string, string>;
   registerCardRef: (id: string, el: HTMLElement | null) => void;
+  onClick: (workstreamId: string) => void;
 }) {
   const stageLabel = wsStageLabel(ws.planAnchor, ws.name);
   const myStageNum = stageNumOf.get(ws.id);
@@ -2074,6 +2092,17 @@ function WsStageCard({
   const cb = useCallback((el: HTMLElement | null) => registerCardRef(ws.id, el),
     [registerCardRef, ws.id]);
 
+  // Cross-dep chip clicks must not bubble up and re-trigger the card-level
+  // navigation; without stopPropagation a click on a dep chip would jump
+  // to the parent stage's workstream rather than feel like an inert label.
+  const handleCardClick = useCallback(() => onClick(ws.id), [onClick, ws.id]);
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onClick(ws.id);
+    }
+  }, [onClick, ws.id]);
+
   return (
     <div
       ref={cb}
@@ -2085,12 +2114,17 @@ function WsStageCard({
         width: WS_NODE_W,
         height: WS_NODE_H,
         borderColor: color,
+        cursor: 'pointer',
       }}
       data-ws-id={ws.id}
+      role="button"
+      tabIndex={0}
+      onClick={handleCardClick}
+      onKeyDown={handleKeyDown}
       title={
         ws.status === 'stalled' && ws.stallReason
-          ? `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nstalled — ${ws.stallReason}`
-          : `${ws.name}\n${ws.planAnchor ?? ws.id}`
+          ? `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nstalled — ${ws.stallReason}\n\nClick to open workstream`
+          : `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nClick to open workstream`
       }
     >
       <div className="ws-stage__hd">
@@ -2113,7 +2147,7 @@ function WsStageCard({
       <div className="ws-stage__stage">STAGE · {stageLabel}</div>
       <div className="ws-stage__name">{ws.name}</div>
       {crossDeps.length > 0 && (
-        <div className="ws-stage__cross">
+        <div className="ws-stage__cross" onClick={(e) => e.stopPropagation()}>
           <span className="ws-stage__cross-label" title="Cross-phase upstream deps">↥ deps</span>
           {crossDeps.map((u) => {
             const num = stageNumOf.get(u.id) ?? '?';
@@ -2121,7 +2155,12 @@ function WsStageCard({
               <span
                 key={u.id}
                 className="ws-stage__cross-chip"
-                title={`${num} — ${u.name}\n${u.planAnchor ?? u.id}`}
+                title={`${num} — ${u.name}\n${u.planAnchor ?? u.id}\n\nClick to open this dep's workstream`}
+                style={{ cursor: 'pointer' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClick(u.id);
+                }}
               >
                 {num}
               </span>
