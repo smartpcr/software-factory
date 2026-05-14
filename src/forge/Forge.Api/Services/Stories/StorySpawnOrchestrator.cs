@@ -1035,17 +1035,24 @@ public sealed class StorySpawnOrchestrator
     /// <see cref="WorkItemRow"/> backing its synthetic <c>plan-doc:*</c>
     /// workItemId. Idempotent: rows already inserted by a prior tick or by
     /// <c>Phase38Migration</c> are left alone. Each row gets points =
-    /// max(1, story.points / 4) so a 1-point story still gets a 1-pt doc
-    /// (3-iter budget) and a 13-point story gets 3-pt docs (5-iter budget
-    /// each). The id MUST match
+    /// max(3, story.points). The 3-point floor was added 2026-05-13 (Phase
+    /// 60) after observing architecture.md plan-doc spawns repeatedly
+    /// hitting the per-task max-turns cap on 2-point stories (`points *
+    /// 30 = 60` turns is exhausted by the architect's grep-verify
+    /// protocol + incremental edits + sibling reads). A 3-point floor
+    /// gives every plan-doc ≥90 turns and ≥15 min wall-clock
+    /// (<see cref="BudgetForPhase"/>'s `plan` prefix floor matches).
+    /// Higher-point stories keep their full points (no `/4` division here;
+    /// that's the historical <see cref="Phase38Migration"/> formula).
+    /// The id MUST match
     /// <c>$"plan-doc:{spawn.Id}:{filename}"</c> — that's the workItemId
     /// every existing deliverable + transcript event is keyed on, and what
     /// /api/stories/{storyId}/spawn/artifacts/{key}/iterations queries.
     /// </summary>
-    private static async Task EnsurePlanDocWorkItemsAsync(
+    internal static async Task EnsurePlanDocWorkItemsAsync(
         ForgeDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
     {
-        var docPoints = Math.Max(1, spawn.StoryPoints);
+        var docPoints = Math.Max(3, spawn.StoryPoints);
         // List<string> rather than string[] — C# 12's implicit T[] → ReadOnlySpan<T>
         // conversion makes the EF Core LINQ translator route Contains() through
         // MemoryExtensions.Contains, which can't be compiled by the parameter

@@ -16,7 +16,11 @@ using Microsoft.EntityFrameworkCore;
 ///
 /// Plan docs:
 ///   id = "plan-doc:{spawn.Id}:{filename}", track=design, type=step,
-///   parentId=spawn.StoryId, points = max(1, spawn.StoryPoints / 4).
+///   parentId=spawn.StoryId, points = max(3, spawn.StoryPoints / 4).
+///   The 3-point floor was added 2026-05-13 (Phase 60) so plan-docs
+///   always get ≥90 turns / ≥15 min wall-clock; see
+///   <see cref="Forge.Api.Services.Stories.StorySpawnOrchestrator"/>
+///   for the matching live-create path floor.
 ///
 /// Workstreams:
 ///   id = workstream.Id, track=dev, type=task, parentId=spawn.StoryId,
@@ -46,7 +50,7 @@ public static class Phase38Migration
         // Plan docs.
         foreach (var spawn in spawns)
         {
-            var docPoints = Math.Max(1, spawn.StoryPoints / 4);
+            var docPoints = Math.Max(3, spawn.StoryPoints / 4);
             foreach (var fileName in PlanDocFileNames)
             {
                 var id = $"plan-doc:{spawn.Id}:{fileName}";

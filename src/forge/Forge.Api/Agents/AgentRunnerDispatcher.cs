@@ -1154,6 +1154,22 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                         {
                             try
                             {
+                                // 2026-05-13 -- defensive worktree-existence
+                                // pre-check. The shared copilot.exe server
+                                // validates cwd inside `session.create` and
+                                // returns "Directory does not exist or cannot
+                                // be accessed: <path>" when the worktree
+                                // got wiped between EnsureWorktreeAsync's
+                                // success and this CreateSessionAsync call
+                                // (observed on local:UPDATE-HISTORY-IN-CL ->
+                                // architecture.md iter 3 at 5:22 PM after a
+                                // Forge.Api restart cycle). Throwing here
+                                // with a sentinel message routes the error
+                                // into the existing IsProcessLaunchError
+                                // retry-once arm and surfaces a clearer
+                                // diagnostic if the second attempt also
+                                // fails.
+                                EnsureWorkingDirectoryAccessible(sessionConfig);
                                 c = new CopilotClient(clientOptions);
                                 var s = await c.CreateSessionAsync(sessionConfig, factoryCt);
                                 return (c, s);
@@ -1185,6 +1201,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 {
                     try
                     {
+                        // 2026-05-13 -- worktree-existence pre-check; see
+                        // companion comment in the pooled branch above.
+                        EnsureWorkingDirectoryAccessible(sessionConfig);
                         client = new CopilotClient(clientOptions);
                         session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
                         break;
@@ -1590,6 +1609,62 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         if (msg.Contains("start process", StringComparison.OrdinalIgnoreCase)) return true;
         if (msg.Contains("ENOTCONN", StringComparison.OrdinalIgnoreCase)) return true;
 
+        // 2026-05-13 -- the shared copilot.exe server returns
+        // "Directory does not exist or cannot be accessed: <path>" from
+        // its session.create handler when the worktree was wiped between
+        // EnsureWorktreeAsync and CreateSessionAsync. Same race semantics
+        // as a process-launch error (transient, retryable after a brief
+        // delay because EnsureWorktreeAsync upstream is idempotent + the
+        // next orchestrator drive cycle will re-create the worktree if
+        // the deletion is real, OR the OS will catch up if it was only
+        // a filesystem-visibility lag).
+        if (msg.Contains("Directory does not exist", StringComparison.OrdinalIgnoreCase)) return true;
+        if (msg.Contains(WorktreeMissingMarker, StringComparison.Ordinal)) return true;
+        if (msg.Contains("cannot be accessed", StringComparison.OrdinalIgnoreCase)
+            && msg.Contains("session.create", StringComparison.OrdinalIgnoreCase)) return true;
+
         return false;
+    }
+
+    /// <summary>
+    /// 2026-05-13 -- magic marker embedded in worktree-missing error
+    /// messages so <see cref="IsProcessLaunchError"/> recognises our own
+    /// pre-check failures as retryable. Keeps the diagnostic string
+    /// operator-readable while still being machine-matchable.
+    /// </summary>
+    private const string WorktreeMissingMarker = "[forge:worktree-missing]";
+
+    /// <summary>
+    /// 2026-05-13 -- defensive pre-check before invoking
+    /// <see cref="CopilotClient.CreateSessionAsync"/>. The shared
+    /// copilot.exe server validates cwd server-side and the SDK marshals
+    /// its rejection through as
+    /// <c>"Communication error with Copilot CLI: Request session.create
+    /// failed with message: Directory does not exist or cannot be
+    /// accessed: &lt;path&gt;"</c>. That error halts the orchestrator and
+    /// requires operator triage even though the underlying issue is
+    /// usually a transient race (worktree wiped during a restart/
+    /// resume cycle, Phase 49 migration, or DeleteSpawn). Probing the
+    /// path on the .NET side first lets us:
+    /// <list type="number">
+    /// <item>Throw a clearer, sentinel-tagged error message.</item>
+    /// <item>Engage the existing 2 s retry-once arm so brief filesystem
+    /// visibility lags self-heal without an operator intervention.</item>
+    /// <item>Provide a single grep-able marker
+    /// (<see cref="WorktreeMissingMarker"/>) for incident triage.</item>
+    /// </list>
+    /// </summary>
+    private static void EnsureWorkingDirectoryAccessible(SessionConfig cfg)
+    {
+        var cwd = cfg.WorkingDirectory;
+        if (string.IsNullOrEmpty(cwd)) return; // SDK defaults are fine.
+        if (Directory.Exists(cwd)) return;
+        throw new InvalidOperationException(
+            $"{WorktreeMissingMarker} Worktree path does not exist at the time of "
+            + $"Copilot session.create: '{cwd}'. The worktree was likely deleted "
+            + "between EnsureWorktreeAsync and CreateSessionAsync (e.g. concurrent "
+            + "Restart/Resume, Phase 49 migration, or DeleteSpawn). The next "
+            + "orchestrator drive cycle will re-invoke EnsureWorktreeAsync; this "
+            + "attempt will retry once after 2 s, then propagate.");
     }
 }

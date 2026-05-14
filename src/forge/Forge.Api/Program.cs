@@ -549,6 +549,13 @@ using (var scope = app.Services.CreateScope())
     // Order: any time before the runners boot is fine; placed adjacent to
     // 53/54 so the post-Phase-52 migration sequence stays grouped.
     await Phase55Migration.ApplyAsync(db);
+    // Phase 60 — bump existing plan-doc:* work_items rows with Points<3
+    // to Points=3 so the next gen/eval round gets ≥90 turns and ≥15 min
+    // wall-clock budget. Must run BEFORE Phase38 so the backfill below
+    // sees the new floor (Phase38 is now also floor-aware, this is
+    // belt-and-suspenders + corrective for live rows). Self-idempotent
+    // via the SQL WHERE clause; safe to re-run on every boot.
+    await Phase60Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

@@ -3125,7 +3125,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <summary>
     /// Per-phase wall-clock budget, computed from the originating story's
     /// points so a 1-pt change isn't given the same window as a 13-pt epic.
-    /// Formula: <c>base = max(2 minutes, points * 30s)</c>; per-phase
+    /// Formula: <c>base = max(180s, points * 60s)</c>; per-phase
     /// multiplier on top.
     /// </summary>
     internal static TimeSpan BudgetForPhase(int points, string phaseTag)
@@ -3148,8 +3148,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Plan docs need a higher floor -- the architect must read repo
         // context + siblings + write a large markdown file. 3 minutes
         // (the 0-point default) is too tight and causes timeouts.
-        if (prefix == "plan" && seconds < 600)
-            seconds = 600;
+        //
+        // 2026-05-13 (Phase 60) -- scale wall-clock with the turn budget
+        // so a 3-point plan-doc (90 turns @ ~10s/turn ≈ 900s) doesn't
+        // hit `generator-timeout` before exhausting its turn cap.
+        // Formula: `max(600s, min(1800s, points * 300s))`.
+        //   - 1-2 pt: 600s (the historical floor; turn cap is 60 anyway)
+        //   - 3 pt:   900s (15 min; aligns with 90-turn cap)
+        //   - 4 pt:  1200s (20 min)
+        //   - 6+ pt: 1800s (30 min cap to avoid runaway costs)
+        // Without this, raising plan-doc Points 2→3 (Phase 60 floor)
+        // would just shift failures from `generator-max-turns` to
+        // `generator-timeout` -- same outcome, different label.
+        if (prefix == "plan")
+        {
+            var planFloor = Math.Max(600.0, Math.Min(1800.0, points * 300.0));
+            if (seconds < planFloor) seconds = planFloor;
+        }
         return TimeSpan.FromSeconds(seconds);
     }
 
@@ -5314,6 +5329,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// explicit truncation marker tells the agent how many were
     /// dropped so it can re-derive context from code if it needs to.
     ///
+    /// <para>2026-05-13 (Phase 60) — add an explicit iter-count cap
+    /// (most-recent 3 entries) BEFORE the byte cap to bound per-turn
+    /// prompt growth across long-running loops. When entries are
+    /// dropped, list their iter numbers so the agent knows there's
+    /// older context it could re-derive from the file/PR history.
+    /// The byte cap remains as a defense-in-depth tail.</para>
+    ///
     /// <para>Backward compat: when no archive exists yet but the
     /// legacy single-file <c>.forge/iter-notes.md</c> is present
     /// (workstreams mid-flight at the A.1 → A.2 boundary), fall through
@@ -5321,11 +5343,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// The next iter's <see cref="GeneratorDelegate"/> archive step
     /// will start populating <c>.forge/notes/</c> normally from there.</para>
     /// </summary>
-    private static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
+    internal static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workspace)) return string.Empty;
 
         const int TotalCap = 16_000;
+        // Phase 60 — keep only the most-recent N iter-notes entries so
+        // prompt growth is bounded predictably independent of total
+        // iter count. The Copilot SDK already passes full conversation
+        // history each turn within a session; on top of that, this
+        // archive grows monotonically across sessions. Capping at 3
+        // gives the agent ~current iter context without unbounded
+        // growth contributing to `generator-max-turns` failures on
+        // long-running plan-doc loops.
+        const int MaxArchiveEntries = 3;
         var archiveDir = Path.Combine(workspace, ".forge", "notes");
         var entries = new List<(int Iter, string Path)>();
         if (Directory.Exists(archiveDir))
@@ -5367,8 +5398,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         entries.Sort((a, b) => b.Iter.CompareTo(a.Iter));
 
+        // Phase 60 — apply count cap. Stash dropped iter numbers so we
+        // can surface them as a tail marker; the agent can re-derive
+        // earlier context from code/PR history if it needs them.
+        List<int>? droppedByCount = null;
+        if (entries.Count > MaxArchiveEntries)
+        {
+            droppedByCount = entries.Skip(MaxArchiveEntries).Select(e => e.Iter).ToList();
+            entries = entries.Take(MaxArchiveEntries).ToList();
+        }
+
         var sb = new StringBuilder();
         var included = 0;
+        var truncatedByBytes = false;
         for (var i = 0; i < entries.Count; i++)
         {
             var (n, file) = entries[i];
@@ -5391,10 +5433,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     sb.AppendLine($"_(truncated: {dropped} earlier iteration(s) omitted to keep this section under {TotalCap / 1000} KB; re-derive earlier context from code if needed.)_");
                 }
+                truncatedByBytes = true;
                 break;
             }
             sb.Append(section);
             included++;
+        }
+
+        // Phase 60 — append a separate marker for entries dropped by the
+        // count cap. Distinct from the byte-cap truncation marker above
+        // so the agent (and future debuggers) can distinguish whether
+        // they ran out of room or out of recent history.
+        if (!truncatedByBytes && droppedByCount is { Count: > 0 })
+        {
+            var iterList = string.Join(", ", droppedByCount);
+            sb.AppendLine();
+            sb.AppendLine($"_(only the most-recent {MaxArchiveEntries} iteration(s) are included; earlier iter(s) omitted: {iterList}. Re-derive earlier context from code/PR history if needed.)_");
         }
 
         return sb.ToString().TrimEnd();
