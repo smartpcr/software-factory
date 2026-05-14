@@ -181,7 +181,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
-        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(
+            repo, planBranch, worktreeBase, ct,
+            worktreeSlug: PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug());
 
         // Phase 43 -- copy operator-uploaded attachments into the worktree
         // so architect agents can read them with their file tools. Refresh
@@ -852,39 +854,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up -- load the same-spawn workstream set and run
-    /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the short,
-    /// semantic worktree directory name
-    /// (<c>stage-{phaseNum}.{stageNum}-{anchorSlug}</c>). Returns null
-    /// when the workstream has no <see cref="WorkstreamRow.StorySpawnId"/>
-    /// -- the orchestrator-side hot path is never null in production, but
-    /// guard so handcrafted ad-hoc workstreams keep working via the
-    /// legacy <c>spawn-{branch-slug}</c> fallback inside
-    /// <see cref="RealStoryGitOps.EnsureWorktreeAsync"/>.
+    /// Load the same-spawn workstream set and run
+    /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the canonical
+    /// worktree directory name (<c>stage-{phaseNum}.{stageNum}-{stageTitle}</c>
+    /// for plan-anchored rows, <c>ws-{sanitizedId}</c> otherwise). Always
+    /// returns a non-empty slug — handcrafted ad-hoc workstreams (no
+    /// <see cref="WorkstreamRow.StorySpawnId"/>) hit the
+    /// <see cref="WorkstreamWorktreeSlug"/> fallback branch.
     /// </summary>
-    private async Task<string?> ComputeWorkstreamWorktreeSlugAsync(
+    private async Task<string> ComputeWorkstreamWorktreeSlugAsync(
         WorkstreamRow workstream, CancellationToken ct)
     {
-        if (workstream is null || string.IsNullOrWhiteSpace(workstream.StorySpawnId))
-        {
-            return null;
-        }
+        if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-        var siblings = await db.Workstreams.AsNoTracking()
-            .Where(w => w.StorySpawnId == workstream.StorySpawnId)
-            .ToListAsync(ct);
-
-        // The current row may not be in `siblings` (caller is operating on a
-        // possibly-detached entity); ensure it's present so the position
-        // computation finds it.
-        if (siblings.All(w => w.Id != workstream.Id))
-        {
-            siblings.Add(workstream);
-        }
-
-        return WorkstreamWorktreeSlug.Compute(workstream, siblings);
+        return await WorkstreamWorktreeSlug.ComputeAsync(workstream, db, ct);
     }
 
     /// <summary>
@@ -1816,7 +1801,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
 
         // Phase 42 -- same git-worktree plumbing as the full plan run.
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 62 (operator-reported 2026-05-14 on
+        // local:UPDATE-HISTORY-IN-CL → architecture.md halted at iter 11
+        // with `spawn.PlanBranch` NULL but 23 iter commits on the legacy
+        // shared `plan` branch) -- delegate branch resolution to
+        // PlanDocStateHelpers.FindDocBranch so sequential-mode spawns
+        // commit to their canonical per-doc branch
+        // `story/{id}/plan-{key}` (matching what the orchestrator's
+        // RunPlanDocAsync uses), not the legacy `spawn.PlanBranch ??
+        // "story/{id}/plan"` shared branch. Pre-Phase-62 the worktree
+        // slug was canonical (`plan-architecture`) but the branch was
+        // legacy shared (`plan`), so the architect's commits landed on
+        // a branch the UI / PR-open path / accept-artifact flow couldn't
+        // see at the per-doc key. Legacy parallel-mode spawns
+        // (PlanDocPrsJson == null) still get the shared branch via
+        // FindDocBranch's legacy fallback.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
@@ -1824,33 +1824,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         // Phase 55 follow-up (operator-reported 2026-05-13 on
         // local:UPDATE-HISTORY-IN-CL → architecture.md stalled at iter 13 /
-        // score 0 / $130.56) -- sequential-mode plan docs MUST use the
-        // canonical `plan-{key}` worktree slug to match what
-        // StorySpawnOrchestrator.RunPlanDocAsync uses. Without this, every
-        // Restart/Resume of a sequential-mode doc resolves wtPath to the
-        // legacy `spawn-{long-branch-slug}` path; EnsureWorktreeAsync
-        // detects the branch already registered to `plan-{key}` and
-        // *migrates* it (`git worktree remove --force` + Directory.Delete
-        // the old path, then re-add at the new path). The next 15 s
-        // scheduler tick re-enters RunPlanDocAsync (the doc isn't `pass`ed
-        // yet) and migrates the worktree back to `plan-{key}`, deleting
-        // the legacy path out from under the still-running architect's
-        // cwd. Generator narration: "The cwd doesn't exist… I'll edit the
-        // existing draft at the spawn-story worktree (the only worktree
-        // with the file)." Evaluator (which resolved its workspace to the
-        // same legacy path before migration): "architecture.md does not
-        // exist at the required path." → identical complaint every iter
-        // → stalled-no-convergence after 7 iters → loop exits with score 0.
-        // Passing the canonical slug here makes Restart/Resume reuse the
-        // exact same worktree the orchestrator owns, so no migration ever
-        // runs. `null` for legacy parallel-mode spawns keeps the historic
-        // shared `spawn-{slug}` worktree (parallel mode shares one
-        // worktree across all four docs, so legacy is the correct slug
-        // there).
+        // Sequential-mode plan docs use the per-doc `plan-{key}` slug to
+        // match what StorySpawnOrchestrator.RunPlanDocAsync uses; legacy
+        // parallel-mode spawns share one `plan` bucket across all four
+        // docs. Passing the canonical slug here makes Restart/Resume reuse
+        // the exact worktree the orchestrator owns, so no migration runs.
         var worktreeSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
             && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key)
             ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
-            : null;
+            : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
         var worktreePath = await this.git.EnsureWorktreeAsync(
             repo, planBranch, worktreeBase, ct, worktreeSlug: worktreeSlug);
 
@@ -1884,7 +1866,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // PlanReconciler uses the same canonicalisation, so initial decomp
         // and any later reconcile pass produce identical workstream sets
         // for the same plan.
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 62 — sequential-mode spawns persist implementation-plan.md
+        // on its per-doc branch `story/{id}/plan-implementation-plan`,
+        // not the legacy shared `plan` branch. FindDocBranch returns the
+        // right branch for both sequential and legacy modes.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
         var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
 
         RepoRow? repo = null;
@@ -2104,14 +2090,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
-        // Phase 49 follow-up -- compute the short, semantic worktree slug
-        // (e.g. "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout")
-        // so the directory under {cloneRoot}/.worktree/ stays under
-        // Windows MAX_PATH once cargo/npm/dotnet build artifacts land
-        // underneath. The same-spawn workstream list is required to
-        // compute the (phase, stage) position; WorkstreamWorktreeSlug
-        // falls back to the legacy `spawn-{branch-slug}` when PlanAnchor
-        // is missing (handcrafted rows from the create-WS endpoint).
+        // Compute the canonical engineer-workstream slug
+        // (`stage-{phaseNum}.{stageNum}-{stageTitle}` for plan-anchored
+        // rows, `ws-{sanitizedId}` for handcrafted ad-hoc rows). Short
+        // names keep the directory under Windows MAX_PATH once cargo/
+        // npm/dotnet build artifacts land underneath.
         var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
 
@@ -5044,7 +5027,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         if (string.IsNullOrEmpty(workstream.PlanAnchor)) return string.Empty;
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 62 — read implementation-plan.md from its canonical
+        // per-doc branch in sequential mode (legacy shared `plan` branch
+        // in legacy mode). Matches ProduceDecompositionAsync above.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
         var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
         string? planMd;
         try

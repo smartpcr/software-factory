@@ -31,8 +31,8 @@ using Xunit;
 /// the in-memory mocks let pass silently:
 /// <list type="bullet">
 ///   <item>real on-disk worktree directories under
-///         <c>{cloneRoot}/.worktree/spawn-{sanitised}/</c> are gone after
-///         delete (per-workstream + plan + qa);</item>
+///         <c>{cloneRoot}/.worktree/</c> are gone after delete
+///         (per-workstream + plan + qa);</item>
 ///   <item>local branches (<c>git branch --list</c>) for plan / qa / each
 ///         workstream are gone;</item>
 ///   <item>remote branches (<c>git ls-remote --heads origin</c>) for plan
@@ -481,18 +481,16 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
         var workstreamBranches = new[] { ws1Branch, ws2Branch };
         var allBranches = new[] { planBranch, qaBranch, ws1Branch, ws2Branch };
 
-        // 1) Materialise a worktree per branch off the non-main base. The
-        //    DeleteSpawn endpoint and the production RealStoryGitOps both
-        //    expect the legacy `.worktree/spawn-{sanitised}/` shape for
-        //    plan / qa, and the same shape works for engineer workstreams
-        //    on a fresh fixture (Phase 49 short slugs are computed against
-        //    siblings — for a seeded fixture the simple sanitise matches
-        //    the path the orchestrator would have produced).
+        // 1) Materialise a worktree per branch off the non-main base.
+        //    Git tracks the (branch -> path) mapping in `worktree list`,
+        //    and RealStoryGitOps.RemoveWorktreeAsync queries that directly
+        //    to discover the path. The exact directory name doesn't matter
+        //    here — the production cleanup is path-agnostic.
         var worktreePaths = new Dictionary<string, string>();
         foreach (var branch in allBranches)
         {
             var sanitised = SanitiseBranchForWorktree(branch);
-            var wtPath = Path.Combine(this.cloneDir, ".worktree", $"spawn-{sanitised}");
+            var wtPath = Path.Combine(this.cloneDir, ".worktree", sanitised);
             Directory.CreateDirectory(Path.GetDirectoryName(wtPath)!);
 
             // Create branch from base on origin, then add a worktree
@@ -927,11 +925,8 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Mirrors <c>DeleteSpawn.SanitizeForWorktree</c> and
-    /// <c>RealStoryGitOps.SanitizeBranchSlug</c>: every non-[A-Za-z0-9-_.]
-    /// character becomes <c>-</c>, leading/trailing dashes trimmed.
-    /// Materialising worktrees at this same path ensures the endpoint's
-    /// cleanup walks them.
+    /// Replace every non-[A-Za-z0-9-_.] character with <c>-</c> and trim
+    /// edges, producing a filesystem-safe directory name from a branch.
     /// </summary>
     private static string SanitiseBranchForWorktree(string branch)
     {

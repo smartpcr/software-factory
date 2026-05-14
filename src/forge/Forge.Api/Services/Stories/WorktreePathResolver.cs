@@ -6,40 +6,24 @@
 
 namespace Forge.Api.Services.Stories;
 
-using System.Text;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
-/// Phase 49 follow-up — single source of truth for "given a work-item id,
-/// where on disk is its worktree?". Production was carrying THREE distinct
-/// conventions wired into different code paths:
+/// Single source of truth for "given a work-item id, where on disk is
+/// its worktree?". Probes the two surviving conventions in priority order
+/// and returns the first one that actually exists:
 /// <list type="number">
-/// <item><b>New (Phase 49):</b>
-///   <c>{cloneRoot}/.worktree/stage-{phaseNum}.{stageNum}-{anchorSlug}</c>
-///   — the short, semantic name introduced to dodge Windows MAX_PATH.</item>
-/// <item><b>Legacy story-spawn:</b>
-///   <c>{cloneRoot}/.worktree/spawn-{sanitizedBranch}</c> — the
-///   <see cref="RealStoryGitOps"/> default before Phase 49.</item>
-/// <item><b>Legacy crew-queue:</b>
-///   <c>{cloneRoot}/.worktree/ws-{sanitizedId}</c> — the
-///   <c>CrewQueueWorker</c> convention for ad-hoc work items.</item>
+/// <item><b>Canonical engineer workstream:</b>
+///   <c>{cloneRoot}/.worktree/stage-{phaseNum}.{stageNum}-{stageTitle}</c>
+///   — produced by <see cref="WorkstreamWorktreeSlug.Compute"/>.</item>
+/// <item><b>Crew-queue ad-hoc:</b>
+///   <c>{cloneRoot}/.worktree/ws-{sanitizedId}</c> — produced by
+///   <c>CrewQueueWorker</c> for non-spawn work items.</item>
 /// </list>
-///
-/// <para>Multiple endpoints (Worktree tab, commits API, snapshot snapshot)
-/// independently re-derived a path and routinely hit the wrong one
-/// (observed 2026-05-10: PR #2 had 35 files but the Worktree tab showed
-/// "+0 ~0 -0" because it was computing <c>ws-{id}</c> and the orchestrator
-/// had written to <c>stage-1.1-…</c>). This helper enumerates the candidate
-/// paths in priority order and returns the first one that actually exists
-/// on disk, so display always agrees with reality regardless of when the
-/// workstream was created.</para>
-///
-/// <para>The candidate list is intentionally narrow — only existing
-/// directories are returned, never a "would-be" path. Callers that need to
-/// CREATE a worktree must continue to use
-/// <see cref="WorkstreamWorktreeSlug.Compute"/> directly; this helper only
-/// looks at what's already on disk.</para>
+/// Returns null when no candidate exists on disk. Callers that need to
+/// CREATE a worktree must use <see cref="WorkstreamWorktreeSlug.Compute"/>
+/// directly; this helper only looks at what's already on disk.
 /// </summary>
 public static class WorktreePathResolver
 {
@@ -85,34 +69,24 @@ public static class WorktreePathResolver
         var cloneRoot = repo.CloneRoot;
         var branch = ws.Branch ?? string.Empty;
 
-        // Candidate 1 — Phase 49 short name. Only attempt when the row
-        // has a StorySpawnId; without a spawn we have no sibling list to
-        // compute position numbers from.
+        // Candidate 1 — canonical engineer-workstream slug. Only attempt
+        // when the row has a StorySpawnId; without a spawn we have no
+        // sibling list to compute position numbers from.
         if (!string.IsNullOrEmpty(ws.StorySpawnId))
         {
             var siblings = await db.Workstreams.AsNoTracking()
                 .Where(w => w.StorySpawnId == ws.StorySpawnId)
                 .ToListAsync(ct);
             if (siblings.All(w => w.Id != ws.Id)) siblings.Add(ws);
-            var newSlug = WorkstreamWorktreeSlug.Compute(ws, siblings);
-            var newPath = Path.Combine(cloneRoot, ".worktree", newSlug);
-            if (Directory.Exists(newPath))
+            var canonicalSlug = WorkstreamWorktreeSlug.Compute(ws, siblings);
+            var canonicalPath = Path.Combine(cloneRoot, ".worktree", canonicalSlug);
+            if (Directory.Exists(canonicalPath))
             {
-                return new WorktreePathResult(newPath, branch, cloneRoot);
+                return new WorktreePathResult(canonicalPath, branch, cloneRoot);
             }
         }
 
-        // Candidate 2 — legacy story-spawn convention.
-        if (!string.IsNullOrEmpty(branch))
-        {
-            var legacyPath = Path.Combine(cloneRoot, ".worktree", $"spawn-{SanitizeBranchSlug(branch)}");
-            if (Directory.Exists(legacyPath))
-            {
-                return new WorktreePathResult(legacyPath, branch, cloneRoot);
-            }
-        }
-
-        // Candidate 3 — legacy CrewQueueWorker convention.
+        // Candidate 2 — crew-queue ad-hoc convention.
         var sanitizedId = ws.Id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
         var crewQueuePath = Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}");
         if (Directory.Exists(crewQueuePath))
@@ -120,10 +94,9 @@ public static class WorktreePathResolver
             return new WorktreePathResult(crewQueuePath, branch, cloneRoot);
         }
 
-        // None on disk — the workstream's worktree was likely cleaned up
-        // (Phase 49 post-merge cleanup) or never created yet. Return the
-        // branch + cloneRoot so the caller can still surface "no worktree
-        // attached" with useful context.
+        // Nothing on disk — worktree was cleaned up post-merge or never
+        // claimed yet. Surface the branch + cloneRoot so the caller can
+        // still render "no worktree attached" with useful context.
         return new WorktreePathResult(WorktreePath: null, Branch: branch, RepoCloneRoot: cloneRoot);
     }
 
@@ -242,21 +215,6 @@ public static class WorktreePathResolver
         return new CanonicalWorkstreamPathSpec(branch, slug, path, repo.CloneRoot!, baseBranch, ws, repo);
     }
 
-    /// <summary>
-    /// Mirrors <c>RealStoryGitOps.SanitizeBranchSlug</c> — replaces every
-    /// non-alphanumeric / non-<c>-_.</c> character with <c>-</c> and trims
-    /// edge dashes. Duplicated so this helper has no I/O dependency on
-    /// <see cref="RealStoryGitOps"/>.
-    /// </summary>
-    private static string SanitizeBranchSlug(string branch)
-    {
-        var sb = new StringBuilder(branch.Length);
-        foreach (var c in branch)
-        {
-            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
-        }
-        return sb.ToString().Trim('-');
-    }
 }
 
 /// <summary>

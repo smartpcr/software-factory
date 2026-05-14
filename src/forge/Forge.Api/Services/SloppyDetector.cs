@@ -86,6 +86,42 @@ public static class SloppyDetector
     }
 
     /// <summary>
+    /// Phase 61 — pure helper. Returns <c>true</c> when the last
+    /// <paramref name="threshold"/> scores in
+    /// <paramref name="scoresInOrder"/> are ALL <c>0</c>. Operates on the
+    /// trailing window only; earlier non-zero scores do not save the loop
+    /// once it bottoms out. Returns <c>false</c> when the chain is shorter
+    /// than <paramref name="threshold"/> (cannot fire from iter 1 / 2).
+    ///
+    /// <para>Pure function — caller supplies the scores in 1-indexed iter
+    /// order. Score values are clamped 0..points-elsewhere; here we only
+    /// care about the boolean "is this zero?" per slot.</para>
+    /// </summary>
+    /// <param name="scoresInOrder">
+    /// Scores from iter 1 (index 0) through iter N (index N-1).
+    /// </param>
+    /// <param name="threshold">
+    /// Number of trailing zeros required to fire. Defaults to
+    /// <see cref="ScoringConstants.SloppyConsecutiveZeroThreshold"/> (3).
+    /// </param>
+    public static bool CheckConsecutiveScoreZero(
+        IReadOnlyList<int> scoresInOrder,
+        int threshold = -1)
+    {
+        if (scoresInOrder is null) throw new ArgumentNullException(nameof(scoresInOrder));
+        if (threshold < 0) threshold = ScoringConstants.SloppyConsecutiveZeroThreshold;
+        if (threshold <= 0) return false;
+        var n = scoresInOrder.Count;
+        if (n < threshold) return false;
+        for (var i = n - threshold; i < n; i++)
+        {
+            if (scoresInOrder[i] != 0) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Q52.2 — generator token cap. Sums
     /// <c>agent_usage.InputTokens + OutputTokens</c> for the generator
     /// agent's invocations against this work item since
@@ -128,21 +164,33 @@ public static class SloppyDetector
     }
 
     /// <summary>
-    /// Combined check. As of 2026-05-13, both Phase 52 sloppy triggers
-    /// (Q52.1 score-plateau and Q52.2 generator-token cap) are DISABLED at
-    /// the operator's direction — the cumulative-token meter doesn't
-    /// reflect actual context size (the protocol re-reads context each
-    /// turn, so cumulative input balloons naturally on long tasks without
-    /// indicating runaway behavior), and score-plateau adds little signal
-    /// once the legacy 5-iter cap and Phase 51 dollar cap are in play.
+    /// Combined check. As of 2026-05-13, the original Phase 52 sloppy
+    /// triggers (Q52.1 score-plateau and Q52.2 generator-token cap) are
+    /// DISABLED at the operator's direction — the cumulative-token meter
+    /// doesn't reflect actual context size (the protocol re-reads context
+    /// each turn, so cumulative input balloons naturally on long tasks
+    /// without indicating runaway behavior), and score-plateau adds little
+    /// signal once the legacy 5-iter cap and Phase 51 dollar cap are in
+    /// play.
+    /// <para>
+    /// Phase 61 (2026-05-14) re-enabled a NARROWER trigger:
+    /// <see cref="CheckConsecutiveScoreZero"/>. When the last
+    /// <see cref="ScoringConstants.SloppyConsecutiveZeroThreshold"/>
+    /// deliverable scores are all 0, the deliverable is sloppy with
+    /// <see cref="SloppyReasons.ConsecutiveScoreZero"/>. This catches the
+    /// "generator can't converge under its turn/context budget"
+    /// pattern (Phase 58 synthesized score=0 from terminal SDK failure)
+    /// without the false positives of the cumulative-token meter, and
+    /// aborts the loop early instead of paying for the full 5-iter / 10-
+    /// iter cap chain.
+    /// </para>
     /// <para>
     /// The helper methods <see cref="CheckTokenCapAsync"/> and
     /// <see cref="CheckScorePlateau"/> remain available — the UI and debug
     /// endpoints still consume them to display "tokens used / cap" ratios
-    /// and "personal best" stats. This entrypoint deliberately reports
-    /// <c>IsSloppy=false</c> regardless so the deliverable loop never
-    /// rewrites a verdict to <c>sloppy</c> from these triggers. The
-    /// remaining stall paths are:
+    /// and "personal best" stats. The first two triggers deliberately
+    /// report <c>IsSloppy=false</c> regardless. The remaining stall paths
+    /// also still apply:
     /// </para>
     /// <list type="bullet">
     ///   <item>Legacy 5-iter cap (<see cref="DeliverableLoop"/> rewrites
@@ -167,10 +215,22 @@ public static class SloppyDetector
     {
         // Still compute the meters so the result carries display data for
         // any caller that wants the numbers (UI score panel, debug
-        // endpoints) — but never flip IsSloppy from this method.
+        // endpoints) — but never flip IsSloppy from Q52.1 / Q52.2.
         var (_, totalTokens) =
             await CheckTokenCapAsync(db, workItemId, generatorAgentId, budgetWindowStartUtc, ct);
         var (_, bestIter, bestScore) = CheckScorePlateau(scoresInOrder);
+
+        // Phase 61 — only ACTIVE trigger today. Fires on K trailing zeros.
+        if (CheckConsecutiveScoreZero(scoresInOrder))
+        {
+            return new SloppyCheckResult(
+                IsSloppy: true,
+                Reason: SloppyReasons.ConsecutiveScoreZero,
+                BestIter: bestIter,
+                BestScore: bestScore,
+                TotalTokens: totalTokens);
+        }
+
         return new SloppyCheckResult(false, null, bestIter, bestScore, totalTokens);
     }
 }

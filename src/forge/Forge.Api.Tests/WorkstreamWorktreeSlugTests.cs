@@ -11,12 +11,12 @@ using Forge.Api.Services.Stories;
 using Xunit;
 
 /// <summary>
-/// Phase 49 follow-up — pin the short, semantic worktree directory naming
-/// convention so future refactors don't regress to the legacy
-/// <c>spawn-{branch-slug}</c> shape that routinely produced 100+ char
-/// directory names and blew past Windows MAX_PATH the moment a Rust /
-/// Node / .NET build tree (target/, node_modules/, obj/) landed
-/// underneath.
+/// Pin the canonical engineer-workstream worktree directory naming so
+/// future refactors don't regress to a long-anchor or the legacy
+/// <c>spawn-</c> prefix. The shape is
+/// <c>stage-{phaseNum}.{stageNum}-{stageTitle}</c> where the stage title
+/// is the suffix of <see cref="WorkstreamRow.PlanAnchor"/> after the
+/// <c>/stage-</c> separator.
 /// </summary>
 public class WorkstreamWorktreeSlugTests
 {
@@ -33,45 +33,45 @@ public class WorkstreamWorktreeSlugTests
         };
 
     /// <summary>
-    /// The headline regression: the failover-cluster:XRAFT stage 1.1
-    /// workstream (longest observed on prod 2026-05-10) must produce
-    /// <c>stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>,
-    /// not <c>spawn-ws-failover-cluster-XRAFT-phase-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>.
-    /// Shaves ~30 characters off the path and stays under MAX_PATH for the
-    /// <c>target/debug/.fingerprint/{crate}-{hash}/dep-build-script-build-script-build</c>
-    /// nesting that <c>cargo build</c> writes underneath.
+    /// The headline example: phase 3 "consensus engine" / stage 3.3
+    /// "log replication" → <c>stage-3.3-log-replication</c>. Both the
+    /// phase title and the legacy <c>spawn-</c> prefix MUST be absent.
     /// </summary>
     [Fact]
-    public void Compute_ProjectScaffolding_Stage1_1_ProducesShortPath()
+    public void Compute_ConsensusEngine_LogReplication_ProducesStageTitleOnlySlug()
     {
         var siblings = new[]
         {
-            Ws("ws-stage-1-1", 1, "phase-project-scaffolding", "phase-project-scaffolding/stage-cargo-workspace-and-crate-layout"),
-            Ws("ws-stage-1-2", 2, "phase-project-scaffolding", "phase-project-scaffolding/stage-core-types-and-configuration"),
-            Ws("ws-stage-1-3", 3, "phase-project-scaffolding", "phase-project-scaffolding/stage-rpc-message-definitions"),
-            Ws("ws-stage-2-1", 4, "phase-raft-consensus-engine", "phase-raft-consensus-engine/stage-leader-election"),
+            // Phase 1, stage 1.1
+            Ws("ws-1", 1, "phase-foundation", "phase-foundation/stage-bootstrap"),
+            // Phase 2, stage 2.1
+            Ws("ws-2", 2, "phase-rpc", "phase-rpc/stage-message-types"),
+            // Phase 3, stages 3.1 - 3.3
+            Ws("ws-3", 3, "phase-consensus-engine", "phase-consensus-engine/stage-leader-election"),
+            Ws("ws-4", 4, "phase-consensus-engine", "phase-consensus-engine/stage-append-entries"),
+            Ws("ws-5", 5, "phase-consensus-engine", "phase-consensus-engine/stage-log-replication"),
         };
 
-        var slug = WorkstreamWorktreeSlug.Compute(siblings[0], siblings);
+        var slug = WorkstreamWorktreeSlug.Compute(siblings[4], siblings);
 
-        Assert.Equal(
-            "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout",
-            slug);
-        Assert.DoesNotContain("ws-failover-cluster", slug);
-        Assert.DoesNotContain("phase-project-scaffolding/", slug); // path separator collapsed to '-'
+        Assert.Equal("stage-3.3-log-replication", slug);
+        Assert.DoesNotContain("consensus-engine", slug);
+        Assert.DoesNotContain("spawn-", slug);
     }
 
     /// <summary>
     /// Phase numbering follows the first-encounter order of distinct
     /// <see cref="WorkstreamRow.PhaseAnchor"/> values when iterating
     /// siblings sorted by <see cref="WorkstreamRow.Sort"/>. Stage
-    /// numbering is the 1-based position within that phase bucket.
+    /// numbering is the 1-based position within that phase bucket. The
+    /// stage title comes from the portion of PlanAnchor after
+    /// <c>/stage-</c>.
     /// </summary>
     [Theory]
-    [InlineData(1, "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout")]
-    [InlineData(2, "stage-1.2-project-scaffolding-stage-core-types-and-configuration")]
-    [InlineData(3, "stage-1.3-project-scaffolding-stage-rpc-message-definitions")]
-    [InlineData(4, "stage-2.1-raft-consensus-engine-stage-leader-election")]
+    [InlineData(1, "stage-1.1-cargo-workspace-and-crate-layout")]
+    [InlineData(2, "stage-1.2-core-types-and-configuration")]
+    [InlineData(3, "stage-1.3-rpc-message-definitions")]
+    [InlineData(4, "stage-2.1-leader-election")]
     public void Compute_PositionNumbersFollowSortOrderWithinPhase(int targetSort, string expectedSlug)
     {
         var siblings = new[]
@@ -106,31 +106,48 @@ public class WorkstreamWorktreeSlugTests
         };
 
         Assert.Equal(
-            "stage-2.1-raft-consensus-engine-stage-leader-election",
+            "stage-2.1-leader-election",
             WorkstreamWorktreeSlug.Compute(siblings[0], siblings));
         Assert.Equal(
-            "stage-1.2-project-scaffolding-stage-core-types-and-configuration",
+            "stage-1.2-core-types-and-configuration",
             WorkstreamWorktreeSlug.Compute(siblings[1], siblings));
+    }
+
+    /// <summary>
+    /// The PlanReconciler appends <c>@{contentHash}</c> to PlanAnchor when
+    /// it detects a scope edit on an in-flight row. The hash must NOT leak
+    /// into the worktree directory name — it changes every plan rev and
+    /// would orphan the previous directory.
+    /// </summary>
+    [Fact]
+    public void Compute_StripsContentHashSuffix()
+    {
+        var siblings = new[]
+        {
+            Ws("ws-1", 1, "phase-consensus-engine", "phase-consensus-engine/stage-log-replication@abc12345"),
+        };
+
+        Assert.Equal("stage-1.1-log-replication", WorkstreamWorktreeSlug.Compute(siblings[0], siblings));
     }
 
     /// <summary>
     /// Rows without a <see cref="WorkstreamRow.PlanAnchor"/> (handcrafted
     /// via <c>POST /api/workstreams</c>, or pre-Phase-42 legacy rows that
-    /// never went through the reconciler) take the legacy
-    /// <c>spawn-{branch-slug}</c> shape as a fallback so the path is
-    /// still unique. Plan-doc / QA worktrees are intentionally NOT
-    /// renamed (they already have short names).
+    /// never went through the reconciler) take the crew-queue ad-hoc shape
+    /// <c>ws-{sanitizedBranch}</c> so the path is still unique without
+    /// reviving the legacy <c>spawn-</c> prefix.
     /// </summary>
     [Fact]
-    public void Compute_NoPlanAnchor_FallsBackToLegacySpawnSlug()
+    public void Compute_NoPlanAnchor_FallsBackToAdHocWsSlug()
     {
         var ws = Ws("ws-handcrafted", 1, phaseAnchor: null, planAnchor: null, branch: "ws/handcrafted-feature");
         var siblings = new[] { ws };
 
         var slug = WorkstreamWorktreeSlug.Compute(ws, siblings);
 
-        Assert.StartsWith("spawn-", slug);
-        Assert.Contains("ws-handcrafted-feature", slug);
+        Assert.StartsWith("ws-", slug);
+        Assert.DoesNotContain("spawn-", slug);
+        Assert.Contains("handcrafted-feature", slug);
     }
 
     /// <summary>
@@ -153,6 +170,6 @@ public class WorkstreamWorktreeSlugTests
 
         // Unique within the spawn even though target wasn't in the siblings list.
         Assert.StartsWith("stage-", slug);
-        Assert.Contains("unknown-phase", slug);
+        Assert.Contains("some-stage", slug);
     }
 }

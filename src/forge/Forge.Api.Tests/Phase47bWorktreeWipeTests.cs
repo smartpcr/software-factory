@@ -112,10 +112,13 @@ public class Phase47bWorktreeWipeTests : IAsyncLifetime
         // EnsureBranchAsync short-circuits when the branch already exists on
         // origin (no worktree materialised). Materialise the worktree
         // directly with `git worktree add` so we can stage the dirty edits
-        // before the MergeUpstream call. Path matches RealStoryGitOps's
-        // WorktreePath formula: {cloneRoot}/.worktree/spawn-{sanitised}.
+        // before the MergeUpstream call.
+        // Worktree path doesn't have to match any canonical slug — git
+        // tracks the (branch -> path) mapping in `worktree list`, and
+        // RealStoryGitOps probes that directly. Use the sanitised branch
+        // name as a simple deterministic-but-non-spawn directory name.
         var sanitised = SanitizeBranchSlug(branch);
-        var wtPath = Path.Combine(this.cloneDir, ".worktree", $"spawn-{sanitised}");
+        var wtPath = Path.Combine(this.cloneDir, ".worktree", sanitised);
         Directory.CreateDirectory(Path.GetDirectoryName(wtPath)!);
         await Git(this.cloneDir, "fetch", "origin", branch);
         await Git(this.cloneDir, "worktree", "add", wtPath, $"origin/{branch}");
@@ -178,8 +181,12 @@ public class Phase47bWorktreeWipeTests : IAsyncLifetime
         var git = new RealStoryGitOps(sink);
 
         var repo = new RepoRow { Id = "repo-test-2", Kind = "github", CloneRoot = this.cloneDir };
+        // Worktree path doesn't have to match any canonical slug — git
+        // tracks the (branch -> path) mapping in `worktree list`, and
+        // RealStoryGitOps probes that directly. Use the sanitised branch
+        // name as a simple deterministic-but-non-spawn directory name.
         var sanitised = SanitizeBranchSlug(branch);
-        var wtPath = Path.Combine(this.cloneDir, ".worktree", $"spawn-{sanitised}");
+        var wtPath = Path.Combine(this.cloneDir, ".worktree", sanitised);
         Directory.CreateDirectory(Path.GetDirectoryName(wtPath)!);
         await Git(this.cloneDir, "fetch", "origin", branch);
         await Git(this.cloneDir, "worktree", "add", wtPath, $"origin/{branch}");
@@ -245,8 +252,12 @@ public class Phase47bWorktreeWipeTests : IAsyncLifetime
         var git = new RealStoryGitOps(sink);
 
         var repo = new RepoRow { Id = "repo-nudge-regression", Kind = "github", CloneRoot = this.cloneDir };
+        // Worktree path doesn't have to match any canonical slug — git
+        // tracks the (branch -> path) mapping in `worktree list`, and
+        // RealStoryGitOps probes that directly. Use the sanitised branch
+        // name as a simple deterministic-but-non-spawn directory name.
         var sanitised = SanitizeBranchSlug(branch);
-        var wtPath = Path.Combine(this.cloneDir, ".worktree", $"spawn-{sanitised}");
+        var wtPath = Path.Combine(this.cloneDir, ".worktree", sanitised);
         Directory.CreateDirectory(Path.GetDirectoryName(wtPath)!);
         await Git(this.cloneDir, "fetch", "origin", branch);
         await Git(this.cloneDir, "worktree", "add", wtPath, $"origin/{branch}");

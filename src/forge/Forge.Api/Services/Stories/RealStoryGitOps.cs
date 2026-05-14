@@ -21,10 +21,10 @@ using Forge.Api.Persistence;
 /// <para>
 /// Operations on the orchestrator's gate branches (<c>story/.../plan</c>,
 /// <c>story/.../qa</c>, <c>ws/.../...</c>) all happen via a per-call
-/// dedicated worktree under <c>{cloneRoot}/.worktree/spawn-{slug}/</c> —
-/// matches the convention <see cref="Services.CrewQueueWorker"/> uses for
-/// live work-item exec, and keeps story commits out of the operator's
-/// primary checkout.
+/// dedicated worktree under <c>{cloneRoot}/.worktree/{slug}/</c> where
+/// <c>{slug}</c> is supplied by the caller. The canonical slug formulas
+/// live in <see cref="PlanDocStateHelpers"/> (plan docs / QA / QA-steps)
+/// and <see cref="WorkstreamWorktreeSlug"/> (engineer workstreams).
 /// </para>
 /// </summary>
 public sealed class RealStoryGitOps : IStoryGitOps
@@ -124,9 +124,9 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// Phase 50 — implementation. Force-pushes the base tip to
     /// <c>refs/heads/{branch}</c> on origin so any orphan tip is replaced
     /// in one atomic operation. Then tears down any local mirror — the
-    /// local branch ref and the legacy <c>spawn-{slug}</c> worktree — so
-    /// downstream callers don't reuse a stale checkout. Idempotent on a
-    /// non-orphan branch (force-pushes an identical tree).
+    /// local branch ref and whichever worktree path was registered against
+    /// the branch — so downstream callers don't reuse a stale checkout.
+    /// Idempotent on a non-orphan branch (force-pushes an identical tree).
     /// </remarks>
     public async Task EnsureBranchFreshAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
@@ -148,22 +148,23 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // EnsureWorktreeAsync (called later by the orchestrator) is
         // smart enough to recreate from the now-fresh origin tip; the
         // problem we're guarding against is its reuse of a directory
-        // that still holds the OLD spawn's files. `git worktree remove
-        // --force` + raw Directory.Delete handles the "registered but
-        // missing" and "missing but with leftover files" cases.
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
-        if (Directory.Exists(wtPath))
+        // that still holds the OLD spawn's files. We ask git directly for
+        // the worktree path registered against the branch (regardless of
+        // which slug it lives under) so this stays correct even if the
+        // operator hand-customised the directory layout.
+        var registeredWtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        if (!string.IsNullOrEmpty(registeredWtPath) && Directory.Exists(registeredWtPath)
+            && !IsSamePath(registeredWtPath, root) && !IsMainWorktreeDir(registeredWtPath))
         {
-            await this.RunGitCaptureAsync(root, ct, "worktree", "remove", "--force", wtPath);
-            if (Directory.Exists(wtPath))
+            await this.RunGitCaptureAsync(root, ct, "worktree", "remove", "--force", registeredWtPath);
+            if (Directory.Exists(registeredWtPath))
             {
-                try { Directory.Delete(wtPath, recursive: true); }
+                try { Directory.Delete(registeredWtPath, recursive: true); }
                 catch (Exception ex)
                 {
                     this.logger?.LogWarning(ex,
                         "EnsureBranchFreshAsync: could not raw-delete worktree {Path}; pruning git metadata only.",
-                        wtPath);
+                        registeredWtPath);
                 }
             }
             await this.RunGitCaptureAsync(root, ct, "worktree", "prune");
@@ -180,11 +181,16 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     public async Task<string> CommitFilesAsync(
-        RepoRow? repo, string branch, IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
+        RepoRow? repo, string branch, string worktreeSlug,
+        IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(worktreeSlug))
+        {
+            throw new ArgumentException(
+                $"worktreeSlug is required (branch={branch}).", nameof(worktreeSlug));
+        }
         var root = ResolveCloneRoot(repo);
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
+        var wtPath = WorktreePath(root, worktreeSlug);
 
         await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
 
@@ -490,16 +496,15 @@ public sealed class RealStoryGitOps : IStoryGitOps
     {
         var root = ResolveCloneRoot(repo);
 
-        // Phase 49 follow-up — find the EXISTING worktree on this branch
-        // (regardless of which directory layout it lives under: the new
-        // `stage-{n.n}-{slug}` short name, the legacy `spawn-{slug}`, or
-        // any operator-customised path). The merge MUST happen in the
-        // same working directory the agent is using, otherwise the
-        // merge commit lands in a sibling worktree and the agent's
-        // tree stays at the pre-merge state (observed 2026-05-10 on
-        // failover-cluster:XRAFT stage 1.2: behind base by 1, agent
-        // saw README + docs only). Only fall back to creating a new
-        // worktree at the legacy path when NO worktree is registered.
+        // Find the EXISTING worktree on this branch regardless of which
+        // canonical slug it lives under (stage-…, plan-…, qa-…). The
+        // merge MUST happen in the same working directory the agent is
+        // using, otherwise the merge commit lands in a sibling worktree
+        // and the agent's tree stays at the pre-merge state (observed
+        // 2026-05-10 on failover-cluster:XRAFT stage 1.2: behind base
+        // by 1, agent saw README + docs only). Only fall back to creating
+        // a new worktree at a sanitized-branch slug when NO worktree is
+        // registered — degenerate case, but keeps the op idempotent.
         var existingWtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
         var wtPath = !string.IsNullOrEmpty(existingWtPath)
             ? existingWtPath
@@ -681,15 +686,16 @@ public sealed class RealStoryGitOps : IStoryGitOps
     public async Task<string> EnsureWorktreeAsync(
         RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default, string? worktreeSlug = null)
     {
+        if (string.IsNullOrWhiteSpace(worktreeSlug))
+        {
+            throw new ArgumentException(
+                $"worktreeSlug is required (branch={branch}). Callers must supply the canonical slug from "
+                + "PlanDocStateHelpers (plan / QA) or WorkstreamWorktreeSlug (engineer workstreams).",
+                nameof(worktreeSlug));
+        }
+
         var root = ResolveCloneRoot(repo);
-        // Phase 49 — when the caller passes a precomputed slug (engineer
-        // workstreams use WorkstreamWorktreeSlug.Compute), root the
-        // worktree directory at it directly. Otherwise fall back to the
-        // legacy `spawn-{branch-slug}` shape so plan-doc / QA paths
-        // (which already have short names) don't churn.
-        var wtPath = !string.IsNullOrWhiteSpace(worktreeSlug)
-            ? Path.Combine(root, ".worktree", worktreeSlug)
-            : WorktreePath(root, SanitizeBranchSlug(branch));
+        var wtPath = WorktreePath(root, worktreeSlug);
 
         // Serialise the ensure step against itself per-branch so two concurrent
         // callers don't race `git worktree add`.
@@ -707,15 +713,13 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
-    /// Phase 49 follow-up — locate and remove the worktree currently
-    /// associated with <paramref name="branch"/>, regardless of which
-    /// directory layout (legacy <c>spawn-{slug}</c> vs. new
-    /// <c>stage-{n.n}-{slug}</c>) it lives under. Best-effort: never
-    /// throws, just logs. The branch ref itself is left intact (an
-    /// already-merged plan / workstream branch is still useful for
-    /// audit). Used to free disk after a spawn's plan PR merges (plan
-    /// worktree becomes stale) and after each engineer workstream's PR
-    /// merges (engineer worktree becomes stale).
+    /// Locate and remove the worktree currently associated with
+    /// <paramref name="branch"/>, regardless of which canonical slug it
+    /// lives under (<c>stage-{n.n}-{title}</c>, <c>plan-{key}</c>,
+    /// <c>qa-{storyId}</c>, etc.). Best-effort: never throws, just logs.
+    /// The branch ref itself is left intact. Used to free disk after a
+    /// spawn's plan PR merges and after each engineer workstream's PR
+    /// merges.
     /// </summary>
     public async Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default)
     {
@@ -828,8 +832,16 @@ public sealed class RealStoryGitOps : IStoryGitOps
             throw new InvalidOperationException($"Refusing absolute or parent-traversal path '{repoRelativePath}'.");
 
         var root = ResolveCloneRoot(repo);
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
+        // Per-iter commit assumes the worktree was already created by an
+        // earlier <c>EnsureWorktreeAsync</c> / <c>CommitFilesAsync</c> call.
+        // Ask git for the registered path so we don't need to know the slug.
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        if (string.IsNullOrEmpty(wtPath))
+        {
+            throw new InvalidOperationException(
+                $"CommitPathInWorktreeAsync: no worktree registered for branch '{branch}'. "
+                + "Callers must materialise the worktree (via EnsureWorktreeAsync or CommitFilesAsync) first.");
+        }
 
         // Serialise per-branch so concurrent agent commits don't race the
         // git index lock.
@@ -837,8 +849,6 @@ public sealed class RealStoryGitOps : IStoryGitOps
         await gate.WaitAsync(ct);
         try
         {
-            // Worktree must exist before we stage anything.
-            await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
 
             // Stage only the requested path so a sibling agent's mid-edit
             // changes don't get rolled into this commit.
@@ -877,12 +887,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
     public async Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);
-        var sanitized = SanitizeBranchSlug(branch);
-        var wtPath = WorktreePath(root, sanitized);
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
 
-        if (!Directory.Exists(wtPath))
+        if (string.IsNullOrEmpty(wtPath) || !Directory.Exists(wtPath))
         {
-            this.logger?.LogInformation("PushBranchAsync: worktree '{Path}' does not exist; skipping.", wtPath);
+            this.logger?.LogInformation(
+                "PushBranchAsync: no worktree registered for branch '{Branch}'; skipping.", branch);
             return;
         }
 
@@ -1105,9 +1115,11 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     private static string WorktreePath(string cloneRoot, string slug)
     {
+        if (string.IsNullOrWhiteSpace(slug))
+            throw new ArgumentException("Worktree slug is required.", nameof(slug));
         var wtRoot = Path.Combine(cloneRoot, ".worktree");
         Directory.CreateDirectory(wtRoot);
-        return Path.Combine(wtRoot, $"spawn-{slug}");
+        return Path.Combine(wtRoot, slug);
     }
 
     private static string SanitizeBranchSlug(string branch)
@@ -1126,12 +1138,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // doesn't leave a registered-but-missing entry that confuses us.
         await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
 
-        // Phase 49 follow-up — the branch may be registered to a DIFFERENT
-        // worktree path under the legacy `spawn-{branch-slug}` layout
-        // (typically 100+ chars). Detect that and unregister before we try
-        // to add the short-name worktree, otherwise `git worktree add` aborts
-        // with "branch already checked out at {oldPath}". The branch ref
-        // (and any local commits the agent made) survives the worktree
+        // The branch may already be registered to a DIFFERENT worktree
+        // path (operator-customised layout, leftover from an aborted
+        // claim, etc.). Detect that and unregister it before we try to
+        // add a new worktree, otherwise `git worktree add` aborts with
+        // "branch already checked out at {oldPath}". The branch ref (and
+        // any local commits the agent made) survives the worktree
         // removal — only the working directory is torn down.
         var existingOnBranch = await this.TryFindExistingWorktreeAsync(cloneRoot, branch, ct);
         if (!string.IsNullOrEmpty(existingOnBranch))

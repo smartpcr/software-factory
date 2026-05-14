@@ -43,10 +43,15 @@ public interface IStoryGitOps
     /// Write each <c>files</c> entry into the working tree at the given branch
     /// and commit them with <paramref name="message"/>. Returns the synthetic
     /// commit sha. Tests use this to verify that a merged PR actually carries
-    /// the expected files.
+    /// the expected files. Materialises the worktree at
+    /// <c>{cloneRoot}/.worktree/{worktreeSlug}</c> when missing — the slug is
+    /// the canonical name from <see cref="PlanDocStateHelpers"/> (plan / QA
+    /// / QA-steps) or <see cref="WorkstreamWorktreeSlug"/> (engineer
+    /// workstreams).
     /// </summary>
     Task<string> CommitFilesAsync(
-        RepoRow? repo, string branch, IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default);
+        RepoRow? repo, string branch, string worktreeSlug,
+        IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default);
 
     /// <summary>Returns true when <paramref name="filePath"/> exists at the branch tip.</summary>
     Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default);
@@ -93,16 +98,13 @@ public interface IStoryGitOps
     /// the actual repo layout instead of an isolated scratch dir. Idempotent;
     /// concurrent callers within the same process get the same path.
     ///
-    /// <para>Phase 49 follow-up — when <paramref name="worktreeSlug"/> is
-    /// supplied, the worktree directory is rooted at
-    /// <c>{cloneRoot}/.worktree/{worktreeSlug}</c> instead of the legacy
-    /// <c>{cloneRoot}/.worktree/spawn-{branch-slug}</c>. The new convention
-    /// gives engineer workstreams short, semantic names
-    /// (<c>stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>)
-    /// that stay under Windows MAX_PATH once <c>cargo build</c> /
-    /// <c>npm install</c> / <c>target/debug/.fingerprint/…</c> trees land
-    /// underneath. Plan-doc / QA worktrees omit the override and keep the
-    /// legacy <c>spawn-</c> prefix; their names are already short.</para>
+    /// <para><paramref name="worktreeSlug"/> is REQUIRED — the worktree
+    /// directory is always rooted at <c>{cloneRoot}/.worktree/{worktreeSlug}</c>.
+    /// Use <see cref="PlanDocStateHelpers.CanonicalDocWorktreeSlug"/> /
+    /// <see cref="PlanDocStateHelpers.CanonicalQaWorktreeSlug"/> /
+    /// <see cref="PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug"/> for
+    /// plan and QA gates, and <see cref="WorkstreamWorktreeSlug.Compute"/>
+    /// for engineer workstreams.</para>
     /// </summary>
     Task<string> EnsureWorktreeAsync(
         RepoRow? repo,

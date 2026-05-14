@@ -202,26 +202,15 @@ public static class AdminEndpoints
 
                 foreach (var (path, branch) in registered)
                 {
-                    // Only consider worktrees that look like per-WS dirs.
-                    // The plan / qa / feature shared worktrees use stable
-                    // names and stay alive across plan reshapes; their
-                    // branches always have a matching spawn row.
-                    //
-                    // Phase 51 Fix 6c — broadened to also include legacy
-                    // `ws-WI-*` (pre-Phase 49 layout) worktrees. The
-                    // liveBranches check below still protects active
-                    // workstreams from being pruned, so this only catches
-                    // dead pre-Phase 49 dirs left behind when a
-                    // workstream's branch was renamed during plan reshape.
-                    // Base-branch worktrees (`spawn-feature-*`,
-                    // `spawn-merge-*`) are NOT pruned here — they're owned
-                    // by `MergeAsync` (Fix 6b removes its own merge
-                    // fallback) and `DeleteSpawn` (Fix 6a cleans the
-                    // base-branch dir when the spawn is deleted).
+                    // Only consider worktrees that look like per-WS dirs:
+                    // canonical engineer slugs (`stage-…`) and ad-hoc
+                    // crew-queue rows (`ws-…`). Plan / QA / base-branch
+                    // worktrees use stable names and are owned by other
+                    // lifecycle hooks (MergeAsync's merge-{base} fallback,
+                    // DeleteSpawn's plan/qa/merge cleanup).
                     var leaf = System.IO.Path.GetFileName(path) ?? string.Empty;
-                    var isPerWs = leaf.StartsWith("spawn-ws-", StringComparison.Ordinal)
-                        || leaf.StartsWith("stage-", StringComparison.Ordinal)
-                        || leaf.StartsWith("ws-WI-", StringComparison.Ordinal);
+                    var isPerWs = leaf.StartsWith("stage-", StringComparison.Ordinal)
+                        || leaf.StartsWith("ws-", StringComparison.Ordinal);
                     if (!isPerWs) continue;
 
                     if (string.IsNullOrEmpty(branch)) continue;

@@ -72,8 +72,14 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     }
 
     public Task<string> CommitFilesAsync(
-        RepoRow? repo, string branch, IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
+        RepoRow? repo, string branch, string worktreeSlug,
+        IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(worktreeSlug))
+        {
+            throw new ArgumentException(
+                $"worktreeSlug is required (branch={branch}).", nameof(worktreeSlug));
+        }
         var key = Key(repo, branch);
         if (!this.trees.TryGetValue(key, out var tree))
         {
@@ -148,7 +154,7 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         // touches the in-memory tree with a placeholder so the branch tip
         // advances and tests asserting "branch had a commit" pass.
         await this.CommitFilesAsync(
-            repo, branch,
+            repo, branch, "test-worktree",
             new Dictionary<string, string>(StringComparer.Ordinal) { [repoRelativePath] = $"<commit:{message}>" },
             message, ct);
         return this.tips.TryGetValue(Key(repo, branch), out var sha) ? sha : string.Empty;

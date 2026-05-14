@@ -1071,6 +1071,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         $"SLOPPY: generator-token cap exceeded — used {sloppy.TotalTokens:N0} input+output tokens against a {ScoringConstants.SloppyGeneratorTokenCap:N0}-token budget since the budget window opened. Reassigning to a fresh pair on the next reconciler tick.",
                     SloppyReasons.ScorePlateau =>
                         $"SLOPPY: score plateau detected — the trailing 3 iterations (scores {string.Join(", ", scoresInOrder.TakeLast(3))}) did not surpass the personal best of {sloppy.BestScore} set at iter {sloppy.BestIter}. Reassigning to a fresh pair on the next reconciler tick.",
+                    SloppyReasons.ConsecutiveScoreZero =>
+                        $"SLOPPY: {ScoringConstants.SloppyConsecutiveZeroThreshold} consecutive score-0 iterations — the trailing scores {{{string.Join(", ", scoresInOrder.TakeLast(ScoringConstants.SloppyConsecutiveZeroThreshold))}}} indicate the generator could not produce a passing artifact under its turn/context budget. Reassigning to a fresh pair on the next reconciler tick.",
                     _ => "SLOPPY: reassigning to a fresh pair on the next reconciler tick.",
                 };
                 row.Notes = string.IsNullOrEmpty(row.Notes) ? reasonText : row.Notes + "\n\n" + reasonText;

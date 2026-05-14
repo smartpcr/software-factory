@@ -36,9 +36,9 @@ using Xunit;
 ///         <c>.git</c> is a DIRECTORY).</item>
 ///   <item><c>StoriesEndpoints.DeleteSpawn</c> step 6a.1 (the obsolete
 ///         <c>RemoveWorktreeAsync(repo, spawn.BaseBranch, ...)</c> call)
-///         was removed — Phase 49 long since stopped creating a
-///         <c>spawn-{base}</c> worktree from EnsureBranchAsync, so the
-///         step was both stale AND actively destructive.</item>
+///         was removed — Phase 49 long since stopped creating a base-branch
+///         worktree from EnsureBranchAsync, so the step was both stale AND
+///         actively destructive.</item>
 /// </list>
 ///
 /// <para>Why not also restrict <c>TryFindExistingWorktreeAsync</c>?

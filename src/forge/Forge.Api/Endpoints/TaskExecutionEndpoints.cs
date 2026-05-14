@@ -1057,20 +1057,13 @@ public static class TaskExecutionEndpoints
         var baseBranch = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
             .ResolveAsync(db, id, ct);
 
-        // Phase 42 — plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
-        // share the spawn's plan-branch worktree at `{cloneRoot}/.worktree/spawn-{slug}`,
-        // not the per-workstream `.worktree/ws-{id}` convention. Route to the
-        // right worktree based on the id prefix; engineer workstreams take
-        // the legacy path.
-        //
-        // Phase 49 — engineer workstreams switched to
-        // `stage-{phaseNum}.{stageNum}-{anchorSlug}` to dodge Windows
-        // MAX_PATH. Use WorktreePathResolver so the displayed worktree
-        // path agrees with whatever's actually on disk (new short name,
-        // legacy `spawn-` prefix, or legacy `ws-` prefix). Observed
-        // 2026-05-10: PR #2 had 35 files but the Worktree tab read +0
-        // changes because the old code hard-coded the `ws-{id}` path
-        // while the orchestrator had written to `stage-1.1-…`.
+        // Plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
+        // share the spawn's plan-branch worktree at
+        // `{cloneRoot}/.worktree/plan-{docKey}` (sequential) or
+        // `{cloneRoot}/.worktree/plan` (legacy parallel). Engineer
+        // workstreams use the canonical `stage-{n.n}-{title}` slug or
+        // the ad-hoc `ws-{id}` slug, whichever WorktreePathResolver
+        // finds on disk.
         string branch;
         string? worktreePath;
         if (id.StartsWith("plan-doc:", StringComparison.Ordinal))
@@ -1098,34 +1091,25 @@ public static class TaskExecutionEndpoints
             // Look up the spawn so we use its real PlanBranch (preserves
             // any custom branch name the orchestrator picked at spawn time).
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
-            // Phase 53 — sequential-mode spawns put each doc on its own
-            // branch and worktree. FindDocBranch resolves both legacy
-            // (PlanBranch) and sequential (per-doc) cases.
+            // Sequential-mode spawns put each doc on its own branch and
+            // worktree; legacy parallel-mode shares one bucket.
             if (spawn is not null && planDocKey is not null
                 && Forge.Api.Services.Stories.PlanDocStateHelpers.PlanDocFileName.ContainsKey(planDocKey))
             {
                 branch = Forge.Api.Services.Stories.PlanDocStateHelpers.FindDocBranch(spawn, planDocKey);
-                if (Forge.Api.Services.Stories.PlanDocStateHelpers.IsSequentialMode(spawn))
-                {
-                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                        ? Path.Combine(cloneRoot, ".worktree",
-                            Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey))
-                        : null;
-                }
-                else
-                {
-                    var sanitizedBranch = SanitizeBranchSlug(branch);
-                    worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                        ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
-                        : null;
-                }
+                var slug = Forge.Api.Services.Stories.PlanDocStateHelpers.IsSequentialMode(spawn)
+                    ? Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey)
+                    : Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
+                worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                    ? Path.Combine(cloneRoot, ".worktree", slug)
+                    : null;
             }
             else
             {
                 branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
-                var sanitizedBranch = SanitizeBranchSlug(branch);
                 worktreePath = !string.IsNullOrEmpty(cloneRoot)
-                    ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                    ? Path.Combine(cloneRoot, ".worktree",
+                        Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug())
                     : null;
             }
         }
@@ -1169,23 +1153,6 @@ public static class TaskExecutionEndpoints
             Commits: scan.Commits,
             Uncommitted: scan.Uncommitted,
             BranchTotals: scan.BranchTotals));
-    }
-
-    /// <summary>
-    /// Phase 42 — keep this in sync with <c>RealStoryGitOps.SanitizeBranchSlug</c>
-    /// so the commits endpoint computes the same worktree path the architect
-    /// strategy creates. Branches like <c>story/foo/plan</c> become
-    /// <c>story-foo-plan</c>; the worktree mounts at
-    /// <c>{cloneRoot}/.worktree/spawn-{slug}</c>.
-    /// </summary>
-    private static string SanitizeBranchSlug(string branch)
-    {
-        var sb = new System.Text.StringBuilder(branch.Length);
-        foreach (var c in branch)
-        {
-            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
-        }
-        return sb.ToString().Trim('-');
     }
 
     private static async Task<(int code, string stdout, string stderr)> RunGitAsync(

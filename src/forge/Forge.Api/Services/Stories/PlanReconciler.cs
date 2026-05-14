@@ -292,9 +292,16 @@ public sealed class PlanReconciler
             {
                 var artifactRepoPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/workstreams.yaml";
                 var artifactYaml = ToYaml(artifactJson);
+                // Sequential-mode reconciles run on the per-doc
+                // implementation-plan worktree; legacy parallel-mode stays
+                // on the shared plan worktree.
+                var reconcileSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
+                    ? PlanDocStateHelpers.CanonicalDocWorktreeSlug("implementation-plan")
+                    : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
                 await this.git.CommitFilesAsync(
                     repo,
                     planBranch,
+                    reconcileSlug,
                     new Dictionary<string, string> { [artifactRepoPath] = artifactYaml },
                     $"reconcile: regenerate workstreams.yaml from implementation-plan.md ({planStages.Count} stages)",
                     ct);

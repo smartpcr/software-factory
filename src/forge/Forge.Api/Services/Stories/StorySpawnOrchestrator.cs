@@ -510,6 +510,7 @@ public sealed class StorySpawnOrchestrator
         // suspenders write that catches "agent edited file mid-iter but
         // per-iter commit was skipped".
         await this.git.CommitFilesAsync(repo, docBranch,
+            PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey),
             new Dictionary<string, string>(StringComparer.Ordinal) { [repoPath] = content },
             forceResume
                 ? $"plan-{docKey}: resume iteration for story {GitSafe(spawn.StoryId)}"
@@ -763,7 +764,9 @@ public sealed class StorySpawnOrchestrator
                 await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
 
                 var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
-                await this.git.CommitFilesAsync(repo, planBranch, artifacts,
+                await this.git.CommitFilesAsync(repo, planBranch,
+                    PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug(),
+                    artifacts,
                     forceResume
                         ? $"plan: resume iteration for story {GitSafe(spawn.StoryId)}"
                         : $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
@@ -2314,7 +2317,8 @@ public sealed class StorySpawnOrchestrator
 
         if (files.Count > 0)
         {
-            await this.git.CommitFilesAsync(repo, w.Branch, files,
+            var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, db2, ct);
+            await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
                 $"impl({w.Id}): {w.Name}", ct);
         }
 
@@ -2838,7 +2842,10 @@ public sealed class StorySpawnOrchestrator
                 // Path A — commit the code change.
                 if (!fix.IsReplyOnly)
                 {
-                    await this.git.CommitFilesAsync(repo, w.Branch,
+                    using var slugScope = this.services.CreateScope();
+                    var slugDb = slugScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, slugDb, ct);
+                    await this.git.CommitFilesAsync(repo, w.Branch, wsSlug,
                         new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
                         $"fix({w.Id}): address review comment", ct);
                 }
@@ -2943,7 +2950,9 @@ public sealed class StorySpawnOrchestrator
             var qaBranch = spawn.QaBranch ?? $"story/{GitSafe(spawn.StoryId)}/qa";
             await this.git.EnsureBranchAsync(repo, qaBranch, baseBranch, ct);
             var files = await this.strategy.ProduceQaFeatureFilesAsync(spawn, story, workstreams, ct);
-            await this.git.CommitFilesAsync(repo, qaBranch, files,
+            await this.git.CommitFilesAsync(repo, qaBranch,
+                PlanDocStateHelpers.CanonicalQaWorktreeSlug(spawn.StoryId),
+                files,
                 $"qa: feature files for story {GitSafe(spawn.StoryId)}", ct);
 
             // Phase 46 — merge latest from main into the QA branch
@@ -2991,7 +3000,9 @@ public sealed class StorySpawnOrchestrator
 
             await this.git.EnsureBranchAsync(repo, stepBranch, baseBranch, ct);
             var files = await this.strategy.ProduceStepDefinitionsAsync(spawn, w, ct);
-            await this.git.CommitFilesAsync(repo, stepBranch, files,
+            await this.git.CommitFilesAsync(repo, stepBranch,
+                PlanDocStateHelpers.CanonicalQaStepsWorktreeSlug(w.Id),
+                files,
                 $"qa-steps({w.Id}): step definitions", ct);
 
             // Phase 46 — merge latest from main before creating the PR.

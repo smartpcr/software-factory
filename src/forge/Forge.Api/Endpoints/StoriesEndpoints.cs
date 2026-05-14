@@ -168,9 +168,11 @@ public static class StoriesEndpoints
         // Phase 50 defensive purge — runs ONCE at the moment a new spawn is
         // about to be created. spawn.Id is deterministic
         // (`spawn-{safeStoryId}`), so the WorkItemId space
-        // (`plan-doc:spawn-{safeStoryId}:*`) and on-disk paths
-        // (`.worktree/spawn-story-{safeStoryId}-*`, `storyworkspaces/{spawn.Id}/`,
-        // `attachments/{spawn.Id}/`) are PREDICTABLE. If a previous
+        // (`plan-doc:spawn-{safeStoryId}:*`), worktree slug space
+        // (`.worktree/plan-{key}`, `.worktree/qa-{safeStoryId}`,
+        // `.worktree/stage-{n.n}-{title}`), and stash dirs
+        // (`storyworkspaces/{spawn.Id}/`, `attachments/{spawn.Id}/`) are
+        // PREDICTABLE. If a previous
         // DeleteSpawn ran but partially failed (HTTP RequestAborted, FK
         // exception mid-batch, race with an in-flight agent writing a
         // deliverable AFTER step 6 ran), residual rows / files survive
@@ -1200,26 +1202,11 @@ public static class StoriesEndpoints
 
         var storyGitOps = ctx.RequestServices.GetService<IStoryGitOps>();
 
-        // Phase 50 fix — `git worktree list` can be out of sync with what's
-        // actually on disk (e.g., after a process crash or manual rm). The
-        // plan/qa worktrees survived the original cleanup because
-        // RemoveWorktreeAsync silently no-ops when the branch isn't in
-        // `git worktree list --porcelain` output. Defensive cleanup:
-        // (a) try the IStoryGitOps path (handles registered worktrees),
-        // (b) ALSO compute the expected `.worktree/spawn-{sanitized}/`
-        //     path and force-delete the directory if it exists,
-        // (c) prune git's worktree metadata so a re-spawn doesn't get
-        //     "fatal: '...' already exists" on the next `git worktree add`.
-        static string SanitizeForWorktree(string branch)
-        {
-            var sb = new System.Text.StringBuilder(branch.Length);
-            foreach (var c in branch)
-            {
-                sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
-            }
-            return sb.ToString().Trim('-');
-        }
-
+        // Cleanup strategy:
+        // (a) IStoryGitOps.RemoveWorktreeAsync — uses `git worktree list`
+        //     to find whatever path is registered against the branch, so
+        //     this handles operator-customised layouts as well.
+        // (b) Local branch ref + remote-branch delete.
         async Task CleanBranchAsync(string? branch)
         {
             if (string.IsNullOrEmpty(branch) || !cleanedBranches.Add(branch)) return;
@@ -1233,25 +1220,7 @@ public static class StoriesEndpoints
             }
             if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
             {
-                // Force-cleanup the expected on-disk worktree path even
-                // when `git worktree list` doesn't know about it. Plan +
-                // QA worktrees use the legacy `spawn-{sanitized}/` shape
-                // (Phase 49 only renamed engineer workstream paths).
-                var sanitized = SanitizeForWorktree(branch);
-                var legacyWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{sanitized}");
-                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", legacyWtPath);
-                if (Directory.Exists(legacyWtPath))
-                {
-                    try { Directory.Delete(legacyWtPath, recursive: true); }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex,
-                            "DeleteSpawn: could not raw-delete worktree dir {Path}; will be pruned next claim.",
-                            legacyWtPath);
-                    }
-                }
                 await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
-
                 await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "branch", "-D", branch);
                 var pushRc = await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "push", "origin", "--delete", branch);
                 if (pushRc != 0)
@@ -1280,42 +1249,21 @@ public static class StoriesEndpoints
             await CleanBranchAsync(pr.Branch);
         }
 
-        // Phase 51 Fix 6a — clean base-branch worktrees. `RealStoryGitOps.MergeAsync`
-        // creates `spawn-{baseBranch}` (when an EnsureBranchAsync worktree
-        // already exists) or `spawn-merge-{baseBranch}` (fallback). These
-        // worktrees survived every prior DeleteSpawn run because the old
-        // code at section 9 below claimed "Base branches don't have
-        // spawn-specific worktrees" — observed 2026-05-12 with 14 stale
-        // dirs in `E:\forge\update\.worktree\` including `spawn-feature-history`
-        // / `spawn-feature-memory-pressure` / `spawn-merge-feature-memory-pressure`.
-        // We always remove the WORKTREE dirs; the base branch's REF
-        // delete is still gated by `deleteBase=true` at section 9 below.
-        //
-        // Phase 55 — the previous Fix 6a.1 (`RemoveWorktreeAsync(repo,
-        // spawn.BaseBranch, ...)`) was REMOVED. Its comment claimed it
-        // cleaned the `spawn-{base}` worktree EnsureBranchAsync created,
-        // but Phase 49 long since stopped creating that worktree from
-        // EnsureBranchAsync (RealStoryGitOps.cs:62-119 just pushes a ref).
-        // What it actually did was: ask `git worktree list` for the worktree
-        // on `main`, get back the cloneRoot itself, then
-        // `Directory.Delete(cloneRoot, recursive: true)` → wipe the whole
-        // repo including `.git`. The user observed this on 2026-05-13 when
-        // DeleteSpawn on `code-intelligence:AGENT-MEMORY` wiped
-        // `E:\forge\workflow`. The merge fallback (`spawn-merge-{base}`)
-        // at 6a.1 below and the legacy `spawn-{base}` at 6a.2 below cover
-        // every linked-worktree shape we ever materialize for the base
-        // branch. The main worktree is the cloneRoot and is never owned
-        // by a single spawn.
+        // Clean the base-branch merge worktree. `RealStoryGitOps.MergeAsync`
+        // materialises `.worktree/merge-{baseBranch}` when no other worktree
+        // is registered on the base. The main worktree (cloneRoot) is
+        // intentionally NOT touched — it isn't owned by a single spawn and
+        // would wipe the whole repo (observed 2026-05-13 on
+        // code-intelligence:AGENT-MEMORY: a prior `RemoveWorktreeAsync(repo,
+        // BaseBranch)` call deleted `E:\forge\workflow` including `.git`).
         if (!string.IsNullOrEmpty(spawn.BaseBranch)
             && repo is not null
             && !string.IsNullOrEmpty(repo.CloneRoot)
             && Directory.Exists(repo.CloneRoot))
         {
-            // 6a.1 — Force-cleanup the `spawn-merge-{base}` fallback dir
-            // that MergeAsync materialized. Even with Fix 6b removing
-            // these post-sync, prior installations left them on disk.
-            var mergeSanitized = SanitizeForWorktree($"merge-{spawn.BaseBranch}");
-            var mergeWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{mergeSanitized}");
+            var mergeWtPath = Path.Combine(
+                repo.CloneRoot, ".worktree",
+                $"merge-{spawn.BaseBranch.Replace('/', '-')}");
             if (Directory.Exists(mergeWtPath))
             {
                 await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", mergeWtPath);
@@ -1327,27 +1275,6 @@ public static class StoriesEndpoints
                         logger.LogWarning(ex,
                             "DeleteSpawn: could not raw-delete merge worktree dir {Path}; will be pruned on next claim.",
                             mergeWtPath);
-                    }
-                }
-                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
-            }
-
-            // 6a.2 — Also force-cleanup the legacy `spawn-{base}` dir
-            // (created pre-Phase 49 by EnsureBranchAsync). RemoveWorktreeAsync
-            // skips it if `git worktree list` doesn't know about it.
-            var baseSanitized = SanitizeForWorktree(spawn.BaseBranch);
-            var baseWtPath = Path.Combine(repo.CloneRoot, ".worktree", $"spawn-{baseSanitized}");
-            if (Directory.Exists(baseWtPath))
-            {
-                await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "remove", "--force", baseWtPath);
-                if (Directory.Exists(baseWtPath))
-                {
-                    try { Directory.Delete(baseWtPath, recursive: true); }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex,
-                            "DeleteSpawn: could not raw-delete legacy base worktree dir {Path}; will be pruned on next claim.",
-                            baseWtPath);
                     }
                 }
                 await WorkstreamsEndpoints.RunGitQuietAsync(repo.CloneRoot, "worktree", "prune");
@@ -3744,8 +3671,8 @@ public static class StoriesEndpoints
         var safeStoryId = StoryPaths.Safe(storyId);
         var relPath = $"docs/stories/{safeStoryId}/{key.ToLowerInvariant()}.md";
 
-        // Phase 42 — read source priority:
-        //   1. Worktree   — `{repo.CloneRoot}/.worktree/spawn-{sanitizedPlanBranch}/{relPath}`
+        // Read source priority:
+        //   1. Worktree   — `{repo.CloneRoot}/.worktree/{planSlug}/{relPath}`
         //                   The architect's gen↔eval loop reads + writes here every
         //                   iteration. This is the LIVE agent state; show it first.
         //   2. Main       — `{repo.CloneRoot}/{relPath}` after the plan PR merges.
@@ -3760,14 +3687,14 @@ public static class StoriesEndpoints
             : ForgeSeed.FindRepoRoot();
 
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
-        // Phase 53 — sequential-mode docs live in `.worktree/plan-{key}`
-        // (canonical worktree slug). Legacy spawns continue to use the
-        // hash-derived `spawn-{branch-slug}` layout via ComputeWorktreePath.
+        // Sequential-mode docs live in `.worktree/plan-{key}`; legacy
+        // parallel-mode spawns share a single `.worktree/plan` directory.
         var isSequential = PlanDocStateHelpers.IsSequentialMode(spawn)
             && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key);
-        var worktreePath = isSequential
-            ? Path.Combine(cloneRoot, ".worktree", PlanDocStateHelpers.CanonicalDocWorktreeSlug(key))
-            : ComputeWorktreePath(cloneRoot, planBranch);
+        var planSlug = isSequential
+            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
+            : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
+        var worktreePath = Path.Combine(cloneRoot, ".worktree", planSlug);
         var worktreeFilePath = Path.Combine(worktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
 
         // (1) Worktree — live agent state. Highest priority.
@@ -3831,24 +3758,6 @@ public static class StoriesEndpoints
             exists = false,
             source = (string?)null,
         });
-    }
-
-    /// <summary>
-    /// Phase 42 — keep this in sync with <c>RealStoryGitOps.WorktreePath</c> +
-    /// <c>SanitizeBranchSlug</c>. The architect strategy creates the worktree
-    /// at this path; the artifact-content endpoint must read from the same
-    /// path or the UI will show stale committed content while the agent is
-    /// mid-iteration.
-    /// </summary>
-    private static string ComputeWorktreePath(string cloneRoot, string branch)
-    {
-        var sb = new System.Text.StringBuilder(branch.Length);
-        foreach (var c in branch)
-        {
-            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
-        }
-        var slug = sb.ToString().Trim('-');
-        return Path.Combine(cloneRoot, ".worktree", $"spawn-{slug}");
     }
 
     /// <summary>
