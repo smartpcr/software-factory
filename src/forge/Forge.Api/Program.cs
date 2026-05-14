@@ -556,6 +556,12 @@ using (var scope = app.Services.CreateScope())
     // belt-and-suspenders + corrective for live rows). Self-idempotent
     // via the SQL WHERE clause; safe to re-run on every boot.
     await Phase60Migration.ApplyAsync(db);
+    // Phase 63 — PausedFromPhase on story_spawns, PausedFromStatus on
+    // workstreams for spawn-level pause / resume. Must run BEFORE
+    // Phase38 because EF's model now includes these columns — any EF
+    // query against story_spawns or workstreams will fail if the
+    // columns don't exist yet.
+    await Phase63Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

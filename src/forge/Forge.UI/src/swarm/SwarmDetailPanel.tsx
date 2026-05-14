@@ -217,16 +217,22 @@ function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail
   }
   if (sel.kind === 'doc') {
     const tabs: DetailTab[] = ['overview', 'document', 'conv'];
-    if (detail.spawn.planPrId) tabs.push('pr');
+    // Phase 53 — sequential mode stores per-doc PRs in planDocPrs; legacy
+    // mode uses a single planPrId. Show the PR tab when either source has a
+    // PR for the selected doc.
+    const docKey = sel.id?.startsWith('doc:') ? sel.id.slice(4) : sel.id;
+    const hasDocPr = detail.spawn.planDocPrs?.some(
+      (d) => d.key === docKey && d.prId,
+    );
+    if (hasDocPr || detail.spawn.planPrId) tabs.push('pr');
     tabs.push('worktree');
     if (questionCount > 0) tabs.push('questions');
     return tabs;
   }
-  // Workstream (phase) selection
+  // Workstream (phase) selection — always show PR tab so the operator
+  // sees "No PR linked yet" rather than a missing tab.
   if (sel.kind === 'phase') {
-    const tabs: DetailTab[] = ['overview', 'conv'];
-    const ws = detail.workstreams.find((w) => w.id === sel.id);
-    if (ws && ws.prs.length > 0) tabs.push('pr');
+    const tabs: DetailTab[] = ['overview', 'conv', 'pr'];
     tabs.push('worktree');
     if (questionCount > 0) tabs.push('questions');
     if (mode === 'impl') tabs.push('qa', 'trace');
@@ -797,16 +803,24 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
     : null;
   const isWsCurrentlyAssigned = !isWorkstream || (() => {
     const s = wsRowForOverview?.status ?? '';
-    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete';
+    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete' || s === 'stalled';
   })();
 
   // Agent identity — prefer prompt-derived agent info (matches what the
   // system/user prompt sections display) over snapshot/API data which may
   // be from a different iteration with different round-robin agents.
+  // Phase 53 follow-up: when the live snapshot hasn't loaded yet (worktree
+  // setup failed before gen/eval started), fall back to the workstream
+  // summary's latestGenAgentId / latestEvalAgentId so the overview always
+  // shows the last known or assigned agent pair.
   const promptGenId = latestPrompts.gen?.agentId ?? null;
   const promptEvalId = latestPrompts.ev?.agentId ?? null;
-  const fallbackGenId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
-  const fallbackEvalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
+  const fallbackGenId = isWorkstream
+    ? (snapshot?.generatorAgentId ?? wsRowForOverview?.latestGenAgentId ?? null)
+    : (docGen?.agentId ?? null);
+  const fallbackEvalId = isWorkstream
+    ? (snapshot?.evaluatorAgentId ?? wsRowForOverview?.latestEvalAgentId ?? null)
+    : (docEval?.agentId ?? null);
   const rawGenId = promptGenId ?? fallbackGenId;
   const rawEvalId = promptEvalId ?? fallbackEvalId;
   const genId = isWsCurrentlyAssigned ? rawGenId : null;
@@ -818,12 +832,12 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
     ? '— not assigned —'
     : promptGenId
       ? (agentNames[promptGenId] ?? promptGenId)
-      : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
+      : (isWorkstream ? (snapshot?.generatorAgentName ?? agentNames[fallbackGenId ?? ''] ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
   const evalName = !isWsCurrentlyAssigned
     ? '— not assigned —'
     : promptEvalId
       ? (agentNames[promptEvalId] ?? promptEvalId)
-      : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
+      : (isWorkstream ? (snapshot?.evaluatorAgentName ?? agentNames[fallbackEvalId ?? ''] ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
   const genModel = !isWsCurrentlyAssigned
     ? null
     : latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
@@ -1046,7 +1060,15 @@ function QuestionsPane({ workItemId }: { workItemId: string }) {
 
 function PrPane({ detail, selection }: { detail: StorySpawnDetail; selection: Selection }) {
   const prIds = useMemo(() => {
-    if (selection.kind === 'doc' && detail.spawn.planPrId) return [detail.spawn.planPrId];
+    if (selection.kind === 'doc') {
+      // Phase 53 — sequential mode: look up the per-doc PR first.
+      const docKey = selection.id?.startsWith('doc:') ? selection.id.slice(4) : selection.id;
+      const docEntry = detail.spawn.planDocPrs?.find((d) => d.key === docKey);
+      if (docEntry?.prId) return [docEntry.prId];
+      // Legacy single-PR fallback.
+      if (detail.spawn.planPrId) return [detail.spawn.planPrId];
+      return [];
+    }
     if (selection.kind === 'phase') {
       const ws = detail.workstreams.find((w) => w.id === selection.id);
       return ws?.prs ?? [];

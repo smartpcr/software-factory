@@ -248,6 +248,14 @@ public class WorkstreamRow
     /// blocked before this column existed — backfilled to null).
     /// </summary>
     public string? StallReason { get; set; }
+
+    /// <summary>
+    /// Phase 63 — stores the status the workstream was in before the
+    /// spawn-level pause. <c>null</c> unless <see cref="Status"/> is
+    /// <c>"paused"</c>. The spawn resume endpoint restores
+    /// <see cref="Status"/> to this value and clears the field.
+    /// </summary>
+    public string? PausedFromStatus { get; set; }
 }
 
 public class WsEventRow
@@ -2522,6 +2530,14 @@ public class StorySpawnRow
     /// spawn"; non-null scopes the pin to one specific doc / workstream.</para>
     /// </summary>
     public string? DecisionPinsJson { get; set; }
+
+    /// <summary>
+    /// Phase 63 — stores the phase the spawn was in before the operator
+    /// paused it. <c>null</c> unless <see cref="Phase"/> is <c>"paused"</c>.
+    /// The resume endpoint restores <see cref="Phase"/> to this value and
+    /// clears the field.
+    /// </summary>
+    public string? PausedFromPhase { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>
@@ -2550,6 +2566,16 @@ public static class StorySpawnPhases
     /// <c>An error occurred while saving the entity changes</c>.
     /// </summary>
     public const string Deleting = "deleting";
+
+    /// <summary>
+    /// Phase 63 — operator-initiated pause. The orchestrator's <c>switch</c>
+    /// does not match this value so <see cref="Forge.Api.Services.Stories.StorySpawnOrchestrator.RunOneStepAsync"/>
+    /// no-ops. All in-flight agents are killed and workstreams are set to
+    /// <c>Status="paused"</c> on entry. The resume endpoint restores
+    /// <see cref="StorySpawnRow.PausedFromPhase"/> and flips workstreams back
+    /// to their prior status.
+    /// </summary>
+    public const string Paused = "paused";
 
     /// <summary>
     /// Ordered phase list. Phase rollback is rejected (Phase 28 non-goal),

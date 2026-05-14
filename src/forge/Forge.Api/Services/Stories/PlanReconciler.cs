@@ -159,6 +159,7 @@ public sealed class PlanReconciler
         var active = existing
             .Where(w => w.Status != WorkstreamStatuses.Historic
                      && w.Status != "cancelled"
+                     && w.Status != "paused"
                      && !string.IsNullOrEmpty(w.PlanAnchor))
             .ToDictionary(w => w.PlanAnchor!, StringComparer.Ordinal);
 
@@ -245,6 +246,7 @@ public sealed class PlanReconciler
         var legacyUnanchored = existing
             .Where(w => w.Status != WorkstreamStatuses.Historic
                      && w.Status != "cancelled"
+                     && w.Status != "paused"
                      && string.IsNullOrEmpty(w.PlanAnchor))
             .ToList();
 
@@ -638,7 +640,8 @@ public sealed class PlanReconciler
             .AsNoTracking()
             .Where(w => w.StorySpawnId == spawnId
                      && w.Status != WorkstreamStatuses.Historic
-                     && w.Status != "cancelled")
+                     && w.Status != "cancelled"
+                     && w.Status != "paused")
             .ToListAsync(ct);
 
         var orderedAnchors = planByAnchor.Keys.ToList();

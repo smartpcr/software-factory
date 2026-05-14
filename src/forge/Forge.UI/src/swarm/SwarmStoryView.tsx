@@ -13,6 +13,7 @@ import { Toaster } from '@/board/Toaster';
 function modeForPhase(p: StorySpawnPhase): SwarmMode {
   if (p === 'plan' || p === 'decompose') return 'design';
   if (p === 'done') return 'release';
+  if (p === 'paused') return 'impl';
   return 'impl';
 }
 
@@ -161,8 +162,53 @@ export function SwarmStoryView() {
             <div className="swarm-header-slim-eyebrow">SWARM CONTROL // {detail.spawn.storyId}</div>
             <h1 className="swarm-header-slim-title">{detail.spawn.storyTitle.toUpperCase()}</h1>
             <div className="swarm-header-slim-sub">
-              phase · {detail.spawn.phase.toUpperCase()} · {detail.workstreams.length} workstreams · repo {detail.spawn.repoId ?? '—'}
-            </div>
+             phase · {detail.spawn.phase.toUpperCase()}
+             {detail.spawn.phase === 'paused' && detail.spawn.pausedFromPhase
+               ? ` (from ${detail.spawn.pausedFromPhase})`
+               : ''}
+             {' '}· {detail.workstreams.length} workstreams · repo {detail.spawn.repoId ?? '—'}
+             {detail.spawn.phase !== 'done' && (
+               <button
+                 type="button"
+                 style={{
+                   marginLeft: 12,
+                   padding: '2px 10px',
+                   fontSize: 10,
+                   fontFamily: 'var(--sc-font-display)',
+                   letterSpacing: '0.12em',
+                   background: detail.spawn.phase === 'paused' ? 'rgba(80,200,120,0.15)' : 'rgba(255,180,0,0.12)',
+                   color: detail.spawn.phase === 'paused' ? '#50c878' : '#ffb400',
+                   border: `1px solid ${detail.spawn.phase === 'paused' ? 'rgba(80,200,120,0.3)' : 'rgba(255,180,0,0.25)'}`,
+                   borderRadius: 3,
+                   cursor: 'pointer',
+                   verticalAlign: 'middle',
+                 }}
+                 title={detail.spawn.phase === 'paused'
+                   ? `Resume spawn (restore to ${detail.spawn.pausedFromPhase ?? 'prior'} phase)`
+                   : 'Pause spawn — stop all agents and workstreams'}
+                 onClick={async () => {
+                   const action = detail.spawn.phase === 'paused' ? 'resume' : 'pause';
+                   if (!confirm(`${action === 'pause' ? '⏸ Pause' : '▶ Resume'} spawn "${detail.spawn.storyTitle}"?\n\n${
+                     action === 'pause'
+                       ? 'This will kill all running agents and pause every workstream.'
+                       : 'This will restore the prior phase and resume all paused workstreams.'
+                   }`)) return;
+                   try {
+                     if (action === 'pause') {
+                       await forgeApi.pauseStorySpawn(storyId);
+                     } else {
+                       await forgeApi.resumeStorySpawn(storyId);
+                     }
+                     useSpawnStore.getState().bump(storyId);
+                   } catch (e: any) {
+                     useToastStore.getState().show(`${action} failed: ${e?.message ?? e}`, 'danger');
+                   }
+                 }}
+               >
+                 {detail.spawn.phase === 'paused' ? '▶ RESUME' : '⏸ PAUSE'}
+               </button>
+             )}
+           </div>
           </div>
           {selection.kind === 'phase' && selection.id && (() => {
             const ws = detail.workstreams.find((w) => w.id === selection.id);

@@ -55,7 +55,7 @@ import type {
 } from '@/workitems/workItemTypes';
 
 // forge_implementation.md Phase 28 — story spawn types.
-export type StorySpawnPhase = 'plan' | 'decompose' | 'implement' | 'review' | 'qa' | 'done';
+export type StorySpawnPhase = 'plan' | 'decompose' | 'implement' | 'review' | 'qa' | 'done' | 'paused';
 
 export interface StorySpawn {
   id: string;
@@ -85,6 +85,12 @@ export interface StorySpawn {
   lastErrorAt?: string | null;
   /** Phase 43 — operator-uploaded reference documents. */
   attachments?: StoryAttachment[];
+  /** Phase 53 — per-doc PRs for sequential plan-doc spawns.
+   *  Null on legacy (single-PR) spawns. UI prefers this over planPrId. */
+  planDocPrs?: { key: string; branch: string | null; prId: string | null }[] | null;
+  /** Phase 63 — the phase the spawn was in before the operator paused it.
+   *  Null unless phase === 'paused'. */
+  pausedFromPhase?: string | null;
 }
 
 export interface StorySpawnWorkstreamSummary {
@@ -190,7 +196,13 @@ export interface StorySpawnDecomposeWorkstream {
 }
 
 export interface StorySpawnArtifacts {
-  plan: { branch: string | null; pr: string | null; files: string[] };
+  plan: {
+    branch: string | null;
+    pr: string | null;
+    /** Phase 53 — per-doc PRs. Null on legacy spawns. */
+    docs?: { key: string; branch: string | null; prId: string | null }[] | null;
+    files: string[];
+  };
   decompose: { approved: boolean; json: string | null };
   implement: { prs: string[]; workstreams: string[] };
   review: { prs: string[] };
@@ -1249,6 +1261,24 @@ export const forgeApi = {
 
   async dismissStorySpawnError(storyId: string): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/dismiss-error`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Phase 63 — POST /api/stories/{storyId}/spawn/pause — hard-pause the
+   *  entire spawn, killing all in-flight agents and pausing workstreams. */
+  async pauseStorySpawn(storyId: string): Promise<{ id: string; status: string; pausedFromPhase: string; workstreamsPaused: number }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/pause`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Phase 63 — POST /api/stories/{storyId}/spawn/resume — resume a paused
+   *  spawn, restoring the prior phase and workstream statuses. */
+  async resumeStorySpawn(storyId: string): Promise<{ id: string; status: string; phase: string; workstreamsResumed: number }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/resume`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });

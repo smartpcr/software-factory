@@ -104,6 +104,12 @@ public static class StoriesEndpoints
         // implementation-plan artifact, scheduler tick) cover automatic cases; this one is for
         // operator-driven recovery after a manual edit on the plan branch.
         grp.MapPost("/{storyId}/spawn/reconcile", Reconcile).WithName("ReconcileStorySpawn");
+        // Phase 63 — spawn-level pause / resume. Pausing sets phase="paused",
+        // kills all in-flight agents across workstreams + plan-doc synthetic
+        // tasks, and sets every active workstream to Status="paused". Resume
+        // restores the prior phase and workstream statuses.
+        grp.MapPost("/{storyId}/spawn/pause", PauseSpawn).WithName("PauseStorySpawn");
+        grp.MapPost("/{storyId}/spawn/resume", ResumeSpawn).WithName("ResumeStorySpawn");
         // Phase 50 — operator-pinned decisions that break convergence loops.
         // Pinned text is prepended to every future iter prompt for every
         // plan-doc / workstream under the spawn. Use when the evaluator keeps
@@ -4217,6 +4223,253 @@ public static class StoriesEndpoints
         return Results.Ok(new { removed });
     }
 
+    // ── Phase 63 — Pause / Resume ───────────────────────────────────────
+
+    /// <summary>
+    /// POST /api/stories/{storyId}/spawn/pause — hard-pause the entire spawn.
+    /// Saves the current phase, flips to <c>paused</c>, kills ALL in-flight
+    /// agents (workstream + plan-doc + spawn-level), and sets every
+    /// non-terminal workstream to <c>Status="paused"</c> with prior status
+    /// preserved for resume.
+    /// </summary>
+    private static async Task<IResult> PauseSpawn(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub,
+        ILoggerFactory loggerFactory)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ctx.RequestAborted);
+        if (spawn is null)
+        {
+            return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+        }
+
+        if (spawn.Phase is StorySpawnPhases.Paused or StorySpawnPhases.Done or StorySpawnPhases.Deleting)
+        {
+            return Results.Problem(
+                title: $"Cannot pause spawn in phase '{spawn.Phase}'",
+                detail: spawn.Phase == StorySpawnPhases.Paused
+                    ? "Spawn is already paused."
+                    : $"Spawn phase '{spawn.Phase}' is terminal — pause is not applicable.",
+                statusCode: 409);
+        }
+
+        var logger = loggerFactory.CreateLogger("forge.story-spawn.pause");
+
+        // 1. Save current phase and flip to "paused" early — same pattern as
+        //    "deleting" — so the orchestrator's RunOneStepAsync no-ops even if
+        //    a concurrent tick is in-flight.
+        spawn.PausedFromPhase = spawn.Phase;
+        spawn.Phase = StorySpawnPhases.Paused;
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        // Brief drain so any in-flight tick finishes its current SaveChanges
+        // before we contend for the write lock (mirrors DeleteSpawn pattern).
+        try { await Task.Delay(TimeSpan.FromSeconds(1), ctx.RequestAborted); }
+        catch (OperationCanceledException) { return Results.StatusCode(499); }
+
+        // 2. Build the full set of task IDs to cancel: workstream IDs +
+        //    spawn.Id + plan-doc synthetic IDs.
+        var workstreams = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id)
+            .ToListAsync(ctx.RequestAborted);
+
+        var planDocFiles = new[] { "architecture.md", "tech-spec.md", "implementation-plan.md", "e2e-scenarios.md" };
+        var allTaskIds = new HashSet<string>(StringComparer.Ordinal) { spawn.Id };
+        foreach (var fn in planDocFiles) allTaskIds.Add($"plan-doc:{spawn.Id}:{fn}");
+        foreach (var w in workstreams) allTaskIds.Add(w.Id);
+
+        // 3. Cancel in-flight runner invocations + open queue rows + claims.
+        var invocationsCancelled = 0;
+        foreach (var wid in allTaskIds)
+        {
+            try { invocationsCancelled += await runner.CancelByTaskAsync(wid, ctx.RequestAborted); }
+            catch { /* best-effort */ }
+        }
+
+        var nowOff = DateTimeOffset.UtcNow;
+        var openQueueRows = await db.TaskQueue
+            .Where(q => allTaskIds.Contains(q.WorkItemId)
+                && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync(ctx.RequestAborted);
+        foreach (var q in openQueueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = nowOff;
+            q.LastUpdatedAt = nowOff;
+        }
+
+        var openClaims = await db.AgentClaims
+            .Where(c => allTaskIds.Contains(c.WorkItemId) && c.ReleasedAt == null)
+            .ToListAsync(ctx.RequestAborted);
+        foreach (var c in openClaims) c.ReleasedAt = nowOff;
+
+        // 4. Pause non-terminal workstreams — preserve prior status for resume.
+        var workstreamsPaused = 0;
+        foreach (var w in workstreams)
+        {
+            if (w.Status is "cancelled" or "complete" or "merging" or WorkstreamStatuses.Historic or "paused")
+            {
+                continue;
+            }
+
+            w.PausedFromStatus = w.Status;
+            w.Status = "paused";
+            workstreamsPaused++;
+        }
+
+        // 5. Set work_item ExecutionStatus to idle for all non-terminal items
+        //    under this spawn so the orchestrator doesn't re-claim them.
+        var wiIds = allTaskIds.ToList();
+        var workItems = await db.WorkItems
+            .Where(wi => wiIds.Contains(wi.Id)
+                && wi.ExecutionStatus != ExecutionStatuses.Cancelled
+                && wi.ExecutionStatus != ExecutionStatuses.Completed)
+            .ToListAsync(ctx.RequestAborted);
+        foreach (var wi in workItems)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Idle;
+            wi.UpdatedAt = nowOff;
+        }
+
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        logger.LogInformation(
+            "Spawn {SpawnId} paused from phase '{FromPhase}'. "
+            + "Workstreams paused: {WsPaused}, invocations cancelled: {InvCancelled}, "
+            + "queue rows cancelled: {QueueCancelled}, claims released: {ClaimsReleased}.",
+            spawn.Id, spawn.PausedFromPhase, workstreamsPaused,
+            invocationsCancelled, openQueueRows.Count, openClaims.Count);
+
+        await hub.Clients.All.SendAsync(
+            "story-spawn.changed",
+            new { kind = "paused", spawn = ToContract(spawn) },
+            ctx.RequestAborted);
+
+        return Results.Ok(new
+        {
+            id = spawn.Id,
+            status = "paused",
+            pausedFromPhase = spawn.PausedFromPhase,
+            workstreamsPaused,
+            invocationsCancelled,
+            queueRowsCancelled = openQueueRows.Count,
+            claimsReleased = openClaims.Count,
+        });
+    }
+
+    /// <summary>
+    /// POST /api/stories/{storyId}/spawn/resume — resume a paused spawn.
+    /// Restores the phase from <see cref="StorySpawnRow.PausedFromPhase"/>
+    /// and flips every <c>Status="paused"</c> workstream back to its prior
+    /// status.
+    /// </summary>
+    private static async Task<IResult> ResumeSpawn(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator,
+        ILoggerFactory loggerFactory)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ctx.RequestAborted);
+        if (spawn is null)
+        {
+            return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+        }
+
+        if (spawn.Phase != StorySpawnPhases.Paused)
+        {
+            return Results.Problem(
+                title: $"Spawn is not paused (phase='{spawn.Phase}')",
+                statusCode: 409);
+        }
+
+        var fromPhase = spawn.PausedFromPhase;
+        if (string.IsNullOrEmpty(fromPhase) || StorySpawnPhases.IndexOf(fromPhase) < 0)
+        {
+            // Defensive fallback — should never happen, but don't strand the
+            // spawn if PausedFromPhase got corrupted. Default to "implement"
+            // (the most common pre-pause phase).
+            fromPhase = StorySpawnPhases.Implement;
+        }
+
+        var logger = loggerFactory.CreateLogger("forge.story-spawn.resume");
+
+        // 1. Restore phase.
+        spawn.Phase = fromPhase;
+        spawn.PausedFromPhase = null;
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+
+        // 2. Restore paused workstream statuses.
+        var workstreams = await db.Workstreams
+            .Where(w => w.StorySpawnId == spawn.Id && w.Status == "paused")
+            .ToListAsync(ctx.RequestAborted);
+
+        var workstreamsResumed = 0;
+        foreach (var w in workstreams)
+        {
+            w.Status = string.IsNullOrEmpty(w.PausedFromStatus) ? "active" : w.PausedFromStatus;
+            w.PausedFromStatus = null;
+            workstreamsResumed++;
+        }
+
+        // 3. Ensure work items are claimable again (idle, not cancelled/completed).
+        var wsIds = workstreams.Select(w => w.Id).ToList();
+        if (wsIds.Count > 0)
+        {
+            var workItems = await db.WorkItems
+                .Where(wi => wsIds.Contains(wi.Id)
+                    && wi.ExecutionStatus != ExecutionStatuses.Cancelled
+                    && wi.ExecutionStatus != ExecutionStatuses.Completed)
+                .ToListAsync(ctx.RequestAborted);
+            foreach (var wi in workItems)
+            {
+                wi.ExecutionStatus = ExecutionStatuses.Idle;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+        }
+
+        await db.SaveChangesAsync(ctx.RequestAborted);
+
+        logger.LogInformation(
+            "Spawn {SpawnId} resumed to phase '{Phase}'. Workstreams resumed: {WsResumed}.",
+            spawn.Id, fromPhase, workstreamsResumed);
+
+        await hub.Clients.All.SendAsync(
+            "story-spawn.changed",
+            new { kind = "resumed", spawn = ToContract(spawn) },
+            ctx.RequestAborted);
+
+        // 4. Kick the orchestrator so it picks up work immediately instead
+        //    of waiting for the next 15 s scheduler tick.
+        _ = Task.Run(async () =>
+        {
+            try { await orchestrator.DriveAsync(storyId, CancellationToken.None); }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Post-resume DriveAsync failed for spawn {SpawnId}; scheduler will retry.", spawn.Id);
+            }
+        });
+
+        return Results.Ok(new
+        {
+            id = spawn.Id,
+            status = "resumed",
+            phase = fromPhase,
+            workstreamsResumed,
+        });
+    }
+
     private static object ToContract(StorySpawnRow row) => new
     {
         id = row.Id,
@@ -4263,6 +4516,9 @@ public static class StoriesEndpoints
         decisionPins = string.IsNullOrEmpty(row.DecisionPinsJson)
             ? (object)Array.Empty<object>()
             : System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement[]>(row.DecisionPinsJson)!,
+        // Phase 63 — the phase the spawn was in before the operator paused it.
+        // Null unless phase == "paused". UI can use this to show "paused from implement" etc.
+        pausedFromPhase = row.PausedFromPhase,
     };
 
     private static string SlugFor(string title)

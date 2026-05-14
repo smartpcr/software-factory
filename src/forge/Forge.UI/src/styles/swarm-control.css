@@ -571,7 +571,7 @@
 }
 .swarm-ctrl .story-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto auto auto;
+  grid-template-columns: 56px 1fr auto auto auto auto auto;
   align-items: stretch;
   gap: 14px;
   padding: 10px 14px;
@@ -750,6 +750,18 @@
 .swarm-ctrl .story-row .sr-delete:disabled {
   cursor: not-allowed;
   opacity: 0.4;
+}
+/* Phase 63 — pause/resume button reuses sr-delete sizing but uses amber
+ * accent on hover instead of red. The .sr-pause class overrides the
+ * destructive-red intent with a neutral amber to signal "stop, not destroy". */
+.swarm-ctrl .story-row .sr-pause:hover:not(:disabled) {
+  border-color: var(--sc-amber);
+  color: var(--sc-amber);
+  background: rgba(255, 180, 0, 0.08);
+}
+.swarm-ctrl .story-row .sr-pause:focus-visible {
+  outline: 1px solid var(--sc-amber);
+  outline-offset: 2px;
 }
 
 /* Workstream chip strip on each story row — a layered DAG of small
@@ -1607,7 +1619,7 @@
   .swarm-ctrl .mode-pane.active { grid-template-columns: 1fr; }
   .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr); }
   .swarm-ctrl .clock { display: none; }
-  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto; }
+  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto auto; }
   .swarm-ctrl .sr-score { display: none; }
   .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
   .swarm-ctrl .ov-split-r { display: none; }

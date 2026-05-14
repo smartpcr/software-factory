@@ -196,6 +196,46 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
       </div>
       <button
         type="button"
+        className="sr-delete sr-pause"
+        title={spawn.phase === 'paused'
+          ? `Resume spawn (restore to ${spawn.pausedFromPhase ?? 'prior'} phase)`
+          : 'Pause spawn — stop all agents and workstreams'}
+        aria-label={`${spawn.phase === 'paused' ? 'Resume' : 'Pause'} spawn ${spawn.storyTitle}`}
+        disabled={!detail || deleting || spawn.phase === 'done'}
+        onClick={async (e) => {
+          e.stopPropagation();
+          const action = spawn.phase === 'paused' ? 'resume' : 'pause';
+          if (!confirm(`${action === 'pause' ? '⏸ Pause' : '▶ Resume'} spawn "${spawn.storyTitle}"?\n\n${
+            action === 'pause'
+              ? 'This will kill all running agents and pause every workstream.'
+              : 'This will restore the prior phase and resume all paused workstreams.'
+          }`)) return;
+          try {
+            if (action === 'pause') {
+              await forgeApi.pauseStorySpawn(spawn.storyId);
+            } else {
+              await forgeApi.resumeStorySpawn(spawn.storyId);
+            }
+            useSpawnStore.getState().bump(spawn.storyId);
+            useSpawnStore.getState().bumpList();
+          } catch (err: any) {
+            useToastStore.getState().show(`${action} failed: ${err?.message ?? err}`, 'danger');
+          }
+        }}
+      >
+        {spawn.phase === 'paused' ? (
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" stroke="none" aria-hidden="true">
+            <path d="M5 3l8 5-8 5V3z" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" stroke="none" aria-hidden="true">
+            <rect x="3" y="2" width="3.5" height="12" rx="0.8" />
+            <rect x="9.5" y="2" width="3.5" height="12" rx="0.8" />
+          </svg>
+        )}
+      </button>
+      <button
+        type="button"
         className="sr-delete"
         title={deleting ? 'Deleting…' : 'Delete spawn (wipes workstreams, PRs, branches)'}
         aria-label={`Delete spawn ${spawn.storyTitle}`}

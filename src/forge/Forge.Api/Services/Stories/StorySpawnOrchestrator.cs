@@ -1140,7 +1140,7 @@ public sealed class StorySpawnOrchestrator
         // preserved per Phase 42).
         foreach (var ws in workstreams)
         {
-            if (ws.Status is "complete" or "cancelled" or "merging" or WorkstreamStatuses.Historic)
+            if (ws.Status is "complete" or "cancelled" or "paused" or "merging" or WorkstreamStatuses.Historic)
             {
                 continue;
             }
@@ -1368,7 +1368,7 @@ public sealed class StorySpawnOrchestrator
         if (workstreams.Count == 0) return;
 
         var nameToId = workstreams
-            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .Where(w => w.Status != "cancelled" && w.Status != "paused" && w.Status != WorkstreamStatuses.Historic)
             .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
 
@@ -1568,7 +1568,7 @@ public sealed class StorySpawnOrchestrator
             .Where(d => workstreams.Select(w => w.Id).Contains(d.WorkstreamId))
             .ToListAsync(ct);
         var nameToId = workstreams
-            .Where(w => w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .Where(w => w.Status != "cancelled" && w.Status != "paused" && w.Status != WorkstreamStatuses.Historic)
             .GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
         var depsByWs = fkDeps
@@ -1634,7 +1634,7 @@ public sealed class StorySpawnOrchestrator
             // sat indefinitely after 1.1/1.2/1.3 completed because the
             // skip list excluded them. "stalled" stays in the skip
             // list because that IS the operator-attention state.
-            if (w.Status is "review" or "merging" or "complete" or "cancelled" or WorkstreamStatuses.Stalled) continue;
+            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "paused" or WorkstreamStatuses.Stalled) continue;
 
             // Block until every dep is merged. Reads from the merged
             // depsByWs map (FK table + DepsJson title fallback) so a
@@ -2308,7 +2308,7 @@ public sealed class StorySpawnOrchestrator
     AfterProduce:
         // Re-check status: operator may have cancelled mid-loop.
         var freshRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
-        if (freshRow is null || freshRow.Status is "cancelled")
+        if (freshRow is null || freshRow.Status is "cancelled" or "paused")
         {
             this.logger?.LogInformation(
                 "Workstream {WsId} was cancelled during gen/eval; skipping commit + PR.", w.Id);
@@ -2900,7 +2900,7 @@ public sealed class StorySpawnOrchestrator
 
         // Don't overwrite a terminal/operator-set state. Same guard the
         // BuildFailedException path in DriveImplementAsync uses.
-        if (w.Status is not "cancelled" and not "complete")
+        if (w.Status is not "cancelled" and not "paused" and not "complete")
         {
             w.Status = WorkstreamStatuses.Stalled;
             w.StallReason =

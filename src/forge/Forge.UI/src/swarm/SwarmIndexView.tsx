@@ -52,7 +52,7 @@ const FILTER_CHIPS: { key: PhaseFilter; label: string }[] = [
 type ChipCounts = Record<Exclude<PhaseFilter, 'all'>, number>;
 
 const ZERO_COUNTS: ChipCounts = {
-  plan: 0, decompose: 0, implement: 0, review: 0, qa: 0, done: 0,
+  plan: 0, decompose: 0, implement: 0, review: 0, qa: 0, done: 0, paused: 0,
 };
 
 function countsForSpawn(d: StorySpawnDetail): ChipCounts {
@@ -238,7 +238,7 @@ export function SwarmIndexView() {
     // "where is each story today" stat; mixing in task totals here would
     // double-count against the chips below.
     const spawnPhaseCounts: Record<StorySpawnPhase, number> = {
-      plan: 0, decompose: 0, implement: 0, review: 0, qa: 0, done: 0,
+      plan: 0, decompose: 0, implement: 0, review: 0, qa: 0, done: 0, paused: 0,
     };
     for (const s of spawns) spawnPhaseCounts[s.phase]++;
     const totalPhases = spawns.length * 6;

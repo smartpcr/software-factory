@@ -108,6 +108,7 @@ public sealed class SpawnDependencyScheduler : BackgroundService
             // closed, so this remains effectively a one-shot per spawn.
             active = await db.StorySpawns
                 .AsNoTracking()
+                .Where(s => s.Phase != StorySpawnPhases.Paused)
                 .Select(s => new ValueTuple<string, string>(s.StoryId, s.Id))
                 .ToListAsync(ct);
         }

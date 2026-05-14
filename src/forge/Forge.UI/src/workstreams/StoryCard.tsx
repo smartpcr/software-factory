@@ -24,6 +24,7 @@ const PHASE_LABELS: Record<StorySpawnPhase, string> = {
   review: 'REVIEW',
   qa: 'QA',
   done: 'DONE',
+  paused: 'PAUSED',
 };
 
 export function StoryCard({ storyId, defaultExpanded = false }: Props) {
@@ -255,6 +256,7 @@ function phaseBadgeStyle(phase: StorySpawnPhase): React.CSSProperties {
     review: ['#5f4d2d', '#ffd57c'],
     qa: ['#5f2d3a', '#ff7caa'],
     done: ['#3d3d3d', '#a0a0a0'],
+    paused: ['#5f4d00', '#ffb400'],
   };
   const [bg, fg] = phaseColors[phase];
   return {
