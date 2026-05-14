@@ -356,13 +356,14 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           )}
         </div>
       )}
-      {iterKpis.length > 0 && (
-        <IterKpiStrip
-          iters={iterKpis}
-          activeIter={activeIterNumber}
-          onSelectIter={handleSelectKpiIter}
-        />
-      )}
+      {/* Always render KPI strip — shows placeholder row when no
+       * iterations exist yet, so the visual structure matches the
+       * active-workstream layout from day one. */}
+      <IterKpiStrip
+        iters={iterKpis}
+        activeIter={activeIterNumber}
+        onSelectIter={handleSelectKpiIter}
+      />
       <ContextUsageBar roles={memoryRoles} />
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
@@ -434,7 +435,7 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
         </button>
       </nav>
 
-      {totalIters > 1 && (
+      {totalIters > 0 && (
         <nav className="live-exec__iter-pager" aria-label="Iteration pager">
           <button
             type="button"

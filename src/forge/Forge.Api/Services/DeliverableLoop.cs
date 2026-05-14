@@ -192,6 +192,18 @@ public static class GeneratorFailureKinds
     public const string Other = "generator-failed";
 
     /// <summary>
+    /// Phase 64 — a single tool call (one ToolExecutionStartEvent without
+    /// a matching ToolExecutionCompleteEvent) ran longer than
+    /// <c>AgentRunnerOptions.PerTurnTimeout</c>. Distinct from
+    /// <see cref="Inactive"/> (which fires when the whole transport
+    /// goes silent including between tools) and from <see cref="Timeout"/>
+    /// (per-invocation wall clock). Recovery: investigate the named
+    /// tool (e.g. a hung build / test subprocess) rather than bumping
+    /// budgets.
+    /// </summary>
+    public const string StuckToolCall = "generator-stuck-tool-call";
+
+    /// <summary>
     /// Classify a free-form Failed-event error message into one of the
     /// kinds above. Pattern-matching is conservative: we look for the
     /// exact phrases the dispatcher emits (see
@@ -209,6 +221,14 @@ public static class GeneratorFailureKinds
             || error.Contains("max-turns", StringComparison.OrdinalIgnoreCase))
         {
             return MaxTurns;
+        }
+        // Phase 64 — stuck-tool-call must be checked BEFORE the generic
+        // "exceeded budget" pattern, because the dispatcher's stuck-tool
+        // message also contains "exceeded" (per-turn budget).
+        if (error.Contains("stuck on tool", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("per-turn budget", StringComparison.OrdinalIgnoreCase))
+        {
+            return StuckToolCall;
         }
         if (error.Contains("hard timeout", StringComparison.OrdinalIgnoreCase)
             || error.Contains("exceeded", StringComparison.OrdinalIgnoreCase) && error.Contains("budget", StringComparison.OrdinalIgnoreCase))
@@ -572,6 +592,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
                     GenCostUsd = gen.CostUsd,
                     EvalCostUsd = 0m,
+                    // Phase 64 — persist the classifier + raw error so
+                    // StorySpawnOrchestrator's stall handler can put the
+                    // real cause on workstreams.StallReason instead of
+                    // the generic "verdict='stalled'" text.
+                    FailureKind = failKind,
+                    FailureReason = gen.FailureReason,
                     CreatedAt = DateTimeOffset.UtcNow,
                 };
                 this.db.Deliverables.Add(stalledRow);

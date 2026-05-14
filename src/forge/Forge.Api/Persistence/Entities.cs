@@ -973,6 +973,30 @@ public class DeliverableRow
 
     public string? JudgeNotes { get; set; }
 
+    /// <summary>
+    /// Phase 64 — when <see cref="Verdict"/> is <c>stalled</c> and the
+    /// underlying generator invocation aborted (per-task max-turns cap,
+    /// hard wall-clock timeout, transport silent, CLI crash), this carries
+    /// the <see cref="Services.GeneratorFailureKinds"/> classifier value
+    /// (e.g. <c>generator-timeout</c>, <c>generator-max-turns</c>,
+    /// <c>generator-inactive</c>). Null on non-failure rows. Lets the
+    /// stall handlers surface the underlying cause on
+    /// <see cref="WorkstreamRow.StallReason"/> instead of writing the
+    /// generic "Evaluator terminal verdict 'stalled'" text that hides
+    /// the actual reason from the operator.
+    /// </summary>
+    public string? FailureKind { get; set; }
+
+    /// <summary>
+    /// Phase 64 — the free-form provider error string that produced
+    /// <see cref="FailureKind"/> (e.g. <c>"Copilot SDK hard timeout:
+    /// exceeded 16m budget"</c>). Captured verbatim from the
+    /// dispatcher's Failed event so the operator sees the actual
+    /// numbers (16 min, 5.2 min, 90 turns) without parsing prose
+    /// out of <see cref="Notes"/>.
+    /// </summary>
+    public string? FailureReason { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 

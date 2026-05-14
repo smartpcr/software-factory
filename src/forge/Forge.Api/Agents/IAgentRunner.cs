@@ -41,6 +41,18 @@ public interface IAgentRunner
     /// </summary>
     Task<int> CancelByTaskAsync(string taskId, CancellationToken ct);
 
+    /// <summary>
+    /// Phase 64 — true when at least one invocation tied to <paramref name="taskId"/>
+    /// is still alive in-process. Used by <c>ImplSpawnGuard</c>'s
+    /// "in-flight overran budget" branch so we don't double-dispatch a
+    /// workstream whose original SDK invocation is still ticking. The
+    /// 22:18:34-style concurrent dispatch observed 2026-05-14 on
+    /// local:UPDATE-HISTORY-IN-CL impl stages doubled token spend with
+    /// no forward progress; this is the in-process companion to the
+    /// transcript-event-based guard.
+    /// </summary>
+    bool IsTaskActive(string taskId);
+
     /// <summary>Halt the agent's task pickup loop. Live invocations run to completion.</summary>
     Task PauseAsync(string agentId, CancellationToken ct);
 

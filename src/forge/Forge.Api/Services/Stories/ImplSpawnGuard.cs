@@ -100,12 +100,23 @@ internal static class ImplSpawnGuard
     /// <summary>
     /// Decide whether a fresh impl spawn is allowed for <paramref name="workstreamId"/>.
     /// </summary>
+    /// <param name="isInvocationActive">
+    /// Phase 64 — optional in-process check ("is there a live SDK
+    /// invocation tied to this taskId right now?"). When supplied AND
+    /// the in-flight branch overruns its budget+slack window, the guard
+    /// still refuses to Allow if this delegate reports the invocation
+    /// is alive — preventing the concurrent dispatch observed
+    /// 2026-05-14 on local:UPDATE-HISTORY-IN-CL where a second agent
+    /// was started while the first was still 63 s short of its own
+    /// 16-min timeout. Null = original behaviour (transcript-only).
+    /// </param>
     public static async Task<Result> CheckAsync(
         ForgeDbContext db,
         string workstreamId,
         int wsPoints,
         DateTimeOffset now,
-        CancellationToken ct)
+        CancellationToken ct,
+        Func<string, bool>? isInvocationActive = null)
     {
         // Pull the small set of impl-spawn events for this WI in one query —
         // there's typically a handful of rows; sorting in memory avoids
@@ -161,9 +172,21 @@ internal static class ImplSpawnGuard
                     $"in-flight: spawn-started {elapsed:0}s ago < guard {guardSeconds}s (budget {budget.TotalMinutes:0}min + slack)");
             }
 
-            // Overran — fall through to allow recovery spawn. The currently
-            // hung invocation (if any) will be left to time out on its own
-            // wall-clock budget; the new spawn provides forward progress.
+            // Overran — historically we let a recovery spawn run while
+            // the hung invocation was left to time out on its own
+            // wall-clock budget. Phase 64 — if the dispatcher confirms
+            // the SDK invocation is still alive in-process, refuse the
+            // recovery spawn instead. The original invocation gets a
+            // few more minutes to finish (or its own wall-clock will
+            // kill it shortly anyway), and we save the double-token
+            // burn of a parallel agent on the same iter.
+            if (isInvocationActive is not null && isInvocationActive(workstreamId))
+            {
+                return new Result(
+                    Decision.SkipInFlight,
+                    $"in-flight overran guard ({elapsed:0}s >= {guardSeconds}s) "
+                    + "but dispatcher reports invocation still alive; refusing concurrent spawn");
+            }
             return new Result(
                 Decision.Allow,
                 $"in-flight overran guard: {elapsed:0}s >= {guardSeconds}s; allowing recovery spawn");

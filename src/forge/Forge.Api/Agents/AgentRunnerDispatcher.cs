@@ -44,13 +44,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     public const string ClientName = "AnthropicMessages";
 
     /// <summary>
-    /// Inactivity threshold for the Copilot SDK session — if no SDK callback
-    /// fires within this window, the session is treated as dead and a Failed
-    /// event is yielded so the worker can surface task.failed and re-queue.
-    /// Real reasoning steps are seconds; multi-minute silence always means
-    /// the JSON-RPC transport died (process crash, socket close, restart).
+    /// Hard floor for the Copilot SDK inactivity watchdog — even if
+    /// <see cref="AgentRunnerOptions.InactivityTimeout"/> is misconfigured
+    /// to something tiny, the watchdog never fires below this. 1 minute
+    /// is the minimum useful window for a JSON-RPC heartbeat detector.
     /// </summary>
-    private static readonly TimeSpan InactivitySdkTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan InactivitySdkFloor = TimeSpan.FromMinutes(1);
 
     /// <summary>How often the watchdog checks the gap. Cheap, so 30 s is fine.</summary>
     private static readonly TimeSpan InactivitySdkPollInterval = TimeSpan.FromSeconds(30);
@@ -143,6 +142,18 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             entry.Cts.Cancel();
         }
         return Task.CompletedTask;
+    }
+
+    public bool IsTaskActive(string taskId)
+    {
+        if (string.IsNullOrEmpty(taskId)) return false;
+        // O(N) over active invocations — N is small (one-handful per host).
+        // Cheap enough to avoid maintaining a parallel TaskId->Count index.
+        foreach (var kv in this.active)
+        {
+            if (string.Equals(kv.Value.TaskId, taskId, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     public Task<int> CancelByTaskAsync(string taskId, CancellationToken ct)
@@ -1094,6 +1105,17 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         // InactivitySdkTimeout of silence.
         long lastEventTicks = DateTimeOffset.UtcNow.Ticks;
         var wasInactive = false;
+        // Phase 64 — per-tool-call watchdog state. lastToolStartTicks is
+        // 0 when no tool call is currently in flight, otherwise the
+        // ticks-at-start of the most recent ToolExecutionStartEvent.
+        // The watchdog kills the invocation when the matching
+        // ToolExecutionCompleteEvent fails to arrive within PerTurnTimeout,
+        // catching genuinely hung tool subprocesses (e.g. a `dotnet build`
+        // that wedged) without killing a healthy agent doing legitimately
+        // long work split across many fast tool calls.
+        long lastToolStartTicks = 0;
+        string? lastToolName = null;
+        var wasStuckOnTool = false;
 
         // Phase 55 / Phase E -- when the caller attached an
         // AgentMemoryHandle, route through CopilotSessionPool so iter
@@ -1249,6 +1271,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case ToolExecutionStartEvent tStart:
+                            // Phase 64 — stamp per-tool-call watchdog state so
+                            // the inactivity timer below can distinguish a
+                            // legitimate long tool call from a stuck one.
+                            Interlocked.Exchange(ref lastToolStartTicks, DateTimeOffset.UtcNow.Ticks);
+                            lastToolName = tStart.Data.ToolName;
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolCall,
                                 DateTimeOffset.UtcNow,
@@ -1259,6 +1286,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case ToolExecutionCompleteEvent tEnd:
+                            // Phase 64 — clear the per-tool watchdog stamp now
+                            // that the tool returned.
+                            Interlocked.Exchange(ref lastToolStartTicks, 0);
                             turnCount++;
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolResult,
@@ -1312,11 +1342,20 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             }, CancellationToken.None);
 
             // Inactivity watchdog. Polls every InactivitySdkPollInterval and,
-            // if no SDK callback has fired for InactivitySdkTimeout, treats
-            // the session as dead — sets failReason and completes `done` so
-            // the consumer loop above unblocks. Real Copilot reasoning steps
-            // are seconds-to-tens-of-seconds; multi-minute silence is always
-            // a dead transport (process crash, JSON-RPC socket close, etc.).
+            // if no SDK callback has fired for the configured inactivity
+            // window, treats the session as dead — sets failReason and
+            // completes `done` so the consumer loop above unblocks.
+            // Phase 64 — threshold is now operator-configurable via
+            // Forge:Agents:InactivityTimeout (default 10 min). The
+            // original 5-min threshold killed healthy agents whose
+            // single tool call (e.g. dotnet build) sat silent legitimately
+            // for 4–6 min on this repo.
+            var inactivityWindow = this.options.Value.InactivityTimeout < InactivitySdkFloor
+                ? InactivitySdkFloor
+                : this.options.Value.InactivityTimeout;
+            var perTurnWindow = this.options.Value.PerTurnTimeout < InactivitySdkFloor
+                ? InactivitySdkFloor
+                : this.options.Value.PerTurnTimeout;
             _ = Task.Run(async () =>
             {
                 try
@@ -1326,15 +1365,41 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                         try { await Task.Delay(InactivitySdkPollInterval, effectiveCt); }
                         catch (OperationCanceledException) { return; }
 
+                        var now = DateTimeOffset.UtcNow;
+
+                        // Phase 64 — per-tool-call check first. A long-running
+                        // tool subprocess (e.g. a hung `dotnet build`) keeps
+                        // ToolExecutionStartEvent in flight without a matching
+                        // Complete. The transport itself is not silent (other
+                        // SDK callbacks may still fire), so the inactivity
+                        // gap alone won't catch it. Catch it explicitly.
+                        var toolStartTicks = Interlocked.Read(ref lastToolStartTicks);
+                        if (toolStartTicks != 0)
+                        {
+                            var toolUtc = new DateTimeOffset(toolStartTicks, TimeSpan.Zero);
+                            var toolGap = now - toolUtc;
+                            if (toolGap > perTurnWindow)
+                            {
+                                var toolName = lastToolName ?? "(unknown)";
+                                this.log.LogWarning(
+                                    "Copilot SDK stuck on tool {Tool} for {Gap} (> {Threshold}) — killing session",
+                                    toolName, toolGap, perTurnWindow);
+                                wasStuckOnTool = true;
+                                failReason = $"Generator stuck on tool '{toolName}' for {toolGap.TotalMinutes:0.0}min (>{perTurnWindow.TotalMinutes:0}min per-turn budget)";
+                                done.TrySetResult();
+                                return;
+                            }
+                        }
+
                         var lastUtc = new DateTimeOffset(Interlocked.Read(ref lastEventTicks), TimeSpan.Zero);
-                        var gap = DateTimeOffset.UtcNow - lastUtc;
-                        if (gap > InactivitySdkTimeout)
+                        var gap = now - lastUtc;
+                        if (gap > inactivityWindow)
                         {
                             this.log.LogWarning(
                                 "Copilot SDK silent for {Gap} (> {Threshold}) — assuming transport died, completing session",
-                                gap, InactivitySdkTimeout);
+                                gap, inactivityWindow);
                             wasInactive = true;
-                            failReason = $"Copilot transport silent for {gap.TotalMinutes:0.0}min (>{InactivitySdkTimeout.TotalMinutes:0}min) — assumed dead";
+                            failReason = $"Copilot transport silent for {gap.TotalMinutes:0.0}min (>{inactivityWindow.TotalMinutes:0}min) — assumed dead";
                             done.TrySetResult();
                             return;
                         }
@@ -1398,10 +1463,23 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             }
         }
 
+        if (wasStuckOnTool)
+        {
+            yield return this.BuildFailedWithUsage(
+                error: failReason ?? $"Generator stuck on tool >{this.options.Value.PerTurnTimeout.TotalMinutes:0}min",
+                accumulatedInputTokens: inputTokens,
+                accumulatedOutputTokens: outputTokens,
+                accumulatedCostUsd: null,
+                promptCharCount: prompt?.Length ?? 0,
+                outputCharCount: contentBuilder.Length,
+                modelName: context.Model);
+            yield break;
+        }
+
         if (wasInactive)
         {
             yield return this.BuildFailedWithUsage(
-                error: failReason ?? $"Copilot transport silent for >{InactivitySdkTimeout.TotalMinutes:0}min",
+                error: failReason ?? $"Copilot transport silent for >{this.options.Value.InactivityTimeout.TotalMinutes:0}min",
                 accumulatedInputTokens: inputTokens,
                 accumulatedOutputTokens: outputTokens,
                 accumulatedCostUsd: null,

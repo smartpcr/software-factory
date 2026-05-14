@@ -318,7 +318,7 @@ export function filterEvents(
  */
 export function availableTabs(
   events: TaskTranscriptEvent[],
-  deliverablesCount: number,
+  _deliverablesCount: number,
   genCrewId?: string | null,
   evalCrewId?: string | null,
   genAgentId?: string | null,
@@ -327,7 +327,14 @@ export function availableTabs(
   const set = new Set<FilterKey>();
   set.add('all');
 
-  if (deliverablesCount > 0) set.add('summary');
+  // Always show Summary, Worktree, and Build tabs so the operator
+  // has baseline visibility even before the gen↔eval loop starts
+  // (e.g. worktree creation failures, build gate results). Empty
+  // tabs render a "no data" placeholder — better than hiding the
+  // tab entirely when the workstream IS active.
+  set.add('summary');
+  set.add('worktree');
+  set.add('build');
 
   // Walk transcript once, mark each tab as it sees a matching event.
   // Bail early once everything's on (cheap fixed-size set).

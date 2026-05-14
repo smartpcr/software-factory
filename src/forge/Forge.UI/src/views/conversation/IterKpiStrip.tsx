@@ -26,7 +26,48 @@ interface Props {
 }
 
 export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.Element | null {
-  if (iters.length === 0) return null;
+  if (iters.length === 0) {
+    // Placeholder strip — keeps the visual structure consistent so the
+    // operator sees the sparkline area even before the gen↔eval loop
+    // produces its first deliverable.
+    return (
+      <div
+        className="iter-kpi-strip"
+        role="region"
+        aria-label="Iteration KPIs"
+        style={{
+          display: 'flex',
+          gap: 8,
+          padding: '8px 10px',
+          borderBottom: '1px solid var(--border, #2a2f3a)',
+          background: 'var(--bg-elevated, rgba(255,255,255,0.02))',
+          fontFamily: 'var(--sc-font-mono, monospace)',
+          overflowX: 'auto',
+        }}
+      >
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', fontSize: 10, color: 'var(--text-tertiary, #8d94a3)', letterSpacing: '0.08em' }}>
+          No iterations yet — KPI chips and sparklines appear after the first gen↔eval pass.
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateRows: 'repeat(5, 1fr)',
+            gap: 1,
+            alignItems: 'center',
+            fontSize: 10,
+            color: 'var(--text-tertiary, #8d94a3)',
+            minWidth: 130,
+          }}
+        >
+          <SparkRow label="score" values={[]} stroke="var(--sc-cyan, #5eead4)" />
+          <SparkRow label="tok"   values={[]} stroke="var(--sc-amber, #ffb347)" />
+          <SparkRow label="cost"  values={[]} stroke="var(--sc-green, #6ee7b7)" />
+          <SparkRow label="files" values={[]} stroke="var(--sc-purple, #c4b5fd)" />
+          <SparkRow label="dur"   values={[]} stroke="var(--text-tertiary, #8d94a3)" />
+        </div>
+      </div>
+    );
+  }
 
   const scores = useMemo(() => iters.map((i) => i.score), [iters]);
   const totalTokens = useMemo(() => iters.map((i) => i.inputTokens + i.outputTokens), [iters]);

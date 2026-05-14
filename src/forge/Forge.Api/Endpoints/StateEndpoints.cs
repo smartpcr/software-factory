@@ -277,6 +277,30 @@ public static class StateEndpoints
                     spawn.StoryPoints = points;
                     spawn.UpdatedAt = DateTimeOffset.UtcNow;
                 }
+
+                // Cascade to child work items so BudgetForPhase / max-turns
+                // pick up the new value on the next dispatch. Without this
+                // the spawn snapshot updates but the stage/plan-doc rows
+                // stay frozen at their original Points (Phase 38 snapshot)
+                // and the agent keeps hitting the old 16m / 90-turn caps.
+                // Stage WIs ride the story value 1:1. Plan-doc WIs preserve
+                // the Phase 60 floor of max(3, points/4) so the 4-doc fan-out
+                // still gets a sensible per-doc allocation.
+                var newWsPoints = Math.Max(1, points);
+                var newDocPoints = Math.Max(3, points / 4);
+                var now = DateTimeOffset.UtcNow;
+                await db.WorkItems
+                    .Where(w => w.ParentId == storyId
+                             && !w.Id.StartsWith("plan-doc:"))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.Points, newWsPoints)
+                        .SetProperty(w => w.UpdatedAt, now));
+                await db.WorkItems
+                    .Where(w => w.ParentId == storyId
+                             && w.Id.StartsWith("plan-doc:"))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(w => w.Points, newDocPoints)
+                        .SetProperty(w => w.UpdatedAt, now));
             }
 
             // Phase 45 — operator-chosen default base branch. When the

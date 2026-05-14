@@ -562,6 +562,12 @@ using (var scope = app.Services.CreateScope())
     // query against story_spawns or workstreams will fail if the
     // columns don't exist yet.
     await Phase63Migration.ApplyAsync(db);
+    // Phase 64 — FailureKind + FailureReason on deliverables so the
+    // generator's failure mode (timeout / max-turns / inactive) flows
+    // through to workstreams.StallReason. Same ordering constraint as
+    // Phase63 — EF's DeliverableRow model now references these columns,
+    // so any query against deliverables would fail without them.
+    await Phase64Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

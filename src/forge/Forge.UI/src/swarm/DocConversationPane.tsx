@@ -442,13 +442,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
 
   return (
     <div className="doc-conv doc-conv--quiet">
-      {iterKpis.length > 0 && (
-        <IterKpiStrip
+      <IterKpiStrip
           iters={iterKpis}
           activeIter={activeIterNumber}
           onSelectIter={handleSelectKpiIter}
         />
-      )}
       <ContextUsageBar roles={memoryRoles} />
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
@@ -529,7 +527,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
       </nav>
 
       {/* Iteration pager — windowed page list with score chips */}
-      {totalIters > 1 && (
+      {totalIters > 0 && (
         <nav className="live-exec__iter-pager" aria-label="Iteration pager">
           <button
             type="button"

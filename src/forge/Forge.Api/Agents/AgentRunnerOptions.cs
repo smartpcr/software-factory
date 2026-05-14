@@ -28,6 +28,32 @@ public sealed class AgentRunnerOptions
     /// <summary>Default per-invocation token budget. Null = no token cap (only wall-clock + crew budget apply).</summary>
     public long? DefaultTokenBudget { get; set; }
 
+    /// <summary>
+    /// Phase 64 — Copilot SDK inactivity watchdog threshold. If no SDK
+    /// callback fires within this window the dispatcher kills the
+    /// invocation with <c>generator-inactive</c> on the assumption
+    /// that the JSON-RPC transport died (process crash, socket close,
+    /// restart).
+    /// <para>Default 10 min — raised from the original hard-coded 5 min.
+    /// A <c>dotnet build</c> of a non-trivial .NET solution can sit silent
+    /// for 4–6 min, and the 5 min threshold was killing healthy agents
+    /// mid-build (observed 2026-05-14 on local:UPDATE-HISTORY-IN-CL
+    /// stage iter-2 retries). Bind via <c>Forge:Agents:InactivityTimeout</c>.</para>
+    /// </summary>
+    public TimeSpan InactivityTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Phase 64 — per-tool-call wall-clock cap. The dispatcher tracks
+    /// the most recent <c>ToolExecutionStartedEvent</c>; if no matching
+    /// <c>ToolExecutionCompleteEvent</c> arrives within this window
+    /// the invocation is killed with <c>generator-stuck-tool-call</c>.
+    /// Distinguishes a genuinely stuck tool (e.g. a hung CLI subprocess)
+    /// from a healthy agent doing legitimately long work in a single
+    /// tool call (e.g. a multi-minute build). Default 15 min — a generous
+    /// upper bound on any single tool round-trip in this repo.
+    /// </summary>
+    public TimeSpan PerTurnTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
     /// <summary>Max retries on 429 / 503 / 529.</summary>
     public int MaxRetries { get; set; } = 3;
 

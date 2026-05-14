@@ -830,10 +830,10 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const promptGenId = latestPrompts.gen?.agentId ?? null;
   const promptEvalId = latestPrompts.ev?.agentId ?? null;
   const fallbackGenId = isWorkstream
-    ? (snapshot?.generatorAgentId ?? wsRowForOverview?.latestGenAgentId ?? null)
+    ? (snapshot?.generatorAgentId ?? wsRowForOverview?.latestGenAgentId ?? wsRowForOverview?.agents?.[0] ?? null)
     : (docGen?.agentId ?? null);
   const fallbackEvalId = isWorkstream
-    ? (snapshot?.evaluatorAgentId ?? wsRowForOverview?.latestEvalAgentId ?? null)
+    ? (snapshot?.evaluatorAgentId ?? wsRowForOverview?.latestEvalAgentId ?? wsRowForOverview?.agents?.[1] ?? null)
     : (docEval?.agentId ?? null);
   const rawGenId = promptGenId ?? fallbackGenId;
   const rawEvalId = promptEvalId ?? fallbackEvalId;
