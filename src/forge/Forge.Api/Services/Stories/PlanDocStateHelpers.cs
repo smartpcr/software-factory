@@ -203,6 +203,29 @@ public static class PlanDocStateHelpers
     public static string CanonicalDocWorktreeSlug(string docKey) => $"plan-{docKey}";
 
     /// <summary>
+    /// The canonical worktree slug for a legacy parallel-mode plan branch.
+    /// All four parallel architects share one worktree (the legacy single-PR
+    /// flow checks out <c>story/{id}/plan</c> and runs every doc on it).
+    /// Single bucket per repo — concurrent spawns on the same repo are
+    /// outside the design space the parallel mode supports.
+    /// </summary>
+    public static string CanonicalParallelPlanWorktreeSlug() => "plan";
+
+    /// <summary>
+    /// The canonical worktree slug for the QA gate branch
+    /// (<c>story/{storyId}/qa</c>). Includes the safe story id so QA
+    /// runs for distinct stories on the same repo don't collide.
+    /// </summary>
+    public static string CanonicalQaWorktreeSlug(string storyId) => $"qa-{StoryPaths.Safe(storyId)}";
+
+    /// <summary>
+    /// The canonical worktree slug for a per-workstream QA-steps branch
+    /// (<c>ws/{storyId}/{anchor}-steps</c>). Keyed on the workstream id
+    /// so each step-def PR runs in its own worktree.
+    /// </summary>
+    public static string CanonicalQaStepsWorktreeSlug(string workstreamId) => $"qa-steps-{workstreamId}";
+
+    /// <summary>
     /// Reverse-lookup: find the spawn + doc-key that owns a given PR id.
     /// Used by <c>PlanPrMergeReactor</c> when a PR-merge event fires and
     /// the reactor only knows the PR id.

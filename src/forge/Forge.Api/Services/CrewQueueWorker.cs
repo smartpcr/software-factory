@@ -1059,25 +1059,62 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             //     this work item. We run git directly against the repo clone
             //     root (not the singleton GitWorktreeService, which is pinned
             //     to a single RepoPath from config).
-            var branchName = $"ws/{workItemId}";
-            var baseBranch = "main";
-            string? repoCloneRoot = null;
-            Persistence.RepoRow? wiRepo = null;
-            if (!string.IsNullOrEmpty(wi?.RepoId))
+            // 2026-05-14 — route engineer workstreams through the canonical
+            // path spec so boot-crash-recovery (and any ad-hoc invocation)
+            // lands on the SAME branch + worktree directory the spawn-flow
+            // owns. Without this the worker synthesised `ws/{workItemId}`
+            // / `.worktree/ws-{workItemId}` which double-prefixed to
+            // `ws/ws-…` / `.worktree/ws-ws-…` for any workstream id
+            // already starting with `ws-`, and iter-N commits landed on a
+            // sibling branch the orchestrator never saw — PR creation then
+            // either pushed to the wrong branch or skipped on "0 commits
+            // ahead". See WorktreePathResolver.GetCanonicalForWorkstreamAsync.
+            var canonicalSpec = await Forge.Api.Services.Stories.WorktreePathResolver
+                .GetCanonicalForWorkstreamAsync(db, workItemId, ct);
+
+            string branchName;
+            string baseBranch;
+            string? repoCloneRoot;
+            Persistence.RepoRow? wiRepo;
+            string? canonicalWorktreeDir = null;
+
+            if (canonicalSpec is not null)
             {
-                wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
-                if (!string.IsNullOrEmpty(wiRepo?.DefaultBranch))
-                    baseBranch = wiRepo.DefaultBranch;
-                if (!string.IsNullOrEmpty(wiRepo?.CloneRoot) && Directory.Exists(wiRepo.CloneRoot))
-                    repoCloneRoot = wiRepo.CloneRoot;
+                branchName = canonicalSpec.Branch;
+                baseBranch = canonicalSpec.BaseBranch;
+                repoCloneRoot = Directory.Exists(canonicalSpec.RepoCloneRoot) ? canonicalSpec.RepoCloneRoot : null;
+                wiRepo = canonicalSpec.Repo;
+                canonicalWorktreeDir = canonicalSpec.WorktreePath;
+            }
+            else
+            {
+                // Ad-hoc (non-spawn) work item — preserve the pre-Phase-49
+                // legacy convention: branch = ws/{workItemId},
+                // worktree = .worktree/ws-{sanitizedId}.
+                branchName = $"ws/{workItemId}";
+                baseBranch = "main";
+                repoCloneRoot = null;
+                wiRepo = null;
+                if (!string.IsNullOrEmpty(wi?.RepoId))
+                {
+                    wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                    if (!string.IsNullOrEmpty(wiRepo?.DefaultBranch))
+                        baseBranch = wiRepo.DefaultBranch;
+                    if (!string.IsNullOrEmpty(wiRepo?.CloneRoot) && Directory.Exists(wiRepo.CloneRoot))
+                        repoCloneRoot = wiRepo.CloneRoot;
+                }
             }
 
             if (!string.IsNullOrEmpty(repoCloneRoot))
             {
-                // Compute worktree directory: {cloneRoot}/.worktree/{sanitizedId}
+                // Canonical spec (when present) wins; otherwise fall back to
+                // the legacy `.worktree/ws-{sanitizedId}` slug for ad-hoc
+                // work items.
                 var wtRoot = Path.Combine(repoCloneRoot, ".worktree");
-                var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
-                var worktreeDir = Path.Combine(wtRoot, $"ws-{sanitizedId}");
+                var worktreeDir = canonicalWorktreeDir
+                    ?? Path.Combine(
+                        wtRoot,
+                        $"ws-{workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-")}");
 
                 // Ensure .worktree/ is in .gitignore so it's never committed.
                 try
@@ -1341,18 +1378,22 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .OrderByDescending(d => d.Id)
                 .Select(d => new { d.CreatedAt })
                 .FirstOrDefaultAsync(ct))?.CreatedAt;
-            // Collapse the nullable to a sentinel so the EF expression tree
-            // has a plain DateTimeOffset>DateTimeOffset compare. SQLite's
-            // EF provider cannot translate `(DateTimeOffset?)e.At > @p` and
-            // crashed the worker mid-iteration on
-            // qq:MICROSOFT-TEAMS-MESS stage 2.1 (2026-05-13 22:41:45).
+            // SQLite EF cannot translate ANY DateTimeOffset comparison in a
+            // Where clause — not even non-nullable vs non-nullable. The
+            // first fix attempt collapsed the nullable away but still
+            // threw `could not be translated` for `e.At > @p`. Narrow the
+            // server query to the cheap `Kind` predicate, materialize the
+            // latest few candidates, then filter At in memory.
+            // qq:MICROSOFT-TEAMS-MESS stage 2.1 (2026-05-13 22:41:45 →
+            // 23:34/23:36/23:52/23:59 retry storm post-restart).
             var noteThreshold = lastDelivAt ?? DateTimeOffset.MinValue;
-            var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
+            var noteCandidates = await db.TaskTranscriptEvents.AsNoTracking()
                 .Where(e => e.WorkItemId == workItemId
-                    && e.Kind == "task.operator-note"
-                    && e.At > noteThreshold)
+                    && e.Kind == "task.operator-note")
                 .OrderByDescending(e => e.Id)
-                .FirstOrDefaultAsync(ct);
+                .Take(10)
+                .ToListAsync(ct);
+            var noteEvt = noteCandidates.FirstOrDefault(e => e.At > noteThreshold);
             if (noteEvt is not null)
             {
                 try

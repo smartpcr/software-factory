@@ -523,16 +523,11 @@ public static class WorkstreamsEndpoints
             var cloneRoot = repoRow?.CloneRoot;
             if (!string.IsNullOrEmpty(cloneRoot))
             {
-                // Phase 50 — try EVERY worktree-path convention this codebase
-                // ships with (legacy spawn-, legacy ws-, Phase 49 short slug).
-                // Mirrors the Restart endpoint's defensive sweep. Before this
-                // fix, CascadeDeleteWorkstreamAsync only removed the legacy
-                // `spawn-{branch}` shape, so engineer workstreams created
-                // under the Phase 49 short slug (`stage-1.1-foo/`) survived
-                // delete and surfaced stale commits in the Worktree tab.
+                // Try BOTH worktree-path conventions this codebase ships
+                // with (canonical engineer-workstream slug, ad-hoc ws-{id}),
+                // plus whatever path git has registered against this branch
+                // (handles operator-customised directory layouts).
                 var candidatePaths = new List<string>();
-                var sanitized = row.Branch.Replace('/', '-');
-                candidatePaths.Add(Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}"));
                 var sanitizedId = row.Id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
                 candidatePaths.Add(Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}"));
                 if (!string.IsNullOrEmpty(row.StorySpawnId))
@@ -548,6 +543,8 @@ public static class WorkstreamsEndpoints
                     }
                     catch { /* slug computer is best-effort */ }
                 }
+                var registeredPath = await TryFindWorktreeForBranchAsync(cloneRoot, row.Branch);
+                if (!string.IsNullOrEmpty(registeredPath)) candidatePaths.Add(registeredPath);
 
                 // Run `git worktree prune` first so stale metadata doesn't
                 // block a fresh `worktree add` after a re-spawn.
@@ -828,29 +825,25 @@ public static class WorkstreamsEndpoints
             {
                 var cloneRoot = repoRow.CloneRoot;
 
-                // Phase 49 follow-up — engineer workstreams switched from the
-                // legacy `spawn-{branch-slug}` directory shape (often 100+
-                // chars on Windows MAX_PATH-fragile builds) to the short
-                // `stage-{phaseNum}.{stageNum}-{anchorSlug}` shape. Restart
-                // must clean BOTH so a row migrating from old → new doesn't
-                // leave a stale 100-char dir behind that the next claim
-                // can't see (it'd open the new short path; the old long
-                // one would persist forever as an orphan).
-                var sanitized = SanitizeBranchSlug(ws.Branch);
-                var legacyWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
-
-                string? newWtPath = null;
+                // Compute the canonical worktree path for this workstream
+                // (engineer rows take the stage-{n.n}-{title} shape; ad-hoc
+                // rows take ws-{sanitizedId}). Clean it AND ask git for any
+                // additional path it has registered against this branch so
+                // operator-customised layouts get reaped too.
+                string? canonicalWtPath = null;
                 if (!string.IsNullOrEmpty(ws.StorySpawnId))
                 {
                     var siblings = await db.Workstreams.AsNoTracking()
                         .Where(w => w.StorySpawnId == ws.StorySpawnId)
                         .ToListAsync();
                     if (siblings.All(w => w.Id != ws.Id)) siblings.Add(ws);
-                    var newSlug = Forge.Api.Services.Stories.WorkstreamWorktreeSlug.Compute(ws, siblings);
-                    newWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", newSlug);
+                    var slug = Forge.Api.Services.Stories.WorkstreamWorktreeSlug.Compute(ws, siblings);
+                    canonicalWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", slug);
                 }
 
-                foreach (var wtPath in new[] { newWtPath, legacyWtPath }.Where(p => !string.IsNullOrEmpty(p)).Distinct())
+                var registeredPath = await TryFindWorktreeForBranchAsync(cloneRoot, ws.Branch);
+                foreach (var wtPath in new[] { canonicalWtPath, registeredPath }
+                    .Where(p => !string.IsNullOrEmpty(p)).Distinct())
                 {
                     // (a) Remove worktree (if registered)
                     await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath!);
@@ -897,18 +890,35 @@ public static class WorkstreamsEndpoints
     }
 
     /// <summary>
-    /// Sanitize a branch name into a filesystem-safe slug. Must match
-    /// <see cref="RealStoryGitOps"/>'s <c>SanitizeBranchSlug</c> exactly
-    /// so we target the correct worktree directory.
+    /// Ask <c>git worktree list --porcelain</c> for the worktree path
+    /// currently registered against <paramref name="branch"/>. Returns
+    /// null when no match. Best-effort; failures return null.
     /// </summary>
-    internal static string SanitizeBranchSlug(string branch)
+    internal static async Task<string?> TryFindWorktreeForBranchAsync(string cloneRoot, string branch)
     {
-        var sb = new System.Text.StringBuilder(branch.Length);
-        foreach (var c in branch)
+        var (code, stdout, _) = await RunGitCaptureAsync(cloneRoot, "worktree", "list", "--porcelain");
+        if (code != 0 || string.IsNullOrEmpty(stdout)) return null;
+        var lines = stdout.Split('\n');
+        string? currentWt = null;
+        var wantedRef = $"refs/heads/{branch}";
+        foreach (var raw in lines)
         {
-            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+            var line = raw.TrimEnd('\r');
+            if (line.StartsWith("worktree ", StringComparison.Ordinal))
+            {
+                currentWt = line["worktree ".Length..];
+            }
+            else if (line.StartsWith("branch ", StringComparison.Ordinal))
+            {
+                var refName = line["branch ".Length..];
+                if (string.Equals(refName, wantedRef, StringComparison.Ordinal)
+                    && !string.IsNullOrEmpty(currentWt))
+                {
+                    return currentWt;
+                }
+            }
         }
-        return sb.ToString().Trim('-');
+        return null;
     }
 
     /// <summary>Best-effort git command — returns exit code, never throws.</summary>

@@ -44,7 +44,16 @@ Decisions confirmed by the operator. Each one closes an entry in "Open questions
 
 - **Provider parity (Q1)** — ADO and GitHub are **equal first-class providers**. No primary / secondary tier.
   - **Implications**: Phase 5 ships both `AdoProvider` and `GitHubProvider` together (no "ADO first, GitHub later"); auth UX in Phase 9 surfaces both sign-in buttons side-by-side with the same prominence; webhook intake in Phase 5.8 supports ADO Service Hooks and GitHub webhooks at the same milestone; provider config in `/settings` lists them in alphabetical order; Phase 8.5 "Add repo" picker lets the user choose either provider per-repo, and a single product can mix repos from both.
-- **Worktree location (Q2)** — worktrees live **under each repo**, in a fixed subdirectory: `{repo.cloneRoot}\.worktree\ws-{workItemId}`. Example: for the `update` repo cloned at `E:\work\hci\update`, work item `12345`'s worktree is at `E:\work\hci\update\.worktree\ws-12345`. Branch name for the same row is `ws/{workItemId}`.
+- **Worktree location (Q2)** — worktrees live **under each repo**, in a fixed subdirectory: `{repo.cloneRoot}\.worktree\{slug}`. Canonical slugs (2026-05-13 standardisation; the legacy `spawn-{branch}` prefix is removed entirely):
+  - **Engineer workstreams** — `stage-{phaseNum}.{stageNum}-{stageTitle}` (e.g. `.worktree/stage-3.3-log-replication`), produced by `WorkstreamWorktreeSlug.Compute`. Stage title is the suffix of `PlanAnchor` after `/stage-`.
+  - **Sequential plan docs** — `plan-{docKey}` where `docKey ∈ {architecture, tech-spec, implementation-plan, e2e-scenarios}` (e.g. `.worktree/plan-architecture`).
+  - **Legacy parallel-mode plan** — `plan` (single bucket).
+  - **QA gate** — `qa-{safeStoryId}` (e.g. `.worktree/qa-WI-12345`).
+  - **QA step-defs (per-workstream)** — `qa-steps-{wsId}`.
+  - **Ad-hoc crew-queue work items** — `ws-{sanitizedId}` (e.g. `.worktree/ws-WI-12345`). Also the fallback for handcrafted workstream rows without a `PlanAnchor`.
+  - **Base-branch merge / rebase ops** — `merge-{baseBranch}` / `rebase-{baseBranch}` (temporary, scoped to the merge/rebase op).
+
+  Slug formulas live in `PlanDocStateHelpers` (plan / QA) and `WorkstreamWorktreeSlug` (engineer workstreams); every caller of `IStoryGitOps.EnsureWorktreeAsync` / `CommitFilesAsync` must pass a canonical slug.
   - **Implications**:
     - Phase 3.7 `IGitWorktreeService` is the singleton helper used for ad-hoc worktree create/list/remove; the **production agent path** (Phase 16.18) bypasses it and runs `git worktree add` directly against the work item's repo `cloneRoot` so the directory is keyed by the work item being executed, not by the workstream the row was bound to. Both paths refuse anything that escapes the `.worktree/` prefix.
     - Phase 8.1 `Repo` record must carry `cloneRoot` (already specified) — the only field needed; there is no separate global "worktrees root" config.
@@ -4770,7 +4779,7 @@ After the three steps the spawn's `BaseBranch` is updated and every workstream's
 
 `IStoryGitOps.RebaseBaseBranchAsync(repo, baseBranch, upstreamBranch, ct)` — bring the spawn's base branch up to the upstream tip:
 
-- **Real binding (`RealStoryGitOps`):** dedicated worktree at `{cloneRoot}/.worktree/spawn-rebase-{slug}/`. `git fetch origin {base}` + `git fetch origin {upstream}` + `git reset --hard origin/{base}` + `git rebase --rebase-merges origin/{upstream}` + `git push --force-with-lease origin {base}`. No-op when `base == upstream`.
+- **Real binding (`RealStoryGitOps`):** dedicated worktree at `{cloneRoot}/.worktree/rebase-{slug}/`. `git fetch origin {base}` + `git fetch origin {upstream}` + `git reset --hard origin/{base}` + `git rebase --rebase-merges origin/{upstream}` + `git push --force-with-lease origin {base}`. No-op when `base == upstream`.
 - **In-memory binding (`InMemoryStoryGitOps`):** copies the upstream tree over the base branch tree and bumps the tip sha. Tests rely on this to assert that downstream phases see commits that were on `main` after the spawn started.
 
 ### UI

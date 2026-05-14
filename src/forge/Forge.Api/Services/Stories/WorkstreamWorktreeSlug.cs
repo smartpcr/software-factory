@@ -8,39 +8,29 @@ namespace Forge.Api.Services.Stories;
 
 using System.Text;
 using Forge.Api.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 /// <summary>
-/// Phase 49 follow-up — compute the short, semantic worktree directory
-/// name for an engineer workstream. The legacy convention
-/// (<c>spawn-{branch-slug}</c>) baked the full
-/// <c>ws/{product}-{story}/phase-{phaseSlug}-stage-{stageSlug}</c> branch
-/// into the path and routinely produced 100+ character directory names,
-/// which on Windows blew past <c>MAX_PATH</c> as soon as
-/// <c>cargo build</c> wrote its <c>target/debug/.fingerprint/…</c> tree.
+/// Compute the worktree directory name for an engineer workstream.
+/// Canonical convention is
+/// <c>stage-{phaseNum}.{stageNum}-{stageTitle}</c>, where
+/// <c>{stageTitle}</c> is the stage portion of the workstream's
+/// <see cref="WorkstreamRow.PlanAnchor"/> (with the leading
+/// <c>stage-</c> stripped). Example: a workstream on
+/// <c>phase-consensus-engine/stage-log-replication</c> at the third
+/// stage of the third phase materialises as
+/// <c>.worktree/stage-3.3-log-replication</c>.
 ///
-/// <para>The new convention is
-/// <c>stage-{phaseNum}.{stageNum}-{anchorSlug}</c> where
-/// <c>{phaseNum}.{stageNum}</c> is the workstream's positional address in
-/// the plan and <c>{anchorSlug}</c> is the workstream's
-/// <see cref="WorkstreamRow.PlanAnchor"/> with the leading <c>phase-</c>
-/// stripped and <c>/</c> replaced by <c>-</c>. Example:
-/// <c>stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>
-/// (~70 chars vs. the legacy
-/// <c>spawn-ws-failover-cluster-XRAFT-phase-project-scaffolding-stage-cargo-workspace-and-crate-layout</c>
-/// at ~104 chars).</para>
-///
-/// <para>Falls back to the legacy <c>spawn-{branch-slug}</c> shape when the
-/// workstream lacks a <see cref="WorkstreamRow.PlanAnchor"/> (legacy
-/// rows that predate the Phase 42 reconciler, or hand-created workstreams
-/// from the <c>POST /api/workstreams</c> endpoint). The fallback preserves
-/// the per-branch uniqueness invariant; only the readability suffers.</para>
+/// <para>Rows without a <see cref="WorkstreamRow.PlanAnchor"/>
+/// (hand-crafted via <c>POST /api/workstreams</c>, or pre-Phase-42
+/// rows that never went through the reconciler) fall back to
+/// <c>ws-{sanitizedId}</c>, matching the ad-hoc crew-queue
+/// convention.</para>
 ///
 /// <para>Phase/stage numbering matches the swarm-control phase-board UI
 /// (<c>SwarmMasterPanel.stageNumOf</c>) exactly — group by
 /// <see cref="WorkstreamRow.PhaseAnchor"/> preserving first-encounter
-/// order, position-within-group is the stage number. The same caller-side
-/// computation is used so operators see one consistent set of numbers
-/// across the UI and the filesystem.</para>
+/// order, position-within-group is the stage number.</para>
 /// </summary>
 public static class WorkstreamWorktreeSlug
 {
@@ -58,29 +48,69 @@ public static class WorkstreamWorktreeSlug
     {
         if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 
-        // Plan-anchored workstreams take the new short name.
+        // Plan-anchored workstreams take the canonical short name.
         if (!string.IsNullOrWhiteSpace(workstream.PlanAnchor))
         {
             var (phaseNum, stageNum) = ComputePosition(workstream, sameSpawnWorkstreams);
-            var anchorSlug = AnchorSlug(workstream.PlanAnchor!);
-            return $"stage-{phaseNum}.{stageNum}-{anchorSlug}";
+            var stageTitle = StageTitleSlug(workstream.PlanAnchor!);
+            return $"stage-{phaseNum}.{stageNum}-{stageTitle}";
         }
 
-        // Legacy fallback — no plan anchor → use the branch slug.
-        return $"spawn-{SanitizeBranchSlug(workstream.Branch ?? workstream.Id)}";
+        // No plan anchor → use the crew-queue ad-hoc shape so the path
+        // is still deterministic and unique per workstream id.
+        return $"ws-{SanitizeBranchSlug(workstream.Branch ?? workstream.Id)}";
     }
 
     /// <summary>
-    /// Strip the leading <c>phase-</c> token (if present) and replace
-    /// path separators so the anchor becomes a single filesystem-safe
-    /// segment. Idempotent if the anchor doesn't start with <c>phase-</c>.
+    /// Convenience overload — loads the same-spawn siblings from
+    /// <paramref name="db"/> and delegates to <see cref="Compute"/>. Callers
+    /// that already have the sibling list cached should prefer the pure
+    /// overload to avoid the extra query.
     /// </summary>
-    private static string AnchorSlug(string planAnchor)
+    public static async Task<string> ComputeAsync(
+        WorkstreamRow workstream, ForgeDbContext db, CancellationToken ct = default)
     {
-        var s = planAnchor;
-        if (s.StartsWith("phase-", StringComparison.Ordinal))
+        if (workstream is null) throw new ArgumentNullException(nameof(workstream));
+
+        List<WorkstreamRow> siblings;
+        if (string.IsNullOrWhiteSpace(workstream.StorySpawnId))
         {
-            s = s["phase-".Length..];
+            siblings = new List<WorkstreamRow> { workstream };
+        }
+        else
+        {
+            siblings = await db.Workstreams.AsNoTracking()
+                .Where(w => w.StorySpawnId == workstream.StorySpawnId)
+                .ToListAsync(ct);
+            if (siblings.All(w => w.Id != workstream.Id)) siblings.Add(workstream);
+        }
+        return Compute(workstream, siblings);
+    }
+
+    /// <summary>
+    /// Extract the stage title from a <see cref="WorkstreamRow.PlanAnchor"/>
+    /// formatted as <c>phase-{phaseSlug}/stage-{stageSlug}</c> — returns
+    /// just <c>{stageSlug}</c>. Anchors that don't follow the convention
+    /// fall back to the full anchor with separators normalised, keeping
+    /// the result filesystem-safe.
+    /// </summary>
+    private static string StageTitleSlug(string planAnchor)
+    {
+        // Drop the trailing <c>@{contentHash}</c> the reconciler appends
+        // on stage scope-edits — the hash isn't useful in a directory
+        // name and changes every plan rev.
+        var s = planAnchor;
+        var at = s.IndexOf('@');
+        if (at > 0) s = s[..at];
+
+        var slash = s.IndexOf('/');
+        if (slash >= 0)
+        {
+            s = s[(slash + 1)..];
+        }
+        if (s.StartsWith("stage-", StringComparison.Ordinal))
+        {
+            s = s["stage-".Length..];
         }
         return s.Replace('/', '-').Replace('\\', '-');
     }

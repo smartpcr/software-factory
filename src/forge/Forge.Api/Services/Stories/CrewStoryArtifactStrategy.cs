@@ -181,7 +181,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
-        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, worktreeBase, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(
+            repo, planBranch, worktreeBase, ct,
+            worktreeSlug: PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug());
 
         // Phase 43 -- copy operator-uploaded attachments into the worktree
         // so architect agents can read them with their file tools. Refresh
@@ -852,39 +854,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 49 follow-up -- load the same-spawn workstream set and run
-    /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the short,
-    /// semantic worktree directory name
-    /// (<c>stage-{phaseNum}.{stageNum}-{anchorSlug}</c>). Returns null
-    /// when the workstream has no <see cref="WorkstreamRow.StorySpawnId"/>
-    /// -- the orchestrator-side hot path is never null in production, but
-    /// guard so handcrafted ad-hoc workstreams keep working via the
-    /// legacy <c>spawn-{branch-slug}</c> fallback inside
-    /// <see cref="RealStoryGitOps.EnsureWorktreeAsync"/>.
+    /// Load the same-spawn workstream set and run
+    /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the canonical
+    /// worktree directory name (<c>stage-{phaseNum}.{stageNum}-{stageTitle}</c>
+    /// for plan-anchored rows, <c>ws-{sanitizedId}</c> otherwise). Always
+    /// returns a non-empty slug — handcrafted ad-hoc workstreams (no
+    /// <see cref="WorkstreamRow.StorySpawnId"/>) hit the
+    /// <see cref="WorkstreamWorktreeSlug"/> fallback branch.
     /// </summary>
-    private async Task<string?> ComputeWorkstreamWorktreeSlugAsync(
+    private async Task<string> ComputeWorkstreamWorktreeSlugAsync(
         WorkstreamRow workstream, CancellationToken ct)
     {
-        if (workstream is null || string.IsNullOrWhiteSpace(workstream.StorySpawnId))
-        {
-            return null;
-        }
+        if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-        var siblings = await db.Workstreams.AsNoTracking()
-            .Where(w => w.StorySpawnId == workstream.StorySpawnId)
-            .ToListAsync(ct);
-
-        // The current row may not be in `siblings` (caller is operating on a
-        // possibly-detached entity); ensure it's present so the position
-        // computation finds it.
-        if (siblings.All(w => w.Id != workstream.Id))
-        {
-            siblings.Add(workstream);
-        }
-
-        return WorkstreamWorktreeSlug.Compute(workstream, siblings);
+        return await WorkstreamWorktreeSlug.ComputeAsync(workstream, db, ct);
     }
 
     /// <summary>
@@ -1815,24 +1800,29 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var generatorOverride = genRoster.Count > docIndex ? genRoster[docIndex] : null;
         var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
 
-        // Phase 53 follow-up — sequential-mode plan docs live on their own
-        // per-doc branch (`story/{safe}/plan-{key}`), never on a combined
-        // `.../plan`. `spawn.PlanBranch` stays null in sequential mode and
-        // the persisted per-doc branch lives in `PlanDocPrsJson` (one entry
-        // per canonical key, populated by RunPlanDocAsync via
-        // `CanonicalDocBranch`). Using the legacy `spawn.PlanBranch ??
-        // "story/.../plan"` fallback here would route EnsureWorktreeAsync's
-        // `git checkout -B story/.../plan origin/story/.../plan` against a
-        // branch that never existed — `fatal: 'origin/story/.../plan' is
-        // not a commit` (exit 128). Observed 2026-05-14 on
-        // code-intelligence:AGENT-MEMORY → architecture Resume.
+        // Phase 42 -- same git-worktree plumbing as the full plan run.
+        // Phase 62 (operator-reported 2026-05-14 on
+        // local:UPDATE-HISTORY-IN-CL → architecture.md halted at iter 11
+        // with `spawn.PlanBranch` NULL but 23 iter commits on the legacy
+        // shared `plan` branch) -- delegate branch resolution to
+        // PlanDocStateHelpers.FindDocBranch so sequential-mode spawns
+        // commit to their canonical per-doc branch
+        // `story/{id}/plan-{key}` (matching what the orchestrator's
+        // RunPlanDocAsync uses), not the legacy `spawn.PlanBranch ??
+        // "story/{id}/plan"` shared branch. Pre-Phase-62 the worktree
+        // slug was canonical (`plan-architecture`) but the branch was
+        // legacy shared (`plan`), so the architect's commits landed on
+        // a branch the UI / PR-open path / accept-artifact flow couldn't
+        // see at the per-doc key. Legacy parallel-mode spawns
+        // (PlanDocPrsJson == null) still get the shared branch via
+        // FindDocBranch's legacy fallback.
         //
-        // PlanDocStateHelpers.FindDocBranch already encapsulates the
-        // sequential-vs-legacy split: legacy spawns (PlanDocPrsJson null)
-        // return the same `spawn.PlanBranch ?? "story/.../plan"` fallback
-        // as before, sequential spawns return the persisted per-doc branch
-        // (or the canonical `plan-{docKey}` shape if the entry hasn't been
-        // started yet). No regression for legacy spawns.
+        // Also seen 2026-05-14 on code-intelligence:AGENT-MEMORY →
+        // architecture Resume, where the legacy `story/{id}/plan` fallback
+        // surfaced as `git checkout -B story/.../plan origin/story/.../plan`
+        // failing with exit 128 (`fatal: 'origin/story/.../plan' is not a
+        // commit`) because that combined branch never existed on origin
+        // for a sequential spawn.
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch
@@ -1841,33 +1831,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var worktreeBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         // Phase 55 follow-up (operator-reported 2026-05-13 on
         // local:UPDATE-HISTORY-IN-CL → architecture.md stalled at iter 13 /
-        // score 0 / $130.56) -- sequential-mode plan docs MUST use the
-        // canonical `plan-{key}` worktree slug to match what
-        // StorySpawnOrchestrator.RunPlanDocAsync uses. Without this, every
-        // Restart/Resume of a sequential-mode doc resolves wtPath to the
-        // legacy `spawn-{long-branch-slug}` path; EnsureWorktreeAsync
-        // detects the branch already registered to `plan-{key}` and
-        // *migrates* it (`git worktree remove --force` + Directory.Delete
-        // the old path, then re-add at the new path). The next 15 s
-        // scheduler tick re-enters RunPlanDocAsync (the doc isn't `pass`ed
-        // yet) and migrates the worktree back to `plan-{key}`, deleting
-        // the legacy path out from under the still-running architect's
-        // cwd. Generator narration: "The cwd doesn't exist… I'll edit the
-        // existing draft at the spawn-story worktree (the only worktree
-        // with the file)." Evaluator (which resolved its workspace to the
-        // same legacy path before migration): "architecture.md does not
-        // exist at the required path." → identical complaint every iter
-        // → stalled-no-convergence after 7 iters → loop exits with score 0.
-        // Passing the canonical slug here makes Restart/Resume reuse the
-        // exact same worktree the orchestrator owns, so no migration ever
-        // runs. `null` for legacy parallel-mode spawns keeps the historic
-        // shared `spawn-{slug}` worktree (parallel mode shares one
-        // worktree across all four docs, so legacy is the correct slug
-        // there).
+        // Sequential-mode plan docs use the per-doc `plan-{key}` slug to
+        // match what StorySpawnOrchestrator.RunPlanDocAsync uses; legacy
+        // parallel-mode spawns share one `plan` bucket across all four
+        // docs. Passing the canonical slug here makes Restart/Resume reuse
+        // the exact worktree the orchestrator owns, so no migration runs.
         var worktreeSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
             && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key)
             ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
-            : null;
+            : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
         var worktreePath = await this.git.EnsureWorktreeAsync(
             repo, planBranch, worktreeBase, ct, worktreeSlug: worktreeSlug);
 
@@ -1901,7 +1873,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // PlanReconciler uses the same canonicalisation, so initial decomp
         // and any later reconcile pass produce identical workstream sets
         // for the same plan.
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 62 — sequential-mode spawns persist implementation-plan.md
+        // on its per-doc branch `story/{id}/plan-implementation-plan`,
+        // not the legacy shared `plan` branch. FindDocBranch returns the
+        // right branch for both sequential and legacy modes.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
         var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
 
         RepoRow? repo = null;
@@ -2121,14 +2097,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
-        // Phase 49 follow-up -- compute the short, semantic worktree slug
-        // (e.g. "stage-1.1-project-scaffolding-stage-cargo-workspace-and-crate-layout")
-        // so the directory under {cloneRoot}/.worktree/ stays under
-        // Windows MAX_PATH once cargo/npm/dotnet build artifacts land
-        // underneath. The same-spawn workstream list is required to
-        // compute the (phase, stage) position; WorkstreamWorktreeSlug
-        // falls back to the legacy `spawn-{branch-slug}` when PlanAnchor
-        // is missing (handcrafted rows from the create-WS endpoint).
+        // Compute the canonical engineer-workstream slug
+        // (`stage-{phaseNum}.{stageNum}-{stageTitle}` for plan-anchored
+        // rows, `ws-{sanitizedId}` for handcrafted ad-hoc rows). Short
+        // names keep the directory under Windows MAX_PATH once cargo/
+        // npm/dotnet build artifacts land underneath.
         var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
         var workspace = await this.git.EnsureWorktreeAsync(repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
 
@@ -3142,7 +3115,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <summary>
     /// Per-phase wall-clock budget, computed from the originating story's
     /// points so a 1-pt change isn't given the same window as a 13-pt epic.
-    /// Formula: <c>base = max(2 minutes, points * 30s)</c>; per-phase
+    /// Formula: <c>base = max(180s, points * 60s)</c>; per-phase
     /// multiplier on top.
     /// </summary>
     internal static TimeSpan BudgetForPhase(int points, string phaseTag)
@@ -3165,8 +3138,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Plan docs need a higher floor -- the architect must read repo
         // context + siblings + write a large markdown file. 3 minutes
         // (the 0-point default) is too tight and causes timeouts.
-        if (prefix == "plan" && seconds < 600)
-            seconds = 600;
+        //
+        // 2026-05-13 (Phase 60) -- scale wall-clock with the turn budget
+        // so a 3-point plan-doc (90 turns @ ~10s/turn ≈ 900s) doesn't
+        // hit `generator-timeout` before exhausting its turn cap.
+        // Formula: `max(600s, min(1800s, points * 300s))`.
+        //   - 1-2 pt: 600s (the historical floor; turn cap is 60 anyway)
+        //   - 3 pt:   900s (15 min; aligns with 90-turn cap)
+        //   - 4 pt:  1200s (20 min)
+        //   - 6+ pt: 1800s (30 min cap to avoid runaway costs)
+        // Without this, raising plan-doc Points 2→3 (Phase 60 floor)
+        // would just shift failures from `generator-max-turns` to
+        // `generator-timeout` -- same outcome, different label.
+        if (prefix == "plan")
+        {
+            var planFloor = Math.Max(600.0, Math.Min(1800.0, points * 300.0));
+            if (seconds < planFloor) seconds = planFloor;
+        }
         return TimeSpan.FromSeconds(seconds);
     }
 
@@ -5046,7 +5034,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         if (string.IsNullOrEmpty(workstream.PlanAnchor)) return string.Empty;
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
-        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        // Phase 62 — read implementation-plan.md from its canonical
+        // per-doc branch in sequential mode (legacy shared `plan` branch
+        // in legacy mode). Matches ProduceDecompositionAsync above.
+        var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
         var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
         string? planMd;
         try
@@ -5331,6 +5322,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// explicit truncation marker tells the agent how many were
     /// dropped so it can re-derive context from code if it needs to.
     ///
+    /// <para>2026-05-13 (Phase 60) — add an explicit iter-count cap
+    /// (most-recent 3 entries) BEFORE the byte cap to bound per-turn
+    /// prompt growth across long-running loops. When entries are
+    /// dropped, list their iter numbers so the agent knows there's
+    /// older context it could re-derive from the file/PR history.
+    /// The byte cap remains as a defense-in-depth tail.</para>
+    ///
     /// <para>Backward compat: when no archive exists yet but the
     /// legacy single-file <c>.forge/iter-notes.md</c> is present
     /// (workstreams mid-flight at the A.1 → A.2 boundary), fall through
@@ -5338,11 +5336,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// The next iter's <see cref="GeneratorDelegate"/> archive step
     /// will start populating <c>.forge/notes/</c> normally from there.</para>
     /// </summary>
-    private static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
+    internal static async Task<string> ReadPriorIterNotesAsync(string workspace, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workspace)) return string.Empty;
 
         const int TotalCap = 16_000;
+        // Phase 60 — keep only the most-recent N iter-notes entries so
+        // prompt growth is bounded predictably independent of total
+        // iter count. The Copilot SDK already passes full conversation
+        // history each turn within a session; on top of that, this
+        // archive grows monotonically across sessions. Capping at 3
+        // gives the agent ~current iter context without unbounded
+        // growth contributing to `generator-max-turns` failures on
+        // long-running plan-doc loops.
+        const int MaxArchiveEntries = 3;
         var archiveDir = Path.Combine(workspace, ".forge", "notes");
         var entries = new List<(int Iter, string Path)>();
         if (Directory.Exists(archiveDir))
@@ -5384,8 +5391,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         entries.Sort((a, b) => b.Iter.CompareTo(a.Iter));
 
+        // Phase 60 — apply count cap. Stash dropped iter numbers so we
+        // can surface them as a tail marker; the agent can re-derive
+        // earlier context from code/PR history if it needs them.
+        List<int>? droppedByCount = null;
+        if (entries.Count > MaxArchiveEntries)
+        {
+            droppedByCount = entries.Skip(MaxArchiveEntries).Select(e => e.Iter).ToList();
+            entries = entries.Take(MaxArchiveEntries).ToList();
+        }
+
         var sb = new StringBuilder();
         var included = 0;
+        var truncatedByBytes = false;
         for (var i = 0; i < entries.Count; i++)
         {
             var (n, file) = entries[i];
@@ -5408,10 +5426,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     sb.AppendLine($"_(truncated: {dropped} earlier iteration(s) omitted to keep this section under {TotalCap / 1000} KB; re-derive earlier context from code if needed.)_");
                 }
+                truncatedByBytes = true;
                 break;
             }
             sb.Append(section);
             included++;
+        }
+
+        // Phase 60 — append a separate marker for entries dropped by the
+        // count cap. Distinct from the byte-cap truncation marker above
+        // so the agent (and future debuggers) can distinguish whether
+        // they ran out of room or out of recent history.
+        if (!truncatedByBytes && droppedByCount is { Count: > 0 })
+        {
+            var iterList = string.Join(", ", droppedByCount);
+            sb.AppendLine();
+            sb.AppendLine($"_(only the most-recent {MaxArchiveEntries} iteration(s) are included; earlier iter(s) omitted: {iterList}. Re-derive earlier context from code/PR history if needed.)_");
         }
 
         return sb.ToString().TrimEnd();

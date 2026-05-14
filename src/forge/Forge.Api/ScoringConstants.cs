@@ -164,4 +164,27 @@ public static class ScoringConstants
     /// </summary>
     public const long PromptBloatGrowthThreshold = 200_000;
 
+    // ── Phase 61 — consecutive-score-zero sloppy trigger ────────────────
+
+    /// <summary>
+    /// Phase 61 — threshold (K) for the consecutive-score-zero sloppy
+    /// trigger. When the last <c>K</c> deliverable scores on a single
+    /// work item are all <c>0</c>, the deliverable loop flips the verdict
+    /// to <c>sloppy</c> with
+    /// <see cref="SloppyReasons.ConsecutiveScoreZero"/> and parks the
+    /// work item for reassignment. <c>K = 3</c> chosen empirically against
+    /// the <c>local:UPDATE-HISTORY-IN-CL:architecture.md</c> stall pattern
+    /// (78, 71, 0, 0, 82, 0, 0, 0, 0, 0) — <c>K = 3</c> would have aborted
+    /// after iter 8 saving ~$230 vs. the actual halt at iter 10, while
+    /// preserving the genuine iter-5 recovery (only 2 consecutive zeros
+    /// before that, so the trigger does not fire prematurely).
+    ///
+    /// <para>Generator-side only: the score reflects the evaluator's grade
+    /// of the generator's artifact. Three zeros in a row indicates either
+    /// generator terminal failure (Phase 58 synthetic score) or repeated
+    /// rubric-bottom output — both are signals to reassign rather than
+    /// keep paying for further attempts on the same pair.</para>
+    /// </summary>
+    public const int SloppyConsecutiveZeroThreshold = 3;
+
 }

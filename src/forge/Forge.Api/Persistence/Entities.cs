@@ -1069,6 +1069,18 @@ public static class SloppyReasons
     /// Phase 56 prompt-bloat hard-stop was enabled.
     /// </summary>
     public const string PromptBloat = "prompt-bloat";
+
+    /// <summary>
+    /// Phase 61 — the last
+    /// <see cref="ScoringConstants.SloppyConsecutiveZeroThreshold"/>
+    /// deliverable scores on this work item were all <c>0</c>. Re-enabled
+    /// 2026-05-14 after the Phase 60 budget bump still failed to converge
+    /// on the <c>local:UPDATE-HISTORY-IN-CL:architecture.md</c> generator/
+    /// model combo (10 iters, $1.3K spent, halted with verdict=stalled).
+    /// Fires earlier than the legacy 5-iter cap and cuts the post-failure
+    /// spend by aborting the loop ~iter (K+2) instead of iter 10.
+    /// </summary>
+    public const string ConsecutiveScoreZero = "consecutive-score-zero";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's
