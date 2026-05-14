@@ -109,7 +109,9 @@ type RectStatus =
   | 'complete'
   | 'completed'
   | 'blocked'
-  | 'stalled';
+  | 'stalled'
+  | 'historic'
+  | 'cancelled';
 
 interface Rect {
   key: string;

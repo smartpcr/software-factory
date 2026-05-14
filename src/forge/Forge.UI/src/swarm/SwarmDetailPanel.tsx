@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import type { Build, PrComment, StoryAttachment } from '@/types';
@@ -389,8 +389,8 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
     return team.toUpperCase();
   };
   // Phase 49 follow-up — only show an agent pair when the workstream is
-  // currently RUNNING or has shipped (active/review/merging/complete).
-  // For pre-claim states (planning/blocked/stalled/cancelled/historic),
+  // currently RUNNING or has shipped (active/review/merging/complete/historic).
+  // For pre-claim or aborted states (planning/blocked/stalled/cancelled),
   // `latestGen/EvalAgentId` may carry the pair from a prior aborted run;
   // displaying it as if it's the current assignment confused the
   // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
@@ -399,8 +399,14 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
   // as "no current assignment"; the SwarmMasterPanel + Conversation
   // tab still surface the historical iter / score data so the prior
   // run isn't hidden, just not painted as "currently assigned".
+  // `historic` IS a successfully-shipped state (PR merged under a
+  // prior plan version, then the plan changed) — its latestDeliverable
+  // is the agent pair that actually completed the work, so we surface
+  // it the same as `complete` (observed 2026-05-14: stage 3.2 Leader
+  // Election was `historic` with a Mang Liu deliverable but the chips
+  // read "— not assigned —").
   const isCurrentlyAssigned = (status: string): boolean =>
-    status === 'active' || status === 'review' || status === 'merging' || status === 'complete';
+    status === 'active' || status === 'review' || status === 'merging' || status === 'complete' || status === 'historic';
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
     .map((w, i) => {
@@ -790,20 +796,28 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
 
   // Phase 49 follow-up — gate the Overview's agent-pair display on the
   // workstream's CURRENT status. When status is one of the pre-claim or
-  // tombstoned states (planning/blocked/stalled/cancelled/historic),
-  // the stored `latestGen/EvalAgentId` reflects a PRIOR aborted run and
+  // tombstoned states (planning/blocked/stalled/cancelled), the stored
+  // `latestGen/EvalAgentId` reflects a PRIOR aborted run and
   // displaying it as if it were the live assignment confused the
   // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
   // deps 1.1/1.2/1.3, yet the avatar panel showed Zhu Rong + Bi Gan
   // from iter-1/iter-2 deliverables). For docs (architect plan-doc
   // panels) we keep the legacy display — those have a stable
   // generator/evaluator across iterations.
+  //
+  // `historic` IS shown as assigned: it's a shipped row (PR merged)
+  // whose plan version was later superseded, so its latestDeliverable
+  // is the legitimate agent pair that completed the work. The backend
+  // groups `historic` alongside `complete` as terminal-done at
+  // StoriesEndpoints.cs:1664 (observed 2026-05-14: stage 3.2 Leader
+  // Election was `historic` with a Mang Liu deliverable but the chips
+  // read "— not assigned —").
   const wsRowForOverview = isWorkstream
     ? detail.workstreams.find((w) => w.id === selection.id)
     : null;
   const isWsCurrentlyAssigned = !isWorkstream || (() => {
     const s = wsRowForOverview?.status ?? '';
-    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete' || s === 'stalled';
+    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete' || s === 'stalled' || s === 'historic';
   })();
 
   // Agent identity — prefer prompt-derived agent info (matches what the
@@ -1757,6 +1771,20 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
 function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
   const storyId = detail.spawn.storyId;
   const ws = detail.workstreams;
+  const navigate = useNavigate();
+
+  // Clicking a stage card jumps to the workstream-detail page with the
+  // master pane open and that workstream pre-selected on the conversation
+  // tab. URL shape mirrors the WorkItemDetailPanel "◇ Workstream" link at
+  // workitems/WorkItemDetailPanel.tsx:732 so deep-links from anywhere in
+  // the app converge on the same target. Param order matches the
+  // operator-specified template in the Phase 63 ask
+  // (mode=impl → master=open → sel=phase → selId).
+  const openWorkstream = useCallback((workstreamId: string) => {
+    const target = `/workstreams/${encodeURIComponent(storyId)}`
+      + `?mode=impl&master=open&sel=phase&selId=${encodeURIComponent(workstreamId)}`;
+    navigate(target);
+  }, [navigate, storyId]);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadWsDagCollapsed(storyId));
   useEffect(() => { setCollapsed(loadWsDagCollapsed(storyId)); }, [storyId]);
@@ -1983,6 +2011,7 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
             onToggle={() => togglePhase(g.anchor)}
             registerCardRef={registerCardRef}
             registerHeaderRef={registerHeaderRef}
+            onStageClick={openWorkstream}
           />
         ))}
       </div>
@@ -1992,7 +2021,7 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
 
 function WsPhaseContainer({
   group, phaseIndex, byId, phaseAnchorOf, stageNumOf, collapsed, onToggle,
-  registerCardRef, registerHeaderRef,
+  registerCardRef, registerHeaderRef, onStageClick,
 }: {
   group: WsPhaseGroup;
   phaseIndex: number;
@@ -2003,6 +2032,7 @@ function WsPhaseContainer({
   onToggle: () => void;
   registerCardRef: (id: string, el: HTMLElement | null) => void;
   registerHeaderRef: (anchor: string, el: HTMLElement | null) => void;
+  onStageClick: (workstreamId: string) => void;
 }) {
   const layout = useMemo(() => layoutPhase(group.items), [group.items]);
   const activeInPhase = group.items.filter((w) => w.status === 'active').length;
@@ -2051,6 +2081,7 @@ function WsPhaseContainer({
               phaseAnchorOf={phaseAnchorOf}
               stageNumOf={stageNumOf}
               registerCardRef={registerCardRef}
+              onClick={onStageClick}
             />
           ))}
         </div>
@@ -2060,7 +2091,7 @@ function WsPhaseContainer({
 }
 
 function WsStageCard({
-  ws, left, top, byId, phaseAnchorOf, stageNumOf, registerCardRef,
+  ws, left, top, byId, phaseAnchorOf, stageNumOf, registerCardRef, onClick,
 }: {
   ws: StorySpawnDetail['workstreams'][number];
   left: number;
@@ -2069,6 +2100,7 @@ function WsStageCard({
   phaseAnchorOf: Map<string, string>;
   stageNumOf: Map<string, string>;
   registerCardRef: (id: string, el: HTMLElement | null) => void;
+  onClick: (workstreamId: string) => void;
 }) {
   const stageLabel = wsStageLabel(ws.planAnchor, ws.name);
   const myStageNum = stageNumOf.get(ws.id);
@@ -2082,6 +2114,17 @@ function WsStageCard({
   const cb = useCallback((el: HTMLElement | null) => registerCardRef(ws.id, el),
     [registerCardRef, ws.id]);
 
+  // Cross-dep chip clicks must not bubble up and re-trigger the card-level
+  // navigation; without stopPropagation a click on a dep chip would jump
+  // to the parent stage's workstream rather than feel like an inert label.
+  const handleCardClick = useCallback(() => onClick(ws.id), [onClick, ws.id]);
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onClick(ws.id);
+    }
+  }, [onClick, ws.id]);
+
   return (
     <div
       ref={cb}
@@ -2093,12 +2136,17 @@ function WsStageCard({
         width: WS_NODE_W,
         height: WS_NODE_H,
         borderColor: color,
+        cursor: 'pointer',
       }}
       data-ws-id={ws.id}
+      role="button"
+      tabIndex={0}
+      onClick={handleCardClick}
+      onKeyDown={handleKeyDown}
       title={
         ws.status === 'stalled' && ws.stallReason
-          ? `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nstalled — ${ws.stallReason}`
-          : `${ws.name}\n${ws.planAnchor ?? ws.id}`
+          ? `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nstalled — ${ws.stallReason}\n\nClick to open workstream`
+          : `${ws.name}\n${ws.planAnchor ?? ws.id}\n\nClick to open workstream`
       }
     >
       <div className="ws-stage__hd">
@@ -2121,7 +2169,7 @@ function WsStageCard({
       <div className="ws-stage__stage">STAGE · {stageLabel}</div>
       <div className="ws-stage__name">{ws.name}</div>
       {crossDeps.length > 0 && (
-        <div className="ws-stage__cross">
+        <div className="ws-stage__cross" onClick={(e) => e.stopPropagation()}>
           <span className="ws-stage__cross-label" title="Cross-phase upstream deps">↥ deps</span>
           {crossDeps.map((u) => {
             const num = stageNumOf.get(u.id) ?? '?';
@@ -2129,7 +2177,12 @@ function WsStageCard({
               <span
                 key={u.id}
                 className="ws-stage__cross-chip"
-                title={`${num} — ${u.name}\n${u.planAnchor ?? u.id}`}
+                title={`${num} — ${u.name}\n${u.planAnchor ?? u.id}\n\nClick to open this dep's workstream`}
+                style={{ cursor: 'pointer' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClick(u.id);
+                }}
               >
                 {num}
               </span>

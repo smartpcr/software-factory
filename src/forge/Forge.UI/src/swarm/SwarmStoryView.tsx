@@ -13,7 +13,6 @@ import { Toaster } from '@/board/Toaster';
 function modeForPhase(p: StorySpawnPhase): SwarmMode {
   if (p === 'plan' || p === 'decompose') return 'design';
   if (p === 'done') return 'release';
-  if (p === 'paused') return 'impl';
   return 'impl';
 }
 
@@ -119,6 +118,52 @@ export function SwarmStoryView() {
   // exact symptom that broke StoryDeliveryStrip rect-click navigation).
   // Mode changes from useState init / load()'s phase fallback go through
   // setModeState directly and preserve selection.
+  //
+  // ── URL → local state sync ────────────────────────────────────────
+  // The four pieces of local state above are initialised from
+  // searchParams via `useState(() => …)` — initialisers only run on
+  // mount. When the URL changes AFTER mount (e.g. operator clicks a
+  // stage card in the DecompositionDiagram DAG and we navigate to the
+  // same `/workstreams/:storyId` route with different query params),
+  // React Router updates `searchParams` but local state does NOT
+  // re-read the initialiser, so the page renders the OLD mode /
+  // selection — symptom: "url change, page not loaded".
+  //
+  // This effect reconciles state ← URL on every searchParams change.
+  // The diff guards (`if (urlMode !== mode)` etc.) are mandatory:
+  // - They prevent feedback loops with the state → URL writers
+  //   (setMode / setSelection / setTab call updateParams which calls
+  //   setSearchParams, which re-fires this effect; without the guard
+  //   we'd setModeState(currentMode) → re-render → no-op cycle, but
+  //   it still wastes work).
+  // - They keep StrictMode-safe: the dev double-mount fires this
+  //   effect twice with the same searchParams; first run sets state
+  //   if needed, second run sees state already matches and no-ops.
+  //
+  // Depending on [searchParams] (not [mode]) is also intentional —
+  // this avoids the StrictMode trap that broke rect-click navigation
+  // (the warning above), because searchParams is a stable React
+  // Router ref that only ticks when the URL actually changes.
+  useEffect(() => {
+    const urlMode = (searchParams.get('mode') as SwarmMode | null) ?? null;
+    const urlSelKind = searchParams.get('sel') as Selection['kind'] | null;
+    const urlSelId = searchParams.get('selId');
+    const urlTab = (searchParams.get('tab') as DetailTab) || 'overview';
+    const urlMasterCollapsed = searchParams.get('master') !== 'open';
+
+    if (urlMode !== mode) setModeState(urlMode);
+
+    const wantSel: Selection = urlSelKind
+      ? { kind: urlSelKind, id: urlSelId ?? null }
+      : { kind: 'overview', id: null };
+    if (wantSel.kind !== selection.kind || wantSel.id !== selection.id) {
+      setSelectionState(wantSel);
+    }
+
+    if (urlTab !== tab) setTabState(urlTab);
+    if (urlMasterCollapsed !== masterCollapsed) setMasterCollapsed(urlMasterCollapsed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   if (err) {
     return (
@@ -162,53 +207,8 @@ export function SwarmStoryView() {
             <div className="swarm-header-slim-eyebrow">SWARM CONTROL // {detail.spawn.storyId}</div>
             <h1 className="swarm-header-slim-title">{detail.spawn.storyTitle.toUpperCase()}</h1>
             <div className="swarm-header-slim-sub">
-             phase · {detail.spawn.phase.toUpperCase()}
-             {detail.spawn.phase === 'paused' && detail.spawn.pausedFromPhase
-               ? ` (from ${detail.spawn.pausedFromPhase})`
-               : ''}
-             {' '}· {detail.workstreams.length} workstreams · repo {detail.spawn.repoId ?? '—'}
-             {detail.spawn.phase !== 'done' && (
-               <button
-                 type="button"
-                 style={{
-                   marginLeft: 12,
-                   padding: '2px 10px',
-                   fontSize: 10,
-                   fontFamily: 'var(--sc-font-display)',
-                   letterSpacing: '0.12em',
-                   background: detail.spawn.phase === 'paused' ? 'rgba(80,200,120,0.15)' : 'rgba(255,180,0,0.12)',
-                   color: detail.spawn.phase === 'paused' ? '#50c878' : '#ffb400',
-                   border: `1px solid ${detail.spawn.phase === 'paused' ? 'rgba(80,200,120,0.3)' : 'rgba(255,180,0,0.25)'}`,
-                   borderRadius: 3,
-                   cursor: 'pointer',
-                   verticalAlign: 'middle',
-                 }}
-                 title={detail.spawn.phase === 'paused'
-                   ? `Resume spawn (restore to ${detail.spawn.pausedFromPhase ?? 'prior'} phase)`
-                   : 'Pause spawn — stop all agents and workstreams'}
-                 onClick={async () => {
-                   const action = detail.spawn.phase === 'paused' ? 'resume' : 'pause';
-                   if (!confirm(`${action === 'pause' ? '⏸ Pause' : '▶ Resume'} spawn "${detail.spawn.storyTitle}"?\n\n${
-                     action === 'pause'
-                       ? 'This will kill all running agents and pause every workstream.'
-                       : 'This will restore the prior phase and resume all paused workstreams.'
-                   }`)) return;
-                   try {
-                     if (action === 'pause') {
-                       await forgeApi.pauseStorySpawn(storyId);
-                     } else {
-                       await forgeApi.resumeStorySpawn(storyId);
-                     }
-                     useSpawnStore.getState().bump(storyId);
-                   } catch (e: any) {
-                     useToastStore.getState().show(`${action} failed: ${e?.message ?? e}`, 'danger');
-                   }
-                 }}
-               >
-                 {detail.spawn.phase === 'paused' ? '▶ RESUME' : '⏸ PAUSE'}
-               </button>
-             )}
-           </div>
+              phase · {detail.spawn.phase.toUpperCase()} · {detail.workstreams.length} workstreams · repo {detail.spawn.repoId ?? '—'}
+            </div>
           </div>
           {selection.kind === 'phase' && selection.id && (() => {
             const ws = detail.workstreams.find((w) => w.id === selection.id);

@@ -1816,6 +1816,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // see at the per-doc key. Legacy parallel-mode spawns
         // (PlanDocPrsJson == null) still get the shared branch via
         // FindDocBranch's legacy fallback.
+        //
+        // Also seen 2026-05-14 on code-intelligence:AGENT-MEMORY →
+        // architecture Resume, where the legacy `story/{id}/plan` fallback
+        // surfaced as `git checkout -B story/.../plan origin/story/.../plan`
+        // failing with exit 128 (`fatal: 'origin/story/.../plan' is not a
+        // commit`) because that combined branch never existed on origin
+        // for a sequential spawn.
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch

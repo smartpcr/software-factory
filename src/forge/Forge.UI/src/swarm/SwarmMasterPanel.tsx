@@ -70,6 +70,10 @@ const STATUS_TO_PHASE_CLASS: Record<string, string> = {
   review:   'review',
   merging:  'active',
   complete: 'done',
+  // Phase 42 `historic` shipped under a previous plan version (PR
+  // merged); operator-facing lifecycle reads as `complete` with an
+  // "obsolete" audit pill rendered separately below.
+  historic: 'done',
   blocked:  'blocked',
   stalled:  'stalled',
 };
@@ -80,6 +84,7 @@ const STATUS_TO_BADGE: Record<string, string> = {
   review:   'review',
   merging:  'active',
   complete: 'done',
+  historic: 'done',
   blocked:  'blocked',
   stalled:  'stalled',
 };
@@ -90,6 +95,7 @@ const STATUS_PROGRESS: Record<string, number> = {
   review:   70,
   merging:  90,
   complete: 100,
+  historic: 100,
   blocked:  0,
   stalled:  35,
 };
@@ -208,12 +214,23 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   // Phase-board status filter — operator narrows which phase rows render.
   // Counts shown on chips are derived from the unfiltered list so the
   // operator always sees the full picture even when the filter is on.
+  //
+  // The `complete` chip folds in `historic` rows: from a lifecycle
+  // standpoint historic IS complete (PR merged + code shipped), only the
+  // plan version it was scoped against has been superseded. Operator-
+  // facing model treats them as the same bucket; the per-row "obsolete"
+  // pill below keeps the audit dimension visible. Backend status string
+  // stays `historic` so all `Status != WorkstreamStatuses.Historic`
+  // filters in the orchestrator continue to scope live work correctly.
   const phaseStatusFilter = useWorkstreamsStore((s) => s.phaseStatusFilter);
   const togglePhaseStatusFilter = useWorkstreamsStore((s) => s.togglePhaseStatusFilter);
   const setPhaseStatusFilter = useWorkstreamsStore((s) => s.setPhaseStatusFilter);
   const wsCountByStatus = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const w of ws) counts[w.status] = (counts[w.status] ?? 0) + 1;
+    for (const w of ws) {
+      const bucket = w.status === 'historic' ? 'complete' : w.status;
+      counts[bucket] = (counts[bucket] ?? 0) + 1;
+    }
     return counts;
   }, [ws]);
   const effectiveFilter = phaseStatusFilter.length === 0
@@ -225,7 +242,10 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const visibleWs = useMemo(
     () => ws
       .map((w, originalIndex) => ({ w, originalIndex }))
-      .filter(({ w }) => (effectiveFilter as readonly string[]).includes(w.status)),
+      .filter(({ w }) => {
+        const bucket = w.status === 'historic' ? 'complete' : w.status;
+        return (effectiveFilter as readonly string[]).includes(bucket);
+      }),
     [ws, effectiveFilter],
   );
   const isAllSelected = phaseStatusFilter.length === 0
@@ -360,6 +380,12 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }:
   const badgeCls = STATUS_TO_BADGE[ws.status] ?? 'blocked';
   const pct = STATUS_PROGRESS[ws.status] ?? 0;
   const unanswered = ws.unansweredQuestionCount ?? 0;
+  // Operator-facing lifecycle label: a `historic` row reads as
+  // `complete` (it shipped, PR merged) with an "obsolete" audit pill
+  // rendered next to the badge to surface that the plan version it
+  // targeted has been superseded. Tooltip mirrors the same model.
+  const isObsolete = ws.status === 'historic';
+  const lifecycleLabel = isObsolete ? 'complete' : ws.status;
 
   return (
     <div
@@ -369,7 +395,7 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }:
       data-sc-tooltip={
         ws.status === 'stalled' && ws.stallReason
           ? `${ws.name}\nstalled — ${ws.stallReason}${ws.branch ? `\n${ws.branch}` : ''}`
-          : `${ws.name}\n${ws.status}${ws.branch ? ` · ${ws.branch}` : ''}`
+          : `${ws.name}\n${lifecycleLabel}${isObsolete ? ' (obsolete plan version)' : ''}${ws.branch ? ` · ${ws.branch}` : ''}`
       }
       data-sc-tooltip-pos="bottom"
     >
@@ -383,8 +409,26 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }:
           className={`badge ${badgeCls}`}
           title={ws.status === 'stalled' && ws.stallReason ? ws.stallReason : undefined}
         >
-          {ws.status}
+          {lifecycleLabel}
         </span>
+        {isObsolete && (
+          <span
+            className="badge"
+            style={{
+              marginLeft: 4,
+              background: 'rgba(121,224,138,0.10)',
+              color: 'var(--sc-green-d, #4f8a59)',
+              border: '1px solid rgba(121,224,138,0.35)',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+            title="Shipped + merged under a previous version of the plan; the architect has since re-decomposed and this anchor was either renamed or removed. The merged code is still on the base branch — only the plan attribution moved."
+          >
+            obsolete
+          </span>
+        )}
         {unanswered > 0 && (
           <span
             className="badge stalled"

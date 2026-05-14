@@ -571,7 +571,7 @@
 }
 .swarm-ctrl .story-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto auto auto auto;
+  grid-template-columns: 56px 1fr auto auto auto auto;
   align-items: stretch;
   gap: 14px;
   padding: 10px 14px;
@@ -751,18 +751,6 @@
   cursor: not-allowed;
   opacity: 0.4;
 }
-/* Phase 63 — pause/resume button reuses sr-delete sizing but uses amber
- * accent on hover instead of red. The .sr-pause class overrides the
- * destructive-red intent with a neutral amber to signal "stop, not destroy". */
-.swarm-ctrl .story-row .sr-pause:hover:not(:disabled) {
-  border-color: var(--sc-amber);
-  color: var(--sc-amber);
-  background: rgba(255, 180, 0, 0.08);
-}
-.swarm-ctrl .story-row .sr-pause:focus-visible {
-  outline: 1px solid var(--sc-amber);
-  outline-offset: 2px;
-}
 
 /* Workstream chip strip on each story row — a layered DAG of small
  * squares rendered as a "progress tree". Phase 50 — instead of a single
@@ -828,7 +816,22 @@
  * design-doc / release rects (see StoryDeliveryStrip.tsx). Not-started
  * rects (pending / planning / blocked) use a light gray (`--sc-muted`)
  * so they're visible against the near-black backplate; the prior
- * `--sc-surface-3` fill matched the row background too closely. */
+ * `--sc-surface-3` fill matched the row background too closely.
+ *
+ * `blocked` is folded into the not-started palette per operator
+ * preference — visually it reads as "queued, waiting on upstream", the
+ * same grey bucket as `pending` / `planning`. The row-strip header
+ * (SwarmStoryRow.tsx:181) surfaces "N blocked" in red text so the
+ * count remains visually distinct without coloring every chip red.
+ *
+ * `historic` (Phase 42 tombstones — frozen prior-plan versions, see
+ * PlanReconciler.WorkstreamStatuses.Historic) and `cancelled` rows
+ * are rendered as dimmed hatched tombstones below so the operator
+ * can distinguish them from live workstreams without them dominating
+ * the strip. Without an explicit selector they fell through to the
+ * base `.ws-chip` near-black background — observed on
+ * failover-cluster:XRAFT (8 historic rows after the
+ * server-assembly-and-client-sdk → internal-client rebirth). */
 .swarm-ctrl .ws-chip.pending,
 .swarm-ctrl .ws-chip.planning,
 .swarm-ctrl .ws-chip.blocked { background: var(--sc-muted); border-color: var(--sc-text-dim); }
@@ -844,9 +847,41 @@
 .swarm-ctrl .ws-chip.merging  { background: var(--sc-cyan); border-color: var(--sc-cyan-d); }
 .swarm-ctrl .ws-chip.complete,
 .swarm-ctrl .ws-chip.completed { background: var(--sc-green); border-color: var(--sc-green-d); }
-/* `blocked` lifecycle is folded into the not-started selector above —
- * keep this comment as a signpost so future status entries land in the
- * right palette. Stalled (the real error state) stays below. */
+/* Phase 42 `historic` — shipped under a previous plan version (PR was
+ * merged), then superseded when the architect re-decomposed. These ARE
+ * completed work, not abandoned tombstones, so they share the green
+ * `complete` family. The diagonal stripe + 0.7 opacity reads as
+ * "completed but obsolete plan version" — distinct from live `complete`
+ * (solid green) without losing the "this shipped" signal. PlanReconciler
+ * only ever stamps `historic` over a `Shipped` row (status was
+ * merging/complete OR a linked PR was merged) — see ClassifyAsync. */
+.swarm-ctrl .ws-chip.historic {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sc-green) 0,
+    var(--sc-green) 2px,
+    var(--sc-green-d) 2px,
+    var(--sc-green-d) 4px
+  );
+  border-color: var(--sc-green-d);
+  opacity: 0.7;
+}
+/* Tombstones — `cancelled` rows that were in-flight when the plan got
+ * revised and never shipped. No PR, no audit value beyond "we tried".
+ * Dim hatched grey so they fade into the strip's background. */
+.swarm-ctrl .ws-chip.cancelled {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sc-muted) 0,
+    var(--sc-muted) 2px,
+    var(--sc-bg-2) 2px,
+    var(--sc-bg-2) 4px
+  );
+  border-color: var(--sc-text-dim);
+  opacity: 0.45;
+}
+/* `stalled` is the hard-error sibling: red family rendered with a
+ * diagonal hatch so it reads as "broken / failed" at a glance. */
 .swarm-ctrl .ws-chip.stalled {
   background: repeating-linear-gradient(
     45deg,
@@ -1619,7 +1654,7 @@
   .swarm-ctrl .mode-pane.active { grid-template-columns: 1fr; }
   .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr); }
   .swarm-ctrl .clock { display: none; }
-  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto auto; }
+  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto; }
   .swarm-ctrl .sr-score { display: none; }
   .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
   .swarm-ctrl .ov-split-r { display: none; }
