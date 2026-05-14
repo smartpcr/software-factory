@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Microsoft.EntityFrameworkCore;
@@ -28,25 +29,40 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
     private readonly IHttpClientFactory clientFactory;
     private readonly GitHubOptions options;
     private readonly IServiceScopeFactory scopeFactory;
+    private readonly IEnumerable<IAuthService> authServices;
     private readonly ILogger<GitHubPrCommentSyncClient> logger;
 
     public GitHubPrCommentSyncClient(
         IHttpClientFactory clientFactory,
         IOptions<GitHubOptions> options,
         IServiceScopeFactory scopeFactory,
+        IEnumerable<IAuthService> authServices,
         ILogger<GitHubPrCommentSyncClient> logger)
     {
         this.clientFactory = clientFactory;
         this.options = options.Value;
         this.scopeFactory = scopeFactory;
+        this.authServices = authServices;
         this.logger = logger;
     }
 
     public string Provider => "github";
 
+    // 2026-05-14 — mirror AdoPrCommentSyncClient.IsConfigured: comment sync
+    // can authenticate either via the legacy Forge:GitHub:Pat config
+    // or via the gh-CLI-backed GitHubAuthService registered as an
+    // IAuthService. Previously this checked options.Pat + options.Repo
+    // only, which silently disabled sync for every deployment that
+    // relied on `gh auth login` (the documented happy path) — every
+    // GitHub PR opened by Forge stalled at LastSyncStatus='failed'
+    // with "Sync client for provider 'github' not configured", and the
+    // local PrRow / Workstream.PrsJson mirrors never refreshed after a
+    // PR was opened or auto-merged (observed on PR smartpcr/qq#14
+    // 2026-05-14: closed+merged on GitHub for ~10 h while the Forge UI
+    // still showed the workstream as ACTIVE iter 4/50).
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(this.options.Repo)
-        && !string.IsNullOrWhiteSpace(this.options.Pat);
+        !string.IsNullOrWhiteSpace(this.options.Pat)
+        || this.authServices.Any(a => string.Equals(a.Kind, "github", StringComparison.OrdinalIgnoreCase));
 
     public async Task<PrSyncSnapshot> FetchAsync(PrRow pr, CancellationToken ct)
     {
@@ -63,7 +79,7 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
 
         var num = pr.ProviderRef.TrimStart('#').Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase);
 
-        using var http = this.NewClient();
+        using var http = await this.NewClientAsync(ct);
         var prResp = await http.GetAsync($"repos/{owner}/{repo}/pulls/{num}", ct);
         if (!prResp.IsSuccessStatusCode)
         {
@@ -430,15 +446,44 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         return dict;
     }
 
-    private HttpClient NewClient()
+    private async Task<HttpClient> NewClientAsync(CancellationToken ct)
     {
         var client = this.clientFactory.CreateClient(ClientName);
         var apiBase = string.IsNullOrEmpty(this.options.ApiBase) ? "https://api.github.com" : this.options.ApiBase;
         client.BaseAddress = new Uri(apiBase.TrimEnd('/') + "/");
+
+        // 2026-05-14 — resolve auth in priority order: configured PAT
+        // (legacy / CI path) → gh-CLI bearer via IAuthService (the
+        // documented dev path). Mirrors AdoPrCommentSyncClient.NewClient.
+        // Anonymous requests still work for public repos (rate-limited
+        // to 60 req/h instead of 5000), so we don't fail the call when
+        // both paths come back empty — let the request go and the
+        // status-code handler upstream decides what to do.
+        string? bearer = null;
         if (!string.IsNullOrWhiteSpace(this.options.Pat))
         {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", this.options.Pat);
+            bearer = this.options.Pat;
         }
+        else
+        {
+            var auth = this.authServices.FirstOrDefault(a => string.Equals(a.Kind, "github", StringComparison.OrdinalIgnoreCase));
+            if (auth is not null)
+            {
+                try
+                {
+                    bearer = await auth.GetAccessTokenAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "GitHub comment sync: failed to acquire bearer token from gh CLI");
+                }
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(bearer))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        }
+
         client.DefaultRequestHeaders.UserAgent.Clear();
         client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("forge-pr-sync", "1.0"));
         client.DefaultRequestHeaders.Accept.Clear();

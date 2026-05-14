@@ -210,7 +210,18 @@ public static class WorktreePathResolver
         var slug = WorkstreamWorktreeSlug.Compute(ws, siblings);
         var path = Path.Combine(repo.CloneRoot, ".worktree", slug);
         var branch = !string.IsNullOrEmpty(ws.Branch) ? ws.Branch! : $"ws/{workItemId}";
-        var baseBranch = !string.IsNullOrEmpty(repo.DefaultBranch) ? repo.DefaultBranch! : "main";
+
+        // 2026-05-14 — route the base-branch resolution through the shared
+        // WorkItemBaseBranchResolver so engineer workstreams open PRs
+        // against the spawn's integration branch (e.g. `feature/teams`)
+        // rather than the repo's default (e.g. `main`). The previous code
+        // hard-coded `repo.DefaultBranch` here, which silently bypassed
+        // the architect's chosen feature branch for every spawn-bound
+        // workstream — observed on PR smartpcr/qq#14 (ASP.NET Core Bot
+        // Host): spawn.BaseBranch=`feature/teams`, ws.Base=`feature/teams`,
+        // but the PR opened with base=`main` and auto-merge landed
+        // engineer work straight onto trunk.
+        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(db, workItemId, ct);
 
         return new CanonicalWorkstreamPathSpec(branch, slug, path, repo.CloneRoot!, baseBranch, ws, repo);
     }
