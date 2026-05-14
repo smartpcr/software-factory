@@ -2880,8 +2880,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Phase 49 follow-up -- emit fix events under workstream.Id so the
         // engineer's iteration on review feedback appears in the same
         // Conversation tab as the original impl work.
+        //
+        // Phase 65 — dispatch to the workstream's assigned generator (the
+        // engineer who originally wrote the code) instead of the crew-wide
+        // DefaultGeneratorAgentId. The authoring agent id flows from the
+        // orchestrator's AgentsJson[0] → ReviewCommentContext.AuthoringAgentId.
+        // Fall back to AgentsJson[0] directly when AuthoringAgentId is empty
+        // (e.g. synthetic callers), then to crew default as last resort.
+        var assignedGen = ParseAgentsList(workstream.AgentsJson).FirstOrDefault();
+        var fixAgentId = !string.IsNullOrEmpty(comment.AuthoringAgentId)
+            ? comment.AuthoringAgentId
+            : assignedGen;
         await this.InvokeAsync("Engineer", workstream.Id, $"review-fix:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review-fix"), ct);
+            BudgetForPhase(spawn.StoryPoints, "review-fix"), ct, agentIdOverride: fixAgentId);
 
         // reply.md is mandatory -- every comment needs a written response.
         var replyFile = Path.Combine(workspace, "reply.md");
@@ -4861,7 +4872,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private static string? NonEmptyOrNull(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
     private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, CancellationToken ct)
-        => await this.InvokeAsync(team, workItemId, phaseTag, prompt, workspace, budget: null, ct);
+        => await this.InvokeAsync(team, workItemId, phaseTag, prompt, workspace, budget: null, ct: ct);
+
+    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct)
+        => await this.InvokeAsync(team, workItemId, phaseTag, prompt, workspace, budget, ct: ct, agentIdOverride: null);
 
     /// <summary>
     /// Phase 49 follow-up -- <paramref name="workItemId"/> (formerly named
@@ -4874,7 +4888,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// Review subtab) instead of disappearing into the spawn-level
     /// stream that no UI surface renders.
     /// </summary>
-    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct)
+    /// <summary>
+    /// Phase 65 — optional <paramref name="agentIdOverride"/>. When non-null
+    /// the invocation targets that specific agent (with config inherited from
+    /// the agent's own crew row) instead of the team crew's default generator.
+    /// Used by <see cref="ProduceReviewFixAsync"/> to dispatch the workstream's
+    /// assigned engineer — the one who originally wrote the code — rather than
+    /// the crew-wide default (which was a single-point-of-failure when that
+    /// default agent's transport hung).
+    /// </summary>
+    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct, string? agentIdOverride = null)
     {
         var prefix = CrewIdPrefix(team);
 
@@ -4886,21 +4909,59 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ?? throw new InvalidOperationException(
                 $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
 
-        var agentId = crew.DefaultGeneratorAgentId ?? crew.Lead
-            ?? throw new InvalidOperationException(
-                $"Crew '{crew.Id}' has no Lead/DefaultGeneratorAgentId set.");
+        // Phase 65 — when an override agent is supplied (e.g. the workstream's
+        // assigned generator for review-fix), use it instead of the crew
+        // default. Validate the agent exists; fall back to crew default when
+        // the override is stale / deleted so we don't silently break.
+        AgentRow? agent = null;
+        string agentId;
+        if (!string.IsNullOrEmpty(agentIdOverride))
+        {
+            agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentIdOverride, ct);
+            if (agent is not null)
+            {
+                agentId = agentIdOverride;
+            }
+            else
+            {
+                this.logger?.LogWarning(
+                    "InvokeAsync: agentIdOverride '{Override}' not found in agents table for phase '{Phase}' "
+                    + "on workItem '{WiId}'; falling back to crew default.",
+                    agentIdOverride, phaseTag, workItemId);
+                agentId = crew.DefaultGeneratorAgentId ?? crew.Lead
+                    ?? throw new InvalidOperationException(
+                        $"Crew '{crew.Id}' has no Lead/DefaultGeneratorAgentId set.");
+                agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+            }
+        }
+        else
+        {
+            agentId = crew.DefaultGeneratorAgentId ?? crew.Lead
+                ?? throw new InvalidOperationException(
+                    $"Crew '{crew.Id}' has no Lead/DefaultGeneratorAgentId set.");
+            agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        }
 
-        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        // When the override agent belongs to a different crew, inherit
+        // model/backend/invokeMode from that crew so runtime config matches
+        // the agent's real home (e.g. night-crew agents have different models).
+        var configCrew = crew;
+        if (agent is not null && !string.IsNullOrEmpty(agent.CrewId)
+            && !string.Equals(agent.CrewId, crew.Id, StringComparison.Ordinal))
+        {
+            var agentCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == agent.CrewId, ct);
+            if (agentCrew is not null) configCrew = agentCrew;
+        }
 
         var model = !string.IsNullOrEmpty(agent?.GeneratorModel) ? agent!.GeneratorModel
-            : !string.IsNullOrEmpty(crew.Model) ? crew.Model
-            : throw new InvalidOperationException($"Crew '{crew.Id}' has no Model set.");
+            : !string.IsNullOrEmpty(configCrew.Model) ? configCrew.Model
+            : throw new InvalidOperationException($"Crew '{configCrew.Id}' has no Model set.");
 
-        var backendStr = !string.IsNullOrEmpty(agent?.Backend) ? agent!.Backend : crew.Backend;
+        var backendStr = !string.IsNullOrEmpty(agent?.Backend) ? agent!.Backend : configCrew.Backend;
         var backend = string.Equals(backendStr, "claude", StringComparison.OrdinalIgnoreCase)
             ? AgentBackend.Claude : AgentBackend.Copilot;
 
-        var invokeStr = !string.IsNullOrEmpty(agent?.InvokeMode) ? agent!.InvokeMode : crew.InvokeMode;
+        var invokeStr = !string.IsNullOrEmpty(agent?.InvokeMode) ? agent!.InvokeMode : configCrew.InvokeMode;
         var invokeMode = string.Equals(invokeStr, "cli", StringComparison.OrdinalIgnoreCase)
             ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
