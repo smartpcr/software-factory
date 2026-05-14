@@ -12,6 +12,7 @@ using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// forge_implementation.md Phase 28 — orchestration brain. The endpoints
@@ -52,11 +53,24 @@ public sealed class StorySpawnOrchestrator
     /// Keyed by deterministic <c>spawn.Id = spawn-{safeStoryId}</c> (not
     /// <c>storyId</c> — the spawn-id matches the gate's claim semantics
     /// and is what every other branch/path slug uses). Acquired
-    /// non-blocking via <see cref="SemaphoreSlim.WaitAsync(int)"/> with
-    /// timeout 0 — if held, the current call returns immediately and
-    /// the next scheduler tick / operator action picks up.
+    /// <summary>
+    /// Per-spawn drive gate. Wraps a semaphore with an acquisition timestamp
+    /// so the scheduler can detect stuck ticks (e.g. an agent invocation
+    /// that exceeded its timeout but never released the semaphore). When a
+    /// gate has been held longer than <see cref="DriveStuckMinutes"/>, the
+    /// scheduler replaces it with a fresh instance and proceeds — the old
+    /// (stuck) drive's eventual <c>Release()</c> goes to the discarded
+    /// semaphore and is harmless.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> driveLocks =
+    private sealed class DriveGate
+    {
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public DateTimeOffset AcquiredAt { get; set; }
+    }
+
+    private const int DriveStuckMinutes = 15;
+
+    private static readonly ConcurrentDictionary<string, DriveGate> driveLocks =
         new(StringComparer.Ordinal);
 
     private readonly IServiceProvider services;
@@ -120,15 +134,33 @@ public sealed class StorySpawnOrchestrator
         // a DB round-trip and avoid spending DI scope creation when a
         // concurrent drive is already in flight.
         var spawnId = $"spawn-{StoryPaths.Safe(storyId)}";
-        var gate = driveLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
-        if (!await gate.WaitAsync(0, ct).ConfigureAwait(false))
+        var gate = driveLocks.GetOrAdd(spawnId, _ => new DriveGate());
+        if (!await gate.Semaphore.WaitAsync(0, ct).ConfigureAwait(false))
         {
-            this.logger?.LogInformation(
-                "DriveAsync: drive for spawn {SpawnId} already in flight; skipping (next scheduler tick will retry).",
-                spawnId);
-            return;
+            // Check if the in-flight drive is stuck (agent timeout, hung
+            // I/O, etc.). If held longer than DriveStuckMinutes, replace
+            // the gate so this tick can proceed. The old drive's eventual
+            // Release() goes to the discarded semaphore — harmless.
+            var elapsed = DateTimeOffset.UtcNow - gate.AcquiredAt;
+            if (elapsed.TotalMinutes < DriveStuckMinutes)
+            {
+                this.logger?.LogInformation(
+                    "DriveAsync: drive for spawn {SpawnId} already in flight ({ElapsedMin:F1}m); skipping.",
+                    spawnId, elapsed.TotalMinutes);
+                return;
+            }
+
+            this.logger?.LogWarning(
+                "DriveAsync: drive for spawn {SpawnId} stuck for {ElapsedMin:F1}m (>{ThresholdMin}m); "
+                + "forcing re-entry with fresh gate.",
+                spawnId, elapsed.TotalMinutes, DriveStuckMinutes);
+            var fresh = new DriveGate();
+            driveLocks[spawnId] = fresh;
+            gate = fresh;
+            await gate.Semaphore.WaitAsync(ct).ConfigureAwait(false);
         }
 
+        gate.AcquiredAt = DateTimeOffset.UtcNow;
         try
         {
             using var scope = this.services.CreateScope();
@@ -140,7 +172,7 @@ public sealed class StorySpawnOrchestrator
         }
         finally
         {
-            gate.Release();
+            gate.Semaphore.Release();
         }
     }
 
@@ -1700,7 +1732,16 @@ public sealed class StorySpawnOrchestrator
             // pending-reassign so Phase 52's SloppyReassignmentReconciler
             // rotates to a fresh pair on the next tick.
             var wsPointsForGuard = await LookupWorkstreamPointsAsync(db, w.Id, spawn.StoryPoints, ct);
-            var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct);
+            // Phase 64 — supply the in-process active-invocation check so the
+            // guard's "overran budget+slack → Allow recovery spawn" branch
+            // refuses to fire when the original SDK invocation is still alive.
+            // Resolved off the root provider; the dispatcher is registered
+            // as a singleton so this never creates a scope conflict.
+            var agentRunnerForGuard = this.services.GetService<Forge.Api.Agents.IAgentRunner>();
+            Func<string, bool>? isActive = agentRunnerForGuard is null
+                ? null
+                : agentRunnerForGuard.IsTaskActive;
+            var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct, isActive);
             if (guardDecision.Outcome != ImplSpawnGuard.Decision.Allow)
             {
                 this.logger?.LogDebug(
@@ -1815,6 +1856,31 @@ public sealed class StorySpawnOrchestrator
                     using var pickScope = this.services.CreateScope();
                     var pickDb = pickScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
                     var freshBusy = await Forge.Api.Services.BusyAgentsHelper.LoadBusyAgentsAsync(pickDb, ct);
+
+                    // Phase 65 — seed the busy set with evaluator agents
+                    // already assigned to sibling workstreams in this spawn.
+                    // Without this, PickEvaluator gives DefaultEvaluatorAgentId
+                    // (BH) unconditional first-dibs on every tick, because
+                    // workstreams clear deps one-per-tick and freshBusy only
+                    // tracks currently-in-flight invocations. The sibling
+                    // evaluators are no longer in-flight but should still be
+                    // excluded so the picker rotates through the roster.
+                    var siblingAgentsJson = await pickDb.Workstreams
+                        .AsNoTracking()
+                        .Where(ws => ws.StorySpawnId == spawn.Id
+                            && ws.Id != w.Id
+                            && ws.AgentsJson != null)
+                        .Select(ws => ws.AgentsJson)
+                        .ToListAsync(ct);
+                    foreach (var sj in siblingAgentsJson)
+                    {
+                        var sibPair = ParseStringList(sj);
+                        if (sibPair.Count >= 2 && !string.IsNullOrEmpty(sibPair[1]))
+                        {
+                            freshBusy.Add(sibPair[1]);
+                        }
+                    }
+
                     var assignedPair = await ResolveImplPairAsync(
                         pickDb, this.allocation, freshBusy, w.Sort, ct);
                     var assignedJson = JsonSerializer.Serialize(assignedPair);
@@ -2296,17 +2362,17 @@ public sealed class StorySpawnOrchestrator
             }
 
             this.logger?.LogWarning(
-                "Workstream {WsId} terminal verdict {Verdict} (iter {Iter}, score {Score}). "
+                "Workstream {WsId} terminal verdict {Verdict} (iter {Iter}, score {Score}) "
+                + "failureKind={FailureKind} failureReason={FailureReason}. "
                 + "Marking stalled; operator must Restart (or raise cap for stalled-budget) to retry.",
-                w.Id, lastDel.Verdict, lastDel.Iter, lastDel.Score);
+                w.Id, lastDel.Verdict, lastDel.Iter, lastDel.Score,
+                lastDel.FailureKind ?? "(none)", lastDel.FailureReason ?? "(none)");
 
             var blockedRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
             if (blockedRow is not null && blockedRow.Status is not "cancelled" and not "complete")
             {
                 blockedRow.Status = WorkstreamStatuses.Stalled;
-                blockedRow.StallReason =
-                    $"Evaluator terminal verdict '{lastDel.Verdict}' at iter {lastDel.Iter} (score {lastDel.Score}). "
-                    + "Restart to retry, or escalate to lead.";
+                blockedRow.StallReason = ComposeStallReason(lastDel);
                 await db2.SaveChangesAsync(ct);
                 await EmitChange(hub, "ws-stalled", spawn, ct);
             }
@@ -3317,5 +3383,60 @@ public sealed class StorySpawnOrchestrator
             storyId = spawn.StoryId,
             phase = spawn.Phase,
         }, ct);
+    }
+
+    /// <summary>
+    /// Phase 64 — compose the workstream-level StallReason text from a
+    /// terminal deliverable row. Preferred source is the structured
+    /// <see cref="DeliverableRow.FailureKind"/> / <see cref="DeliverableRow.FailureReason"/>
+    /// columns (populated for new stalled rows since the migration).
+    /// Falls back to parsing the legacy <c>"GENERATOR FAILED (kind): reason"</c>
+    /// prefix in <see cref="DeliverableRow.Notes"/> so rows written before
+    /// the migration still surface a useful reason. Final fallback is the
+    /// generic "Evaluator terminal verdict 'X'" text the pre-Phase-64
+    /// code wrote unconditionally.
+    /// </summary>
+    private static string ComposeStallReason(DeliverableRow del)
+    {
+        var kind = del.FailureKind;
+        var reason = del.FailureReason;
+        if (string.IsNullOrEmpty(kind))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                del.Notes ?? string.Empty,
+                @"^GENERATOR FAILED \(([^)]+)\):\s*(.+?)(?:\r?\n|$)");
+            if (m.Success)
+            {
+                kind = m.Groups[1].Value;
+                reason = m.Groups[2].Value;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(kind))
+        {
+            var advice = kind switch
+            {
+                "generator-max-turns" =>
+                    "Raise WorkItem.Points (each point adds 30 turns) and Restart.",
+                "generator-timeout" =>
+                    "Raise WorkItem.Points (each point adds 2 min wall-clock) or split the stage, then Restart.",
+                "generator-inactive" =>
+                    "Transport silent — check whether a long tool call (e.g. dotnet build) is exceeding "
+                    + "Forge:Agents:InactivityTimeout. Raise the option or Restart.",
+                "generator-stuck-tool-call" =>
+                    "A single tool call ran past Forge:Agents:PerTurnTimeout. Inspect the named tool "
+                    + "(likely a hung build/test subprocess) before Restart.",
+                "generator-cli-exit" =>
+                    "Agent CLI crashed mid-stream. Check the transcript for the exit detail, then Restart.",
+                "generator-provider-error" =>
+                    "Provider HTTP error after retries exhausted. Wait for upstream recovery and Restart.",
+                _ => "Restart to retry, or escalate to lead.",
+            };
+            var detail = string.IsNullOrEmpty(reason) ? string.Empty : $": {reason}";
+            return $"Generator failed ({kind}) at iter {del.Iter}{detail}. {advice}";
+        }
+
+        return $"Evaluator terminal verdict '{del.Verdict}' at iter {del.Iter} (score {del.Score}). "
+            + "Restart to retry, or escalate to lead.";
     }
 }
