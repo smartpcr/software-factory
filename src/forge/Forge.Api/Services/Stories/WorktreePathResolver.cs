@@ -193,6 +193,56 @@ public static class WorktreePathResolver
     }
 
     /// <summary>
+    /// 2026-05-14 — write-side canonical spec for an engineer workstream.
+    /// Returns the branch, slug, and absolute worktree path the
+    /// orchestrator + worker MUST use; null when <paramref name="workItemId"/>
+    /// is not a spawn-bound workstream (ad-hoc work items take the legacy
+    /// <c>ws-{sanitizedId}</c> path at the caller).
+    /// <para>Single source of truth: every code path that creates an
+    /// engineer worktree (StorySpawnOrchestrator's spawn-flow,
+    /// CrewQueueWorker's standard pipeline, the boot-crash-recovery
+    /// sweep) routes through this so paths and branches stay in
+    /// lock-step.</para>
+    /// </summary>
+    public static async Task<CanonicalWorkstreamPathSpec?> GetCanonicalForWorkstreamAsync(
+        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return null;
+
+        var ws = await db.Workstreams.AsNoTracking()
+            .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        if (ws is null) return null;
+
+        if (string.IsNullOrEmpty(ws.RepoId)) return null;
+        var repo = await db.Repos.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return null;
+
+        // Sibling list drives WorkstreamWorktreeSlug.Compute's phase/stage
+        // numbering. Standalone workstreams (no StorySpawnId) get a
+        // single-element list so the helper takes its legacy fallback.
+        List<WorkstreamRow> siblings;
+        if (string.IsNullOrEmpty(ws.StorySpawnId))
+        {
+            siblings = new List<WorkstreamRow> { ws };
+        }
+        else
+        {
+            siblings = await db.Workstreams.AsNoTracking()
+                .Where(w => w.StorySpawnId == ws.StorySpawnId)
+                .ToListAsync(ct);
+            if (siblings.All(w => w.Id != ws.Id)) siblings.Add(ws);
+        }
+
+        var slug = WorkstreamWorktreeSlug.Compute(ws, siblings);
+        var path = Path.Combine(repo.CloneRoot, ".worktree", slug);
+        var branch = !string.IsNullOrEmpty(ws.Branch) ? ws.Branch! : $"ws/{workItemId}";
+        var baseBranch = !string.IsNullOrEmpty(repo.DefaultBranch) ? repo.DefaultBranch! : "main";
+
+        return new CanonicalWorkstreamPathSpec(branch, slug, path, repo.CloneRoot!, baseBranch, ws, repo);
+    }
+
+    /// <summary>
     /// Mirrors <c>RealStoryGitOps.SanitizeBranchSlug</c> — replaces every
     /// non-alphanumeric / non-<c>-_.</c> character with <c>-</c> and trims
     /// edge dashes. Duplicated so this helper has no I/O dependency on
@@ -222,3 +272,25 @@ public sealed record WorktreePathResult(
 {
     public static WorktreePathResult Empty { get; } = new(null, string.Empty, null);
 }
+
+/// <summary>
+/// 2026-05-14 — canonical write-side spec for an engineer workstream.
+/// Unlike <see cref="WorktreePathResult"/> (which probes disk and may
+/// return null when nothing is created yet), this bundle is the
+/// authoritative "where SHOULD the worktree live and what branch SHOULD
+/// it host" answer. <see cref="CrewQueueWorker"/>'s boot-crash-recovery
+/// path consumes it so a recovery attempt reuses the spawn-flow's
+/// canonical directory + branch instead of synthesising
+/// <c>ws/{workItemId}</c> + <c>.worktree/ws-{workItemId}</c> (which
+/// double-prefixed to <c>ws/ws-…</c> / <c>.worktree/ws-ws-…</c> for any
+/// engineer workstream whose id already started with <c>ws-</c>,
+/// observed 2026-05-14 on <c>qq:MICROSOFT-TEAMS-MESS</c> stage 2.1).
+/// </summary>
+public sealed record CanonicalWorkstreamPathSpec(
+    string Branch,
+    string Slug,
+    string WorktreePath,
+    string RepoCloneRoot,
+    string BaseBranch,
+    WorkstreamRow Workstream,
+    RepoRow Repo);
