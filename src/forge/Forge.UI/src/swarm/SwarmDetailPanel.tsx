@@ -383,8 +383,8 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
     return team.toUpperCase();
   };
   // Phase 49 follow-up — only show an agent pair when the workstream is
-  // currently RUNNING or has shipped (active/review/merging/complete).
-  // For pre-claim states (planning/blocked/stalled/cancelled/historic),
+  // currently RUNNING or has shipped (active/review/merging/complete/historic).
+  // For pre-claim or aborted states (planning/blocked/stalled/cancelled),
   // `latestGen/EvalAgentId` may carry the pair from a prior aborted run;
   // displaying it as if it's the current assignment confused the
   // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
@@ -393,8 +393,14 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
   // as "no current assignment"; the SwarmMasterPanel + Conversation
   // tab still surface the historical iter / score data so the prior
   // run isn't hidden, just not painted as "currently assigned".
+  // `historic` IS a successfully-shipped state (PR merged under a
+  // prior plan version, then the plan changed) — its latestDeliverable
+  // is the agent pair that actually completed the work, so we surface
+  // it the same as `complete` (observed 2026-05-14: stage 3.2 Leader
+  // Election was `historic` with a Mang Liu deliverable but the chips
+  // read "— not assigned —").
   const isCurrentlyAssigned = (status: string): boolean =>
-    status === 'active' || status === 'review' || status === 'merging' || status === 'complete';
+    status === 'active' || status === 'review' || status === 'merging' || status === 'complete' || status === 'historic';
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
     .map((w, i) => {
@@ -784,20 +790,28 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
 
   // Phase 49 follow-up — gate the Overview's agent-pair display on the
   // workstream's CURRENT status. When status is one of the pre-claim or
-  // tombstoned states (planning/blocked/stalled/cancelled/historic),
-  // the stored `latestGen/EvalAgentId` reflects a PRIOR aborted run and
+  // tombstoned states (planning/blocked/stalled/cancelled), the stored
+  // `latestGen/EvalAgentId` reflects a PRIOR aborted run and
   // displaying it as if it were the live assignment confused the
   // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
   // deps 1.1/1.2/1.3, yet the avatar panel showed Zhu Rong + Bi Gan
   // from iter-1/iter-2 deliverables). For docs (architect plan-doc
   // panels) we keep the legacy display — those have a stable
   // generator/evaluator across iterations.
+  //
+  // `historic` IS shown as assigned: it's a shipped row (PR merged)
+  // whose plan version was later superseded, so its latestDeliverable
+  // is the legitimate agent pair that completed the work. The backend
+  // groups `historic` alongside `complete` as terminal-done at
+  // StoriesEndpoints.cs:1664 (observed 2026-05-14: stage 3.2 Leader
+  // Election was `historic` with a Mang Liu deliverable but the chips
+  // read "— not assigned —").
   const wsRowForOverview = isWorkstream
     ? detail.workstreams.find((w) => w.id === selection.id)
     : null;
   const isWsCurrentlyAssigned = !isWorkstream || (() => {
     const s = wsRowForOverview?.status ?? '';
-    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete';
+    return s === 'active' || s === 'review' || s === 'merging' || s === 'complete' || s === 'historic';
   })();
 
   // Agent identity — prefer prompt-derived agent info (matches what the

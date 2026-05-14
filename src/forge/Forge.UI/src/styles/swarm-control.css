@@ -847,10 +847,28 @@
 .swarm-ctrl .ws-chip.merging  { background: var(--sc-cyan); border-color: var(--sc-cyan-d); }
 .swarm-ctrl .ws-chip.complete,
 .swarm-ctrl .ws-chip.completed { background: var(--sc-green); border-color: var(--sc-green-d); }
-/* Tombstones — frozen / cancelled rows from a previous plan version.
- * Dim hatched grey so they read as "archived / audit only" rather than
- * competing with live workstreams for the operator's attention. */
-.swarm-ctrl .ws-chip.historic,
+/* Phase 42 `historic` — shipped under a previous plan version (PR was
+ * merged), then superseded when the architect re-decomposed. These ARE
+ * completed work, not abandoned tombstones, so they share the green
+ * `complete` family. The diagonal stripe + 0.7 opacity reads as
+ * "completed but obsolete plan version" — distinct from live `complete`
+ * (solid green) without losing the "this shipped" signal. PlanReconciler
+ * only ever stamps `historic` over a `Shipped` row (status was
+ * merging/complete OR a linked PR was merged) — see ClassifyAsync. */
+.swarm-ctrl .ws-chip.historic {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sc-green) 0,
+    var(--sc-green) 2px,
+    var(--sc-green-d) 2px,
+    var(--sc-green-d) 4px
+  );
+  border-color: var(--sc-green-d);
+  opacity: 0.7;
+}
+/* Tombstones — `cancelled` rows that were in-flight when the plan got
+ * revised and never shipped. No PR, no audit value beyond "we tried".
+ * Dim hatched grey so they fade into the strip's background. */
 .swarm-ctrl .ws-chip.cancelled {
   background: repeating-linear-gradient(
     45deg,
