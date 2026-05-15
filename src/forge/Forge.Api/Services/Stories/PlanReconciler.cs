@@ -298,7 +298,7 @@ public sealed class PlanReconciler
                 // implementation-plan worktree; legacy parallel-mode stays
                 // on the shared plan worktree.
                 var reconcileSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
-                    ? PlanDocStateHelpers.CanonicalDocWorktreeSlug("implementation-plan")
+                    ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, "implementation-plan")
                     : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
                 await this.git.CommitFilesAsync(
                     repo,

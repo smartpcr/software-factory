@@ -3760,16 +3760,28 @@ public static class StoriesEndpoints
         var isSequential = PlanDocStateHelpers.IsSequentialMode(spawn)
             && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key);
         var planSlug = isSequential
-            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
+            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, key)
             : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
         var worktreePath = Path.Combine(cloneRoot, ".worktree", planSlug);
         var worktreeFilePath = Path.Combine(worktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
 
-        // (1) Worktree — live agent state. Highest priority.
-        if (File.Exists(worktreeFilePath))
+        // Also check legacy slug (pre-story-scoping) for backward compat.
+        string? legacyWorktreeFilePath = null;
+        if (isSequential)
         {
-            var content = await File.ReadAllTextAsync(worktreeFilePath);
-            var lastModified = File.GetLastWriteTimeUtc(worktreeFilePath).ToString("O");
+            var legacySlug = PlanDocStateHelpers.CanonicalDocWorktreeSlug(key);
+            var legacyWt = Path.Combine(cloneRoot, ".worktree", legacySlug);
+            legacyWorktreeFilePath = Path.Combine(legacyWt, relPath.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        // (1) Worktree — live agent state. Highest priority.
+        var effectiveWtFile = File.Exists(worktreeFilePath)
+            ? worktreeFilePath
+            : (legacyWorktreeFilePath is not null && File.Exists(legacyWorktreeFilePath) ? legacyWorktreeFilePath : null);
+        if (effectiveWtFile is not null)
+        {
+            var content = await File.ReadAllTextAsync(effectiveWtFile);
+            var lastModified = File.GetLastWriteTimeUtc(effectiveWtFile).ToString("O");
             return Results.Ok(new
             {
                 key,

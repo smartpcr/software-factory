@@ -619,9 +619,10 @@ public sealed class StorySpawnOrchestrator
 
         // Worktree at the doc's canonical slug. Base is spawn.BaseBranch
         // which by this point includes all upstream-merged plan docs.
+        // Story-scoped slug so two stories in the same repo don't collide.
         var worktreePath = await this.git.EnsureWorktreeAsync(
             repo, docBranch, baseBranch, ct,
-            worktreeSlug: PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey));
+            worktreeSlug: PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, docKey));
 
         // Scrub already-tracked .forge/ from the index before the agent runs.
         await this.git.ScrubForgeScratchFromIndexAsync(worktreePath, ct);
@@ -665,7 +666,7 @@ public sealed class StorySpawnOrchestrator
         // suspenders write that catches "agent edited file mid-iter but
         // per-iter commit was skipped".
         await this.git.CommitFilesAsync(repo, docBranch,
-            PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey),
+            PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, docKey),
             new Dictionary<string, string>(StringComparer.Ordinal) { [repoPath] = content },
             forceResume
                 ? $"plan-{docKey}: resume iteration for story {GitSafe(spawn.StoryId)}"

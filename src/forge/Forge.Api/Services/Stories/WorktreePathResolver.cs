@@ -152,11 +152,20 @@ public static class WorktreePathResolver
             return WorktreePathResult.Empty;
         }
 
-        var slug = PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey);
-        var path = Path.Combine(repo.CloneRoot, ".worktree", slug);
-        if (Directory.Exists(path))
+        // Probe story-scoped slug first (new convention), then legacy
+        // slug (no story prefix) for backward compatibility.
+        var scopedSlug = PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, docKey);
+        var scopedPath = Path.Combine(repo.CloneRoot, ".worktree", scopedSlug);
+        if (Directory.Exists(scopedPath))
         {
-            return new WorktreePathResult(path, branch, repo.CloneRoot);
+            return new WorktreePathResult(scopedPath, branch, repo.CloneRoot);
+        }
+
+        var legacySlug = PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey);
+        var legacyPath = Path.Combine(repo.CloneRoot, ".worktree", legacySlug);
+        if (Directory.Exists(legacyPath))
+        {
+            return new WorktreePathResult(legacyPath, branch, repo.CloneRoot);
         }
 
         // Worktree not on disk yet (pre-claim) or cleaned up post-merge.

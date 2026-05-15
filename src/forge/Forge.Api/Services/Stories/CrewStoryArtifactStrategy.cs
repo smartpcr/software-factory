@@ -1866,7 +1866,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // the exact worktree the orchestrator owns, so no migration runs.
         var worktreeSlug = PlanDocStateHelpers.IsSequentialMode(spawn)
             && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key)
-            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(key)
+            ? PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, key)
             : PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
         var worktreePath = await this.git.EnsureWorktreeAsync(
             repo, planBranch, worktreeBase, ct, worktreeSlug: worktreeSlug);

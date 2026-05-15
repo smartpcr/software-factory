@@ -1328,11 +1328,18 @@ public static class TaskExecutionEndpoints
             {
                 branch = Forge.Api.Services.Stories.PlanDocStateHelpers.FindDocBranch(spawn, planDocKey);
                 var slug = Forge.Api.Services.Stories.PlanDocStateHelpers.IsSequentialMode(spawn)
-                    ? Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey)
+                    ? Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(spawn.StoryId, planDocKey)
                     : Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalParallelPlanWorktreeSlug();
                 worktreePath = !string.IsNullOrEmpty(cloneRoot)
                     ? Path.Combine(cloneRoot, ".worktree", slug)
                     : null;
+                // Legacy fallback: check the old slug (no story prefix)
+                if (worktreePath is not null && !Directory.Exists(worktreePath))
+                {
+                    var legacySlug = Forge.Api.Services.Stories.PlanDocStateHelpers.CanonicalDocWorktreeSlug(planDocKey);
+                    var legacyPath = Path.Combine(cloneRoot!, ".worktree", legacySlug);
+                    if (Directory.Exists(legacyPath)) worktreePath = legacyPath;
+                }
             }
             else
             {

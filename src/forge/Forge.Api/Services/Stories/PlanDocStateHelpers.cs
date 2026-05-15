@@ -197,9 +197,18 @@ public static class PlanDocStateHelpers
 
     /// <summary>
     /// The canonical worktree slug for a plan doc on a sequential-mode
-    /// spawn. Always <c>plan-{docKey}</c>, materialising under
-    /// <c>{repoCloneRoot}/.worktree/plan-{docKey}</c>.
+    /// spawn. When <paramref name="storyId"/> is provided, the slug is
+    /// <c>plan-{safeStoryId}-{docKey}</c> so two stories in the same
+    /// repo don't collide. The single-arg overload returns the legacy
+    /// <c>plan-{docKey}</c> slug for backward compatibility (read paths
+    /// that probe both conventions).
     /// </summary>
+    public static string CanonicalDocWorktreeSlug(string storyId, string docKey)
+        => $"plan-{StoryPaths.Safe(storyId)}-{docKey}";
+
+    /// <summary>Legacy slug (no story scoping). Used by read-path probes
+    /// that need to find existing worktrees created before the
+    /// story-scoped slug was introduced.</summary>
     public static string CanonicalDocWorktreeSlug(string docKey) => $"plan-{docKey}";
 
     /// <summary>
