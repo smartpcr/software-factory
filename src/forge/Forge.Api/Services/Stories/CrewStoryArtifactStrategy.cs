@@ -5231,6 +5231,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // agent, never deliverables, and must not leak into committed
             // PR diffs (e.g. tests/Features/.../.forge-attachments/spec.md).
             if (rel.StartsWith(".forge-attachments/", StringComparison.Ordinal)) continue;
+            // Forge iteration scratch (iter-notes, conversation notes).
+            if (rel.StartsWith(".forge/", StringComparison.Ordinal)) continue;
             dict[rel] = File.ReadAllText(path);
         }
         return dict;

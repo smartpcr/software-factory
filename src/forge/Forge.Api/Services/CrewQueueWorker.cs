@@ -1116,19 +1116,26 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         wtRoot,
                         $"ws-{workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-")}");
 
-                // Ensure .worktree/ is in .gitignore so it's never committed.
+                // Ensure .worktree/ and .forge/ are in .gitignore so they're never committed.
                 try
                 {
                     var gitignorePath = Path.Combine(repoCloneRoot, ".gitignore");
-                    var needsEntry = true;
-                    if (File.Exists(gitignorePath))
+                    var existingLines = File.Exists(gitignorePath)
+                        ? await File.ReadAllLinesAsync(gitignorePath, ct)
+                        : Array.Empty<string>();
+
+                    var appendLines = new List<string>();
+                    if (!existingLines.Any(l => l.Trim() is ".worktree/" or ".worktree"))
+                        appendLines.Add(".worktree/");
+                    if (!existingLines.Any(l => l.Trim() is ".forge/" or ".forge"))
+                        appendLines.Add(".forge/");
+
+                    if (appendLines.Count > 0)
                     {
-                        var lines = await File.ReadAllLinesAsync(gitignorePath, ct);
-                        needsEntry = !lines.Any(l => l.Trim() is ".worktree/" or ".worktree");
-                    }
-                    if (needsEntry)
-                    {
-                        await File.AppendAllTextAsync(gitignorePath, "\n.worktree/\n", ct);
+                        await File.AppendAllTextAsync(
+                            gitignorePath,
+                            "\n" + string.Join("\n", appendLines) + "\n",
+                            ct);
                     }
                 }
                 catch (Exception ex)
@@ -1577,6 +1584,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
                         {
                             await RunGitAsync(worktreePath, "add", "-A");
+                            await RunGitAsync(worktreePath, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
                             var commitMsg = $"forge[{agentId}] iter {iter}: {workItemId}";
                             var (commitCode, _, commitErr) = await RunGitAsync(
                                 worktreePath,
@@ -1944,6 +1952,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         this.logger.LogInformation(
                             "Auto-committing uncommitted changes: wi={Wi}", workItemId);
                         await RunGitAsync(pushCwd, "add", "-A");
+                        await RunGitAsync(pushCwd, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
                         await RunGitAsync(pushCwd, "commit", "-m",
                             $"chore: auto-commit for {workItemId}", "--allow-empty");
                     }
@@ -2073,6 +2082,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                                 this.logger.LogInformation(
                                     "Auto-committing post-build/test changes: wi={Wi}", workItemId);
                                 await RunGitAsync(pushCwd, "add", "-A");
+                                await RunGitAsync(pushCwd, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
                                 await RunGitAsync(pushCwd, "commit", "-m",
                                     $"chore: post-build auto-commit for {workItemId}", "--allow-empty");
                             }

@@ -230,6 +230,16 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
         if (status is null) return null;
         var parsed = ParsePorcelainV2(status);
 
+        // Filter out Forge scratch paths (.forge/) — these are local
+        // iteration notes that must never surface in the Worktree tab
+        // or leak into commits.
+        static void FilterForgePaths(List<string> paths) =>
+            paths.RemoveAll(p => p.StartsWith(".forge/", StringComparison.Ordinal)
+                              || p == ".forge");
+        FilterForgePaths(parsed.AddedPaths);
+        FilterForgePaths(parsed.ModifiedPaths);
+        FilterForgePaths(parsed.DeletedPaths);
+
         // git log -1 for HEAD
         var head = await RunGitAsync(path, "log -1 --format=%H%x09%s%x09%an%x09%aI", ct);
         string? sha = null, message = null, author = null;
@@ -310,6 +320,9 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
                 }
             }
         }
+        FilterForgePaths(branchDiffAdded);
+        FilterForgePaths(branchDiffModified);
+        FilterForgePaths(branchDiffDeleted);
 
         // Fold uncommitted entries into the totals so untracked files
         // (which `git diff` is blind to) and tracked-but-uncommitted

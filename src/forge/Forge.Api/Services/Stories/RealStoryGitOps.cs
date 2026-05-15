@@ -207,6 +207,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
 
         await this.GitAsync(wtPath, ct, "add", "-A");
+        await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
 
         // Detect "nothing to commit" — git returns non-zero for an empty
         // commit unless --allow-empty is passed; we don't want empty
@@ -903,6 +904,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             // Stage + commit any uncommitted changes so they're included
             // in the push (e.g. a generator interrupted mid-write).
             await this.RunGitCaptureAsync(wtPath, ct, "add", "-A");
+            await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
             var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
                 wtPath, ct, "status", "--porcelain");
             if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
@@ -1093,6 +1095,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             ".nuxt/",             // Nuxt
             ".turbo/",            // Turborepo
             ".parcel-cache/",     // Parcel
+            ".forge/",            // Forge iteration scratch (iter-notes, notes/)
         ];
         foreach (var dir in dirs)
         {
@@ -1103,6 +1106,23 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Scrubs Forge scratch paths (<c>.forge/</c>) from the git index so
+    /// they never land in a commit. Handles both freshly-staged untracked
+    /// files and already-tracked files from prior iterations. Uses
+    /// <c>--ignore-unmatch</c> so the call is a safe no-op when the
+    /// directory doesn't exist. Best-effort: any failure is swallowed.
+    /// </summary>
+    internal async Task ScrubForgeScratchFromIndexAsync(string wtPath, CancellationToken ct)
+    {
+        try
+        {
+            await this.RunGitCaptureAsync(wtPath, ct,
+                "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+        }
+        catch { /* best-effort */ }
+    }
 
     private static string ResolveCloneRoot(RepoRow? repo)
     {
