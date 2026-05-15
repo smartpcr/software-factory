@@ -1041,6 +1041,65 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
 
+            // Phase 67 — Fast-stop on no-progress score-zero iter. When the
+            // iter completed with score==0 AND the per-iter commit
+            // snapshot (Phase 65) recorded zero file change on the branch
+            // (FilesAdded+FilesModified+FilesDeleted == 0), the agent
+            // produced nothing useful. Burning more iters at $9+/iter
+            // rebuilding the same context the agent has already shown it
+            // can't use is operator-visible waste.
+            //
+            // Observed 2026-05-15 on code-intelligence:AGENT-MEMORY
+            // e2e-scenarios.md iter 3 (12m52 / 600K tokens / $9.81 / zero
+            // commits). Phase 61's 3-trailing-zero threshold would have
+            // waited two more iters at the same cost each; this gate
+            // fires after a single iter.
+            //
+            // Skipped conservatively when the snapshot fields are null
+            // (OnIterationCommit didn't run / threw) — better to risk one
+            // wasted iter than wedge the loop on a snapshot config error.
+            //
+            // Routes through the existing Phase 52 sloppy infrastructure
+            // (verdict=sloppy → CrewQueueWorker pending-reassign →
+            // SloppyReassignmentReconciler) with reason
+            // `no-progress-score-zero` so the UI chip, pair-reassign flow,
+            // and PairAttemptCount terminal cap behave identically.
+            var snapshotPresent = row.FilesAdded.HasValue
+                || row.FilesModified.HasValue
+                || row.FilesDeleted.HasValue;
+            var fileChangeTotal = (row.FilesAdded ?? 0)
+                + (row.FilesModified ?? 0)
+                + (row.FilesDeleted ?? 0);
+            if (lastScore.Score == 0 && snapshotPresent && fileChangeTotal == 0)
+            {
+                verdict = "sloppy";
+                row.Verdict = verdict;
+                var noProgressNote = $"SLOPPY: no-progress score-zero — iter {iter} produced score=0 AND zero file change on branch (snapshot: +{row.FilesAdded ?? 0} ~{row.FilesModified ?? 0} -{row.FilesDeleted ?? 0}). The agent ran but produced no useful output. Reassigning to a fresh pair on the next reconciler tick.";
+                row.Notes = string.IsNullOrEmpty(row.Notes) ? noProgressNote : row.Notes + "\n\n" + noProgressNote;
+                lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
+                await this.db.SaveChangesAsync(ct);
+
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.ReassignedSloppy,
+                    sloppyReason: SloppyReasons.NoProgressScoreZero,
+                    finalScore: lastScore.Score,
+                    ct);
+
+                await this.EmitAsync(request.WorkItemId, "task.sloppy", new
+                {
+                    iter,
+                    score = lastScore.Score,
+                    reason = SloppyReasons.NoProgressScoreZero,
+                    filesAdded = row.FilesAdded,
+                    filesModified = row.FilesModified,
+                    filesDeleted = row.FilesDeleted,
+                    pairAssignmentId,
+                }, ct);
+
+                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost, SloppyReasons.NoProgressScoreZero);
+            }
+
             // Phase 50 — checkbox-attention hard gate. The evaluator now
             // emits "What still needs work" as `- [ ] N. <item>` checkboxes,
             // and the generator prompt requires those checkboxes to be

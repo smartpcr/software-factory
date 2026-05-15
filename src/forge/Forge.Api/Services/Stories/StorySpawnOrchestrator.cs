@@ -533,10 +533,15 @@ public sealed class StorySpawnOrchestrator
         // orchestrator tick until the operator answers.
         if (!forceResume)
         {
-            var earlyLatest = await db.Deliverables.AsNoTracking()
-                .Where(d => d.WorkItemId == docWorkItemId)
-                .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
-                .FirstOrDefaultAsync(ct);
+            // SQLite EF Core cannot ORDER BY DateTimeOffset; materialize
+            // then order client-side (same workaround as IsDocVerdictPassAsync
+            // at line ~614).
+            var earlyLatest = (await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == docWorkItemId)
+                    .ToListAsync(ct))
+                .OrderByDescending(d => d.Iter)
+                .ThenByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
             if (earlyLatest is not null
                 && string.Equals(earlyLatest.Verdict, "stalled-questions", StringComparison.Ordinal))
             {
@@ -587,10 +592,14 @@ public sealed class StorySpawnOrchestrator
         // per-iter callback, but landing a PR at this point would skip
         // the operator-answers gate. Park the spawn with a soft
         // awaiting-answers note and let the next tick re-check.
-        var postCallLatest = await db.Deliverables.AsNoTracking()
-            .Where(d => d.WorkItemId == docWorkItemId)
-            .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
-            .FirstOrDefaultAsync(ct);
+        // SQLite EF Core cannot ORDER BY DateTimeOffset; materialize
+        // then order client-side.
+        var postCallLatest = (await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == docWorkItemId)
+                .ToListAsync(ct))
+            .OrderByDescending(d => d.Iter)
+            .ThenByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
         if (postCallLatest is not null
             && string.Equals(postCallLatest.Verdict, "stalled-questions", StringComparison.Ordinal))
         {
@@ -1105,12 +1114,50 @@ public sealed class StorySpawnOrchestrator
             .Where(d => docIds.Contains(d.WorkItemId))
             .ToListAsync(ct);
 
+        // Phase 68 — pre-load the per-doc PR rows for the "merged + ever-passed"
+        // gate-relaxation branch. A merged PR means the doc actually shipped;
+        // a stale post-merge phantom iter (e.g. resume-after-merge) shouldn't
+        // re-block phase advance just because it left an iterate/iter-cap row
+        // at the top of the deliverable history. Observed 2026-05-15 on
+        // code-intelligence:AGENT-MEMORY e2e-scenarios.md: PR #4 merged at
+        // iter 1 score=92 (verdict=pass), then a Resume fired post-merge and
+        // produced an iter-2 score=0 row that became "latest", blocking
+        // Phase 48 indefinitely until ACCEPT was clicked.
+        var prIdsByKey = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (PlanDocStateHelpers.IsSequentialMode(spawn))
+        {
+            foreach (var fileName in PlanDocFileNames)
+            {
+                var key = fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+                    ? fileName[..^3]
+                    : fileName;
+                var entry = PlanDocStateHelpers.GetEntry(spawn, key);
+                prIdsByKey[key] = entry.PrId;
+            }
+        }
+        var prIds = prIdsByKey.Values.Where(p => !string.IsNullOrEmpty(p)).Distinct().ToList();
+        var mergedPrIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (prIds.Count > 0)
+        {
+            var prs = await db.Prs.AsNoTracking()
+                .Where(p => prIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Col })
+                .ToListAsync(ct);
+            foreach (var p in prs)
+            {
+                if (string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    mergedPrIds.Add(p.Id);
+                }
+            }
+        }
+
         var nonPassed = new List<string>();
         foreach (var fileName in PlanDocFileNames)
         {
             var docId = $"plan-doc:{spawn.Id}:{fileName}";
-            var latest = rows
-                .Where(d => d.WorkItemId == docId)
+            var docRows = rows.Where(d => d.WorkItemId == docId).ToList();
+            var latest = docRows
                 .OrderByDescending(d => d.Iter)
                 .ThenByDescending(d => d.CreatedAt)
                 .FirstOrDefault();
@@ -1121,11 +1168,30 @@ public sealed class StorySpawnOrchestrator
                 ? fileName[..^3]
                 : fileName;
 
-            if (latest is null
-                || !string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+            // (a) Existing path — latest deliverable verdict == pass (covers
+            // natural pass + Phase 43 ACCEPT-override which flips latest
+            // verdict to pass).
+            if (latest is not null
+                && string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
             {
-                nonPassed.Add(key);
+                continue;
             }
+
+            // (b) Phase 68 — merged + ever-passed. Any prior pass deliverable
+            // for a doc whose PR has merged counts as satisfied. The merged
+            // PR is the ship signal; deliverable history is the quality
+            // signal; both together = the doc actually went out with a
+            // passing iter. A phantom post-merge iter at iterate/sloppy
+            // shouldn't undo that.
+            if (prIdsByKey.TryGetValue(key, out var prId)
+                && !string.IsNullOrEmpty(prId)
+                && mergedPrIds.Contains(prId!)
+                && docRows.Any(d => string.Equals(d.Verdict, "pass", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            nonPassed.Add(key);
         }
 
         return (nonPassed.Count == 0, nonPassed);

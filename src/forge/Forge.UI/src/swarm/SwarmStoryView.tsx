@@ -408,6 +408,18 @@ function SpawnErrorBanner(props: {
   // clears it once the operator answers (or dismisses) the questions.
   const isAwaitingAnswers = error.startsWith('Awaiting operator answers');
 
+  // Phase 48 — `Plan docs not all passed; phase advance blocked: <keys>`
+  // is also a soft-block (the orchestrator regressed `Phase=Plan` and
+  // is actively re-iterating on the non-passed doc). It is NOT a
+  // human-action-required halt — once the doc converges or is accepted,
+  // the orchestrator advances on its own. Surface as blue
+  // "auto-recovering" banner with no retry button.
+  const isPhaseAdvanceBlocked = error.startsWith('Plan docs not all passed');
+
+  // Umbrella: any soft-block flips the banner from red→blue and hides
+  // the (irrelevant) Retry button. Dismiss remains for operator override.
+  const isSoftBlock = isAwaitingAnswers || isPhaseAdvanceBlocked;
+
   async function handleRetry() {
     setBusy(true);
     try {
@@ -435,15 +447,27 @@ function SpawnErrorBanner(props: {
     }
   }
 
+  const bannerTitle = isAwaitingAnswers
+    ? '▌ AWAITING ANSWERS'
+    : isPhaseAdvanceBlocked
+      ? '▌ AUTO-RECOVERING'
+      : '▌ ORCHESTRATOR HALTED';
+
+  const dismissTitle = isAwaitingAnswers
+    ? 'Dismiss this note (answers still required to resume the loop)'
+    : isPhaseAdvanceBlocked
+      ? 'Dismiss this note (orchestrator continues auto-recovery regardless)'
+      : 'Dismiss this error without retrying';
+
   return (
     <div
-      className={`spawn-error-banner${isAwaitingAnswers ? ' spawn-error-banner--awaiting-answers' : ''}`}
-      role={isAwaitingAnswers ? 'status' : 'alert'}
+      className={`spawn-error-banner${isSoftBlock ? ' spawn-error-banner--awaiting-answers' : ''}`}
+      role={isSoftBlock ? 'status' : 'alert'}
     >
-      <div className="spawn-error-banner__icon" aria-hidden>{isAwaitingAnswers ? '?' : '!'}</div>
+      <div className="spawn-error-banner__icon" aria-hidden>{isSoftBlock ? '?' : '!'}</div>
       <div className="spawn-error-banner__body">
         <div className="spawn-error-banner__title">
-          {isAwaitingAnswers ? '▌ AWAITING ANSWERS' : '▌ ORCHESTRATOR HALTED'}
+          {bannerTitle}
           {when && <span className="spawn-error-banner__when"> · {when}</span>}
         </div>
         <div className="spawn-error-banner__msg">{error}</div>
@@ -454,12 +478,12 @@ function SpawnErrorBanner(props: {
           className="spawn-error-banner__retry"
           disabled={busy || dismissing}
           onClick={() => void handleDismiss()}
-          title={isAwaitingAnswers ? 'Dismiss this note (answers still required to resume the loop)' : 'Dismiss this error without retrying'}
+          title={dismissTitle}
           style={{ borderColor: 'var(--sc-text-dim, #8d94a3)', color: 'var(--sc-text-dim, #8d94a3)' }}
         >
           {dismissing ? '⏳…' : '✕ dismiss'}
         </button>
-        {!isAwaitingAnswers && (
+        {!isSoftBlock && (
           <button
             type="button"
             className="spawn-error-banner__retry"

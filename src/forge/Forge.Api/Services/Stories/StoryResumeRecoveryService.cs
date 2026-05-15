@@ -47,10 +47,21 @@ public sealed class StoryResumeRecoveryService : IHostedService
     /// tasks before returning — used by integration tests so assertions can
     /// run after the recovery completes. Production startup uses false so a
     /// slow recovery doesn't block app boot.
+    ///
+    /// <para>Phase 68 — skip any pending key whose doc PR is already merged.
+    /// A stale resume marker on a merged doc (e.g. left behind by a pre-
+    /// Phase-68 Resume click that landed just before the PR auto-merged)
+    /// would otherwise re-fire <see cref="StoriesEndpoints.RunResumeWithCleanupAsync"/>
+    /// against a worktree that's been cleaned up, producing the iter-2
+    /// score=0 phantom-run pattern (observed 2026-05-15 on
+    /// code-intelligence:AGENT-MEMORY e2e-scenarios.md). We clear the
+    /// stale marker as part of the skip so it doesn't re-fire on
+    /// subsequent boots.</para>
     /// </summary>
     public async Task SweepAsync(bool awaitCompletion, CancellationToken ct)
     {
         List<(string SpawnId, string StoryId, string Key)> pending;
+        List<(string SpawnId, string Key, string PrId)> skippedMerged;
         using (var scope = this.scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
@@ -58,11 +69,58 @@ public sealed class StoryResumeRecoveryService : IHostedService
                 .Where(s => s.ResumePendingJson != null && s.ResumePendingJson != string.Empty)
                 .ToListAsync(ct);
             pending = new List<(string, string, string)>();
+            skippedMerged = new List<(string, string, string)>();
             foreach (var row in rows)
             {
                 foreach (var key in StoriesEndpoints.ParseResumePending(row.ResumePendingJson))
                 {
+                    // Phase 68 — skip merged plan-doc keys.
+                    if (PlanDocStateHelpers.IsSequentialMode(row)
+                        && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key.ToLowerInvariant()))
+                    {
+                        var entry = PlanDocStateHelpers.GetEntry(row, key.ToLowerInvariant());
+                        if (!string.IsNullOrEmpty(entry.PrId))
+                        {
+                            var pr = await db.Prs.AsNoTracking()
+                                .FirstOrDefaultAsync(p => p.Id == entry.PrId, ct);
+                            if (pr is not null
+                                && string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                            {
+                                skippedMerged.Add((row.Id, key, entry.PrId));
+                                continue;
+                            }
+                        }
+                    }
                     pending.Add((row.Id, row.StoryId, key));
+                }
+            }
+        }
+
+        // Clear stale resume-pending markers for merged docs so they don't
+        // re-fire on every boot. Best-effort: log + continue on failure.
+        if (skippedMerged.Count > 0)
+        {
+            using var cleanupScope = this.scopeFactory.CreateScope();
+            var cleanupDb = cleanupScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            foreach (var (spawnId, key, prId) in skippedMerged)
+            {
+                this.logger.LogWarning(
+                    "Phase 68 boot recovery: skipping stale Resume marker for spawn {SpawnId} key {Key} (PR {PrId} already merged); clearing marker.",
+                    spawnId, key, prId);
+                try
+                {
+                    var liveSpawn = await cleanupDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+                    if (liveSpawn is not null && StoriesEndpoints.RemoveResumePending(liveSpawn, key))
+                    {
+                        liveSpawn.UpdatedAt = DateTimeOffset.UtcNow;
+                        await cleanupDb.SaveChangesAsync(ct);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger.LogWarning(ex,
+                        "Phase 68 boot recovery: failed to clear stale Resume marker for spawn {SpawnId} key {Key}; will retry next boot.",
+                        spawnId, key);
                 }
             }
         }

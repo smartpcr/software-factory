@@ -1146,6 +1146,30 @@ public static class SloppyReasons
     /// spend by aborting the loop ~iter (K+2) instead of iter 10.
     /// </summary>
     public const string ConsecutiveScoreZero = "consecutive-score-zero";
+
+    /// <summary>
+    /// Phase 67 — a single iter completed with <c>score == 0</c> AND the
+    /// per-iter commit snapshot (Phase 65) recorded
+    /// <c>FilesAdded + FilesModified + FilesDeleted == 0</c> on the
+    /// branch. The agent ran but produced nothing useful; continuing
+    /// would burn $9+/iter rebuilding the same context the agent has
+    /// already shown it can't use.
+    /// <para>Observed 2026-05-15 on
+    /// <c>code-intelligence:AGENT-MEMORY</c> plan-doc
+    /// <c>e2e-scenarios.md</c> iter 3: 12m52 / 600K tokens / $9.81 burned,
+    /// branch HEAD unchanged, evaluator scored 0. Phase 61's
+    /// 3-trailing-zero threshold would have waited two more iters at
+    /// the same cost each before triggering; Phase 67 fires after the
+    /// first such iter.</para>
+    /// <para>Distinct from Phase 47 NoProgressException (3 consecutive
+    /// no-change iters, impl-only) — Phase 67 needs just 1 iter and
+    /// applies to all roles (plan-doc / workstream / review-fix / QA).
+    /// Routes through the existing Phase 52 sloppy infrastructure
+    /// (CrewQueueWorker pending-reassign, SloppyReassignmentReconciler)
+    /// so the UI surface, pair-reassign flow, and PairAttemptCount
+    /// terminal cap all behave identically to legacy sloppy reasons.</para>
+    /// </summary>
+    public const string NoProgressScoreZero = "no-progress-score-zero";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's
