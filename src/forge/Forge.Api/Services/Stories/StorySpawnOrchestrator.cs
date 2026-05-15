@@ -2736,12 +2736,12 @@ public sealed class StorySpawnOrchestrator
                     await this.provider.PostPrCommentAsync(prId, c.FilePath, c.Line, c.Body, reviewer, ct);
                 }
 
-                // Re-load active comments and run the fix loop on this tick.
+                // Re-load active comments and defer fix loop to pass 2.
                 allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
                 activeComments = allComments.Where(c => c.State == "active").ToList();
                 if (activeComments.Count > 0)
                 {
-                    await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
+                    fixNeeded.Add((w, prId, activeComments));
                     changed = true;
                     continue;
                 }
