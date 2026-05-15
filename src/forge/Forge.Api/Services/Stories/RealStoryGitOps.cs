@@ -209,6 +209,15 @@ public sealed class RealStoryGitOps : IStoryGitOps
         await this.GitAsync(wtPath, ct, "add", "-A");
         await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
 
+        // Delete .forge/ from disk so a subsequent `git add -A` (e.g., in
+        // MergeUpstreamIntoBranchAsync) doesn't re-stage the files.
+        var forgeDir = Path.Combine(wtPath, ".forge");
+        if (Directory.Exists(forgeDir))
+        {
+            try { Directory.Delete(forgeDir, recursive: true); }
+            catch { /* best-effort — Windows file handles may hold the dir */ }
+        }
+
         // Detect "nothing to commit" — git returns non-zero for an empty
         // commit unless --allow-empty is passed; we don't want empty
         // history rows.
@@ -591,7 +600,17 @@ public sealed class RealStoryGitOps : IStoryGitOps
         {
             // Phase 50 follow-up — origin/{upstream} is already an ancestor
             // of HEAD, so the source branch already carries every commit
-            // from upstream. Just return.
+            // from upstream. Scrub any tracked .forge/ scratch files before
+            // returning so the branch is clean for the provider merge.
+            await this.ScrubForgeScratchFromTreeAsync(wtPath, ct);
+
+            // If scrub created a commit, push it.
+            var (pushCheckCode, pushCheckOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "rev-list", "--count", $"origin/{branch}..HEAD");
+            if (pushCheckCode == 0 && int.TryParse(pushCheckOut.Trim(), out var ahead) && ahead > 0)
+            {
+                await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+            }
             //
             // We INTENTIONALLY no longer push an empty commit on the
             // `force=true` path here, even though we used to. The
@@ -625,6 +644,14 @@ public sealed class RealStoryGitOps : IStoryGitOps
             return true;
         }
 
+        // Pre-merge scrub: remove .forge/ from the current tree so it
+        // can't create add/add or modify/delete tree conflicts during the
+        // merge. Agents may commit .forge/iter-notes.md despite being told
+        // not to; a previously-merged workstream PR may also carry .forge/
+        // files into the base branch. Removing from "ours" before the
+        // merge prevents the conflict entirely.
+        await this.ScrubForgeScratchFromTreeAsync(wtPath, ct);
+
         // Attempt a normal merge from upstream.
         var (mergeCode, mergeOut, mergeErr) = await this.RunGitCaptureAsync(
             wtPath, ct,
@@ -634,6 +661,30 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         if (mergeCode != 0)
         {
+            // Before aborting, check if the ONLY conflicts are .forge/
+            // scratch files. If so, resolve them by deletion and complete
+            // the merge — no need for -X ours on real source files.
+            if (await this.TryResolveForgeConflictsAsync(wtPath, ct))
+            {
+                // All conflicts were under .forge/; complete the merge.
+                var (continueCode, _, continueErr) = await this.RunGitCaptureAsync(
+                    wtPath, ct,
+                    "-c", "user.email=forge-merger@local",
+                    "-c", "user.name=Forge",
+                    "commit", "--no-edit");
+                if (continueCode == 0)
+                {
+                    this.logger?.LogInformation(
+                        "MergeUpstreamIntoBranchAsync: resolved .forge/-only conflicts for origin/{Upstream} into {Branch}.",
+                        upstreamBranch, branch);
+                    goto MergeSucceeded;
+                }
+                // commit failed — fall through to abort + retry.
+                this.logger?.LogWarning(
+                    "MergeUpstreamIntoBranchAsync: .forge/ conflict resolution succeeded but commit failed for {Branch}. stderr={Err}",
+                    branch, continueErr);
+            }
+
             await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
 
             if (!force)
@@ -663,6 +714,24 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
             if (oursCode != 0)
             {
+                // -X ours failed too — check if .forge/ conflicts are the
+                // blocker. Resolve them and try to complete the merge.
+                if (await this.TryResolveForgeConflictsAsync(wtPath, ct))
+                {
+                    var (c2, _, e2) = await this.RunGitCaptureAsync(
+                        wtPath, ct,
+                        "-c", "user.email=forge-merger@local",
+                        "-c", "user.name=Forge",
+                        "commit", "--no-edit");
+                    if (c2 == 0)
+                    {
+                        this.logger?.LogInformation(
+                            "MergeUpstreamIntoBranchAsync: resolved .forge/ tree conflicts after -X ours for {Branch}.",
+                            branch);
+                        goto MergeSucceeded;
+                    }
+                }
+                // Still unresolvable — abort and surface to caller.
                 this.logger?.LogError(
                     "MergeUpstreamIntoBranchAsync: -X ours merge also failed for origin/{Upstream} into {Branch}. "
                     + "stdout={StdOut} stderr={StdErr}",
@@ -675,6 +744,11 @@ public sealed class RealStoryGitOps : IStoryGitOps
                 "MergeUpstreamIntoBranchAsync: resolved conflicts with -X ours for origin/{Upstream} into {Branch}.",
                 upstreamBranch, branch);
         }
+
+    MergeSucceeded:
+        // Post-merge scrub: the upstream merge may have re-introduced
+        // .forge/ files from the base branch. Remove them before pushing.
+        await this.ScrubForgeScratchFromTreeAsync(wtPath, ct);
 
         // Push the merged result.
         await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
@@ -1122,6 +1196,123 @@ public sealed class RealStoryGitOps : IStoryGitOps
                 "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
         }
         catch { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// Removes <c>.forge/</c> from both the git index AND the working tree
+    /// (on disk). If the removal produces a staged diff, commits the
+    /// deletion so that the branch tree is clean before a merge or push.
+    /// Best-effort: failures are logged but never thrown.
+    /// </summary>
+    private async Task ScrubForgeScratchFromTreeAsync(string wtPath, CancellationToken ct)
+    {
+        try
+        {
+            // Remove from the index (handles tracked files from prior iterations).
+            await this.RunGitCaptureAsync(wtPath, ct,
+                "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+
+            // Remove from disk so a subsequent `git add -A` or merge commit
+            // doesn't re-introduce them. Swallow IO exceptions — on Windows,
+            // file handles from an agent process can keep directories locked.
+            var forgeDir = Path.Combine(wtPath, ".forge");
+            if (Directory.Exists(forgeDir))
+            {
+                try { Directory.Delete(forgeDir, recursive: true); }
+                catch (Exception ex)
+                {
+                    this.logger?.LogDebug(ex,
+                        "ScrubForgeScratchFromTreeAsync: could not delete .forge/ from disk at {WtPath}; "
+                        + "index scrub still applied.", wtPath);
+                }
+            }
+
+            // If the scrub staged any deletions, commit them so the tree is
+            // clean for the next merge. Only check .forge/ paths to avoid
+            // accidentally committing unrelated staged changes.
+            var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(wtPath, ct,
+                "diff", "--cached", "--name-only", "--", ".forge/");
+            if (diffCode == 0 && !string.IsNullOrWhiteSpace(diffOut))
+            {
+                await this.RunGitCaptureAsync(wtPath, ct,
+                    "-c", "user.email=forge-merger@local",
+                    "-c", "user.name=Forge",
+                    "commit", "-m", "forge: remove scratch files from tree");
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex,
+                "ScrubForgeScratchFromTreeAsync: best-effort scrub failed at {WtPath}.", wtPath);
+        }
+    }
+
+    /// <summary>
+    /// During an in-progress merge with conflicts, resolves any conflicts
+    /// under <c>.forge/</c> by removing those paths from the index + disk.
+    /// Returns <c>true</c> if ALL remaining conflicts were under
+    /// <c>.forge/</c> (merge can be completed), <c>false</c> if non-forge
+    /// conflicts remain.
+    /// </summary>
+    private async Task<bool> TryResolveForgeConflictsAsync(string wtPath, CancellationToken ct)
+    {
+        try
+        {
+            // List unmerged (conflicting) paths.
+            var (code, output, _) = await this.RunGitCaptureAsync(wtPath, ct,
+                "diff", "--name-only", "--diff-filter=U");
+            if (code != 0 || string.IsNullOrWhiteSpace(output))
+                return false;
+
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var forgeConflicts = new List<string>();
+            bool hasNonForgeConflict = false;
+
+            foreach (var line in lines)
+            {
+                var norm = line.Replace('\\', '/');
+                if (norm.StartsWith(".forge/", StringComparison.Ordinal)
+                    || norm.Equals(".forge", StringComparison.Ordinal))
+                {
+                    forgeConflicts.Add(line);
+                }
+                else
+                {
+                    hasNonForgeConflict = true;
+                }
+            }
+
+            if (forgeConflicts.Count == 0)
+                return false;
+
+            // Resolve .forge/ conflicts by removing them.
+            foreach (var path in forgeConflicts)
+            {
+                await this.RunGitCaptureAsync(wtPath, ct,
+                    "rm", "--ignore-unmatch", "--", path);
+            }
+
+            // Delete from disk too.
+            var forgeDir = Path.Combine(wtPath, ".forge");
+            if (Directory.Exists(forgeDir))
+            {
+                try { Directory.Delete(forgeDir, recursive: true); }
+                catch { /* best-effort */ }
+            }
+
+            this.logger?.LogInformation(
+                "TryResolveForgeConflictsAsync: resolved {Count} .forge/ conflict(s) in {WtPath}; "
+                + "hasNonForgeConflict={HasNonForge}.",
+                forgeConflicts.Count, wtPath, hasNonForgeConflict);
+
+            return !hasNonForgeConflict;
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex,
+                "TryResolveForgeConflictsAsync: failed at {WtPath}.", wtPath);
+            return false;
+        }
     }
 
     private static string ResolveCloneRoot(RepoRow? repo)
