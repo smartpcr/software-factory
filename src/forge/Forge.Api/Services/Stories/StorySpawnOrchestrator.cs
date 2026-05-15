@@ -2890,6 +2890,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     w.Status = "complete";
                     await db.SaveChangesAsync(ct);
+                    await TryCloseWorkItemAsync(db, w.Id, ct);
                     changed = true;
                     this.logger?.LogInformation(
                         "Workstream {WsId} PR {PrId} merged — advanced to complete.",
@@ -2921,6 +2922,7 @@ public sealed class StorySpawnOrchestrator
             {
                 w.Status = "complete";
                 await db.SaveChangesAsync(ct);
+                await TryCloseWorkItemAsync(db, w.Id, ct);
                 changed = true;
                 this.logger?.LogInformation(
                     "Workstream {WsId} PR {PrId} reached terminal merged state — advanced from review to complete.",
@@ -3366,6 +3368,7 @@ public sealed class StorySpawnOrchestrator
             w.PrsJson = JsonSerializer.Serialize(prsList);
             w.Status = "complete";
             await db.SaveChangesAsync(ct);
+            await TryCloseWorkItemAsync(db, w.Id, ct);
             changed = true;
         }
 
@@ -3615,6 +3618,21 @@ public sealed class StorySpawnOrchestrator
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return JsonSerializer.Deserialize<List<string>>(json, JsonOpts) ?? new List<string>(); }
         catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Best-effort work item state update when a workstream completes.
+    /// Tolerates missing rows — the orchestrator should never crash
+    /// because of a stale id.
+    /// </summary>
+    private static async Task TryCloseWorkItemAsync(ForgeDbContext db, string workstreamId, CancellationToken ct)
+    {
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workstreamId, ct);
+        if (wi is null) return;
+        if (string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase)) return;
+        wi.State = "closed";
+        wi.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
     }
 
     private static string GitSafe(string storyId) => StoryPaths.Safe(storyId);
