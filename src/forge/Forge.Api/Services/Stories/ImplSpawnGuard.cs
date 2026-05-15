@@ -71,6 +71,30 @@ internal static class ImplSpawnGuard
         /// two failure modes.
         /// </summary>
         SkipNoProgressBackoff,
+
+        /// <summary>
+        /// 2026-05-15 — the work item is parked on
+        /// <c>stalled-questions</c> with unanswered questions. No spawn is
+        /// allowed AND the no-progress counter is suppressed: parking on
+        /// operator questions is intentional, NOT a sloppy-loop signal.
+        /// Without this, the pre-iter gate at
+        /// <c>DeliverableLoop.cs:568-594</c> keeps returning
+        /// <c>stalled-questions</c> on every tick without producing a new
+        /// deliverable row; <c>CountConsecutiveNoProgressSuccesses</c>
+        /// crosses <see cref="SyncConstants.NoProgressReassignThreshold"/>
+        /// after ~5 ticks, routes to
+        /// <see cref="StorySpawnOrchestrator.TryRouteToSloppyReassignAsync"/>,
+        /// and the SloppyReassignmentReconciler stamps a bogus
+        /// <c>"Sloppy-3-attempts: ..."</c> terminal failure on a workstream
+        /// that's legitimately waiting for the operator. Observed
+        /// 2026-05-15 on code-intelligence:AGENT-MEMORY ws 1.3 (Episodic
+        /// and concept schema migrations): iter 1 stalled-questions at
+        /// 7:38, 5 no-progress ticks later (7:50:05)
+        /// task.sloppy-parked → task.sloppy-terminal-failure at 7:50:06
+        /// → workstream wedged in stalled even after operator answered
+        /// and iter 3 eventually passed at 11:38 (score 92).
+        /// </summary>
+        SkipAwaitingAnswers,
     }
 
     /// <summary>
@@ -218,27 +242,87 @@ internal static class ImplSpawnGuard
         var lastFailed = LastSpawnFailed(latestFinish.PayloadJson);
         if (!lastFailed)
         {
-            // Phase 52 follow-up — even success isn't a free pass. If the
-            // recent spawn(s) didn't actually produce a new deliverable
-            // row, the orchestrator is in a "successful no-op" loop and
-            // we must apply the same escalating backoff as the failure
-            // path. Count consecutive spawn-finished:true events whose
-            // matching spawn-started fired AFTER the latest deliverable's
-            // CreatedAt (i.e. spawns that ran without producing
-            // deliverable progress).
-            //
-            // SQLite cannot ORDER BY DateTimeOffset — materialize the
-            // CreatedAt values then sort client-side. Matches the
-            // convention used elsewhere in this codebase.
-            var deliverableTimestamps = await db.Deliverables.AsNoTracking()
+            // 2026-05-15 — awaiting-answers detection. When the gen-eval
+            // loop's pre-iter gate (DeliverableLoop.cs:568-594) parks the
+            // WI on `stalled-questions` because there are unanswered
+            // operator questions, every subsequent orchestrator tick:
+            //   - spawns the loop
+            //   - the loop short-circuits via the pre-iter gate WITHOUT
+            //     creating a new deliverable row
+            //   - returns success=true to the spawn-finished event
+            // Without the early-return below, those "successful" spawns
+            // accumulate in CountConsecutiveNoProgressSuccesses and after
+            // ~5 ticks ShouldTriggerReassign=true flips on, routing the
+            // (legitimately parked) workstream through
+            // SloppyReassignmentReconciler.MarkTerminalFailedAsync which
+            // stamps a bogus "Sloppy-3-attempts" stall. Detection rule:
+            // the latest deliverable's verdict is `stalled-questions` AND
+            // at least one DeliverableQuestion row for this WI is still
+            // unanswered (Answer is null). When both hold, we return
+            // SkipAwaitingAnswers with ShouldTriggerReassign=false and
+            // ConsecutiveNoProgress=0 so even the conversation tab's
+            // "consecutive no-progress" counter resets cleanly once the
+            // operator answers.
+            var latestDeliv = await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == workstreamId)
-                .Select(d => d.CreatedAt)
+                .Select(d => new { d.Verdict, d.CreatedAt })
                 .ToListAsync(ct);
-            DateTimeOffset? latestDeliverableAt = deliverableTimestamps.Count == 0
+            var orderedDelivs = latestDeliv
+                .OrderByDescending(d => d.CreatedAt)
+                .ToList();
+            DateTimeOffset? latestDeliverableAt = orderedDelivs.Count == 0
                 ? null
-                : deliverableTimestamps.Max();
+                : orderedDelivs[0].CreatedAt;
+            var latestVerdict = orderedDelivs.Count == 0 ? null : orderedDelivs[0].Verdict;
 
-            var consecutiveNoProgress = CountConsecutiveNoProgressSuccesses(events, latestDeliverableAt);
+            if (string.Equals(latestVerdict, "stalled-questions", StringComparison.Ordinal))
+            {
+                var hasUnanswered = await db.DeliverableQuestions.AsNoTracking()
+                    .Where(q => q.WorkItemId == workstreamId && q.AnsweredAt == null)
+                    .AnyAsync(ct);
+                if (hasUnanswered)
+                {
+                    return new Result(
+                        Decision.SkipAwaitingAnswers,
+                        "parked on stalled-questions verdict with unanswered operator questions; suppressing no-progress counter",
+                        ConsecutiveNoProgress: 0,
+                        ShouldTriggerReassign: false);
+                }
+                // Questions are all answered/dismissed but the gate hasn't
+                // re-fired yet (the resume is fire-and-forget; this tick
+                // may have raced ahead of the gen-eval call). Fall through
+                // with a FRESH progress boundary set to the most recent
+                // answered timestamp so pre-answer no-progress events
+                // don't immediately trigger reassignment on the first
+                // post-answer tick.
+            }
+
+            // 2026-05-15 — progress boundary = max(latestDeliverableAt,
+            // latestAnsweredAt). Operator answers count as forward
+            // progress: any spawn that started before the most recent
+            // answer is "from the pre-answer era" and must NOT count
+            // toward consecutive no-progress (the workstream WAS making
+            // progress via the operator's dialogue even if no deliverable
+            // landed). Without this, a workstream that sat on
+            // stalled-questions for 5+ ticks and then resumed would
+            // immediately re-trigger sloppy reassignment on the post-
+            // answer happy-path tick.
+            var answeredTimestamps = await db.DeliverableQuestions.AsNoTracking()
+                .Where(q => q.WorkItemId == workstreamId && q.AnsweredAt != null)
+                .Select(q => q.AnsweredAt)
+                .ToListAsync(ct);
+            DateTimeOffset? latestAnsweredAt = answeredTimestamps.Count == 0
+                ? null
+                : answeredTimestamps.Where(a => a != null).Max();
+
+            DateTimeOffset? progressBoundary = latestDeliverableAt;
+            if (latestAnsweredAt is DateTimeOffset ans
+                && (progressBoundary is null || ans > progressBoundary.Value))
+            {
+                progressBoundary = ans;
+            }
+
+            var consecutiveNoProgress = CountConsecutiveNoProgressSuccesses(events, progressBoundary);
             if (consecutiveNoProgress >= SyncConstants.NoProgressReassignThreshold)
             {
                 // Hand off to Phase 52 reassignment. We still RETURN a
@@ -314,26 +398,36 @@ internal static class ImplSpawnGuard
     /// <summary>
     /// Phase 52 follow-up — count the most-recent consecutive run of
     /// spawn-finished:true events whose matching spawn-started fired
-    /// AFTER <paramref name="latestDeliverableAt"/>. The count resets when
+    /// AFTER <paramref name="progressBoundary"/>. The count resets when
     /// we encounter a start with no matching finish (in-flight, not
     /// counted), a finish with success=false (handled by the failure
     /// backoff path, not counted here), or a spawn-started.At &lt;=
-    /// <paramref name="latestDeliverableAt"/> (this spawn's window
-    /// contained a deliverable — progress).
+    /// <paramref name="progressBoundary"/> (this spawn predates a
+    /// progress event — either a deliverable or an operator answer).
     /// </summary>
     /// <param name="events">
     /// Spawn-started + spawn-finished events for the workstream, sorted
     /// descending by Id (most-recent first).
     /// </param>
+    /// <param name="progressBoundary">
+    /// 2026-05-15 — timestamp used as the "this is forward progress"
+    /// cutoff. Spawns that started AT OR BEFORE this boundary belong to
+    /// a prior progress window and don't count toward consecutive
+    /// no-progress. The caller uses
+    /// <c>max(latestDeliverableAt, latestAnsweredAt)</c> so operator
+    /// answers to <c>stalled-questions</c> count as forward progress
+    /// (otherwise pre-answer no-progress ticks would immediately
+    /// trigger reassignment on the first post-answer tick).
+    /// </param>
     private static int CountConsecutiveNoProgressSuccesses(
         IReadOnlyList<(long Id, string Kind, DateTimeOffset At, string PayloadJson)> events,
-        DateTimeOffset? latestDeliverableAt)
+        DateTimeOffset? progressBoundary)
     {
-        // When there's no deliverable at all, treat as "infinitely old"
-        // so any successful spawn counts as no-progress. (Brand-new
-        // workstreams whose first iteration is still in flight take the
-        // SkipInFlight branch above, not this one.)
-        var threshold = latestDeliverableAt ?? DateTimeOffset.MinValue;
+        // When there's no deliverable AND no answered question, treat as
+        // "infinitely old" so any successful spawn counts as no-progress.
+        // (Brand-new workstreams whose first iteration is still in flight
+        // take the SkipInFlight branch above, not this one.)
+        var threshold = progressBoundary ?? DateTimeOffset.MinValue;
 
         var count = 0;
         for (var i = 0; i < events.Count; i++)

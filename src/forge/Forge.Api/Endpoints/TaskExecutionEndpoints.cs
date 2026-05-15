@@ -321,9 +321,16 @@ public static class TaskExecutionEndpoints
     ///   then fire-and-forget <see cref="StoriesEndpoints.RunResumeWithCleanupAsync"/>.
     ///   The resume marker is required so a crash mid-resume is recovered
     ///   by <c>StoryResumeRecoveryService</c>.</item>
-    ///   <item>Workstream ids → flip <c>ExecutionStatus=queued</c> and emit
-    ///   <c>ws-changed</c>; the orchestrator's next tick handles the
-    ///   resume via <c>DriveOneWorkstreamImplAsync</c>.</item>
+    ///   <item>Workstream ids → clear any bogus
+    ///   <c>"Sloppy-3-attempts:"</c> stall on the row (2026-05-15 fix),
+    ///   demote the workstream back to <c>active</c>, reset WI failure
+    ///   fields, and emit <c>ws-changed</c>; the orchestrator's next
+    ///   tick re-enters <c>DriveOneWorkstreamImplAsync</c>. Operator-set
+    ///   stall reasons (build failures, no-progress exceptions,
+    ///   cancelled/paused/complete/merging/review/historic) are left
+    ///   untouched so unrelated stalls aren't reanimated.</item>
+    ///   <item>Bare work-item rows (legacy / non-workstream) → flip
+    ///   <c>ExecutionStatus=queued</c>.</item>
     /// </list>
     /// Also clears any <c>spawn.LastError</c> that references this work
     /// item via the <see cref="StorySpawnOrchestrator.AwaitingAnswersErrorPrefix"/>
@@ -399,6 +406,61 @@ public static class TaskExecutionEndpoints
                 parentSpawn.LastErrorAt = null;
                 parentSpawn.UpdatedAt = DateTimeOffset.UtcNow;
             }
+
+            // 2026-05-15 — unwedge bogus Sloppy-3-attempts stall. The
+            // operator's answer/dismiss action signals their intent to
+            // resume; if the workstream was wrongly demoted to `stalled`
+            // by SloppyReassignmentReconciler.MarkTerminalFailedAsync
+            // while it was actually parked on `stalled-questions` (bug
+            // path: ImplSpawnGuard mis-counted no-progress during
+            // question parking → routed to sloppy reassignment → at-cap
+            // → terminal failure → ws.Status=stalled with bogus
+            // "Sloppy-3-attempts: ..." reason), we MUST clear that stall
+            // here. Otherwise the orchestrator's claim sweep at
+            // StorySpawnOrchestrator.cs:1801 keeps skipping the row and
+            // even a successful post-answer iter never gets the PR
+            // opened.
+            //
+            // Scope: ONLY recover when ws.Status=="stalled" AND
+            // ws.StallReason starts with "Sloppy-3-attempts:" — that's
+            // the known-bogus class. Build failures (`Gate failed`),
+            // no-progress exceptions (`No progress: ...`), and
+            // operator-set states (cancelled/paused/complete/merging
+            // /review/historic) are all left untouched.
+            //
+            // Also clear stale WI terminal-failure fields so a later
+            // path can't re-interpret the WI as still-failed and
+            // re-stall the row. WorkstreamRecovery owns the
+            // canonical reset shape, but this path only needs to
+            // erase the failure indicators — pair-attempt accounting
+            // and PriorPairsJson are retained so the next attempt
+            // still excludes already-tried pairs.
+            const string BogusSloppyPrefix = "Sloppy-3-attempts:";
+            if (string.Equals(ws.Status, "stalled", StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(ws.StallReason)
+                && ws.StallReason.StartsWith(BogusSloppyPrefix, StringComparison.Ordinal))
+            {
+                ws.Status = "active";
+                ws.StallReason = null;
+                ws.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+                var wiForReset = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == workItemId, ct);
+                if (wiForReset is not null)
+                {
+                    wiForReset.FailureReason = null;
+                    // Only reset ExecutionStatus when it's still in a
+                    // terminal-failed shape. If a queue-worker path
+                    // already advanced it to Queued/Live/Completed,
+                    // leave it alone so we don't stomp valid state.
+                    if (string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.Failed, StringComparison.Ordinal)
+                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.PendingReassign, StringComparison.Ordinal))
+                    {
+                        wiForReset.ExecutionStatus = ExecutionStatuses.Queued;
+                    }
+                    wiForReset.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+            }
+
             await db.SaveChangesAsync(ct);
             await hub.Clients.All.SendAsync("ws-changed",
                 new { workstreamId = ws.Id, storyId = parentSpawn?.StoryId, kind = "questions-answered" }, ct);

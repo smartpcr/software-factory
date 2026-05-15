@@ -121,6 +121,14 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         // leaving it stale misleads triage.
         recovered += await this.ClearStaleStallReasonOnShippedAsync(db, ct);
 
+        // Phase C — 2026-05-15 — stalled rows with bogus
+        // "Sloppy-3-attempts:" stall reason whose underlying WI is healthy
+        // AND the most recent deliverable is a `pass` verdict, but no PR
+        // has been opened yet. See xml-doc on
+        // <see cref="RecoverBogusSloppyStallWithPassedDeliverableAsync"/>
+        // for full failure-mode walkthrough.
+        recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(db, ct);
+
         if (recovered > 0)
         {
             await this.hub.Clients.All.SendAsync("forge:change", new { kind = "stalled-merged-recovered", count = recovered }, ct);
@@ -179,6 +187,168 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         {
             await db.SaveChangesAsync(ct);
             RecoveredCounter.Add(recovered, new KeyValuePair<string, object?>("phase", "stalled->complete"));
+        }
+        return recovered;
+    }
+
+    /// <summary>
+    /// Phase C — 2026-05-15 — recover stalled workstreams wrongly demoted
+    /// by the bogus-sloppy chain (ImplSpawnGuard mis-counted no-progress
+    /// during operator-question parking → routed to sloppy reassignment →
+    /// SloppyReassignmentReconciler.MarkTerminalFailedAsync stamped
+    /// "Sloppy-3-attempts: ..." stall + WI Failed) where the operator
+    /// later answered the questions, the queue worker resumed the
+    /// gen-eval loop independent of the bogus workstream status, and an
+    /// iteration eventually scored pass — but the orchestrator's claim
+    /// sweep at StorySpawnOrchestrator.cs:1801 keeps skipping the row
+    /// because it's still flagged stalled, so the PR never opens and
+    /// Phase A (which requires merged PR) never triggers. Permanent
+    /// wedge observed 2026-05-15 on code-intelligence:AGENT-MEMORY ws 1.3
+    /// (Episodic and concept schema migrations).
+    ///
+    /// <para>Recovery criteria (ALL must hold to avoid false-positive
+    /// recovery of legitimately-stalled rows):</para>
+    /// <list type="bullet">
+    ///   <item><c>ws.Status == "stalled"</c></item>
+    ///   <item><c>ws.StallReason</c> starts with <c>"Sloppy-3-attempts:"</c>
+    ///   — the known-bogus prefix. Build-failure stalls (<c>"Gate failed"</c>),
+    ///   no-progress stalls (<c>"No progress: ..."</c>), and other
+    ///   stall reasons are left untouched.</item>
+    ///   <item>No PR is currently linked to the workstream: empty
+    ///   <c>PrsJson</c> AND no <c>PrRow</c> with
+    ///   <c>Workstream == ws.Id</c>. A row with an existing PR should
+    ///   either ride Phase A (when merged) or stay in the operator-
+    ///   triage path.</item>
+    ///   <item>Latest deliverable verdict is <c>"pass"</c>. This is the
+    ///   primary signal that the work is ready to commit + open a PR.</item>
+    ///   <item>The matching <c>WorkItemRow</c> has no terminal failure
+    ///   indication: <c>FailureReason</c> is null AND
+    ///   <c>ExecutionStatus</c> is not in
+    ///   {<c>Failed</c>, <c>PendingReassign</c>, <c>Cancelled</c>}.</item>
+    /// </list>
+    ///
+    /// <para>Effect: flip <c>ws.Status="active"</c>, clear
+    /// <c>ws.StallReason</c>, clear stale <c>wi.FailureReason</c>. The
+    /// orchestrator's next 15s tick picks the row up via
+    /// <c>DriveOneWorkstreamImplAsync</c>'s pass-verdict branch and
+    /// routes to <c>ReadCachedWorkstreamFilesAsync</c> for commit + PR
+    /// open.</para>
+    /// </summary>
+    private async Task<int> RecoverBogusSloppyStallWithPassedDeliverableAsync(
+        ForgeDbContext db, CancellationToken ct)
+    {
+        const string BogusSloppyPrefix = "Sloppy-3-attempts:";
+
+        var stalled = await db.Workstreams
+            .Where(w => w.Status == WorkstreamStatuses.Stalled
+                     && w.StallReason != null
+                     && w.StallReason.StartsWith(BogusSloppyPrefix))
+            .ToListAsync(ct);
+        if (stalled.Count == 0) return 0;
+
+        // Bulk-fetch PR rows that point at any of these workstreams.
+        // PrsJson check + PrRow.Workstream check are complementary: the
+        // JSON list is the workstream's view; the Workstream column is
+        // the PR row's view. Either non-empty means the PR pipeline has
+        // already touched this row and Phase C should NOT recover it.
+        var wsIds = stalled.Select(w => w.Id).ToList();
+        var prsByWs = await db.Prs.AsNoTracking()
+            .Where(p => wsIds.Contains(p.Workstream))
+            .Select(p => p.Workstream)
+            .ToListAsync(ct);
+        var wsWithPr = new HashSet<string>(prsByWs, StringComparer.Ordinal);
+
+        // Bulk-fetch WI rows in one query.
+        var wis = await db.WorkItems
+            .Where(x => wsIds.Contains(x.Id))
+            .ToListAsync(ct);
+        var wiById = wis.ToDictionary(x => x.Id, StringComparer.Ordinal);
+
+        // Bulk-fetch deliverables for these WIs. SQLite can't ORDER BY
+        // DateTimeOffset — materialize then sort client-side, matching
+        // the convention used elsewhere in this codebase.
+        var delivs = await db.Deliverables.AsNoTracking()
+            .Where(d => wsIds.Contains(d.WorkItemId))
+            .Select(d => new { d.WorkItemId, d.Verdict, d.CreatedAt, d.Iter })
+            .ToListAsync(ct);
+        var latestByWs = delivs
+            .GroupBy(d => d.WorkItemId, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Iter).First(),
+                StringComparer.Ordinal);
+
+        var recovered = 0;
+        foreach (var w in stalled)
+        {
+            string? rejectReason = null;
+
+            // Skip if a PR is already linked anywhere — either the
+            // workstream's PrsJson lists one, or a PR row points at us.
+            var prIds = StoriesJsonHelpers.Deserialize(w.PrsJson);
+            if ((prIds is not null && prIds.Count > 0) || wsWithPr.Contains(w.Id))
+            {
+                rejectReason = $"PR exists (PrsJson count={prIds?.Count ?? 0}, prRowMatch={wsWithPr.Contains(w.Id)})";
+            }
+
+            // Skip if no WI exists for this workstream — Phase C is
+            // workstream-mode specific (WI.Id == ws.Id).
+            else if (!wiById.TryGetValue(w.Id, out var wi))
+            {
+                rejectReason = "no WI found for this workstream id";
+            }
+            else
+            {
+                // WI must show no terminal failure indication.
+                if (!string.IsNullOrEmpty(wi.FailureReason))
+                {
+                    rejectReason = $"WI.FailureReason set ('{wi.FailureReason}')";
+                }
+                else if (string.Equals(wi.ExecutionStatus, ExecutionStatuses.Failed, StringComparison.Ordinal)
+                    || string.Equals(wi.ExecutionStatus, ExecutionStatuses.PendingReassign, StringComparison.Ordinal)
+                    || string.Equals(wi.ExecutionStatus, ExecutionStatuses.Cancelled, StringComparison.Ordinal))
+                {
+                    rejectReason = $"WI.ExecutionStatus is terminal ('{wi.ExecutionStatus}')";
+                }
+                // Latest deliverable verdict must be pass.
+                else if (!latestByWs.TryGetValue(w.Id, out var latest))
+                {
+                    rejectReason = "no deliverables for this WI";
+                }
+                else if (!string.Equals(latest.Verdict, "pass", StringComparison.Ordinal))
+                {
+                    rejectReason = $"latest deliverable verdict='{latest.Verdict}' (need 'pass')";
+                }
+                else
+                {
+                    // All filters pass — recover.
+                    this.logger.LogInformation(
+                        "StalledMergedRecoveryReconciler Phase C: ws={WsId} stall->active "
+                        + "(bogus Sloppy-3-attempts cleared, latest verdict=pass iter={Iter}, no PR yet); "
+                        + "prior StallReason={Reason}",
+                        w.Id, latest.Iter, w.StallReason);
+
+                    w.Status = "active";
+                    w.StallReason = null;
+                    w.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    wi.FailureReason = null;
+                    wi.UpdatedAt = DateTimeOffset.UtcNow;
+                    recovered++;
+                }
+            }
+
+            if (rejectReason is not null)
+            {
+                this.logger.LogInformation(
+                    "StalledMergedRecoveryReconciler Phase C: ws={WsId} candidate REJECTED — {Reason}",
+                    w.Id, rejectReason);
+            }
+        }
+
+        if (recovered > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            RecoveredCounter.Add(recovered, new KeyValuePair<string, object?>("phase", "bogus-sloppy-stall->active"));
         }
         return recovered;
     }
