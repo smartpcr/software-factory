@@ -1606,6 +1606,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // may be 0 for locally-created stories.
         var docBudget = BudgetForPhase(docPoints, $"plan:{spec.FileName}");
 
+        // Phase 65 — track the branch HEAD seen at each iter boundary so
+        // the OnIterationCommit callback can compute file-change counts
+        // by diffing against the prior iter's recorded SHA. The dictionary
+        // is captured by closure, scoped to this single plan-doc loop,
+        // so concurrent producers (parallel-mode 4-doc fan-out) each have
+        // their own. Seeded with `null` for the iter-1 baseline; first
+        // call returns 0 counts but records the HEAD SHA, second call
+        // diffs against it, and so on.
+        string? prevIterSha = null;
+
         await this.RunGenEvalLoopAsync(
             team: "Architect",
             workItemId: docWorkItemId,
@@ -1664,6 +1674,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             spawn.Id, iter);
                     }
                 }
+            },
+            // Phase 65 — snapshot HEAD + numstat against the prior iter's
+            // SHA so the deliverable row records real file counts. Runs
+            // AFTER onIterationCompleted (per DeliverableLoop ordering),
+            // so CommitPathInWorktreeAsync has already landed this iter's
+            // commit (if any) before we snapshot.
+            onIterationCommit: async (iter, deliverableId, snapCt) =>
+            {
+                if (repo is null) return null;
+                var snap = await this.git.SnapshotBranchHeadAsync(repo, planBranch, prevIterSha, snapCt);
+                if (snap is null) return null;
+                prevIterSha = snap.Sha;
+                return new IterCommitInfo(
+                    CommitSha: snap.Sha,
+                    CommitMessage: snap.Subject,
+                    FilesAdded: snap.Added,
+                    FilesModified: snap.Modified,
+                    FilesDeleted: snap.Deleted);
             },
             ct: ct);
 
@@ -2639,6 +2667,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? assignedGen = assignedAgents.Count > 0 ? assignedAgents[0] : null;
         string? assignedEval = assignedAgents.Count > 1 ? assignedAgents[1] : null;
 
+        // Phase 65 — track the workstream branch's HEAD across iters so the
+        // OnIterationCommit callback can compute file-change counts
+        // against the prior iter's snapshot. Engineer agents commit via
+        // their own `git_commit` tool during the iter, so HEAD advances
+        // mid-iter — capturing post-iter (after the evaluator has scored)
+        // gives a stable boundary. Iter 1 baseline is null → first
+        // snapshot returns zero counts but records HEAD; iters 2+ diff
+        // against the prior snapshot.
+        string? prevIterSha = null;
+
         await this.RunGenEvalLoopAsync(
             team: "Engineer",
             workItemId: workstream.Id,
@@ -2664,6 +2702,27 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // discovering a failure the per-iter chain didn't catch.
             qualityCommands: ResolveQualityCommands(repo, workspace),
             testCommand: ResolveTestCommand(repo, workspace),
+            // Phase 65 — snapshot the workstream branch's HEAD per iter
+            // so the DeliverableRow records real file counts. Engineer
+            // agents commit via their own `git_commit` tool during the
+            // iter; HEAD may advance by 0+ commits between snapshots,
+            // and the numstat diff against prevIterSha captures the
+            // cumulative delta. When HEAD didn't advance (e.g. iter
+            // ran but agent only read files), zero counts persist
+            // and the iter cell renders as `0f` truthfully.
+            onIterationCommit: async (iter, deliverableId, snapCt) =>
+            {
+                if (repo is null || string.IsNullOrEmpty(workstream.Branch)) return null;
+                var snap = await this.git.SnapshotBranchHeadAsync(repo, workstream.Branch, prevIterSha, snapCt);
+                if (snap is null) return null;
+                prevIterSha = snap.Sha;
+                return new IterCommitInfo(
+                    CommitSha: snap.Sha,
+                    CommitMessage: snap.Subject,
+                    FilesAdded: snap.Added,
+                    FilesModified: snap.Modified,
+                    FilesDeleted: snap.Deleted);
+            },
             ct: ct);
 
         // Phase 45 follow-up -- collect only files the agent actually changed
@@ -3255,6 +3314,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // operator nor BuildSystemDetector can resolve one). Resolved
         // by the caller via ResolveTestCommand.
         string? testCommand = null,
+        // Phase 65 -- per-iter commit snapshot. Forwarded to
+        // DeliverableLoopRequest.OnIterationCommit so the just-persisted
+        // DeliverableRow gets its CommitSha + FilesChanged/Added/
+        // Modified/Deleted columns populated. Null = no snapshot, row
+        // columns stay null, iter-KPI endpoint falls back to event
+        // aggregation. See CrewStoryArtifactStrategy producer call
+        // sites (plan-doc + engineer) for typical wiring.
+        Func<int, long, CancellationToken, Task<IterCommitInfo?>>? onIterationCommit = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -4770,7 +4837,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 EvaluatorCrewId: evalCrewId,
                 WorkItemPoints: storyPoints,
-                OnPassValidate: onPassValidate), ct);
+                OnPassValidate: onPassValidate,
+                OnIterationCommit: onIterationCommit), ct);
         }
         finally
         {
@@ -4807,6 +4875,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // terminal verdict (iterate / stalled / stalled-budget / reject); the
         // caller (StorySpawnOrchestrator.DrivePlanAsync) records the failure
         // on the spawn so the operator sees why the lifecycle halted.
+        //
+        // Phase 66 exception: `stalled-questions` is a SOFT terminal — the
+        // loop is parked awaiting operator answers, not failed. Returning
+        // normally (no throw, no commit, no PR-open) lets the orchestrator
+        // park the doc / workstream with a blue "awaiting answers" banner
+        // instead of the red "orchestrator halted" banner. Once the
+        // operator answers via the conversation-tab wizard, the answer
+        // endpoint fire-and-forgets a resume; the next call to RunAsync
+        // sees unansweredCount == 0 and continues at iter N+1.
+        if (string.Equals(result.FinalVerdict, "stalled-questions", StringComparison.OrdinalIgnoreCase))
+        {
+            this.logger?.LogInformation(
+                "Phase 66: {Phase} parked on stalled-questions at iter {Iter} (score {Score}); awaiting operator answers.",
+                phaseTag, result.Iterations, result.FinalScore);
+            return;
+        }
+
         if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(

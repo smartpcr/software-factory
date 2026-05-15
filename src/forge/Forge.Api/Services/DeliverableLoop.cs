@@ -104,7 +104,25 @@ public sealed record DeliverableLoopRequest(
     /// exception — used by the post-pass gate-recovery exhaustion path.
     /// Null = no validator (today's behavior; pass means pass).
     /// </summary>
-    Func<int, CancellationToken, Task<string?>>? OnPassValidate = null);
+    Func<int, CancellationToken, Task<string?>>? OnPassValidate = null,
+    /// <summary>
+    /// Phase 65 — per-iter commit-snapshot hook. Invoked AFTER the
+    /// iter's <see cref="DeliverableRow"/> has been persisted (so the
+    /// callback can reference the row's <see cref="DeliverableRow.Id"/>
+    /// if it wants to cross-link telemetry) and BEFORE the unanswered-
+    /// questions / checkbox-attention / <see cref="OnPassValidate"/>
+    /// gates run. The producer captures the workstream's branch state
+    /// (HEAD SHA, message, numstat against the iter's start point) and
+    /// returns an <see cref="IterCommitInfo"/>; the loop UPDATEs the
+    /// just-persisted row with the snapshot so downstream queries
+    /// (iter-KPI strip, deliverables endpoint) don't have to re-derive
+    /// from <c>task.worktree-tick</c> events that may have been missed
+    /// when the worktree was removed mid-flight. Null callback = no
+    /// snapshot recorded; existing aggregation paths still work.
+    /// Throwing from the callback is non-fatal — the loop logs and
+    /// continues; the iter row stays without commit metadata.
+    /// </summary>
+    Func<int, long, CancellationToken, Task<IterCommitInfo?>>? OnIterationCommit = null);
 
 /// <summary>
 /// Phase 24 Q24.12 — well-known values for <see cref="DeliverableLoopRequest.Kind"/>.
@@ -152,6 +170,42 @@ public sealed record GeneratorRunOutput(
     string? TurnSamplesJson = null,
     string? FailureReason = null,
     string? FailureKind = null);
+
+/// <summary>
+/// Phase 65 — per-iter commit snapshot captured by the producer right
+/// after the iter's evaluator scored. Wired through
+/// <see cref="DeliverableLoopRequest.OnIterationCommit"/>; the loop
+/// invokes the callback after persisting the iter row and (when the
+/// callback returns non-null) UPDATEs the just-persisted
+/// <see cref="DeliverableRow"/> with these values.
+///
+/// <para>All fields are nullable so the producer can return partial
+/// information (e.g. commit happened but numstat parse failed, or
+/// counts are known but the SHA wasn't captured). The Conversation
+/// tab's iter-KPI strip prefers these row-level values over the
+/// pre-existing <c>task.worktree-tick</c> event aggregation because
+/// the event signal misses iter windows when the worktree is removed
+/// mid-flight or a commit lands in the last 1-second tick slice (the
+/// failure mode that triggered Phase 65 — see
+/// PR smartpcr/failover-cluster#19 Log Replication, 2026-05-14, where
+/// 3 real commits + 6 modified paths showed as "0f" for all four
+/// iters because no <c>worktree-tick</c> event fell inside any iter's
+/// time window).</para>
+/// </summary>
+public sealed record IterCommitInfo(
+    string? CommitSha,
+    string? CommitMessage,
+    int? FilesAdded,
+    int? FilesModified,
+    int? FilesDeleted)
+{
+    /// <summary>Convenience denormalisation — null when every input is null, else sum-of-non-nulls.</summary>
+    public int? FilesChanged =>
+        (this.FilesAdded ?? 0) + (this.FilesModified ?? 0) + (this.FilesDeleted ?? 0) is var sum
+            && (this.FilesAdded.HasValue || this.FilesModified.HasValue || this.FilesDeleted.HasValue)
+                ? sum
+                : null;
+}
 
 /// <summary>
 /// 2026-05-13 root-cause fix — machine-classifier strings for
@@ -469,7 +523,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         }
 
         if (lastPersisted is not null
-            && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy"
+            && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy" or "stalled-questions"
             && lastPersisted.Iter < maxIter)
         {
             iter = lastPersisted.Iter;
@@ -477,7 +531,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // resumed generator turn gets the same history a fresh run
             // would have built up in-memory.
             var seedRows = existingDeliverables
-                .Where(d => d.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy")
+                .Where(d => d.Verdict is "iterate" or "stalled" or "stalled-budget" or "sloppy" or "stalled-questions")
                 .OrderBy(d => d.Iter)
                 .ThenBy(d => d.CreatedAt);
             foreach (var d in seedRows)
@@ -493,6 +547,51 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 priorScore = lastPersisted.Score,
                 priorAgent = lastPersisted.GeneratorAgentId,
             }, ct);
+        }
+
+        // Phase 66 — Pre-iter stall gate. If the operator has unanswered
+        // questions from a prior iter, refuse to enter the gen-eval loop:
+        // generator output will only re-emit the same unresolved questions
+        // (the prompt template requires the `## Open Questions` block), and
+        // burning another full gen+eval round to land back on the same
+        // gate is exactly the waste this phase was added to prevent
+        // (observed on code-intelligence:AGENT-MEMORY plan-doc
+        // implementation-plan.md: 105 iters, score 94, $1860.77).
+        //
+        // The gate only fires when at least one deliverable already exists
+        // (we have to run iter 1 to surface the architect's questions in
+        // the first place). The
+        // `POST /api/work-items/{id}/questions/answer` endpoint flips
+        // ExecutionStatus back to queued/idle and fire-and-forgets a
+        // resume; this same loop call re-enters, the count is now 0, and
+        // we fall through to iter N+1.
+        if (lastPersisted is not null)
+        {
+            var pendingQuestions = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
+            if (pendingQuestions > 0)
+            {
+                if (workItemRow is not null
+                    && !string.Equals(workItemRow.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
+                {
+                    workItemRow.ExecutionStatus = ExecutionStatuses.AwaitingAnswers;
+                    workItemRow.UpdatedAt = DateTimeOffset.UtcNow;
+                    await this.db.SaveChangesAsync(ct);
+                }
+                await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-questions", new
+                {
+                    iter = lastPersisted.Iter,
+                    score = lastPersisted.Score,
+                    unansweredCount = pendingQuestions,
+                    priorVerdict = lastPersisted.Verdict,
+                    phase = "pre-iter",
+                }, ct);
+                return new DeliverableLoopResult(
+                    "stalled-questions",
+                    lastPersisted.Iter,
+                    lastPersisted.Score,
+                    new List<long>(),
+                    0m);
+            }
         }
 
         while (iter < maxIter)
@@ -770,6 +869,53 @@ public sealed class DeliverableLoop : IDeliverableLoop
             await this.db.SaveChangesAsync(ct);
             rowIds.Add(row.Id);
 
+            // Phase 65 — capture per-iter commit snapshot. The producer's
+            // callback runs in the workspace it owns and knows how to
+            // resolve the iter's HEAD + numstat against the prior iter's
+            // baseline. Non-null return → UPDATE the just-persisted row
+            // with the snapshot so the iter-KPI strip can show a real
+            // file count instead of the 0f fallback the event-aggregation
+            // path produces when worktree-tick events miss the window.
+            // Failures here are non-fatal — the iter row already exists
+            // with its evaluator-derived state; missing commit metadata
+            // is recoverable (the iter-KPI endpoint falls back to the
+            // event aggregation when the row column is null).
+            if (request.OnIterationCommit is not null)
+            {
+                try
+                {
+                    var snap = await request.OnIterationCommit(iter, row.Id, ct);
+                    if (snap is not null)
+                    {
+                        row.CommitSha = snap.CommitSha;
+                        row.CommitMessage = string.IsNullOrEmpty(snap.CommitMessage)
+                            ? null
+                            : snap.CommitMessage.Length <= 512
+                                ? snap.CommitMessage
+                                : snap.CommitMessage[..512];
+                        row.FilesAdded = snap.FilesAdded;
+                        row.FilesModified = snap.FilesModified;
+                        row.FilesDeleted = snap.FilesDeleted;
+                        row.FilesChanged = snap.FilesChanged;
+                        await this.db.SaveChangesAsync(ct);
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    // Emit a transcript event so the iter-KPI strip can
+                    // surface "metadata-capture failed" instead of just
+                    // showing 0f/—. Non-fatal: the iter row persists and
+                    // the loop continues to the gates / next iter.
+                    await this.EmitAsync(request.WorkItemId, "task.iter-commit-failed", new
+                    {
+                        iter,
+                        deliverableId = row.Id,
+                        error = ex.Message,
+                    }, ct);
+                }
+            }
+
             // Phase 52 — bump pair-assignment running totals on each
             // iteration so the live UI can read per-pair iters/tokens/cost
             // without recomputing from agent_usage. Cheap (single UPDATE)
@@ -843,17 +989,56 @@ public sealed class DeliverableLoop : IDeliverableLoop
             var unansweredCount = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
 
             verdict = lastScore.Verdict;
-            // Hard gate: pass with unanswered questions → demote to iterate
-            // and tack a note onto the evaluator's notes so the next
-            // iteration's chain includes the reason.
-            if (verdict == "pass" && unansweredCount > 0)
+            // Phase 66 — Stall the loop unconditionally when operator
+            // questions remain unanswered (was: demote pass→iterate and
+            // keep looping; the keep-looping variant burned 105 iters /
+            // $1860 on code-intelligence:AGENT-MEMORY implementation-plan.md
+            // because the generator re-emits the same questions every
+            // round, so the gate fires every round, so iter cap rewrites
+            // the final verdict to "sloppy" and the orchestrator throws
+            // "plan PR will not be opened — bump max-iterations…").
+            //
+            // Exception: when the evaluator returned verdict="reject",
+            // honour the reject — the work is fundamentally wrong and
+            // operator triage is needed on the work itself, not the
+            // questions. Reject is preserved; everything else (pass,
+            // iterate) is demoted to stalled-questions.
+            if (verdict != "reject" && unansweredCount > 0)
             {
-                verdict = "iterate";
+                verdict = "stalled-questions";
                 row.Verdict = verdict;
-                var blockNote = $"BLOCKED: {unansweredCount} open question{(unansweredCount == 1 ? string.Empty : "s")} unanswered — operator must answer via the conversation-tab wizard before pass is allowed.";
+                var blockNote = $"BLOCKED: {unansweredCount} open question{(unansweredCount == 1 ? string.Empty : "s")} unanswered — operator must answer via the conversation-tab wizard. The loop is parked; answering any question triggers an automatic resume from this iter's chain.";
                 row.Notes = string.IsNullOrEmpty(row.Notes) ? blockNote : row.Notes + "\n\n" + blockNote;
                 lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
                 await this.db.SaveChangesAsync(ct);
+
+                if (workItemRow is not null)
+                {
+                    workItemRow.ExecutionStatus = ExecutionStatuses.AwaitingAnswers;
+                    workItemRow.UpdatedAt = DateTimeOffset.UtcNow;
+                    await this.db.SaveChangesAsync(ct);
+                }
+
+                // Stamp the pair-assignment as Cancelled — this is an
+                // operator-input stall, not a sloppy pair signal. The
+                // existing pair gets to continue once the operator
+                // answers (no reassignment, no clean-slate wipe).
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.Cancelled,
+                    sloppyReason: null,
+                    finalScore: lastScore.Score,
+                    ct);
+
+                await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-questions", new
+                {
+                    iter,
+                    score = lastScore.Score,
+                    unansweredCount,
+                    phase = "post-iter",
+                }, ct);
+
+                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
 
             // Phase 50 — checkbox-attention hard gate. The evaluator now

@@ -2556,6 +2556,30 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     return;
                 }
 
+                // Phase 66 — stalled-questions verdict: operator must
+                // answer questions via the conversation wizard before the
+                // loop can resume. DeliverableLoop already set
+                // ExecutionStatus=AwaitingAnswers and stamped the
+                // pair-assignment as Cancelled; CompleteQueueRowAsync
+                // above has flushed the queue row. Emit a parked event
+                // for observability and return — TaskExecutionEndpoints.
+                // AnswerQuestions / DismissQuestions kicks the resume
+                // when the operator clears the gate.
+                if (string.Equals(result.FinalVerdict, "stalled-questions", StringComparison.Ordinal))
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.questions-parked", new
+                    {
+                        agentId,
+                        crewId,
+                        evaluatorAgentId,
+                        verdict = result.FinalVerdict,
+                        score = result.FinalScore,
+                        iterations = result.Iterations,
+                        reason = "Operator questions unanswered. Auto-resume when answers are recorded via the conversation wizard.",
+                    }, crewId: crewId, ct: ct);
+                    return;
+                }
+
                 // Phase 52 — sloppy verdict (score plateau, generator token
                 // cap, or iter cap). Route to pending-reassign so the
                 // SloppyReassignmentReconciler picks it up next tick. The

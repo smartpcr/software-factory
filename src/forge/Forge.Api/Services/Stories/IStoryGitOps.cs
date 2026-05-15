@@ -200,4 +200,41 @@ public interface IStoryGitOps
         string worktreePath,
         string? baseBranch = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 65 — snapshot a branch's current HEAD SHA + commit subject +
+    /// diff numstat against a baseline. Used by the gen/eval loop's
+    /// <c>OnIterationCommit</c> hook to record deterministic per-iter
+    /// file-change counts on the <c>DeliverableRow</c> — deterministic
+    /// alternative to the pre-existing <c>task.worktree-tick</c> event
+    /// aggregation in <c>ConversationInsightQueries</c>, which misses
+    /// iter windows when the worktree is removed mid-flight or when
+    /// commits land in the last 1-second tick slice.
+    ///
+    /// <para>Returns <c>null</c> when the branch doesn't resolve to a
+    /// commit (never-pushed branch, missing repo, etc.). When
+    /// <paramref name="baselineSha"/> is null or equals the current
+    /// HEAD, the numstat fields are all zero (no commit since the
+    /// caller's baseline) but the returned SHA + subject still reflect
+    /// HEAD so the caller can record "we observed this SHA at iter
+    /// boundary".</para>
+    /// </summary>
+    Task<IterCommitSnapshot?> SnapshotBranchHeadAsync(
+        RepoRow? repo,
+        string branch,
+        string? baselineSha,
+        CancellationToken ct = default);
 }
+
+/// <summary>
+/// Phase 65 — return shape of <see cref="IStoryGitOps.SnapshotBranchHeadAsync"/>.
+/// Lives in this file (the <c>Stories</c> namespace) so the git surface
+/// stays self-contained; the consumer in <c>DeliverableLoop</c>
+/// translates this into <c>IterCommitInfo</c>.
+/// </summary>
+public sealed record IterCommitSnapshot(
+    string Sha,
+    string Subject,
+    int Added,
+    int Modified,
+    int Deleted);

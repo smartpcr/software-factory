@@ -306,6 +306,13 @@ builder.Services.Configure<Forge.Api.Services.SloppyReassignmentOptions>(
     builder.Configuration.GetSection(Forge.Api.Services.SloppyReassignmentOptions.SectionName));
 builder.Services.AddSingleton<Forge.Api.Services.SloppyReassignmentReconciler>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.SloppyReassignmentReconciler>());
+// 2026-05-15 — auto-recovery sweep for workstreams wrongly demoted from
+// `complete`/`merging` to `stalled` by a stale sloppy-reassignment tick.
+// Root cause fixed in SloppyReassignmentReconciler.MarkTerminalFailedAsync;
+// this reconciler is the belt-and-suspenders cleanup that re-promotes any
+// stalled row whose PR is in `merged`. Idempotent; ticks every 60 s.
+builder.Services.AddSingleton<Forge.Api.Services.StalledMergedRecoveryReconciler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.StalledMergedRecoveryReconciler>());
 // Phase 29 — async build validation worker.
 builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
 builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();
@@ -568,6 +575,13 @@ using (var scope = app.Services.CreateScope())
     // Phase63 — EF's DeliverableRow model now references these columns,
     // so any query against deliverables would fail without them.
     await Phase64Migration.ApplyAsync(db);
+    // Phase 65 — CommitSha + FilesChanged/Added/Modified/Deleted on
+    // deliverables so per-iter file-change counts are deterministic
+    // (don't depend on 1Hz task.worktree-tick polling that misses the
+    // iter window when the worktree is removed mid-flight or commits
+    // land in the last second of an iter). Same ordering constraint as
+    // Phase63/64 — EF's model now references these columns.
+    await Phase65Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

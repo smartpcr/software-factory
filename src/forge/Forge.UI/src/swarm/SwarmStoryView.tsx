@@ -401,6 +401,13 @@ function SpawnErrorBanner(props: {
     ? new Date(errorAt).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' })
     : null;
 
+  // Phase 66 — when the spawn is parked awaiting operator answers (NOT a
+  // hard halt), surface a blue informational banner instead of the red
+  // orchestrator-halted banner. The backend writes the sentinel prefix
+  // "Awaiting operator answers" on spawn.LastError; the answer endpoint
+  // clears it once the operator answers (or dismisses) the questions.
+  const isAwaitingAnswers = error.startsWith('Awaiting operator answers');
+
   async function handleRetry() {
     setBusy(true);
     try {
@@ -429,11 +436,14 @@ function SpawnErrorBanner(props: {
   }
 
   return (
-    <div className="spawn-error-banner" role="alert">
-      <div className="spawn-error-banner__icon" aria-hidden>!</div>
+    <div
+      className={`spawn-error-banner${isAwaitingAnswers ? ' spawn-error-banner--awaiting-answers' : ''}`}
+      role={isAwaitingAnswers ? 'status' : 'alert'}
+    >
+      <div className="spawn-error-banner__icon" aria-hidden>{isAwaitingAnswers ? '?' : '!'}</div>
       <div className="spawn-error-banner__body">
         <div className="spawn-error-banner__title">
-          ▌ ORCHESTRATOR HALTED
+          {isAwaitingAnswers ? '▌ AWAITING ANSWERS' : '▌ ORCHESTRATOR HALTED'}
           {when && <span className="spawn-error-banner__when"> · {when}</span>}
         </div>
         <div className="spawn-error-banner__msg">{error}</div>
@@ -444,19 +454,21 @@ function SpawnErrorBanner(props: {
           className="spawn-error-banner__retry"
           disabled={busy || dismissing}
           onClick={() => void handleDismiss()}
-          title="Dismiss this error without retrying"
+          title={isAwaitingAnswers ? 'Dismiss this note (answers still required to resume the loop)' : 'Dismiss this error without retrying'}
           style={{ borderColor: 'var(--sc-text-dim, #8d94a3)', color: 'var(--sc-text-dim, #8d94a3)' }}
         >
           {dismissing ? '⏳…' : '✕ dismiss'}
         </button>
-        <button
-          type="button"
-          className="spawn-error-banner__retry"
-          disabled={busy || dismissing}
-          onClick={() => void handleRetry()}
-        >
-          {busy ? '⏳ retrying…' : '↻ retry'}
-        </button>
+        {!isAwaitingAnswers && (
+          <button
+            type="button"
+            className="spawn-error-banner__retry"
+            disabled={busy || dismissing}
+            onClick={() => void handleRetry()}
+          >
+            {busy ? '⏳ retrying…' : '↻ retry'}
+          </button>
+        )}
       </div>
     </div>
   );

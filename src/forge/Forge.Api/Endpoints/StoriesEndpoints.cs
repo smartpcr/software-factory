@@ -1672,6 +1672,29 @@ public static class StoriesEndpoints
                 baseStatus = "stalled";
             }
 
+            // 2026-05-15 — reverse override: a workstream sitting at
+            // `stalled` whose PR is in `merged` MUST be a stale demotion.
+            // Root cause was fixed in SloppyReassignmentReconciler.cs
+            // (MarkTerminalFailedAsync no longer demotes complete/merging
+            // rows), but defense in depth here so the UI is sane even if
+            // another code path slips through. The StalledMergedRecoveryReconciler
+            // corrects the DB on its 60s tick; this read-side override
+            // keeps the operator's view consistent in the meantime.
+            if (string.Equals(baseStatus, WorkstreamStatuses.Stalled, StringComparison.Ordinal))
+            {
+                var wsPrIds = StoriesJsonHelpers.Deserialize(w.PrsJson);
+                if (wsPrIds is not null && wsPrIds.Count > 0)
+                {
+                    var anyMerged = prRowsForSpawn.Any(p =>
+                        wsPrIds.Contains(p.Id)
+                        && string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase));
+                    if (anyMerged)
+                    {
+                        baseStatus = "complete";
+                    }
+                }
+            }
+
             return new
             {
                 id = w.Id,

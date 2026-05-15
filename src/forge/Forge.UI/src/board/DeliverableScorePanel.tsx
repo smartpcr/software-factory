@@ -185,6 +185,10 @@ function verdictColor(verdict: string): string {
     case 'reject':         return 'rgb(220, 38, 38)';
     case 'stalled':
     case 'stalled-budget': return 'rgb(120, 120, 120)';
+    // Phase 66 — stalled-questions = soft park (operator must answer).
+    // Use the same blue as paused-eod so the iter chip reads "waiting
+    // on a human", distinct from the gray "stalled / hard halt" colors.
+    case 'stalled-questions':
     case 'paused-eod':     return 'rgb(20, 110, 245)';
     default:               return 'var(--text-tertiary)';
   }

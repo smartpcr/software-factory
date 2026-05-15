@@ -359,8 +359,33 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // Also mark any workstreams pointing at this work item as stalled
         // with a structured reason. Phase 52 spec: only on terminal failure
         // (the reassignment path itself leaves the workstream active).
+        //
+        // 2026-05-15 — exclude shipped/terminal lifecycle states from the
+        // demotion sweep. The original filter only excluded `stalled`,
+        // which meant a workstream that had already passed gen↔eval AND
+        // merged its PR (status="complete" or "merging", PR.Col="merged")
+        // could be retroactively demoted to "stalled" with a bogus
+        // "Sloppy-3-attempts" reason if the reconciler tripped on a stale
+        // PairAttemptCount counter that was set before the eventual pass.
+        // Observed on failover-cluster:XRAFT stage 3.3 Log Replication:
+        // iters 1-3 sloppy → PairAttemptCount=3, iter 4 passed → PR #19
+        // merged → ws.Status=complete → reconciler ticked, demoted to
+        // stalled. Downstream stage 4.1 had already legitimately claimed
+        // against complete-3.3 and stalled at its own 26-min timeout,
+        // making it look like the dep gate had failed when in fact the
+        // upstream had been wrongly un-completed AFTER the claim.
+        // `historic` (Phase 42) is also excluded so a tombstoned-but-
+        // shipped row isn't reanimated as stalled. `cancelled` for
+        // operator-explicit terminations. `review` / `merging` because
+        // those mean the PR pipeline is mid-stream — flipping to stalled
+        // would stomp an in-progress merge.
         var workstreams = await db.Workstreams
-            .Where(w => w.Status != WorkstreamStatuses.Stalled)
+            .Where(w => w.Status != WorkstreamStatuses.Stalled
+                     && w.Status != WorkstreamStatuses.Historic
+                     && w.Status != "complete"
+                     && w.Status != "merging"
+                     && w.Status != "review"
+                     && w.Status != "cancelled")
             .ToListAsync(ct);
         var touched = 0;
         foreach (var w in workstreams)

@@ -39,6 +39,28 @@ public static class WorkstreamMergeAdvancer
     /// path so every "advance to complete" decision honors active comments.
     /// </para>
     /// </summary>
+    /// <para>
+    /// 2026-05-15 — stalled-row advance. A workstream whose orchestrator
+    /// halted (Max-turns review timeout, Phase 49 sloppy-terminal, etc.)
+    /// is marked <c>stalled</c> via <see cref="WorkstreamStatuses.Stalled"/>.
+    /// The status is sticky: the orchestrator's claim loop skips stalled
+    /// rows until <c>Restart</c> flips them back. But when the row's PR
+    /// later merges through an external path (operator clicks Merge on the
+    /// provider UI, auto-merge fires after review-fixes addressed the
+    /// active comments), the work is shipped and the row should advance
+    /// to <c>complete</c> — leaving it stuck on <c>stalled</c> hides a
+    /// successful outcome and forces a no-op Restart. The
+    /// active-comments guard above still applies (a row whose PR has
+    /// unresolved comments is intentionally left in place so
+    /// <c>DriveReviewAsync</c>'s fix loop can address them), so a stalled
+    /// row only advances when the PR is genuinely complete. Observed on
+    /// PR smartpcr/failover-cluster#19 (Log Replication, 2026-05-14) —
+    /// review phase hit Max-turns, workstream stalled, but the
+    /// review-fix commits merged the PR; UI still showed STALLED for
+    /// hours because <c>AdvanceForMergedPrAsync</c>'s gate excluded
+    /// stalled rows.
+    /// </para>
+    /// </summary>
     public static async Task<IReadOnlyList<string>> AdvanceForMergedPrAsync(
         ForgeDbContext db, string prId, CancellationToken ct = default)
     {
@@ -51,7 +73,8 @@ public static class WorkstreamMergeAdvancer
 
         var advanced = new List<string>();
         var candidates = await db.Workstreams
-            .Where(w => w.PrsJson.Contains(prId) && (w.Status == "review" || w.Status == "merging"))
+            .Where(w => w.PrsJson.Contains(prId)
+                && (w.Status == "review" || w.Status == "merging" || w.Status == WorkstreamStatuses.Stalled))
             .ToListAsync(ct);
         foreach (var w in candidates)
         {
