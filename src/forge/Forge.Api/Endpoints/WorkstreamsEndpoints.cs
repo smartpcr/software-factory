@@ -1106,25 +1106,25 @@ public static class WorkstreamsEndpoints
             q.LastUpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        // (2) Demote verdict. Either "pass" or "stalled" / "stalled-budget"
-        // → "iterate". "pass" comes from the Phase 56 OnPassValidate throw
-        // path semantically meaning "evaluator scored at pass but the gate
-        // suite rejected it post-pass." "stalled" can land here from
-        // legacy paths or from the orchestrator's terminal-verdict
-        // re-stamping at StorySpawnOrchestrator.cs:2284. Either way,
-        // "iterate" is the only verdict that survives both the
-        // orchestrator's terminal-triage check (line 2154) AND
-        // DeliverableLoop's seeding (line 348) so the next tick
-        // picks up at iter+1 with the full prior chain.
-        var priorVerdict = lastDel.Verdict;
-        var demoted = false;
-        if (lastDel.Verdict is "pass" or "stalled" or "stalled-budget")
-        {
-            lastDel.Verdict = "iterate";
-            var note = $"OPERATOR RETRY -- verdict demoted from '{priorVerdict}' to 'iterate' so the orchestrator re-enters the gen/eval loop at iter+1. Worktree, deliverables, transcript, agent_usage, and PRs preserved.";
-            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
-            demoted = true;
-        }
+        // (2) Phase 67 — operator-recovery reset. The previous demotion
+        // list was incomplete (missing `stalled-questions` / `sloppy` /
+        // `stalled-no-convergence`) AND the pair-attempt accounting was
+        // never reset, so a Retry on a sloppy-capped row was a no-op:
+        // ws.Status flipped to active but `wi.PairAttemptCount = 3`
+        // immediately re-tripped the orchestrator's claim-loop cap at
+        // StorySpawnOrchestrator.cs:2431 and the row stayed terminal-
+        // failed. WorkstreamRecovery centralizes the correct shape:
+        // demote any terminal verdict, and when stalled-or-at-cap, also
+        // wipe the pair-attempt accounting + agent_pair_assignment +
+        // agent_usage rows so the orchestrator gets a clean slate.
+        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var report = await Forge.Api.Services.Stories.WorkstreamRecovery.SoftResetForResumeAsync(
+            db, ws, await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id), lastDel,
+            operatorActor: actor,
+            noteSuffix: "operator clicked Retry",
+            ct: ctx.RequestAborted);
+        var priorVerdict = report.PriorVerdict;
+        var demoted = report.VerdictDemoted;
 
         // (3) Load work-item row early — needed by both the merged-PR
         // short-circuit and the normal active-reset path below.

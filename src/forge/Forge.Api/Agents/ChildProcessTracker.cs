@@ -32,6 +32,26 @@ internal static class ChildProcessTracker
     private static readonly object Sync = new();
     private static IntPtr jobHandle = IntPtr.Zero;
     private static bool initialized;
+    private static bool selfAssigned;
+    private static string? lastError;
+
+    /// <summary>
+    /// True when the JobObject was created AND Forge.Api itself was
+    /// assigned to it. When both are true, every descendant Forge.Api
+    /// spawns (including SDK-internal copilot.exe) automatically inherits
+    /// the job and is reaped on Forge.Api exit. When false, only
+    /// processes explicitly registered via <see cref="AddProcess"/> are
+    /// in the job — the SDK-spawned ones leak unless
+    /// <see cref="CopilotServerManager"/>'s explicit ownership path
+    /// kills them on dispose.
+    /// </summary>
+    public static bool IsActive => initialized && jobHandle != IntPtr.Zero && selfAssigned;
+
+    /// <summary>
+    /// Last initialisation error in human-readable form, or <c>null</c>
+    /// if init succeeded. Surfaced for health/diagnostic endpoints.
+    /// </summary>
+    public static string? LastError => lastError;
 
     /// <summary>
     /// Initialise the tracker eagerly at process startup. Safe to call
@@ -62,12 +82,21 @@ internal static class ChildProcessTracker
 
         try
         {
-            AssignProcessToJobObject(jobHandle, process.Handle);
+            if (!AssignProcessToJobObject(jobHandle, process.Handle))
+            {
+                var err = Marshal.GetLastWin32Error();
+                // Win32 0x05 == ERROR_ACCESS_DENIED → process already in a
+                // non-nestable job. Caller's explicit kill still applies.
+                Console.Error.WriteLine(
+                    $"[Forge] ChildProcessTracker.AddProcess: AssignProcessToJobObject(PID {process.Id}) failed: Win32 error {err}");
+            }
         }
-        catch
+        catch (Exception ex)
         {
             // Best-effort. Already-jobbed processes (rare in dev) and racing
             // exits surface here; both are handled by the caller's finally.
+            Console.Error.WriteLine(
+                $"[Forge] ChildProcessTracker.AddProcess: PID {process.Id} threw: {ex.Message}");
         }
     }
 
@@ -78,12 +107,23 @@ internal static class ChildProcessTracker
         {
             if (initialized) return;
             initialized = true;
-            if (!OperatingSystem.IsWindows()) return;
+            if (!OperatingSystem.IsWindows())
+            {
+                lastError = "non-Windows host";
+                return;
+            }
+
             try
             {
                 var name = $"forge-api-children-{Environment.ProcessId}";
                 jobHandle = CreateJobObject(IntPtr.Zero, name);
-                if (jobHandle == IntPtr.Zero) return;
+                if (jobHandle == IntPtr.Zero)
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    lastError = $"CreateJobObject failed: Win32 error {err}";
+                    Console.Error.WriteLine($"[Forge] ChildProcessTracker: {lastError}");
+                    return;
+                }
 
                 var info = new JOBOBJECT_BASIC_LIMIT_INFORMATION
                 {
@@ -99,7 +139,13 @@ internal static class ChildProcessTracker
                 try
                 {
                     Marshal.StructureToPtr(ext, ptr, fDeleteOld: false);
-                    SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, ptr, (uint)length);
+                    if (!SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, ptr, (uint)length))
+                    {
+                        var err = Marshal.GetLastWin32Error();
+                        lastError = $"SetInformationJobObject failed: Win32 error {err}";
+                        Console.Error.WriteLine($"[Forge] ChildProcessTracker: {lastError}");
+                        return;
+                    }
                 }
                 finally
                 {
@@ -113,17 +159,30 @@ internal static class ChildProcessTracker
                 try
                 {
                     using var self = Process.GetCurrentProcess();
-                    AssignProcessToJobObject(jobHandle, self.Handle);
+                    if (AssignProcessToJobObject(jobHandle, self.Handle))
+                    {
+                        selfAssigned = true;
+                        Console.WriteLine(
+                            $"[Forge] ChildProcessTracker: JobObject '{name}' active (kill-on-close, self-assigned PID {Environment.ProcessId}).");
+                    }
+                    else
+                    {
+                        var err = Marshal.GetLastWin32Error();
+                        lastError = $"Self-AssignProcessToJobObject failed: Win32 error {err} (likely ERROR_ACCESS_DENIED — Forge.Api is in a non-nestable parent job; SDK-spawned copilot.exe will rely on CopilotServerManager explicit-kill on shutdown).";
+                        Console.Error.WriteLine($"[Forge] ChildProcessTracker: {lastError}");
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Already-jobbed by an ancestor with a non-nestable job.
-                    // AddProcess() still works for the children we spawn ourselves.
+                    lastError = $"Self-AssignProcessToJobObject threw: {ex.Message}";
+                    Console.Error.WriteLine($"[Forge] ChildProcessTracker: {lastError}");
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 jobHandle = IntPtr.Zero;
+                lastError = $"EnsureJob threw: {ex}";
+                Console.Error.WriteLine($"[Forge] ChildProcessTracker: {lastError}");
             }
         }
     }

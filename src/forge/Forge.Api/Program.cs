@@ -35,6 +35,36 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
 {
     Console.WriteLine($"[Forge] ProcessExit at {DateTime.UtcNow:O}");
+
+    // Last-ditch synchronous kill of the SDK-spawned copilot.exe tree.
+    // ProcessExit gets ~3s before the OS terminates us, so we MUST stay
+    // synchronous and avoid DI / SDK async calls. CopilotServerManager
+    // updates LastSpawnedPid via Interlocked when it spawns/disposes the
+    // shared server, so this handler is non-zero whenever a server is
+    // currently alive. Graceful host shutdown calls
+    // CopilotServerManager.StopAsync first which sets LastSpawnedPid to
+    // 0 and reaps the tree explicitly; this handler is the panic path
+    // (Ctrl-C / unhandled exception / IDE stop / parent-shell exit).
+    var pid = System.Threading.Interlocked.Exchange(
+        ref Forge.Api.Agents.CopilotServerManager.LastSpawnedPid, 0);
+    if (pid <= 0) return;
+    try
+    {
+        using var proc = System.Diagnostics.Process.GetProcessById(pid);
+        if (!proc.HasExited)
+        {
+            proc.Kill(entireProcessTree: true);
+            Console.WriteLine($"[Forge] ProcessExit: killed shared Copilot server PID {pid} (entire tree).");
+        }
+    }
+    catch (ArgumentException)
+    {
+        // PID already gone — nothing to do.
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[Forge] ProcessExit: kill of PID {pid} failed: {ex.Message}");
+    }
 };
 
 var builder = WebApplication.CreateBuilder(args);
