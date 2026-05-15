@@ -97,10 +97,14 @@ public static class ConversationInsightQueries
             .ToList();
 
         var sortedUsage = usageRows.OrderBy(u => u.StartedAt).ToList();
-        DateTimeOffset? earliestUsage = sortedUsage.Count > 0 ? sortedUsage[0].StartedAt : null;
 
         var iters = new List<object>(deliverables.Count);
-        DateTimeOffset prevAt = earliestUsage ?? DateTimeOffset.MinValue;
+        // Start from MinValue so the first iter's window captures ALL
+        // usage rows up to the deliverable's CreatedAt. The previous
+        // value (`earliestUsage`) excluded the first usage row because
+        // the boundary check is strict `>` — a single-iter workstream
+        // (e.g. generator-timeout on iter 1) showed 0 tokens / $0.00.
+        DateTimeOffset prevAt = DateTimeOffset.MinValue;
         foreach (var d in deliverables)
         {
             var windowStart = prevAt;

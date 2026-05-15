@@ -2716,6 +2716,17 @@ public sealed class StorySpawnOrchestrator
             .Where(w => w.StorySpawnId == spawn.Id)
             .ToListAsync(ct);
         var changed = false;
+
+        // Two-pass approach: process merge-ready workstreams FIRST
+        // (no active comments → approve & merge), then run review-fix
+        // loops (agent invocations that block for minutes). Without
+        // this split, a workstream stuck in review-fix starves every
+        // merge-ready sibling behind it in the sequential foreach.
+        // Observed 2026-05-15 on qq:TELEGRAM-MESSENGER-S — ws 2.3
+        // (SCR 95, PR ready to merge) sat for 8h+ because ws 2.4's
+        // review-fix loop blocked the foreach on every tick.
+        var fixNeeded = new List<(WorkstreamRow ws, string prId, List<PrCommentRow> activeComments)>();
+
         foreach (var w in workstreams)
         {
             // 2026-05-13 — include "complete" so late-arriving review comments
@@ -2785,22 +2796,16 @@ public sealed class StorySpawnOrchestrator
             if (activeComments.Count > 0)
             {
                 // Phase 59 — gate the fix loop on PR/worktree liveness.
-                // When the PR is already merged/closed OR the per-stage
-                // worktree on disk was wiped after merge (Phase 49
-                // follow-up), invoking the engineer is pointless: every
-                // CommitFilesAsync would throw, the catch in
-                // RunReviewFixLoopAsync would swallow, and the loop
-                // would burn ~$0.10 per E9 invocation forever without
-                // resolving the comment. Auto-resolve with a system
-                // reply + skip the engineer.
                 if (await this.TrySkipReviewFixOnStalePrAsync(db, spawn, w, prId, activeComments, repo, ct))
                 {
                     changed = true;
                     continue;
                 }
 
-                await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
-                changed = true;
+                // Defer the agent-driven review-fix to pass 2 so
+                // merge-ready workstreams (no active comments) are
+                // processed first without blocking on agent invocations.
+                fixNeeded.Add((w, prId, activeComments));
                 continue;
             }
 
@@ -2907,12 +2912,12 @@ public sealed class StorySpawnOrchestrator
                     await this.provider.PostPrCommentAsync(prId, c.FilePath, c.Line, c.Body, reviewer, ct);
                 }
 
-                // Re-load active comments and run the fix loop on this tick.
+                // Re-load active comments and defer fix loop to pass 2.
                 allComments = await db.PrComments.Where(c => c.PrId == prId).ToListAsync(ct);
                 activeComments = allComments.Where(c => c.State == "active").ToList();
                 if (activeComments.Count > 0)
                 {
-                    await this.RunReviewFixLoopAsync(spawn, w, prId, activeComments, repo, ct);
+                    fixNeeded.Add((w, prId, activeComments));
                     changed = true;
                     continue;
                 }
@@ -2940,6 +2945,16 @@ public sealed class StorySpawnOrchestrator
                 changed = true;
             }
         }
+
+        // ── Pass 2: review-fix agent invocations (deferred) ──────────────
+        // Runs AFTER all merge-ready workstreams have been processed so
+        // merge candidates aren't starved by long-running agent calls.
+        foreach (var (fw, fwPrId, fwActiveComments) in fixNeeded)
+        {
+            await this.RunReviewFixLoopAsync(spawn, fw, fwPrId, fwActiveComments, repo, ct);
+            changed = true;
+        }
+
         return changed;
     }
 
