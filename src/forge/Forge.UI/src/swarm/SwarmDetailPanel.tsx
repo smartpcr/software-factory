@@ -171,7 +171,10 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
               docId={selection.id}
             />
           ) : tab === 'conv' && selection.kind === 'phase' && selection.id ? (
-            <WorkstreamConversationPane workstreamId={selection.id} />
+            <WorkstreamConversationPane
+              workstreamId={selection.id}
+              wsStatus={detail.workstreams.find((w) => w.id === selection.id)?.status}
+            />
           ) : tab === 'conv' && (
             <Placeholder
               label="conversation tab"

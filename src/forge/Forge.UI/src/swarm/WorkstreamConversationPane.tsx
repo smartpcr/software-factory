@@ -25,6 +25,10 @@ interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
    *  the engineer crew's gen↔eval loop). */
   workstreamId: string;
+  /** DB status of the workstream row — when this is "stalled" or "cancelled"
+   *  but executionStatus is still "live"/"queued", the loop has actually
+   *  halted and the buttons should reflect that. */
+  wsStatus?: string;
 }
 
 /**
@@ -37,7 +41,7 @@ interface Props {
  *   - deliverables[] (one per gen↔eval iteration; drives Summary mode)
  *   - generator / evaluator agent + crew + model fields (drives the pair bar)
  */
-export function WorkstreamConversationPane({ workstreamId }: Props) {
+export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const live = useTaskLive(workstreamId);
   const snapshot = live?.snapshot ?? null;
   const transcript = live?.transcript ?? [];
@@ -58,7 +62,12 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const executionStatus = snapshot?.executionStatus ?? null;
   const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
   const isComplete = executionStatus === 'completed';
-  const isLive = executionStatus === 'live' || executionStatus === 'queued';
+  // When the workstream DB row is stalled/cancelled but the task
+  // execution snapshot still says "live" (the orchestrator never
+  // updated executionStatus), treat the loop as halted so buttons
+  // become actionable.
+  const wsActuallyHalted = wsStatus === 'stalled' || wsStatus === 'cancelled' || wsStatus === 'complete';
+  const isLive = (executionStatus === 'live' || executionStatus === 'queued') && !wsActuallyHalted;
   // Phase 56 -- terminal-bad verdicts must enable Retry even when
   // ExecutionStatus is stuck at "live"/"queued" (architect and
   // engineer paths can both leave this dangling after a terminal
