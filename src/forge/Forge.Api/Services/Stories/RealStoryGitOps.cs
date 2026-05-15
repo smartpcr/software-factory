@@ -1132,6 +1132,92 @@ public sealed class RealStoryGitOps : IStoryGitOps
         return ordered;
     }
 
+    /// <inheritdoc/>
+    public async Task<IterCommitSnapshot?> SnapshotBranchHeadAsync(
+        RepoRow? repo,
+        string branch,
+        string? baselineSha,
+        CancellationToken ct = default)
+    {
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot) || string.IsNullOrEmpty(branch))
+        {
+            return null;
+        }
+
+        // Prefer the worktree path for the branch so the rev-parse / log /
+        // diff calls run in a checkout that exists on disk (avoids
+        // surprises when the cloneRoot itself is on a different branch).
+        // Fall back to the cloneRoot — `git rev-parse {branch}` resolves
+        // against the local ref store regardless of working dir, so the
+        // fallback still produces a valid SHA for a never-checked-out
+        // branch (or one whose worktree was removed post-merge — the
+        // exact case Phase 65 needs to survive).
+        var workDir = await this.TryFindExistingWorktreeAsync(repo.CloneRoot, branch, ct);
+        if (string.IsNullOrEmpty(workDir) || !Directory.Exists(workDir))
+        {
+            workDir = repo.CloneRoot;
+        }
+
+        // 1. Resolve HEAD SHA on the branch ref.
+        var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(workDir, ct, "rev-parse", "--verify", $"{branch}^{{commit}}");
+        if (shaCode != 0 || string.IsNullOrWhiteSpace(shaOut)) return null;
+        var newSha = shaOut.Trim();
+
+        // 2. Pull the commit subject — short message for tooltip display.
+        var (subjectCode, subjectOut, _) = await this.RunGitCaptureAsync(workDir, ct, "log", "-1", "--format=%s", newSha);
+        var subject = subjectCode == 0 ? subjectOut.Trim() : string.Empty;
+
+        // 3. When the caller has no baseline (iter 1 start, or a previous
+        // iter that captured nothing), or the baseline equals HEAD (no
+        // new commit since), report zero counts but still surface the
+        // SHA so the caller can record the boundary observation.
+        if (string.IsNullOrEmpty(baselineSha) || string.Equals(baselineSha, newSha, StringComparison.Ordinal))
+        {
+            return new IterCommitSnapshot(newSha, subject, 0, 0, 0);
+        }
+
+        // 4. Compute name-status diff for A/M/D classification.
+        //    `git diff --name-status -z` emits NUL-separated records:
+        //    "{status}\t{path}[\t{newPath}]" — renames carry two paths.
+        var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
+            workDir, ct, "diff", "--name-status", "-z", $"{baselineSha}..{newSha}");
+        if (diffCode != 0)
+        {
+            // Baseline may not be reachable from newSha (rebase, force-push,
+            // shallow clone). Return the SHA + subject with null-ish zero
+            // counts so the row still records "we saw this commit at iter
+            // boundary" even if the delta is unknown.
+            return new IterCommitSnapshot(newSha, subject, 0, 0, 0);
+        }
+
+        int added = 0, modified = 0, deleted = 0;
+        var fields = diffOut.Split('\0');
+        for (var i = 0; i < fields.Length; i++)
+        {
+            var status = fields[i];
+            if (string.IsNullOrEmpty(status)) continue;
+            // Rename / copy entries are 3-field: status\0oldPath\0newPath.
+            // Everything else is 2-field: status\0path.
+            var skip = status.StartsWith('R') || status.StartsWith('C') ? 2 : 1;
+            i += skip;
+            if (i >= fields.Length) break;
+
+            // Status letter is the first char (R100 / C95 etc carry digits).
+            switch (status[0])
+            {
+                case 'A': added++; break;
+                case 'M': modified++; break;
+                case 'D': deleted++; break;
+                case 'R': modified++; break;  // rename counts as modify
+                case 'C': added++; break;     // copy adds a new path
+                case 'T': modified++; break;  // type change
+                default: break;               // U (unmerged), X, ? — ignore
+            }
+        }
+
+        return new IterCommitSnapshot(newSha, subject, added, modified, deleted);
+    }
+
     /// <summary>
     /// True for paths under directories whose contents are by convention
     /// generated/cached (Rust <c>target/</c>, Node <c>node_modules/</c>,

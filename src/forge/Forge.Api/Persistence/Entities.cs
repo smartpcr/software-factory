@@ -953,7 +953,7 @@ public class DeliverableRow
     /// <summary>JSON object mapping each rubric dimension to its 0..weight points.</summary>
     public string DimsJson { get; set; } = "{}";
 
-    /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | stalled-no-convergence | sloppy | paused-eod</c>.</summary>
+    /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | stalled-no-convergence | sloppy | stalled-questions | paused-eod</c>. <c>stalled-questions</c> (Phase 66) is a SOFT terminal — the loop returns without spending another generator turn while operator questions are unanswered, then resumes from the prior chain once the answer endpoint clears the gate.</summary>
     public string Verdict { get; set; } = "iterate";
 
     /// <summary>Evaluator's free-form notes (≤ 4000 chars by spec, not enforced at the row level).</summary>
@@ -996,6 +996,39 @@ public class DeliverableRow
     /// out of <see cref="Notes"/>.
     /// </summary>
     public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// Phase 65 — per-iter commit SHA recorded by the producer's
+    /// <c>OnIterationCommit</c> callback. Null when the iter produced no
+    /// commit (e.g. verification-only iter, or a producer path that
+    /// doesn't snapshot per-iter SHAs). Pairs with
+    /// <see cref="FilesAdded"/> / <see cref="FilesModified"/> /
+    /// <see cref="FilesDeleted"/> / <see cref="FilesChanged"/> so the
+    /// Conversation tab's iter strip can show real file counts even when
+    /// the <c>task.worktree-tick</c> polling missed the iter window
+    /// (worktree removed between iters, very-fast commits, etc.).
+    /// </summary>
+    public string? CommitSha { get; set; }
+
+    /// <summary>Phase 65 — commit message of <see cref="CommitSha"/>, truncated to 512 chars on capture. Null when no commit.</summary>
+    public string? CommitMessage { get; set; }
+
+    /// <summary>Phase 65 — count of files added by this iter's commit (relative to its parent). Null when no commit / no data.</summary>
+    public int? FilesAdded { get; set; }
+
+    /// <summary>Phase 65 — count of files modified by this iter's commit. Null when no commit / no data.</summary>
+    public int? FilesModified { get; set; }
+
+    /// <summary>Phase 65 — count of files deleted by this iter's commit. Null when no commit / no data.</summary>
+    public int? FilesDeleted { get; set; }
+
+    /// <summary>
+    /// Phase 65 — denormalised total = <see cref="FilesAdded"/> +
+    /// <see cref="FilesModified"/> + <see cref="FilesDeleted"/>. Stored
+    /// rather than computed so the iter-KPI endpoint can sort/aggregate
+    /// without a column expression that breaks on null arithmetic.
+    /// </summary>
+    public int? FilesChanged { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -1113,6 +1146,30 @@ public static class SloppyReasons
     /// spend by aborting the loop ~iter (K+2) instead of iter 10.
     /// </summary>
     public const string ConsecutiveScoreZero = "consecutive-score-zero";
+
+    /// <summary>
+    /// Phase 67 — a single iter completed with <c>score == 0</c> AND the
+    /// per-iter commit snapshot (Phase 65) recorded
+    /// <c>FilesAdded + FilesModified + FilesDeleted == 0</c> on the
+    /// branch. The agent ran but produced nothing useful; continuing
+    /// would burn $9+/iter rebuilding the same context the agent has
+    /// already shown it can't use.
+    /// <para>Observed 2026-05-15 on
+    /// <c>code-intelligence:AGENT-MEMORY</c> plan-doc
+    /// <c>e2e-scenarios.md</c> iter 3: 12m52 / 600K tokens / $9.81 burned,
+    /// branch HEAD unchanged, evaluator scored 0. Phase 61's
+    /// 3-trailing-zero threshold would have waited two more iters at
+    /// the same cost each before triggering; Phase 67 fires after the
+    /// first such iter.</para>
+    /// <para>Distinct from Phase 47 NoProgressException (3 consecutive
+    /// no-change iters, impl-only) — Phase 67 needs just 1 iter and
+    /// applies to all roles (plan-doc / workstream / review-fix / QA).
+    /// Routes through the existing Phase 52 sloppy infrastructure
+    /// (CrewQueueWorker pending-reassign, SloppyReassignmentReconciler)
+    /// so the UI surface, pair-reassign flow, and PairAttemptCount
+    /// terminal cap all behave identically to legacy sloppy reasons.</para>
+    /// </summary>
+    public const string NoProgressScoreZero = "no-progress-score-zero";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's
@@ -1908,6 +1965,25 @@ public static class ExecutionStatuses
     /// is in flight.
     /// </summary>
     public const string PendingReassign = "pending-reassign";
+
+    /// <summary>
+    /// Phase 66 — generator emitted <c>## Open Questions</c> that the
+    /// operator has not yet answered. The gen-eval loop refuses to spend
+    /// another generator turn while questions remain unanswered (iterating
+    /// without operator input cannot converge — observed on
+    /// <c>code-intelligence:AGENT-MEMORY</c> plan-doc
+    /// <c>implementation-plan.md</c>: 105 iters, score 94, $1860 burned
+    /// before manual halt). The
+    /// <c>POST /api/work-items/{id}/questions/answer</c> endpoint clears
+    /// this status back to <see cref="Queued"/> (workstream) or
+    /// <see cref="Idle"/> (plan-doc) and fire-and-forgets a resume so the
+    /// loop seeds the prior chain and continues at iter N+1 with the
+    /// answers folded into the generator's <c>## Operator answers</c>
+    /// prelude (Phase 39 Layer C). Distinct from <see cref="Failed"/>
+    /// so the UI renders a blue "awaiting answers" banner instead of the
+    /// red orchestrator-halted banner.
+    /// </summary>
+    public const string AwaitingAnswers = "awaiting-answers";
 }
 
 /// <summary>

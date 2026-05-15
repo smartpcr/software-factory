@@ -408,6 +408,125 @@ public class Phase55ActiveCommentsGuardTests
         finally { f.Dispose(); }
     }
 
+    /// <summary>
+    /// 2026-05-15 — stalled rows whose PR merged externally must advance to
+    /// <c>complete</c>. The orchestrator's claim loop intentionally skips
+    /// stalled rows, but that meant a workstream stalled mid-review and
+    /// later merged (review-fix commits addressed the comments, auto-merge
+    /// fired) stayed pinned at <c>stalled</c> in the UI for hours despite
+    /// shipping. Observed on PR smartpcr/failover-cluster#19 (Log
+    /// Replication, 2026-05-14): review phase hit Max-turns, workstream
+    /// flipped to <c>stalled</c>, review-fix commits pushed by the
+    /// operator, PR auto-merged ~70 min later — UI never updated.
+    /// </summary>
+    [Fact]
+    public async Task Advancer_Advances_Stalled_Row_When_Pr_Merged()
+    {
+        var f = new ForgeWebApplicationFactory();
+        try
+        {
+            const string prId = "pr-stalled-advance-1";
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                db.Workstreams.Add(new WorkstreamRow
+                {
+                    Id = "ws-stalled-advance-1",
+                    StorySpawnId = "spawn-stub",
+                    Name = "ws1",
+                    Status = WorkstreamStatuses.Stalled,
+                    StallReason = "review:Max turns (60) reached",
+                    Branch = "story/X/ws1",
+                    PrsJson = JsonSerializer.Serialize(new[] { prId }),
+                    AgentsJson = "[]",
+                });
+                db.Prs.Add(new PrRow { Id = prId, Col = "merged", Branch = "story/X/ws1", Base = "main", Title = "x" });
+                await db.SaveChangesAsync();
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                Assert.Single(advanced);
+                Assert.Equal("ws-stalled-advance-1", advanced[0]);
+                await db.SaveChangesAsync();
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-advance-1");
+                Assert.Equal("complete", ws.Status);
+            }
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// 2026-05-15 — the stalled-row advance still honors the active-comments
+    /// guard. A stalled row whose PR has unresolved review comments must
+    /// stay at <c>stalled</c> so the comment chain can be addressed before
+    /// the row closes — same policy as <c>review</c>/<c>merging</c>
+    /// candidates.
+    /// </summary>
+    [Fact]
+    public async Task Advancer_Defers_Stalled_Row_When_Active_Comments_Exist()
+    {
+        var f = new ForgeWebApplicationFactory();
+        try
+        {
+            const string prId = "pr-stalled-defer-1";
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                db.Workstreams.Add(new WorkstreamRow
+                {
+                    Id = "ws-stalled-defer-1",
+                    StorySpawnId = "spawn-stub",
+                    Name = "ws1",
+                    Status = WorkstreamStatuses.Stalled,
+                    StallReason = "review:Max turns (60) reached",
+                    Branch = "story/X/ws1",
+                    PrsJson = JsonSerializer.Serialize(new[] { prId }),
+                    AgentsJson = "[]",
+                });
+                db.Prs.Add(new PrRow { Id = prId, Col = "merged", Branch = "story/X/ws1", Base = "main", Title = "x" });
+                db.PrComments.Add(new PrCommentRow
+                {
+                    PrId = prId,
+                    ProviderCommentId = "u-active-1",
+                    ThreadId = "t-active-1",
+                    AuthorId = "reviewer",
+                    AuthorKind = "user",
+                    Body = "needs another pass",
+                    FilePath = "a.cs",
+                    Line = 1,
+                    State = "active",
+                    RequiresAttention = true,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                Assert.Empty(advanced);
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-defer-1");
+                Assert.Equal(WorkstreamStatuses.Stalled, ws.Status);
+            }
+        }
+        finally { f.Dispose(); }
+    }
+
     // -----------------------------------------------------------------------
     // 2) DriveReviewAsync — external-merge fast-path guarded
     // -----------------------------------------------------------------------

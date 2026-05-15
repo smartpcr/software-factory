@@ -1672,6 +1672,29 @@ public static class StoriesEndpoints
                 baseStatus = "stalled";
             }
 
+            // 2026-05-15 — reverse override: a workstream sitting at
+            // `stalled` whose PR is in `merged` MUST be a stale demotion.
+            // Root cause was fixed in SloppyReassignmentReconciler.cs
+            // (MarkTerminalFailedAsync no longer demotes complete/merging
+            // rows), but defense in depth here so the UI is sane even if
+            // another code path slips through. The StalledMergedRecoveryReconciler
+            // corrects the DB on its 60s tick; this read-side override
+            // keeps the operator's view consistent in the meantime.
+            if (string.Equals(baseStatus, WorkstreamStatuses.Stalled, StringComparison.Ordinal))
+            {
+                var wsPrIds = StoriesJsonHelpers.Deserialize(w.PrsJson);
+                if (wsPrIds is not null && wsPrIds.Count > 0)
+                {
+                    var anyMerged = prRowsForSpawn.Any(p =>
+                        wsPrIds.Contains(p.Id)
+                        && string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase));
+                    if (anyMerged)
+                    {
+                        baseStatus = "complete";
+                    }
+                }
+            }
+
             return new
             {
                 id = w.Id,
@@ -2334,6 +2357,41 @@ public static class StoriesEndpoints
 
         var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
         if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        // Phase 68 — Resume on a merged plan-doc is rejected with 409 (mirrors
+        // RestartArtifact's guard at line ~3060). Re-firing the gen-eval loop
+        // after the doc PR merged rebuilds the worktree from base, then runs
+        // the loop against a phantom workspace — the evaluator scores 0
+        // because the doc file is "absent from the requested worktree".
+        // This is the exact pattern observed 2026-05-15 on
+        // code-intelligence:AGENT-MEMORY e2e-scenarios.md (iter-2 row 5079,
+        // score 0, $9.81 burned, "draft cannot be reviewed" notes). Mirroring
+        // the Restart guard prevents both operator-initiated Resume clicks
+        // AND boot-recovery resume sweeps from triggering the phantom run.
+        if (PlanDocStateHelpers.IsSequentialMode(spawn)
+            && PlanDocStateHelpers.PlanDocFileName.ContainsKey(key.ToLowerInvariant()))
+        {
+            var entry = PlanDocStateHelpers.GetEntry(spawn, key.ToLowerInvariant());
+            if (!string.IsNullOrEmpty(entry.PrId))
+            {
+                var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId);
+                if (pr is not null && string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Defensive: if a stale resume-pending marker exists from
+                    // a pre-Phase-68 boot, clear it so StoryResumeRecoveryService
+                    // doesn't keep re-firing the phantom path on every restart.
+                    if (RemoveResumePending(spawn, key.ToLowerInvariant()))
+                    {
+                        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+                        await db.SaveChangesAsync();
+                    }
+                    return Results.Problem(
+                        title: "Plan doc PR already merged",
+                        detail: $"doc '{key}' PR {entry.PrId} is already merged; resume not supported (would run gen-eval against a phantom worktree). Use ACCEPT to flip the latest deliverable verdict to pass, or delete + re-create the spawn.",
+                        statusCode: 409);
+                }
+            }
+        }
 
         // Phase 41 — persist the pending intent before the task starts so a
         // crash between here and ResumeSingleArtifactAsync's first persisted

@@ -176,12 +176,20 @@ public static class TaskExecutionEndpoints
     /// and AnsweredBy so the row stops blocking the verdict gate but the
     /// audit trail still shows who decided to skip it. UI surfaces a small
     /// "✕ dismiss" button next to each unanswered question.
+    ///
+    /// <para>Phase 66 — when the dismissal drops the unanswered count to 0,
+    /// fire the same unpark-and-resume path as
+    /// <see cref="AnswerQuestions"/> so the operator's dismiss decision
+    /// also unblocks the gen-eval loop.</para>
     /// </summary>
     private static async Task<IResult> DismissQuestions(
         HttpContext ctx,
         string id,
         [FromBody] DismissQuestionsRequest req,
         ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IServiceScopeFactory scopeFactory,
+        IStoryArtifactStrategy strategy,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -209,7 +217,15 @@ public static class TaskExecutionEndpoints
         await db.SaveChangesAsync(ct);
 
         var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
-        return Results.Ok(new { workItemId = id, unansweredCount });
+
+        // Phase 66 — dismissals also clear the gate; fire the resume.
+        var resumeScheduled = false;
+        if (unansweredCount == 0)
+        {
+            resumeScheduled = await TryUnparkAndResumeAsync(
+                db, hub, scopeFactory, strategy, id, ct);
+        }
+        return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
     }
 
     /// <summary>
@@ -218,12 +234,38 @@ public static class TaskExecutionEndpoints
     /// ExternalId) so the history reads "asked at iter N, answered at iter
     /// N" cleanly. Returns the updated unanswered count so the UI can
     /// re-render the wizard without an extra GET.
+    ///
+    /// <para>Phase 66 — when the recomputed unanswered count drops to 0,
+    /// clear <see cref="ExecutionStatuses.AwaitingAnswers"/> on the work
+    /// item and fire-and-forget the resume path:</para>
+    /// <list type="bullet">
+    ///   <item>For plan-doc work items (<c>plan-doc:{spawnId}:{filename}</c>)
+    ///   call <see cref="StoriesEndpoints.AddResumePending"/> +
+    ///   <see cref="StoriesEndpoints.RunResumeWithCleanupAsync"/> with
+    ///   <c>restartFromScratch=false</c> so the deliverable chain seeds
+    ///   the next gen↔eval iter (resumes at iter N+1 with the operator
+    ///   answers folded into the generator's <c>## Operator answers</c>
+    ///   prelude per Phase 39 Layer C).</item>
+    ///   <item>For workstream work items, set
+    ///   <c>ExecutionStatus = queued</c> and emit <c>ws-changed</c>
+    ///   on the SignalR hub; the next orchestrator tick re-enters
+    ///   <c>DriveOneWorkstreamImplAsync</c>, sees
+    ///   <c>verdict=stalled-questions</c> with
+    ///   <c>unansweredCount=0</c>, and falls through to
+    ///   <c>ProduceWorkstreamChangesAsync</c>.</item>
+    /// </list>
+    /// <para>Also clears <c>spawn.LastError</c> when it references this
+    /// work item (the soft "Awaiting operator answers" note set by
+    /// <see cref="StorySpawnOrchestrator"/>).</para>
     /// </summary>
     private static async Task<IResult> AnswerQuestions(
         HttpContext ctx,
         string id,
         [FromBody] AnswerQuestionsRequest req,
         ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IServiceScopeFactory scopeFactory,
+        IStoryArtifactStrategy strategy,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -257,7 +299,124 @@ public static class TaskExecutionEndpoints
 
         // Re-compute and return the updated unanswered count for the UI.
         var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
-        return Results.Ok(new { workItemId = id, unansweredCount });
+
+        // Phase 66 — when all questions are answered, fire the resume.
+        var resumeScheduled = false;
+        if (unansweredCount == 0)
+        {
+            resumeScheduled = await TryUnparkAndResumeAsync(
+                db, hub, scopeFactory, strategy, id, ct);
+        }
+
+        return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
+    }
+
+    /// <summary>
+    /// Phase 66 — flip a work item out of
+    /// <see cref="ExecutionStatuses.AwaitingAnswers"/> and kick the
+    /// appropriate resume path:
+    /// <list type="bullet">
+    ///   <item>Plan-doc ids (<c>plan-doc:{spawnId}:{filename}</c>) → resolve
+    ///   spawn + story, call <see cref="StoriesEndpoints.AddResumePending"/>,
+    ///   then fire-and-forget <see cref="StoriesEndpoints.RunResumeWithCleanupAsync"/>.
+    ///   The resume marker is required so a crash mid-resume is recovered
+    ///   by <c>StoryResumeRecoveryService</c>.</item>
+    ///   <item>Workstream ids → flip <c>ExecutionStatus=queued</c> and emit
+    ///   <c>ws-changed</c>; the orchestrator's next tick handles the
+    ///   resume via <c>DriveOneWorkstreamImplAsync</c>.</item>
+    /// </list>
+    /// Also clears any <c>spawn.LastError</c> that references this work
+    /// item via the <see cref="StorySpawnOrchestrator.AwaitingAnswersErrorPrefix"/>
+    /// sentinel so the UI banner flips from blue "awaiting answers" back
+    /// to clean.
+    /// </summary>
+    /// <returns>True when a resume was scheduled (caller can surface this
+    /// to the operator); false when no further action was needed.</returns>
+    private static async Task<bool> TryUnparkAndResumeAsync(
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IServiceScopeFactory scopeFactory,
+        IStoryArtifactStrategy strategy,
+        string workItemId,
+        CancellationToken ct)
+    {
+        // Plan-doc path: id format `plan-doc:{spawnId}:{filename}`.
+        if (workItemId.StartsWith("plan-doc:", StringComparison.Ordinal))
+        {
+            var parts = workItemId.Split(':', 3);
+            if (parts.Length != 3) return false;
+            var spawnId = parts[1];
+            var fileName = parts[2];
+            // Strip the `.md` suffix to get the canonical doc key
+            // (matches PlanDocStateHelpers.PlanDocFileName values).
+            var docKey = fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+                ? fileName[..^3]
+                : fileName;
+
+            var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            if (spawn is null) return false;
+
+            // Clear soft "Awaiting operator answers" LastError when it
+            // references this doc; the banner flips back to clean.
+            if (!string.IsNullOrEmpty(spawn.LastError)
+                && spawn.LastError.StartsWith(StorySpawnOrchestrator.AwaitingAnswersErrorPrefix, StringComparison.Ordinal))
+            {
+                spawn.LastError = null;
+                spawn.LastErrorAt = null;
+                spawn.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            StoriesEndpoints.AddResumePending(spawn, docKey);
+            spawn.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+
+            // Fire-and-forget the resume; the strategy's deliverable loop
+            // seeds the prior chain (now including the stalled-questions
+            // row, which the loop's resume branch treats as iterate-like)
+            // and continues at iter N+1.
+            var storyId = spawn.StoryId;
+            _ = Task.Run(() => StoriesEndpoints.RunResumeWithCleanupAsync(
+                scopeFactory, strategy, spawn.Id, storyId, docKey, CancellationToken.None));
+
+            await hub.Clients.All.SendAsync("story-spawn.changed",
+                new { kind = "questions-answered", storyId, key = docKey, workItemId }, ct);
+            return true;
+        }
+
+        // Workstream path: id is the workstream's row id.
+        var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        if (ws is not null)
+        {
+            // Clear soft LastError on the parent spawn if it references
+            // this workstream.
+            var parentSpawn = await db.StorySpawns
+                .FirstOrDefaultAsync(s => s.Id == ws.StorySpawnId, ct);
+            if (parentSpawn is not null
+                && !string.IsNullOrEmpty(parentSpawn.LastError)
+                && parentSpawn.LastError.StartsWith(StorySpawnOrchestrator.AwaitingAnswersErrorPrefix, StringComparison.Ordinal))
+            {
+                parentSpawn.LastError = null;
+                parentSpawn.LastErrorAt = null;
+                parentSpawn.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            await db.SaveChangesAsync(ct);
+            await hub.Clients.All.SendAsync("ws-changed",
+                new { workstreamId = ws.Id, storyId = parentSpawn?.StoryId, kind = "questions-answered" }, ct);
+            return true;
+        }
+
+        // Generic work-item path: bare WorkItem row (e.g. crew-queue items).
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        if (wi is not null
+            && string.Equals(wi.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        return false;
     }
 
     private static async Task<IResult> GetExecution(
@@ -806,7 +965,13 @@ public static class TaskExecutionEndpoints
             r.Id, r.WorkItemId, r.CrewId, r.GeneratorAgentId, r.EvaluatorAgentId,
             r.Iter, r.Score, dims, r.Verdict, r.Notes, r.GenCostUsd, r.EvalCostUsd,
             r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt,
-            r.GeneratorSummary ?? string.Empty);
+            r.GeneratorSummary ?? string.Empty,
+            r.CommitSha,
+            r.CommitMessage,
+            r.FilesAdded,
+            r.FilesModified,
+            r.FilesDeleted,
+            r.FilesChanged);
     }
 
     /// <summary>

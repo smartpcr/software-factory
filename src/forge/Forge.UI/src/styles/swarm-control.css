@@ -1946,6 +1946,35 @@
   opacity: 0.5; cursor: default;
 }
 
+/* Phase 66 — Awaiting-answers variant of the spawn banner. When the
+ * spawn is parked because the gen-eval loop emitted unanswered operator
+ * questions (verdict=stalled-questions), the banner flips from red
+ * "orchestrator halted" to blue "awaiting answers" so the operator
+ * sees this as a non-fatal wait state, not a failure. Matches the
+ * blue used for `paused-eod` / `stalled-questions` chips in
+ * DeliverableScorePanel so all "waiting on a human" surfaces use the
+ * same hue. */
+.swarm-ctrl .spawn-error-banner--awaiting-answers {
+  background: rgba(20, 110, 245, 0.07);
+  border-left: 3px solid rgb(20, 110, 245);
+  border-top-color: rgba(20, 110, 245, 0.4);
+  border-bottom-color: rgba(20, 110, 245, 0.4);
+  border-right-color: rgba(20, 110, 245, 0.4);
+}
+.swarm-ctrl .spawn-error-banner--awaiting-answers .spawn-error-banner__icon {
+  background: rgb(20, 110, 245); color: var(--sc-bg);
+}
+.swarm-ctrl .spawn-error-banner--awaiting-answers .spawn-error-banner__title {
+  color: rgb(20, 110, 245);
+}
+.swarm-ctrl .spawn-error-banner--awaiting-answers .spawn-error-banner__retry {
+  border: 1px solid rgb(20, 110, 245);
+  color: rgb(20, 110, 245);
+}
+.swarm-ctrl .spawn-error-banner--awaiting-answers .spawn-error-banner__retry:hover:not(:disabled) {
+  background: rgb(20, 110, 245); color: var(--sc-bg);
+}
+
 /* GFM markdown body inside a doc section — paragraphs, code, lists,
  * tables, blockquotes, task lists. Tones match the existing .doc-p /
  * .doc-code / .doc-list styling so a doc looks the same after the switch

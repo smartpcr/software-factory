@@ -193,6 +193,22 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
     /// <summary>
+    /// Phase 65 — in-memory stub. Returns a synthetic snapshot derived
+    /// from the test tree's tip SHA when the branch exists, else null.
+    /// Numstat counts are 0 since the in-memory tree tracks content but
+    /// not per-iter commit boundaries (tests that care about file counts
+    /// bind a custom IStoryGitOps).
+    /// </summary>
+    public Task<IterCommitSnapshot?> SnapshotBranchHeadAsync(
+        RepoRow? repo, string branch, string? baselineSha, CancellationToken ct = default)
+    {
+        var key = Key(repo, branch);
+        if (!this.tips.TryGetValue(key, out var tip)) return Task.FromResult<IterCommitSnapshot?>(null);
+        return Task.FromResult<IterCommitSnapshot?>(
+            new IterCommitSnapshot(tip, $"in-memory tip for {branch}", 0, 0, 0));
+    }
+
+    /// <summary>
     /// Phase 45 — fast-forward the in-memory base branch to the upstream tip.
     /// Tests rely on the base branch carrying every artifact already merged
     /// into <paramref name="upstreamBranch"/>, so we copy the upstream tree

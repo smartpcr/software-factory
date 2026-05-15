@@ -497,6 +497,16 @@ public sealed class StorySpawnOrchestrator
     }
 
     /// <summary>
+    /// Phase 66 — sentinel prefix for <see cref="StorySpawnRow.LastError"/>
+    /// when the spawn is parked awaiting operator answers (not a hard
+    /// failure). The UI matches on this prefix to render a blue
+    /// "awaiting answers" banner instead of the red orchestrator-halted
+    /// banner. Keep in sync with
+    /// <c>src/forge/Forge.UI/src/swarm/SpawnErrorBanner.tsx</c>.
+    /// </summary>
+    internal const string AwaitingAnswersErrorPrefix = "Awaiting operator answers";
+
+    /// <summary>
     /// Phase 53 — one drive of a single plan doc: ensure branch + worktree
     /// at the chosen base, run the gen↔eval loop via the strategy, commit
     /// the result, merge upstream base in, and open (or recover) the per-doc
@@ -512,6 +522,41 @@ public sealed class StorySpawnOrchestrator
         // The hasAnyPlanDeliverable check mirrors the legacy DrivePlanAsync
         // (line 392-402) but scoped to this doc only.
         var docWorkItemId = $"plan-doc:{spawn.Id}:{PlanDocStateHelpers.PlanDocFileName[docKey]}";
+
+        // Phase 66 — pre-call awaiting-answers short-circuit. If the prior
+        // tick parked the doc on stalled-questions and the operator hasn't
+        // answered yet, skip the entire worktree-setup + strategy call.
+        // The strategy's pre-iter gate would also stop early (no
+        // generator turn), but stopping at the orchestrator level saves
+        // the worktree probe, attachments refresh, and DB roundtrip
+        // through `EnsureWorktreeAsync`. Idempotent: re-fires every
+        // orchestrator tick until the operator answers.
+        if (!forceResume)
+        {
+            // SQLite EF Core cannot ORDER BY DateTimeOffset; materialize
+            // then order client-side (same workaround as IsDocVerdictPassAsync
+            // at line ~614).
+            var earlyLatest = (await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == docWorkItemId)
+                    .ToListAsync(ct))
+                .OrderByDescending(d => d.Iter)
+                .ThenByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
+            if (earlyLatest is not null
+                && string.Equals(earlyLatest.Verdict, "stalled-questions", StringComparison.Ordinal))
+            {
+                var earlyPending = await DeliverableLoop.CountUnansweredQuestionsAsync(
+                    db, docWorkItemId, ct);
+                if (earlyPending > 0)
+                {
+                    await PersistLastErrorAsync(db, spawn.Id,
+                        $"{AwaitingAnswersErrorPrefix} for plan-doc {docKey} ({earlyPending} unanswered) — answer in the Conversation tab to resume.",
+                        hub, ct);
+                    return false;
+                }
+            }
+        }
+
         var hasAnyDeliverable = await db.Deliverables
             .AnyAsync(d => d.WorkItemId == docWorkItemId, ct);
         var isFirstDrive = !hasAnyDeliverable;
@@ -538,6 +583,33 @@ public sealed class StorySpawnOrchestrator
         // file-write tool) AND returns the content string.
         var (repoPath, content) = await this.strategy.ProduceSinglePlanArtifactAsync(
             spawn, story, docKey, worktreePath, docBranch, repo, forceResume, ct);
+
+        // Phase 66 — post-call awaiting-answers check. If the strategy
+        // returned because the gen-eval loop parked on stalled-questions
+        // (operator must answer questions before convergence is
+        // possible), do NOT commit + do NOT open the PR. The doc's
+        // worktree may already have iter-1 content committed by the
+        // per-iter callback, but landing a PR at this point would skip
+        // the operator-answers gate. Park the spawn with a soft
+        // awaiting-answers note and let the next tick re-check.
+        // SQLite EF Core cannot ORDER BY DateTimeOffset; materialize
+        // then order client-side.
+        var postCallLatest = (await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == docWorkItemId)
+                .ToListAsync(ct))
+            .OrderByDescending(d => d.Iter)
+            .ThenByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        if (postCallLatest is not null
+            && string.Equals(postCallLatest.Verdict, "stalled-questions", StringComparison.Ordinal))
+        {
+            var postPending = await DeliverableLoop.CountUnansweredQuestionsAsync(
+                db, docWorkItemId, ct);
+            await PersistLastErrorAsync(db, spawn.Id,
+                $"{AwaitingAnswersErrorPrefix} for plan-doc {docKey} ({postPending} unanswered) — answer in the Conversation tab to resume.",
+                hub, ct);
+            return false;
+        }
 
         // Commit. CommitFilesAsync is no-op when the file content hasn't
         // changed since the per-iter commit (the strategy commits per iter
@@ -1042,12 +1114,50 @@ public sealed class StorySpawnOrchestrator
             .Where(d => docIds.Contains(d.WorkItemId))
             .ToListAsync(ct);
 
+        // Phase 68 — pre-load the per-doc PR rows for the "merged + ever-passed"
+        // gate-relaxation branch. A merged PR means the doc actually shipped;
+        // a stale post-merge phantom iter (e.g. resume-after-merge) shouldn't
+        // re-block phase advance just because it left an iterate/iter-cap row
+        // at the top of the deliverable history. Observed 2026-05-15 on
+        // code-intelligence:AGENT-MEMORY e2e-scenarios.md: PR #4 merged at
+        // iter 1 score=92 (verdict=pass), then a Resume fired post-merge and
+        // produced an iter-2 score=0 row that became "latest", blocking
+        // Phase 48 indefinitely until ACCEPT was clicked.
+        var prIdsByKey = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (PlanDocStateHelpers.IsSequentialMode(spawn))
+        {
+            foreach (var fileName in PlanDocFileNames)
+            {
+                var key = fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+                    ? fileName[..^3]
+                    : fileName;
+                var entry = PlanDocStateHelpers.GetEntry(spawn, key);
+                prIdsByKey[key] = entry.PrId;
+            }
+        }
+        var prIds = prIdsByKey.Values.Where(p => !string.IsNullOrEmpty(p)).Distinct().ToList();
+        var mergedPrIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (prIds.Count > 0)
+        {
+            var prs = await db.Prs.AsNoTracking()
+                .Where(p => prIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Col })
+                .ToListAsync(ct);
+            foreach (var p in prs)
+            {
+                if (string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                {
+                    mergedPrIds.Add(p.Id);
+                }
+            }
+        }
+
         var nonPassed = new List<string>();
         foreach (var fileName in PlanDocFileNames)
         {
             var docId = $"plan-doc:{spawn.Id}:{fileName}";
-            var latest = rows
-                .Where(d => d.WorkItemId == docId)
+            var docRows = rows.Where(d => d.WorkItemId == docId).ToList();
+            var latest = docRows
                 .OrderByDescending(d => d.Iter)
                 .ThenByDescending(d => d.CreatedAt)
                 .FirstOrDefault();
@@ -1058,11 +1168,30 @@ public sealed class StorySpawnOrchestrator
                 ? fileName[..^3]
                 : fileName;
 
-            if (latest is null
-                || !string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+            // (a) Existing path — latest deliverable verdict == pass (covers
+            // natural pass + Phase 43 ACCEPT-override which flips latest
+            // verdict to pass).
+            if (latest is not null
+                && string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
             {
-                nonPassed.Add(key);
+                continue;
             }
+
+            // (b) Phase 68 — merged + ever-passed. Any prior pass deliverable
+            // for a doc whose PR has merged counts as satisfied. The merged
+            // PR is the ship signal; deliverable history is the quality
+            // signal; both together = the doc actually went out with a
+            // passing iter. A phantom post-merge iter at iterate/sloppy
+            // shouldn't undo that.
+            if (prIdsByKey.TryGetValue(key, out var prId)
+                && !string.IsNullOrEmpty(prId)
+                && mergedPrIds.Contains(prId!)
+                && docRows.Any(d => string.Equals(d.Verdict, "pass", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            nonPassed.Add(key);
         }
 
         return (nonPassed.Count == 0, nonPassed);
@@ -2242,6 +2371,31 @@ public sealed class StorySpawnOrchestrator
                 w.Id, lastDel.Iter, lastDel.Score);
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
+        else if (lastDel is not null && string.Equals(lastDel.Verdict, "stalled-questions", StringComparison.Ordinal))
+        {
+            // Phase 66 — workstream parked on operator questions. If the
+            // operator has answered (count == 0) since the prior stall, the
+            // loop is free to resume; fall through to ProduceWorkstreamChangesAsync
+            // (the loop's own resume branch seeds the prior chain and
+            // continues at iter N+1). If questions remain unanswered, keep
+            // the workstream alive at its current status (NOT marked
+            // stalled — sloppy/budget triage doesn't apply; this is an
+            // operator-input wait state) and return without committing
+            // anything new this tick.
+            var pending = await DeliverableLoop.CountUnansweredQuestionsAsync(db2, w.Id, ct);
+            if (pending > 0)
+            {
+                this.logger?.LogInformation(
+                    "Workstream {WsId} parked on stalled-questions (iter {Iter}, {Pending} unanswered). "
+                    + "Skipping gen/eval until operator answers via the wizard.",
+                    w.Id, lastDel.Iter, pending);
+                return;
+            }
+            this.logger?.LogInformation(
+                "Workstream {WsId} resuming from stalled-questions (iter {Iter}, all questions answered).",
+                w.Id, lastDel.Iter);
+            files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
+        }
         else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
@@ -2393,6 +2547,28 @@ public sealed class StorySpawnOrchestrator
         {
             this.logger?.LogInformation(
                 "Workstream {WsId} was cancelled during gen/eval; skipping commit + PR.", w.Id);
+            return;
+        }
+
+        // Phase 66 — post-call awaiting-answers check. If the strategy's
+        // gen-eval loop parked on stalled-questions (the architect/engineer
+        // surfaced questions the operator must answer), do NOT commit + do
+        // NOT open the PR. Leave the workstream alive at its current
+        // status; the answer endpoint will fire the resume.
+        var postCallDel = (await db2.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == w.Id)
+                .ToListAsync(ct))
+            .OrderByDescending(d => d.CreatedAt)
+            .ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (postCallDel is not null
+            && string.Equals(postCallDel.Verdict, "stalled-questions", StringComparison.Ordinal))
+        {
+            var pendingPost = await DeliverableLoop.CountUnansweredQuestionsAsync(db2, w.Id, ct);
+            this.logger?.LogInformation(
+                "Workstream {WsId} produced no PR this tick — gen-eval loop parked on stalled-questions "
+                + "(iter {Iter}, {Pending} unanswered). Awaiting operator answers.",
+                w.Id, postCallDel.Iter, pendingPost);
             return;
         }
 

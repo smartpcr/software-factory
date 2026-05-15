@@ -861,7 +861,19 @@ public sealed record Deliverable(
     string? JudgeNotes,
     DateTimeOffset CreatedAt,
     /// <summary>Generator's per-iteration summary — extracted from the `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading in the generator response. Empty when the agent didn't write one.</summary>
-    string GeneratorSummary = "");
+    string GeneratorSummary = "",
+    /// <summary>Phase 65 — HEAD SHA the producer's <c>OnIterationCommit</c> hook observed at the iter boundary. Null when no producer wired the hook (legacy rows) or the snapshot returned null (no resolvable branch).</summary>
+    string? CommitSha = null,
+    /// <summary>Phase 65 — truncated commit subject for <see cref="CommitSha"/>, capped at 512 chars on capture.</summary>
+    string? CommitMessage = null,
+    /// <summary>Phase 65 — files added by this iter's commit (relative to the prior iter's recorded SHA). Null when no snapshot taken.</summary>
+    int? FilesAdded = null,
+    /// <summary>Phase 65 — files modified by this iter's commit.</summary>
+    int? FilesModified = null,
+    /// <summary>Phase 65 — files deleted by this iter's commit.</summary>
+    int? FilesDeleted = null,
+    /// <summary>Phase 65 — denormalised total = <see cref="FilesAdded"/> + <see cref="FilesModified"/> + <see cref="FilesDeleted"/>. Preferred over <c>task.worktree-tick</c> event aggregation when present.</summary>
+    int? FilesChanged = null);
 
 /// <summary>
 /// Phase 14.5 — dispute body. <c>JudgeScore</c> is the judge agent's

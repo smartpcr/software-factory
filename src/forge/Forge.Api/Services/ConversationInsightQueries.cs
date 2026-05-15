@@ -130,7 +130,18 @@ public static class ConversationInsightQueries
                     foreach (var p in paths) pathsThisIter.Add(p);
                 }
             }
-            int filesChanged = pathsThisIter.Count;
+            // Phase 65 — prefer the deliverable row's deterministic
+            // FilesChanged column when present. The event-aggregation
+            // path above is the fallback for legacy rows that pre-date
+            // the OnIterationCommit hook (row column is null) and for
+            // rows whose hook returned null (worktree path unresolvable
+            // at snapshot time). The event aggregation loses fidelity
+            // when worktree-tick events miss the iter window (worktree
+            // removed mid-flight, commits in the last 1-second slice) —
+            // exactly the failure mode Phase 65 fixes. Row column wins
+            // because it was captured inside the loop's transaction
+            // boundary and is immune to polling timing.
+            int filesChanged = d.FilesChanged ?? pathsThisIter.Count;
 
             long? durationMs = null;
             if (startedByIter.TryGetValue(d.Iter, out var s)
