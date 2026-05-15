@@ -245,8 +245,15 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
       .filter(({ w }) => {
         const bucket = w.status === 'historic' ? 'complete' : w.status;
         return (effectiveFilter as readonly string[]).includes(bucket);
+      })
+      .sort((a, b) => {
+        const sa = stageNumOf.get(a.w.id) ?? '999.999';
+        const sb = stageNumOf.get(b.w.id) ?? '999.999';
+        const [aMaj, aMin] = sa.split('.').map(Number);
+        const [bMaj, bMin] = sb.split('.').map(Number);
+        return aMaj !== bMaj ? aMaj - bMaj : aMin - bMin;
       }),
-    [ws, effectiveFilter],
+    [ws, effectiveFilter, stageNumOf],
   );
   const isAllSelected = phaseStatusFilter.length === 0
     || phaseStatusFilter.length === PHASE_STATUS_FILTER_KEYS.length;
