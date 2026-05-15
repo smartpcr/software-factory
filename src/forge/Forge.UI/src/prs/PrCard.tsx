@@ -363,7 +363,7 @@ function PrReviewBlock({ review }: { review: NonNullable<Pr['review']> }) {
         <AgentChip
           id={review.agent}
           name={review.name}
-          role={review.agent.startsWith('R') ? 'rev' : 'eng'}
+          role={roleFor(review.agent)}
         />
         <span className="who">{review.name}</span>
         <span className={`verdict ${review.verdict}`}>{review.verdict}</span>
