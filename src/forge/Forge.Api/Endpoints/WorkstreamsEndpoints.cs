@@ -1120,7 +1120,47 @@ public static class WorkstreamsEndpoints
             demoted = true;
         }
 
-        // (3) Reset workstream state -- but DO NOT touch worktree/branch/PRs.
+        // (3) Load work-item row early — needed by both the merged-PR
+        // short-circuit and the normal active-reset path below.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
+
+        // If the PR is already merged, promote straight to "complete" —
+        // the gen/eval loop has nothing left to do.
+        var pr = await db.Prs.FirstOrDefaultAsync(p => p.Workstream == id);
+        if (pr is not null && string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+        {
+            ws.Status = "complete";
+            ws.StallReason = null;
+
+            if (wi is not null)
+            {
+                wi.ExecutionStatus = ExecutionStatuses.Completed;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            await db.SaveChangesAsync();
+
+            await hub.Clients.All.SendAsync("workstream.changed", new
+            {
+                workstreamId = id,
+                status = ws.Status,
+                kind = "retry-promoted-complete",
+                priorVerdict,
+                prMerged = true,
+            });
+
+            return Results.Ok(new
+            {
+                workstreamId = id,
+                priorVerdict,
+                newVerdict = lastDel.Verdict,
+                demoted,
+                priorIter = lastDel.Iter,
+                priorScore = lastDel.Score,
+                status = ws.Status,
+            });
+        }
+
         ws.Status = "active";
         ws.StallReason = null;
 
@@ -1129,7 +1169,6 @@ public static class WorkstreamsEndpoints
         // sweep sees a clean row. Mirrors Restart's reset, minus the
         // PairAttemptCount/BudgetWindowStartUtc/PriorPairsJson wipe
         // (Retry is a continuation, not a clean slate).
-        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
         if (wi is not null)
         {
             wi.ExecutionStatus = ExecutionStatuses.Queued;
