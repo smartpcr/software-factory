@@ -109,6 +109,91 @@ public sealed class ImplSpawnGuardTests
     }
 
     [Fact]
+    public async Task Phase71_RecentStartedNoFinish_WithDeadInvocation_AllowsRecovery()
+    {
+        // Phase 71 (2026-05-15) — the in-flight branch must ALSO honour
+        // isInvocationActive. When the dispatcher confirms the task is
+        // not alive (process crash, Forge.Api restart) AND a stale
+        // spawn-started has no matching finish, allow recovery
+        // IMMEDIATELY — the original drive is dead and waiting the full
+        // budget+slack burns dead time.
+        //
+        // Observed 2026-05-15 on
+        // failover-cluster:XRAFT:stage-4.1-grpc-transport-layer iter 7
+        // (verdict=pass at 4:49:43, Forge.Api restarted 40s later;
+        // workstream sat at 13min elapsed / 26min budget, PR never
+        // opened, operator forced to wait or ACCEPT manually).
+        var (conn, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            // 2-minute-old start with no finish — well within the 26-min
+            // guard for a 13-point workstream, so pre-Phase-71 this
+            // would have returned SkipInFlight.
+            await AddEventAsync(db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-2));
+
+            Func<string, bool> deadInvocation = _ => false;
+
+            var r = await ImplSpawnGuard.CheckAsync(db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: deadInvocation);
+
+            Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
+            Assert.Contains("recovery spawn", r.Reason);
+            Assert.Contains("NOT alive", r.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task Phase71_RecentStartedNoFinish_WithLiveInvocation_StillSkipsAsInFlight()
+    {
+        // Defensive: when isInvocationActive returns TRUE, the original
+        // drive is genuinely still running. The Phase 71 fast-recovery
+        // branch must NOT fire — that would double-spawn a workstream
+        // that's still iterating. Falls through to the existing
+        // elapsed < guardSeconds branch.
+        var (conn, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-2));
+
+            Func<string, bool> liveInvocation = _ => true;
+
+            var r = await ImplSpawnGuard.CheckAsync(db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: liveInvocation);
+
+            Assert.Equal(ImplSpawnGuard.Decision.SkipInFlight, r.Outcome);
+            Assert.Contains("in-flight", r.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task Phase71_NoIsActive_Wired_Preserves_Legacy_InFlight_Behaviour()
+    {
+        // When isInvocationActive is null (legacy callers / tests), the
+        // Phase 71 fast-recovery branch is a no-op and the original
+        // elapsed < guardSeconds skip-in-flight semantics still apply.
+        // Pins the back-compat contract.
+        var (conn, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-2));
+
+            var r = await ImplSpawnGuard.CheckAsync(db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: null);
+
+            Assert.Equal(ImplSpawnGuard.Decision.SkipInFlight, r.Outcome);
+        }
+    }
+
+    [Fact]
     public async Task GuardWindowScalesWithBudget_LargeWsHasLongerWindow()
     {
         // For a 10-point workstream, BudgetForPhase("impl") = 10 * 60s * 2 =

@@ -55,6 +55,7 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const [restarting, setRestarting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
   useEffect(() => { setSelectedIter(null); }, [filter, workstreamId]);
@@ -163,6 +164,35 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Cancel failed', 'danger');
     } finally { setCancelling(false); }
+  }
+  async function handleAccept() {
+    const ok = await useConfirmStore.getState().ask({
+      title: 'Accept workstream?',
+      body: 'Operator override — flip the latest deliverable verdict to "pass" so the orchestrator commits the worktree files and opens the PR on its next tick. Use when the loop keeps demoting pass→iterate on a false positive but the diff is good.',
+      tone: 'info',
+      confirmLabel: '✓ Accept',
+      cancelLabel: 'Cancel',
+      checklist: [
+        'Flip last deliverable verdict → pass',
+        'Append OPERATOR ACCEPT audit note',
+        'Cancel any in-flight runner work + queued task rows',
+        'Reset workstream status to "active"',
+        'PRESERVE deliverables, transcript, agent_usage, costs, branch, worktree',
+        'Orchestrator next tick commits worktree files and opens the PR',
+      ],
+    });
+    if (!ok) return;
+    setAccepting(true);
+    try {
+      const r = await forgeApi.acceptWorkstream(workstreamId);
+      showToast(
+        r.alreadyPassed
+          ? `Already passed (iter ${r.iter}, score ${r.score}); orchestrator nudged.`
+          : `Accepted — verdict ${r.priorVerdict} → ${r.newVerdict} (iter ${r.iter}, score ${r.score}). PR opens on next tick.`,
+        'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Accept failed', 'danger');
+    } finally { setAccepting(false); }
   }
 
   const generatorAgentId = snapshot?.generatorAgentId ?? null;
@@ -437,10 +467,21 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-red, #ff6b80)' }}>
           {cancelling ? '⏳…' : '✕ CANCEL'}
         </button>
-        <button type="button" className="doc-conv-resume-btn" disabled={cancelling || restarting || resuming || retrying}
+        <button type="button" className="doc-conv-resume-btn" disabled={cancelling || restarting || resuming || retrying || accepting}
           title="Restart from iter 1 (wipes worktree, deliverables, PRs)." onClick={() => void handleRestart()}
           style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-amber, #ffb347)' }}>
           {restarting ? '⏳…' : '⟲ RESTART'}
+        </button>
+        {/* Phase 70 — ACCEPT mirrors plan-doc Phase 43 ACCEPT for workstreams.
+            Enabled when: at least one deliverable AND workstream not in terminal
+            status. Bypasses Phase 50 / 56 / 66 false-positive demotions when
+            the operator has independently verified the diff is good. */}
+        <button type="button" className="doc-conv-resume-btn"
+          disabled={isComplete || lastDeliverable === null || accepting || cancelling || restarting || resuming || retrying}
+          title={isComplete ? 'Completed.' : lastDeliverable === null ? 'No iterations yet — wait for at least one deliverable.' : 'Accept the workstream at its current score — flip verdict to pass and commit + open PR on next tick.'}
+          onClick={() => void handleAccept()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-green, #4ade80)' }}>
+          {accepting ? '⏳…' : '✓ ACCEPT'}
         </button>
       </nav>
 

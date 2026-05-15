@@ -39,6 +39,12 @@ public static class WorkstreamsEndpoints
         grp.MapPost("/{id}/restart", Restart).WithName("RestartWorkstream");
         grp.MapPost("/{id}/retry", Retry).WithName("RetryWorkstream");
         grp.MapPost("/{id}/cancel", Cancel).WithName("CancelWorkstream");
+        // Phase 70 — operator-override ACCEPT mirrors plan-doc Phase 43:
+        // flip the latest deliverable verdict to `pass` so the orchestrator
+        // proceeds to commit + open the workstream PR on its next tick.
+        // Used to bypass Phase 50 / 56 / 66 false-positive demotions when
+        // the operator has independently verified the work is good.
+        grp.MapPost("/{id}/accept", Accept).WithName("AcceptWorkstream");
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
         grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
         grp.MapGet("/{id}/iter-kpis", GetIterKpis).WithName("GetWorkstreamIterKpis");
@@ -1159,6 +1165,148 @@ public static class WorkstreamsEndpoints
             priorIter = lastDel.Iter,
             priorScore = lastDel.Score,
             status = ws.Status,
+        });
+    }
+
+    /// <summary>
+    /// Phase 70 — POST /api/workstreams/{id}/accept. Operator override that
+    /// flips the latest deliverable's verdict to <c>pass</c> so the
+    /// orchestrator commits the worktree files + opens the PR on its next
+    /// tick. Used to bypass false-positive demotions from the Phase 50
+    /// checkbox-attention gate, Phase 56 post-pass gate suite, or Phase 66
+    /// stalled-questions gate when the operator has independently verified
+    /// the diff is good.
+    ///
+    /// <para>Mirrors plan-doc <c>StoriesEndpoints.AcceptArtifact</c> but
+    /// scoped to a workstream — preserves the worktree, deliverables,
+    /// transcript, agent_usage, branch + commits. Does NOT push the
+    /// branch or open the PR directly; that's the orchestrator's job
+    /// (<c>DriveOneWorkstreamImplAsync</c> sees <c>lastDel.Verdict=pass</c>
+    /// and routes through the cached-files commit+PR-open path).</para>
+    ///
+    /// <para>Refuses with 409 when the workstream is in a terminal status
+    /// (<c>cancelled</c> / <c>complete</c> / <c>merging</c>) since
+    /// flipping the verdict at that point can't resurrect the workstream.
+    /// Idempotent on already-passed deliverables (logs a no-op note + emits
+    /// <c>workstream.changed</c> so the UI nudges the orchestrator).</para>
+    ///
+    /// <para>Observed pain 2026-05-15 on
+    /// <c>failover-cluster:XRAFT:stage-4.1-grpc-transport-layer</c> iter 6
+    /// score 98 — Phase 50 false positive demoted pass→iterate
+    /// indefinitely; operator had no equivalent ACCEPT path the way
+    /// plan-docs do. Phase 70 closes the gap.</para>
+    /// </summary>
+    private static async Task<IResult> Accept(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IAgentRunner runner,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
+        if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
+
+        if (ws.Status is "cancelled" or "complete" or "merging")
+        {
+            return Results.Problem(
+                type: "accept.terminal",
+                title: $"Workstream is in terminal status '{ws.Status}'; cannot accept.",
+                detail: "Use Restart to dispatch fresh, or open a new workstream.",
+                statusCode: 409);
+        }
+
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        if (lastDel is null)
+        {
+            return Results.Problem(
+                type: "accept.no-deliverables",
+                title: "Nothing to accept — workstream has no prior deliverables.",
+                detail: "Wait for at least one iteration to land before ACCEPT.",
+                statusCode: 400);
+        }
+
+        var priorVerdict = lastDel.Verdict;
+        var priorScore = lastDel.Score;
+        var alreadyPassed = string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+
+        // (1) Cancel any in-flight runner work and open queue rows so the
+        // loop doesn't keep iterating while the orchestrator transitions
+        // to the commit+PR-open path. Mirrors Retry's first two steps.
+        try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
+        catch { /* best-effort */ }
+
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        // (2) Flip the latest deliverable verdict to `pass` and append an
+        // audit note. The orchestrator's DriveOneWorkstreamImplAsync reads
+        // `lastDel.Verdict == "pass"` (line ~2238) to route into the
+        // ReadCachedWorkstreamFilesAsync commit-and-PR-open branch.
+        if (!alreadyPassed)
+        {
+            lastDel.Verdict = "pass";
+            var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+            var note = $"OPERATOR ACCEPT ({actor}) — verdict overridden from '{priorVerdict}' to 'pass' at score {priorScore}. Worktree, deliverables, transcript, agent_usage, branch, and any prior PR commits are preserved. Orchestrator's next tick will commit the worktree files and open the PR via the cached-files branch.";
+            lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes) ? note : lastDel.Notes + "\n\n" + note;
+        }
+
+        // (3) Reset workstream + work-item state so the orchestrator's
+        // claim sweep / ExecBadge unwedges. Status="active" so the
+        // for-each-workstream loop in DriveImplementAsync picks it up
+        // on the next tick; ExecutionStatus="queued" so the UI badge
+        // un-pulses any stuck live state.
+        ws.Status = "active";
+        ws.StallReason = null;
+
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync();
+
+        // (4) Emit workstream-changed so the live UI refreshes without a
+        // manual reload. The orchestrator's next tick (~15s) does the
+        // commit + PR-open work.
+        await hub.Clients.All.SendAsync("workstream.changed", new
+        {
+            workstreamId = id,
+            status = ws.Status,
+            kind = "accepted",
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            iter = lastDel.Iter,
+            score = lastDel.Score,
+            alreadyPassed,
+        });
+
+        return Results.Ok(new
+        {
+            workstreamId = id,
+            priorVerdict,
+            newVerdict = lastDel.Verdict,
+            alreadyPassed,
+            iter = lastDel.Iter,
+            score = lastDel.Score,
+            status = ws.Status,
+            queueRowsCancelled = queueRows.Count,
         });
     }
 

@@ -982,6 +982,32 @@ export const forgeApi = {
   },
 
   /**
+   * POST /api/workstreams/{id}/accept — Phase 70 operator override.
+   * Flips the latest deliverable's verdict to `pass` so the orchestrator
+   * commits the worktree files + opens the PR on its next tick.
+   * Mirrors the plan-doc `acceptArtifact` shape. Use to bypass
+   * false-positive demotions from the Phase 50 checkbox gate, Phase 56
+   * post-pass gate suite, or Phase 66 stalled-questions gate when the
+   * operator has independently verified the diff is good.
+   * Refused with 409 on terminal status (cancelled / complete / merging).
+   */
+  async acceptWorkstream(id: string): Promise<{
+    workstreamId: string;
+    priorVerdict: string;
+    newVerdict: string;
+    alreadyPassed: boolean;
+    iter: number;
+    score: number;
+    status: string;
+    queueRowsCancelled: number;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/accept`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
    * GET /api/workstreams/{id}/iter-notes — Insight I.2
    * (docs/forge/workstream-insights.md). Returns the agent's
    * `.forge/notes/iter-*.md` archive for the workstream, sorted

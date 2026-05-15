@@ -1490,14 +1490,85 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// (<c>RunAsync</c>) to demote pass→iterate when the generator's
     /// output marks fewer items as resolved than the prior evaluator
     /// listed as unresolved.</para>
+    ///
+    /// <para>Phase 69 (2026-05-15) — when counting UNCHECKED, exclude
+    /// markers whose item text is a semantically-empty "zero items
+    /// remain" placeholder (e.g. <c>- [ ] 1. None.</c>,
+    /// <c>- [ ] N/A</c>, <c>- [ ] —</c>, <c>- [ ]</c> with empty body).
+    /// Without this guard the checkbox-attention gate spins forever:
+    /// the evaluator writes "Still needs improvement: - [ ] 1. None." to
+    /// mean "nothing left", the regex counts it as 1 unfulfilled item,
+    /// the next iter's generator has nothing to FIX so produces 0
+    /// <c>- [x]</c> markings, the gate demotes pass→iterate, repeat.
+    /// Observed 2026-05-15 on
+    /// <c>failover-cluster:XRAFT:stage-4.1-grpc-transport-layer</c> iter 6
+    /// at score 98 ($1367.98 burned across 6 iters).</para>
     /// </summary>
     internal static int CountCheckboxMarkers(string text, bool lookForUnchecked)
     {
         if (string.IsNullOrEmpty(text)) return 0;
-        var pattern = lookForUnchecked
-            ? @"(?:^|\n)\s*[-*]\s+\[ \]"
-            : @"(?:^|\n)\s*[-*]\s+\[[xX]\]";
-        return System.Text.RegularExpressions.Regex.Matches(text, pattern).Count;
+        if (!lookForUnchecked)
+        {
+            // Checked counting is unchanged — every `- [x]` is a real
+            // claim of "I fixed (or deferred) this".
+            const string checkedPattern = @"(?:^|\n)\s*[-*]\s+\[[xX]\]";
+            return System.Text.RegularExpressions.Regex.Matches(text, checkedPattern).Count;
+        }
+
+        // Unchecked counting (Phase 69): capture each `- [ ]` line's
+        // trailing text and skip the ones that mean "no items remain".
+        // We grab up to the next newline (or end-of-string) so a
+        // multi-line item still gets its first-line body inspected.
+        const string uncheckedWithBody =
+            @"(?:^|\n)\s*[-*]\s+\[ \](?<body>[^\n]*)";
+        var matches = System.Text.RegularExpressions.Regex.Matches(text, uncheckedWithBody);
+        var count = 0;
+        foreach (System.Text.RegularExpressions.Match m in matches)
+        {
+            var body = m.Groups["body"].Value ?? string.Empty;
+            if (!IsSemanticallyEmptyCheckboxBody(body)) count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Phase 69 — true when the body following a <c>- [ ]</c> marker
+    /// represents "no items remain" rather than an actual unaddressed
+    /// item. Strips numbering prefixes (<c>1.</c>, <c>1)</c>), surrounding
+    /// punctuation, and normalises to lowercase before matching against
+    /// the closed-set placeholder list.
+    ///
+    /// <para>Matched placeholders (case-insensitive, with optional
+    /// trailing punctuation): empty string, <c>none</c>, <c>n/a</c>,
+    /// <c>na</c>, <c>—</c> / <c>–</c> / <c>-</c>, <c>(none)</c>,
+    /// <c>nothing</c>, <c>no items</c>, <c>no outstanding items</c>.
+    /// </para>
+    /// </summary>
+    internal static bool IsSemanticallyEmptyCheckboxBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return true;
+        var s = body.Trim();
+        // Strip a numbering prefix: "1. ", "1) ", "1: ".
+        s = System.Text.RegularExpressions.Regex.Replace(
+            s, @"^\d+\s*[\.\):]\s*", string.Empty).Trim();
+        // Strip trailing punctuation.
+        s = s.TrimEnd('.', ',', ';', ':', '!', '—', '–', '-', '(', ')');
+        // Strip surrounding parens / quotes.
+        s = s.Trim('"', '\'', '(', ')', '[', ']');
+        s = s.Trim();
+        if (s.Length == 0) return true;
+        var lower = s.ToLowerInvariant();
+        return lower is "none"
+            or "n/a"
+            or "na"
+            or "—"
+            or "–"
+            or "-"
+            or "nothing"
+            or "no items"
+            or "no outstanding items"
+            or "no remaining items"
+            or "no items remain";
     }
 
     /// <summary>

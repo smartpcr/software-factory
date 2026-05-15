@@ -165,6 +165,28 @@ internal static class ImplSpawnGuard
                 SyncConstants.InflightSpawnGuardMinSeconds,
                 (int)budget.TotalSeconds + SyncConstants.InflightSpawnGuardBudgetSlackSeconds);
             var elapsed = (now - latestStart.At).TotalSeconds;
+
+            // Phase 71 — fast recovery on dead invocation. When the
+            // dispatcher's isActive check is wired AND reports the task
+            // is NOT alive, the original orchestrator drive must have
+            // died (process crash, Forge.Api restart, host kill).
+            // Waiting the full budget+slack would burn 20-30 min of
+            // dead time on a workstream whose verdict has already
+            // landed in DB but the post-loop commit/PR step never ran.
+            // Observed 2026-05-15 on
+            // failover-cluster:XRAFT:stage-4.1-grpc-transport-layer
+            // iter 7 (verdict=pass at 4:49:43, Forge.Api restarted 40s
+            // later, workstream sat at 13min elapsed / 26min budget,
+            // PR never opened, ACCEPT button hidden by Vite cache).
+            // The recovery spawn rebuilds from the persisted deliverable
+            // chain so no work is lost.
+            if (isInvocationActive is not null && !isInvocationActive(workstreamId))
+            {
+                return new Result(
+                    Decision.Allow,
+                    $"in-flight spawn-started {elapsed:0}s ago has no matching finish AND dispatcher reports invocation NOT alive — original drive died (likely Forge.Api restart). Allowing recovery spawn.");
+            }
+
             if (elapsed < guardSeconds)
             {
                 return new Result(
