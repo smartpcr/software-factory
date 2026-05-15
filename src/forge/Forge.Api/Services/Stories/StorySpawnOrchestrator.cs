@@ -530,6 +530,9 @@ public sealed class StorySpawnOrchestrator
             repo, docBranch, baseBranch, ct,
             worktreeSlug: PlanDocStateHelpers.CanonicalDocWorktreeSlug(docKey));
 
+        // Scrub already-tracked .forge/ from the index before the agent runs.
+        await this.git.ScrubForgeScratchFromIndexAsync(worktreePath, ct);
+
         // Produce the doc content via the strategy. ProduceSinglePlanArtifactAsync
         // writes the file into the worktree as a side-effect (the agent's
         // file-write tool) AND returns the content string.

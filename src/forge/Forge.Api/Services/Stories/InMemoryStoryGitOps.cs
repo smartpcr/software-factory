@@ -178,6 +178,9 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     public Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    public Task ScrubForgeScratchFromIndexAsync(string wtPath, CancellationToken ct)
+        => Task.CompletedTask;
+
     /// <summary>
     /// Phase 45 follow-up — in-memory test stub returns an empty list since
     /// the test deterministic strategy doesn't write to a real worktree on

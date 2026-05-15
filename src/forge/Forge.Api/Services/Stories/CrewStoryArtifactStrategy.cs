@@ -2112,6 +2112,27 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // safe to call on every drive.
         await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
 
+        // Scrub any already-tracked `.forge/` files from the index.
+        // info/exclude only prevents NEW files from being staged; files
+        // committed in a prior iteration (before the exclude existed)
+        // remain tracked. This `git rm --cached` unmarks them so the
+        // agent's own `git add -A && git commit` won't re-include them.
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git",
+                "rm -r --cached --ignore-unmatch -- .forge/")
+            {
+                WorkingDirectory = workspace,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is not null) await proc.WaitForExitAsync(ct);
+        }
+        catch { /* best-effort */ }
+
         // Phase 49 follow-up -- bring the workstream branch up to date with
         // the spawn's base branch BEFORE the agent runs. Without this, a
         // workstream whose branch was created before a sibling workstream

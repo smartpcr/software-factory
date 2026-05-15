@@ -161,6 +161,14 @@ public interface IStoryGitOps
     Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 
     /// <summary>
+    /// Scrubs <c>.forge/</c> scratch paths from the git index so they
+    /// never land in a commit — handles both freshly-staged and
+    /// already-tracked files from prior iterations. Best-effort no-op
+    /// when the directory doesn't exist.
+    /// </summary>
+    Task ScrubForgeScratchFromIndexAsync(string wtPath, CancellationToken ct);
+
+    /// <summary>
     /// Phase 45 follow-up — list repo-relative paths of files the agent
     /// touched in <paramref name="worktreePath"/> but hasn't yet committed,
     /// PLUS files contributed by local commits that aren't yet on the

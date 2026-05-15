@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import { SwarmNavBar } from './SwarmNavBar';
 import { type SwarmMode } from './SwarmPipelineStrip';
 import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
@@ -234,11 +235,17 @@ export function SwarmStoryView() {
                     : 'Pause spawn — stop all agents and workstreams'}
                   onClick={async () => {
                     const action = detail.spawn.phase === 'paused' ? 'resume' : 'pause';
-                    if (!confirm(`${action === 'pause' ? '⏸ Pause' : '▶ Resume'} spawn "${detail.spawn.storyTitle}"?\n\n${
-                      action === 'pause'
+                    const ask = useConfirmStore.getState().ask;
+                    const ok = await ask({
+                      title: `${action === 'pause' ? '⏸ PAUSE' : '▶ RESUME'} SPAWN "${detail.spawn.storyTitle}"?`,
+                      body: action === 'pause'
                         ? 'This will kill all running agents and pause every workstream.'
-                        : 'This will restore the prior phase and resume all paused workstreams.'
-                    }`)) return;
+                        : 'This will restore the prior phase and resume all paused workstreams.',
+                      tone: action === 'pause' ? 'warn' : 'info',
+                      confirmLabel: action === 'pause' ? 'Pause' : 'Resume',
+                      cancelLabel: 'Cancel',
+                    });
+                    if (!ok) return;
                     try {
                       if (action === 'pause') {
                         await forgeApi.pauseStorySpawn(storyId);

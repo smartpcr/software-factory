@@ -205,11 +205,17 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
         onClick={async (e) => {
           e.stopPropagation();
           const action = spawn.phase === 'paused' ? 'resume' : 'pause';
-          if (!confirm(`${action === 'pause' ? '⏸ Pause' : '▶ Resume'} spawn "${spawn.storyTitle}"?\n\n${
-            action === 'pause'
+          const ask = useConfirmStore.getState().ask;
+          const ok = await ask({
+            title: `${action === 'pause' ? '⏸ PAUSE' : '▶ RESUME'} SPAWN "${spawn.storyTitle}"?`,
+            body: action === 'pause'
               ? 'This will kill all running agents and pause every workstream.'
-              : 'This will restore the prior phase and resume all paused workstreams.'
-          }`)) return;
+              : 'This will restore the prior phase and resume all paused workstreams.',
+            tone: action === 'pause' ? 'warn' : 'info',
+            confirmLabel: action === 'pause' ? 'Pause' : 'Resume',
+            cancelLabel: 'Cancel',
+          });
+          if (!ok) return;
           try {
             if (action === 'pause') {
               await forgeApi.pauseStorySpawn(spawn.storyId);

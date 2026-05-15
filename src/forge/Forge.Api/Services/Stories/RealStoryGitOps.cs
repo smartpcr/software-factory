@@ -1114,7 +1114,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// <c>--ignore-unmatch</c> so the call is a safe no-op when the
     /// directory doesn't exist. Best-effort: any failure is swallowed.
     /// </summary>
-    internal async Task ScrubForgeScratchFromIndexAsync(string wtPath, CancellationToken ct)
+    public async Task ScrubForgeScratchFromIndexAsync(string wtPath, CancellationToken ct)
     {
         try
         {

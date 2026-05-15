@@ -1216,6 +1216,19 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var resolvedBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
                     .ResolveAsync(db, workItemId, ct);
                 this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath, resolvedBase);
+
+                // Scrub already-tracked .forge/ files from the index
+                // BEFORE the agent runs. info/exclude only prevents
+                // NEW files from being staged; this handles files
+                // committed in a prior iteration.
+                try
+                {
+                    await Forge.Api.Services.Stories.CrewStoryArtifactStrategy.TryAddGitInfoExcludeAsync(
+                        worktreePath, ".forge/", ct);
+                    await RunGitAsync(worktreePath,
+                        "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+                }
+                catch { /* best-effort */ }
             }
 
             // Build prompt from the work item.
