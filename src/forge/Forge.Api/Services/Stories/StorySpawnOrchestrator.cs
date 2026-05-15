@@ -73,6 +73,24 @@ public sealed class StorySpawnOrchestrator
     private static readonly ConcurrentDictionary<string, DriveGate> driveLocks =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Plan-doc in-flight guard — prevents concurrent gen-eval loops for
+    /// the same plan doc. The spawn-level <see cref="DriveGate"/> has a
+    /// <see cref="DriveStuckMinutes"/>-minute stuck timeout that
+    /// force-releases when a long-running gen-eval loop exceeds the
+    /// threshold, letting a second tick re-enter
+    /// <see cref="RunPlanDocAsync"/> while the first is still in flight.
+    /// Two concurrent loops create duplicate deliverable rows at the
+    /// same iter, and a phantom score-0 row after a pass permanently
+    /// blocks the plan chain gate.
+    /// Observed 2026-05-15 on local:HIGH-MEM-CONSUMPTION architecture.md:
+    /// 10-iter loop took 31 min total; at 15 min the stuck detection
+    /// fired, a second loop started, and the phantom iter-7 row blocked
+    /// tech-spec indefinitely.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> planDocInFlight =
+        new(StringComparer.Ordinal);
+
     private readonly IServiceProvider services;
     private readonly IStoryArtifactStrategy strategy;
     private readonly IStoryGitOps git;
@@ -522,6 +540,36 @@ public sealed class StorySpawnOrchestrator
         // The hasAnyPlanDeliverable check mirrors the legacy DrivePlanAsync
         // (line 392-402) but scoped to this doc only.
         var docWorkItemId = $"plan-doc:{spawn.Id}:{PlanDocStateHelpers.PlanDocFileName[docKey]}";
+
+        // Plan-doc concurrency guard — skip if another tick is already
+        // driving this doc's gen-eval loop. The spawn-level DriveGate
+        // force-releases after DriveStuckMinutes, which is shorter than
+        // a multi-iter plan-doc loop on a high-point story.
+        if (!planDocInFlight.TryAdd(docWorkItemId, DateTimeOffset.UtcNow))
+        {
+            var started = planDocInFlight.GetValueOrDefault(docWorkItemId);
+            this.logger?.LogInformation(
+                "RunPlanDocAsync: plan-doc {DocKey} ({DocId}) already in-flight since {Started}; skipping.",
+                docKey, docWorkItemId, started);
+            return false;
+        }
+
+        try
+        {
+            return await this.RunPlanDocInnerAsync(db, hub, spawn, story, repo, baseBranch,
+                docKey, docBranch, docWorkItemId, forceResume, ct);
+        }
+        finally
+        {
+            planDocInFlight.TryRemove(docWorkItemId, out _);
+        }
+    }
+
+    private async Task<bool> RunPlanDocInnerAsync(
+        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
+        string docKey, string docBranch, string docWorkItemId, bool forceResume, CancellationToken ct)
+    {
 
         // Phase 66 — pre-call awaiting-answers short-circuit. If the prior
         // tick parked the doc on stalled-questions and the operator hasn't
@@ -1173,6 +1221,22 @@ public sealed class StorySpawnOrchestrator
             // verdict to pass).
             if (latest is not null
                 && string.Equals(latest.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // (a2) Ever-passed fallback — when a later phantom row
+            // (e.g. a generator-inactive failure on a resume attempt
+            // after a pass, or a post-pass gate retry that created a
+            // second deliverable at the same iter) left a non-pass
+            // verdict as "latest", the doc is still satisfied if ANY
+            // prior deliverable scored pass. Without this, a transient
+            // failure after a pass permanently blocks the plan chain.
+            // Observed 2026-05-15 on local:HIGH-MEM-CONSUMPTION
+            // architecture.md: iter 7 scored 91/pass, then a second
+            // iter 7 row (generator-inactive, score=0) became latest
+            // and blocked tech-spec indefinitely.
+            if (docRows.Any(d => string.Equals(d.Verdict, "pass", StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }

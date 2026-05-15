@@ -647,20 +647,19 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // transport silent, CLI crash), the generator delegate now
             // surfaces the failure on
             // `GeneratorRunOutput.FailureReason/FailureKind`. Short-
-            // circuit the loop BEFORE the evaluator runs: a cap-aborted
-            // generator either left no edits (empty diff) or partial
-            // uncommitted edits the evaluator would grade on. Either way,
-            // burning $7+/iter of evaluator tokens against a known-broken
-            // generator output is operator-visible waste. Persist a
-            // `verdict="stalled"` deliverable row carrying the failure
-            // reason so the operator sees the dispatch outcome and can
-            // fix root cause (bump points / Resume) before re-running.
-            // Reuse the existing "stalled" verdict so all the existing
-            // exact-match routing in CrewQueueWorker / StorySpawnOrchestrator
-            // / TaskExecutionEndpoints / live-channel timeline continues
-            // to recognize the row as a recoverable stall (Resume path
-            // re-enters the loop at iter+1 once the operator addresses
-            // the root cause).
+            // circuit the evaluator (no point grading broken output) and
+            // persist a deliverable row carrying the failure metadata.
+            //
+            // Transient failures (timeout, inactive transport) use
+            // verdict="iterate" so the loop auto-retries with a fresh
+            // budget on the next iter — the sloppy detectors (Phase 61
+            // ConsecutiveScoreZero, Phase 67 NoProgressScoreZero) catch
+            // persistent failures after ≤3 retries.
+            //
+            // Non-transient failures (max-turns cap, CLI crash, provider
+            // error, stuck tool) use verdict="stalled" — these need
+            // operator action (raise points, investigate crash, wait for
+            // upstream recovery).
             if (!string.IsNullOrEmpty(gen.FailureReason))
             {
                 var failKind = !string.IsNullOrEmpty(gen.FailureKind)
@@ -668,16 +667,24 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     : GeneratorFailureKinds.Classify(gen.FailureReason);
                 totalCost += gen.CostUsd;
 
-                var stalledNote = $"GENERATOR FAILED ({failKind}): {gen.FailureReason}\n\n"
+                // Transient failures auto-retry; non-transient stall.
+                var isTransient = failKind is GeneratorFailureKinds.Timeout
+                    or GeneratorFailureKinds.Inactive;
+                var failVerdict = isTransient ? "iterate" : "stalled";
+
+                var failNote = $"GENERATOR FAILED ({failKind}): {gen.FailureReason}\n\n"
                     + "The evaluator was skipped to avoid burning tokens against a "
-                    + "known-broken generator output. Resume after fixing root cause "
-                    + "(e.g., bump WorkItem.Points or TaskQueue.MaxIterOverride for "
-                    + $"`{GeneratorFailureKinds.MaxTurns}`).";
+                    + "known-broken generator output. "
+                    + (isTransient
+                        ? "Auto-retrying on next iteration (transient failure)."
+                        : "Resume after fixing root cause "
+                          + "(e.g., bump WorkItem.Points or TaskQueue.MaxIterOverride for "
+                          + $"`{GeneratorFailureKinds.MaxTurns}`).");
                 if (!string.IsNullOrEmpty(notesForNext))
                 {
-                    stalledNote += "\n\n---\n\n" + notesForNext;
+                    failNote += "\n\n---\n\n" + notesForNext;
                 }
-                var stalledRow = new DeliverableRow
+                var failRow = new DeliverableRow
                 {
                     WorkItemId = request.WorkItemId,
                     CrewId = request.CrewId,
@@ -686,22 +693,18 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     Iter = iter,
                     Score = 0,
                     DimsJson = "{}",
-                    Verdict = "stalled",
-                    Notes = stalledNote,
+                    Verdict = failVerdict,
+                    Notes = failNote,
                     GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
                     GenCostUsd = gen.CostUsd,
                     EvalCostUsd = 0m,
-                    // Phase 64 — persist the classifier + raw error so
-                    // StorySpawnOrchestrator's stall handler can put the
-                    // real cause on workstreams.StallReason instead of
-                    // the generic "verdict='stalled'" text.
                     FailureKind = failKind,
                     FailureReason = gen.FailureReason,
                     CreatedAt = DateTimeOffset.UtcNow,
                 };
-                this.db.Deliverables.Add(stalledRow);
+                this.db.Deliverables.Add(failRow);
                 await this.db.SaveChangesAsync(ct);
-                rowIds.Add(stalledRow.Id);
+                rowIds.Add(failRow.Id);
 
                 await this.UpdatePairAssignmentTotalsAsync(
                     pairAssignmentId,
@@ -710,12 +713,6 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     gen.OutputTokens,
                     gen.CostUsd,
                     latestScore: 0,
-                    ct);
-                await this.StampPairAssignmentAsync(
-                    pairAssignmentId,
-                    AgentPairAssignmentOutcomes.Cancelled,
-                    sloppyReason: failKind,
-                    finalScore: 0,
                     ct);
 
                 await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-generator", new
@@ -729,14 +726,37 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     genInputTokens = gen.InputTokens,
                     genOutputTokens = gen.OutputTokens,
                     totalCostUsd = totalCost,
+                    autoRetry = isTransient,
                 }, ct);
 
-                return new DeliverableLoopResult(
-                    "stalled",
-                    iter,
-                    FinalScore: 0,
-                    rowIds,
-                    totalCost);
+                if (!isTransient)
+                {
+                    await this.StampPairAssignmentAsync(
+                        pairAssignmentId,
+                        AgentPairAssignmentOutcomes.Cancelled,
+                        sloppyReason: failKind,
+                        finalScore: 0,
+                        ct);
+
+                    return new DeliverableLoopResult(
+                        "stalled",
+                        iter,
+                        FinalScore: 0,
+                        rowIds,
+                        totalCost);
+                }
+
+                // Transient — feed the failure note into the next iter's
+                // prelude so the agent knows what happened and can adjust.
+                lastScore = new EvaluatorScore(
+                    Score: 0, Dims: new Dictionary<string, int>(),
+                    Verdict: "iterate", ModelVerdict: null,
+                    VerdictMismatch: false, Notes: failNote,
+                    ParseFailed: true, ParseError: failKind,
+                    ParseRecovered: false);
+
+                await this.EmitAsync(request.WorkItemId, "task.iteration.iterated", new { iter, score = 0, notes = failNote }, ct);
+                continue;
             }
 
             // (b) evaluator

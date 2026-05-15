@@ -487,9 +487,22 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     }
 
     /// <summary>
-    /// Best-effort reset of the work item's worktree branch to the repo's
-    /// default base. Q52.4 clean-slate semantics: the new pair starts on
-    /// an unmodified base instead of the prior pair's partial commits.
+    /// Best-effort reset of the work item's worktree branch to the correct
+    /// base. Q52.4 clean-slate semantics: the new pair starts on an
+    /// unmodified base instead of the prior pair's partial commits.
+    ///
+    /// <para>Phase 46 fix — story-spawned workstreams use canonical
+    /// <c>stage-{phaseNum}.{stageNum}-{stageTitle}</c> slugs (via
+    /// <see cref="WorkstreamWorktreeSlug"/>), not the legacy
+    /// <c>ws-{workItemId}</c> convention. The old path never matched on
+    /// disk, so the reset silently no-op'd and the new pair started on
+    /// top of the prior pair's commits — causing zero-file-change
+    /// score=0 failures on the first iter.</para>
+    ///
+    /// <para>Phase 45 fix — the base branch is resolved via
+    /// <see cref="WorkItemBaseBranchResolver"/> so story-spawned
+    /// workstreams reset to the spawn's base branch (e.g.
+    /// <c>feature/teams</c>), not the repo default.</para>
     ///
     /// <para>Failure here is non-fatal — the row remains requeued; the new
     /// pair sees whatever's on the branch (which on a real repo is the
@@ -502,17 +515,29 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
 
-        // Worktree path convention from Q2 / Phase 16.18:
-        //   {repo.cloneRoot}\.worktree\ws-{workItemId}
-        var worktreePath = System.IO.Path.Combine(repo.CloneRoot, ".worktree", "ws-" + wi.Id);
-        if (!System.IO.Directory.Exists(worktreePath))
+        // Resolve the worktree path via the same resolver the rest of
+        // the codebase uses — handles canonical stage-* slugs, ad-hoc
+        // ws-{id} fallback, and plan-doc worktrees.
+        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, wi.Id, ct);
+        var worktreePath = resolved.WorktreePath;
+
+        // Fallback for pure ad-hoc work items that may not have a
+        // workstream row (WorktreePathResolver only queries workstreams).
+        if (worktreePath is null)
         {
-            // No worktree → nothing to reset. Common for synthetic
-            // plan-doc work items.
-            return;
+            var sanitizedId = wi.Id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+            var fallback = System.IO.Path.Combine(repo.CloneRoot, ".worktree", $"ws-{sanitizedId}");
+            if (!System.IO.Directory.Exists(fallback))
+            {
+                return;
+            }
+
+            worktreePath = fallback;
         }
 
-        var baseBranch = string.IsNullOrEmpty(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
+        // Resolve the correct base branch — story-spawned workstreams
+        // target the spawn's base branch, not the repo default.
+        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(db, wi.Id, ct);
         try
         {
             await RunGitAsync(worktreePath, $"fetch origin {baseBranch}", ct);

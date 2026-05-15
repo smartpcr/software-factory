@@ -24,6 +24,8 @@ This includes:
 - Front-end (Vite) changes are safe to leave for HMR — no restart needed.
 - "Approval to restart" is per-restart. Approval given for one restart does NOT carry forward; ask each subsequent time.
 
+**NEVER auto-commit changes to git.** Always present the changes and wait for explicit user approval before running `git commit`. The user wants to review all changes before they are committed.
+
 ## Project Overview
 
 Workflow is a C# .NET 8.0 solution for processing Event Tracing for Windows (ETW) and Windows Event Log (EVTX) files, with automated ingestion into Azure Data Explorer (Kusto). The project also includes ExecutionEngine and ProgressTree libraries for workflow orchestration. All projects use BDD-style testing with Reqnroll (SpecFlow successor) and MSTest.

@@ -144,10 +144,14 @@ public static class ConversationInsightQueries
             int filesChanged = d.FilesChanged ?? pathsThisIter.Count;
 
             long? durationMs = null;
-            if (startedByIter.TryGetValue(d.Iter, out var s)
-                && scoredByIter.TryGetValue(d.Iter, out var e2))
+            if (startedByIter.TryGetValue(d.Iter, out var s))
             {
-                durationMs = (long)(e2 - s).TotalMilliseconds;
+                // Prefer the scored timestamp; fall back to the
+                // deliverable's CreatedAt so stalled/failed iters
+                // (which never emit task.iteration.scored) still
+                // show their real wall-clock duration in the sparkline.
+                var end = scoredByIter.TryGetValue(d.Iter, out var e2) ? e2 : d.CreatedAt;
+                durationMs = (long)(end - s).TotalMilliseconds;
                 if (durationMs < 0) durationMs = null;
             }
 
