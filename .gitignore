@@ -215,3 +215,5 @@ forge.env
 **/bin/
 **/obj/
 **/TestResults/
+
+*.lscache
