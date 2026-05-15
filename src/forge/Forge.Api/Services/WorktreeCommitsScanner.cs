@@ -305,6 +305,10 @@ internal static class WorktreeCommitsScanner
                 else uMod.Add(path);
             }
         }
+        // Filter Forge scratch paths from uncommitted and totals.
+        static void FilterForge(List<string> list) =>
+            list.RemoveAll(p => p.StartsWith(".forge/", StringComparison.Ordinal) || p == ".forge");
+        FilterForge(uAdded); FilterForge(uMod); FilterForge(uDel);
 
         // Cumulative branch totals (committed + uncommitted) vs the fork
         // point. `git diff --name-status <merge-base>` compares the
@@ -359,6 +363,7 @@ internal static class WorktreeCommitsScanner
         foreach (var p in uAdded) if (seen.Add(p)) tAdded.Add(p);
         foreach (var p in uMod) if (seen.Add(p)) tMod.Add(p);
         foreach (var p in uDel) if (seen.Add(p)) tDel.Add(p);
+        FilterForge(tAdded); FilterForge(tMod); FilterForge(tDel);
 
         return new ScanResult(
             Ahead: ahead,

@@ -940,7 +940,10 @@ public static class TaskExecutionEndpoints
             if (item.ValueKind == JsonValueKind.String)
             {
                 var s = item.GetString();
-                if (!string.IsNullOrEmpty(s)) list.Add(s);
+                if (!string.IsNullOrEmpty(s)
+                    && !s.StartsWith(".forge/", StringComparison.Ordinal)
+                    && s != ".forge")
+                    list.Add(s);
             }
         }
         return list;
