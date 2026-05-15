@@ -1437,6 +1437,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                back to `[ ]` will trip the convergence detector and exit
                the loop.
 
+            5. **ASCII-clean output -- NO garbled / box-drawing characters.**
+               The plan doc MUST contain only printable ASCII plus standard
+               markdown punctuation (`` ` `` , `*`, `#`, `-`, `>`, `|`, etc.).
+               NEVER copy box-drawing characters (`─`, `│`, `┌`, `└`, `├`,
+               `╔`, `║`, etc. U+2500–U+257F), BOM marks, or other non-ASCII
+               decorative glyphs from source code into the plan. They render
+               as gibberish (`Γöé`, `ΓöÅΓöéΓöÇ`) when the doc passes through
+               Windows codepage boundaries. If source code uses box-drawing
+               diagrams, redraw them with ASCII art (`+`, `-`, `|`, `\`, `/`)
+               or describe the structure in prose. After writing the file,
+               run: `grep -Pn '[^\x00-\x7E]' {{spec.RepoPath}}` — if ANY
+               line matches, replace the non-ASCII characters before
+               finishing. The evaluator will deduct points for garbled text.
+
             ## Open questions -- structured (REQUIRED when you have any)
             If the story description left ambiguity that you had to guess on,
             do NOT just mention it in prose. Emit a fenced JSON block right
@@ -1562,6 +1576,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                deferral rationale is sound; otherwise re-include them.
 
             3. **Why this score** -- two sentences max.
+
+            ## Garbled / non-ASCII character check
+            Scan the draft for garbled or corrupted characters — sequences
+            like `Γöé`, `Γöñ`, `ΓöÅ`, `Γöî`, box-drawing glyphs (`─│┌└├╔║`),
+            or any multi-byte sequences that render as mojibake. These appear
+            when the generator copies content through a Windows codepage
+            boundary. If you find ANY, add a checkbox:
+              `- [ ] N. Garbled characters at §X.Y lines NNN-NNN — replace
+               box-drawing / corrupted sequences with ASCII equivalents.`
+            This is a quality gate — do NOT pass a doc with garbled text.
 
             ## Open-questions hard gate
             If the generator surfaced open questions in its
