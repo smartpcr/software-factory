@@ -31,20 +31,20 @@ public sealed class ImplSpawnGuardTests
     /// must Dispose both. The connection is held open so the in-memory DB
     /// lives for the duration of the test.
     /// </summary>
-    private static async Task<(SqliteConnection conn, ForgeDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         return (conn, db);
     }
 
     private static async Task AddEventAsync(
-        ForgeDbContext db, string kind, DateTimeOffset at, object? payload = null)
+        ProductDbContext db, string kind, DateTimeOffset at, object? payload = null)
     {
         db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
         {

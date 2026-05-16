@@ -20,10 +20,10 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public sealed class TaskQueueService : ITaskQueueService
 {
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly ILogger<TaskQueueService> logger;
 
-    public TaskQueueService(ForgeDbContext db, ILogger<TaskQueueService> logger)
+    public TaskQueueService(ProductDbContext db, ILogger<TaskQueueService> logger)
     {
         this.db = db;
         this.logger = logger;

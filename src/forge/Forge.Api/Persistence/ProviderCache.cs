@@ -19,10 +19,10 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public class ProviderCache
 {
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly IHubContext<ForgeHub> hub;
 
-    public ProviderCache(ForgeDbContext db, IHubContext<ForgeHub> hub)
+    public ProviderCache(ProductDbContext db, IHubContext<ForgeHub> hub)
     {
         this.db = db;
         this.hub = hub;

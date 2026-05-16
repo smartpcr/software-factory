@@ -31,7 +31,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
         var existing = await db.Workstreams.Select(w => w.Id).ToListAsync();
         // RepoId set to the default seed repo so the product-scope filter on
         // /api/workstreams (which only shows workstreams whose RepoId is in
@@ -157,7 +157,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         // is no longer loaded, so we can't rely on a named row existing.
         using (var scope = this.factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             if (!await db.Workstreams.AnyAsync(w => w.Id == "ws-delete-target"))
             {
                 db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
@@ -223,7 +223,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
 
         using (var scope = this.factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
             {
                 db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
@@ -265,7 +265,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         Assert.Equal(94, body.GetProperty("priorScore").GetInt32());
 
         using var verifyScope = this.factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
         Assert.Equal("active", ws.Status);
         Assert.Null(ws.StallReason);
@@ -289,7 +289,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         const string wsId = "ws-retry-empty";
         using (var scope = this.factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
             {
                 db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
@@ -314,7 +314,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         const string wsId = "ws-retry-terminal";
         using (var scope = this.factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
             {
                 db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
@@ -339,7 +339,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         const string wsId = "ws-retry-idempotent";
         using (var scope = this.factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
             {
                 db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow

@@ -29,13 +29,13 @@ using Xunit;
 /// </summary>
 public class RestartBehaviorTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db, ITaskQueueService queue)> BootAsync(
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db, ITaskQueueService queue)> BootAsync(
         Dictionary<string, string?>? extraConfig = null)
     {
         var f = new ForgeWebApplicationFactory(extraConfig);
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         return (f, scope, db, queue);
     }

@@ -53,7 +53,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SeedStoryAsync(ForgeWebApplicationFactory factory, string id, string title)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return;
         db.WorkItems.Add(new WorkItemRow
         {
@@ -76,7 +76,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SetPlanPrAsync(ForgeWebApplicationFactory f, string storyId, string prId, string col)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         s.PlanPrId = prId;
         s.PlanBranch = $"story/{storyId}/plan";
@@ -111,7 +111,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SeedAllPlanDocsPassedAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         var docs = new (string FileName, int Iter)[]
         {
@@ -179,7 +179,7 @@ public class Phase55ActiveCommentsGuardTests
         long? commentId = null;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
             ws.Status = initialStatus;
             ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
@@ -247,7 +247,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-defer-1";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
                     Id = "ws-defer-1",
@@ -279,7 +279,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
                 Assert.Empty(advanced);
                 await db.SaveChangesAsync();
@@ -287,7 +287,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-defer-1");
                 Assert.Equal("review", ws.Status);
             }
@@ -309,7 +309,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-advance-1";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
                     Id = "ws-advance-1",
@@ -327,7 +327,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
                 Assert.Single(advanced);
                 Assert.Equal("ws-advance-1", advanced[0]);
@@ -336,7 +336,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-advance-1");
                 Assert.Equal("complete", ws.Status);
             }
@@ -358,7 +358,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-resolved-1";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
                     Id = "ws-resolved-1",
@@ -392,7 +392,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
                 Assert.Single(advanced);
                 await db.SaveChangesAsync();
@@ -400,7 +400,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-resolved-1");
                 Assert.Equal("complete", ws.Status);
             }
@@ -428,7 +428,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-stalled-advance-1";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
                     Id = "ws-stalled-advance-1",
@@ -446,7 +446,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
                 Assert.Single(advanced);
                 Assert.Equal("ws-stalled-advance-1", advanced[0]);
@@ -455,7 +455,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-advance-1");
                 Assert.Equal("complete", ws.Status);
             }
@@ -479,7 +479,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-stalled-defer-1";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
                     Id = "ws-stalled-defer-1",
@@ -512,14 +512,14 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
                 Assert.Empty(advanced);
             }
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-defer-1");
                 Assert.Equal(WorkstreamStatuses.Stalled, ws.Status);
             }
@@ -555,7 +555,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
 
                 // The original reviewer comment must end up "resolved" via the
@@ -609,7 +609,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var humanActive = await db.PrComments.AsNoTracking()
                     .CountAsync(pc => pc.PrId == prId && pc.State == "active" && pc.AuthorKind == "user");
                 Assert.Equal(0, humanActive);
@@ -659,7 +659,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
 

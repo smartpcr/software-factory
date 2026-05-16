@@ -38,7 +38,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "AreaPathsJson"));
     }
 
@@ -47,7 +47,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "LastSyncAt"));
     }
 
@@ -56,7 +56,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "LastSyncCursor"));
     }
 
@@ -65,7 +65,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "LastSyncStatus"));
         // Verify default value is 'idle' on a freshly-inserted row.
         var repo = await db.Repos.FirstAsync();
@@ -77,7 +77,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "LastSyncError"));
     }
 
@@ -86,7 +86,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "IsRunningSince"));
     }
 
@@ -95,7 +95,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "AgentReadyDefaultTeam"));
     }
 
@@ -104,7 +104,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "repos", "InitialSyncWindowDays"));
     }
 
@@ -113,7 +113,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await TableExistsAsync(db, "work_item_sync_runs"));
     }
 
@@ -122,7 +122,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
@@ -138,7 +138,7 @@ public class Phase23MigrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         // Run the migration a second time — should not throw.
         await Phase23Migration.ApplyAsync(db);
         Assert.True(await ColumnExistsAsync(db, "repos", "AreaPathsJson"));
@@ -151,12 +151,12 @@ public class Phase23MigrationTests
         // verify the Phase 21 column exists before Phase 23 runs.
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await ColumnExistsAsync(db, "task_queue", "SkipSoulPrompt"));
         Assert.True(await ColumnExistsAsync(db, "repos", "AreaPathsJson"));
     }
 
-    private static async Task<bool> ColumnExistsAsync(ForgeDbContext db, string table, string column)
+    private static async Task<bool> ColumnExistsAsync(ProductDbContext db, string table, string column)
     {
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
@@ -170,7 +170,7 @@ public class Phase23MigrationTests
         return false;
     }
 
-    private static async Task<bool> TableExistsAsync(ForgeDbContext db, string table)
+    private static async Task<bool> TableExistsAsync(ProductDbContext db, string table)
     {
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
@@ -776,7 +776,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         repo.LastSyncStatus = "running";
         repo.IsRunningSince = DateTimeOffset.UtcNow.ToString("o");
@@ -801,7 +801,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         var originalLastSyncAt = "2026-04-01T00:00:00Z";
         repo.LastSyncAt = originalLastSyncAt;
@@ -826,7 +826,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         repo.LastSyncError = "Previous error";
         await db.SaveChangesAsync();
@@ -844,7 +844,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         repo.LastSyncCursor = "page-3";
         await db.SaveChangesAsync();
@@ -862,7 +862,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         var prior = "2026-04-10T00:00:00Z";
         repo.LastSyncAt = prior;
@@ -879,7 +879,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -908,7 +908,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         repo.LastSyncError = "Connection timeout";
         repo.LastSyncStatus = "failed";
@@ -923,7 +923,7 @@ public class DeltaCursorTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
         var startTime = DateTimeOffset.UtcNow.ToString("o");
         repo.LastSyncAt = startTime;
@@ -970,7 +970,7 @@ public class Phase23IdempotencyTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var count = await db.WorkItems.CountAsync(w => w.Provider == "ado" && w.ProviderRef == 902);
         Assert.Equal(1, count);
     }
@@ -990,7 +990,7 @@ public class Phase23IdempotencyTests
         Assert.Equal(1, result.Updated);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.WorkItems.FirstAsync(w => w.Provider == "ado" && w.ProviderRef == 903);
         Assert.Equal("v2", row.Title);
         Assert.Equal("rev-2", row.RemoteRevision);
@@ -1002,7 +1002,7 @@ public class Phase23IdempotencyTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-IDEM-4", RepoId = "atlas-platform", Provider = "ado", ProviderRef = 904,
@@ -1018,7 +1018,7 @@ public class Phase23IdempotencyTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "ado" && w.ProviderRef == 904);
         Assert.Equal("Auth", row.FeatureRef);
     }
@@ -1029,7 +1029,7 @@ public class Phase23IdempotencyTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-IDEM-5", RepoId = "atlas-platform", Provider = "ado", ProviderRef = 905,
@@ -1046,7 +1046,7 @@ public class Phase23IdempotencyTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "ado" && w.ProviderRef == 905);
         Assert.NotNull(row.AssignedToJson);
         Assert.Contains("Forge", row.AssignedToJson!);
@@ -1058,7 +1058,7 @@ public class Phase23IdempotencyTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-IDEM-6", RepoId = "atlas-platform", Provider = "ado", ProviderRef = 906,
@@ -1074,7 +1074,7 @@ public class Phase23IdempotencyTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "ado" && w.ProviderRef == 906);
         Assert.Equal("EP-X", row.ParentId);
     }
@@ -1105,7 +1105,7 @@ public class Phase23IdempotencyTests
         await sync2.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.WorkItems.FirstAsync(w => w.Provider == "ado" && w.ProviderRef == 907);
         Assert.Equal("design", row.Track);
         Assert.Equal("phase", row.Type);
@@ -1146,7 +1146,7 @@ public class Phase23IdempotencyTests
     private static async Task<RepoRow> GetRepoAsync(ForgeWebApplicationFactory factory, string id)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.Repos.FirstOrDefaultAsync(r => r.Id == id)
             ?? throw new InvalidOperationException($"seed repo '{id}' not found");
     }
@@ -1349,7 +1349,7 @@ public class WorkItemSyncJobTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         // Idle repos should be eligible for sync.
@@ -1367,7 +1367,7 @@ public class WorkItemSyncJobTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var repos = await db.Repos
             .OrderBy(r => r.LastSyncAt ?? string.Empty)
@@ -1387,7 +1387,7 @@ public class WorkItemSyncJobTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -1508,7 +1508,7 @@ public class Phase23EndpointTests
         // Seed some runs.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             for (int i = 0; i < 5; i++)
             {
                 db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -1540,7 +1540,7 @@ public class Phase23EndpointTests
         // 50-row default when no `limit` is supplied (Phase 23.7 contract).
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             for (int i = 0; i < 60; i++)
             {
                 db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -1588,7 +1588,7 @@ public class Phase23EndpointTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync(r => r.Id == "atlas-platform");
         Assert.NotNull(repo.AreaPathsJson);
         Assert.Contains("Auth", repo.AreaPathsJson!);
@@ -1605,7 +1605,7 @@ public class Phase23EndpointTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync(r => r.Id == "atlas-platform");
         Assert.Equal("Platform", repo.AgentReadyDefaultTeam);
     }
@@ -1617,7 +1617,7 @@ public class Phase23EndpointTests
         // First set some area paths.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var repo = await db.Repos.FirstAsync(r => r.Id == "atlas-platform");
             repo.AreaPathsJson = """["Atlas\\Auth"]""";
             await db.SaveChangesAsync();
@@ -1630,7 +1630,7 @@ public class Phase23EndpointTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var updated = await verifyDb.Repos.FirstAsync(r => r.Id == "atlas-platform");
         Assert.Null(updated.AreaPathsJson);
     }
@@ -1676,7 +1676,7 @@ public class Phase23TelemetryTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         var started = DateTimeOffset.UtcNow;
@@ -1703,7 +1703,7 @@ public class Phase23TelemetryTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -1788,7 +1788,7 @@ public class Phase23IntegrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
@@ -1818,7 +1818,7 @@ public class Phase23IntegrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed a second repo.
         db.Repos.Add(new RepoRow
@@ -1854,7 +1854,7 @@ public class Phase23IntegrationTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstAsync();
 
         Assert.Equal("idle", repo.LastSyncStatus);
@@ -1895,7 +1895,7 @@ public class Phase23IntegrationTests
     private static async Task<RepoRow> GetRepoAsync(ForgeWebApplicationFactory factory, string id)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.Repos.FirstOrDefaultAsync(r => r.Id == id)
             ?? throw new InvalidOperationException($"seed repo '{id}' not found");
     }

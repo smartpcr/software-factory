@@ -40,12 +40,12 @@ public class Phase54PromptGrowthTests
     private static string EvalJson(int score) =>
         Fence + "json\n{ \"score\": " + score + " }\n" + Fence;
 
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrate */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
 
@@ -63,7 +63,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             const string genSamples = "[{\"turnIndex\":1,\"inputTokens\":1000,\"outputTokens\":200,\"atUtc\":\"2026-05-12T00:00:00Z\"}]";
@@ -103,7 +103,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb);
 
             var req = new DeliverableLoopRequest(
@@ -135,7 +135,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // Iter 1: gen 1000 in / eval 500 in (no prior → delta == cumulative).
@@ -198,7 +198,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // Iter 1: gen 5K in. Iter 2: gen 50K in → delta 45K > 30K threshold.
@@ -242,7 +242,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // Iter 1 alone with absolute input 100K (passes immediately) — delta
@@ -279,7 +279,7 @@ public class Phase54PromptGrowthTests
             await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // 3 iterations: gen input 1K → 3K → 5K; eval 800 → 1.2K → 1.5K; pass on 3.

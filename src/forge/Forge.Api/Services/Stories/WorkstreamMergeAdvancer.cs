@@ -62,7 +62,7 @@ public static class WorkstreamMergeAdvancer
     /// </para>
     /// </summary>
     public static async Task<IReadOnlyList<string>> AdvanceForMergedPrAsync(
-        ForgeDbContext db, string prId, CancellationToken ct = default)
+        ProductDbContext db, string prId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(prId)) return Array.Empty<string>();
 
@@ -92,7 +92,7 @@ public static class WorkstreamMergeAdvancer
     /// were wired in. PRs with active comments are deferred (the
     /// orchestrator's fix loop picks them up on its next tick).
     /// </summary>
-    public static async Task<int> BackfillAsync(ForgeDbContext db, CancellationToken ct = default)
+    public static async Task<int> BackfillAsync(ProductDbContext db, CancellationToken ct = default)
     {
         var mergedPrIds = await db.Prs
             .Where(p => p.Col == "merged")

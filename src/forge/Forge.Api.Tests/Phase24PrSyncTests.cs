@@ -30,7 +30,7 @@ public class Phase24PrSyncTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private static PrRow SeedPr(ForgeDbContext db, string id)
+    private static PrRow SeedPr(ProductDbContext db, string id)
     {
         var pr = new PrRow
         {
@@ -56,7 +56,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.NotNull(db);
     }
 
@@ -66,7 +66,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
 
@@ -85,11 +85,11 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-defaults");
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p24-defaults");
         Assert.True(row.IsActive);
         Assert.Equal("idle", row.LastSyncStatus);
@@ -121,7 +121,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-crud");
 
         var resp = await client.PostAsJsonAsync("/api/prs/p24-crud/comments", new { body = "Hello world" }, JsonOpts);
@@ -140,7 +140,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-list");
 
         await client.PostAsJsonAsync("/api/prs/p24-list/comments", new { body = "Comment 1" }, JsonOpts);
@@ -162,7 +162,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-get");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-get/comments", new { body = "Get me" }, JsonOpts);
@@ -185,7 +185,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-edit");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-edit/comments", new { body = "Original" }, JsonOpts);
@@ -209,7 +209,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-iso-1");
         SeedPr(db, "p24-iso-2");
 
@@ -246,7 +246,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-auth-res");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-auth-res/comments", new { body = "Auth test" }, JsonOpts);
@@ -267,7 +267,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-resolve");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-resolve/comments", new { body = "Resolve me" }, JsonOpts);
@@ -289,7 +289,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-auth-reo");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-auth-reo/comments", new { body = "Reopen auth" }, JsonOpts);
@@ -312,7 +312,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-reopen");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-reopen/comments", new { body = "Reopen me" }, JsonOpts);
@@ -335,7 +335,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-noop-res");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-noop-res/comments", new { body = "NoOp" }, JsonOpts);
@@ -347,7 +347,7 @@ public class Phase24PrSyncTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var resolvedCount = await db2.PrCommentHistory.CountAsync(
             h => h.CommentId == commentId && h.Kind == "resolved");
         Assert.Equal(1, resolvedCount);
@@ -361,7 +361,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-noop-reo");
 
         var createResp = await client.PostAsJsonAsync("/api/prs/p24-noop-reo/comments", new { body = "NoOp reopen" }, JsonOpts);
@@ -372,7 +372,7 @@ public class Phase24PrSyncTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var reopenedCount = await db2.PrCommentHistory.CountAsync(
             h => h.CommentId == commentId && h.Kind == "reopened");
         Assert.Equal(0, reopenedCount);
@@ -386,7 +386,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-attn");
 
         var comment = new PrCommentRow
@@ -405,7 +405,7 @@ public class Phase24PrSyncTests
         await db.SaveChangesAsync();
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var read = await db2.PrComments.AsNoTracking().FirstAsync(c => c.Id == comment.Id);
         Assert.True(read.RequiresAttention);
         Assert.Equal("human", read.AuthorKind);
@@ -420,7 +420,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-clr-attn");
 
         var createResp = await client.PostAsJsonAsync(
@@ -448,7 +448,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-reo-attn");
 
         var createResp = await client.PostAsJsonAsync(
@@ -474,7 +474,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-hist-cre");
 
         var createResp = await client.PostAsJsonAsync(
@@ -483,7 +483,7 @@ public class Phase24PrSyncTests
         var commentId = createDoc.RootElement.GetProperty("id").GetInt64();
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var history = await db2.PrCommentHistory
             .Where(h => h.CommentId == commentId)
             .ToListAsync();
@@ -500,7 +500,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-hist-res");
 
         var createResp = await client.PostAsJsonAsync(
@@ -511,7 +511,7 @@ public class Phase24PrSyncTests
         await client.PostAsync($"/api/prs/p24-hist-res/comments/{commentId}/resolve", null);
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var resolved = await db2.PrCommentHistory
             .Where(h => h.CommentId == commentId && h.Kind == "resolved")
             .ToListAsync();
@@ -527,7 +527,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-hist-reo");
 
         var createResp = await client.PostAsJsonAsync(
@@ -539,7 +539,7 @@ public class Phase24PrSyncTests
         await client.PostAsync($"/api/prs/p24-hist-reo/comments/{commentId}/reopen", null);
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var reopened = await db2.PrCommentHistory
             .Where(h => h.CommentId == commentId && h.Kind == "reopened")
             .ToListAsync();
@@ -555,7 +555,7 @@ public class Phase24PrSyncTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "human@test.com");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-hist-edt");
 
         var createResp = await client.PostAsJsonAsync(
@@ -568,7 +568,7 @@ public class Phase24PrSyncTests
         await client.SendAsync(req);
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var edited = await db2.PrCommentHistory
             .Where(h => h.CommentId == commentId && h.Kind == "edited")
             .ToListAsync();
@@ -644,7 +644,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = new WorkItemRow
         {
@@ -671,7 +671,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = new WorkItemRow
         {
@@ -724,7 +724,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-link-reply");
 
         var parent = new PrCommentRow
@@ -778,7 +778,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-link-no-match");
 
         var c = new PrCommentRow
@@ -814,7 +814,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-snap-1");
         var pr = await db.Prs.FirstAsync(p => p.Id == "p24-snap-1");
         pr.Provider = "ado";
@@ -844,7 +844,7 @@ public class Phase24PrSyncTests
         await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var comments = await db2.PrComments.Where(c => c.PrId == "p24-snap-1").ToListAsync();
         Assert.Equal(2, comments.Count);
         var c1 = comments.First(c => c.ProviderCommentId == "c1");
@@ -861,7 +861,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-snap-2");
         var existing = new PrCommentRow
         {
@@ -896,7 +896,7 @@ public class Phase24PrSyncTests
         await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var refreshed = await db2.PrComments.AsNoTracking().FirstAsync(c => c.PrId == "p24-snap-2");
         Assert.Equal("resolved", refreshed.State);
         Assert.False(refreshed.RequiresAttention);
@@ -912,7 +912,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p24-snap-term");
         var snapshot = new PrSyncSnapshot(
             CanonicalState: "completed",
@@ -927,7 +927,7 @@ public class Phase24PrSyncTests
         await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var pr = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p24-snap-term");
         Assert.False(pr.IsActive);
         // Phase 28 — completed/abandoned canonical states map to the "merged"
@@ -949,7 +949,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed a PR with the col already at the UI value "review" — this is what
         // PrsEndpoints.SyncPrs writes for an active ADO PR.
@@ -973,7 +973,7 @@ public class Phase24PrSyncTests
         await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var refreshed = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p28-preserve-col");
         // Must stay "review" — not overwritten with the canonical "open".
         Assert.Equal("review", refreshed.Col);
@@ -988,7 +988,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var active = SeedPr(db, "p24-sweep-active");
         var inactive = SeedPr(db, "p24-sweep-inactive");
         active.Provider = "ado"; active.ProviderRef = "10";
@@ -1033,7 +1033,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p-stats-1");
         var pr = await db.Prs.FirstAsync(p => p.Id == "p-stats-1");
         pr.Provider = "ado";
@@ -1058,7 +1058,7 @@ public class Phase24PrSyncTests
         await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p-stats-1");
         Assert.Equal(3, row.Files);
         Assert.Equal(2, row.Commits);
@@ -1072,7 +1072,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "p-stats-2");
         var pr = await db.Prs.FirstAsync(p => p.Id == "p-stats-2");
         pr.Provider = "ado";
@@ -1095,7 +1095,7 @@ public class Phase24PrSyncTests
         await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p-stats-2");
         Assert.Equal(5, row.Files);
         Assert.Equal(3, row.Commits);
@@ -1109,7 +1109,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         SeedPr(db, "PR #12345");
         var pr = await db.Prs.FirstAsync(p => p.Id == "PR #12345");
         pr.Provider = "ado";
@@ -1131,7 +1131,7 @@ public class Phase24PrSyncTests
         await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
 
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "PR #12345");
         Assert.Equal("merged", row.Col);
         Assert.False(row.IsActive);
@@ -1146,7 +1146,7 @@ public class Phase24PrSyncTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed a PR in "merged" state.
         var pr = new PrRow
@@ -1189,7 +1189,7 @@ public class Phase24PrSyncTests
 
         // Re-load and verify the workstream status advanced.
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var workstreams = await db2.Workstreams
             .Where(w => w.StorySpawnId == "spawn-merge-test")
             .ToListAsync();
@@ -1220,7 +1220,7 @@ public class Phase24PrSyncTests
 
         // Verify final state.
         using var scope3 = f.Services.CreateScope();
-        var db3 = scope3.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db3 = scope3.ServiceProvider.GetRequiredService<ProductDbContext>();
         var final = await db3.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-merge-test");
         Assert.Equal("complete", final.Status);
     }

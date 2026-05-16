@@ -128,7 +128,7 @@ public class PrsEndpointsMergeConflictTests
         string? baseBranch)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.Prs.AnyAsync(p => p.Id == prId)) return;
         db.Prs.Add(new PrRow
         {

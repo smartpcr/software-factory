@@ -38,7 +38,7 @@ public static class WorktreePathResolver
     ///   <see cref="WorkstreamRow.Id"/> for engineer workstreams.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<WorktreePathResult> ResolveForWorkstreamAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+        ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         var ws = await db.Workstreams.AsNoTracking()
             .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
@@ -59,7 +59,7 @@ public static class WorktreePathResolver
     /// <see cref="WorktreePathResult.Empty"/>.
     /// </summary>
     public static async Task<WorktreePathResult> ResolveForWorkstreamAsync(
-        ForgeDbContext db, WorkstreamRow ws, RepoRow? repo, CancellationToken ct = default)
+        ProductDbContext db, WorkstreamRow ws, RepoRow? repo, CancellationToken ct = default)
     {
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot))
         {
@@ -119,7 +119,7 @@ public static class WorktreePathResolver
     ///   <see cref="PlanDocStateHelpers.PlanDocOrder"/>.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<WorktreePathResult> ResolveForPlanDocAsync(
-        ForgeDbContext db, string spawnId, string docKey, CancellationToken ct = default)
+        ProductDbContext db, string spawnId, string docKey, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(spawnId) || string.IsNullOrEmpty(docKey))
         {
@@ -187,7 +187,7 @@ public static class WorktreePathResolver
     /// lock-step.</para>
     /// </summary>
     public static async Task<CanonicalWorkstreamPathSpec?> GetCanonicalForWorkstreamAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+        ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return null;
 
@@ -238,7 +238,7 @@ public static class WorktreePathResolver
 }
 
 /// <summary>
-/// Result of <see cref="WorktreePathResolver.ResolveForWorkstreamAsync(ForgeDbContext, string, CancellationToken)"/>.
+/// Result of <see cref="WorktreePathResolver.ResolveForWorkstreamAsync(ProductDbContext, string, CancellationToken)"/>.
 /// <see cref="WorktreePath"/> is null when no on-disk candidate matched —
 /// either the workstream was never claimed (no worktree created yet) or
 /// the worktree was cleaned up after merge.

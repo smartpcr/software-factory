@@ -25,7 +25,7 @@ public class Phase14PromotionRunnerTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private static async Task SeedAgent(ForgeDbContext db, string id, int level = 0)
+    private static async Task SeedAgent(ProductDbContext db, string id, int level = 0)
     {
         if (await db.Agents.AnyAsync(a => a.Id == id)) return;
         db.Agents.Add(new AgentRow
@@ -37,7 +37,7 @@ public class Phase14PromotionRunnerTests
         await db.SaveChangesAsync();
     }
 
-    private static async Task SeedDeliverables(ForgeDbContext db, string genId, int count, int score, string verdict = "pass")
+    private static async Task SeedDeliverables(ProductDbContext db, string genId, int count, int score, string verdict = "pass")
     {
         for (var i = 0; i < count; i++)
         {
@@ -63,7 +63,7 @@ public class Phase14PromotionRunnerTests
         // Boot the host so the DB is created.
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         await SeedAgent(db, "evalA");
         await SeedAgent(db, "promote-me", level: 3);
         await SeedDeliverables(db, "promote-me", 20, 95);
@@ -90,7 +90,7 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         await SeedAgent(db, "evalA");
         await SeedAgent(db, "demote-me", level: 5);
         await SeedDeliverables(db, "demote-me", 20, 70, verdict: "iterate");
@@ -113,7 +113,7 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         await SeedAgent(db, "evalA");
         await SeedAgent(db, "iter-agent", level: 3);
 
@@ -157,7 +157,7 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         await SeedAgent(db, "evalA");
         await SeedAgent(db, "cooldown-agent", level: 4);
         // Recent promotion 10 days ago.
@@ -186,7 +186,7 @@ public class Phase14PromotionRunnerTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             await SeedAgent(db, "evalA");
             await SeedAgent(db, "active1", level: 3);
             await SeedDeliverables(db, "active1", 20, 95);
@@ -208,7 +208,7 @@ public class Phase14PromotionRunnerTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             await SeedAgent(db, "hist-agent");
             db.AgentLevelHistory.Add(new AgentLevelHistoryRow
             {

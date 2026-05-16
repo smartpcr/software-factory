@@ -370,7 +370,7 @@ public sealed record DeliverableLoopResult(
 /// <inheritdoc cref="IDeliverableLoop"/>
 public sealed class DeliverableLoop : IDeliverableLoop
 {
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly TaskChannel? channel;
 
     /// <summary>
@@ -389,14 +389,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
     public static int PointsToMaxIter(int points) =>
         points <= 0 ? ScoringConstants.MaxIterations : points * IterationsPerPoint;
 
-    public DeliverableLoop(ForgeDbContext db) : this(db, channel: null) { }
+    public DeliverableLoop(ProductDbContext db) : this(db, channel: null) { }
 
     /// <summary>
     /// Phase 16.7 — when <paramref name="channel"/> is non-null, the loop
     /// emits <c>task.iteration.started | scored | iterated | passed |
     /// rejected | stalled</c> events on the per-work-item live channel.
     /// </summary>
-    public DeliverableLoop(ForgeDbContext db, TaskChannel? channel)
+    public DeliverableLoop(ProductDbContext db, TaskChannel? channel)
     {
         this.db = db;
         this.channel = channel;
@@ -1383,7 +1383,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// prepend).
     /// </summary>
     public static async Task<string> BuildOperatorAnswersBlockAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct)
+        ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var rows = await db.DeliverableQuestions.AsNoTracking()
             .Where(q => q.WorkItemId == workItemId && q.Answer != null && q.Answer != string.Empty)
@@ -1424,7 +1424,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// via the wizard.</para>
     /// </summary>
     public static async Task<int> CountUnansweredQuestionsAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct)
+        ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite can't ORDER BY DateTimeOffset; pull rows for this work
         // item, group + dedupe in memory.
@@ -1827,7 +1827,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// state-machine constraints (e.g. closed → closed is a no-op) are
     /// respected by the regular <c>WorkItemRow</c> writes.
     /// </summary>
-    private static async Task TrySetWorkItemStateAsync(ForgeDbContext db, string workItemId, string newState, CancellationToken ct)
+    private static async Task TrySetWorkItemStateAsync(ProductDbContext db, string workItemId, string newState, CancellationToken ct)
     {
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
         if (wi is null) return;

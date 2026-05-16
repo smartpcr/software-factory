@@ -301,7 +301,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
         // Seed spawn with no attachments yet.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.StorySpawns.Add(new StorySpawnRow
             {
                 Id = spawnId,
@@ -324,7 +324,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
         // tick already snapshotted the spawn.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.AttachmentsJson = BuildAttachmentsJson(("late", "late.md", "attachments/up-late/late.md", 7));
             await db.SaveChangesAsync();

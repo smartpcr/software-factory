@@ -53,13 +53,13 @@ public class Phase66StallOnQuestionsTests
 
     private static string GenWithoutQuestion() => "Some content without any open questions.";
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId,
@@ -108,7 +108,7 @@ public class Phase66StallOnQuestionsTests
 
             // Refresh from a fresh DbContext so we don't read cached state.
             using var scope = f.Services.CreateScope();
-            var freshDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await freshDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi).ToListAsync();
             Assert.Single(rows);
@@ -200,7 +200,7 @@ public class Phase66StallOnQuestionsTests
 
             // Only the iter-1 row remains; no extra row was persisted by the pre-iter gate.
             using var scope = f.Services.CreateScope();
-            var freshDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await freshDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi).ToListAsync();
             Assert.Single(rows);
@@ -240,7 +240,7 @@ public class Phase66StallOnQuestionsTests
             // endpoint test below exercises the HTTP path).
             using (var s1 = f.Services.CreateScope())
             {
-                var d1 = s1.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var d1 = s1.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var q = await d1.DeliverableQuestions.FirstAsync(q => q.WorkItemId == wi);
                 q.Answer = "Use A";
                 q.AnsweredAt = DateTimeOffset.UtcNow;
@@ -253,7 +253,7 @@ public class Phase66StallOnQuestionsTests
             int genIterSeen = 0;
             string priorNotes = string.Empty;
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop2 = new DeliverableLoop(db2);
             var secondReq = new DeliverableLoopRequest(
                 wi, "crew-x", "gen-1", "eval-1",
@@ -330,7 +330,7 @@ public class Phase66StallOnQuestionsTests
             Assert.Equal("stalled-questions", result.FinalVerdict);
 
             using var scope = f.Services.CreateScope();
-            var freshDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await freshDb.Deliverables.AsNoTracking().FirstAsync(d => d.WorkItemId == wi);
             // Must be stalled-questions, NEVER sloppy.
             Assert.Equal("stalled-questions", row.Verdict);

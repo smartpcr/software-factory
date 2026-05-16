@@ -125,7 +125,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         var candidates = await db.WorkItems
@@ -153,7 +153,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     }
 
     private async Task<bool> TryReassignOrFailAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         ITaskQueueService queue,
         WorkItemRow wi,
         CancellationToken ct)
@@ -322,7 +322,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         return true;
     }
 
-    private async Task MarkTerminalFailedAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task MarkTerminalFailedAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         wi.ExecutionStatus = ExecutionStatuses.Failed;
         wi.FailureReason = ScoringConstants.SloppyTerminalFailureReason;
@@ -427,7 +427,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     /// retries next tick.
     /// </summary>
     private async Task<string?> PickFreshGeneratorAsync(
-        ForgeDbContext db, WorkItemRow wi, string crewId, CancellationToken ct)
+        ProductDbContext db, WorkItemRow wi, string crewId, CancellationToken ct)
     {
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
         if (crew is null) return null;
@@ -508,7 +508,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     /// pair sees whatever's on the branch (which on a real repo is the
     /// prior pair's commits, but a fresh agent will overwrite them).</para>
     /// </summary>
-    private async Task TryResetWorktreeAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task TryResetWorktreeAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(wi.RepoId)) return;
 
@@ -590,7 +590,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         }
     }
 
-    private async Task ClearWorkstreamStallAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private async Task ClearWorkstreamStallAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // Mirror of BudgetCooldownReconciler.ClearWorkstreamStallAsync — keep
         // both impls in lockstep so a sloppy-reassignment un-stalls the

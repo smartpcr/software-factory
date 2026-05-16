@@ -38,7 +38,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
         await db.SaveChangesAsync();
@@ -61,7 +61,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
 
@@ -86,7 +86,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Implement);
 
@@ -109,7 +109,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
         foreach (var fileName in PlanDocFileNames)
@@ -138,7 +138,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
         var docId = $"plan-doc:{SpawnId}:tech-spec.md";
@@ -172,7 +172,7 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
         var docId = $"plan-doc:{SpawnId}:tech-spec.md";
@@ -192,7 +192,7 @@ public class Phase48PlanDocGateTests
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private static StorySpawnRow SeedSpawn(ForgeDbContext db, string phase)
+    private static StorySpawnRow SeedSpawn(ProductDbContext db, string phase)
     {
         var spawn = new StorySpawnRow
         {
@@ -210,7 +210,7 @@ public class Phase48PlanDocGateTests
     }
 
     private static void AddDeliverable(
-        ForgeDbContext db, string workItemId, int iter, string verdict,
+        ProductDbContext db, string workItemId, int iter, string verdict,
         int score = 0, DateTimeOffset? createdAt = null)
     {
         db.Deliverables.Add(new DeliverableRow

@@ -28,7 +28,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         // Seed a minimal work item so the partial-unique idempotency guard
@@ -63,7 +63,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-pin-2", Title = "Work", State = "active", Type = "task" });
@@ -80,7 +80,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-1", Title = "Block", State = "active", Type = "task" });
@@ -111,7 +111,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-2", Title = "Block2", State = "active", Type = "task" });
@@ -139,7 +139,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-3", Title = "Block3", State = "active", Type = "task" });
@@ -175,7 +175,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-mix-1", Title = "Work", State = "active", Type = "task" });

@@ -86,7 +86,7 @@ public class SystemPromptSoulTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == "A1");
         Assert.NotNull(agent);
@@ -98,7 +98,7 @@ public class SystemPromptSoulTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Check several seeded agents — their SoulPath (or fallback) should point
         // to an existing soul.md file when running in the repo tree.
@@ -148,7 +148,7 @@ public class SystemPromptSoulTests
         {
             using (var scope = factory.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var row = await db.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = soulFile;
                 await db.SaveChangesAsync();

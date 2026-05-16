@@ -43,12 +43,12 @@ public class Phase47NoProgressLivelockTests
     private static string EvalJson(int score) =>
         Fence + "json\n{ \"score\": " + score + " }\n" + Fence;
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(string workItemId)
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId,

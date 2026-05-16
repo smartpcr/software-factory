@@ -151,7 +151,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Spawn row + every child workstream row gone.
         Assert.False(await db.StorySpawns.AnyAsync(s => s.Id == seed.SpawnId));
@@ -334,7 +334,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // 3) Every PR row removed from the DB regardless of merged/open state.
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         foreach (var prId in seed.PrIds)
         {
             Assert.False(await db.Prs.AnyAsync(p => p.Id == prId), $"PR {prId} survived in DB.");
@@ -378,7 +378,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // DB
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await db.StorySpawns.AnyAsync(s => s.Id == seed.SpawnId));
         foreach (var wid in seed.AllWorkItemIds)
         {
@@ -442,7 +442,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
         // Both spawn rows survive — the refusal must precede every
         // destructive step.
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await db.StorySpawns.AnyAsync(s => s.Id == seedA.SpawnId));
         Assert.True(await db.StorySpawns.AnyAsync(s => s.Id == seedB.SpawnId));
 
@@ -507,7 +507,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // 2) Seed DB rows.
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         if (!await db.Products.AnyAsync(p => p.Id == "test-product"))
         {

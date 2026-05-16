@@ -38,7 +38,7 @@ public static class TimelineEndpoints
     {
         app.MapGet("/api/timeline", async (
             HttpContext ctx,
-            ForgeDbContext db,
+            ProductDbContext db,
             ILoggerFactory loggerFactory,
             double? from,
             double? to) =>

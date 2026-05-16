@@ -211,7 +211,7 @@ public sealed class BuildArtifactExpander
         var indexed = indexedFiles.Select(x => x.RelPath).ToList();
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var existing = await db.BuildArtifacts.FirstOrDefaultAsync(
                 a => a.BuildId == buildId && a.Name == artifactName, ct);
             if (existing is null)
@@ -266,7 +266,7 @@ public sealed class BuildArtifactExpander
         var threshold = DateTimeOffset.UtcNow.AddDays(-SyncConstants.BuildArtifactRetentionDays).ToString("o");
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var expired = await db.BuildArtifacts
                 .Where(a => a.FetchedAt != null && string.Compare(a.FetchedAt, threshold) < 0)
                 .ToListAsync(ct);
@@ -296,7 +296,7 @@ public sealed class BuildArtifactExpander
         while (totalSize > capBytes)
         {
             using var scope2 = this.scopeFactory.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var oldest = await db2.BuildArtifacts
                 .OrderBy(a => a.FetchedAt)
                 .FirstOrDefaultAsync(ct);

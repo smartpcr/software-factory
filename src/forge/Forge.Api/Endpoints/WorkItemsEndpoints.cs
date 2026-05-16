@@ -55,7 +55,7 @@ public static class WorkItemsEndpoints
     /// </summary>
     private static async Task<IResult> GetWorkstreamLink(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         if (string.IsNullOrEmpty(id)) return Results.NotFound();
@@ -123,7 +123,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string repoId,
         [FromBody] SyncWorkItemsRequest? req,
-        ForgeDbContext db,
+        ProductDbContext db,
         WorkItemSyncService syncService,
         CancellationToken ct)
     {
@@ -175,7 +175,7 @@ public static class WorkItemsEndpoints
 
     private static async Task<IResult> List(
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         string? repoId,
         string? iterationRef,
         string? state,
@@ -264,7 +264,7 @@ public static class WorkItemsEndpoints
 
     // ----- GET ------------------------------------------------------------
 
-    private static async Task<IResult> Get(string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(string id, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
@@ -277,7 +277,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateWorkItemRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -396,7 +396,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PatchWorkItemRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -533,7 +533,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Delete(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         bool? force,
         CancellationToken ct)
@@ -585,7 +585,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] MoveWorkItemRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -625,7 +625,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] ReparentWorkItemRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -682,7 +682,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Resync(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -787,7 +787,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> CreatePr(
         string id,
         [FromBody] CreatePrRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         Forge.Api.Realtime.TaskChannel taskChannel,
         CancellationToken ct)

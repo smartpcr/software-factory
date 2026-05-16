@@ -43,10 +43,10 @@ public sealed record PromotionRunResult(
 /// <inheritdoc cref="IPromotionRunner"/>
 public sealed class PromotionRunner : IPromotionRunner
 {
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly ILogger<PromotionRunner> log;
 
-    public PromotionRunner(ForgeDbContext db, ILogger<PromotionRunner> log)
+    public PromotionRunner(ProductDbContext db, ILogger<PromotionRunner> log)
     {
         this.db = db;
         this.log = log;

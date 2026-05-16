@@ -65,7 +65,7 @@ public class Phase27BuildArtifactExpanderTests : IDisposable
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var expander = new BuildArtifactExpander(
             f.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -102,7 +102,7 @@ public class Phase27BuildArtifactExpanderTests : IDisposable
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var expander = new BuildArtifactExpander(
             f.Services.GetRequiredService<IServiceScopeFactory>(),

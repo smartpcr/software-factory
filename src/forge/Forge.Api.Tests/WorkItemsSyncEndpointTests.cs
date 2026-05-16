@@ -110,7 +110,7 @@ public class WorkItemsSyncEndpointTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             db.Users.Add(new Forge.Api.Persistence.UserRow
             {
                 Id = "u-h", DisplayName = "H", Email = "h@x", Role = "human",
@@ -140,7 +140,7 @@ public class WorkItemsSyncEndpointTests
         // Instead we reach into the service directly and verify the merge.
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
 
         // Pre-seed a row that already has a FeatureRef set locally.
         db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow

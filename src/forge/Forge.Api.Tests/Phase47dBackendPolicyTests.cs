@@ -102,7 +102,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Seed a brand-new test agent with a disallowed override.
             var rogue = new AgentRow
@@ -157,7 +157,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             var rogue = new AgentRow
             {
@@ -201,7 +201,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Drift one canonical crew off the rail. We probe a single
             // known id (crew-eng) rather than IN-querying the canonical

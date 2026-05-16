@@ -49,7 +49,7 @@ public class StalledQuestionsLeakTests
     // ── helpers ──────────────────────────────────────────────────────────
 
     private static async Task SeedSpawnPairAsync(
-        ForgeDbContext db, string wsId, DateTimeOffset startedAt, bool success)
+        ProductDbContext db, string wsId, DateTimeOffset startedAt, bool success)
     {
         db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
         {
@@ -69,7 +69,7 @@ public class StalledQuestionsLeakTests
     }
 
     private static async Task SeedDeliverableAsync(
-        ForgeDbContext db, string wsId, int iter, int score, string verdict, DateTimeOffset createdAt)
+        ProductDbContext db, string wsId, int iter, int score, string verdict, DateTimeOffset createdAt)
     {
         db.Deliverables.Add(new DeliverableRow
         {
@@ -87,7 +87,7 @@ public class StalledQuestionsLeakTests
     }
 
     private static async Task SeedQuestionAsync(
-        ForgeDbContext db, string wsId, string extId, int iter,
+        ProductDbContext db, string wsId, string extId, int iter,
         DateTimeOffset createdAt, DateTimeOffset? answeredAt = null)
     {
         db.DeliverableQuestions.Add(new DeliverableQuestionRow
@@ -114,7 +114,7 @@ public class StalledQuestionsLeakTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         // Iter 1 ran, evaluator emitted a question, verdict=stalled-questions
@@ -139,7 +139,7 @@ public class StalledQuestionsLeakTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         await SeedDeliverableAsync(db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
@@ -173,7 +173,7 @@ public class StalledQuestionsLeakTests
         // unanswered, then post-answer the progress boundary advances.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         await SeedDeliverableAsync(db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
@@ -199,7 +199,7 @@ public class StalledQuestionsLeakTests
         // legitimate no-progress detection when there are no questions.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         // Old deliverable (NOT stalled-questions), then many post-deliverable spawns

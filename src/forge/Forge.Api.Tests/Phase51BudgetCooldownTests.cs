@@ -33,14 +33,14 @@ using Xunit;
 /// </summary>
 public class Phase51BudgetCooldownTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, BudgetCooldownReconciler r)>
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, BudgetCooldownReconciler r)>
         SetupAsync(string workItemId, decimal? cap, decimal cumulativeCost, DateTimeOffset cooldownUntil, string[] priorPair)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot + migrations */ }
 
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed a crew with the supplied cap.
         db.Crews.Add(new CrewRow
@@ -211,7 +211,7 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.Crews.Add(new CrewRow
         {
@@ -287,7 +287,7 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.Crews.Add(new CrewRow
         {
@@ -383,7 +383,7 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var windowStart = DateTimeOffset.UtcNow.AddMinutes(-1);
 
@@ -444,7 +444,7 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.Crews.Add(new CrewRow
         {

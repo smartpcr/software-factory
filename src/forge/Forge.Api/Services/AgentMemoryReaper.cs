@@ -96,7 +96,7 @@ public sealed class AgentMemoryReaper : BackgroundService
         var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(retention);
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // SQLite EF cannot reliably translate DateTimeOffset comparisons
         // (TEXT-stored ISO 8601 mostly orders correctly, but mixed-nullable

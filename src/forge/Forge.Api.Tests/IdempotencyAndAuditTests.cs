@@ -26,7 +26,7 @@ public class IdempotencyAndAuditTests : IClassFixture<ForgeWebApplicationFactory
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.Prs.AnyAsync(p => p.Id == "PR #229"))
         {
             db.Prs.Add(new PrRow

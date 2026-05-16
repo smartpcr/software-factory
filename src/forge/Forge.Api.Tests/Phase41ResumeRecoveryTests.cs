@@ -78,14 +78,14 @@ public class Phase41ResumeRecoveryTests
         await WaitForAsync(TimeSpan.FromSeconds(2), () =>
         {
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = db.StorySpawns.AsNoTracking().FirstOrDefault(s => s.Id == spawnId);
             return string.IsNullOrEmpty(row?.ResumePendingJson);
         });
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == spawnId);
             Assert.True(string.IsNullOrEmpty(row.ResumePendingJson),
                 $"ResumePendingJson was not cleared after the loop completed. Value: '{row.ResumePendingJson}'.");
@@ -114,7 +114,7 @@ public class Phase41ResumeRecoveryTests
         // directly in the DB without ever firing the loop.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.ResumePendingJson = "[\"architecture\",\"tech-spec\"]";
             await db.SaveChangesAsync();
@@ -134,7 +134,7 @@ public class Phase41ResumeRecoveryTests
         // And the marker is fully drained.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == spawnId);
             Assert.True(string.IsNullOrEmpty(row.ResumePendingJson),
                 $"Boot recovery did not clear ResumePendingJson. Value: '{row.ResumePendingJson}'.");
@@ -164,7 +164,7 @@ public class Phase41ResumeRecoveryTests
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
         {
             db.WorkItems.Add(new WorkItemRow

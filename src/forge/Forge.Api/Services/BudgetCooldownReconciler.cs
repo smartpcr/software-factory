@@ -122,7 +122,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         // Pull both row sets in one EF query — the ExecutionStatus index
@@ -169,7 +169,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     /// re-attempted, and then failed for a downstream reason are still
     /// recovered when the operator raises the cap.
     /// </summary>
-    private async Task<bool> IsBudgetRecoverableAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private async Task<bool> IsBudgetRecoverableAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite EF can do this query server-side — both Verdict columns
         // are plain TEXT. AnyAsync short-circuits, so this is cheap even
@@ -183,7 +183,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     }
 
     private async Task<bool> TryResumeAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         ITaskQueueService queue,
         WorkItemRow wi,
         DateTimeOffset now,
@@ -368,7 +368,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         return true;
     }
 
-    private async Task ClearWorkstreamStallAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private async Task ClearWorkstreamStallAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite EF can't translate JSON-array contains; materialize the
         // candidate set (every stalled workstream) and filter in memory.

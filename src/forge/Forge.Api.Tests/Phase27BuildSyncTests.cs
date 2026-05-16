@@ -27,7 +27,7 @@ public class Phase27BuildSyncTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot triggers migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Re-applying the migration is a no-op.
         await Phase31Migration.ApplyAsync(db);
@@ -59,7 +59,7 @@ public class Phase27BuildSyncTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.BuildFixPending.Add(new BuildFixPendingRow
         {

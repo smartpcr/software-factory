@@ -30,7 +30,7 @@ public class Phase27BuildFixLoopTests
         using (f.CreateClient()) { }
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         // Seed a work item with an assigned crew + agent.
@@ -89,7 +89,7 @@ public class Phase27BuildFixLoopTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         var wiId = "wi-buildfix-dup-1";

@@ -89,7 +89,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     public async Task<DispatchTickResult> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var dispatched = 0;
         var skipped = 0;
@@ -273,7 +273,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     /// Returns true when the crew has at least one non-lead member AND the
     /// in-flight count is below <see cref="CrewRow.MaxConcurrent"/>.
     /// </summary>
-    private async Task<bool> HasCapacityAsync(ForgeDbContext db, CrewRow crew, CancellationToken ct)
+    private async Task<bool> HasCapacityAsync(ProductDbContext db, CrewRow crew, CancellationToken ct)
     {
         var memberCount = await db.CrewMembers.AsNoTracking()
             .CountAsync(m => m.CrewId == crew.Id && m.AgentId != crew.Lead, ct);

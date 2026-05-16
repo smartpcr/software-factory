@@ -46,7 +46,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
 
         using var scope = this.services.CreateScope();
         var provider = ResolveProvider(scope.ServiceProvider, req.Repo.Kind);
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
         // Phase 45 follow-up (2026-05-05) — use the same canonical resolver
@@ -164,7 +164,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task MergePrAsync(string prId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
         var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct)
@@ -239,7 +239,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task ApprovePrAsync(string prId, string reviewerAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
         var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct)
@@ -264,7 +264,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         string prId, string filePath, int line, string body, string authorAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Local row first so the comment id is stable for downstream callers.
         // ProviderCommentId must be unique per PR — the provider's
@@ -335,7 +335,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     /// path end-to-end).
     /// </summary>
     private static async Task<ProviderCallContext> BuildCallContextAsync(
-        ForgeDbContext db, PrRow pr, CancellationToken ct)
+        ProductDbContext db, PrRow pr, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(pr.RepoId)) return ProviderCallContext.Anonymous;
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
@@ -352,7 +352,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var parent = await db.PrComments.AsNoTracking().FirstOrDefaultAsync(x => x.Id == parentCommentId, ct)
             ?? throw new InvalidOperationException($"Parent comment {parentCommentId} not found.");
@@ -417,7 +417,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var c = await db.PrComments.FirstOrDefaultAsync(x => x.Id == commentId, ct)
             ?? throw new InvalidOperationException($"Comment {commentId} not found.");
         c.State = "resolved";
@@ -441,7 +441,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task UpdatePrBaseBranchAsync(string prId, string newBaseBranch, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
         var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct)
@@ -464,7 +464,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task TransitionWorkItemAsync(string workItemId, string state, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
 

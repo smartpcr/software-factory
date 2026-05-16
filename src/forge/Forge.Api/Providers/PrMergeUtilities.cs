@@ -50,7 +50,7 @@ public static class PrMergeUtilities
     /// returning false; caller decides what to do.
     /// </param>
     public static async Task<bool> RebaseSourceOnBaseAsync(
-        ForgeDbContext db, IStoryGitOps git, PrRow pr, bool force, CancellationToken ct = default)
+        ProductDbContext db, IStoryGitOps git, PrRow pr, bool force, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(pr.Branch) || string.IsNullOrEmpty(pr.Base)) return false;
         var repo = !string.IsNullOrEmpty(pr.RepoId)

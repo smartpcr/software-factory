@@ -29,14 +29,14 @@ public static class ForgeSeed
     /// Does NOT seed prototype cards/PRs/workstreams (that path lives in
     /// <see cref="EnsureSeededAsync"/> and is gated on empty epics).
     /// </summary>
-    public static async Task EnsureCrewCatalogAsync(ForgeDbContext db)
+    public static async Task EnsureCrewCatalogAsync(ProductDbContext db)
     {
         await EnsureSeedCrewsAsync(db);
         await EnsureSeedAgentsAsync(db);
         await EnsureRosterBackfillAsync(db);
     }
 
-    public static async Task EnsureSeededAsync(ForgeDbContext db)
+    public static async Task EnsureSeededAsync(ProductDbContext db)
     {
         // Phase 8.3 — products / repos seed runs independently of the prototype
         // sample data so older DBs that already have epics still get a default
@@ -85,7 +85,7 @@ public static class ForgeSeed
     /// character from src/forge/Forge.UI/src/crew.ts. Idempotent: each
     /// replacement only runs when the *old* string is still present.
     /// </summary>
-    private static async Task RenameMockedAgentsAsync(ForgeDbContext db)
+    private static async Task RenameMockedAgentsAsync(ProductDbContext db)
     {
         var renames = new Dictionary<string, string>
         {
@@ -160,7 +160,7 @@ public static class ForgeSeed
     /// Original Phase-0 prototype seed extracted into its own method so the
     /// Phase 12 backfill can run reliably after it on first boot.
     /// </summary>
-    private static async Task SeedPrototypeDataAsync(ForgeDbContext db)
+    private static async Task SeedPrototypeDataAsync(ProductDbContext db)
     {
 
         var serializerOpts = new JsonSerializerOptions
@@ -322,7 +322,7 @@ public static class ForgeSeed
     /// <c>atlas-platform</c> repo if they don't yet exist. Used both by the
     /// boot path and by Phase 8.3 backfill against pre-existing dev DBs.
     /// </summary>
-    public static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
+    public static async Task EnsureDefaultProductAndRepoAsync(ProductDbContext db)
     {
         var changed = false;
 
@@ -378,7 +378,7 @@ public static class ForgeSeed
     /// prefix (E* → engineering, R* → review, A* → architecture, Q* → qa).
     /// Idempotent on agent id.
     /// </summary>
-    private static async Task EnsureSeedAgentsAsync(ForgeDbContext db)
+    private static async Task EnsureSeedAgentsAsync(ProductDbContext db)
     {
         var existing = await db.Agents.ToListAsync();
         var existingIds = existing.Select(a => a.Id).ToHashSet();
@@ -584,7 +584,7 @@ public static class ForgeSeed
         return null;
     }
 
-    private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)
+    private static async Task EnsureSeedCrewsAsync(ProductDbContext db)
     {
         // Canonical model + quotas for all crews. Pricing/quota fields are
         // owned by EnsureStartupConfigAsync (which re-asserts them on every
@@ -677,7 +677,7 @@ public static class ForgeSeed
     /// initial split runs. On existing DBs with an uneven legacy split,
     /// the method rebalances until the difference is ≤ 1.
     /// </summary>
-    private static async Task EnsureNightShiftSplitAsync(ForgeDbContext db)
+    private static async Task EnsureNightShiftSplitAsync(ProductDbContext db)
     {
         var pairs = new (string Day, string Night)[]
         {
@@ -756,7 +756,7 @@ public static class ForgeSeed
     /// Idempotent: existing roster entries are preserved; only missing
     /// rows are added.
     /// </summary>
-    private static async Task EnsureRosterBackfillAsync(ForgeDbContext db)
+    private static async Task EnsureRosterBackfillAsync(ProductDbContext db)
     {
         var crews = await db.Crews.ToListAsync();
         var leadByCrewId = crews
@@ -835,7 +835,7 @@ public static class ForgeSeed
     /// <c>RepoId</c> are pinned to the default repo. Phase 8.2's migration
     /// adds the column nullable; Phase 8.3 fills it in.
     /// </summary>
-    private static async Task BackfillRepoIdAsync(ForgeDbContext db)
+    private static async Task BackfillRepoIdAsync(ProductDbContext db)
     {
         var changed = false;
         await foreach (var c in db.Cards.Where(c => c.RepoId == null).AsAsyncEnumerable())
@@ -864,7 +864,7 @@ public static class ForgeSeed
     /// through /api/work-items; a follow-up batch rewires /api/cards as a
     /// projection over <c>work_items</c>.
     /// </summary>
-    private static async Task BackfillWorkItemsFromCardsAsync(ForgeDbContext db)
+    private static async Task BackfillWorkItemsFromCardsAsync(ProductDbContext db)
     {
         var existingIds = await db.WorkItems.Select(w => w.Id).ToListAsync();
         var existing = new HashSet<string>(existingIds);
@@ -987,7 +987,7 @@ public static class ForgeSeed
     /// rewrite it as the Phase 12 WorkItemAssignee shape. Skips rows that
     /// already carry <c>displayName</c>.
     /// </summary>
-    private static async Task RepairLegacyAssigneeShapeAsync(ForgeDbContext db)
+    private static async Task RepairLegacyAssigneeShapeAsync(ProductDbContext db)
     {
         var rows = await db.WorkItems
             .Where(w => w.AssignedToJson != null && w.AssignedToJson != "")
@@ -1040,7 +1040,7 @@ public static class ForgeSeed
     /// Idempotent: writing the same values is a no-op at the SQLite layer;
     /// roster additions only happen when the guarantee is unmet.
     /// </summary>
-    public static async Task EnsureStartupConfigAsync(ForgeDbContext db, ILogger? logger = null, ForgeBackendPolicy? backendPolicy = null)
+    public static async Task EnsureStartupConfigAsync(ProductDbContext db, ILogger? logger = null, ForgeBackendPolicy? backendPolicy = null)
     {
         // ── 1. Canonical crew ids we manage. ────────────────────────────
         var canonicalIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1334,7 +1334,7 @@ public static class ForgeSeed
     /// rows that would be touched; pass false to actually delete.
     /// </para>
     /// </summary>
-    public static async Task<ScrubReport> ScrubTestArtifactsAsync(ForgeDbContext db, bool dryRun, ILogger? logger = null)
+    public static async Task<ScrubReport> ScrubTestArtifactsAsync(ProductDbContext db, bool dryRun, ILogger? logger = null)
     {
         var canonicalCrewIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -1497,7 +1497,7 @@ public static class ForgeSeedSpawnScrub
     /// </para>
     /// </summary>
     public static async Task<SpawnScrubReport> ScrubMockedSpawnsAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IReadOnlyCollection<string> keepSpawnIds,
         IReadOnlyCollection<string> keepWorkstreamIds,
         bool dryRun,

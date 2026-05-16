@@ -30,12 +30,12 @@ public class Phase26BuildTestGateTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
 
@@ -98,7 +98,7 @@ public class Phase26BuildTestGateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.NotNull(db);
     }
 
@@ -113,7 +113,7 @@ public class Phase26BuildTestGateTests
             await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet build Workflow.sln", saved.BuildCommand);
         }
@@ -131,7 +131,7 @@ public class Phase26BuildTestGateTests
             await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet test src/Foo.Tests/Foo.Tests.csproj", saved.TestCommand);
         }
@@ -150,7 +150,7 @@ public class Phase26BuildTestGateTests
             await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal(300, saved.BuildTimeoutSec);
             Assert.Equal(900, saved.TestTimeoutSec);
@@ -352,7 +352,7 @@ public class Phase26BuildTestGateTests
 
             // Verify DB persistence.
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet test src/Foo/Foo.csproj", saved.TestCommand);
         }
@@ -373,7 +373,7 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal(120, saved.BuildTimeoutSec);
             Assert.Equal(300, saved.TestTimeoutSec);
@@ -398,7 +398,7 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Null(saved.BuildCommand);
             Assert.Null(saved.TestCommand);
@@ -423,7 +423,7 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Null(saved.BuildTimeoutSec);
             Assert.Null(saved.TestTimeoutSec);
@@ -510,7 +510,7 @@ public class Phase26BuildTestGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var product = await db.Products.FirstAsync();
 
@@ -567,7 +567,7 @@ public class Phase26BuildTestGateTests
     private sealed record PipelineTestContext(
         ForgeWebApplicationFactory Factory,
         IServiceScope Scope,
-        ForgeDbContext Db,
+        ProductDbContext Db,
         string WorkItemId,
         string TestRoot,
         string RepoDir,
@@ -1149,7 +1149,7 @@ public class Phase26BuildTestGateTests
         try
         {
             using var client = f.CreateClient();
-            var repo = await scope.ServiceProvider.GetRequiredService<ForgeDbContext>()
+            var repo = await scope.ServiceProvider.GetRequiredService<ProductDbContext>()
                 .Repos.FirstAsync();
             var resp = await client.PostAsync($"/api/repos/{repo.Id}/detect-build", null);
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
@@ -1186,7 +1186,7 @@ public class Phase26BuildTestGateTests
         try
         {
             using var client = f.CreateClient();
-            var repo = await scope.ServiceProvider.GetRequiredService<ForgeDbContext>()
+            var repo = await scope.ServiceProvider.GetRequiredService<ProductDbContext>()
                 .Repos.FirstAsync();
             var resp = await client.PostAsync($"/api/repos/{repo.Id}/validate-build", null);
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
@@ -1397,7 +1397,7 @@ public class Phase26BuildTestGateTests
 
                 // Verify build command was auto-detected.
                 using var scope2 = f.Services.CreateScope();
-                var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "detect-repo");
                 Assert.Equal("dotnet build TestProject.sln", saved.BuildCommand);
                 Assert.Equal("dotnet test TestProject.sln", saved.TestCommand);
@@ -1439,7 +1439,7 @@ public class Phase26BuildTestGateTests
                 Assert.True(resp.IsSuccessStatusCode);
 
                 using var scope2 = f.Services.CreateScope();
-                var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "keep-repo");
                 Assert.Equal("my-custom-build", saved.BuildCommand); // preserved
                 Assert.Equal("dotnet test MyApp.sln", saved.TestCommand); // auto-detected
@@ -1513,7 +1513,7 @@ public class Phase26BuildTestGateTests
 
             // Verify commands persisted.
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var savedRepo = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-dotnet");
             Assert.Equal(detectedBuild, savedRepo.BuildCommand);
             Assert.Equal(detectedTest, savedRepo.TestCommand);
@@ -1598,7 +1598,7 @@ public class Phase26BuildTestGateTests
 
             // Verify auto-detected commands were persisted.
             using var scope2 = f.Services.CreateScope();
-            var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-patch");
             Assert.NotNull(saved.BuildCommand);
             Assert.NotNull(saved.TestCommand);

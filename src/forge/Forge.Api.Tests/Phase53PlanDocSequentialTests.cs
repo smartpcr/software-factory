@@ -160,7 +160,7 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.StorySpawns.Add(new StorySpawnRow
         {
@@ -187,7 +187,7 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = new StorySpawnRow
         {
@@ -218,7 +218,7 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.Null(await PlanDocStateHelpers.FindByPrIdAsync(db, "pr-nope", default));
     }
 
@@ -234,7 +234,7 @@ public class Phase53PlanDocSequentialTests
         // Seed story.
         using (var seedScope = f.Services.CreateScope())
         {
-            var sdb = seedScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var sdb = seedScope.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-P53-A", Provider = "ado", Track = "dev", Type = "feature",
@@ -248,7 +248,7 @@ public class Phase53PlanDocSequentialTests
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-P53-A");
         Assert.True(PlanDocStateHelpers.IsSequentialMode(spawn),
             "New spawn must be in sequential mode (PlanDocPrsJson initialised).");
@@ -265,7 +265,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var sdb = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-P53-B", Provider = "ado", Track = "dev", Type = "feature",
@@ -316,7 +316,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var sdb = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-P53-C", Provider = "ado", Track = "dev", Type = "feature",
@@ -380,7 +380,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var sdb = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-P53-D", Provider = "ado", Track = "dev", Type = "feature",

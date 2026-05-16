@@ -35,7 +35,7 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var product = await db.Products.FirstAsync();
         db.Crews.Add(new CrewRow
@@ -80,7 +80,7 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var product = await db.Products.FirstAsync();
         db.Crews.Add(new CrewRow
@@ -121,7 +121,7 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var product = await db.Products.FirstAsync();
         db.Crews.Add(new CrewRow

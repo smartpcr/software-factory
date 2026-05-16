@@ -221,7 +221,7 @@ public class AgentRuntimeTests
         while (DateTime.UtcNow < deadline)
         {
             using var scope = factory.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             row = await db.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
             if (row?.Status == "finished") break;
             await Task.Delay(50);
@@ -257,7 +257,7 @@ public class AgentRuntimeTests
         // which never happens in tests.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Users.Add(new UserRow
             {
                 Id = "user-po",

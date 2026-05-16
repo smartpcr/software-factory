@@ -27,11 +27,11 @@ public sealed class PrCommentLinker
         @"(?:Addresses|Fixes|fix|fixes|address|addresses)\s+comment\s+(?<id>\d+)|CR-(?<id2>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly ILogger<PrCommentLinker> logger;
     private readonly ForgeMetrics? metrics;
 
-    public PrCommentLinker(ForgeDbContext db, ILogger<PrCommentLinker> logger, ForgeMetrics? metrics = null)
+    public PrCommentLinker(ProductDbContext db, ILogger<PrCommentLinker> logger, ForgeMetrics? metrics = null)
     {
         this.db = db;
         this.logger = logger;

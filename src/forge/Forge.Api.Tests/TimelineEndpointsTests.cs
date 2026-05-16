@@ -51,7 +51,7 @@ public class TimelineEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
     {
         // Seed a workstream so there's at least one bar to inspect.
         using var scope = this.factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
         if (!await db.Workstreams.AnyAsync(w => w.Id == "ws-timeline-shape"))
         {
             db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow

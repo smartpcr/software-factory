@@ -17,7 +17,7 @@ using Xunit;
 /// <summary>
 /// Phase 52 — pure unit tests for <see cref="SloppyDetector"/>. The score
 /// plateau check is deterministic and DB-free (in-memory scalar math); the
-/// token cap check requires the real ForgeDbContext to query
+/// token cap check requires the real ProductDbContext to query
 /// <c>agent_usage</c>.
 /// </summary>
 public class Phase52SloppyDetectorTests
@@ -135,7 +135,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed an agent_usage row carrying 500_001 generator tokens.
         db.AgentUsage.Add(new AgentUsageRow
@@ -164,7 +164,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Evaluator agent burns 600K (above cap); generator burns 100K
         // (below). The check is scoped to AgentId == generatorAgentId, so
@@ -199,7 +199,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var windowStart = DateTimeOffset.UtcNow.AddMinutes(-10);
 
@@ -246,7 +246,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Exactly at the cap → NOT sloppy (strict >, not >=).
         db.AgentUsage.Add(new AgentUsageRow
@@ -278,7 +278,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Token usage well over the cap AND a textbook plateau pattern —
         // historically both would have fired sloppy; now neither does.
@@ -312,7 +312,7 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Light token usage + strictly-improving scores — was already
         // not-sloppy pre-2026-05-13; remains not-sloppy after the

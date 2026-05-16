@@ -209,7 +209,7 @@ public class ProductsEndpointsTests
         // workstream here so the "all" branch has something to find.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
             db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
             {
                 Id = "ws-product-scope-test",

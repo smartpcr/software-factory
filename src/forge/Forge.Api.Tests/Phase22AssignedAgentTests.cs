@@ -27,12 +27,12 @@ public class Phase22AssignedAgentTests
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
 
@@ -72,7 +72,7 @@ public class Phase22AssignedAgentTests
 
         // If we can write and read the column, migration succeeded.
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = MakeWorkItem("mig-col-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\"}";
         db2.WorkItems.Add(wi);
@@ -132,7 +132,7 @@ public class Phase22AssignedAgentTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Running migration again should not throw.
         await Phase22Migration.ApplyAsync(db);
@@ -274,7 +274,7 @@ public class Phase22AssignedAgentTests
 
         // Set AssignedAgentJson directly via DB.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "map-1");
         wi.AssignedAgentJson = JsonSerializer.Serialize(new
         {
@@ -326,7 +326,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "ga-200");
         wi.AssignedAgentJson = JsonSerializer.Serialize(new
         {
@@ -380,7 +380,7 @@ public class Phase22AssignedAgentTests
 
         // Insert 3 history rows with different timestamps.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var now = DateTimeOffset.UtcNow;
         db.AgentAssignments.AddRange(
             new AgentAssignmentRow { WorkItemId = "hist-1", Kind = "claimed", At = now.AddMinutes(-3) },
@@ -408,7 +408,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         for (int i = 0; i < 5; i++)
         {
             db.AgentAssignments.Add(new AgentAssignmentRow
@@ -481,7 +481,7 @@ public class Phase22AssignedAgentTests
 
         // Seed an agent for validation.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         // Agents are seeded by ForgeSeed — pick one that exists.
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
@@ -510,7 +510,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
         var body = new { agents = new[] { agent.Id }, role = "manual" };
@@ -531,7 +531,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
         var body = new { agents = new[] { agent.Id }, role = "reviewer" };
@@ -566,7 +566,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
         var body = new { agents = new[] { agent.Id }, role = "manual", reason = "manual override" };
@@ -587,7 +587,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
         var body = new { agents = new[] { agent.Id }, role = "manual" };
@@ -633,7 +633,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
 
         var body = new { agents = new[] { agent.Id }, role = "nonexistent-role" };
@@ -656,7 +656,7 @@ public class Phase22AssignedAgentTests
 
         // Set AssignedAgentJson.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "del-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -685,7 +685,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "del-reason");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -728,7 +728,7 @@ public class Phase22AssignedAgentTests
 
         // Still should have a history row.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.AgentAssignments.AsNoTracking()
             .Where(a => a.WorkItemId == "del-idem").ToListAsync();
         Assert.Single(hist);
@@ -759,7 +759,7 @@ public class Phase22AssignedAgentTests
 
         // Set AssignedAgentJson.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "mv-res-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -792,7 +792,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "mv-cls-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -820,7 +820,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "mv-act-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -849,7 +849,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items/mv-pa-1/move", moveBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.AgentAssignments.AsNoTracking()
             .Where(a => a.WorkItemId == "mv-pa-1").ToListAsync();
         Assert.Empty(hist);
@@ -869,7 +869,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "rst-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         wi.ExecutionStatus = ExecutionStatuses.Live;
@@ -892,7 +892,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "rst-hist");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         wi.ExecutionStatus = ExecutionStatuses.Failed;
@@ -918,7 +918,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "rst-user");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         wi.ExecutionStatus = ExecutionStatuses.Live;
@@ -943,7 +943,7 @@ public class Phase22AssignedAgentTests
         await client.DeleteAsync("/api/work-items/rst-null/transcript");
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.AgentAssignments.AsNoTracking()
             .Where(a => a.WorkItemId == "rst-null").ToListAsync();
         Assert.Single(hist);
@@ -962,7 +962,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient(); // triggers boot + migration
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Insert a work item with runtime-shaped AssignedToJson.
         var wi = MakeWorkItem("bf-rt-1");
@@ -1003,7 +1003,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = MakeWorkItem("bf-wit-1");
         wi.AssignedToJson = JsonSerializer.Serialize(new
@@ -1041,7 +1041,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = MakeWorkItem("bf-null-1");
         wi.AssignedToJson = null;
@@ -1068,7 +1068,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = MakeWorkItem("bf-hist-1");
         wi.AssignedToJson = JsonSerializer.Serialize(new
@@ -1102,7 +1102,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Backfill already ran during boot.
         // Running again should be a no-op (no duplicate rows).
@@ -1129,7 +1129,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var wi = MakeWorkItem("bf-idem-1");
         wi.AssignedToJson = JsonSerializer.Serialize(new
@@ -1181,7 +1181,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "stick-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         wi.ExecutionStatus = ExecutionStatuses.Failed;
@@ -1213,7 +1213,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "wit-indep-1");
         wi.AssignedAgentJson = "{\"agents\":[\"a1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
         await db.SaveChangesAsync();
@@ -1240,7 +1240,7 @@ public class Phase22AssignedAgentTests
         await client.PatchAsJsonAsync("/api/work-items/wit-nohist", patchBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.AgentAssignments.AsNoTracking()
             .Where(a => a.WorkItemId == "wit-nohist").ToListAsync();
         Assert.Empty(hist);
@@ -1256,7 +1256,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "both-1");
         wi.AssignedToJson = "{\"kind\":\"agent\",\"id\":\"XD\",\"displayName\":\"XD\",\"initials\":\"XD\"}";
         wi.AssignedAgentJson = "{\"agents\":[\"gen-1\"],\"role\":\"generator\",\"assignedAt\":\"2026-01-01T00:00:00Z\"}";
@@ -1282,7 +1282,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Set initial generator assignment.
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "rev-replace");
@@ -1314,7 +1314,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agent = await db.Agents.AsNoTracking().FirstAsync();
         var now = DateTimeOffset.UtcNow;
 
@@ -1379,7 +1379,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.AgentAssignments.Add(new AgentAssignmentRow
         {
             WorkItemId = "ts-check", Kind = AgentAssignmentKinds.Claimed,
@@ -1404,7 +1404,7 @@ public class Phase22AssignedAgentTests
         await client.PostAsJsonAsync("/api/work-items", createBody, JsonOpts);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         foreach (var kind in AgentAssignmentKinds.All)
         {
             db.AgentAssignments.Add(new AgentAssignmentRow
@@ -1452,7 +1452,7 @@ public class Phase22AssignedAgentTests
         using var client = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = MakeWorkItem("malformed-1");
         wi.AssignedAgentJson = "NOT VALID JSON {{{{";
         db.WorkItems.Add(wi);

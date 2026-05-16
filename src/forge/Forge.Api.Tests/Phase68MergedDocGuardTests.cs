@@ -52,7 +52,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         // e2e-scenarios — iter 1 passed (the PR was opened on this row).
@@ -88,7 +88,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 1, verdict: "iterate");
@@ -118,7 +118,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 1, verdict: "pass",
@@ -151,7 +151,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 1, verdict: "iterate");
@@ -178,7 +178,7 @@ public class Phase68MergedDocGuardTests
         using var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         // Story row required by ResumeArtifact lookup.
@@ -216,7 +216,7 @@ public class Phase68MergedDocGuardTests
         using var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         db.WorkItems.Add(new WorkItemRow
@@ -249,7 +249,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         AddMergedPr(db, "pr-e2e-boot");
@@ -263,7 +263,7 @@ public class Phase68MergedDocGuardTests
 
         // Marker was cleared so the next boot won't re-fire the phantom path.
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var refreshed = await verifyDb.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == SpawnId);
         Assert.True(
             string.IsNullOrEmpty(refreshed.ResumePendingJson)
@@ -277,7 +277,7 @@ public class Phase68MergedDocGuardTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = SeedSequentialSpawn(db);
         db.WorkItems.Add(new WorkItemRow
@@ -306,7 +306,7 @@ public class Phase68MergedDocGuardTests
         // test). What we DO want to pin: Phase 68 doesn't strip a marker
         // that should have run.
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var refreshed = await verifyDb.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == SpawnId);
         // Either still pending (resume task didn't finish in test window) or
         // cleared via the legitimate resume path — both are acceptable. The
@@ -320,7 +320,7 @@ public class Phase68MergedDocGuardTests
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static StorySpawnRow SeedSequentialSpawn(ForgeDbContext db)
+    private static StorySpawnRow SeedSequentialSpawn(ProductDbContext db)
     {
         var spawn = new StorySpawnRow
         {
@@ -341,7 +341,7 @@ public class Phase68MergedDocGuardTests
     }
 
     private static void AddDeliverable(
-        ForgeDbContext db, string workItemId, int iter, string verdict,
+        ProductDbContext db, string workItemId, int iter, string verdict,
         int score = 0, DateTimeOffset? createdAt = null)
     {
         db.Deliverables.Add(new DeliverableRow
@@ -360,10 +360,10 @@ public class Phase68MergedDocGuardTests
         });
     }
 
-    private static void AddMergedPr(ForgeDbContext db, string prId) =>
+    private static void AddMergedPr(ProductDbContext db, string prId) =>
         AddPr(db, prId, col: "merged");
 
-    private static void AddPr(ForgeDbContext db, string prId, string col)
+    private static void AddPr(ProductDbContext db, string prId, string col)
     {
         db.Prs.Add(new PrRow
         {

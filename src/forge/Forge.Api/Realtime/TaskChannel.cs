@@ -80,7 +80,7 @@ public sealed class TaskChannel
         try
         {
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = new TaskTranscriptEventRow
             {
                 WorkItemId = workItemId,
@@ -130,7 +130,7 @@ public sealed class TaskChannel
         }
     }
 
-    private static async Task EvictOverCapAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private static async Task EvictOverCapAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var count = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
             .CountAsync(db.TaskTranscriptEvents, e => e.WorkItemId == workItemId, ct);

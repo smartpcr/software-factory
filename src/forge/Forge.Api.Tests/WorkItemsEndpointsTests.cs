@@ -292,7 +292,7 @@ public class WorkItemsEndpointsTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow {
                 Id = "WI-AUTH-1", Track = "dev", Type = "task", State = "proposed",
                 Title = "x", Provider = "local",

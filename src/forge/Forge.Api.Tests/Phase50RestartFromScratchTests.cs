@@ -150,7 +150,7 @@ public class Phase50RestartFromScratchTests
         // pending marker and pretend deliverables were already wiped.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.ResumePendingJson = "[\"architecture\"]";
             await db.SaveChangesAsync();
@@ -344,7 +344,7 @@ public class Phase50RestartFromScratchTests
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
         {
             db.WorkItems.Add(new WorkItemRow
@@ -380,7 +380,7 @@ public class Phase50RestartFromScratchTests
     private static async Task<(
         ForgeWebApplicationFactory factory,
         IServiceScope scope,
-        ForgeDbContext db,
+        ProductDbContext db,
         IServiceScopeFactory scopeFactory,
         string tempDir,
         string diskPath)>
@@ -389,7 +389,7 @@ public class Phase50RestartFromScratchTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var scopeFactory = f.Services.GetRequiredService<IServiceScopeFactory>();
         var tempDir = Path.Combine(Path.GetTempPath(), $"forge-test-{suffix}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);

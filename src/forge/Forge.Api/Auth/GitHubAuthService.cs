@@ -187,7 +187,7 @@ public partial class GitHubAuthService : IAuthService
         try
         {
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.UserSettings.AsNoTracking()
                 .OrderBy(x => x.UserId)
                 .FirstOrDefaultAsync(ct);

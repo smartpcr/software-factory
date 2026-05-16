@@ -35,7 +35,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             AddDeliverable(db, iter: 6, score: 98, verdict: "iterate");
             await db.SaveChangesAsync();
@@ -47,7 +47,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var latest = (await verifyDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == WsId).ToListAsync())
             .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
@@ -70,7 +70,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "complete");
             AddDeliverable(db, iter: 1, score: 95, verdict: "pass");
             await db.SaveChangesAsync();
@@ -93,7 +93,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             await db.SaveChangesAsync();
         }
@@ -115,7 +115,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             AddDeliverable(db, iter: 3, score: 95, verdict: "pass");
             await db.SaveChangesAsync();
@@ -127,7 +127,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var latest = (await verifyDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == WsId).ToListAsync())
             .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
@@ -146,7 +146,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             AddDeliverable(db, iter: 4, score: 92, verdict: "iterate");
             // TaskQueue has UNIQUE(WorkItemId, Kind), so we exercise the
@@ -171,7 +171,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queueRows = await verifyDb.TaskQueue.AsNoTracking()
             .Where(q => q.WorkItemId == WsId).ToListAsync();
         Assert.Single(queueRows);
@@ -188,7 +188,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             // The WorkItem row (backs the workstream's persistent state).
             db.WorkItems.Add(new WorkItemRow
@@ -210,7 +210,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
         Assert.Equal(ExecutionStatuses.Queued, wi.ExecutionStatus);
     }
@@ -237,7 +237,7 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             SeedWorkstream(db, status: "active");
             AddDeliverable(db, iter: 1, score: 80, verdict: "iterate");
             await db.SaveChangesAsync();
@@ -250,7 +250,7 @@ public class Phase70WorkstreamAcceptTests
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static void SeedWorkstream(ForgeDbContext db, string status)
+    private static void SeedWorkstream(ProductDbContext db, string status)
     {
         db.Workstreams.Add(new WorkstreamRow
         {
@@ -263,7 +263,7 @@ public class Phase70WorkstreamAcceptTests
         });
     }
 
-    private static void AddDeliverable(ForgeDbContext db, int iter, int score, string verdict)
+    private static void AddDeliverable(ProductDbContext db, int iter, int score, string verdict)
     {
         db.Deliverables.Add(new DeliverableRow
         {

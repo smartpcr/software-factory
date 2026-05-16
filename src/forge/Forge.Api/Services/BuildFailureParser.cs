@@ -68,7 +68,7 @@ public sealed class BuildFailureParser
         long stageId,
         string logTail,
         IReadOnlyList<(string Path, string Content)> artifactFiles,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var p1 = this.RunPass1(logTail, sourceOffsetBase: 0);
@@ -145,7 +145,7 @@ public sealed class BuildFailureParser
     private async Task PersistAsync(
         long stageId,
         IReadOnlyList<ParsedFailurePoint> rows,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         // Replace previous parse results for this stage on re-run (idempotent on re-fetch).

@@ -169,7 +169,7 @@ public class Phase50StorySpawnDeleteTests
         prCols ??= Enumerable.Repeat("review", wsCount).ToArray();
         var spawnId = $"spawn-{storyId}";
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
         {
@@ -403,7 +403,7 @@ public class Phase50StorySpawnDeleteTests
         // Seed a bare spawn — no workstreams, no PRs.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.StorySpawns.Add(new StorySpawnRow
             {
                 Id = $"spawn-{storyId}",
@@ -421,7 +421,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
 
@@ -454,7 +454,7 @@ public class Phase50StorySpawnDeleteTests
         // restart-from-scratch wipes both merged + abandoned for this
         // spawn).
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         foreach (var id in prIds)
         {
             Assert.False(await verifyDb.Prs.AnyAsync(p => p.Id == id),
@@ -474,7 +474,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.Id == spawnId));
         foreach (var wsId in wsIds)
         {
@@ -515,7 +515,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Every claim that was active under any deleted work item should
         // now have ReleasedAt set OR the row itself should be gone (for
@@ -558,7 +558,7 @@ public class Phase50StorySpawnDeleteTests
 
         // Spawn is gone — verify that even though we kept the base.
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
 
@@ -596,7 +596,7 @@ public class Phase50StorySpawnDeleteTests
         // Spawn A should still exist (refused before any destructive
         // work — the operator can re-call without the flag).
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await verifyDb.StorySpawns.AnyAsync(s => s.Id == spawnAId));
         foreach (var wsId in wsAIds)
         {
@@ -658,7 +658,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
 }

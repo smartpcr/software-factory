@@ -318,7 +318,7 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         if (!string.IsNullOrEmpty(pr.RepoId))
         {
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var repoRow = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.AdoProject))
             {
@@ -364,7 +364,7 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         // The full `PreferredAdoAccount` mapping is Phase 9.11 territory; we
         // return a best-effort case-insensitive lookup here.
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var agents = await db.Agents.AsNoTracking().Select(a => new { a.Id, a.Name }).ToListAsync(ct);
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var a in agents)

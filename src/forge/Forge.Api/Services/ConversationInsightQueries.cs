@@ -50,7 +50,7 @@ public static class ConversationInsightQueries
     /// </list>
     /// </summary>
     public static async Task<object> GetIterKpisAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct)
+        ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // EF/SQLite refuses server-side ORDER BY on DateTimeOffset
         // (NotSupportedException), so we materialise then sort
@@ -284,7 +284,7 @@ public static class ConversationInsightQueries
     /// workItemId.</para>
     /// </summary>
     public static async Task<object> GetMemoryAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         CopilotSessionPool copilotPool,
         MemoryCompactor compactor,
         string workItemId,

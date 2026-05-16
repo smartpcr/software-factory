@@ -14,7 +14,7 @@ using Microsoft.EntityFrameworkCore;
 /// <summary>
 /// Phase 16.6 — coding-pipeline file-budget check. When a coding deliverable
 /// reaches PR-emit, the runner calls
-/// <see cref="CheckAsync(string, int, ForgeDbContext, TaskChannel, CancellationToken)"/>
+/// <see cref="CheckAsync(string, int, ProductDbContext, TaskChannel, CancellationToken)"/>
 /// to compare the actual <c>git diff --name-only</c> count against the step's
 /// <see cref="WorkItemRow.ExpectedFileChanges"/> and emit a soft-fail
 /// <c>step-budget-met</c> check on the PR (Phase 6.9 human-gate path).
@@ -46,7 +46,7 @@ public static class StepBudgetChecker
     public static async Task<Result> CheckAsync(
         string workItemId,
         int actualFileCount,
-        ForgeDbContext db,
+        ProductDbContext db,
         TaskChannel channel,
         CancellationToken ct)
     {

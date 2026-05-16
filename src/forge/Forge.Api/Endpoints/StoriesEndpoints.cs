@@ -146,7 +146,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] SpawnRequest? req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
         IForgeDbPaths paths,
@@ -361,7 +361,7 @@ public static class StoriesEndpoints
                 try
                 {
                     using var bgScope = scopeFactory.CreateScope();
-                    var bgDb = bgScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var bgDb = bgScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     var bgLoggerFactory = bgScope.ServiceProvider.GetRequiredService<ILoggerFactory>();
                     var bgPurgeLogger = bgLoggerFactory.CreateLogger("forge.story-spawn.respawn-purge");
                     try
@@ -410,7 +410,7 @@ public static class StoriesEndpoints
     /// </list></para>
     /// </summary>
     private static async Task PurgeResidualSpawnDataAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IForgeDbPaths paths,
         string deterministicSpawnId,
         string safeStoryId,
@@ -779,7 +779,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromQuery] bool? deleteBaseBranch,
-        ForgeDbContext db,
+        ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
         IHubContext<ForgeHub> hub,
@@ -1002,7 +1002,7 @@ public static class StoriesEndpoints
             }
 
             // Wipe local PR comment chain (no FK cascade — see
-            // ForgeDbContext OnModelCreating).
+            // ProductDbContext OnModelCreating).
             var comments = await db.PrComments.Where(c => c.PrId == pr.Id).ToListAsync(ctx.RequestAborted);
             var commentIds = comments.Select(c => c.Id).ToList();
             if (commentIds.Count > 0)
@@ -1405,7 +1405,7 @@ public static class StoriesEndpoints
     /// first collision.
     /// </summary>
     private static async Task SaveChangesWithBusyRetryAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         ILogger logger,
         string operation,
         CancellationToken ct)
@@ -1449,7 +1449,7 @@ public static class StoriesEndpoints
         return false;
     }
 
-    private static async Task<IResult> ListSpawns(HttpContext ctx, ForgeDbContext db, [FromQuery] string? phase)
+    private static async Task<IResult> ListSpawns(HttpContext ctx, ProductDbContext db, [FromQuery] string? phase)
     {
         var scope = await ProductScope.ResolveAsync(ctx, db);
         var q = db.StorySpawns.AsNoTracking().AsQueryable();
@@ -1468,7 +1468,7 @@ public static class StoriesEndpoints
         return Results.Ok(rows.Select(ToContract).ToList());
     }
 
-    private static async Task<IResult> GetSpawn(string storyId, ForgeDbContext db)
+    private static async Task<IResult> GetSpawn(string storyId, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -1797,7 +1797,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] AdvancePhaseRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
     {
@@ -1868,7 +1868,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] ChangeBaseBranchRequest? req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
         IStoryGitOps git,
@@ -1944,7 +1944,7 @@ public static class StoriesEndpoints
     /// (user requirements #5 + #6).
     /// </summary>
     internal static async Task<SpawnBaseBranchChangeResult> ApplySpawnBaseBranchChangeAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryGitOps git,
         IStoryProviderOps provider,
@@ -2143,7 +2143,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> RetrySpawn(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
     {
@@ -2188,7 +2188,7 @@ public static class StoriesEndpoints
                     try
                     {
                         using var scope = scopeFactory.CreateScope();
-                        var scopedDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                        var scopedDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                         var row = await scopedDb.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
                         if (row is not null)
                         {
@@ -2218,7 +2218,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> DismissError(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -2248,7 +2248,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactIterKpis(
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
@@ -2277,7 +2277,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactIterNotes(
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
@@ -2307,7 +2307,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactMemory(
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         Forge.Api.Agents.CopilotSessionPool copilotPool,
         Forge.Api.Services.MemoryCompactor compactor,
         CancellationToken ct)
@@ -2345,7 +2345,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryArtifactStrategy strategy)
     {
@@ -2438,7 +2438,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryArtifactStrategy strategy)
     {
@@ -2602,7 +2602,7 @@ public static class StoriesEndpoints
         try
         {
             using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
             var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == storyId, ct);
             if (spawn is null || story is null) return;
@@ -2644,7 +2644,7 @@ public static class StoriesEndpoints
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
             if (row is not null)
             {
@@ -2659,7 +2659,7 @@ public static class StoriesEndpoints
             try
             {
                 using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, CancellationToken.None);
                 if (row is not null && RemoveResumePending(row, key))
                 {
@@ -2689,7 +2689,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
     {
@@ -2780,7 +2780,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
         IStoryGitOps git,
@@ -2881,7 +2881,7 @@ public static class StoriesEndpoints
             try
             {
                 using var scope = scopeFactory.CreateScope();
-                var scopeDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var scopeDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var scopeHub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
                 RepoRow? repo = null;
@@ -3017,7 +3017,7 @@ public static class StoriesEndpoints
                 try
                 {
                     using var scope = scopeFactory.CreateScope();
-                    var scopeDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var scopeDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     var scopeHub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
                     var spawnRow = await scopeDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == capturedSpawnId);
                     if (spawnRow is not null)
@@ -3062,7 +3062,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
         IForgeDbPaths paths,
@@ -3227,7 +3227,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> Reconcile(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         Forge.Api.Services.Stories.PlanReconciler reconciler)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -3293,7 +3293,7 @@ public static class StoriesEndpoints
     /// Returns null when the gate is satisfied, or an IResult with the
     /// 422 problem describing the gate violation.
     /// </summary>
-    private static async Task<IResult?> CheckGateAsync(StorySpawnRow spawn, string targetPhase, ForgeDbContext db)
+    private static async Task<IResult?> CheckGateAsync(StorySpawnRow spawn, string targetPhase, ProductDbContext db)
     {
         switch (targetPhase)
         {
@@ -3415,7 +3415,7 @@ public static class StoriesEndpoints
     /// 28.8 — story is complete only when every workstream PR is merged,
     /// the QA feature PR is merged, and all e2e tests pass on main.
     /// </summary>
-    private static async Task<IResult?> CheckCompletionAsync(StorySpawnRow spawn, ForgeDbContext db)
+    private static async Task<IResult?> CheckCompletionAsync(StorySpawnRow spawn, ProductDbContext db)
     {
         var workstreams = await db.Workstreams.AsNoTracking()
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -3466,7 +3466,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] DecomposeRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
     {
@@ -3606,7 +3606,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> ApproveDecomposition(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
     {
@@ -3633,7 +3633,7 @@ public static class StoriesEndpoints
         return Results.Ok(ToContract(refreshed));
     }
 
-    private static async Task<IResult> GetArtifacts(string storyId, ForgeDbContext db)
+    private static async Task<IResult> GetArtifacts(string storyId, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -3706,7 +3706,7 @@ public static class StoriesEndpoints
     /// <c>decomposition</c> returns the spawn's stored decomposition JSON
     /// formatted as a markdown-friendly preview.</para>
     /// </summary>
-    private static async Task<IResult> GetArtifactContent(string storyId, string key, ForgeDbContext db)
+    private static async Task<IResult> GetArtifactContent(string storyId, string key, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -3886,7 +3886,7 @@ public static class StoriesEndpoints
     /// in <see cref="Forge.Api.Services.Stories.CrewStoryArtifactStrategy.ProducePlanFileAsync"/>).
     /// Decomposition has no per-doc iterations — returns empty.
     /// </summary>
-    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ForgeDbContext db)
+    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -4159,7 +4159,7 @@ public static class StoriesEndpoints
     /// </summary>
     public sealed record AddDecisionPinRequest(string Text, string? WorkItemId);
 
-    private static async Task<IResult> ListDecisionPins(string storyId, ForgeDbContext db)
+    private static async Task<IResult> ListDecisionPins(string storyId, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -4187,7 +4187,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] AddDecisionPinRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -4242,7 +4242,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string pinId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -4306,7 +4306,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> PauseSpawn(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
         ILoggerFactory loggerFactory)
@@ -4444,7 +4444,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> ResumeSpawn(
         HttpContext ctx,
         string storyId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
         ILoggerFactory loggerFactory)

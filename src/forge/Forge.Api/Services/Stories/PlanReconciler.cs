@@ -82,7 +82,7 @@ public sealed class PlanReconciler
     public async Task<ReconciliationReport?> ReconcileAsync(string spawnId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
         var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
@@ -395,7 +395,7 @@ public sealed class PlanReconciler
     }
 
     private static void InsertWorkstream(
-        ForgeDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
+        ProductDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
         IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
     {
         var wsId = WorkstreamIdFor(spawn.StoryId, stage.Anchor);
@@ -465,7 +465,7 @@ public sealed class PlanReconciler
         }
     }
 
-    private static void UpdateMatchingWorkItem(ForgeDbContext db, string wsId, Action<WorkItemRow> mutate)
+    private static void UpdateMatchingWorkItem(ProductDbContext db, string wsId, Action<WorkItemRow> mutate)
     {
         var wi = db.WorkItems.FirstOrDefault(w => w.Id == wsId);
         if (wi is null) return;
@@ -501,7 +501,7 @@ public sealed class PlanReconciler
         }
     }
 
-    private async Task<RowState> ClassifyAsync(ForgeDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task<RowState> ClassifyAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Shipped: any linked PR is in the merged column, or status is a
         // shipped value.
@@ -530,7 +530,7 @@ public sealed class PlanReconciler
         return RowState.NotStarted;
     }
 
-    private async Task CancelInFlightAsync(ForgeDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task CancelInFlightAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Mirrors WorkstreamsEndpoints.Cancel — kill agent invocations,
         // cancel queue rows, flip statuses to cancelled. We don't touch open
@@ -559,7 +559,7 @@ public sealed class PlanReconciler
         row.Status = "cancelled";
     }
 
-    private async Task DropNotStartedAsync(ForgeDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task DropNotStartedAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Cancel queue rows defensively (a "planning" row shouldn't have any
         // but the cost of an empty Where is zero). We keep the WorkstreamRow
@@ -628,7 +628,7 @@ public sealed class PlanReconciler
     }
 
     private static async Task<string> BuildArtifactJsonAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string spawnId,
         IReadOnlyDictionary<string, PlanParser.CanonicalStage> planByAnchor,
         CancellationToken ct)

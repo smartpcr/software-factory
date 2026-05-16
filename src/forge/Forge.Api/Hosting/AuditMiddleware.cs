@@ -52,7 +52,7 @@ public class AuditMiddleware
 
         var user = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "anonymous";
         var key = ctx.Request.Headers[HttpUserContext.IdempotencyHeader].FirstOrDefault();
-        var db = ctx.RequestServices.GetRequiredService<ForgeDbContext>();
+        var db = ctx.RequestServices.GetRequiredService<ProductDbContext>();
         db.Audit.Add(new AuditRow
         {
             At = DateTimeOffset.UtcNow,

@@ -21,12 +21,12 @@ using Xunit;
 /// </summary>
 public class Phase17QueueTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db, ITaskQueueService queue)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db, ITaskQueueService queue)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         return (f, scope, db, queue);
     }
@@ -156,7 +156,7 @@ public class Phase17QueueTests
         {
             using (var setupScope = f.Services.CreateScope())
             {
-                var d = setupScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var d = setupScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 d.WorkItems.Add(NewWorkItem("wi-race"));
                 await d.SaveChangesAsync();
                 var q = setupScope.ServiceProvider.GetRequiredService<ITaskQueueService>();

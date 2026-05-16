@@ -42,7 +42,7 @@ internal static class PlanPrMergeReactor
     /// touched so callers can log a meaningful summary.
     /// </summary>
     public static async Task<int> OnPlanPrMergedAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub>? hub,
         string prId,

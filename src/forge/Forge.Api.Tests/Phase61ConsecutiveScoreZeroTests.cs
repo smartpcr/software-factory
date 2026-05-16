@@ -225,14 +225,14 @@ public class Phase61ConsecutiveScoreZeroTests
     // ── Shared SQLite-in-memory fixture (matches pattern from existing
     // SloppyDetectorTests / Phase52SloppyDetectorTests). ────────────────
 
-    private static async Task<ForgeDbContext> CreateDbAsync()
+    private static async Task<ProductDbContext> CreateDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         conn.Open();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         return db;
     }

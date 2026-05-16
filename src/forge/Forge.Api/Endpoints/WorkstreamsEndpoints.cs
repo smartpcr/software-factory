@@ -57,7 +57,7 @@ public static class WorkstreamsEndpoints
     // StoriesEndpoints share the same query body.
     private static async Task<IResult> GetIterKpis(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var payload = await Forge.Api.Services.ConversationInsightQueries.GetIterKpisAsync(db, id, ct);
@@ -70,7 +70,7 @@ public static class WorkstreamsEndpoints
     // for the directory walk.
     private static async Task<IResult> GetIterNotes(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, id, ct);
@@ -85,7 +85,7 @@ public static class WorkstreamsEndpoints
     // same code works for engineer workstream ids + plan-doc work items.
     private static async Task<IResult> GetMemory(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         Forge.Api.Agents.CopilotSessionPool copilotPool,
         Forge.Api.Services.MemoryCompactor compactor,
         CancellationToken ct)
@@ -103,7 +103,7 @@ public static class WorkstreamsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] OpenPrRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         Forge.Api.Auth.IUserContext user,
         IHubContext<ForgeHub> hub)
@@ -144,7 +144,7 @@ public static class WorkstreamsEndpoints
     }
 
     // GET /api/workstreams
-    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db, IGitWorktreeService git)
+    private static async Task<IResult> GetAll(HttpContext ctx, ProductDbContext db, IGitWorktreeService git)
     {
         var scope = await ProductScope.ResolveAsync(ctx, db);
         var q = db.Workstreams.AsNoTracking().AsQueryable();
@@ -197,7 +197,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateWorkstreamRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IGitWorktreeService git,
         IRepoCloneService cloneSvc,
         IHubContext<ForgeHub> hub)
@@ -297,7 +297,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Sync(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IGitWorktreeService git,
         IHubContext<ForgeHub> hub)
     {
@@ -331,7 +331,7 @@ public static class WorkstreamsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
-        ForgeDbContext db,
+        ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
         IHubContext<ForgeHub> hub)
@@ -388,7 +388,7 @@ public static class WorkstreamsEndpoints
     /// resurrecting the previous attempt's PR branch.</para>
     /// </summary>
     internal static async Task<object> CascadeDeleteWorkstreamAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
         WorkstreamRow row,
@@ -647,7 +647,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Restart(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
         IForgeDbPaths paths,
@@ -1055,7 +1055,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Retry(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
     {
@@ -1236,7 +1236,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Accept(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
     {
@@ -1364,7 +1364,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Cancel(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
     {

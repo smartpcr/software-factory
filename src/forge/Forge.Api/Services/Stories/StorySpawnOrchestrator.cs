@@ -182,7 +182,7 @@ public sealed class StorySpawnOrchestrator
         try
         {
             using var scope = this.services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
             var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
             if (spawn is null) return;
@@ -199,7 +199,7 @@ public sealed class StorySpawnOrchestrator
     /// (so the caller can loop). Reads the spawn fresh inside its own scope.
     /// </summary>
     private async Task<bool> RunOneStepAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
+        ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
     {
         // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
         // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
@@ -331,7 +331,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── plan ─────────────────────────────────────────────────────────────────
     private async Task<bool> DrivePlanAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         // Phase 53 — sequential plan-doc path. Detection is strictly by
@@ -355,7 +355,7 @@ public sealed class StorySpawnOrchestrator
     /// deliverable verdict is <c>pass</c>.
     /// </summary>
     private async Task<bool> DrivePlanSequentialAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -532,7 +532,7 @@ public sealed class StorySpawnOrchestrator
     /// unambiguous recovery anchor in <c>PlanDocPrsJson</c>.
     /// </summary>
     private async Task<bool> RunPlanDocAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
         string docKey, string docBranch, bool forceResume, CancellationToken ct)
     {
@@ -566,7 +566,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task<bool> RunPlanDocInnerAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
         string docKey, string docBranch, string docWorkItemId, bool forceResume, CancellationToken ct)
     {
@@ -672,7 +672,7 @@ public sealed class StorySpawnOrchestrator
     /// sequential drive.
     /// </summary>
     private static async Task<bool> IsDocVerdictPassAsync(
-        ForgeDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
     {
         if (!PlanDocStateHelpers.PlanDocFileName.TryGetValue(docKey, out var fileName)) return false;
         var docId = $"plan-doc:{spawn.Id}:{fileName}";
@@ -696,7 +696,7 @@ public sealed class StorySpawnOrchestrator
     /// Used by the sequential drive to gate the next doc's start.
     /// </summary>
     private static async Task<bool> IsDocCompleteAsync(
-        ForgeDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
     {
         var entry = PlanDocStateHelpers.GetEntry(spawn, docKey);
         if (entry.PrId is null) return false;
@@ -736,7 +736,7 @@ public sealed class StorySpawnOrchestrator
     /// <see cref="DrivePlanSequentialAsync"/>.
     /// </summary>
     private async Task<bool> DrivePlanLegacyAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -1003,7 +1003,7 @@ public sealed class StorySpawnOrchestrator
     /// waiting for the next /api/state poll.
     /// </summary>
     private static async Task PersistLastErrorAsync(
-        ForgeDbContext db, string spawnId, string message, IHubContext<ForgeHub>? hub, CancellationToken ct)
+        ProductDbContext db, string spawnId, string message, IHubContext<ForgeHub>? hub, CancellationToken ct)
     {
         var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
         if (row is null) return;
@@ -1014,7 +1014,7 @@ public sealed class StorySpawnOrchestrator
         await EmitChange(hub, "spawn-error", row, ct);
     }
 
-    private static Task ClearLastErrorAsync(ForgeDbContext db, StorySpawnRow row, CancellationToken ct)
+    private static Task ClearLastErrorAsync(ProductDbContext db, StorySpawnRow row, CancellationToken ct)
     {
         if (row.LastError is null && row.LastErrorAt is null) return Task.CompletedTask;
         row.LastError = null;
@@ -1092,7 +1092,7 @@ public sealed class StorySpawnOrchestrator
     /// </para>
     /// </summary>
     internal static async Task<(bool AllPassed, IReadOnlyList<string> NonPassedKeys)>
-        ArePlanDocsAllPassedAsync(ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ArePlanDocsAllPassedAsync(ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
         // Materialize the full deliverable history for these docs in one
@@ -1221,7 +1221,7 @@ public sealed class StorySpawnOrchestrator
     /// /api/stories/{storyId}/spawn/artifacts/{key}/iterations queries.
     /// </summary>
     internal static async Task EnsurePlanDocWorkItemsAsync(
-        ForgeDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
     {
         var docPoints = Math.Max(3, spawn.StoryPoints);
         // List<string> rather than string[] — C# 12's implicit T[] → ReadOnlySpan<T>
@@ -1278,7 +1278,7 @@ public sealed class StorySpawnOrchestrator
     /// fresh agent pairs when the spawn re-advances to Implement.</para>
     /// </summary>
     private async Task CancelInFlightImplTasksAsync(
-        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -1358,7 +1358,7 @@ public sealed class StorySpawnOrchestrator
     /// the spawn is currently in plan.
     /// </summary>
     private async Task EnforcePlanPhaseInvariantAsync(
-        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var stranded = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id && w.Status == "active")
@@ -1423,7 +1423,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task<bool> DriveDecomposeAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Phase 48 — recover from spawns whose phase advanced under the
@@ -1528,7 +1528,7 @@ public sealed class StorySpawnOrchestrator
     /// titles that don't resolve to a sibling are skipped.
     /// </summary>
     private static async Task SyncWorkstreamDepsFromJsonAsync(
-        ForgeDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -1579,7 +1579,7 @@ public sealed class StorySpawnOrchestrator
     /// doesn't re-do the workstream + dep insertion every tick.
     /// </summary>
     private async Task PersistDecompositionAsync(
-        ForgeDbContext db, StorySpawnRow spawn,
+        ProductDbContext db, StorySpawnRow spawn,
         IReadOnlyList<DecompositionWorkstream> ws, CancellationToken ct)
     {
         var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
@@ -1686,7 +1686,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── implement ────────────────────────────────────────────────────────────
     private async Task<bool> DriveImplementAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Phase 48 — gate the impl claim sweep on plan-doc completion.
@@ -1990,7 +1990,7 @@ public sealed class StorySpawnOrchestrator
                 try
                 {
                     using var pickScope = this.services.CreateScope();
-                    var pickDb = pickScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var pickDb = pickScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     var freshBusy = await Forge.Api.Services.BusyAgentsHelper.LoadBusyAgentsAsync(pickDb, ct);
 
                     // Phase 65 — seed the busy set with evaluator agents
@@ -2075,7 +2075,7 @@ public sealed class StorySpawnOrchestrator
                     item.ws.Id, npe.ConsecutiveIterations, npe.LastIteration);
 
                 using var noProgScope = this.services.CreateScope();
-                var noProgDb = noProgScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var noProgDb = noProgScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var noProgRow = await noProgDb.Workstreams.FirstOrDefaultAsync(
                     ws => ws.Id == item.ws.Id, CancellationToken.None);
                 if (noProgRow is not null && noProgRow.Status is not "cancelled" and not "complete")
@@ -2118,7 +2118,7 @@ public sealed class StorySpawnOrchestrator
                     bfe.LastIteration, bfe.ExitCode, bfe.ErrorCount);
 
                 using var buildScope = this.services.CreateScope();
-                var buildDb = buildScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var buildDb = buildScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var buildRow = await buildDb.Workstreams.FirstOrDefaultAsync(
                     ws => ws.Id == item.ws.Id, CancellationToken.None);
                 if (buildRow is not null && buildRow.Status is not "cancelled" and not "complete")
@@ -2215,7 +2215,7 @@ public sealed class StorySpawnOrchestrator
     /// WorkItemRow keyed on the workstream id.
     /// </summary>
     private static async Task<int> LookupWorkstreamPointsAsync(
-        ForgeDbContext db, string workstreamId, int storyPoints, CancellationToken ct)
+        ProductDbContext db, string workstreamId, int storyPoints, CancellationToken ct)
     {
         var p = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workstreamId)
@@ -2268,7 +2268,7 @@ public sealed class StorySpawnOrchestrator
     /// </list>
     /// </summary>
     private async Task TryRouteToSloppyReassignAsync(
-        Forge.Api.Persistence.ForgeDbContext db,
+        Forge.Api.Persistence.ProductDbContext db,
         Forge.Api.Persistence.WorkstreamRow w,
         int consecutiveNoProgress,
         CancellationToken ct)
@@ -2349,7 +2349,7 @@ public sealed class StorySpawnOrchestrator
     /// <summary>
     /// Execute the gen↔eval loop, commit, and open PR for a single workstream.
     /// Designed to run in parallel across workstreams — uses its own
-    /// <see cref="ForgeDbContext"/> scope for DB writes and re-checks
+    /// <see cref="ProductDbContext"/> scope for DB writes and re-checks
     /// workstream status before finalizing (guards against cancel/restart
     /// that may have fired mid-loop).
     /// </summary>
@@ -2360,7 +2360,7 @@ public sealed class StorySpawnOrchestrator
         // Check if the gen/eval loop already passed for this workstream.
         // Use a fresh scope so we don't race the original DbContext.
         using var scope = this.services.CreateScope();
-        var db2 = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var lastDel = (await db2.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == w.Id)
@@ -2665,7 +2665,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── review ───────────────────────────────────────────────────────────────
     private async Task<bool> DriveReviewAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -2938,7 +2938,7 @@ public sealed class StorySpawnOrchestrator
     /// for this PR.</para>
     /// </summary>
     private async Task<bool> TrySkipReviewFixOnStalePrAsync(
-        ForgeDbContext db, StorySpawnRow spawn, WorkstreamRow w, string prId,
+        ProductDbContext db, StorySpawnRow spawn, WorkstreamRow w, string prId,
         IReadOnlyList<PrCommentRow> activeComments,
         RepoRow? repo, CancellationToken ct)
     {
@@ -3055,7 +3055,7 @@ public sealed class StorySpawnOrchestrator
         // boundary.
         using (var scope = this.services.CreateScope())
         {
-            var dbDefense = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var dbDefense = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             if (await this.TrySkipReviewFixOnStalePrAsync(dbDefense, spawn, w, prId, activeComments, repo, ct))
             {
                 return;
@@ -3074,7 +3074,7 @@ public sealed class StorySpawnOrchestrator
                 if (!fix.IsReplyOnly)
                 {
                     using var slugScope = this.services.CreateScope();
-                    var slugDb = slugScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var slugDb = slugScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, slugDb, ct);
                     await this.git.CommitFilesAsync(repo, w.Branch, wsSlug,
                         new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
@@ -3121,7 +3121,7 @@ public sealed class StorySpawnOrchestrator
     /// needed) to retry.</para>
     /// </summary>
     private async Task StallWorkstreamForMergeFailureAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkstreamRow w, string prId, Exception ex, CancellationToken ct)
     {
         this.logger?.LogWarning(ex,
@@ -3164,7 +3164,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── qa ───────────────────────────────────────────────────────────────────
     private async Task<bool> DriveQaAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
@@ -3291,7 +3291,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── done ─────────────────────────────────────────────────────────────────
     private async Task<bool> DriveDoneAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub,
+        ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Transition the upstream ADO work item to Closed (idempotent).
@@ -3382,7 +3382,7 @@ public sealed class StorySpawnOrchestrator
     /// claims and the ledger contention sorts itself out as runs finish.
     /// </summary>
     internal static async Task<string[]> ResolveImplPairAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         AgentAllocationLoader allocation,
         HashSet<string> busyAgents,
         int seedOffset,
@@ -3517,7 +3517,7 @@ public sealed class StorySpawnOrchestrator
     /// Tolerates missing rows — the orchestrator should never crash
     /// because of a stale id.
     /// </summary>
-    private static async Task TryCloseWorkItemAsync(ForgeDbContext db, string workstreamId, CancellationToken ct)
+    private static async Task TryCloseWorkItemAsync(ProductDbContext db, string workstreamId, CancellationToken ct)
     {
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workstreamId, ct);
         if (wi is null) return;

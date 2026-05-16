@@ -48,7 +48,7 @@ public static class PerformanceEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetScorecards(string? window, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetScorecards(string? window, ProductDbContext db, CancellationToken ct)
     {
         var windowKey = window ?? "trailing20";
         var nowUtc = DateTimeOffset.UtcNow;

@@ -82,7 +82,7 @@ public class WorkItemSyncJob : BackgroundService
         List<RepoRow> repos;
         using (var scope = this.scopes.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var staleThreshold = now.AddMinutes(-SyncConstants.RunningTimeoutMinutes).ToString("o");
 
@@ -152,7 +152,7 @@ public class WorkItemSyncJob : BackgroundService
         var runId = $"sr-{Guid.NewGuid():N}";
 
         using var scope = this.scopes.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return;
 
@@ -355,7 +355,7 @@ public class WorkItemSyncJob : BackgroundService
     /// the caller can roll them up across the whole run.
     /// </summary>
     private async Task<(int Added, int Updated, int Conflicted)> CommitBatchAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         RepoRow repo,
         WorkItemBatch batch,
         IHubContext<ForgeHub> hub,
@@ -539,7 +539,7 @@ public class WorkItemSyncJob : BackgroundService
         try
         {
             using var scope = this.scopes.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (repo is null) return;
             repo.LastSyncStatus = "idle";
@@ -561,7 +561,7 @@ public class WorkItemSyncJob : BackgroundService
     /// conflict policy lights up the divergence pill in the UI).
     /// </summary>
     private static async Task<(bool Inserted, bool Updated, bool Conflicted)> UpsertAsync(
-        ForgeDbContext db, WorkItem remote, CancellationToken ct)
+        ProductDbContext db, WorkItem remote, CancellationToken ct)
     {
         var existing = await db.WorkItems.FirstOrDefaultAsync(
             w => w.Provider == remote.Provider && w.ProviderRef == remote.ProviderRef, ct);

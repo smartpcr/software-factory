@@ -143,67 +143,14 @@ builder.Services.AddCors(options =>
     // gated behind a feature flag (Forge:Db:SplitEnabled).
     builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitDryRunService>();
 
-    builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
-    {
-        var paths = sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
-        var dbPath = paths.ControlDbPath();
-
-        if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
-        {
-            throw new InvalidOperationException(
-                $"Refusing to open the production Forge DB ('{ProdDbDefault}') from a test process. " +
-                $"This indicates the test factory's Forge:Db:Path override did not reach Program.cs's " +
-                $"AddDbContext delegate (the factory adds an in-memory IConfiguration source via " +
-                $"ConfigureWebHost.ConfigureAppConfiguration; if that source is being shadowed by " +
-                $"appsettings.json, the override silently fails). Inspect ForgeWebApplicationFactory " +
-                $"and the IConfiguration source order before re-running tests.");
-        }
-
-        bool needBootstrap;
-        lock (bootstrapLock)
-        {
-            needBootstrap = bootstrapped.Add(dbPath);
-        }
-        if (needBootstrap)
-        {
-            Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
-            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
-            conn.Open();
-            using var cmd = conn.CreateCommand();
-            // WAL + synchronous=NORMAL is the canonical SQLite config for
-            // concurrent writers. WAL allows readers to run alongside a
-            // single writer (rollback-journal DELETE mode serializes both),
-            // and synchronous=NORMAL fsyncs only at WAL checkpoints instead
-            // of every commit — the durability window shrinks to a handful
-            // of transactions on power loss, which is well within our
-            // tolerance because every meaningful write is idempotent and
-            // recoverable from the spawn state machine.
-            //
-            // journal_mode is a *persistent* DB property (stored in the
-            // file header), so this bootstrap is correct as a one-shot.
-            // The shutdown handler at the bottom of this file already
-            // calls `PRAGMA wal_checkpoint(TRUNCATE)` so the `-wal`/`-shm`
-            // sidecar files don't accumulate.
-            //
-            // Background: User hit "SQLite Error 5: 'database is locked'"
-            // on plan doc 'architecture' at iter 16 ($852.60 spent) on
-            // 2026-05-13 because the orchestrator's per-iteration SaveChanges
-            // raced with PrSyncJob, the worktree-feed sampler, and the cost
-            // ledger. The Phase 48 fix of bumping `Default Timeout=30`
-            // alone wasn't enough — switching to WAL eliminates reader/
-            // writer contention entirely.
-            cmd.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
-            cmd.ExecuteNonQuery();
-        }
-        // `Default Timeout=30` controls SqliteCommand.CommandTimeout, which
-        // Microsoft.Data.Sqlite uses to call sqlite3_busy_timeout(30000) on
-        // every command — so a contending writer waits up to 30 s before
-        // failing with SQLITE_BUSY. Combined with WAL above, this is
-        // belt-and-braces against the rare case where two writers attempt
-        // the lock simultaneously (WAL still serializes writers, just not
-        // readers vs writers).
-        opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
-    });
+    // Phase D step 5 — ForgeDbContext registration removed. The split
+    // ControlDbContext + ProductDbContext (+ IProductDbContextFactory)
+    // below cover every consumer that used to take ForgeDbContext.
+    // The class itself lives on for transitive type references in
+    // legacy XML doc comments and the OnModelCreating union helper, but
+    // it is no longer registered for DI. Delete the file in Phase G
+    // once every remaining XML doc <see cref="ForgeDbContext"/> is
+    // updated.
 
     // Phase D — ControlDbContext binds to the same forge.db file as
     // ForgeDbContext during the migration window. After Phase F, this
@@ -216,8 +163,31 @@ builder.Services.AddCors(options =>
         if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
         {
             throw new InvalidOperationException(
-                $"ControlDbContext refused to open the production Forge DB from a test process. " +
-                $"See ForgeDbContext registration above for the tripwire rationale.");
+                $"ControlDbContext refused to open the production Forge DB ('{ProdDbDefault}') from a test process. " +
+                $"This indicates the test factory's Forge:Db:Path override did not reach Program.cs's " +
+                $"AddDbContext delegate (the factory adds an in-memory IConfiguration source via " +
+                $"ConfigureWebHost.ConfigureAppConfiguration; if that source is being shadowed by " +
+                $"appsettings.json, the override silently fails). Inspect ForgeWebApplicationFactory " +
+                $"and the IConfiguration source order before re-running tests.");
+        }
+
+        // WAL + synchronous=NORMAL bootstrap (Phase A; moved here from the
+        // legacy ForgeDbContext registration as part of Phase D step-5
+        // cleanup). The `bootstrapped` HashSet is keyed on the resolved
+        // path so a different path (tests) bootstraps separately.
+        bool needBootstrap;
+        lock (bootstrapLock)
+        {
+            needBootstrap = bootstrapped.Add(dbPath);
+        }
+        if (needBootstrap)
+        {
+            Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
+            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
+            cmd.ExecuteNonQuery();
         }
         opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
     });
@@ -323,7 +293,7 @@ builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
 // Phase 16.4 — gets the live TaskChannel so iteration boundaries emit on task.{wid}.
 builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
     new Forge.Api.Services.DeliverableLoop(
-        sp.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>(),
+        sp.GetRequiredService<Forge.Api.Persistence.ProductDbContext>(),
         sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
@@ -504,7 +474,7 @@ var app = builder.Build();
 // Ensure DB exists and is seeded (idempotent).
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
     await db.Database.EnsureCreatedAsync();
     // Phase 42 must run BEFORE any migration that issues an EF query against
     // workstreams / work_items. EF's SELECT lists every mapped column on
@@ -799,7 +769,7 @@ if (args.Contains("--scrub-test-artifacts"))
 {
     var apply = args.Contains("--apply");
     using var scrubScope = app.Services.CreateScope();
-    var scrubDb = scrubScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var scrubDb = scrubScope.ServiceProvider.GetRequiredService<ProductDbContext>();
     var scrubLogger = scrubScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.Scrub");
     var report = await ForgeSeed.ScrubTestArtifactsAsync(scrubDb, dryRun: !apply, scrubLogger);
 
@@ -840,7 +810,7 @@ if (args.Contains("--scrub-mocked-spawns"))
 {
     var apply = args.Contains("--apply");
     using var spawnScope = app.Services.CreateScope();
-    var spawnDb = spawnScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var spawnDb = spawnScope.ServiceProvider.GetRequiredService<ProductDbContext>();
     var spawnLogger = spawnScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.SpawnScrub");
 
     // The single real story spawn currently in the DB. If you need to keep
@@ -983,7 +953,7 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 app.Lifetime.ApplicationStopping.Register(() =>
 {
     using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
     db.Database.ExecuteSqlRaw("PRAGMA wal_checkpoint(TRUNCATE)");
     Console.WriteLine("[Forge] WAL checkpoint completed.");
 });

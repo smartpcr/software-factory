@@ -69,7 +69,7 @@ public class AgentSoulAndBudgetTests
         // Seed a PO so the role gate accepts the PUT.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Users.Add(new UserRow
             {
                 Id = "user-po",
@@ -92,7 +92,7 @@ public class AgentSoulAndBudgetTests
         {
             using (var scope = factory.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var row = await db.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = Path.Combine(tmpRoot, "E4.md");
                 await db.SaveChangesAsync();
@@ -131,7 +131,7 @@ public class AgentSoulAndBudgetTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Users.Add(new UserRow { Id = "u-po", DisplayName = "PO", Email = "po@x", Role = "product-owner", CreatedAt = DateTimeOffset.UtcNow });
             db.Users.Add(new UserRow { Id = "u-h", DisplayName = "H", Email = "h@x", Role = "human", CreatedAt = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
@@ -160,7 +160,7 @@ public class AgentSoulAndBudgetTests
 
         // History row appears.
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.AgentHistory.AsNoTracking()
             .Where(h => h.AgentId == "E4")
             .OrderByDescending(h => h.Id)
@@ -194,7 +194,7 @@ public class AgentSoulAndBudgetTests
         await client.PatchAsJsonAsync("/api/crews/crew-eng", new { dailyBudgetUsd = 5m, maxTaskBudgetUsd = 1m }, JsonOpts);
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.AgentUsage.Add(new AgentUsageRow
             {
                 AgentId = "E4", CrewId = "crew-eng", TaskId = "234", Model = "claude-opus-4-7",
@@ -223,7 +223,7 @@ public class AgentSoulAndBudgetTests
         await client.PatchAsJsonAsync("/api/crews/crew-eng", new { dailyBudgetUsd = 0.5m }, JsonOpts);
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.AgentUsage.Add(new AgentUsageRow
             {
                 AgentId = "E4", CrewId = "crew-eng", TaskId = "any", Model = "claude-opus-4-7",

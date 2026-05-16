@@ -72,7 +72,7 @@ public class AutoMergeWatcher : BackgroundService
         try
         {
             using var scope = this.services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>().ToList();
             var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 

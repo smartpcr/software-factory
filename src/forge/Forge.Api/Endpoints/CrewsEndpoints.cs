@@ -67,7 +67,7 @@ public static class CrewsEndpoints
     /// filtered by repo or team-prefix; default returns everything.
     /// </summary>
     private static async Task<IResult> ListDomainExperts(
-        ForgeDbContext db,
+        ProductDbContext db,
         string? repoId,
         string? prefix,
         CancellationToken ct)
@@ -80,7 +80,7 @@ public static class CrewsEndpoints
             e.ContentId, e.RepoId, e.Path, e.Topic, e.Summary, e.IndexedAt)).ToList());
     }
 
-    private static async Task<IResult> GetSalary(string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSalary(string id, ProductDbContext db, CancellationToken ct)
     {
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
@@ -118,7 +118,7 @@ public static class CrewsEndpoints
             Sparkline: sparkline.Select(Round).ToList()));
     }
 
-    private static async Task<IResult> GetSalaryTodayTotal(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSalaryTodayTotal(ProductDbContext db, CancellationToken ct)
     {
         var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
         var rows = await db.AgentUsage.AsNoTracking()
@@ -138,7 +138,7 @@ public static class CrewsEndpoints
     /// task_queue picked-up path. <see cref="CrewConcurrencySummary"/> for
     /// the full rationale.
     /// </summary>
-    private static async Task<IResult> GetConcurrency(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetConcurrency(ProductDbContext db, CancellationToken ct)
     {
         var crews = await db.Crews.AsNoTracking()
             .Select(c => new { c.Id, c.Name, c.MaxConcurrent })
@@ -200,7 +200,7 @@ public static class CrewsEndpoints
 
     private static decimal Round(decimal v) => Math.Round(v, 6);
 
-    private static async Task<IResult> GetBudget(string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetBudget(string id, ProductDbContext db, CancellationToken ct)
     {
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
@@ -231,7 +231,7 @@ public static class CrewsEndpoints
         return rows.Where(r => r.StartedAt >= startOfDay).Sum(r => r.CostUsd);
     }
 
-    private static async Task<IResult> List(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> List(ProductDbContext db, CancellationToken ct)
     {
         var q = db.Crews.AsNoTracking().AsQueryable();
         var rows = await q.OrderBy(c => c.Sort).ThenBy(c => c.Name).ToListAsync(ct);
@@ -257,7 +257,7 @@ public static class CrewsEndpoints
             .ToList());
     }
 
-    private static async Task<IResult> Get(string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(string id, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         return row is null
@@ -286,7 +286,7 @@ public static class CrewsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateCrewRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         // Crew mutations require global PO (crews are not product-scoped).
@@ -379,7 +379,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PatchCrewRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -530,7 +530,7 @@ public static class CrewsEndpoints
         return Results.Ok(await MapCrewAsync(row, db, ct));
     }
 
-    private static async Task<IResult> Delete(HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> Delete(HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
@@ -562,7 +562,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AssignTaskRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         ITaskQueueService taskQueue,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -696,7 +696,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AddMemberRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -783,7 +783,7 @@ public static class CrewsEndpoints
         string id,
         string agentId,
         [FromBody] PatchMemberRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -808,7 +808,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         string agentId,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -835,7 +835,7 @@ public static class CrewsEndpoints
 
     private static async Task<IResult> AutoAssign(
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         // Wide-open gate by design: this is a reconcile pass that brings the
@@ -869,7 +869,7 @@ public static class CrewsEndpoints
     /// Idempotent: subsequent runs no-op.
     /// </summary>
     public static async Task<List<AutoAssignAction>> ApplyAutoAssignAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string? caller,
         CancellationToken ct)
     {
@@ -1079,13 +1079,13 @@ public static class CrewsEndpoints
 
     /// <summary>
     /// Phase 13d — ensure every crew's team has its canonical capabilities
-    /// seeded into <see cref="ForgeDbContext.DomainExperts"/> and appended
+    /// seeded into <see cref="ProductDbContext.DomainExperts"/> and appended
     /// to <see cref="CrewRow.CapabilitiesJson"/> when missing. Each call is
     /// idempotent: existing DomainExpert rows are reused (UNIQUE constraint
     /// on ContentId), and capabilities already in the JSON array are skipped.
     /// </summary>
     public static async Task EnsureTeamCapabilitiesAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string? caller,
         CancellationToken ct)
     {
@@ -1203,7 +1203,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] CapabilityRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -1229,7 +1229,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] CapabilityRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -1259,7 +1259,7 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PairCrewRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -1333,7 +1333,7 @@ public static class CrewsEndpoints
     private static async Task<IResult> UnpairCrew(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -1365,7 +1365,7 @@ public static class CrewsEndpoints
 
     // ── Phase 13.1 — history readout ───────────────────────────────────────
 
-    private static async Task<IResult> GetHistory(string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string id, ProductDbContext db, CancellationToken ct)
     {
         // SQLite EF can't ORDER BY DateTimeOffset — pull then sort client-side.
         var rows = await db.CrewHistory.AsNoTracking()
@@ -1386,7 +1386,7 @@ public static class CrewsEndpoints
     private static async Task<IResult> PlanStub(
         HttpContext ctx, string id,
         [FromBody] PlanRequest req,
-        ForgeDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
+        ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
@@ -1462,7 +1462,7 @@ public static class CrewsEndpoints
     private static async Task<IResult> CodeStub(
         HttpContext ctx, string id,
         [FromBody] CodeRequest req,
-        ForgeDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
+        ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
@@ -1508,7 +1508,7 @@ public static class CrewsEndpoints
     /// <param name="kind">Either <c>plan</c> or <c>code</c>; recorded in the audit row.</param>
     private static async Task<IResult?> ApplyScheduleGateAsync(
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         CrewRow crew,
         string kind,
         CancellationToken ct)
@@ -1568,7 +1568,7 @@ public static class CrewsEndpoints
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static async Task<Crew> MapCrewAsync(CrewRow r, ForgeDbContext db, CancellationToken ct)
+    private static async Task<Crew> MapCrewAsync(CrewRow r, ProductDbContext db, CancellationToken ct)
     {
         // SQLite EF can't translate ORDER BY DateTimeOffset — pull then sort.
         var rows = await db.CrewMembers.AsNoTracking()

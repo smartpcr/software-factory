@@ -39,12 +39,12 @@ public class Phase16ExecutionTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ForgeDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
 
@@ -252,7 +252,7 @@ public class Phase16ExecutionTests
             // Use a fresh DI scope so DeliverableLoop picks up the registered
             // TaskChannel + writes through this scope's DbContext.
             using var s = f.Services.CreateScope();
-            var loopDb = s.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
             var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             var req = new DeliverableLoopRequest(
@@ -1037,7 +1037,7 @@ public class Phase16ExecutionTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         try
         {
@@ -1235,7 +1235,7 @@ public class Phase16ExecutionTests
         var f = new ForgeWebApplicationFactory(extraConfig);
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         try
         {

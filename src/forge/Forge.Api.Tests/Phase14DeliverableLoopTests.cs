@@ -30,14 +30,14 @@ public class Phase14DeliverableLoopTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId = "wi-1", string workItemState = "active")
     {
         var f = new ForgeWebApplicationFactory();
         // Force the host to spin up so the DB is created + migrated.
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId, Type = "step", State = workItemState,

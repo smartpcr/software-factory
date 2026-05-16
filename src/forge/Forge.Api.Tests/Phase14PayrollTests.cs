@@ -112,7 +112,7 @@ public class Phase14PayrollTests
         // Create a crew + a couple of members directly in the DB.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Crews.Add(new CrewRow
             {
                 Id = "crew-payroll", Name = "P", Summary = "",
@@ -161,7 +161,7 @@ public class Phase14PayrollTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Crews.Add(new CrewRow
             {
                 Id = "crew-spend", Name = "S", Summary = "",

@@ -40,7 +40,7 @@ public class Phase52SloppyReassignmentTests
     }
 
     private static async Task SeedRosterAsync(
-        ForgeDbContext db, string crewId, string lead, params string[] memberIds)
+        ProductDbContext db, string crewId, string lead, params string[] memberIds)
     {
         db.Crews.Add(new CrewRow
         {
@@ -74,7 +74,7 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedRosterAsync(db, "crew-sl", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d");
 
@@ -124,7 +124,7 @@ public class Phase52SloppyReassignmentTests
         // the readback so we hit the DB cleanly (avoids any per-DbContext
         // query cache or stale connection snapshot).
         using var readScope = f.Services.CreateScope();
-        var readDb = readScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var readDb = readScope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var live = await readDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == wi.Id);
         Assert.Equal(ExecutionStatuses.Queued, live.ExecutionStatus);
@@ -159,7 +159,7 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedRosterAsync(db, "crew-cap", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f");
 
@@ -224,7 +224,7 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Roster of exactly 5: lead + 4 members. After excluding 2 prior
         // pairs (4 agents), only `agent-e` is eligible for generator.
@@ -268,7 +268,7 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Roster of 2 (lead + 1 member). Prior pair excluded the only
         // non-lead member → no eligible pair.
@@ -315,7 +315,7 @@ public class Phase52SloppyReassignmentTests
         // simulating the loop's sloppy emission between each.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedRosterAsync(db, "crew-3x", lead: "agent-lead",
             "agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f", "agent-g", "agent-h");

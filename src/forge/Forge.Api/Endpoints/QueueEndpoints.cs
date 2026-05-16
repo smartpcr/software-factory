@@ -44,7 +44,7 @@ public static class QueueEndpoints
     }
 
     private static async Task<IResult> List(
-        ForgeDbContext db,
+        ProductDbContext db,
         string? targetKind,
         string? targetId,
         string? state,
@@ -126,7 +126,7 @@ public static class QueueEndpoints
         long id,
         [FromBody] ReassignQueueRequest req,
         ITaskQueueService queue,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -154,7 +154,7 @@ public static class QueueEndpoints
         long id,
         [FromBody] CancelQueueRequest? req,
         ITaskQueueService queue,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -199,7 +199,7 @@ public static class QueueEndpoints
             : Results.Ok(MapRow(row));
     }
 
-    private static async Task<IResult> ListForTeam(string teamId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListForTeam(string teamId, ProductDbContext db, CancellationToken ct)
     {
         var open = TaskQueueStates.OpenStates.ToList();
         var rows = await db.TaskQueue.AsNoTracking()
@@ -209,7 +209,7 @@ public static class QueueEndpoints
         return Results.Ok(ordered.Select(MapRow).ToList());
     }
 
-    private static async Task<IResult> ListForCrew(string crewId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListForCrew(string crewId, ProductDbContext db, CancellationToken ct)
     {
         var open = TaskQueueStates.OpenStates.ToList();
         var rows = await db.TaskQueue.AsNoTracking()
@@ -227,7 +227,7 @@ public static class QueueEndpoints
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    private static async Task<IResult?> CheckLeadOrPoForCrewAsync(HttpContext ctx, ForgeDbContext db, string? crewId, CancellationToken ct)
+    private static async Task<IResult?> CheckLeadOrPoForCrewAsync(HttpContext ctx, ProductDbContext db, string? crewId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(crewId)) return null; // multi-team paths can skip the crew-specific gate
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);

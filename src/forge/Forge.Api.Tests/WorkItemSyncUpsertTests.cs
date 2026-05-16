@@ -41,7 +41,7 @@ public class WorkItemSyncUpsertTests
         Assert.Equal(0, result.Updated);
 
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 1);
         Assert.Equal("from remote", row.Title);
         Assert.Equal("active", row.State);
@@ -76,7 +76,7 @@ public class WorkItemSyncUpsertTests
         // Pre-seed a row that already has FeatureRef set locally.
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-3",
@@ -104,7 +104,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 3);
         Assert.Equal("v2", row.Title);
         Assert.Equal("resolved", row.State);
@@ -120,7 +120,7 @@ public class WorkItemSyncUpsertTests
 
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "WI-4",
@@ -148,7 +148,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 4);
         Assert.NotNull(row.AssignedToJson);
         Assert.Contains("Forge", row.AssignedToJson!);
@@ -161,7 +161,7 @@ public class WorkItemSyncUpsertTests
 
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.AddRange(
                 new WorkItemRow { Id = "EP-X", Track = "dev", Type = "epic", State = "active", Title = "Epic X", TagsJson = "[]" },
                 new WorkItemRow
@@ -184,7 +184,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 5);
         Assert.Equal("EP-X", row.ParentId);
     }
@@ -240,7 +240,7 @@ public class WorkItemSyncUpsertTests
     private static async Task<RepoRow> GetRepoAsync(ForgeWebApplicationFactory factory, string id)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         return repo ?? throw new InvalidOperationException($"seed repo '{id}' not found");
     }

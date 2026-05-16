@@ -53,7 +53,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SprintDiscoveryRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github)
     {
@@ -93,7 +93,7 @@ public static class SprintEndpoints
 
     // ── List (15.7) ──────────────────────────────────────────────────────
 
-    private static async Task<IResult> ListIterations(string id, ForgeDbContext db)
+    private static async Task<IResult> ListIterations(string id, ProductDbContext db)
     {
         if (!await db.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
@@ -139,7 +139,7 @@ public static class SprintEndpoints
         return Results.Ok(list);
     }
 
-    private static async Task<IResult> ListAreaPaths(string id, ForgeDbContext db)
+    private static async Task<IResult> ListAreaPaths(string id, ProductDbContext db)
     {
         if (!await db.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
@@ -180,7 +180,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] ImportNodesRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
@@ -190,7 +190,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] ImportNodesRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
@@ -201,7 +201,7 @@ public static class SprintEndpoints
         string productId,
         ImportNodesRequest req,
         string kind,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
@@ -324,7 +324,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         string areaPathId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
@@ -349,7 +349,7 @@ public static class SprintEndpoints
 
     // ── Saved prefixes (15.10) ───────────────────────────────────────────
 
-    private static async Task<IResult> ListSavedPrefixes(string id, ForgeDbContext db)
+    private static async Task<IResult> ListSavedPrefixes(string id, ProductDbContext db)
     {
         if (!await db.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
@@ -369,7 +369,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SavePrefixRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
@@ -410,7 +410,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long prefixId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
@@ -427,7 +427,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long prefixId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
@@ -511,7 +511,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] IterationBindingRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         if (req is null || string.IsNullOrWhiteSpace(req.ProductIterationId) || string.IsNullOrWhiteSpace(req.Role))
@@ -568,7 +568,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long bindingId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);

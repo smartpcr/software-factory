@@ -247,7 +247,7 @@ public static class PlanDocStateHelpers
     /// scale-out path.</para>
     /// </summary>
     public static async Task<(StorySpawnRow Spawn, string? DocKey)?> FindByPrIdAsync(
-        ForgeDbContext db, string prId, CancellationToken ct)
+        ProductDbContext db, string prId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(prId)) return null;
 

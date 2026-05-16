@@ -80,7 +80,7 @@ public static class PrsEndpoints
     private static async Task<IResult> ResyncPr(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
         CancellationToken ct)
     {
@@ -127,7 +127,7 @@ public static class PrsEndpoints
     /// </summary>
     private static async Task<(IForgeProvider? Provider, ProviderCallContext Ctx, IResult? Error)>
         ResolvePrCallContextAsync(
-            ForgeDbContext db,
+            ProductDbContext db,
             IUserContext user,
             IEnumerable<IForgeProvider> providers,
             PrRow row,
@@ -189,7 +189,7 @@ public static class PrsEndpoints
     }
 
     // GET /api/prs — list with cached state, optionally scoped to a product (Phase 8.9).
-    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
+    private static async Task<IResult> GetAll(HttpContext ctx, ProductDbContext db)
     {
         var scope = await ProductScope.ResolveAsync(ctx, db);
         var q = db.Prs.AsNoTracking().AsQueryable();
@@ -216,7 +216,7 @@ public static class PrsEndpoints
     }
 
     // GET /api/prs/{id} — single PR.
-    private static async Task<IResult> Get(string id, ForgeDbContext db)
+    private static async Task<IResult> Get(string id, ProductDbContext db)
     {
         id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
@@ -239,7 +239,7 @@ public static class PrsEndpoints
         IReadOnlyList<string> Reviewers);
 
     // GET /api/prs/{id}/details — extended payload for the detail panel.
-    private static async Task<IResult> GetDetails(string id, ForgeDbContext db)
+    private static async Task<IResult> GetDetails(string id, ProductDbContext db)
     {
         id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
@@ -275,7 +275,7 @@ public static class PrsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SetAutoMergeRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -297,7 +297,7 @@ public static class PrsEndpoints
     private static async Task<IResult> RerunBuild(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
         IEnumerable<IForgeProvider> providers)
@@ -334,7 +334,7 @@ public static class PrsEndpoints
     private static async Task<IResult> CancelBuild(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
         IEnumerable<IForgeProvider> providers)
@@ -365,7 +365,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/approve — Phase 6.5.
     private static async Task<IResult> Approve(
         HttpContext ctx, string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHubContext<ForgeHub> hub)
@@ -397,7 +397,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/changes — Phase 6.5.
     private static async Task<IResult> RequestChanges(
         HttpContext ctx, string id, [FromBody] ChangesRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHubContext<ForgeHub> hub)
@@ -433,7 +433,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/comment — Phase 6.5.
     private static async Task<IResult> Comment(
         HttpContext ctx, string id, [FromBody] PrCommentRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHubContext<ForgeHub> hub)
@@ -465,7 +465,7 @@ public static class PrsEndpoints
     // discards upstream-side changes on each conflicting hunk).
     private static async Task<IResult> Merge(
         HttpContext ctx, string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
         IHumanGateEvaluator gate,
@@ -698,7 +698,7 @@ public static class PrsEndpoints
     private static async Task<IResult> SyncPrs(
         HttpContext ctx,
         [FromBody] PrSyncRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         [FromServices] IEnumerable<IForgeProvider> providers,
         [FromServices] IHttpClientFactory clientFactory,
         [FromServices] IHubContext<ForgeHub> hub,

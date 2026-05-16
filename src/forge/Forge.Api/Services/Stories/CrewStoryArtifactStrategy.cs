@@ -319,7 +319,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         if (string.IsNullOrEmpty(repoId)) return null;
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
     }
 
@@ -348,7 +348,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Resolve spawn id: plan-doc:{spawnId}:{file} → spawnId; else
         // workstream row's StorySpawnId; else workItemId itself (when
@@ -867,7 +867,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await WorkstreamWorktreeSlug.ComputeAsync(workstream, db, ct);
     }
 
@@ -908,7 +908,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         LoadArchitectAndEvaluatorRostersAsync(int count, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crew = await db.Crews.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == "crew-arch", ct);
@@ -1021,7 +1021,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         List<DeliverableRow> existingDeliverables;
         using (var passScope = this.scopeFactory.CreateScope())
         {
-            var passDb = passScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var passDb = passScope.ServiceProvider.GetRequiredService<ProductDbContext>();
             existingDeliverables = await passDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == docWorkItemId)
                 .ToListAsync(ct);
@@ -1794,7 +1794,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // starts, so nothing the new architect produces could land in
         // these tables yet.
         using var purgeScope = scopeFactory.CreateScope();
-        var purgeDb = purgeScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var purgeDb = purgeScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var staleDeliverables = await purgeDb.Deliverables.Where(d => d.WorkItemId == docWorkItemId).ToListAsync(ct);
         purgeDb.Deliverables.RemoveRange(staleDeliverables);
         var staleQuestions = await purgeDb.DeliverableQuestions.Where(q => q.WorkItemId == docWorkItemId).ToListAsync(ct);
@@ -1936,7 +1936,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (!string.IsNullOrEmpty(spawn.RepoId))
         {
             using var lookup = this.scopeFactory.CreateScope();
-            var db = lookup.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = lookup.ServiceProvider.GetRequiredService<ProductDbContext>();
             repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         }
 
@@ -2108,7 +2108,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             await File.WriteAllTextAsync(yamlPath, yaml, ct);
 
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Audit.Add(new AuditRow
             {
                 At = DateTimeOffset.UtcNow,
@@ -2238,7 +2238,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string workItemDescription;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var wi = await db.WorkItems.AsNoTracking()
                 .FirstOrDefaultAsync(w => w.Id == workstream.Id, ct);
             workItemDescription = !string.IsNullOrEmpty(wi?.DescriptionMd)
@@ -2893,7 +2893,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         try
         {
             using var stalePrScope = this.scopeFactory.CreateScope();
-            var stalePrDb = stalePrScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var stalePrDb = stalePrScope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var prIdList = ParseAgentsList(workstream.PrsJson);
             if (prIdList.Count > 0)
             {
@@ -3343,7 +3343,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var prefix = CrewIdPrefix(team);
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var loop = scope.ServiceProvider.GetRequiredService<IDeliverableLoop>();
 
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
@@ -4989,7 +4989,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// safe and keeps the test simple.</para>
     /// </summary>
     internal static async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
-        ForgeDbContext db, CrewRow crew, bool useEvaluatorRole,
+        ProductDbContext db, CrewRow crew, bool useEvaluatorRole,
         string workspace, TimeSpan? budget, CancellationToken ct,
         // 2026-05-13 root-cause fix -- per-task max-turns cap (Phase 21.5
         // semantics: 30 turns per story point). Without this, both the
@@ -5081,7 +5081,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var prefix = CrewIdPrefix(team);
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
             ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
@@ -5467,7 +5467,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private async Task<int> LookupWorkItemPointsAsync(string workItemId, int fallback, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var pts = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)
             .Select(w => (int?)w.Points)
@@ -5832,7 +5832,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         try
         {
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             return await db.StorySpawns.AsNoTracking()
                 .Where(s => s.Id == spawnId)
                 .Select(s => s.AttachmentsJson)

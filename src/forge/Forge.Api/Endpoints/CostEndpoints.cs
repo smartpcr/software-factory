@@ -37,7 +37,7 @@ public static class CostEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetSummary(int? days, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSummary(int? days, ProductDbContext db, CancellationToken ct)
     {
         var window = Math.Clamp(days ?? 7, 1, 30);
 

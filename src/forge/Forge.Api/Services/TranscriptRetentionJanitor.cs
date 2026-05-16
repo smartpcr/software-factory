@@ -114,7 +114,7 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
         var stats = new PruneStats { DryRun = dryRun };
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Enumerate every WorkItemId that has any transcript event. We
         // include WIs without deliverables (failed-before-first-iter,
@@ -208,7 +208,7 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
     /// Failed/cancelled deliberately use the open-task window because the
     /// operator may inspect them or even resume them later.
     /// </summary>
-    private async Task<int> ResolveKeepNAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private async Task<int> ResolveKeepNAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var wi = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)

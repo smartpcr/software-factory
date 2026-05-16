@@ -32,7 +32,7 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var startOfDay = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
             db.AgentUsage.AddRange(
@@ -65,7 +65,7 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
             db.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 1.00m, startOfDay.AddHours(1)),
@@ -95,7 +95,7 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Pin agent → crew explicitly so the test doesn't depend on the
             // shifting prototypeAlias mapping in ForgeSeed.
             var e4 = await db.Agents.FirstOrDefaultAsync(a => a.Id == "E4");
@@ -145,7 +145,7 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var crew = await db.Crews.FirstAsync(c => c.Id == "crew-eng");
             crew.ModelInputPricePerMTok = 15m;
             crew.ModelOutputPricePerMTok = 75m;
@@ -172,7 +172,7 @@ public class AgentSalaryAndLedgerTests
         while (DateTime.UtcNow < deadline)
         {
             using var scope = factory.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             row = await db.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
             if (row?.Status == "finished") break;
             await Task.Delay(50);
@@ -203,7 +203,7 @@ public class AgentSalaryAndLedgerTests
         {
             using (var scope = factory.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var row = await db.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = Path.Combine(tmp, "E4.md");
                 await db.SaveChangesAsync();

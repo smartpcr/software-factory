@@ -219,7 +219,7 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed three usage rows: two open, one closed. Use distinct
         // agent IDs so the busy set is unambiguous. Id is auto-incremented
@@ -259,7 +259,7 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
         db.AgentUsage.Add(new AgentUsageRow
@@ -307,7 +307,7 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
 

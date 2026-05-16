@@ -64,7 +64,7 @@ public sealed class StoryResumeRecoveryService : IHostedService
         List<(string SpawnId, string Key, string PrId)> skippedMerged;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await db.StorySpawns.AsNoTracking()
                 .Where(s => s.ResumePendingJson != null && s.ResumePendingJson != string.Empty)
                 .ToListAsync(ct);
@@ -101,7 +101,7 @@ public sealed class StoryResumeRecoveryService : IHostedService
         if (skippedMerged.Count > 0)
         {
             using var cleanupScope = this.scopeFactory.CreateScope();
-            var cleanupDb = cleanupScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var cleanupDb = cleanupScope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var (spawnId, key, prId) in skippedMerged)
             {
                 this.logger.LogWarning(

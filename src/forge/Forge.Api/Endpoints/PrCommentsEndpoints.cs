@@ -46,7 +46,7 @@ public static class PrCommentsEndpoints
     // GET /api/prs/{prId}/comments?state=active&requiresAttention=true&skip=0&take=50
     private static async Task<IResult> ListComments(
         string prId,
-        ForgeDbContext db,
+        ProductDbContext db,
         [FromQuery] string? state,
         [FromQuery] bool? requiresAttention,
         [FromQuery] int skip = 0,
@@ -78,7 +78,7 @@ public static class PrCommentsEndpoints
     private static async Task<IResult> GetComment(
         string prId,
         long commentId,
-        ForgeDbContext db)
+        ProductDbContext db)
     {
         prId = NormalizePrId(prId);
         var comment = await db.PrComments.AsNoTracking()
@@ -101,7 +101,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         [FromBody] CreateCommentRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         [FromServices] IEnumerable<IForgeProvider> providers,
         [FromServices] IUserContext user)
@@ -194,7 +194,7 @@ public static class PrCommentsEndpoints
         string prId,
         long commentId,
         [FromBody] EditCommentRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -234,7 +234,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         long commentId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -279,7 +279,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         long commentId,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -327,7 +327,7 @@ public static class PrCommentsEndpoints
         string prId,
         long commentId,
         [FromBody] ReactRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         [FromServices] IEnumerable<IForgeProvider> providers,
         [FromServices] IUserContext user,

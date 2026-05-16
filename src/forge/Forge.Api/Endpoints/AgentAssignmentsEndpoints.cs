@@ -57,7 +57,7 @@ public static class AgentAssignmentsEndpoints
 
     private static async Task<IResult> GetAssignedAgent(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var row = await db.WorkItems.AsNoTracking()
@@ -84,7 +84,7 @@ public static class AgentAssignmentsEndpoints
     private static async Task<IResult> GetAssignmentHistory(
         string id,
         [FromQuery] int? limit,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var exists = await db.WorkItems.AsNoTracking().AnyAsync(w => w.Id == id, ct);
@@ -119,7 +119,7 @@ public static class AgentAssignmentsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PostAssignmentRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -188,7 +188,7 @@ public static class AgentAssignmentsEndpoints
     private static async Task<IResult> DeleteAssignedAgent(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);

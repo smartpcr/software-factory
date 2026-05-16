@@ -134,7 +134,7 @@ public static class SloppyDetector
     /// new pair.</para>
     /// </summary>
     public static async Task<(bool IsSloppy, long TotalTokens)> CheckTokenCapAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string workItemId,
         string generatorAgentId,
         DateTimeOffset? budgetWindowStartUtc,
@@ -206,7 +206,7 @@ public static class SloppyDetector
     /// </list>
     /// </summary>
     public static async Task<SloppyCheckResult> CheckAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string workItemId,
         string generatorAgentId,
         DateTimeOffset? budgetWindowStartUtc,

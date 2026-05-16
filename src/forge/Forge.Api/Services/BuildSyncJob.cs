@@ -88,7 +88,7 @@ public sealed class BuildSyncJob : BackgroundService
         List<BuildSweepCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             candidates = await db.Prs.AsNoTracking()
                 .Where(p => p.IsActive)
                 .OrderBy(p => p.LastSyncAt ?? string.Empty)
@@ -139,7 +139,7 @@ public sealed class BuildSyncJob : BackgroundService
 
         // Append a sync_runs row per repo, scoped 'build'.
         using var histScope = this.scopeFactory.CreateScope();
-        var histDb = histScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var histDb = histScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var now = DateTimeOffset.UtcNow.ToString("o");
         foreach (var g in candidates.GroupBy(c => c.RepoId).Where(g => !string.IsNullOrEmpty(g.Key)))
         {
@@ -165,7 +165,7 @@ public sealed class BuildSyncJob : BackgroundService
         BuildSweepCandidate? candidate;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             candidate = await db.Prs.AsNoTracking()
                 .Where(p => p.Id == prId)
                 .Select(p => new BuildSweepCandidate(
@@ -195,7 +195,7 @@ public sealed class BuildSyncJob : BackgroundService
         RepoRow? repo;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == c.RepoId, ct);
         }
         if (repo is null)
@@ -221,7 +221,7 @@ public sealed class BuildSyncJob : BackgroundService
         var transitionedToFailed = new List<long>();
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var s in snapshots)
             {
                 var existing = await db.Builds.FirstOrDefaultAsync(
@@ -322,7 +322,7 @@ public sealed class BuildSyncJob : BackgroundService
         BuildRow? buildRow;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             buildRow = await db.Builds.AsNoTracking().FirstOrDefaultAsync(b => b.Id == buildId, ct);
         }
         if (buildRow is null) return;
@@ -343,7 +343,7 @@ public sealed class BuildSyncJob : BackgroundService
         var allLogTails = new List<(long StageId, string Content)>();
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var s in stages)
             {
                 var stage = await db.BuildStages.FirstOrDefaultAsync(
@@ -448,7 +448,7 @@ public sealed class BuildSyncJob : BackgroundService
                     if (logFiles.Count == 0) continue;
 
                     using var scope = this.scopeFactory.CreateScope();
-                    var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                    var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     foreach (var (stageId, _) in allLogTails)
                     {
                         var pts = await this.parser.ParseAsync(stageId, string.Empty, logFiles, db, ct);
@@ -484,7 +484,7 @@ public sealed class BuildSyncJob : BackgroundService
         }
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == workItemId, ct);
         if (wi is null)
         {

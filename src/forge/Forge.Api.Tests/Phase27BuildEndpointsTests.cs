@@ -51,7 +51,7 @@ public class Phase27BuildEndpointsTests
         // wiring is reachable.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             using (f.CreateClient()) { }
             db.Builds.Add(new BuildRow
             {
@@ -68,7 +68,7 @@ public class Phase27BuildEndpointsTests
         long id;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             id = db.Builds.OrderByDescending(b => b.Id).First().Id;
         }
 
@@ -86,7 +86,7 @@ public class Phase27BuildEndpointsTests
         long buildId;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Builds.Add(new BuildRow
             {
                 Provider = "ado", ProviderBuildId = "1234",
@@ -113,7 +113,7 @@ public class Phase27BuildEndpointsTests
         long buildId;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Builds.Add(new BuildRow
             {
                 Provider = "github", ProviderBuildId = "5678",

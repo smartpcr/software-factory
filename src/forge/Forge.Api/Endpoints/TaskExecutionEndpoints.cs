@@ -68,7 +68,7 @@ public static class TaskExecutionEndpoints
     /// </summary>
     private static async Task<IResult> GetQuestions(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var rows = await db.DeliverableQuestions.AsNoTracking()
@@ -117,7 +117,7 @@ public static class TaskExecutionEndpoints
     /// when the table has zero rows for this work item.
     /// </summary>
     private static async Task TryImportQuestionsFromDocAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct)
+        ProductDbContext db, string workItemId, CancellationToken ct)
     {
         if (!workItemId.StartsWith("plan-doc:", StringComparison.Ordinal)) return;
 
@@ -186,7 +186,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] DismissQuestionsRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
         IStoryArtifactStrategy strategy,
@@ -262,7 +262,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AnswerQuestionsRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
         IStoryArtifactStrategy strategy,
@@ -340,7 +340,7 @@ public static class TaskExecutionEndpoints
     /// <returns>True when a resume was scheduled (caller can surface this
     /// to the operator); false when no further action was needed.</returns>
     private static async Task<bool> TryUnparkAndResumeAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
         IStoryArtifactStrategy strategy,
@@ -483,7 +483,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetExecution(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         WorktreeChangeFeed worktreeFeed,
         CancellationToken ct)
     {
@@ -912,7 +912,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> GetTranscriptEvent(
         string id,
         long eventId,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var row = await db.TaskTranscriptEvents.AsNoTracking()
@@ -938,7 +938,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetTranscript(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         long? from,
         long? before,
         int? limit,
@@ -969,7 +969,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> ClearTranscript(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var rows = await db.TaskTranscriptEvents
@@ -1190,7 +1190,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> PatchExecution(
         string id,
         [FromBody] PatchExecutionBody body,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         if (body.MaxIterations is int val && (val < 1 || val > 50))
@@ -1249,7 +1249,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetCommits(
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         HttpContext httpCtx,
         CancellationToken ct)
     {
@@ -1447,7 +1447,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> Resume(
         string id,
         [FromBody] ResumeBody? body,
-        ForgeDbContext db,
+        ProductDbContext db,
         Forge.Api.Services.ITaskQueueService taskQueue,
         Microsoft.AspNetCore.SignalR.IHubContext<ForgeHub> hub,
         Forge.Api.Realtime.TaskChannel taskChannel,

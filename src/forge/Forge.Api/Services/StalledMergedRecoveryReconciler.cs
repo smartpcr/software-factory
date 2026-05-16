@@ -102,7 +102,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var recovered = 0;
 
@@ -136,7 +136,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         return recovered;
     }
 
-    private async Task<int> RecoverStalledWithMergedPrAsync(ForgeDbContext db, CancellationToken ct)
+    private async Task<int> RecoverStalledWithMergedPrAsync(ProductDbContext db, CancellationToken ct)
     {
         // Pull every stalled workstream up-front; in steady state this set
         // is small (operator-triage rows). Then resolve each row's PR list
@@ -244,7 +244,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
     /// open.</para>
     /// </summary>
     private async Task<int> RecoverBogusSloppyStallWithPassedDeliverableAsync(
-        ForgeDbContext db, CancellationToken ct)
+        ProductDbContext db, CancellationToken ct)
     {
         const string BogusSloppyPrefix = "Sloppy-3-attempts:";
 
@@ -362,7 +362,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         return recovered;
     }
 
-    private async Task<int> ClearStaleStallReasonOnShippedAsync(ForgeDbContext db, CancellationToken ct)
+    private async Task<int> ClearStaleStallReasonOnShippedAsync(ProductDbContext db, CancellationToken ct)
     {
         // A shipped row should never carry a StallReason. If one is set
         // here it's leftover state from a transient demotion that was

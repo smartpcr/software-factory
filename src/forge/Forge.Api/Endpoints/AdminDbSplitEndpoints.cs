@@ -35,7 +35,7 @@ public static class AdminDbSplitEndpoints
         app.MapPost("/api/admin/db/split-dry-run", async (
             HttpContext ctx,
             IConfiguration config,
-            ForgeDbContext db,
+            ProductDbContext db,
             SplitDryRunService analyzer,
             CancellationToken ct) =>
         {

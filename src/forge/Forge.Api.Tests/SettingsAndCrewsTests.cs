@@ -153,7 +153,7 @@ public class SettingsAndCrewsTests
 
         // Insert a non-PO user via the DB to simulate a populated install.
         var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
         db.Users.Add(new Forge.Api.Persistence.UserRow
         {
             Id = "u1",

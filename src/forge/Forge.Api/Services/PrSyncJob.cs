@@ -89,7 +89,7 @@ public sealed class PrSyncJob : BackgroundService
         List<PrSyncCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var staleThreshold = now.Subtract(StaleRunningThreshold).ToString("o");
 
@@ -112,7 +112,7 @@ public sealed class PrSyncJob : BackgroundService
                 string.Equals(c.Provider, "ado", StringComparison.OrdinalIgnoreCase)).ToList();
             if (needBackfill.Count > 0)
             {
-                var backfillDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var backfillDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 foreach (var c in needBackfill)
                 {
                     var digits = new string(c.PrId.Where(char.IsDigit).ToArray());
@@ -183,7 +183,7 @@ public sealed class PrSyncJob : BackgroundService
             if (repoGroups.Any())
             {
                 using var histScope = this.scopeFactory.CreateScope();
-                var histDb = histScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var histDb = histScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var now2 = DateTimeOffset.UtcNow;
                 foreach (var g in repoGroups)
                 {
@@ -214,7 +214,7 @@ public sealed class PrSyncJob : BackgroundService
         PrSyncCandidate? candidate;
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
             if (pr is null) return;
 
@@ -244,7 +244,7 @@ public sealed class PrSyncJob : BackgroundService
         // Mark running
         using (var scope = this.scopeFactory.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == candidate.PrId, ct);
             if (row is null) return;
             row.LastSyncStatus = "running";
@@ -275,7 +275,7 @@ public sealed class PrSyncJob : BackgroundService
             PrSyncSnapshot snapshot;
             using (var scopeRead = this.scopeFactory.CreateScope())
             {
-                var dbRead = scopeRead.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var dbRead = scopeRead.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var prFresh = await dbRead.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == candidate.PrId, ct);
                 if (prFresh is null) return;
                 snapshot = await client.FetchAsync(prFresh, ct);
@@ -297,7 +297,7 @@ public sealed class PrSyncJob : BackgroundService
     private async Task ApplySnapshotAsync(PrSyncCandidate candidate, PrSyncSnapshot snapshot, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var prRow = await db.Prs.FirstOrDefaultAsync(p => p.Id == candidate.PrId, ct);
         if (prRow is null) return;
 
@@ -470,7 +470,7 @@ public sealed class PrSyncJob : BackgroundService
         }
     }
 
-    private async Task UpsertCommentsAsync(ForgeDbContext db, PrRow pr, IReadOnlyList<PrSyncComment> upstream, CancellationToken ct)
+    private async Task UpsertCommentsAsync(ProductDbContext db, PrRow pr, IReadOnlyList<PrSyncComment> upstream, CancellationToken ct)
     {
         var existing = await db.PrComments
             .Where(c => c.PrId == pr.Id)
@@ -540,7 +540,7 @@ public sealed class PrSyncJob : BackgroundService
         await db.SaveChangesAsync(ct);
     }
 
-    private void UpdateExisting(ForgeDbContext db, PrCommentRow local, PrSyncComment u, PrRow pr)
+    private void UpdateExisting(ProductDbContext db, PrCommentRow local, PrSyncComment u, PrRow pr)
     {
         if (u.UpdatedAt <= local.UpdatedAt && local.State == u.State && local.Body == u.Body) return;
         var prevState = local.State;
@@ -613,7 +613,7 @@ public sealed class PrSyncJob : BackgroundService
         }
     }
 
-    private async Task MaybeEnqueueCommentResponseAsync(ForgeDbContext db, PrSyncCandidate candidate, CancellationToken ct)
+    private async Task MaybeEnqueueCommentResponseAsync(ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.WorkItemId)) return;
 
@@ -738,7 +738,7 @@ public sealed class PrSyncJob : BackgroundService
         }
     }
 
-    private async Task<string?> ResolveWorktreeRootAsync(ForgeDbContext db, PrSyncCandidate candidate, CancellationToken ct)
+    private async Task<string?> ResolveWorktreeRootAsync(ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.RepoId) || string.IsNullOrEmpty(candidate.WorkItemId)) return null;
         var repo = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
@@ -749,7 +749,7 @@ public sealed class PrSyncJob : BackgroundService
     private async Task MarkSyncResultAsync(string prId, bool success, string? error, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
         if (row is null) return;
 
@@ -769,7 +769,7 @@ public sealed class PrSyncJob : BackgroundService
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task CleanupWorktreeAsync(PrSyncCandidate candidate, ForgeDbContext db, string prState, CancellationToken ct)
+    private async Task CleanupWorktreeAsync(PrSyncCandidate candidate, ProductDbContext db, string prState, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.WorkItemId) || string.IsNullOrEmpty(candidate.RepoId))
             return;

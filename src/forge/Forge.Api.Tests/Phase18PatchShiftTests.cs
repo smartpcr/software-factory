@@ -154,7 +154,7 @@ public class Phase18PatchShiftTests
         Assert.True(resp.IsSuccessStatusCode);
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hist = await db.CrewHistory.AsNoTracking()
             .Where(h => h.CrewId == "p-noop" && h.Kind == "shift")
             .ToListAsync();
@@ -215,7 +215,7 @@ public class Phase18PatchShiftTests
         // hits the human fallback in `RequireRole.CheckForProduct`.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Users.Add(new UserRow
             {
                 Id = "u-non-po",
@@ -235,7 +235,7 @@ public class Phase18PatchShiftTests
         // And the row must NOT have been mutated.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.Crews.AsNoTracking().FirstAsync(x => x.Id == "p-rolegate");
             Assert.Equal("day", row.Shift);
         }

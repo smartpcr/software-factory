@@ -53,7 +53,7 @@ public class AdoConfigResolver : IAdoConfigResolver
         // repo is intentional and the operator expects the effective config
         // to update immediately.
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         if (!string.IsNullOrWhiteSpace(repoId))
         {

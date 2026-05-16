@@ -38,7 +38,7 @@ public class Phase39PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Two crews, paired, same Model, no EvaluatorModel.
         var matchingModel = "claude-opus-4.6-1m";
@@ -148,7 +148,7 @@ public class Phase39PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Re-seed so crew-arch-night uses gpt-5.5 as evaluator model — the
         // production pattern (opus generator, sonnet/gpt evaluator).

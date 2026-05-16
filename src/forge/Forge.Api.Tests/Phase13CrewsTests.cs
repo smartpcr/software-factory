@@ -121,7 +121,7 @@ public class Phase13CrewsTests
     private static async Task DisableSchedule(ForgeWebApplicationFactory f, string crewId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.Crews.FirstAsync(x => x.Id == crewId);
         row.ScheduleEnabled = false;
         await db.SaveChangesAsync();
@@ -143,7 +143,7 @@ public class Phase13CrewsTests
         // Seed a domain expert directly into the DB then retry.
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.DomainExperts.Add(new DomainExpertRow
             {
                 ContentId = "sha256:abc",

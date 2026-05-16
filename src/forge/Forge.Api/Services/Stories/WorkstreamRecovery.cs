@@ -103,7 +103,7 @@ public static class WorkstreamRecovery
     /// open-questions answers.</para>
     /// </summary>
     public static async Task<SoftResetReport> SoftResetForResumeAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         WorkstreamRow ws,
         WorkItemRow? wi,
         DeliverableRow? lastDel,

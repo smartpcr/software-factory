@@ -48,7 +48,7 @@ public class Phase51BudgetCooldownEndToEndTests
     /// rosters non-lead members for round-robin, so the picker has agent-b
     /// + agent-c to pick from when agent-a is excluded.
     /// </summary>
-    private static async Task SeedCrewAndAgentsAsync(ForgeDbContext db, string crewId, decimal? cap)
+    private static async Task SeedCrewAndAgentsAsync(ProductDbContext db, string crewId, decimal? cap)
     {
         db.Crews.Add(new CrewRow
         {
@@ -85,7 +85,7 @@ public class Phase51BudgetCooldownEndToEndTests
     /// populates BudgetCooldownUntilUtc + LastPairAgentIdsJson.
     /// </summary>
     private static async Task<DeliverableLoopResult> RunLoopToBudgetStallAsync(
-        ForgeDbContext db, DeliverableLoop loop,
+        ProductDbContext db, DeliverableLoop loop,
         string workItemId, string crewId,
         string generator, string evaluator, decimal cap)
     {
@@ -132,7 +132,7 @@ public class Phase51BudgetCooldownEndToEndTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var loop = new DeliverableLoop(db);
         var reconciler = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
 
@@ -200,7 +200,7 @@ public class Phase51BudgetCooldownEndToEndTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var loop = new DeliverableLoop(db);
         var reconciler = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         var worker = scope.ServiceProvider.GetRequiredService<CrewQueueWorker>();

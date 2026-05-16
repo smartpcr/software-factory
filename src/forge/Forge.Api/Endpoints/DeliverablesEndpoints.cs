@@ -36,14 +36,14 @@ public static class DeliverablesEndpoints
         return app;
     }
 
-    private static async Task<IResult> Get(long id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(long id, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.Deliverables.AsNoTracking().FirstOrDefaultAsync(d => d.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Deliverable {id} not found", statusCode: 404);
         return Results.Ok(MapToDto(row));
     }
 
-    private static async Task<IResult> ListByWorkItem(string workItemId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListByWorkItem(string workItemId, ProductDbContext db, CancellationToken ct)
     {
         var rows = (await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == workItemId)
@@ -67,7 +67,7 @@ public static class DeliverablesEndpoints
         long id,
         [FromBody] DeliverableDisputeRequest req,
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         if (req is null) return Results.Problem(title: "Body is required", statusCode: 400);

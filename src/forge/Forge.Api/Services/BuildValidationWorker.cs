@@ -94,7 +94,7 @@ public sealed class BuildValidationWorker : BackgroundService
         var ct = jobCts.Token;
 
         await using var scope = this.scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
         var run = await db.BuildValidationRuns.FirstOrDefaultAsync(r => r.Id == job.RunId, CancellationToken.None);

@@ -37,7 +37,7 @@ public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsy
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var existing = await db.Prs.Select(p => p.Id).ToListAsync();
 
         if (!existing.Contains("PR #234"))

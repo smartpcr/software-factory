@@ -47,20 +47,20 @@ public sealed class Phase50EvaluatorDistributionTests
     private static readonly string[] DayMembers = new[] { "DA", "DB", "DC", "DD" };
     private static readonly string[] NightMembers = new[] { "NA", "NB", "NC", "ND", "NE", "NF", "NG", "NH" };
 
-    private static async Task<(SqliteConnection conn, ForgeDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         return (conn, db);
     }
 
     private static async Task SeedPairedCrewsAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string? dayDefaultEval = null,
         string? nightDefaultEval = null)
     {

@@ -43,7 +43,7 @@ public static class PromotionEndpoints
     /// </summary>
     private static async Task<IResult> Run(
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         IPromotionRunner runner,
         CancellationToken ct)
     {
@@ -63,7 +63,7 @@ public static class PromotionEndpoints
         return Results.Ok(resp);
     }
 
-    private static async Task<IResult> GetHistory(string agentId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string agentId, ProductDbContext db, CancellationToken ct)
     {
         // SQLite can't sort DateTimeOffset at the SQL layer; sort client-side.
         var rows = (await db.AgentLevelHistory.AsNoTracking()

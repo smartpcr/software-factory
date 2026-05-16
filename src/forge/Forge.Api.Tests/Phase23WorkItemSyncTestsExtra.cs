@@ -559,7 +559,7 @@ public class AgentReadyAuditExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
         // Pre-seed a work item with no assignee.
@@ -643,7 +643,7 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
 
         var freshRunning = DateTimeOffset.UtcNow.AddMinutes(-5).ToString("o");
@@ -670,7 +670,7 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
 
         var staleRunning = DateTimeOffset.UtcNow.AddMinutes(-30).ToString("o");
@@ -699,7 +699,7 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
 
         var priorSyncAt = DateTimeOffset.UtcNow.AddDays(-1).ToString("o");
@@ -727,7 +727,7 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {
@@ -816,7 +816,7 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {
@@ -844,7 +844,7 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {
@@ -879,7 +879,7 @@ public class Phase23EndpointExtraTests
         using (f.CreateClient()) { /* trigger boot */ }
         using var scope = f.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
 
         // Insert a repo whose Kind matches no real provider; Phase 13 NullForgeProvider
@@ -927,7 +927,7 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {
@@ -959,7 +959,7 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {
@@ -992,7 +992,7 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await db.Products.FirstAsync();
         db.Repos.Add(new RepoRow
         {

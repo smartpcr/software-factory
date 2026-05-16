@@ -104,7 +104,7 @@ public class WorkItemRulesTests
         // The walk from A's proposed parent (C) walks C.parent = B, B.parent = A → cycle at A.
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.AddRange(
             new WorkItemRow { Id = "A", Type = "epic", Track = "dev", State = "active", Title = "A", ParentId = null },
             new WorkItemRow { Id = "B", Type = "feature", Track = "dev", State = "active", Title = "B", ParentId = "A" },
@@ -121,7 +121,7 @@ public class WorkItemRulesTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow { Id = "Z", Type = "epic", Track = "dev", State = "active", Title = "Z" });
         await db.SaveChangesAsync();
 
@@ -134,7 +134,7 @@ public class WorkItemRulesTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.Null(await WorkItemRules.DetectCycleAsync(db, "A", null, default));
         Assert.Null(await WorkItemRules.DetectCycleAsync(db, "A", string.Empty, default));
     }

@@ -51,19 +51,19 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     private const string NightLead = "AB2";
     private const string OverrideAgent = "AG";
 
-    private static async Task<(SqliteConnection conn, ForgeDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         return (conn, db);
     }
 
-    private static async Task SeedPairedArchCrewsAsync(ForgeDbContext db)
+    private static async Task SeedPairedArchCrewsAsync(ProductDbContext db)
     {
         // Day crew — the "work" crew (where the generator agents live).
         db.Crews.Add(new CrewRow

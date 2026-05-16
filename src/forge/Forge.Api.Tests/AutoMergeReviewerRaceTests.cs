@@ -60,7 +60,7 @@ public class AutoMergeReviewerRaceTests
 
         // PR row stays unmerged.
         using var verifyScope = factory.Services.CreateScope();
-        var db = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var pr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == WorkstreamPrId);
         Assert.NotEqual("merged", pr.Col);
     }
@@ -130,7 +130,7 @@ public class AutoMergeReviewerRaceTests
         RecordingProviderFactory factory, string prId, string? reviewVerdict)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.Prs.Add(BuildAutoMergeReadyPr(prId, reviewVerdict));
         db.Workstreams.Add(new WorkstreamRow
@@ -153,7 +153,7 @@ public class AutoMergeReviewerRaceTests
         RecordingProviderFactory factory, string prId, string? reviewVerdict)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.Prs.Add(BuildAutoMergeReadyPr(prId, reviewVerdict));
         await db.SaveChangesAsync();
     }

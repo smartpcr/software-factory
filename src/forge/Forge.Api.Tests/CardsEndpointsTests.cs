@@ -38,7 +38,7 @@ public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IA
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var existingColumns = await db.Columns.Select(c => c.Id).ToListAsync();
         var columns = new[]
         {

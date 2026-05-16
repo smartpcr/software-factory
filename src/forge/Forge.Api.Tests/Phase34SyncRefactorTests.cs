@@ -174,11 +174,11 @@ public class Phase34SyncRefactorTests
         await using var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
 
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
 
-        await using var db = new ForgeDbContext(opts);
+        await using var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
 
         await Phase34Migration.ApplyAsync(db);

@@ -72,7 +72,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] UpdateRepoRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -180,7 +180,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> CloneRepo(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IRepoCloneService cloneSvc,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -238,7 +238,7 @@ public static class ProductsEndpoints
     /// The UI shows these to the operator who can accept or override.
     /// </summary>
     private static async Task<IResult> DetectBuild(
-        HttpContext ctx, string id, ForgeDbContext db)
+        HttpContext ctx, string id, ProductDbContext db)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -276,7 +276,7 @@ public static class ProductsEndpoints
     /// Completion is notified via SignalR <c>repo.validation-complete</c>.
     /// </summary>
     private static async Task<IResult> ValidateBuild(
-        HttpContext ctx, string id, ForgeDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -332,7 +332,7 @@ public static class ProductsEndpoints
     /// validation runs for the repo, ordered by start time descending.
     /// </summary>
     private static async Task<IResult> GetValidationRuns(
-        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
@@ -365,7 +365,7 @@ public static class ProductsEndpoints
     /// POST /api/repos/{id}/validation-runs/{runId}/cancel — cancel a running validation.
     /// </summary>
     private static async Task<IResult> CancelValidationRun(
-        HttpContext ctx, string id, string runId, ForgeDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, string runId, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -393,7 +393,7 @@ public static class ProductsEndpoints
 
     /// <summary>DELETE /api/repos/{id}/validation-runs — clear all completed validation runs.</summary>
     private static async Task<IResult> ClearValidationRuns(
-        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -408,7 +408,7 @@ public static class ProductsEndpoints
 
     /// <summary>DELETE /api/repos/{id}/sync-work-items/runs — clear all sync run history.</summary>
     private static async Task<IResult> ClearSyncRuns(
-        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -445,11 +445,11 @@ public static class ProductsEndpoints
 
     // ----- /api/products ---------------------------------------------------
 
-    private static async Task<IResult> ListProducts(ForgeDbContext db) =>
+    private static async Task<IResult> ListProducts(ProductDbContext db) =>
         Results.Ok((await db.Products.AsNoTracking().OrderBy(p => p.Sort).ThenBy(p => p.Name).ToListAsync())
             .Select(MapProduct).ToList());
 
-    private static async Task<IResult> GetProduct(string id, ForgeDbContext db)
+    private static async Task<IResult> GetProduct(string id, ProductDbContext db)
     {
         var row = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         return row is null
@@ -460,7 +460,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> CreateProduct(
         HttpContext ctx,
         [FromBody] CreateProductRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -520,7 +520,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] UpdateProductRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -554,7 +554,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -586,7 +586,7 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/repos ---------------------------------------
 
-    private static async Task<IResult> ListReposForProduct(string id, ForgeDbContext db)
+    private static async Task<IResult> ListReposForProduct(string id, ProductDbContext db)
     {
         var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
@@ -598,7 +598,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] CreateRepoRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IRepoCloneService cloneSvc,
         ILoggerFactory loggerFactory)
@@ -723,7 +723,7 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/stats ---------------------------------------
 
-    private static async Task<IResult> GetProductStats(string id, ForgeDbContext db)
+    private static async Task<IResult> GetProductStats(string id, ProductDbContext db)
     {
         var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
@@ -751,7 +751,7 @@ public static class ProductsEndpoints
 
     // ----- /api/repos ------------------------------------------------------
 
-    private static async Task<IResult> ListAllRepos(ForgeDbContext db, string? productId)
+    private static async Task<IResult> ListAllRepos(ProductDbContext db, string? productId)
     {
         var q = db.Repos.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(productId)) q = q.Where(r => r.ProductId == productId);
@@ -759,7 +759,7 @@ public static class ProductsEndpoints
         return Results.Ok(rows.Select(MapRepo).ToList());
     }
 
-    private static async Task<IResult> GetRepo(string id, ForgeDbContext db)
+    private static async Task<IResult> GetRepo(string id, ProductDbContext db)
     {
         var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
         return row is null
@@ -771,7 +771,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -889,7 +889,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] TriggerSyncRequest? req,
-        ForgeDbContext db,
+        ProductDbContext db,
         WorkItemSyncService syncService,
         CancellationToken ct)
     {
@@ -971,7 +971,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> GetRepoSyncRuns(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         [FromQuery] int? limit,
         [FromQuery] string? target,
         CancellationToken ct)
@@ -1016,7 +1016,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         string runId,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var run = await db.WorkItemSyncRuns.AsNoTracking()
@@ -1053,7 +1053,7 @@ public static class ProductsEndpoints
         string runId,
         string entityKind,
         string entityId,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var run = await db.WorkItemSyncRuns.AsNoTracking()
@@ -1184,7 +1184,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> GetRepoSyncStatus(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         CancellationToken ct)
     {
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);

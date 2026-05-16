@@ -38,7 +38,7 @@ public class AgentSlotService
         string agentId, string workItemId, string role = "generator", CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (agent is null)
@@ -98,7 +98,7 @@ public class AgentSlotService
         CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var claim = await db.AgentClaims
             .FirstOrDefaultAsync(c => c.AgentId == agentId && c.WorkItemId == workItemId && c.ReleasedAt == null, ct);
@@ -135,7 +135,7 @@ public class AgentSlotService
     public async Task ReleaseByTaskAsync(string workItemId, CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var openClaims = await db.AgentClaims
             .Where(c => c.WorkItemId == workItemId && c.ReleasedAt == null)
@@ -174,7 +174,7 @@ public class AgentSlotService
     public async Task<bool> IsAvailableAsync(string agentId, CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (agent is null) return false;
@@ -191,7 +191,7 @@ public class AgentSlotService
     public async Task<IReadOnlyList<AgentClaimRow>> GetActiveClaimsAsync(CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.AgentClaims.AsNoTracking()
             .Where(c => c.ReleasedAt == null)
             .ToListAsync(ct);
@@ -204,7 +204,7 @@ public class AgentSlotService
     public async Task RecoverOrphanedClaimsAsync(CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var orphans = await db.AgentClaims
             .Where(c => c.ReleasedAt == null)

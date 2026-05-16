@@ -33,14 +33,14 @@ using Xunit;
 /// </summary>
 public sealed class Phase60PlanDocPointsFloorTests
 {
-    private static async Task<(SqliteConnection conn, ForgeDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("Data Source=:memory:");
         await conn.OpenAsync();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         return (conn, db);
     }

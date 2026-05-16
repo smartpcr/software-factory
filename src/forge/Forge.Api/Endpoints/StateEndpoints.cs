@@ -28,7 +28,7 @@ public static class StateEndpoints
 
     public static WebApplication MapStateEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/state", async (HttpContext ctx, ForgeDbContext db) =>
+        app.MapGet("/api/state", async (HttpContext ctx, ProductDbContext db) =>
         {
             // Phase 8.9 — scope cards / workstreams / prs to the active product.
             // Epics, columns, ws-events, ws-stats, overview-* are NOT repo-scoped
@@ -91,7 +91,7 @@ public static class StateEndpoints
         .WithName("GetState");
 
         var epicsGrp = app.MapGroup("/api/epics").WithTags("Epics");
-        epicsGrp.MapGet("/", async (ForgeDbContext db) =>
+        epicsGrp.MapGet("/", async (ProductDbContext db) =>
         {
             var rows = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
             return Results.Ok(rows.Select(MapEpic).ToList());
@@ -99,7 +99,7 @@ public static class StateEndpoints
 
         // ── Product-scoped stories ──────────────────────────────────
         var stories = app.MapGroup("/api/products/{productId}/stories").WithTags("Stories");
-        stories.MapGet("/", async (string productId, ForgeDbContext db) =>
+        stories.MapGet("/", async (string productId, ProductDbContext db) =>
         {
             var rows = await db.ProductStories.AsNoTracking()
                 .Where(s => s.ProductId == productId)
@@ -112,7 +112,7 @@ public static class StateEndpoints
             HttpContext ctx,
             string productId,
             [FromBody] CreateStoryRequest req,
-            ForgeDbContext db,
+            ProductDbContext db,
             IHubContext<ForgeHub> hub,
             IForgeDbPaths paths,
             Forge.Api.Services.Stories.IStoryGitOps git,
@@ -212,7 +212,7 @@ public static class StateEndpoints
             string productId,
             string storyId,
             [FromBody] PatchStoryRequest req,
-            ForgeDbContext db,
+            ProductDbContext db,
             IHubContext<ForgeHub> hub,
             IForgeDbPaths paths,
             Forge.Api.Services.Stories.IStoryGitOps git,
@@ -483,7 +483,7 @@ public static class StateEndpoints
             HttpContext ctx,
             string productId,
             string storyId,
-            ForgeDbContext db,
+            ProductDbContext db,
             IHubContext<ForgeHub> hub) =>
         {
             var auth = ForgeUser.RequireWriter(ctx);
@@ -551,7 +551,7 @@ public static class StateEndpoints
     /// failing the whole request.
     /// </summary>
     private static async Task<List<string>> EnsureBranchInProductReposAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string productId,
         string baseBranch,
         Forge.Api.Services.Stories.IStoryGitOps git,

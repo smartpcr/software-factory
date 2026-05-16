@@ -282,7 +282,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         }
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var stale = await db.TaskQueue
             .Where(r => r.State == TaskQueueStates.PickedUp)
@@ -350,7 +350,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepBootCrashRecoveryAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         // Find work items stuck in "failed" execution status whose ADO/GH
@@ -429,7 +429,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
         var stale = await db.TaskQueue.AsNoTracking()
@@ -457,7 +457,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crewsWithQueue = await db.TaskQueue.AsNoTracking()
             .Where(r => r.TargetKind == "crew" && r.State == TaskQueueStates.Queued)
@@ -897,7 +897,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         {
             using var scope = this.scopeFactory.CreateScope();
             var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Guard: skip execution if the work item already has a delivered PR
             // (state "in-review", "resolved", or "closed"). This prevents boot-
@@ -2809,7 +2809,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         {
             using var scope = this.scopeFactory.CreateScope();
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Find the picked-up row. Client-side ordering because SQLite
             // can't ORDER BY DateTimeOffset reliably.
             var rows = await db.TaskQueue
@@ -2838,7 +2838,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         try
         {
             using var scope = this.scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
             if (wi is not null)
             {
@@ -2941,7 +2941,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// Verify a PR was created by checking if a <c>task.pr-opened</c>
     /// transcript event exists for this work item.
     /// </summary>
-    private static async Task<bool> VerifyPrCreatedAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    private static async Task<bool> VerifyPrCreatedAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         return await db.TaskTranscriptEvents
             .AnyAsync(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened", ct);
@@ -2953,7 +2953,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// either reply on the thread or commit a fix to the existing PR
     /// branch (no new PR — the existing PR receives the new commit).
     /// </summary>
-    private static async Task<string> BuildCommentResponsePromptAsync(ForgeDbContext db, string workItemId, string workItemTitle, CancellationToken ct)
+    private static async Task<string> BuildCommentResponsePromptAsync(ProductDbContext db, string workItemId, string workItemTitle, CancellationToken ct)
     {
         var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
         if (pr is null)
@@ -3012,7 +3012,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// via <c>read_file</c>.
     /// </summary>
     private static async Task<string> BuildBuildFixPromptAsync(
-        ForgeDbContext db, string workItemId, string title, string desc, CancellationToken ct)
+        ProductDbContext db, string workItemId, string title, string desc, CancellationToken ct)
     {
         var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
         if (pr is null)
@@ -3193,7 +3193,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// evaluator can wait its turn rather than blocking the row).
     /// </summary>
     private static async Task<string?> ResolveDiverseEvaluatorAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         CrewRow generatorCrew,
         CrewRow? evaluatorCrew,
         string generatorAgentId,
@@ -3243,7 +3243,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return picked;
     }
 
-    private async Task AutoLinkToWorkstreamAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task AutoLinkToWorkstreamAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         try
         {
@@ -3308,7 +3308,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// failure (id collision after retry, save error, etc.).
     /// </summary>
     private async Task<WorkstreamRow?> CreateAutoWorkstreamAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         WorkItemRow wi,
         RepoRow repo,
         List<WorkstreamRow> allWs,
@@ -3372,7 +3372,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crewsWithQueue = await db.TaskQueue.AsNoTracking()
             .Where(r => r.TargetKind == "crew" && r.State == TaskQueueStates.Queued)
@@ -3420,7 +3420,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepAbandonedAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var cutoff = DateTimeOffset.UtcNow - TaskQueueDefaults.AbandonedAfter;
         var stale = await db.TaskQueue
@@ -3491,7 +3491,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepLiveBadgeReconciliationAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         var liveWis = await db.WorkItems
@@ -3559,7 +3559,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return reconciled;
     }
 
-    private async Task HealStuckBadgeAsync(ForgeDbContext db, WorkItemRow wi, string broadcastKind, CancellationToken ct)
+    private async Task HealStuckBadgeAsync(ProductDbContext db, WorkItemRow wi, string broadcastKind, CancellationToken ct)
     {
         wi.ExecutionStatus = ExecutionStatuses.Failed;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
@@ -3607,7 +3607,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return null;
     }
 
-    private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct, ForgeDbContext? db = null)
+    private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct, ProductDbContext? db = null)
     {
         try
         {

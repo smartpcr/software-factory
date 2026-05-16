@@ -18,7 +18,7 @@ using Xunit;
 /// the per-crew shift band. Migration tests use a hand-rolled SQLite
 /// connection so a "pre-Phase18" schema (no Shift column) can be
 /// reconstructed from raw SQL; domain-model tests use a real
-/// <see cref="ForgeDbContext"/> for the EF round-trip.
+/// <see cref="ProductDbContext"/> for the EF round-trip.
 /// </summary>
 public class Phase18MigrationAndModelTests
 {
@@ -42,16 +42,16 @@ public class Phase18MigrationAndModelTests
     }
 
     /// <summary>
-    /// Wrap the SqliteConnection in a real ForgeDbContext so
+    /// Wrap the SqliteConnection in a real ProductDbContext so
     /// <c>Phase18Migration.ApplyAsync</c> (which expects a context) can run.
     /// The DbContext does not own the connection — caller disposes it.
     /// </summary>
-    private static ForgeDbContext WrapInContext(SqliteConnection conn)
+    private static ProductDbContext WrapInContext(SqliteConnection conn)
     {
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        return new ForgeDbContext(opts);
+        return new ProductDbContext(opts);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column)
@@ -155,7 +155,7 @@ public class Phase18MigrationAndModelTests
         using (f.CreateClient()) { /* boot to apply migrations */ }
 
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.Crews.Add(new CrewRow
         {
             Id = "round-trip",
@@ -170,7 +170,7 @@ public class Phase18MigrationAndModelTests
 
         // Read in a fresh tracker scope so we exercise the actual SELECT.
         using var scope2 = f.Services.CreateScope();
-        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
         var read = await db2.Crews.AsNoTracking().FirstAsync(c => c.Id == "round-trip");
         Assert.Equal("night", read.Shift);
     }

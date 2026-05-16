@@ -34,17 +34,17 @@ public class Phase52NoProgressGuardTests
 {
     private const string Ws = "ws-noprogress-test";
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot + migrations */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, db);
     }
 
     private static async Task SeedSpawnPairAsync(
-        ForgeDbContext db, string wsId, DateTimeOffset startedAt, bool success)
+        ProductDbContext db, string wsId, DateTimeOffset startedAt, bool success)
     {
         db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
         {
@@ -61,7 +61,7 @@ public class Phase52NoProgressGuardTests
     }
 
     private static async Task SeedDeliverableAsync(
-        ForgeDbContext db, string wsId, int iter, int score, DateTimeOffset createdAt)
+        ProductDbContext db, string wsId, int iter, int score, DateTimeOffset createdAt)
     {
         db.Deliverables.Add(new DeliverableRow
         {
@@ -78,7 +78,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Deliverable created first, then spawn after. Spawn ran BEFORE
         // deliverable was written → that spawn was the one that produced
@@ -102,7 +102,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Deliverable at T=0. Two successful spawns at T+5min and T+10min
         // (after the deliverable, no new deliverable produced) → 2
@@ -125,7 +125,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Three successful no-progress spawns. Backoff threshold = 3,
         // backoff window = base (90s) × 3 = 270s. "now" is only 60s
@@ -152,7 +152,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddHours(-3);
         await SeedDeliverableAsync(db, Ws, iter: 1, score: 80, createdAt: baseTime);
@@ -175,7 +175,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Pattern: D1 → 4 no-progress spawns → D2 → 1 spawn after.
         // The 4 spawns are AFTER D1 but BEFORE D2; the 1 final spawn is
@@ -206,7 +206,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Pattern: D1 → 2 no-progress successes → 1 failure → 1 success.
         // Walking backward from the most recent finish: that's a success,
@@ -231,7 +231,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Most-recent finish is a failure → goes through the original
         // failure-backoff path (not the no-progress path).
@@ -251,7 +251,7 @@ public class Phase52NoProgressGuardTests
     {
         await using var f = (await BootAsync()).f;
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Three no-progress successes; "now" is well past base × 3 = 270s.
         var baseTime = DateTimeOffset.UtcNow.AddHours(-3);

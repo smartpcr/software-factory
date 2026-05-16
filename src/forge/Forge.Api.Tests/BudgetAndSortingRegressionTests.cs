@@ -111,7 +111,7 @@ public class BudgetAndSortingRegressionTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -179,7 +179,7 @@ public class BudgetAndSortingRegressionTests
         {
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.WorkItems.Add(new WorkItemRow
                 {
                     Id = "wi-sort", Type = "step", State = "active",
@@ -236,7 +236,7 @@ public class BudgetAndSortingRegressionTests
         {
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.WorkItems.Add(new WorkItemRow
                 {
                     Id = "wi-order", Type = "step", State = "active",

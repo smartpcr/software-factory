@@ -36,7 +36,7 @@ public class StalledQuestionsRecoveryTests
     }
 
     private static async Task SeedStalledWorkstreamAsync(
-        ForgeDbContext db, string wsId, string stallReason, string executionStatus,
+        ProductDbContext db, string wsId, string stallReason, string executionStatus,
         string? failureReason, string? latestVerdict, string? prsJson = null)
     {
         db.Workstreams.Add(new WorkstreamRow
@@ -86,7 +86,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedStalledWorkstreamAsync(db, WsId,
             stallReason: "Sloppy-3-attempts: Failed after 3 reassignments...",
@@ -113,7 +113,7 @@ public class StalledQuestionsRecoveryTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -128,7 +128,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Build-failure stall reason — should NOT be cleared by dismiss.
         await SeedStalledWorkstreamAsync(db, WsId,
@@ -155,7 +155,7 @@ public class StalledQuestionsRecoveryTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         // Stall is genuine — preserved.
@@ -169,7 +169,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Cancelled workstreams are intentional terminal states.
         db.Workstreams.Add(new WorkstreamRow
@@ -203,7 +203,7 @@ public class StalledQuestionsRecoveryTests
             new { externalIds = new[] { "q1" } });
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         // Cancelled stays cancelled — recovery only fires when Status=="stalled".
@@ -219,7 +219,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedStalledWorkstreamAsync(db, WsId,
             stallReason: "Sloppy-3-attempts: Failed after 3 reassignments...",
@@ -231,7 +231,7 @@ public class StalledQuestionsRecoveryTests
         var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -246,7 +246,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedStalledWorkstreamAsync(db, WsId,
             stallReason: "Sloppy-3-attempts: ...",
@@ -259,7 +259,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         // PR exists → Phase C must skip; row stays stalled for triage.
@@ -272,7 +272,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedStalledWorkstreamAsync(db, WsId,
             stallReason: "Gate failed (build) running `dotnet build`: 3 consecutive failed iterations...",
@@ -284,7 +284,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         // Build-failure stall reason — Phase C must NOT recover.
@@ -297,7 +297,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         await SeedStalledWorkstreamAsync(db, WsId,
             stallReason: "Sloppy-3-attempts: ...",
@@ -309,7 +309,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         // Verdict not pass — Phase C waits.
@@ -321,7 +321,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // WI still carries terminal failure indication — don't recover.
         await SeedStalledWorkstreamAsync(db, WsId,
@@ -334,7 +334,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
         Assert.Equal("stalled", ws.Status);

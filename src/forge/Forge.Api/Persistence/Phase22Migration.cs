@@ -25,7 +25,7 @@ public static class Phase22Migration
 {
     private const string BackfillSeedKey = "phase22-backfill-done";
 
-    public static async Task ApplyAsync(ForgeDbContext db, CancellationToken ct = default)
+    public static async Task ApplyAsync(ProductDbContext db, CancellationToken ct = default)
     {
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
@@ -74,7 +74,7 @@ public static class Phase22Migration
     /// Gated by a <c>forge_seed_state</c> row so re-boots skip it.
     /// </summary>
     private static async Task BackfillRuntimeAssignmentsAsync(
-        ForgeDbContext db, SqliteConnection conn, CancellationToken ct)
+        ProductDbContext db, SqliteConnection conn, CancellationToken ct)
     {
         // Gate check — skip if already done.
         if (await IsSeedStateDoneAsync(conn, BackfillSeedKey, ct)) return;

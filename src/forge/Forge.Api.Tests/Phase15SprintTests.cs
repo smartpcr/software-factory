@@ -91,7 +91,7 @@ public class Phase15SprintTests
     private static async Task<RepoRow> EnsureAdoRepo(StubFactory f, string id = "atlas-platform-test")
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var existing = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (existing is not null) return existing;
         var repo = new RepoRow
@@ -165,7 +165,7 @@ public class Phase15SprintTests
         DateTimeOffset firstImported, firstRefreshed;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14");
             firstImported = row.ImportedAt;
@@ -179,7 +179,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Still only two rows — re-import is upsert by (ProductId, ProviderNodeId).
             var count = await db.ProductIterations.CountAsync(i => i.ProductId == "atlas");
             Assert.Equal(2, count);
@@ -198,7 +198,7 @@ public class Phase15SprintTests
         using var f = new StubFactory();
         // Repo is github-kind; no need for AdoProject.
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.Repos.Add(new RepoRow
         {
             Id = "atlas-portal-test", ProductId = "atlas", Kind = "github",
@@ -246,7 +246,7 @@ public class Phase15SprintTests
         string iter14, iter15;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iter14 = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14")).Id;
             iter15 = (await db.ProductIterations.AsNoTracking()
@@ -294,7 +294,7 @@ public class Phase15SprintTests
         string iter15Id;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iter15Id = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:15")).Id;
         }
@@ -319,7 +319,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var orphan = await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:15");
             Assert.Equal("provider-orphan", orphan.State);
@@ -346,7 +346,7 @@ public class Phase15SprintTests
         string iterId;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iterId = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14")).Id;
         }
@@ -408,7 +408,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Three rows total — no duplicates.
             var ids = await db.ProductIterations.AsNoTracking()
                 .Where(i => i.ProductId == "atlas")

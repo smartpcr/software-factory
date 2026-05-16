@@ -40,7 +40,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var conn = (Microsoft.Data.Sqlite.SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
@@ -62,7 +62,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.AgentUsage.Add(new AgentUsageRow
         {
@@ -85,7 +85,7 @@ public class Phase72CacheTokensTests
         await db.SaveChangesAsync();
 
         using var verify = f.Services.CreateScope();
-        var verifyDb = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.AgentUsage.AsNoTracking().FirstAsync(u => u.TaskId == WiId);
 
         Assert.Equal(40_000L, row.CacheReadTokens);
@@ -99,7 +99,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var iterStarted = DateTimeOffset.UtcNow.AddMinutes(-10);
         var iterCreated = iterStarted.AddMinutes(2);
@@ -164,7 +164,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Deliverable only, no agent_usage with cache columns set —
         // simulates a pre-Phase-72 row or a CLI runner.

@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>
 /// Phase D — EF DbContext bound to a **per-product DB** (<c>{folder}\{slug}.db</c>).
-/// Exposes only entities owned by a single product: workstreams, cards,
+/// Exposes entities owned by a single product: workstreams, cards,
 /// PRs, work items, deliverables, task queue, builds, story spawns, etc.
 ///
 /// <para>Construction is via <see cref="IProductDbContextFactory"/>, which
@@ -19,10 +19,15 @@ using Microsoft.EntityFrameworkCore;
 /// to the same <c>forge.db</c> file because the per-product files don't
 /// exist yet — that lands in Phase F.</para>
 ///
-/// <para>Cross-context references (<c>ProductId</c>, <c>RepoId</c> columns
-/// on product rows) are plain strings with indexes but no EF-level FK.
-/// Callers that need to join them with the control side must read each
-/// row from its respective context separately.</para>
+/// <para><strong>Phase D.2 interim compromise (documented in
+/// docs/forge/split-db.md):</strong> this context ALSO exposes the
+/// control-side DbSets so bulk-renamed legacy code keeps compiling
+/// against <c>db.Products</c> / <c>db.Repos</c> / <c>db.Users</c> etc.
+/// During Phase D the underlying file is the same <c>forge.db</c> for
+/// both control and product, so the cross-boundary reads work
+/// transparently. Phase G will remove the control DbSets from this
+/// class and force consumers to take both <see cref="ControlDbContext"/>
+/// and <see cref="ProductDbContext"/> explicitly.</para>
 /// </summary>
 public class ProductDbContext : DbContext
 {
@@ -34,6 +39,38 @@ public class ProductDbContext : DbContext
     /// <summary>The product slug this context is bound to (for diagnostics).</summary>
     public string? ProductSlug { get; internal set; }
 
+    // ── Control-side DbSets (Phase D.2 interim compromise — remove in Phase G) ──
+    public DbSet<ProductRow> Products => this.Set<ProductRow>();
+
+    public DbSet<RepoRow> Repos => this.Set<RepoRow>();
+
+    public DbSet<UserRow> Users => this.Set<UserRow>();
+
+    public DbSet<UserSettingsRow> UserSettings => this.Set<UserSettingsRow>();
+
+    public DbSet<UserProductRoleRow> UserProductRoles => this.Set<UserProductRoleRow>();
+
+    public DbSet<CrewRow> Crews => this.Set<CrewRow>();
+
+    public DbSet<CrewMemberRow> CrewMembers => this.Set<CrewMemberRow>();
+
+    public DbSet<CrewHistoryRow> CrewHistory => this.Set<CrewHistoryRow>();
+
+    public DbSet<DomainExpertRow> DomainExperts => this.Set<DomainExpertRow>();
+
+    public DbSet<AgentRow> Agents => this.Set<AgentRow>();
+
+    public DbSet<AgentHistoryRow> AgentHistory => this.Set<AgentHistoryRow>();
+
+    public DbSet<AgentLevelHistoryRow> AgentLevelHistory => this.Set<AgentLevelHistoryRow>();
+
+    public DbSet<AgentUsageRow> AgentUsage => this.Set<AgentUsageRow>();
+
+    public DbSet<AgentClaimRow> AgentClaims => this.Set<AgentClaimRow>();
+
+    public DbSet<AuditRow> Audit => this.Set<AuditRow>();
+
+    // ── Product-side DbSets ─────────────────────────────────────────────
     // Prototype / board surface.
     public DbSet<EpicRow> Epics => this.Set<EpicRow>();
 
@@ -120,6 +157,15 @@ public class ProductDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
+        // Phase D.2 interim compromise: ProductDbContext maps BOTH control
+        // and product entities so legacy code bulk-renamed from
+        // ForgeDbContext continues to compile. The underlying file is the
+        // same forge.db for both sides during Phase D, so the boundary
+        // is purely conceptual until Phase F splits the physical files.
+        // Phase G will drop DbModelControl.Configure from this class and
+        // force callers to take both ControlDbContext + ProductDbContext
+        // explicitly.
+        DbModelControl.Configure(mb);
         DbModelProduct.Configure(mb);
     }
 }

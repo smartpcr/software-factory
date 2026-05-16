@@ -135,7 +135,7 @@ internal static class ImplSpawnGuard
     /// 16-min timeout. Null = original behaviour (transcript-only).
     /// </param>
     public static async Task<Result> CheckAsync(
-        ForgeDbContext db,
+        ProductDbContext db,
         string workstreamId,
         int wsPoints,
         DateTimeOffset now,

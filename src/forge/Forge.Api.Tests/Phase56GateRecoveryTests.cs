@@ -48,13 +48,13 @@ public class Phase56GateRecoveryTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId,

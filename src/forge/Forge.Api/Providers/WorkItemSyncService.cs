@@ -109,7 +109,7 @@ public class WorkItemSyncService
         // request-scoped DbContext is unrelated.
         using (var scope = this.scopes.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var w in remote)
             {
                 // Pin the row to the requested repo regardless of how the
@@ -141,7 +141,7 @@ public class WorkItemSyncService
     /// fields the remote doesn't track (e.g. <c>FeatureRef</c>, internal
     /// tags) are preserved.
     /// </summary>
-    private static async Task<(bool Inserted, bool Updated)> UpsertAsync(ForgeDbContext db, WorkItem remote, CancellationToken ct)
+    private static async Task<(bool Inserted, bool Updated)> UpsertAsync(ProductDbContext db, WorkItem remote, CancellationToken ct)
     {
         var existing = await db.WorkItems.FirstOrDefaultAsync(
             w => w.Provider == remote.Provider && w.ProviderRef == remote.ProviderRef, ct);

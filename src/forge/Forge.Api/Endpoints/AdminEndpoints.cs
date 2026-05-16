@@ -62,7 +62,7 @@ public static class AdminEndpoints
         // AFTER). Read-only — safe to call on every Settings page load.
         app.MapGet("/api/admin/db/stats", async (
             Forge.Api.Persistence.IForgeDbPaths paths,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             CancellationToken ct) =>
         {
             var dbPath = paths.ControlDbPath();
@@ -107,7 +107,7 @@ public static class AdminEndpoints
         // touching disk.
         app.MapPost("/api/admin/worktrees/prune", async (
             HttpContext ctx,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             Forge.Api.Services.Stories.IStoryGitOps git,
             [FromQuery] bool? dryRun,
             CancellationToken ct) =>
@@ -256,7 +256,7 @@ public static class AdminEndpoints
         // would run before paying the LLM cost.
         app.MapPost("/api/admin/pr-comments/backfill-replies", async (
             HttpContext ctx,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             Forge.Api.Services.Stories.IStoryArtifactStrategy strategy,
             Forge.Api.Services.Stories.IStoryProviderOps provider,
             [FromQuery] string prId,
@@ -414,7 +414,7 @@ public static class AdminEndpoints
         // Supports ?dryRun=true to see what would change.
         app.MapPost("/api/admin/pr-comments/backfill-thread-ids", async (
             HttpContext ctx,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             [FromQuery] bool? dryRun,
             [FromQuery] string? prId,
             CancellationToken ct) =>
@@ -535,7 +535,7 @@ public static class AdminEndpoints
         app.MapPost("/api/admin/prs/{prId}/refresh-stats", async (
             HttpContext ctx,
             string prId,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             IServiceProvider sp,
             [FromQuery] bool? dryRun,
             CancellationToken ct) =>
@@ -587,7 +587,7 @@ public static class AdminEndpoints
 
         app.MapPost("/api/admin/prs/backfill-merged-stats", async (
             HttpContext ctx,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             IServiceProvider sp,
             [FromQuery] bool? dryRun,
             [FromQuery] int? limit,
@@ -702,7 +702,7 @@ public static class AdminEndpoints
         // longer "blocked"). Safe to run anytime.
         app.MapPost("/api/admin/workstreams/unblock-stale", async (
             HttpContext ctx,
-            Forge.Api.Persistence.ForgeDbContext db,
+            Forge.Api.Persistence.ProductDbContext db,
             Microsoft.AspNetCore.SignalR.IHubContext<Forge.Api.Realtime.ForgeHub>? hub,
             [FromQuery] bool? dryRun,
             [FromQuery] string? spawnId,

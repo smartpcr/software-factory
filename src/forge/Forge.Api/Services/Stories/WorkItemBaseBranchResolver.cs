@@ -50,7 +50,7 @@ public static class WorkItemBaseBranchResolver
     ///   the resolver tries each table in turn.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<string> ResolveAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+        ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return "main";
 

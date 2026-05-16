@@ -35,7 +35,7 @@ public class TranscriptRetentionJanitorTests
     /// task.toolresult rows. Returns the iteration.started Ids in order
     /// so tests can assert which boundary the cutoff hit.
     /// </summary>
-    private static async Task<List<long>> SeedItersAsync(ForgeDbContext db, string wid, int iterCount, int eventsPerIter, DateTimeOffset baseAt)
+    private static async Task<List<long>> SeedItersAsync(ProductDbContext db, string wid, int iterCount, int eventsPerIter, DateTimeOffset baseAt)
     {
         var iterStartIds = new List<long>();
         for (var iter = 1; iter <= iterCount; iter++)
@@ -66,7 +66,7 @@ public class TranscriptRetentionJanitorTests
         return iterStartIds;
     }
 
-    private static async Task SeedDeliverablesAsync(ForgeDbContext db, string wid, int count)
+    private static async Task SeedDeliverablesAsync(ProductDbContext db, string wid, int count)
     {
         for (var iter = 1; iter <= count; iter++)
         {
@@ -97,7 +97,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-closed-multi-iter";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Closed",
@@ -116,7 +116,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(20, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
-        var dbv = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var remainingByKind = await dbv.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == wid)
             .GroupBy(e => e.Kind).Select(g => new { g.Key, Count = g.Count() })
@@ -143,7 +143,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-open-fifteen";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Open",
@@ -162,7 +162,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(20, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
-        var dbv = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var startedRows = await dbv.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == wid && e.Kind == ItStartedKind)
             .OrderBy(e => e.Id).ToListAsync();
@@ -178,7 +178,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-open-five";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Small open",
@@ -204,7 +204,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-closed-one";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Closed-one",
@@ -236,7 +236,7 @@ public class TranscriptRetentionJanitorTests
         const string cancelledWid = "wi-cancelled-twelve";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = failedWid, Type = "task", Track = "dev", Title = "Failed",
@@ -269,7 +269,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-dryrun-twelve";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Dry-run",
@@ -288,7 +288,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(12, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
-        var dbv = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var remaining = await dbv.TaskTranscriptEvents.AsNoTracking()
             .CountAsync(e => e.WorkItemId == wid);
         Assert.Equal(12 * (1 + 5), remaining);
@@ -307,7 +307,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "plan-doc:orphan-no-row";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             await SeedItersAsync(db, wid, iterCount: 12, eventsPerIter: 1, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
@@ -328,7 +328,7 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-idempotent";
         using (var seed = f.Services.CreateScope())
         {
-            var db = seed.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Idempotent",

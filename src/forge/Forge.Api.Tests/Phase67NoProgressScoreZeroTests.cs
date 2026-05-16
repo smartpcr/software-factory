@@ -36,13 +36,13 @@ public class Phase67NoProgressScoreZeroTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId,
@@ -98,7 +98,7 @@ public class Phase67NoProgressScoreZeroTests
             Assert.Equal(1, genCallCount);
 
             using var scope = f.Services.CreateScope();
-            var freshDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await freshDb.Deliverables.AsNoTracking().FirstAsync(d => d.WorkItemId == wi);
             Assert.Equal("sloppy", row.Verdict);
             Assert.Contains("no-progress score-zero", row.Notes);

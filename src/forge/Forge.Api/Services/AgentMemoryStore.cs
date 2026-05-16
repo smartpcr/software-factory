@@ -20,7 +20,7 @@ using Microsoft.EntityFrameworkCore;
 /// <see cref="DeleteForWorkItemAsync"/> is the reaper called on terminal
 /// verdicts so a completed workstream doesn't leak rows.
 ///
-/// <para>Scoped so the service shares the caller's <see cref="ForgeDbContext"/>
+/// <para>Scoped so the service shares the caller's <see cref="ProductDbContext"/>
 /// and participates in any ambient transaction. The unique index
 /// <c>ux_agent_memory_wi_agent_role</c> (Phase 55 migration) makes
 /// upsert deterministic — concurrent writers race only on the same
@@ -30,10 +30,10 @@ public sealed class AgentMemoryStore
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private readonly ForgeDbContext db;
+    private readonly ProductDbContext db;
     private readonly ILogger<AgentMemoryStore>? logger;
 
-    public AgentMemoryStore(ForgeDbContext db, ILogger<AgentMemoryStore>? logger = null)
+    public AgentMemoryStore(ProductDbContext db, ILogger<AgentMemoryStore>? logger = null)
     {
         this.db = db;
         this.logger = logger;

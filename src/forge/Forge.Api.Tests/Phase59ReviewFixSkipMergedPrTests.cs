@@ -71,7 +71,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task SeedStoryAsync(ForgeWebApplicationFactory factory, string id, string title)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return;
         db.WorkItems.Add(new WorkItemRow
         {
@@ -94,7 +94,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task SetPlanPrAsync(ForgeWebApplicationFactory f, string storyId, string prId, string col)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         s.PlanPrId = prId;
         s.PlanBranch = $"story/{storyId}/plan";
@@ -120,7 +120,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task SeedAllPlanDocsPassedAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         var docs = new (string FileName, int Iter)[]
         {
@@ -181,7 +181,7 @@ public class Phase59ReviewFixSkipMergedPrTests
         long commentId;
         using (var scope = f.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
             ws.Status = initialStatus;
             ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
@@ -233,7 +233,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task WipeWorktreeAsync(ForgeWebApplicationFactory f, string wsId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
         var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
         await git.RemoveWorktreeAsync(repo: null, branch: ws.Branch);
@@ -268,7 +268,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
                 Assert.Equal(SystemResolverId, c2.ResolvedByUserId);
@@ -310,7 +310,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
                 Assert.Equal(SystemResolverId, c2.ResolvedByUserId);
@@ -345,7 +345,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
                 Assert.Equal(SystemResolverId, c2.ResolvedByUserId);
@@ -376,7 +376,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             const string wsId = "ws-phase59-direct-merged";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Prs.Add(new PrRow
                 {
                     Id = prId,
@@ -430,7 +430,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             const string prId = "pr-phase59-direct-closed";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Prs.Add(new PrRow
                 {
                     Id = prId,
@@ -492,7 +492,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             // WorktreeExistsAsync returns true (the gate must NOT fire).
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
                 await git.EnsureBranchAsync(repo: null, branch: ws.Branch, baseBranch: "main");
@@ -508,7 +508,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
                 // Engineer resolved, not the Phase 59 system gate.

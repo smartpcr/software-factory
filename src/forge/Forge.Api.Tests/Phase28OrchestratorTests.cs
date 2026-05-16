@@ -61,7 +61,7 @@ public class Phase28OrchestratorTests
     private static async Task<string> SeedStoryAsync(ForgeWebApplicationFactory f, string id, string title)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return id;
         db.WorkItems.Add(new WorkItemRow
         {
@@ -76,14 +76,14 @@ public class Phase28OrchestratorTests
     private static async Task<StorySpawnRow> ReadSpawnAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
     }
 
     private static async Task<List<WorkstreamRow>> ReadWorkstreamsAsync(ForgeWebApplicationFactory f, string spawnId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.Workstreams.AsNoTracking()
             .Where(w => w.StorySpawnId == spawnId)
             .OrderBy(w => w.Sort)
@@ -136,7 +136,7 @@ public class Phase28OrchestratorTests
     internal static async Task MergeAllPlanPrsAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var prov = scope.ServiceProvider.GetRequiredService<IStoryProviderOps>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
         var sched = scope.ServiceProvider.GetRequiredService<SpawnDependencyScheduler>();
@@ -209,7 +209,7 @@ public class Phase28OrchestratorTests
     /// auto-merge step. Idempotent: skips when a pass row already exists.
     /// </summary>
     private static async Task SeedPlanDocVerdictPassAsync(
-        ForgeDbContext db, string spawnId, string docKey)
+        ProductDbContext db, string spawnId, string docKey)
     {
         if (!PlanDocStateHelpers.PlanDocFileName.TryGetValue(docKey, out var fileName)) return;
         var docId = $"plan-doc:{spawnId}:{fileName}";
@@ -393,7 +393,7 @@ public class Phase28OrchestratorTests
             await TickAsync(f); // round 1 → all resolved → approve + merge
 
             using var scope2 = f.Services.CreateScope();
-            var db = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == first.Id);
             Assert.Equal("merging", reload.Status);
 
@@ -441,7 +441,7 @@ public class Phase28OrchestratorTests
             for (var i = 0; i < 6; i++) await TickAsync(f);
 
             using var scope2 = f.Services.CreateScope();
-            var db = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var firstReload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == first.Id);
             var secondReload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == second.Id);
             // First workstream was processed first (no deps).
@@ -518,7 +518,7 @@ public class Phase28OrchestratorTests
             for (var i = 0; i < 6; i++) await TickAsync(f);
 
             using var scope2 = f.Services.CreateScope();
-            var db = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(x => x.StoryId == "WI-70007");
             Assert.Equal("done", spawn.Phase);
 
@@ -544,10 +544,10 @@ public class Phase28OrchestratorTests
             await MergeAllPlanPrsAsync(f, "WI-70008");
             using (var scope = f.Services.CreateScope())
             {
-                var ss = await scope.ServiceProvider.GetRequiredService<ForgeDbContext>().StorySpawns
+                var ss = await scope.ServiceProvider.GetRequiredService<ProductDbContext>().StorySpawns
                     .FirstAsync(x => x.StoryId == "WI-70008");
                 ss.Phase = "decompose";
-                await scope.ServiceProvider.GetRequiredService<ForgeDbContext>().SaveChangesAsync();
+                await scope.ServiceProvider.GetRequiredService<ProductDbContext>().SaveChangesAsync();
             }
 
             // Tick — orchestrator picks up the spawn and produces the decomposition.
@@ -579,7 +579,7 @@ public class Phase28OrchestratorTests
         int points)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.Products.AnyAsync(p => p.Id == productId))
         {
             db.Products.Add(new ProductRow
@@ -725,7 +725,7 @@ public class Phase28OrchestratorTests
             Assert.Equal("done", spawn.Phase);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ps = await db.ProductStories.AsNoTracking().FirstAsync(x => x.Id == storyId);
             Assert.Equal("done", ps.Status);
         }
@@ -748,7 +748,7 @@ public class Phase28OrchestratorTests
             // should make `DriveDecomposeAsync` short-circuit.
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ss = await db.StorySpawns.FirstAsync(x => x.StoryId == "WI-70009");
                 ss.Phase = "decompose";
                 await db.SaveChangesAsync();
@@ -817,7 +817,7 @@ public class Phase28OrchestratorTests
             }
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var pr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == planPrId);
             Assert.Equal("release/2026-q2", pr.Base);
         }

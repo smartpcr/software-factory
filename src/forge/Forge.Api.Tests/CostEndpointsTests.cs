@@ -41,7 +41,7 @@ public class CostEndpointsTests
         const string sampleCardEpic = "EPIC-024";
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Cards.Add(new CardRow
             {
                 Id = sampleCardId,
@@ -99,7 +99,7 @@ public class CostEndpointsTests
 
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 0.50m, taskId: string.Empty, startedAt: startOfToday.AddHours(1), input: 1000, output: 500),
                 Row("E4", "crew-eng", 0.20m, taskId: string.Empty, startedAt: startOfToday.AddDays(-3), input: 400, output: 100));

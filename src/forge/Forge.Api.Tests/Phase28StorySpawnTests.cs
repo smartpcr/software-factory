@@ -63,7 +63,7 @@ public class Phase28StorySpawnTests
     private static async Task<string> SeedStoryAsync(ForgeWebApplicationFactory factory, string id, string title, int? providerRef = null)
     {
         using var scope = factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         // Idempotent — multiple tests share a factory occasionally.
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return id;
         db.WorkItems.Add(new WorkItemRow
@@ -100,14 +100,14 @@ public class Phase28StorySpawnTests
     private static async Task<StorySpawnRow?> GetSpawnAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.StoryId == storyId);
     }
 
     private static async Task SetPhaseDirectlyAsync(ForgeWebApplicationFactory f, string storyId, string phase)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         s.Phase = phase;
         await db.SaveChangesAsync();
@@ -116,7 +116,7 @@ public class Phase28StorySpawnTests
     private static async Task SetPlanPrAsync(ForgeWebApplicationFactory f, string storyId, string prId, string col)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         // Phase 53 — these tests seed the legacy single-PR plan flow.
         // Clear PlanDocPrsJson so the orchestrator routes to DrivePlanLegacyAsync,
@@ -146,7 +146,7 @@ public class Phase28StorySpawnTests
     private static async Task SetWorkstreamStatusAsync(ForgeWebApplicationFactory f, string wsId, string status)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
         ws.Status = status;
         await db.SaveChangesAsync();
@@ -178,7 +178,7 @@ public class Phase28StorySpawnTests
         (string FileName, int Iter, string Verdict)[] verdicts)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         foreach (var (fileName, iter, verdict) in verdicts)
         {
@@ -250,7 +250,7 @@ public class Phase28StorySpawnTests
 
             // Only one row persisted.
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             Assert.Equal(1, await db.StorySpawns.CountAsync(s => s.StoryId == "WI-50001-dup"));
         }
         finally { f.Dispose(); }
@@ -280,7 +280,7 @@ public class Phase28StorySpawnTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await db.Workstreams.Where(w => w.StorySpawnId == "spawn-WI-50002").ToListAsync();
             Assert.Equal(3, rows.Count);
             Assert.All(rows, r => Assert.Equal("spawn-WI-50002", r.StorySpawnId));
@@ -310,7 +310,7 @@ public class Phase28StorySpawnTests
             await c.PostAsJsonAsync("/api/stories/WI-50003/spawn/decompose", body, JsonOpts);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var deps = await db.WorkstreamDeps
                 .Where(d => d.WorkstreamId.StartsWith("ws-wi-50003-"))
                 .ToListAsync();
@@ -512,7 +512,7 @@ public class Phase28StorySpawnTests
             Assert.True(resp.IsSuccessStatusCode);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await db.Workstreams.Where(w => w.StorySpawnId == "spawn-WI-60005").ToListAsync();
             Assert.Equal(2, rows.Count);
             var deps = await db.WorkstreamDeps
@@ -676,7 +676,7 @@ public class Phase28StorySpawnTests
             }, JsonOpts);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ws = await db.Workstreams.FirstAsync(w => w.StorySpawnId == "spawn-WI-50021");
             Assert.Equal("ws/WI-50021/auth-service", ws.Branch);
             Assert.Equal("main", ws.Base);
@@ -1003,7 +1003,7 @@ public class Phase28StorySpawnTests
             const string prId = "pr-ws1-42";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
                 ws.Status = "review";
                 ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
@@ -1033,7 +1033,7 @@ public class Phase28StorySpawnTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
                 Assert.Equal("complete", reload.Status);
             }
@@ -1058,7 +1058,7 @@ public class Phase28StorySpawnTests
             // Stash a QA PR id directly.
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var s = await db.StorySpawns.FirstAsync(x => x.StoryId == "WI-50050");
                 s.QaBranch = "story/WI-50050/qa";
                 s.QaPrId = "pr-qa-50";
@@ -1086,7 +1086,7 @@ public class Phase28StorySpawnTests
             await SpawnAsync(c, "WI-50051");
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var s = await db.StorySpawns.FirstAsync(x => x.StoryId == "WI-50051");
             s.QaBranch = "story/WI-50051/qa";
             await db.SaveChangesAsync();
@@ -1115,7 +1115,7 @@ public class Phase28StorySpawnTests
             Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-50046-am-main");
             Assert.Equal("main", spawn.BaseBranch);
             Assert.True(spawn.AutoMerge,
@@ -1147,7 +1147,7 @@ public class Phase28StorySpawnTests
             var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
             await orchestrator.DriveAsync("WI-50047-am-pr");
 
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-50047-am-pr");
 
             // Phase 53 — sequential mode: drive opens architecture's PR first.
@@ -1177,7 +1177,7 @@ public class Phase28StorySpawnTests
             const string productId = "p-am-main";
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 if (!await db.Products.AnyAsync(p => p.Id == productId))
                 {
                     db.Products.Add(new ProductRow { Id = productId, Name = "AM main product", Sort = 99 });
@@ -1196,7 +1196,7 @@ public class Phase28StorySpawnTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ps = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Id == storyId);
                 Assert.True(ps.AutoMerge, "Initial autoMerge=true must persist on feature branch.");
             }
@@ -1209,7 +1209,7 @@ public class Phase28StorySpawnTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var reloaded = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Id == storyId);
                 Assert.Equal("main", reloaded.BaseBranch);
                 Assert.True(reloaded.AutoMerge,
@@ -1295,7 +1295,7 @@ public class Phase28StorySpawnTests
             // QA PR open (not merged).
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var s = await db.StorySpawns.FirstAsync(x => x.StoryId == "WI-50062");
                 s.QaPrId = "pr-qa-62";
                 db.Prs.Add(new PrRow { Id = "pr-qa-62", Col = "review", Branch = "story/WI-50062/qa", Base = "main", Title = "QA" });
@@ -1433,7 +1433,7 @@ public class Phase28StorySpawnTests
             Assert.True(resp.IsSuccessStatusCode);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var deps = await db.WorkstreamDeps
                 .Where(d => d.WorkstreamId.StartsWith("ws-wi-50111-"))
                 .ToListAsync();
@@ -1470,7 +1470,7 @@ public class Phase28StorySpawnTests
             Assert.True(resp.IsSuccessStatusCode);
 
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var deps = await db.WorkstreamDeps
                 .Where(d => d.WorkstreamId.StartsWith("ws-wi-50112-"))
                 .ToListAsync();
@@ -1534,7 +1534,7 @@ public class Phase28StorySpawnTests
 
             // Simulate a "restart" by resolving a fresh scope and reloading.
             using var scope = f.Services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var s = await db.StorySpawns.AsNoTracking().FirstAsync(x => x.StoryId == "WI-50202");
             Assert.Equal("implement", s.Phase);
         }
@@ -1667,7 +1667,7 @@ public class Phase28StorySpawnTests
         const string prId = "PR-comment-dup-test";
         using (var scope = factory.Services.CreateScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Prs.Add(new PrRow
             {
                 Id = prId,
@@ -1693,7 +1693,7 @@ public class Phase28StorySpawnTests
         Assert.NotEqual(first, second);
 
         using var verify = factory.Services.CreateScope();
-        var db2 = verify.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db2 = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var rows = await db2.PrComments.AsNoTracking()
             .Where(c => c.PrId == prId)
             .OrderBy(c => c.Id)

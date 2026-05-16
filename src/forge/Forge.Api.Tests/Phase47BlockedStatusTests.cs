@@ -34,7 +34,7 @@ public class Phase47BlockedStatusTests
         ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Story.
         db.WorkItems.Add(new WorkItemRow
@@ -88,7 +88,7 @@ public class Phase47BlockedStatusTests
         ForgeWebApplicationFactory f, string workstreamId, string verdict, int iter, int score)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.Deliverables.Add(new DeliverableRow
         {
             WorkItemId = workstreamId,
@@ -110,14 +110,14 @@ public class Phase47BlockedStatusTests
     private static async Task<string> ReadWorkstreamStatusAsync(ForgeWebApplicationFactory f, string workstreamId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == workstreamId)).Status;
     }
 
     private static async Task<string?> ReadWorkstreamStallReasonAsync(ForgeWebApplicationFactory f, string workstreamId)
     {
         using var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == workstreamId)).StallReason;
     }
 
@@ -225,7 +225,7 @@ public class Phase47BlockedStatusTests
             int delivBefore;
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 delivBefore = await db.Deliverables.CountAsync(d => d.WorkItemId == wsId);
             }
 
@@ -241,7 +241,7 @@ public class Phase47BlockedStatusTests
 
             using (var scope = f.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var delivAfter = await db.Deliverables.CountAsync(d => d.WorkItemId == wsId);
                 Assert.Equal(delivBefore, delivAfter);
             }

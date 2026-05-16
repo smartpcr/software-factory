@@ -84,13 +84,13 @@ public sealed class Phase58GeneratorCapTests
     private static string EvalJson(int score) =>
         Fence + "json\n{ \"score\": " + score + " }\n" + Fence;
 
-    private static async Task<(ForgeWebApplicationFactory f, ForgeDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId, int points = 0)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId,
@@ -236,14 +236,14 @@ public sealed class Phase58GeneratorCapTests
     private const string CrewId = "crew-eng";
     private const string LeadId = "ENG-LEAD";
 
-    private static async Task<(SqliteConnection conn, ForgeDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
-        var opts = new DbContextOptionsBuilder<ForgeDbContext>()
+        var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
-        var db = new ForgeDbContext(opts);
+        var db = new ProductDbContext(opts);
         await db.Database.EnsureCreatedAsync();
         db.Crews.Add(new CrewRow
         {
