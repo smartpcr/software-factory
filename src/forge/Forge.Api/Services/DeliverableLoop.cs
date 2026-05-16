@@ -169,7 +169,30 @@ public sealed record GeneratorRunOutput(
     long OutputTokens = 0,
     string? TurnSamplesJson = null,
     string? FailureReason = null,
-    string? FailureKind = null);
+    string? FailureKind = null,
+    /// <summary>
+    /// 2026-05-16 Phase 72 — prompt-cache hit tokens accumulated by
+    /// the runner (Copilot SDK <c>AssistantUsageEvent.CacheReadTokens</c>).
+    /// Null when the runner / backend doesn't surface cache metrics.
+    /// </summary>
+    long? CacheReadTokens = null,
+    /// <summary>2026-05-16 Phase 72 — prompt-cache write tokens.</summary>
+    long? CacheWriteTokens = null,
+    /// <summary>2026-05-16 Phase 72 — model reasoning tokens.</summary>
+    long? ReasoningTokens = null,
+    /// <summary>
+    /// 2026-05-16 Phase 72 — total conversation context size after this
+    /// turn, from the SDK's <c>SessionUsageInfoEvent</c>. Reveals
+    /// context bloat when prompt+history balloons across iters.
+    /// </summary>
+    long? ConversationTokens = null,
+    /// <summary>
+    /// 2026-05-16 Phase 72 — provider-native session id captured after
+    /// <c>CreateSessionAsync</c>. <see cref="AgentMemoryStore"/>
+    /// persists this so the operator can verify session reuse via
+    /// <c>/api/workstreams/{id}/memory</c>.
+    /// </summary>
+    string? SessionId = null);
 
 /// <summary>
 /// Phase 65 — per-iter commit snapshot captured by the producer right
@@ -309,8 +332,24 @@ public static class GeneratorFailureKinds
 /// <summary>One evaluator turn's raw output + cost.</summary>
 /// <remarks>
 /// Phase 54 — see <see cref="GeneratorRunOutput.TurnSamplesJson"/>.
+/// 2026-05-16 Phase 72 — same Cache* / Reasoning / Conversation /
+/// SessionId fields the generator carries; evaluator side often runs
+/// against an independent session (different agent), so the
+/// conversationTokens it reports describe the evaluator's session,
+/// not the generator's. Persist into the same agent_usage columns
+/// keyed on <c>CostCategory="evaluator"</c>.
 /// </remarks>
-public sealed record EvaluatorRunOutput(string AssistantText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0, string? TurnSamplesJson = null);
+public sealed record EvaluatorRunOutput(
+    string AssistantText,
+    decimal CostUsd,
+    long InputTokens = 0,
+    long OutputTokens = 0,
+    string? TurnSamplesJson = null,
+    long? CacheReadTokens = null,
+    long? CacheWriteTokens = null,
+    long? ReasoningTokens = null,
+    long? ConversationTokens = null,
+    string? SessionId = null);
 
 /// <summary>Final outcome of <see cref="IDeliverableLoop.RunAsync"/>.</summary>
 public sealed record DeliverableLoopResult(
@@ -640,7 +679,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             // (a) generator
             var gen = await request.Generator(iter, iterPrelude, ct);
-            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, gen.TurnSamplesJson, ct);
+            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, gen.TurnSamplesJson, gen.CacheReadTokens, gen.CacheWriteTokens, gen.ReasoningTokens, gen.ConversationTokens, ct);
 
             // 2026-05-13 root-cause fix — when the underlying agent
             // invocation aborted (per-task max-turns cap, hard timeout,
@@ -762,7 +801,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
-            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, eval.TurnSamplesJson, ct);
+            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, eval.TurnSamplesJson, eval.CacheReadTokens, eval.CacheWriteTokens, eval.ReasoningTokens, eval.ConversationTokens, ct);
 
             // Phase 54 — compute per-iteration prompt-size growth deltas
             // (iteration-over-iteration). Emit one summary event per iter
@@ -2015,8 +2054,24 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// of <c>generator | evaluator | judge</c>.
     /// Phase 54 — <paramref name="turnSamplesJson"/> carries the optional
     /// per-<c>AssistantUsageEvent</c> samples produced by the delegate.
+    /// 2026-05-16 Phase 72 — cache / reasoning / conversation token
+    /// telemetry (nullable; null when the runner / backend didn't
+    /// report it).
     /// </summary>
-    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, long inputTokens, long outputTokens, string? turnSamplesJson, CancellationToken ct)
+    private async Task WriteUsageAsync(
+        string workItemId,
+        string? agentId,
+        string crewId,
+        string category,
+        decimal costUsd,
+        long inputTokens,
+        long outputTokens,
+        string? turnSamplesJson,
+        long? cacheReadTokens,
+        long? cacheWriteTokens,
+        long? reasoningTokens,
+        long? conversationTokens,
+        CancellationToken ct)
     {
         if (string.IsNullOrEmpty(agentId)) return;
         var now = DateTimeOffset.UtcNow;
@@ -2034,6 +2089,10 @@ public sealed class DeliverableLoop : IDeliverableLoop
             Status = "finished",
             CostCategory = category,
             TurnSamplesJson = turnSamplesJson,
+            CacheReadTokens = cacheReadTokens,
+            CacheWriteTokens = cacheWriteTokens,
+            ReasoningTokens = reasoningTokens,
+            ConversationTokens = conversationTokens,
         });
         await this.db.SaveChangesAsync(ct);
     }

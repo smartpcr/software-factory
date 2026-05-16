@@ -68,7 +68,17 @@ public static class ConversationInsightQueries
 
         var usageRows = await db.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId)
-            .Select(u => new { u.StartedAt, u.InputTokens, u.OutputTokens, u.CostUsd })
+            .Select(u => new
+            {
+                u.StartedAt,
+                u.InputTokens,
+                u.OutputTokens,
+                u.CostUsd,
+                u.CacheReadTokens,
+                u.CacheWriteTokens,
+                u.ReasoningTokens,
+                u.ConversationTokens,
+            })
             .ToListAsync(ct);
 
         var transcript = await db.TaskTranscriptEvents.AsNoTracking()
@@ -112,6 +122,12 @@ public static class ConversationInsightQueries
 
             long inTok = 0, outTok = 0;
             decimal cost = 0m;
+            // 2026-05-16 Phase 72 — accumulate cache / reasoning tokens
+            // per iter window so the UI can show a "cache hit %" badge
+            // and a reasoning-cost breakdown. ConversationTokens is a
+            // snapshot, not a sum — latest wins inside the window.
+            long cacheReadTok = 0, cacheWriteTok = 0, reasoningTok = 0;
+            long? conversationTokLatest = null;
             foreach (var u in sortedUsage)
             {
                 if (u.StartedAt > windowStart && u.StartedAt <= windowEnd)
@@ -119,6 +135,10 @@ public static class ConversationInsightQueries
                     inTok += u.InputTokens;
                     outTok += u.OutputTokens;
                     cost += u.CostUsd;
+                    if (u.CacheReadTokens is long crt) cacheReadTok += crt;
+                    if (u.CacheWriteTokens is long cwt) cacheWriteTok += cwt;
+                    if (u.ReasoningTokens is long rt) reasoningTok += rt;
+                    if (u.ConversationTokens is long ct2) conversationTokLatest = ct2;
                 }
             }
 
@@ -166,6 +186,14 @@ public static class ConversationInsightQueries
                 durationMs,
                 filesChanged,
                 createdAt = d.CreatedAt,
+                // 2026-05-16 Phase 72 — cache / reasoning / conversation
+                // telemetry. Null fields mean the runner didn't report
+                // them (CLI backends, pre-Phase-72 rows). UI renders
+                // "no cache data" badge when all four are null.
+                cacheReadTokens = cacheReadTok > 0 ? (long?)cacheReadTok : null,
+                cacheWriteTokens = cacheWriteTok > 0 ? (long?)cacheWriteTok : null,
+                reasoningTokens = reasoningTok > 0 ? (long?)reasoningTok : null,
+                conversationTokens = conversationTokLatest,
             });
             prevAt = windowEnd;
         }

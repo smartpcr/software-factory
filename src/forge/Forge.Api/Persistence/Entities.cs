@@ -1338,6 +1338,46 @@ public class AgentUsageRow
     /// granularity is bumped.
     /// </summary>
     public string? TurnSamplesJson { get; set; }
+
+    /// <summary>
+    /// 2026-05-16 — prompt-cache read tokens (cheap; billed at the
+    /// cache-read discount, typically ~10% of fresh input). Source:
+    /// Copilot SDK <c>AssistantUsageEvent.Data.CacheReadTokens</c>,
+    /// accumulated across every usage event the runner observed for
+    /// this invocation. Non-zero means the SDK's session reuse +
+    /// provider prompt cache hit on the prompt prefix. Null on
+    /// pre-2026-05-16 rows; backfill leaves them null.
+    /// </summary>
+    public long? CacheReadTokens { get; set; }
+
+    /// <summary>
+    /// 2026-05-16 — prompt-cache write tokens (the first turn that
+    /// processes a given prefix pays this; subsequent turns hit the
+    /// cache-read path instead). Source: Copilot SDK
+    /// <c>AssistantUsageEvent.Data.CacheWriteTokens</c>. Null on
+    /// pre-2026-05-16 rows.
+    /// </summary>
+    public long? CacheWriteTokens { get; set; }
+
+    /// <summary>
+    /// 2026-05-16 — reasoning tokens (internal model chain-of-thought;
+    /// Anthropic <c>thinking</c> / OpenAI o1 reasoning). Billed
+    /// separately from output. Surfaced in iter-kpis so reasoning-
+    /// heavy iters don't look "free" relative to visible output.
+    /// Null on pre-2026-05-16 rows.
+    /// </summary>
+    public long? ReasoningTokens { get; set; }
+
+    /// <summary>
+    /// 2026-05-16 — conversation context size reported by the
+    /// Copilot SDK on <c>SessionUsageInfoEvent.Data.ConversationTokens</c>
+    /// (the live session's total context after the model processed
+    /// this turn). Useful for spotting context bloat: a small prompt
+    /// with a huge conversationTokens means the SDK is replaying the
+    /// entire prior dialog. Null on pre-2026-05-16 rows and on
+    /// backends that don't emit this event (Claude SDK / Copilot CLI).
+    /// </summary>
+    public long? ConversationTokens { get; set; }
 }
 
 /// <summary>

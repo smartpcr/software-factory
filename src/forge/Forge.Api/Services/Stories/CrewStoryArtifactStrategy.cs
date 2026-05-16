@@ -3891,6 +3891,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
             string? capturedSessionId = null;
+            // 2026-05-16 Phase 72 — same cache / reasoning / conversation
+            // accumulation as the CrewQueueWorker generator delegate so
+            // architect / story-artifact loops report telemetry to
+            // agent_usage too.
+            long cacheReadTok = 0, cacheWriteTok = 0, reasoningTok = 0, conversationTokLatest = 0;
             // 2026-05-13 root-cause fix -- capture the dispatcher's
             // Failed-event error so DeliverableLoop can short-circuit
             // before the evaluator runs against a cap-aborted partial
@@ -3918,12 +3923,29 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     inputTokens = evt.InputTokens,
                     outputTokens = evt.OutputTokens,
                     costUsd = evt.CostUsd,
+                    // 2026-05-16 Phase 72 — propagate enriched fields
+                    // to the SignalR stream so the UI Tools tab and
+                    // iter-kpis can render them in real time.
+                    cacheReadTokens = evt.CacheReadTokens,
+                    cacheWriteTokens = evt.CacheWriteTokens,
+                    reasoningTokens = evt.ReasoningTokens,
+                    conversationTokens = evt.ConversationTokens,
+                    toolCallId = evt.ToolCallId,
+                    parentToolCallId = evt.ParentToolCallId,
+                    durationMs = evt.ToolDurationMs,
+                    exitCode = evt.ToolExitCode,
+                    mcpServerName = evt.McpServerName,
+                    sessionId = evt.SessionId,
                 }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                if (evt.CacheReadTokens is > 0) cacheReadTok += evt.CacheReadTokens.Value;
+                if (evt.CacheWriteTokens is > 0) cacheWriteTok += evt.CacheWriteTokens.Value;
+                if (evt.ReasoningTokens is > 0) reasoningTok += evt.ReasoningTokens.Value;
+                if (evt.ConversationTokens is > 0) conversationTokLatest = evt.ConversationTokens.Value;
                 // Phase 55 / Phase C -- capture session id surfaced by
                 // the Claude/CLI stream-json runner so the post-iter
                 // upsert can persist it for the next iter's --resume.
@@ -3973,7 +3995,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     outTok,
                     TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples),
                     FailureReason: failureReason,
-                    FailureKind: GeneratorFailureKinds.Classify(failureReason));
+                    FailureKind: GeneratorFailureKinds.Classify(failureReason),
+                    CacheReadTokens: cacheReadTok > 0 ? cacheReadTok : null,
+                    CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
+                    ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
+                    ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
+                    SessionId: capturedSessionId);
             }
 
             // Phase 55 / Phase A.2 -- archive this iter's working
@@ -4319,7 +4346,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 outTok,
                 TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples),
                 FailureReason: failureReason,
-                FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason));
+                FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason),
+                CacheReadTokens: cacheReadTok > 0 ? cacheReadTok : null,
+                CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
+                ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
+                ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
+                SessionId: capturedSessionId);
             }
             finally
             {
@@ -4587,6 +4619,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
             string? capturedSessionId = null;
+            // 2026-05-16 Phase 72 — cache / reasoning / conversation
+            // accumulation mirrored from the generator delegate so the
+            // evaluator's agent_usage row carries the same telemetry.
+            long evalCacheRead = 0, evalCacheWrite = 0, evalReasoning = 0, evalConversationLatest = 0;
             // Phase 54 -- mirror the generator-side per-AssistantUsageEvent
             // sample capture (see GeneratorDelegate above). Evaluator runs
             // are usually single-turn so the array typically has one entry,
@@ -4608,12 +4644,27 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     inputTokens = evt.InputTokens,
                     outputTokens = evt.OutputTokens,
                     costUsd = evt.CostUsd,
+                    // 2026-05-16 Phase 72 — enriched event payload.
+                    cacheReadTokens = evt.CacheReadTokens,
+                    cacheWriteTokens = evt.CacheWriteTokens,
+                    reasoningTokens = evt.ReasoningTokens,
+                    conversationTokens = evt.ConversationTokens,
+                    toolCallId = evt.ToolCallId,
+                    parentToolCallId = evt.ParentToolCallId,
+                    durationMs = evt.ToolDurationMs,
+                    exitCode = evt.ToolExitCode,
+                    mcpServerName = evt.McpServerName,
+                    sessionId = evt.SessionId,
                 }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                if (evt.CacheReadTokens is > 0) evalCacheRead += evt.CacheReadTokens.Value;
+                if (evt.CacheWriteTokens is > 0) evalCacheWrite += evt.CacheWriteTokens.Value;
+                if (evt.ReasoningTokens is > 0) evalReasoning += evt.ReasoningTokens.Value;
+                if (evt.ConversationTokens is > 0) evalConversationLatest = evt.ConversationTokens.Value;
                 if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
                 if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
                 {
@@ -4743,7 +4794,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 cost,
                 inTok,
                 outTok,
-                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples));
+                TurnSamplesJson: turnSamples.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(turnSamples),
+                CacheReadTokens: evalCacheRead > 0 ? evalCacheRead : null,
+                CacheWriteTokens: evalCacheWrite > 0 ? evalCacheWrite : null,
+                ReasoningTokens: evalReasoning > 0 ? evalReasoning : null,
+                ConversationTokens: evalConversationLatest > 0 ? evalConversationLatest : null,
+                SessionId: capturedSessionId);
         }
 
         // Phase 44 -- claim agents before starting the gen/eval loop.

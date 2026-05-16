@@ -95,7 +95,92 @@ public sealed record AgentEvent(
     /// final <see cref="AgentEventKind.Finished"/> event from the
     /// Claude/CLI stream-json path.
     /// </summary>
-    string? SessionId = null);
+    string? SessionId = null,
+    /// <summary>
+    /// 2026-05-16 — prompt-cache hit tokens. Reported by the Copilot
+    /// SDK on <c>AssistantUsageEvent.Data.CacheReadTokens</c> and by
+    /// Anthropic's API on the corresponding <c>cache_read_input_tokens</c>
+    /// field. Non-zero means the prefix of the prompt matched a
+    /// previously-cached version on the provider side and was billed
+    /// at the discounted cache-read rate (~10% of fresh input). Used
+    /// by the iter-kpis API to expose a "cache-hit %" so operators
+    /// can verify <c>AgentMemoryStore</c> + <c>CopilotSessionPool</c>
+    /// are actually reusing context across iterations.
+    /// </summary>
+    long? CacheReadTokens = null,
+    /// <summary>
+    /// 2026-05-16 — prompt-cache write tokens. Reported by the
+    /// Copilot SDK on <c>AssistantUsageEvent.Data.CacheWriteTokens</c>.
+    /// Counts tokens written to the prompt cache for future reuse —
+    /// the first iter that processes a given system prompt or
+    /// long tool-definition block pays this once, then subsequent
+    /// iters re-using the same prefix hit the cheaper cache-read path.
+    /// </summary>
+    long? CacheWriteTokens = null,
+    /// <summary>
+    /// 2026-05-16 — reasoning tokens consumed by the model's internal
+    /// chain-of-thought (Anthropic <c>thinking</c>, OpenAI <c>o1</c>
+    /// reasoning). Reported by the Copilot SDK on
+    /// <c>AssistantUsageEvent.Data.ReasoningTokens</c>. Billed
+    /// separately from output tokens and surfaced in the iter-kpis
+    /// breakdown so operators can see when reasoning-heavy models
+    /// (e.g. <c>claude-opus-4.7-high</c>) inflate cost relative to
+    /// visible output.
+    /// </summary>
+    long? ReasoningTokens = null,
+    /// <summary>
+    /// 2026-05-16 — total conversation tokens reported by the
+    /// Copilot SDK on <c>SessionUsageInfoEvent.Data.ConversationTokens</c>.
+    /// Snapshot of the live session's context size at the moment
+    /// the model processed the prompt. Useful for spotting context
+    /// bloat: if iter N reports conversationTokens=200K when the
+    /// raw prompt is 6K, the SDK is replaying the entire prior
+    /// dialog and we're paying the full input token cost on every
+    /// turn (until the prompt-cache kicks in).
+    /// </summary>
+    long? ConversationTokens = null,
+    /// <summary>
+    /// 2026-05-16 — provider-native tool call id from the Copilot SDK
+    /// (<c>ToolExecutionStartData.ToolCallId</c> /
+    /// <c>ToolExecutionCompleteData.ToolCallId</c>). Used by the UI
+    /// Tools tab to pair start/complete events deterministically
+    /// instead of relying on name-based matching (which breaks when
+    /// the SDK overlaps concurrent calls). Non-null only on
+    /// <see cref="AgentEventKind.ToolCall"/> and
+    /// <see cref="AgentEventKind.ToolResult"/>.
+    /// </summary>
+    string? ToolCallId = null,
+    /// <summary>
+    /// 2026-05-16 — parent tool call id when the tool was dispatched
+    /// from within another tool (e.g. an MCP "execute many" tool
+    /// fans out to sub-tools). Forms a parent/child tree the UI
+    /// can render. Non-null only on ToolCall / ToolResult events.
+    /// </summary>
+    string? ParentToolCallId = null,
+    /// <summary>
+    /// 2026-05-16 — wall-clock duration of one tool invocation in
+    /// milliseconds, computed as completeAt - startAt. Stamped on
+    /// <see cref="AgentEventKind.ToolResult"/> so the UI doesn't
+    /// have to recompute from event timestamps (and so plan-doc
+    /// transcripts that get persisted to disk retain the duration
+    /// even if event ordering is rewritten by retention pruning).
+    /// </summary>
+    long? ToolDurationMs = null,
+    /// <summary>
+    /// 2026-05-16 — process exit code for shell-flavored tool calls
+    /// (<c>run_in_terminal</c>, <c>bash</c>, etc.). Extracted from
+    /// the Copilot SDK's <c>ToolExecutionCompleteContentTerminal</c>
+    /// typed content. <c>null</c> for non-shell tools.
+    /// </summary>
+    int? ToolExitCode = null,
+    /// <summary>
+    /// 2026-05-16 — MCP server name when the tool was dispatched
+    /// through an MCP integration (Copilot SDK
+    /// <c>ToolExecutionStartData.McpServerName</c>). Non-null
+    /// triggers the UI Tools tab's MCP classification regardless of
+    /// the tool name itself.
+    /// </summary>
+    string? McpServerName = null);
 
 /// <summary>
 /// Phase 11.1 — handle returned by <see cref="IAgentRunner.StartAsync"/>.

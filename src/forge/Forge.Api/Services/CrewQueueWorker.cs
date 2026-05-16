@@ -1534,6 +1534,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var output = new System.Text.StringBuilder();
                 decimal cost = 0m;
                 long inTok = 0, outTok = 0;
+                // 2026-05-16 Phase 72 — accumulate cache / reasoning /
+                // conversation tokens off the AgentEvent stream so they
+                // can be threaded onto GeneratorRunOutput and persisted
+                // by DeliverableLoop.WriteUsageAsync.
+                long cacheReadTok = 0, cacheWriteTok = 0, reasoningTok = 0, conversationTokLatest = 0;
+                string? capturedSessionId = null;
                 // 2026-05-13 root-cause fix — capture the dispatcher's
                 // Failed-event error so the loop can short-circuit before
                 // the evaluator runs against a cap-aborted partial output.
@@ -1563,12 +1569,32 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         error = evt.Error,
                         inputTokens = evt.InputTokens,
                         outputTokens = evt.OutputTokens,
+                        // 2026-05-16 Phase 72 — propagate cache /
+                        // reasoning / conversation + per-tool detail
+                        // to the SignalR stream so the UI Tools tab
+                        // and the iter-kpis strip can render the new
+                        // fields without re-fetching the deliverables.
+                        cacheReadTokens = evt.CacheReadTokens,
+                        cacheWriteTokens = evt.CacheWriteTokens,
+                        reasoningTokens = evt.ReasoningTokens,
+                        conversationTokens = evt.ConversationTokens,
+                        toolCallId = evt.ToolCallId,
+                        parentToolCallId = evt.ParentToolCallId,
+                        durationMs = evt.ToolDurationMs,
+                        exitCode = evt.ToolExitCode,
+                        mcpServerName = evt.McpServerName,
+                        sessionId = evt.SessionId,
                     }, crewId: crewId, ct: iterCt);
 
                     if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                     if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                     if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                     if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+                    if (evt.CacheReadTokens is > 0) cacheReadTok += evt.CacheReadTokens.Value;
+                    if (evt.CacheWriteTokens is > 0) cacheWriteTok += evt.CacheWriteTokens.Value;
+                    if (evt.ReasoningTokens is > 0) reasoningTok += evt.ReasoningTokens.Value;
+                    if (evt.ConversationTokens is > 0) conversationTokLatest = evt.ConversationTokens.Value;
+                    if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
                     if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
                     {
                         failureReason = evt.Error;
@@ -1637,7 +1663,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     outTok,
                     TurnSamplesJson: null,
                     FailureReason: failureReason,
-                    FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason));
+                    FailureKind: failureReason is null ? null : GeneratorFailureKinds.Classify(failureReason),
+                    CacheReadTokens: cacheReadTok > 0 ? cacheReadTok : null,
+                    CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
+                    ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
+                    ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
+                    SessionId: capturedSessionId);
             }
 
             // Evaluator delegate: invokes the evaluator agent for critical review.
@@ -1844,6 +1875,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var evalOutput = new System.Text.StringBuilder();
                 decimal evalCost = 0m;
                 long evalInTok = 0, evalOutTok = 0;
+                // 2026-05-16 Phase 72 — same cache/reasoning/conversation
+                // accumulation as the generator side; persisted as a
+                // separate evaluator agent_usage row.
+                long evalCacheRead = 0, evalCacheWrite = 0, evalReasoning = 0, evalConversationLatest = 0;
+                string? evalSessionId = null;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -1867,15 +1903,43 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         error = evt.Error,
                         inputTokens = evt.InputTokens,
                         outputTokens = evt.OutputTokens,
+                        // 2026-05-16 Phase 72 — mirror the generator
+                        // delegate's enriched event payload so the UI
+                        // Tools tab + iter-kpis cover evaluator turns.
+                        cacheReadTokens = evt.CacheReadTokens,
+                        cacheWriteTokens = evt.CacheWriteTokens,
+                        reasoningTokens = evt.ReasoningTokens,
+                        conversationTokens = evt.ConversationTokens,
+                        toolCallId = evt.ToolCallId,
+                        parentToolCallId = evt.ParentToolCallId,
+                        durationMs = evt.ToolDurationMs,
+                        exitCode = evt.ToolExitCode,
+                        mcpServerName = evt.McpServerName,
+                        sessionId = evt.SessionId,
                     }, crewId: evaluatorCrewId!, ct: iterCt);
 
                     if (!string.IsNullOrEmpty(evt.Text)) evalOutput.Append(evt.Text);
                     if (evt.CostUsd.HasValue) evalCost += evt.CostUsd.Value;
                     if (evt.InputTokens is > 0) evalInTok += evt.InputTokens.Value;
                     if (evt.OutputTokens is > 0) evalOutTok += evt.OutputTokens.Value;
+                    if (evt.CacheReadTokens is > 0) evalCacheRead += evt.CacheReadTokens.Value;
+                    if (evt.CacheWriteTokens is > 0) evalCacheWrite += evt.CacheWriteTokens.Value;
+                    if (evt.ReasoningTokens is > 0) evalReasoning += evt.ReasoningTokens.Value;
+                    if (evt.ConversationTokens is > 0) evalConversationLatest = evt.ConversationTokens.Value;
+                    if (!string.IsNullOrEmpty(evt.SessionId)) evalSessionId = evt.SessionId;
                 }
 
-                return new EvaluatorRunOutput(evalOutput.ToString(), evalCost, evalInTok, evalOutTok);
+                return new EvaluatorRunOutput(
+                    evalOutput.ToString(),
+                    evalCost,
+                    evalInTok,
+                    evalOutTok,
+                    TurnSamplesJson: null,
+                    CacheReadTokens: evalCacheRead > 0 ? evalCacheRead : null,
+                    CacheWriteTokens: evalCacheWrite > 0 ? evalCacheWrite : null,
+                    ReasoningTokens: evalReasoning > 0 ? evalReasoning : null,
+                    ConversationTokens: evalConversationLatest > 0 ? evalConversationLatest : null,
+                    SessionId: evalSessionId);
             }
 
             // Phase 24 Q24.12 — `loopKind` is computed at the top of the

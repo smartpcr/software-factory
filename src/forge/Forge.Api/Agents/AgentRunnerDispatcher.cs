@@ -1073,9 +1073,30 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var contentBuilder = new StringBuilder();
         long inputTokens = 0;
         long outputTokens = 0;
+        // 2026-05-16 — Phase 72 token telemetry. Accumulated across every
+        // AssistantUsageEvent the SDK emits for this invocation; latest
+        // wins for ConversationTokens since SessionUsageInfoEvent is the
+        // post-turn snapshot.
+        long cacheReadTokens = 0;
+        long cacheWriteTokens = 0;
+        long reasoningTokens = 0;
+        long conversationTokensLatest = 0;
         string? failReason = null;
         int turnCount = 0;
         var maxTurns = context.MaxTurns ?? this.options.Value.MaxTurns;
+
+        // 2026-05-16 — provider-native session id captured after
+        // CreateSessionAsync. Surfaces on the final Finished event so
+        // AgentMemoryStore can persist it (operators can see whether
+        // session reuse worked across Forge.Api restarts via
+        // /api/workstreams/{id}/memory).
+        string? capturedSessionId = null;
+
+        // 2026-05-16 — pair tool start/complete by ToolCallId so the UI
+        // can render duration deterministically without re-scanning the
+        // transcript. Single-flight today (one tool at a time) but
+        // forward-compatible with future concurrent tool dispatch.
+        var toolStartTicks = new System.Collections.Concurrent.ConcurrentDictionary<string, long>(StringComparer.Ordinal);
 
         // Hard wall-clock timeout — per-invocation override from work item
         // points takes precedence over the global default.
@@ -1242,6 +1263,24 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 }
             }
 
+            // 2026-05-16 — Phase 72: capture provider-native session id
+            // for memory persistence. The Copilot SDK assigns a session
+            // id on CreateSessionAsync; persisting it via AgentMemoryStore
+            // lets future iters surface "session reused" in the UI and
+            // enables eventual server-side resume when the SDK exposes
+            // it. Stamped on the final Finished/Failed event below.
+            if (session is not null)
+            {
+                capturedSessionId = session.SessionId;
+                if (!string.IsNullOrEmpty(capturedSessionId))
+                {
+                    queue.Writer.TryWrite(new AgentEvent(
+                        AgentEventKind.SessionInfo,
+                        DateTimeOffset.UtcNow,
+                        SessionId: capturedSessionId));
+                }
+            }
+
             subscription = session!.On(evt =>
             {
                 // Reset the inactivity watchdog before any per-event work.
@@ -1276,13 +1315,23 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             // legitimate long tool call from a stuck one.
                             Interlocked.Exchange(ref lastToolStartTicks, DateTimeOffset.UtcNow.Ticks);
                             lastToolName = tStart.Data.ToolName;
+                            // 2026-05-16 — Phase 72: remember start tick by
+                            // ToolCallId so the matching complete event can
+                            // compute durationMs without UI-side reconstruction.
+                            if (!string.IsNullOrEmpty(tStart.Data.ToolCallId))
+                            {
+                                toolStartTicks[tStart.Data.ToolCallId!] = DateTimeOffset.UtcNow.Ticks;
+                            }
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolCall,
                                 DateTimeOffset.UtcNow,
                                 ToolName: tStart.Data.ToolName,
                                 ToolPayload: tStart.Data.Arguments is null
                                     ? null
-                                    : JsonSerializer.Serialize(tStart.Data.Arguments)));
+                                    : JsonSerializer.Serialize(tStart.Data.Arguments),
+                                ToolCallId: tStart.Data.ToolCallId,
+                                ParentToolCallId: tStart.Data.ParentToolCallId,
+                                McpServerName: tStart.Data.McpServerName));
                             break;
 
                         case ToolExecutionCompleteEvent tEnd:
@@ -1290,6 +1339,20 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             // that the tool returned.
                             Interlocked.Exchange(ref lastToolStartTicks, 0);
                             turnCount++;
+                            // 2026-05-16 — Phase 72: compute durationMs from
+                            // matching start tick, and extract a typed exit
+                            // code when the tool returned terminal content
+                            // (ToolExecutionCompleteContentTerminal carries
+                            // ExitCode + Cwd + Text). Falls back to null on
+                            // tools without typed content so non-shell calls
+                            // simply omit the field.
+                            long? toolDurationMs = null;
+                            if (!string.IsNullOrEmpty(tEnd.Data.ToolCallId)
+                                && toolStartTicks.TryRemove(tEnd.Data.ToolCallId!, out var startTicks))
+                            {
+                                toolDurationMs = (DateTimeOffset.UtcNow.Ticks - startTicks) / TimeSpan.TicksPerMillisecond;
+                            }
+                            int? toolExitCode = ExtractTerminalExitCode(tEnd.Data.Result);
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolResult,
                                 DateTimeOffset.UtcNow,
@@ -1298,7 +1361,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                     : JsonSerializer.Serialize(tEnd.Data.Result),
                                 Error: tEnd.Data.Success
                                     ? null
-                                    : tEnd.Data.Error?.ToString()));
+                                    : tEnd.Data.Error?.ToString(),
+                                ToolCallId: tEnd.Data.ToolCallId,
+                                ParentToolCallId: tEnd.Data.ParentToolCallId,
+                                ToolDurationMs: toolDurationMs,
+                                ToolExitCode: toolExitCode));
                             if (turnCount >= maxTurns)
                             {
                                 failReason = $"Max turns ({maxTurns}) reached";
@@ -1310,6 +1377,29 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             // SDK exposes usage as double? — cast to long.
                             inputTokens += (long)(usage.Data.InputTokens ?? 0);
                             outputTokens += (long)(usage.Data.OutputTokens ?? 0);
+                            // 2026-05-16 — Phase 72: accumulate cache +
+                            // reasoning tokens so the iter-kpis API can
+                            // expose cache-hit % and break out reasoning
+                            // cost separately from visible output. Cast
+                            // matches the existing input/output pattern.
+                            cacheReadTokens += (long)(usage.Data.CacheReadTokens ?? 0);
+                            cacheWriteTokens += (long)(usage.Data.CacheWriteTokens ?? 0);
+                            reasoningTokens += (long)(usage.Data.ReasoningTokens ?? 0);
+                            break;
+
+                        case SessionUsageInfoEvent sessUsage:
+                            // 2026-05-16 — Phase 72: snapshot of the live
+                            // SDK session's full context size after the
+                            // model processed this turn. Latest wins —
+                            // we surface the most recent observation on
+                            // the final Finished event so operators can
+                            // tell at a glance whether the session is
+                            // running with 6K of context (good) or 200K
+                            // (bloated; SDK is replaying history).
+                            if (sessUsage.Data.ConversationTokens is double ct2)
+                            {
+                                conversationTokensLatest = (long)ct2;
+                            }
                             break;
 
                         case SessionIdleEvent:
@@ -1525,7 +1615,41 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             DateTimeOffset.UtcNow,
             InputTokens: inputTokens,
             OutputTokens: outputTokens,
-            CostUsd: ComputeCost(modelInfo, inputTokens, outputTokens));
+            CostUsd: ComputeCost(modelInfo, inputTokens, outputTokens),
+            // 2026-05-16 — Phase 72: stamp telemetry on the Finished
+            // event so downstream usage-writers (CrewQueueWorker,
+            // CrewStoryArtifactStrategy) can persist them to
+            // AgentUsageRow without re-scanning the event stream.
+            SessionId: capturedSessionId,
+            CacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : null,
+            CacheWriteTokens: cacheWriteTokens > 0 ? cacheWriteTokens : null,
+            ReasoningTokens: reasoningTokens > 0 ? reasoningTokens : null,
+            ConversationTokens: conversationTokensLatest > 0 ? conversationTokensLatest : null);
+    }
+
+    /// <summary>
+    /// 2026-05-16 — Phase 72: extract an exit code from a Copilot SDK
+    /// <c>ToolExecutionCompleteResult</c>. Terminal-flavored tool
+    /// results carry a typed <c>ToolExecutionCompleteContentTerminal</c>
+    /// inside <c>Contents</c>; the SDK populates its <c>ExitCode</c>
+    /// only when the tool was shell-shaped (<c>run_in_terminal</c>,
+    /// <c>bash</c>, etc.). Returns null for non-shell tools so the
+    /// caller can skip stamping the field.
+    /// </summary>
+    private static int? ExtractTerminalExitCode(ToolExecutionCompleteResult? result)
+    {
+        var contents = result?.Contents;
+        if (contents is null) return null;
+        foreach (var c in contents)
+        {
+            // SDK exposes ExitCode as double? (Nullable<double>); cast to
+            // int once we've unwrapped the nullable.
+            if (c is ToolExecutionCompleteContentTerminal term && term.ExitCode is double ec)
+            {
+                return (int)ec;
+            }
+        }
+        return null;
     }
 
     private static async IAsyncEnumerable<AgentEvent> RunUnsupported(AgentContext context)

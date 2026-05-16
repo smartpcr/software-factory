@@ -20,6 +20,7 @@ import {
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
+import { ToolsPane } from './ToolsPane';
 
 interface Props {
   storyId: string;
@@ -358,11 +359,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const isWorktreeMode = filter === 'worktree';
   const isBuildMode = filter === 'build';
   const isPromptMode = filter === 'prompt';
+  const isToolsMode = filter === 'tools';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
   // KPI strip click jumps the iter pointer. KPI iter values are 1-based;
@@ -587,6 +589,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
           <WorktreePane workItemId={workItemId} />
         ) : isBuildMode ? (
           <BuildPane workItemId={workItemId} />
+        ) : isToolsMode ? (
+          <ToolsPane workItemId={workItemId} />
         ) : isPromptMode ? (
           <PromptView
             events={transcript}

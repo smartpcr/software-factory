@@ -1041,6 +1041,13 @@ export const forgeApi = {
       durationMs: number | null;
       filesChanged: number;
       createdAt: string;
+      // 2026-05-16 Phase 72 — cache / reasoning / conversation token
+      // telemetry. Null when the iter ran on a backend (Claude SDK,
+      // Copilot CLI) or pre-Phase-72 row that doesn't report them.
+      cacheReadTokens?: number | null;
+      cacheWriteTokens?: number | null;
+      reasoningTokens?: number | null;
+      conversationTokens?: number | null;
     }[];
   }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/iter-kpis`);
@@ -1552,6 +1559,11 @@ export const forgeApi = {
       durationMs: number | null;
       filesChanged: number;
       createdAt: string;
+      // 2026-05-16 Phase 72 — see fetchWorkstreamIterKpis above.
+      cacheReadTokens?: number | null;
+      cacheWriteTokens?: number | null;
+      reasoningTokens?: number | null;
+      conversationTokens?: number | null;
     }[];
   }> {
     return fetchJson(

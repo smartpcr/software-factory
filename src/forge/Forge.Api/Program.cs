@@ -612,6 +612,11 @@ using (var scope = app.Services.CreateScope())
     // land in the last second of an iter). Same ordering constraint as
     // Phase63/64 — EF's model now references these columns.
     await Phase65Migration.ApplyAsync(db);
+    // Phase 72 (2026-05-16) — CacheReadTokens / CacheWriteTokens /
+    // ReasoningTokens / ConversationTokens on agent_usage. EF's
+    // AgentUsageRow model references these columns so any agent_usage
+    // INSERT or SELECT would fail without them.
+    await Phase72Migration.ApplyAsync(db);
     await Phase38Migration.ApplyAsync(db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.

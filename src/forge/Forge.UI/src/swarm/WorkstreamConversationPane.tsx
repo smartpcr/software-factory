@@ -20,6 +20,7 @@ import {
 } from '@/views/conversation';
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
+import { ToolsPane } from './ToolsPane';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -213,11 +214,12 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const isWorktreeMode = filter === 'worktree';
   const isBuildMode = filter === 'build';
   const isPromptMode = filter === 'prompt';
+  const isToolsMode = filter === 'tools';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -540,6 +542,8 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
           <WorktreePane workItemId={workstreamId} />
         ) : isBuildMode ? (
           <BuildPane workItemId={workstreamId} />
+        ) : isToolsMode ? (
+          <ToolsPane workItemId={workstreamId} />
         ) : isPromptMode ? (
           <PromptView
             events={transcript}
