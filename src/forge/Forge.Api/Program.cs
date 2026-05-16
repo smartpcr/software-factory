@@ -138,6 +138,11 @@ builder.Services.AddCors(options =>
     // See docs/forge/split-db.md §"Phase A".
     builder.Services.AddSingleton<Forge.Api.Persistence.IForgeDbPaths, Forge.Api.Persistence.ForgeDbPaths>();
 
+    // Phase B — splitter dry-run analyzer. Singleton because it holds no
+    // per-request state and is invoked from an admin endpoint that's
+    // gated behind a feature flag (Forge:Db:SplitEnabled).
+    builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitDryRunService>();
+
     builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
     {
         var paths = sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
@@ -899,6 +904,9 @@ app.MapTaskExecutionEndpoints();
 app.MapQueueEndpoints();
 // Phase 17 follow-up — admin diagnostics (manual worker tick).
 app.MapAdminEndpoints();
+// Phase B — splitter dry-run admin endpoint. Gated by both the
+// product-owner role and the Forge:Db:SplitEnabled config flag.
+app.MapAdminDbSplitEndpoints();
 // Phase 22 — assigned-agent + assignment history endpoints.
 app.MapAgentAssignmentsEndpoints();
 // Phase 24 — PR comment CRUD + resolve/reopen endpoints.

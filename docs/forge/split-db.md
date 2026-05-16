@@ -193,6 +193,18 @@ The plan splits into 7 phases. Phases A and B are pure config + tooling (no beha
 
 It's mergeable in isolation, fully test-covered, and unblocks every subsequent phase. Phases B–G follow as separate PRs once Phase A is in.
 
+## Status / progress
+
+| Phase | State | Notes |
+|---|---|---|
+| **A — Config + path resolver** | ✅ shipped (commit `f2aeaab1`) + tests green | `Forge:Db:Folder`, `ForgeDbPaths`, 12 fallback sites removed, slug validator (server + UI), 93/93 tests pass on Phase-A surface |
+| **B — Splitter shadow tool** | ✅ code-complete, smoke-tested on live 1.3 GB DB | `POST /api/admin/db/split-dry-run` gated by `Forge:Db:SplitEnabled` (default `false`) + product-owner role. 11/11 unit tests + 50/50 combined Phase A+B tests green. Live report: 100,756 rows → 17,338 control + 74,849 product (across 4 products: failover-cluster, code-intelligence, local, raft) + 8,569 cascade-delete orphans + 0 unknown tables. |
+| C — Boundary validation on real data | ▶ ready for review | Operator inspects B's report and signs off; remaining decision: what to do with the 8,569 broken-FK orphan rows (drop on apply? route to default product?). |
+| D — Split DbContexts + per-request factory | pending | The ~95-file endpoint migration |
+| E — Background services per-product | pending | Worker fan-out + write-path repair |
+| F — Auto-split on first boot | pending | `Phase73Migration_SplitPerProduct` |
+| G — Tests + cleanup | pending | Test factory + ~55 phase migration audit |
+
 ## Estimated effort
 
 | Phase | Files touched | Risk | Effort |
