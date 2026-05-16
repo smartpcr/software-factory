@@ -315,7 +315,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
         // Only scopeFactory + (optional) logger are touched by the helper.
         // Other ctor params are private fields the method never reads.
         var strategy = new CrewStoryArtifactStrategy(
-            scopeFactory, null!, null!, null!, null!, null!, null!);
+            scopeFactory, null!, null!, null!, null!, null!, null!, null!);
 
         var before = await strategy.LoadFreshAttachmentsJsonAsync(spawnId, CancellationToken.None);
         Assert.Null(before);
@@ -344,7 +344,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
 
         var scopeFactory = f.Services.GetRequiredService<IServiceScopeFactory>();
         var strategy = new CrewStoryArtifactStrategy(
-            scopeFactory, null!, null!, null!, null!, null!, null!);
+            scopeFactory, null!, null!, null!, null!, null!, null!, null!);
 
         var result = await strategy.LoadFreshAttachmentsJsonAsync("spawn-does-not-exist", CancellationToken.None);
 

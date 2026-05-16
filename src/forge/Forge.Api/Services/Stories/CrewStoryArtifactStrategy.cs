@@ -40,6 +40,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly IAgentRunner runner;
     private readonly TaskChannel taskChannel;
     private readonly IConfiguration config;
+    private readonly IForgeDbPaths dbPaths;
     private readonly IStoryGitOps git;
     private readonly AgentSlotService slots;
     private readonly CopilotSessionPool copilotPool;
@@ -50,6 +51,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         IAgentRunner runner,
         TaskChannel taskChannel,
         IConfiguration config,
+        IForgeDbPaths dbPaths,
         IStoryGitOps git,
         AgentSlotService slots,
         CopilotSessionPool copilotPool,
@@ -59,6 +61,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.runner = runner;
         this.taskChannel = taskChannel;
         this.config = config;
+        this.dbPaths = dbPaths;
         this.git = git;
         this.slots = slots;
         this.copilotPool = copilotPool;
@@ -190,7 +193,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // from DB so attachments uploaded after the orchestrator's outer
         // tick loaded `spawn` show up on the next plan drive.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
-        var attachmentPaths = await CopyAttachmentsToWorktreeAsync(attachmentsJson, worktreePath, ct);
+        var attachmentPaths = await CopyAttachmentsToWorktreeAsync(
+            attachmentsJson, worktreePath, ct, stateDir: this.dbPaths.Folder);
 
         // ── Assign different generator + evaluator agents per doc (Phase 47) ──
         // Load both rosters so each of the 4 plan docs runs with a
@@ -286,7 +290,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // so this is also where operator-uploaded attachments first reach
         // the architect agent for sequential spawns.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
-        await CopyAttachmentsToWorktreeAsync(attachmentsJson, worktreePath, ct);
+        await CopyAttachmentsToWorktreeAsync(
+            attachmentsJson, worktreePath, ct, stateDir: this.dbPaths.Folder);
 
         var content = await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume,
@@ -320,16 +325,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
     /// <summary>
     /// Resolve the on-disk state directory (where forge.db lives and
-    /// where storyworkspaces / attachments are rooted). Mirrors the
-    /// same resolution rule the rest of the codebase uses.
+    /// where storyworkspaces / attachments are rooted). Phase A: routes
+    /// through <see cref="IForgeDbPaths.Folder"/>.
     /// </summary>
-    private string ResolveStateDir()
-    {
-        using var scope = this.scopeFactory.CreateScope();
-        var cfg = scope.ServiceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
-        var dbPath = cfg?["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        return Path.GetDirectoryName(dbPath) ?? @"E:\forge";
-    }
+    private string ResolveStateDir() => this.dbPaths.Folder;
 
     /// <summary>
     /// Phase 50 -- render operator-pinned decisions as a prompt block that
@@ -1899,7 +1898,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Refresh from DB so attachments uploaded since the orchestrator
         // loaded `spawn` are reflected in this resume run.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
-        await CopyAttachmentsToWorktreeAsync(attachmentsJson, worktreePath, ct);
+        await CopyAttachmentsToWorktreeAsync(
+            attachmentsJson, worktreePath, ct, stateDir: this.dbPaths.Folder);
 
         await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume: true,
@@ -2228,7 +2228,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // `.gitignore`, so the workstream PR diff stays free of unrelated
         // gitignore churn.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
-        await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct);
+        await CopyAttachmentsToWorktreeAsync(
+            attachmentsJson, workspace, ct, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         // Look up the work item's description -- the operator may have edited
@@ -2811,7 +2812,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // output collection paths defensively.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
-            excludeMode: AttachmentExcludeMode.None);
+            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         var prompt = $$"""
@@ -2934,7 +2935,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // the fix. Scratch dir (not a git worktree) → AttachmentExcludeMode.None.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
-            excludeMode: AttachmentExcludeMode.None);
+            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         var prompt = $$"""
@@ -3033,7 +3034,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // contain authored .feature files.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
-            excludeMode: AttachmentExcludeMode.None);
+            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         var prompt = $$"""
@@ -3086,7 +3087,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // them so the steps don't drift from the operator-authored spec.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
-            excludeMode: AttachmentExcludeMode.None);
+            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         var prompt = $$"""
@@ -3130,7 +3131,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     private string PrepareWorkspace(string spawnId, string phaseTag)
     {
-        var stateDir = ResolveStateDir(this.config);
+        var stateDir = this.dbPaths.Folder;
 
         // Check both slug conventions -- older workspaces may use dashes
         // (Slug) while newer code uses underscores (SlugForFs). Prefer the
@@ -3210,13 +3211,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return dict;
     }
 
-    private static string ResolveStateDir(IConfiguration config)
-    {
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        return Path.GetDirectoryName(dbPath) ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Forge");
-    }
-
-    /// <summary>Map team name → crew row id pattern (<c>crew-arch</c> etc.).</summary>
     private static string CrewIdPrefix(string team) => team.ToLowerInvariant() switch
     {
         "architect" => "crew-arch",
@@ -5512,7 +5506,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? attachmentsJson,
         string worktreePath,
         CancellationToken ct,
-        AttachmentExcludeMode excludeMode = AttachmentExcludeMode.GitInfoExclude)
+        AttachmentExcludeMode excludeMode = AttachmentExcludeMode.GitInfoExclude,
+        string? stateDir = null)
     {
         var paths = new List<string>();
         if (string.IsNullOrEmpty(attachmentsJson)) return paths;
@@ -5539,8 +5534,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             await TryAddGitInfoExcludeAsync(worktreePath, ".forge-attachments/", ct);
         }
 
-        var dbDir = Path.GetDirectoryName(
-            System.Environment.GetEnvironmentVariable("FORGE_DB_PATH") ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        // Phase A — production callers must pass `stateDir` (resolved
+        // through IForgeDbPaths.Folder). The FORGE_DB_PATH env-var
+        // fallback is preserved for the few test sites that haven't
+        // migrated yet; once those move to explicit `stateDir` the
+        // env-var branch (and its hardcoded path literal) can be
+        // removed entirely.
+        var dbDir = stateDir
+            ?? Path.GetDirectoryName(Environment.GetEnvironmentVariable("FORGE_DB_PATH"))
+            ?? throw new InvalidOperationException(
+                "CopyAttachmentsToWorktreeAsync: `stateDir` parameter is required when FORGE_DB_PATH " +
+                "env var is unset. Production callers resolve this via IForgeDbPaths.Folder.");
 
         foreach (var entry in entries)
         {

@@ -61,11 +61,11 @@ public static class AdminEndpoints
         // a prune will actually help BEFORE running it (and the savings
         // AFTER). Read-only — safe to call on every Settings page load.
         app.MapGet("/api/admin/db/stats", async (
-            IConfiguration config,
+            Forge.Api.Persistence.IForgeDbPaths paths,
             Forge.Api.Persistence.ForgeDbContext db,
             CancellationToken ct) =>
         {
-            var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+            var dbPath = paths.ControlDbPath();
             long fileBytes = 0;
             DateTimeOffset? modifiedAt = null;
             if (File.Exists(dbPath))

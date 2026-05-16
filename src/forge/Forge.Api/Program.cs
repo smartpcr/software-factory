@@ -131,12 +131,17 @@ builder.Services.AddCors(options =>
         return false;
     }
 
+    // Phase A — IForgeDbPaths is registered as a singleton so consumers
+    // (Program.cs, the 11 endpoint sites, CrewStoryArtifactStrategy, the
+    // Phase B/F migration tooling) all resolve paths through the same
+    // service instead of inlining `?? @"E:\forge\forge.db"` fallbacks.
+    // See docs/forge/split-db.md §"Phase A".
+    builder.Services.AddSingleton<Forge.Api.Persistence.IForgeDbPaths, Forge.Api.Persistence.ForgeDbPaths>();
+
     builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
     {
-        var cfg = sp.GetRequiredService<IConfiguration>();
-        var dbPath = cfg["Forge:Db:Path"] ?? ProdDbDefault;
-        if (!Path.IsPathFullyQualified(dbPath))
-            dbPath = Path.GetFullPath(dbPath);
+        var paths = sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
+        var dbPath = paths.ControlDbPath();
 
         if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
         {

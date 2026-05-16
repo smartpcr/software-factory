@@ -44,6 +44,14 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
     setSlug(slugify(name));
   }, [name, slugDirty]);
 
+  // Live slug validation — only render the inline message once the user
+  // has typed something. Hides the "Slug is required" noise on first
+  // open while still catching real errors as the user types.
+  const liveSlugError = useMemo(() => {
+    if (!slug.trim()) return null;
+    return validateSlug(slug.trim());
+  }, [slug]);
+
   // Esc to close.
   useEffect(() => {
     if (!open) return;
@@ -56,11 +64,8 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
     const cleanName = name.trim();
     const cleanSlug = slug.trim();
     if (!cleanName) { setErr('Name is required'); return; }
-    if (!cleanSlug) { setErr('Slug is required'); return; }
-    if (!/^[a-z0-9-]+$/.test(cleanSlug)) {
-      setErr('Slug can only contain lowercase letters, digits, and hyphens.');
-      return;
-    }
+    const slugError = validateSlug(cleanSlug);
+    if (slugError) { setErr(slugError); return; }
     setBusy(true);
     setErr(null);
     try {
@@ -131,7 +136,7 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
 
           <FieldGroup
             label="Slug"
-            hint={slug ? `Used in API paths: /api/products/${slug || '…'}` : 'Used in API paths.'}
+            hint={slug ? `Used in API paths and DB file: /api/products/${slug || '…'} (\`${slug || '…'}.db\`)` : 'Used in API paths and as the SQLite file name.'}
           >
             <div style={{ position: 'relative' }}>
               <span
@@ -150,12 +155,23 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
                 value={slug}
                 onChange={(e) => { setSlug(e.target.value); setSlugDirty(true); }}
                 placeholder="atlas"
-                maxLength={48}
+                maxLength={100}
                 spellCheck={false}
                 disabled={busy}
-                style={{ ...inputStyle, paddingLeft: 22, fontFamily: 'var(--font-mono, monospace)' }}
+                aria-invalid={liveSlugError !== null}
+                style={{
+                  ...inputStyle,
+                  paddingLeft: 22,
+                  fontFamily: 'var(--font-mono, monospace)',
+                  borderColor: liveSlugError ? 'var(--danger, #dc2626)' : (inputStyle.border as string | undefined)?.toString().includes('border-strong') ? undefined : undefined,
+                }}
               />
             </div>
+            {liveSlugError && (
+              <span style={{ fontSize: 11, color: 'var(--danger, #dc2626)', lineHeight: 1.4 }}>
+                {liveSlugError}
+              </span>
+            )}
           </FieldGroup>
 
           <FieldGroup label="Description" hint="Optional. One short sentence shown on the products grid.">
@@ -185,7 +201,7 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
           <button
             className="btn btn-primary"
             onClick={() => void submit()}
-            disabled={busy || !name.trim() || !slug.trim()}
+            disabled={busy || !name.trim() || !slug.trim() || liveSlugError !== null}
           >
             {busy ? 'Creating…' : 'Create product'}
           </button>
@@ -264,6 +280,35 @@ function slugify(s: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+// Mirrors `ForgeDbPaths.ReservedSlugs` in Forge.Api so the operator sees
+// the rejection before submit. Includes the control DB collision
+// (`forge`) and Windows reserved device names (SQLite cannot open
+// `con.db`, `nul.db`, etc. on Windows).
+const RESERVED_SLUGS = new Set<string>([
+  'forge',
+  'con', 'nul', 'aux', 'prn',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
+
+function validateSlug(slug: string): string | null {
+  if (!slug) return 'Slug is required.';
+  if (slug.length > 100) return `Slug is ${slug.length} characters; the maximum is 100.`;
+  if (!/^[a-z0-9-]+$/.test(slug)) {
+    return 'Slug can only contain lowercase letters, digits, and hyphens.';
+  }
+  if (slug.startsWith('-') || slug.endsWith('-')) {
+    return 'Slug cannot start or end with a hyphen.';
+  }
+  if (slug.includes('--')) {
+    return 'Slug cannot contain consecutive hyphens.';
+  }
+  if (RESERVED_SLUGS.has(slug)) {
+    return `Slug "${slug}" is reserved. Each product becomes a SQLite file at \`{folder}/${slug}.db\`, and this name would collide with the control DB or a Windows device name.`;
+  }
+  return null;
 }
 
 function humanizeError(msg: string): string {

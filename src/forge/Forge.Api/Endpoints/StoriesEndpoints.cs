@@ -149,7 +149,7 @@ public static class StoriesEndpoints
         ForgeDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
-        IConfiguration config,
+        IForgeDbPaths paths,
         ILoggerFactory loggerFactory,
         IServiceScopeFactory scopeFactory)
     {
@@ -307,7 +307,7 @@ public static class StoriesEndpoints
         // Priority: explicit uploadIds from the spawn request > attachments from the ProductStory.
         if (req?.UploadIds is { Count: > 0 })
         {
-            var attachments = ResolveUploadedFiles(req.UploadIds, config);
+            var attachments = ResolveUploadedFiles(req.UploadIds, paths);
             if (attachments.Count > 0)
             {
                 spawn.AttachmentsJson = System.Text.Json.JsonSerializer.Serialize(attachments);
@@ -336,7 +336,7 @@ public static class StoriesEndpoints
                 // orchestrator drive sees a clean state, then await the
                 // drive itself. PlanPrId is observable on the 201 response.
                 await PurgeResidualSpawnDataAsync(
-                    db, config, deterministicSpawnId, safeStoryIdForPurge,
+                    db, paths, deterministicSpawnId, safeStoryIdForPurge,
                     loggerFactory.CreateLogger("forge.story-spawn.respawn-purge"),
                     ctx.RequestAborted);
                 await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
@@ -367,7 +367,7 @@ public static class StoriesEndpoints
                     try
                     {
                         await PurgeResidualSpawnDataAsync(
-                            bgDb, config, spawnIdForBg, safeStoryIdForBg,
+                            bgDb, paths, spawnIdForBg, safeStoryIdForBg,
                             bgPurgeLogger, CancellationToken.None);
                     }
                     catch (Exception ex)
@@ -411,7 +411,7 @@ public static class StoriesEndpoints
     /// </summary>
     private static async Task PurgeResidualSpawnDataAsync(
         ForgeDbContext db,
-        IConfiguration config,
+        IForgeDbPaths paths,
         string deterministicSpawnId,
         string safeStoryId,
         ILogger logger,
@@ -518,7 +518,7 @@ public static class StoriesEndpoints
                     try
                     {
                         await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
-                            db, git!, config, ws, ct, deleteRemoteBranch: true);
+                            db, git!, paths, ws, ct, deleteRemoteBranch: true);
                     }
                     catch (Exception innerEx)
                     {
@@ -538,7 +538,7 @@ public static class StoriesEndpoints
 
         // 3. On-disk dirs: storyworkspaces/{spawnId}/ and attachments/{spawnId}/
         //    Mirrors DeleteSpawn step 8.
-        var stateDir = Path.GetDirectoryName(config["Forge:Db:Path"] ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        var stateDir = paths.Folder;
         foreach (var slug in new[] { deterministicSpawnId, deterministicSpawnId.Replace('-', '_') }.Distinct())
         {
             var spawnRoot = Path.Combine(stateDir, "storyworkspaces", slug);
@@ -781,7 +781,7 @@ public static class StoriesEndpoints
         [FromQuery] bool? deleteBaseBranch,
         ForgeDbContext db,
         IGitWorktreeService git,
-        IConfiguration config,
+        IForgeDbPaths paths,
         IHubContext<ForgeHub> hub,
         IAgentRunner runner,
         IEnumerable<IForgeProvider> providers,
@@ -1061,7 +1061,7 @@ public static class StoriesEndpoints
             try
             {
                 var rep = await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
-                    db, git, config, ws, ctx.RequestAborted, deleteRemoteBranch: true);
+                    db, git, paths, ws, ctx.RequestAborted, deleteRemoteBranch: true);
                 if (rep is { } and not null)
                 {
                     // Best-effort merge of per-workstream counts into a sum.
@@ -1290,7 +1290,7 @@ public static class StoriesEndpoints
         counts["branchesCleaned"] = cleanedBranches.Count;
 
         // ── 8. On-disk dirs ─────────────────────────────────────────────
-        var stateDir = Path.GetDirectoryName(config["Forge:Db:Path"] ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var spawnSlug = spawn.Id;
         foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') }.Distinct())
         {
@@ -3065,7 +3065,7 @@ public static class StoriesEndpoints
         ForgeDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
-        IConfiguration config,
+        IForgeDbPaths paths,
         IStoryArtifactStrategy strategy)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -3168,8 +3168,7 @@ public static class StoriesEndpoints
         // convention used by CrewStoryArtifactStrategy.PrepareWorkspace
         // (`storyworkspaces/{spawnSlug}/plan-{key}`); checks both dash and
         // underscore slug variants for back-compat.
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        var stateDir = System.IO.Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var phaseTag = $"plan-{key}";
         foreach (var slug in new[] { spawn.Id, spawn.Id.Replace('-', '_'), spawn.Id.Replace('_', '-') })
         {
@@ -4649,7 +4648,7 @@ public static class StoriesEndpoints
 
     private static async Task<IResult> UploadAttachments(
         HttpContext ctx,
-        IConfiguration config)
+        IForgeDbPaths paths)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -4664,8 +4663,7 @@ public static class StoriesEndpoints
         if (files.Count == 0) return Results.Problem(title: "No files uploaded", statusCode: 400);
         if (files.Count > MaxFiles) return Results.Problem(title: $"Max {MaxFiles} files allowed", statusCode: 400);
 
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var uploadId = Guid.NewGuid().ToString("N")[..12];
         var uploadDir = Path.Combine(stateDir, "attachments", uploadId);
         Directory.CreateDirectory(uploadDir);
@@ -4704,10 +4702,9 @@ public static class StoriesEndpoints
     }
 
     internal static List<object> ResolveUploadedFiles(
-        IReadOnlyList<string> uploadIds, IConfiguration config)
+        IReadOnlyList<string> uploadIds, IForgeDbPaths paths)
     {
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var attachments = new List<object>();
 
         foreach (var uploadId in uploadIds)
@@ -4747,10 +4744,9 @@ public static class StoriesEndpoints
     }
 
     private static IResult GetAttachmentContent(
-        string uploadId, string fileName, IConfiguration config)
+        string uploadId, string fileName, IForgeDbPaths paths)
     {
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var filePath = Path.Combine(stateDir, "attachments", uploadId, fileName);
         if (!File.Exists(filePath))
             return Results.Problem(title: "Attachment not found", statusCode: 404);

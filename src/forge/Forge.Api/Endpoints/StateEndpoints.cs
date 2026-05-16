@@ -114,7 +114,7 @@ public static class StateEndpoints
             [FromBody] CreateStoryRequest req,
             ForgeDbContext db,
             IHubContext<ForgeHub> hub,
-            IConfiguration config,
+            IForgeDbPaths paths,
             Forge.Api.Services.Stories.IStoryGitOps git,
             ILoggerFactory loggerFactory) =>
         {
@@ -176,7 +176,7 @@ public static class StateEndpoints
             // Phase 43 — resolve pre-uploaded attachments.
             if (req.UploadIds is { Count: > 0 })
             {
-                var attachments = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, config);
+                var attachments = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, paths);
                 if (attachments.Count > 0)
                 {
                     row.AttachmentsJson = System.Text.Json.JsonSerializer.Serialize(attachments);
@@ -214,7 +214,7 @@ public static class StateEndpoints
             [FromBody] PatchStoryRequest req,
             ForgeDbContext db,
             IHubContext<ForgeHub> hub,
-            IConfiguration config,
+            IForgeDbPaths paths,
             Forge.Api.Services.Stories.IStoryGitOps git,
             Forge.Api.Services.Stories.IStoryProviderOps storyProvider,
             ILoggerFactory loggerFactory) =>
@@ -372,7 +372,7 @@ public static class StateEndpoints
             // Phase 43 — append newly uploaded attachments.
             if (req.UploadIds is { Count: > 0 })
             {
-                var newFiles = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, config);
+                var newFiles = StoriesEndpoints.ResolveUploadedFiles(req.UploadIds, paths);
                 if (newFiles.Count > 0)
                 {
                     var existing = string.IsNullOrEmpty(row.AttachmentsJson)

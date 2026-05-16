@@ -477,6 +477,21 @@ public static class ProductsEndpoints
         }
 
         var slug = string.IsNullOrWhiteSpace(req.Slug) ? Slugify(req.Name) : req.Slug;
+
+        // Phase A — server-side validation. The per-product DB file is
+        // named `{folder}\{slug}.db`, so slug must be a valid filename
+        // and must not collide with the control DB (`forge.db`) or
+        // Windows device names (CON, NUL, …). The UI is expected to
+        // pre-validate but we belt-and-suspenders here so a hand-rolled
+        // POST cannot create a product that later fails to open.
+        if (!ForgeDbPaths.TryValidateSlug(slug, out var slugError))
+        {
+            return Results.Problem(
+                title: "Invalid product slug",
+                detail: slugError,
+                statusCode: 400);
+        }
+
         if (await db.Products.AnyAsync(p => p.Slug == slug))
         {
             return Results.Problem(title: $"Slug '{slug}' is already in use", statusCode: 409);
@@ -838,10 +853,28 @@ public static class ProductsEndpoints
     {
         var s = name.Trim().ToLowerInvariant();
         var b = new System.Text.StringBuilder(s.Length);
+        var lastWasHyphen = false;
         foreach (var ch in s)
         {
-            if (char.IsLetterOrDigit(ch)) b.Append(ch);
-            else if (ch is ' ' or '-' or '_') b.Append('-');
+            if (char.IsLetterOrDigit(ch))
+            {
+                b.Append(ch);
+                lastWasHyphen = false;
+            }
+            else if (ch is ' ' or '-' or '_')
+            {
+                // Phase A — collapse runs of separator chars into a single
+                // hyphen. `ForgeDbPaths.TryValidateSlug` rejects `--`, so
+                // "Foo   Bar" must produce "foo-bar" (not "foo---bar").
+                if (!lastWasHyphen)
+                {
+                    b.Append('-');
+                    lastWasHyphen = true;
+                }
+            }
+            // else: silently drop characters that are not letters/digits/
+            // space/hyphen/underscore. The validator catches anything that
+            // still snuck through.
         }
         return b.ToString().Trim('-');
     }

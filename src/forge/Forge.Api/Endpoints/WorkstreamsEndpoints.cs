@@ -18,7 +18,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 
 /// <summary>
 /// Phase 3.6 — workstream CRUD + sync endpoints.
@@ -334,7 +333,7 @@ public static class WorkstreamsEndpoints
         bool? force,
         ForgeDbContext db,
         IGitWorktreeService git,
-        IConfiguration config,
+        IForgeDbPaths paths,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -355,7 +354,7 @@ public static class WorkstreamsEndpoints
             }, statusCode: 422);
         }
 
-        var report = await CascadeDeleteWorkstreamAsync(db, git, config, row, ct: ctx.RequestAborted);
+        var report = await CascadeDeleteWorkstreamAsync(db, git, paths, row, ct: ctx.RequestAborted);
 
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "deleted", id });
         if (!string.IsNullOrEmpty(row.StorySpawnId))
@@ -391,7 +390,7 @@ public static class WorkstreamsEndpoints
     internal static async Task<object> CascadeDeleteWorkstreamAsync(
         ForgeDbContext db,
         IGitWorktreeService git,
-        IConfiguration config,
+        IForgeDbPaths paths,
         WorkstreamRow row,
         CancellationToken ct,
         bool deleteRemoteBranch = false)
@@ -498,7 +497,7 @@ public static class WorkstreamsEndpoints
         await db.SaveChangesAsync(ct);
 
         // ── 6. On-disk artifacts (best-effort; never block the delete) ───
-        var stateDir = Path.GetDirectoryName(config["Forge:Db:Path"] ?? @"E:\forge\forge.db") ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var spawnSlug = row.StorySpawnId ?? string.Empty;
         var dirsRemoved = 0;
         foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') })
@@ -651,7 +650,7 @@ public static class WorkstreamsEndpoints
         ForgeDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
-        IConfiguration config,
+        IForgeDbPaths paths,
         IEnumerable<IForgeProvider> providers,
         StorySpawnOrchestrator orchestrator)
     {
@@ -809,8 +808,7 @@ public static class WorkstreamsEndpoints
         await db.SaveChangesAsync();
 
         // ── 6. Clear the cached workspace ───────────────────────────────
-        var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-        var stateDir = System.IO.Path.GetDirectoryName(dbPath) ?? @"E:\forge";
+        var stateDir = paths.Folder;
         var spawnSlug = ws.StorySpawnId ?? "";
         foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') })
         {
