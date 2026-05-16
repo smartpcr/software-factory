@@ -846,7 +846,11 @@
  * server-assembly-and-client-sdk → internal-client rebirth). */
 .swarm-ctrl .ws-chip.pending,
 .swarm-ctrl .ws-chip.planning,
+.swarm-ctrl .ws-chip.paused,
 .swarm-ctrl .ws-chip.blocked { background: var(--sc-muted); border-color: var(--sc-text-dim); }
+/* Paused chips get a subtle double-border so the operator can tell
+ * "paused" from "pending" at a glance without coloring them differently. */
+.swarm-ctrl .ws-chip.paused  { box-shadow: 0 0 0 1.5px var(--sc-text-dim), inset 0 0 0 1px var(--sc-bg-2); }
 .swarm-ctrl .ws-chip.active,
 .swarm-ctrl .ws-chip.iterating { background: var(--sc-amber); border-color: var(--sc-amber-d); }
 .swarm-ctrl .ws-chip.live {
@@ -904,6 +908,16 @@
   );
   border-color: var(--sc-red-d);
 }
+/* `failed` — terminal failure (3 sloppy reassignments exhausted). Same
+ * red family as `stalled` but solid fill (no hatch) to distinguish
+ * "needs operator action now" from "operator can still retry". */
+.swarm-ctrl .ws-chip.failed {
+  background: var(--sc-red-d);
+  border-color: var(--sc-red);
+}
+/* `idle` — work item exists but isn't scheduled. Same bucket as
+ * pending/planning. */
+.swarm-ctrl .ws-chip.idle { background: var(--sc-muted); border-color: var(--sc-text-dim); }
 
 @keyframes ws-chip-pulse {
   0%, 100% { opacity: 1; }

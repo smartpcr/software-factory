@@ -3242,7 +3242,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             "plan" => 1.0,
             "decompose" => 0.7,
-            "impl" => 2.0,
+            "impl" => 3.0,
             "review" => 1.0,
             "review-fix" => 1.0,
             "qa-features" => 1.0,
