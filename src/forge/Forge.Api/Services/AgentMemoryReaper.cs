@@ -96,30 +96,40 @@ public sealed class AgentMemoryReaper : BackgroundService
         var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(retention);
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product so each product's agent_memory is
+        // pruned independently. The AsyncLocal slug in ProductFanout means
+        // nested GetRequiredService<ProductDbContext> calls inside the
+        // callback automatically resolve to THIS product's DB.
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
+        var totalDeleted = 0;
+        var lockObj = new object();
 
-        // SQLite EF cannot reliably translate DateTimeOffset comparisons
-        // (TEXT-stored ISO 8601 mostly orders correctly, but mixed-nullable
-        // casts trip the provider — see CrewQueueWorker.cs:1346 incident).
-        // Match the project convention: pull ids whose UpdatedAt is < cutoff
-        // client-side, then bulk-delete by primary key.
-        var stale = (await db.AgentMemory.AsNoTracking()
-            .Select(m => new { m.Id, m.UpdatedAt })
-            .ToListAsync(ct))
-            .Where(m => m.UpdatedAt < cutoff)
-            .Select(m => m.Id)
-            .ToList();
-        var deleted = stale.Count == 0 ? 0 : await db.AgentMemory
-            .Where(m => stale.Contains(m.Id))
-            .ExecuteDeleteAsync(ct);
-
-        if (deleted > 0)
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
         {
-            this.logger.LogInformation(
-                "AgentMemoryReaper: deleted {Count} memory row(s) older than {Cutoff} (retention {Days} days).",
-                deleted, cutoff, retention);
-        }
-        return deleted;
+            // SQLite EF cannot reliably translate DateTimeOffset comparisons
+            // (TEXT-stored ISO 8601 mostly orders correctly, but mixed-nullable
+            // casts trip the provider). Pull ids whose UpdatedAt is < cutoff
+            // client-side, then bulk-delete by primary key.
+            var stale = (await db.AgentMemory.AsNoTracking()
+                .Select(m => new { m.Id, m.UpdatedAt })
+                .ToListAsync(fct))
+                .Where(m => m.UpdatedAt < cutoff)
+                .Select(m => m.Id)
+                .ToList();
+            var deleted = stale.Count == 0 ? 0 : await db.AgentMemory
+                .Where(m => stale.Contains(m.Id))
+                .ExecuteDeleteAsync(fct);
+
+            if (deleted > 0)
+            {
+                this.logger.LogInformation(
+                    "AgentMemoryReaper: deleted {Count} memory row(s) older than {Cutoff} (retention {Days} days) in product={Slug}.",
+                    deleted, cutoff, retention, slug);
+                lock (lockObj) totalDeleted += deleted;
+            }
+        }, ct);
+
+        return totalDeleted;
     }
 
     private TimeSpan GetTickInterval()

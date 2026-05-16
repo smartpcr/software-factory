@@ -112,21 +112,46 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
     {
         var sw = Stopwatch.StartNew();
         var stats = new PruneStats { DryRun = dryRun };
+        var statsLock = new object();
 
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product so each product's transcript table
+        // is pruned independently. Before Phase F splits the data, every
+        // ProductDbContext binds to forge.db so behavior is identical to
+        // the pre-Phase-E single-db scan; after Phase F, each product's
+        // transcript lives in its own {slug}.db and this loop is the
+        // only path that visits all of them.
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
 
-        // Enumerate every WorkItemId that has any transcript event. We
-        // include WIs without deliverables (failed-before-first-iter,
-        // synthetic IDs, malformed runs) so they are pruned the same way
-        // as deliverable-bearing ones — they're the most likely runaway
-        // sources without this branch.
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        {
+            await this.PruneOneProductAsync(db, slug, dryRun, vacuum, stats, statsLock, fct);
+        }, ct);
+
+        sw.Stop();
+        stats.ElapsedMs = sw.ElapsedMilliseconds;
+        return stats;
+    }
+
+    private async Task PruneOneProductAsync(
+        ProductDbContext db,
+        string slug,
+        bool dryRun,
+        bool vacuum,
+        PruneStats stats,
+        object statsLock,
+        CancellationToken ct)
+    {
+        // Enumerate every WorkItemId that has any transcript event in
+        // THIS product. We include WIs without deliverables
+        // (failed-before-first-iter, synthetic IDs, malformed runs)
+        // so they are pruned the same way as deliverable-bearing ones.
         var workItemIds = await db.TaskTranscriptEvents.AsNoTracking()
             .Select(e => e.WorkItemId)
             .Distinct()
             .ToListAsync(ct);
 
-        stats.WorkItemsScanned = workItemIds.Count;
+        lock (statsLock) stats.WorkItemsScanned += workItemIds.Count;
 
         foreach (var wid in workItemIds)
         {
@@ -134,18 +159,12 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
             var keepN = await this.ResolveKeepNAsync(db, wid, ct);
 
             // task.iteration.started events demarcate iteration boundaries.
-            // Ordered by Id ASC = chronological. The Mth row is the start
-            // of iter M (regardless of what's in PayloadJson — Iter values
-            // can collide across resume runs, but Ids are monotonic).
             var iterStartIds = await db.TaskTranscriptEvents.AsNoTracking()
                 .Where(e => e.WorkItemId == wid && e.Kind == "task.iteration.started")
                 .OrderBy(e => e.Id)
                 .Select(e => e.Id)
                 .ToListAsync(ct);
 
-            // Cutoff = the (count - keepN)th iteration.started Id. Events
-            // with Id < cutoff are from earlier iterations; safe to drop.
-            // If we don't have enough iter markers, skip this WI.
             if (iterStartIds.Count <= keepN) continue;
             var cutoffId = iterStartIds[iterStartIds.Count - keepN];
 
@@ -156,14 +175,15 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
 
             if (dryRun)
             {
-                stats.WorkItemsPruned++;
-                stats.RowsDeleted += deleteCount;
+                lock (statsLock)
+                {
+                    stats.WorkItemsPruned++;
+                    stats.RowsDeleted += deleteCount;
+                }
                 continue;
             }
 
-            // Bounded batched delete to keep SQLite write-lock duration
-            // small and predictable — important because the live runner
-            // is concurrently inserting into the same table.
+            // Bounded batched delete to keep SQLite write-lock duration small.
             var deletedTotal = 0;
             while (true)
             {
@@ -183,23 +203,25 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
 
             if (deletedTotal > 0)
             {
-                stats.WorkItemsPruned++;
-                stats.RowsDeleted += deletedTotal;
+                lock (statsLock)
+                {
+                    stats.WorkItemsPruned++;
+                    stats.RowsDeleted += deletedTotal;
+                }
             }
         }
 
-        if (vacuum && !dryRun && stats.RowsDeleted > 0)
+        if (vacuum && !dryRun)
         {
-            // VACUUM rewrites the entire DB and requires an exclusive
-            // lock. Only run when the caller explicitly opts in (admin
-            // endpoint), never from the periodic tick.
-            stats.VacuumRan = true;
-            await db.Database.ExecuteSqlRawAsync("VACUUM", ct);
+            // Per-product VACUUM — only when caller opted in.
+            int rowsForThisProduct;
+            lock (statsLock) rowsForThisProduct = stats.RowsDeleted;
+            if (rowsForThisProduct > 0)
+            {
+                lock (statsLock) stats.VacuumRan = true;
+                await db.Database.ExecuteSqlRawAsync("VACUUM", ct);
+            }
         }
-
-        sw.Stop();
-        stats.ElapsedMs = sw.ElapsedMilliseconds;
-        return stats;
     }
 
     /// <summary>

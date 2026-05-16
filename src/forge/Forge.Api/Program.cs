@@ -205,6 +205,12 @@ builder.Services.AddCors(options =>
     // binds to forge.db until Phase F lays down per-product files.
     builder.Services.AddScoped<Forge.Api.Persistence.ProductDbContext>(sp =>
         sp.GetRequiredService<Forge.Api.Persistence.IProductDbContextFactory>().CreateForCurrentRequest());
+
+    // Phase E — fan-out helper for background workers that need to
+    // iterate every product (or a "due" subset) and process per-product
+    // work via the right ProductDbContext. Scoped so tests can swap
+    // ControlDbContext + factory independently.
+    builder.Services.AddScoped<Forge.Api.Persistence.ProductFanout>();
 }
 
 // Prevent a single BackgroundService failure from tearing down the host.

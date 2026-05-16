@@ -79,7 +79,18 @@ public class WorkItemSyncJob : BackgroundService
 
     internal async Task RunTickAsync(CancellationToken ct)
     {
-        List<RepoRow> repos;
+        // Phase E — WorkItemSyncJob is the one worker whose natural loop
+        // is per-repo, not per-product. Reads from control-side (which
+        // repos are due) but writes to product-side (work_items table).
+        // We don't use ProductFanout.ForEachProductAsync here because
+        // that would over-iterate during Phase D interim (every product
+        // sees every repo through the union ProductDbContext). Instead:
+        //   1. Read due repos via ProductDbContext (interim: forge.db)
+        //   2. Join to products to get the slug
+        //   3. Group by slug; push AsyncLocal slug before each group so
+        //      nested DI scopes inside SyncRepoAsync bind to that
+        //      product's DB.
+        List<RepoSyncCandidate> repos;
         using (var scope = this.scopes.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
@@ -88,45 +99,48 @@ public class WorkItemSyncJob : BackgroundService
 
             // Phase 34 — pull the candidate set without the parallelism cap so the
             // per-repo interval filter below doesn't starve a repo that sits
-            // behind a few not-yet-due repos in the order-by ranking.
-            var candidates = await db.Repos
-                .Where(r =>
-                    r.LastSyncStatus == "idle"
-                    || r.LastSyncStatus == "failed"
-                    || (r.LastSyncStatus == "running" && r.IsRunningSince != null
-                        && string.Compare(r.IsRunningSince, staleThreshold) < 0))
-                .OrderBy(r => r.LastSyncAt ?? string.Empty)
-                .ToListAsync(ct);
+            // behind a few not-yet-due repos in the order-by ranking. Join to
+            // products so we have the slug for the AsyncLocal slug push.
+            var candidates = await (
+                from r in db.Repos
+                join p in db.Products on r.ProductId equals p.Id
+                where r.LastSyncStatus == "idle"
+                   || r.LastSyncStatus == "failed"
+                   || (r.LastSyncStatus == "running" && r.IsRunningSince != null
+                       && string.Compare(r.IsRunningSince, staleThreshold) < 0)
+                orderby r.LastSyncAt ?? string.Empty
+                select new RepoSyncCandidate(r, p.Slug)
+            ).ToListAsync(ct);
 
-            // Per-repo cadence override: a repo with WorkItemSyncIntervalSeconds set
-            // syncs slower than the global tick. Stale 'running' rows always pass —
-            // recovering from a crash takes priority over the cadence gate.
             repos = candidates
-                .Where(r => IsDueForSync(r, now))
+                .Where(c => IsDueForSync(c.Repo, now))
                 .Take(SyncConstants.WorkItemSyncMaxParallel)
                 .ToList();
         }
 
         // Skip the seed placeholder repo — it satisfies the FK for seeded
-        // cards/PRs but its URL points at a fictional org. Hammering ADO with
-        // it produces a 401 every tick and the failure ends up in the UI.
-        // The operator is expected to add their real repo via /products.
-        var placeholders = repos.Where(IsSeedPlaceholder).ToList();
+        // cards/PRs but its URL points at a fictional org.
+        var placeholders = repos.Where(c => IsSeedPlaceholder(c.Repo)).ToList();
         foreach (var ph in placeholders)
         {
-            await this.MarkPlaceholderAsync(ph.Id, ct);
+            await this.MarkPlaceholderAsync(ph.Repo.Id, ct);
         }
-        repos = repos.Where(r => !IsSeedPlaceholder(r)).ToList();
+        repos = repos.Where(c => !IsSeedPlaceholder(c.Repo)).ToList();
 
         if (repos.Count == 0) return;
 
         using var semaphore = new SemaphoreSlim(SyncConstants.WorkItemSyncMaxParallel);
-        var tasks = repos.Select(repo => Task.Run(async () =>
+        var tasks = repos.Select(c => Task.Run(async () =>
         {
             await semaphore.WaitAsync(ct);
             try
             {
-                await this.SyncRepoAsync(repo.Id, kind: null, ct: ct);
+                // Phase E — push the AsyncLocal slug so SyncRepoAsync's
+                // nested DI scopes resolve ProductDbContext to this
+                // product's per-product DB (interim: forge.db; post-F:
+                // {slug}.db).
+                using var _ = ProductDbContextFactory.PushAsyncLocalSlug(c.Slug);
+                await this.SyncRepoAsync(c.Repo.Id, kind: null, ct: ct);
             }
             finally
             {
@@ -136,6 +150,9 @@ public class WorkItemSyncJob : BackgroundService
 
         await Task.WhenAll(tasks);
     }
+
+    /// <summary>Phase E — pairs a due repo with its owning product's slug.</summary>
+    private sealed record RepoSyncCandidate(RepoRow Repo, string Slug);
 
     /// <summary>
     /// Phase 23.4 / 23.5 — sync a single repo via the streaming batch API.

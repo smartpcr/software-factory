@@ -216,17 +216,46 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// </summary>
     public async Task<WorkerTickResult> RunOnceAsync(CancellationToken ct)
     {
-        var ackTimeouts = await this.SafeSweepAsync("SweepAckTimeoutsAsync", () => this.SweepAckTimeoutsAsync(ct), ct);
-        var claimsResult = await this.SafeSweepAsync(
-            "SweepClaimsAsync",
-            async () => { var r = await this.SweepClaimsAsync(ct); return (object?)r; },
-            ct,
-            fallback: (object?)(0, (IReadOnlyList<ClaimSkip>)Array.Empty<ClaimSkip>()));
-        var (claims, claimSkips) = ((int, IReadOnlyList<ClaimSkip>))claimsResult!;
-        var strainSignals = await this.SafeSweepAsync("SweepStrainAsync", () => this.SweepStrainAsync(ct), ct);
-        var recovered = await this.SafeSweepAsync("SweepAbandonedAsync", () => this.SweepAbandonedAsync(ct), ct);
-        var reconciled = await this.SafeSweepAsync("SweepLiveBadgeReconciliationAsync", () => this.SweepLiveBadgeReconciliationAsync(ct), ct);
-        return new WorkerTickResult(ackTimeouts, claims, strainSignals, recovered, claimSkips, reconciled);
+        // Phase E — fan out per product. Every sweep below opens its own
+        // child DI scope and resolves ProductDbContext fresh. The
+        // AsyncLocal slug pushed by ProductFanout flows through every
+        // child scope, so each sweep automatically targets the active
+        // product's tables (task_queue, work_items, deliverables, etc.)
+        // without any further refactoring of the sweep bodies themselves.
+        using var outerScope = this.scopeFactory.CreateScope();
+        var fanout = outerScope.ServiceProvider.GetRequiredService<ProductFanout>();
+        var ackTotal = 0;
+        var claimsTotal = 0;
+        var strainTotal = 0;
+        var recoveredTotal = 0;
+        var reconciledTotal = 0;
+        var allSkips = new List<ClaimSkip>();
+        var lockObj = new object();
+
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        {
+            var ack = await this.SafeSweepAsync("SweepAckTimeoutsAsync", () => this.SweepAckTimeoutsAsync(fct), fct);
+            var claimsRes = await this.SafeSweepAsync(
+                "SweepClaimsAsync",
+                async () => { var r = await this.SweepClaimsAsync(fct); return (object?)r; },
+                fct,
+                fallback: (object?)(0, (IReadOnlyList<ClaimSkip>)Array.Empty<ClaimSkip>()));
+            var (cl, sk) = ((int, IReadOnlyList<ClaimSkip>))claimsRes!;
+            var strain = await this.SafeSweepAsync("SweepStrainAsync", () => this.SweepStrainAsync(fct), fct);
+            var rec = await this.SafeSweepAsync("SweepAbandonedAsync", () => this.SweepAbandonedAsync(fct), fct);
+            var recon = await this.SafeSweepAsync("SweepLiveBadgeReconciliationAsync", () => this.SweepLiveBadgeReconciliationAsync(fct), fct);
+            lock (lockObj)
+            {
+                ackTotal += ack;
+                claimsTotal += cl;
+                strainTotal += strain;
+                recoveredTotal += rec;
+                reconciledTotal += recon;
+                allSkips.AddRange(sk);
+            }
+        }, ct);
+
+        return new WorkerTickResult(ackTotal, claimsTotal, strainTotal, recoveredTotal, allSkips, reconciledTotal);
     }
 
     private async Task<int> SafeSweepAsync(string name, Func<Task<int>> sweep, CancellationToken ct)

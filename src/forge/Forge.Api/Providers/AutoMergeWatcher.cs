@@ -72,9 +72,24 @@ public class AutoMergeWatcher : BackgroundService
         try
         {
             using var scope = this.services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>().ToList();
-            var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
+            // Phase E — fan out per product. Each product owns its own PRs;
+            // the auto-merge watcher must visit each product's `prs` table.
+            var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
+            await fanout.ForEachProductAsync(async (db, slug, fct) =>
+            {
+                await this.RunOneProductAsync(scope, db, fct);
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "AutoMergeWatcher tick failed");
+        }
+    }
+
+    private async Task RunOneProductAsync(IServiceScope scope, ProductDbContext db, CancellationToken ct)
+    {
+        var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>().ToList();
+        var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
             var rows = await db.Prs.AsNoTracking().Where(p => p.AutoMerge).ToListAsync(ct);
             foreach (var row in rows)
@@ -256,9 +271,4 @@ public class AutoMergeWatcher : BackgroundService
                 }
             }
         }
-        catch (Exception ex)
-        {
-            this.logger.LogWarning(ex, "forge.auto-merge.tick.failed");
-        }
-    }
 }

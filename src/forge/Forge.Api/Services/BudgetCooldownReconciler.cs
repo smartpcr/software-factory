@@ -122,42 +122,53 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product. Each product's BudgetCooldown
+        // recovery is independent; we sum the per-product resume counts.
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-
-        // Pull both row sets in one EF query — the ExecutionStatus index
-        // (Phase 51 migration) covers both predicates.
-        var candidates = await db.WorkItems
-            .Where(w => w.ExecutionStatus == ExecutionStatuses.CooldownBudget
-                     || w.ExecutionStatus == ExecutionStatuses.Failed)
-            .ToListAsync(ct);
-        if (candidates.Count == 0) return 0;
-
-        var resumed = 0;
+        var totalResumed = 0;
+        var lockObj = new object();
         var now = DateTimeOffset.UtcNow;
-        foreach (var wi in candidates)
+
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
         {
-            try
+            // Pull both row sets in one EF query — the ExecutionStatus
+            // index (Phase 51 migration) covers both predicates.
+            var candidates = await db.WorkItems
+                .Where(w => w.ExecutionStatus == ExecutionStatuses.CooldownBudget
+                         || w.ExecutionStatus == ExecutionStatuses.Failed)
+                .ToListAsync(fct);
+            if (candidates.Count == 0) return;
+
+            var perProductResumed = 0;
+            foreach (var wi in candidates)
             {
-                // For Failed rows we have to confirm "budget was the wall"
-                // before considering recovery — most Failed rows are
-                // unrelated (reject, stalled iter-cap, build-fail, etc.)
-                // and must stay parked.
-                if (wi.ExecutionStatus == ExecutionStatuses.Failed
-                    && !await this.IsBudgetRecoverableAsync(db, wi.Id, ct))
+                try
                 {
-                    continue;
+                    // Failed rows must have "budget was the wall" before
+                    // we consider them recoverable.
+                    if (wi.ExecutionStatus == ExecutionStatuses.Failed
+                        && !await this.IsBudgetRecoverableAsync(db, wi.Id, fct))
+                    {
+                        continue;
+                    }
+                    var didResume = await this.TryResumeAsync(db, queue, wi, now, fct);
+                    if (didResume) perProductResumed++;
                 }
-                var didResume = await this.TryResumeAsync(db, queue, wi, now, ct);
-                if (didResume) resumed++;
+                catch (Exception ex)
+                {
+                    SkippedCounter.Add(1, new KeyValuePair<string, object?>("reason", "exception"));
+                    this.logger.LogWarning(ex, "Cooldown resume failed for product={Slug} wi={Wi} — leaving parked", slug, wi.Id);
+                }
             }
-            catch (Exception ex)
+
+            if (perProductResumed > 0)
             {
-                SkippedCounter.Add(1, new KeyValuePair<string, object?>("reason", "exception"));
-                this.logger.LogWarning(ex, "Cooldown resume failed for wi={Wi} — leaving parked", wi.Id);
+                lock (lockObj) totalResumed += perProductResumed;
             }
-        }
-        return resumed;
+        }, ct);
+
+        return totalResumed;
     }
 
     /// <summary>

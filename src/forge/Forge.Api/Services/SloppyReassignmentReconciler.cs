@@ -125,31 +125,43 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product. PendingReassign work items are
+        // product-scoped; each product's pool is processed independently.
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var totalProgressed = 0;
+        var lockObj = new object();
 
-        var candidates = await db.WorkItems
-            .Where(w => w.ExecutionStatus == ExecutionStatuses.PendingReassign)
-            .ToListAsync(ct);
-        if (candidates.Count == 0) return 0;
-
-        var progressed = 0;
-        foreach (var wi in candidates)
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
         {
-            try
+            var candidates = await db.WorkItems
+                .Where(w => w.ExecutionStatus == ExecutionStatuses.PendingReassign)
+                .ToListAsync(fct);
+            if (candidates.Count == 0) return;
+
+            var perProductProgressed = 0;
+            foreach (var wi in candidates)
             {
-                if (await this.TryReassignOrFailAsync(db, queue, wi, ct))
+                try
                 {
-                    progressed++;
+                    if (await this.TryReassignOrFailAsync(db, queue, wi, fct))
+                    {
+                        perProductProgressed++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SkippedCounter.Add(1, new KeyValuePair<string, object?>("reason", "exception"));
+                    this.logger.LogWarning(ex, "Sloppy reassignment failed for product={Slug} wi={Wi} — leaving parked", slug, wi.Id);
                 }
             }
-            catch (Exception ex)
+            if (perProductProgressed > 0)
             {
-                SkippedCounter.Add(1, new KeyValuePair<string, object?>("reason", "exception"));
-                this.logger.LogWarning(ex, "Sloppy reassignment failed for wi={Wi} — leaving parked", wi.Id);
+                lock (lockObj) totalProgressed += perProductProgressed;
             }
-        }
-        return progressed;
+        }, ct);
+
+        return totalProgressed;
     }
 
     private async Task<bool> TryReassignOrFailAsync(

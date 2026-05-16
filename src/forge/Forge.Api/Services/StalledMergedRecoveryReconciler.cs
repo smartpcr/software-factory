@@ -102,38 +102,30 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product. The reconciler's three recovery
+        // passes (RecoverStalledWithMergedPr, ClearStaleStallReasonOnShipped,
+        // RecoverBogusSloppyStallWithPassedDeliverable) all run per-product.
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
+        var totalRecovered = 0;
+        var lockObj = new object();
 
-        var recovered = 0;
-
-        // Phase A — stalled rows whose PR is merged: promote to complete,
-        // clear StallReason. Covers the original failure mode (sloppy-3
-        // demotion stomped a row that had just shipped) and any future
-        // races that bypass the cause fix in SloppyReassignmentReconciler.
-        recovered += await this.RecoverStalledWithMergedPrAsync(db, ct);
-
-        // Phase B — shipped rows (complete/merging/review/historic) that
-        // still carry a non-null StallReason. This happens when one code
-        // path lifts Status (e.g. WorkstreamMergeAdvancer flipping to
-        // complete on PR merge detection) but doesn't clear the stale
-        // failure reason from an earlier transient demotion. The reason
-        // string is operator-visible (tooltip on the swarm card) so
-        // leaving it stale misleads triage.
-        recovered += await this.ClearStaleStallReasonOnShippedAsync(db, ct);
-
-        // Phase C — 2026-05-15 — stalled rows with bogus
-        // "Sloppy-3-attempts:" stall reason whose underlying WI is healthy
-        // AND the most recent deliverable is a `pass` verdict, but no PR
-        // has been opened yet. See xml-doc on
-        // <see cref="RecoverBogusSloppyStallWithPassedDeliverableAsync"/>
-        // for full failure-mode walkthrough.
-        recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(db, ct);
-
-        if (recovered > 0)
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
         {
-            await this.hub.Clients.All.SendAsync("forge:change", new { kind = "stalled-merged-recovered", count = recovered }, ct);
+            var recovered = 0;
+            recovered += await this.RecoverStalledWithMergedPrAsync(db, fct);
+            recovered += await this.ClearStaleStallReasonOnShippedAsync(db, fct);
+            recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(db, fct);
+            if (recovered > 0)
+            {
+                lock (lockObj) totalRecovered += recovered;
+            }
+        }, ct);
+
+        if (totalRecovered > 0)
+        {
+            await this.hub.Clients.All.SendAsync("forge:change", new { kind = "stalled-merged-recovered", count = totalRecovered }, ct);
         }
-        return recovered;
+        return totalRecovered;
     }
 
     private async Task<int> RecoverStalledWithMergedPrAsync(ProductDbContext db, CancellationToken ct)

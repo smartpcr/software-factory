@@ -85,6 +85,21 @@ public sealed class BuildSyncJob : BackgroundService
     /// <summary>One tick. Public so tests / the manual-trigger endpoint can fire it directly.</summary>
     public async Task RunSweepAsync(CancellationToken ct)
     {
+        // Phase E — fan out per product. Each product owns its own
+        // `prs` / `builds` / `build_stages` tables; the sweep walks them
+        // independently. AsyncLocal slug propagation ensures every
+        // nested DI scope inside RunSweepCoreAsync binds to the active
+        // product's DB.
+        using var outerScope = this.scopeFactory.CreateScope();
+        var fanout = outerScope.ServiceProvider.GetRequiredService<ProductFanout>();
+        await fanout.ForEachProductAsync(async (_, slug, fct) =>
+        {
+            await this.RunSweepCoreAsync(fct);
+        }, ct);
+    }
+
+    private async Task RunSweepCoreAsync(CancellationToken ct)
+    {
         List<BuildSweepCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {

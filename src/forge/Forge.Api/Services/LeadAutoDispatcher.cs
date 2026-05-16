@@ -89,8 +89,34 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     public async Task<DispatchTickResult> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        // Phase E — fan out per product. The dispatcher's work-item scan
+        // is product-scoped; crews are control-side but ProductDbContext
+        // also exposes them (Phase D.2 interim compromise).
+        var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
+        var totalDispatched = 0;
+        var totalSkipped = 0;
+        var totalCapacityBlocked = 0;
+        var totalOffShift = 0;
+        var lockObj = new object();
 
+        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        {
+            var perProduct = await this.DispatchForProductAsync(db, scope, fct);
+            lock (lockObj)
+            {
+                totalDispatched += perProduct.Dispatched;
+                totalSkipped += perProduct.Skipped;
+                totalCapacityBlocked += perProduct.CapacityBlocked;
+                totalOffShift += perProduct.OffShift;
+            }
+        }, ct);
+
+        return new DispatchTickResult(totalDispatched, totalCapacityBlocked, totalOffShift, totalSkipped);
+    }
+
+    private async Task<DispatchTickResult> DispatchForProductAsync(
+        ProductDbContext db, IServiceScope scope, CancellationToken ct)
+    {
         var dispatched = 0;
         var skipped = 0;
         var capacityBlocked = 0;

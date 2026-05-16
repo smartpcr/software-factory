@@ -86,6 +86,19 @@ public sealed class PrSyncJob : BackgroundService
     /// </summary>
     public async Task RunSweepAsync(CancellationToken ct, bool skipHistory = false)
     {
+        // Phase E — fan out per product. The nested scopes inside
+        // RunSweepCoreAsync use AsyncLocal slug propagation to bind to
+        // the active product's `prs` / `pr_comments` tables.
+        using var outerScope = this.scopeFactory.CreateScope();
+        var fanout = outerScope.ServiceProvider.GetRequiredService<ProductFanout>();
+        await fanout.ForEachProductAsync(async (_, slug, fct) =>
+        {
+            await this.RunSweepCoreAsync(fct, skipHistory);
+        }, ct);
+    }
+
+    private async Task RunSweepCoreAsync(CancellationToken ct, bool skipHistory = false)
+    {
         List<PrSyncCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {
