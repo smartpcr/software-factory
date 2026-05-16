@@ -143,6 +143,11 @@ builder.Services.AddCors(options =>
     // gated behind a feature flag (Forge:Db:SplitEnabled).
     builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitDryRunService>();
 
+    // Phase F — split apply service. Mutates forge.db on POST
+    // /api/admin/db/split-apply (PO-role + Forge:Db:SplitEnabled gated).
+    // Singleton: no per-request state.
+    builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitApplyService>();
+
     // Phase D step 5 — ForgeDbContext registration removed. The split
     // ControlDbContext + ProductDbContext (+ IProductDbContextFactory)
     // below cover every consumer that used to take ForgeDbContext.

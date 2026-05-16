@@ -13,18 +13,19 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 
 /// <summary>
-/// Phase B — admin endpoints for the multi-DB split tooling.
+/// Phase B + F — admin endpoints for the multi-DB split tooling.
 ///
 /// <para>All endpoints are gated by:</para>
 /// <list type="bullet">
 ///   <item>The <c>Forge:Db:SplitEnabled</c> config flag (default <c>false</c>).
 ///         Endpoints return <c>403</c> when the flag is off so an unguarded
-///         operator click can't trigger the analyzer in production.</item>
+///         operator click can't trigger the analyzer / apply in production.</item>
 ///   <item><see cref="RequireRole.ProductOwner"/>. Non-PO callers see <c>403</c>.</item>
 /// </list>
 ///
-/// <para>Today only the dry-run is shipped; the split-apply lands in
-/// Phase F together with the auto-split-on-first-boot migration.</para>
+/// <para>The dry-run is the Phase B analyzer; the apply is Phase F's
+/// actual split operation. Operators inspect the dry-run report (Phase C)
+/// before invoking the apply.</para>
 /// </summary>
 public static class AdminDbSplitEndpoints
 {
@@ -54,6 +55,34 @@ public static class AdminDbSplitEndpoints
         })
             .WithTags("Admin")
             .WithName("AdminDbSplitDryRun");
+
+        // POST /api/admin/db/split-apply — Phase F. WRITES to forge.db
+        // and creates per-product {slug}.db files. Backs up first. Idempotent
+        // (returns AlreadyApplied=true on subsequent runs). Operator-only
+        // and feature-flag-gated; do NOT run without reviewing the dry-run
+        // report first (Phase C).
+        app.MapPost("/api/admin/db/split-apply", async (
+            HttpContext ctx,
+            IConfiguration config,
+            ProductDbContext db,
+            SplitApplyService applier,
+            CancellationToken ct) =>
+        {
+            if (RequireRole.Check(ctx, db, RequireRole.ProductOwner) is { } gate) return gate;
+
+            if (!IsEnabled(config))
+            {
+                return Results.Problem(
+                    title: "Split tooling disabled",
+                    detail: "Set Forge:Db:SplitEnabled=true to enable.",
+                    statusCode: 403);
+            }
+
+            var result = await applier.ApplyAsync(ct);
+            return Results.Ok(result);
+        })
+            .WithTags("Admin")
+            .WithName("AdminDbSplitApply");
 
         return app;
     }
