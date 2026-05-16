@@ -75,7 +75,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
         var json = BuildAttachmentsJson(("a", "acs.md", "any/path/acs.md", 1234));
         var prompt = CrewStoryArtifactStrategy.BuildAttachmentPromptSection(json);
 
-        Assert.Contains("Story attachments — IMPORTANT", prompt);
+        Assert.Contains("Story attachments -- IMPORTANT", prompt);
         Assert.Contains("`.forge-attachments/acs.md`", prompt);
         Assert.Contains("1,234 bytes", prompt);
     }

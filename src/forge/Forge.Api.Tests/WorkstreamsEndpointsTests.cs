@@ -172,7 +172,13 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         using var client = this.factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         var resp = await client.DeleteAsync("/api/workstreams/ws-delete-target");
-        Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+        // Delete returns 200 OK + cascade report (counts per affected table).
+        // Asserting 204 NoContent was a leftover from an earlier endpoint
+        // shape; we now ship the report so the operator UI can show what
+        // was reaped.
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var bodyText = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("workstream", bodyText, StringComparison.OrdinalIgnoreCase);
 
         // Confirm it's gone.
         var listDoc = JsonDocument.Parse(await (await client.GetAsync("/api/workstreams")).Content.ReadAsStringAsync());
@@ -272,7 +278,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         Assert.Single(deliverables);
         Assert.Equal("iterate", deliverables[0].Verdict);
         Assert.Equal(94, deliverables[0].Score);
-        Assert.Contains("OPERATOR RETRY", deliverables[0].Notes);
+        Assert.Contains("OPERATOR RECOVERY", deliverables[0].Notes);
         Assert.Contains("Original pass note.", deliverables[0].Notes);
     }
 
