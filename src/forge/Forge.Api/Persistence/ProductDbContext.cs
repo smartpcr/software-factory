@@ -1,0 +1,125 @@
+// -----------------------------------------------------------------------
+// <copyright file="ProductDbContext.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Persistence;
+
+using Microsoft.EntityFrameworkCore;
+
+/// <summary>
+/// Phase D — EF DbContext bound to a **per-product DB** (<c>{folder}\{slug}.db</c>).
+/// Exposes only entities owned by a single product: workstreams, cards,
+/// PRs, work items, deliverables, task queue, builds, story spawns, etc.
+///
+/// <para>Construction is via <see cref="IProductDbContextFactory"/>, which
+/// chooses the connection string based on the resolved product slug.
+/// During Phase D (interim) the factory may bind every product context
+/// to the same <c>forge.db</c> file because the per-product files don't
+/// exist yet — that lands in Phase F.</para>
+///
+/// <para>Cross-context references (<c>ProductId</c>, <c>RepoId</c> columns
+/// on product rows) are plain strings with indexes but no EF-level FK.
+/// Callers that need to join them with the control side must read each
+/// row from its respective context separately.</para>
+/// </summary>
+public class ProductDbContext : DbContext
+{
+    public ProductDbContext(DbContextOptions<ProductDbContext> options)
+        : base(options)
+    {
+    }
+
+    /// <summary>The product slug this context is bound to (for diagnostics).</summary>
+    public string? ProductSlug { get; internal set; }
+
+    // Prototype / board surface.
+    public DbSet<EpicRow> Epics => this.Set<EpicRow>();
+
+    public DbSet<ProductStoryRow> ProductStories => this.Set<ProductStoryRow>();
+
+    public DbSet<CardRow> Cards => this.Set<CardRow>();
+
+    public DbSet<ColumnRow> Columns => this.Set<ColumnRow>();
+
+    public DbSet<WorkstreamRow> Workstreams => this.Set<WorkstreamRow>();
+
+    public DbSet<WsEventRow> WsEvents => this.Set<WsEventRow>();
+
+    public DbSet<WsStatRow> WsStats => this.Set<WsStatRow>();
+
+    public DbSet<PrRow> Prs => this.Set<PrRow>();
+
+    public DbSet<OverviewActivityRow> OverviewActivity => this.Set<OverviewActivityRow>();
+
+    public DbSet<OverviewAgentRow> OverviewAgents => this.Set<OverviewAgentRow>();
+
+    public DbSet<IdempotencyRow> Idempotency => this.Set<IdempotencyRow>();
+
+    // Work-item surface.
+    public DbSet<WorkItemRow> WorkItems => this.Set<WorkItemRow>();
+
+    public DbSet<WorkItemLinkRow> WorkItemLinks => this.Set<WorkItemLinkRow>();
+
+    public DbSet<WorkItemSyncRunRow> WorkItemSyncRuns => this.Set<WorkItemSyncRunRow>();
+
+    public DbSet<SyncRunItemRow> SyncRunItems => this.Set<SyncRunItemRow>();
+
+    public DbSet<DeliverableRow> Deliverables => this.Set<DeliverableRow>();
+
+    public DbSet<AgentPairAssignmentRow> AgentPairAssignments => this.Set<AgentPairAssignmentRow>();
+
+    public DbSet<AgentMemoryRow> AgentMemory => this.Set<AgentMemoryRow>();
+
+    public DbSet<DeliverableQuestionRow> DeliverableQuestions => this.Set<DeliverableQuestionRow>();
+
+    public DbSet<ProductIterationRow> ProductIterations => this.Set<ProductIterationRow>();
+
+    public DbSet<ProductAreaPathRow> ProductAreaPaths => this.Set<ProductAreaPathRow>();
+
+    public DbSet<RepoIterationBindingRow> RepoIterationBindings => this.Set<RepoIterationBindingRow>();
+
+    public DbSet<ProductSavedPrefixRow> ProductSavedPrefixes => this.Set<ProductSavedPrefixRow>();
+
+    public DbSet<TaskTranscriptEventRow> TaskTranscriptEvents => this.Set<TaskTranscriptEventRow>();
+
+    public DbSet<TaskQueueRow> TaskQueue => this.Set<TaskQueueRow>();
+
+    public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();
+
+    public DbSet<AgentAssignmentRow> AgentAssignments => this.Set<AgentAssignmentRow>();
+
+    public DbSet<PrCommentRow> PrComments => this.Set<PrCommentRow>();
+
+    public DbSet<PrCommentHistoryRow> PrCommentHistory => this.Set<PrCommentHistoryRow>();
+
+    // Build surface.
+    public DbSet<BuildValidationRunRow> BuildValidationRuns => this.Set<BuildValidationRunRow>();
+
+    public DbSet<BuildRow> Builds => this.Set<BuildRow>();
+
+    public DbSet<BuildStageRow> BuildStages => this.Set<BuildStageRow>();
+
+    public DbSet<BuildStageLogRow> BuildStageLogs => this.Set<BuildStageLogRow>();
+
+    public DbSet<BuildArtifactRow> BuildArtifacts => this.Set<BuildArtifactRow>();
+
+    public DbSet<BuildArtifactFileRow> BuildArtifactFiles => this.Set<BuildArtifactFileRow>();
+
+    public DbSet<BuildFailurePointRow> BuildFailurePoints => this.Set<BuildFailurePointRow>();
+
+    public DbSet<BuildFixPendingRow> BuildFixPending => this.Set<BuildFixPendingRow>();
+
+    public DbSet<BuildAnnotationRow> BuildAnnotations => this.Set<BuildAnnotationRow>();
+
+    // Story spawn surface.
+    public DbSet<StorySpawnRow> StorySpawns => this.Set<StorySpawnRow>();
+
+    public DbSet<WorkstreamDepRow> WorkstreamDeps => this.Set<WorkstreamDepRow>();
+
+    protected override void OnModelCreating(ModelBuilder mb)
+    {
+        DbModelProduct.Configure(mb);
+    }
+}

@@ -15,7 +15,7 @@ public static class AuditEndpoints
 {
     public static WebApplication MapAuditEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/audit", async (ForgeDbContext db, int? take) =>
+        app.MapGet("/api/audit", async (ControlDbContext db, int? take) =>
             {
                 var n = Math.Clamp(take ?? 200, 1, 1000);
                 var rows = await db.Audit.AsNoTracking()

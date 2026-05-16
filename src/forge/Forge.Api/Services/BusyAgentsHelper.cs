@@ -51,9 +51,9 @@ internal static class BusyAgentsHelper
     /// caps across active crews so the result is small.
     /// </summary>
     public static async Task<HashSet<string>> LoadBusyAgentsAsync(
-        ForgeDbContext db, CancellationToken ct)
+        DbContext db, CancellationToken ct)
     {
-        var busyList = await db.AgentUsage
+        var busyList = await db.Set<AgentUsageRow>()
             .AsNoTracking()
             .Where(u => u.EndedAt == null)
             .Select(u => u.AgentId)
@@ -76,7 +76,7 @@ internal static class BusyAgentsHelper
     /// for every open row. Idempotent. Returns the number of rows
     /// closed.</para>
     /// </summary>
-    public static async Task<int> ReapAllOpenOnBootAsync(ForgeDbContext db, CancellationToken ct = default)
+    public static async Task<int> ReapAllOpenOnBootAsync(DbContext db, CancellationToken ct = default)
     {
         var conn = (Microsoft.Data.Sqlite.SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
@@ -98,7 +98,7 @@ internal static class BusyAgentsHelper
     /// StaleAgentUsageCap</c>. Returns the count of reaped rows so the
     /// boot block can emit telemetry.
     /// </summary>
-    public static async Task<int> ReapStaleAsync(ForgeDbContext db, CancellationToken ct = default)
+    public static async Task<int> ReapStaleAsync(DbContext db, CancellationToken ct = default)
     {
         // SQLite EF can't translate `DateTimeOffset` arithmetic in the
         // WHERE clause (`StartedAt < cutoff` produces "could not be

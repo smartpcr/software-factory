@@ -204,6 +204,30 @@ builder.Services.AddCors(options =>
         // readers vs writers).
         opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
     });
+
+    // Phase D — ControlDbContext binds to the same forge.db file as
+    // ForgeDbContext during the migration window. After Phase F, this
+    // remains the only context bound to forge.db (everything else moves
+    // to per-product files via IProductDbContextFactory).
+    builder.Services.AddDbContext<Forge.Api.Persistence.ControlDbContext>((sp, opt) =>
+    {
+        var paths = sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
+        var dbPath = paths.ControlDbPath();
+        if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
+        {
+            throw new InvalidOperationException(
+                $"ControlDbContext refused to open the production Forge DB from a test process. " +
+                $"See ForgeDbContext registration above for the tripwire rationale.");
+        }
+        opt.UseSqlite($"Data Source={dbPath};Default Timeout=30");
+    });
+
+    // Phase D — per-request factory for ProductDbContext. Scoped so the
+    // per-request cache disposes at request end. IHttpContextAccessor is
+    // already registered transitively by AddSignalR / AddControllers but
+    // we register it explicitly here to make the dependency obvious.
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<Forge.Api.Persistence.IProductDbContextFactory, Forge.Api.Persistence.ProductDbContextFactory>();
 }
 
 // Prevent a single BackgroundService failure from tearing down the host.
@@ -854,6 +878,13 @@ app.UseStatusCodePages();
 // Phase 7.6 — auth gate runs before idempotency/audit so unauthorized writes
 // never enter the cache and never produce an audit row.
 app.UseMiddleware<ForgeSecretMiddleware>();
+
+// Phase D — resolves X-Forge-Product-Id / ?productId= into a product slug
+// stashed on HttpContext.Items so the IProductDbContextFactory can pick
+// the right per-product DB without re-querying. Runs AFTER the auth /
+// secret middleware (so the resolved user is available) and BEFORE the
+// audit middleware (so the per-product write context is set up).
+app.UseMiddleware<Forge.Api.Persistence.ProductScopeMiddleware>();
 // Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
 // Phase 6.10 — audit every write to forge_actions.
 // Order matters: idempotency wraps audit so replays are NOT re-audited.

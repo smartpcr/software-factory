@@ -23,7 +23,7 @@ public static class RequireRole
 {
     public const string ProductOwner = "product-owner";
 
-    public static IResult? Check(HttpContext ctx, ForgeDbContext db, params string[] roles)
+    public static IResult? Check(HttpContext ctx, DbContext db, params string[] roles)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -45,7 +45,7 @@ public static class RequireRole
     /// specific crew / repo / work item; <see cref="Check"/> is fine for
     /// global-scope writes that don't bind to a product.
     /// </summary>
-    public static IResult? CheckForProduct(HttpContext ctx, ForgeDbContext db, string? productId, params string[] roles)
+    public static IResult? CheckForProduct(HttpContext ctx, DbContext db, string? productId, params string[] roles)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -67,24 +67,24 @@ public static class RequireRole
     /// matching <c>UserProductRoleRow</c>, then falls back to the user's
     /// global <c>UserRow.Role</c>. Pre-sign-in (no users yet) returns null.
     /// </summary>
-    public static string? ResolveRoleForProduct(HttpContext ctx, ForgeDbContext db, string? productId)
+    public static string? ResolveRoleForProduct(HttpContext ctx, DbContext db, string? productId)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
 
-        var user = db.Users.AsNoTracking()
+        var user = db.Set<UserRow>().AsNoTracking()
             .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
             .Select(u => new { u.Id, u.Role })
             .FirstOrDefault();
         if (user is null)
         {
-            if (!db.Users.AsNoTracking().Any()) return null;
+            if (!db.Set<UserRow>().AsNoTracking().Any()) return null;
             return "human";
         }
 
         if (!string.IsNullOrEmpty(productId))
         {
-            var over = db.UserProductRoles.AsNoTracking()
+            var over = db.Set<UserProductRoleRow>().AsNoTracking()
                 .Where(r => r.UserId == user.Id && r.ProductId == productId)
                 .Select(r => r.Role)
                 .FirstOrDefault();
@@ -98,14 +98,14 @@ public static class RequireRole
     /// per-product override when X-Forge-Product-Id is present. Returns
     /// null when no signed-in users exist yet (default = open).
     /// </summary>
-    public static string? ResolveRole(HttpContext ctx, ForgeDbContext db)
+    public static string? ResolveRole(HttpContext ctx, DbContext db)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
 
         // Match by email (e.g. "lingxd@gmail.com") or login or display name
         // because the X-Forge-User header isn't tied to a specific column today.
-        var user = db.Users
+        var user = db.Set<UserRow>()
             .AsNoTracking()
             .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
             .Select(u => new { u.Id, u.Role })
@@ -113,7 +113,7 @@ public static class RequireRole
         if (user is null)
         {
             // Bootstrap: if no users yet, treat as open (single-user dev).
-            if (!db.Users.AsNoTracking().Any()) return null;
+            if (!db.Set<UserRow>().AsNoTracking().Any()) return null;
             return "human";
         }
 
@@ -121,7 +121,7 @@ public static class RequireRole
         var productId = ctx.Request.Headers["X-Forge-Product-Id"].FirstOrDefault();
         if (!string.IsNullOrEmpty(productId) && productId != "all")
         {
-            var over = db.UserProductRoles.AsNoTracking()
+            var over = db.Set<UserProductRoleRow>().AsNoTracking()
                 .Where(r => r.UserId == user.Id && r.ProductId == productId)
                 .Select(r => r.Role)
                 .FirstOrDefault();
@@ -131,25 +131,25 @@ public static class RequireRole
     }
 
     /// <summary>Async sibling of <see cref="ResolveRole"/> for handlers that already do async DB work.</summary>
-    public static async Task<string?> ResolveRoleAsync(HttpContext ctx, ForgeDbContext db, CancellationToken ct = default)
+    public static async Task<string?> ResolveRoleAsync(HttpContext ctx, DbContext db, CancellationToken ct = default)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
-        var user = await db.Users
+        var user = await db.Set<UserRow>()
             .AsNoTracking()
             .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
             .Select(u => new { u.Id, u.Role })
             .FirstOrDefaultAsync(ct);
         if (user is null)
         {
-            if (!await db.Users.AsNoTracking().AnyAsync(ct)) return null;
+            if (!await db.Set<UserRow>().AsNoTracking().AnyAsync(ct)) return null;
             return "human";
         }
 
         var productId = ctx.Request.Headers["X-Forge-Product-Id"].FirstOrDefault();
         if (!string.IsNullOrEmpty(productId) && productId != "all")
         {
-            var over = await db.UserProductRoles.AsNoTracking()
+            var over = await db.Set<UserProductRoleRow>().AsNoTracking()
                 .Where(r => r.UserId == user.Id && r.ProductId == productId)
                 .Select(r => r.Role)
                 .FirstOrDefaultAsync(ct);

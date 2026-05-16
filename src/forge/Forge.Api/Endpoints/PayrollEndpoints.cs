@@ -51,7 +51,7 @@ public static class PayrollEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetPayrollTodayTotal(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetPayrollTodayTotal(ControlDbContext db, CancellationToken ct)
     {
         var crews = await db.Crews.AsNoTracking().ToListAsync(ct);
         if (crews.Count == 0) return Results.Ok(new PayrollTodaySummary(0m, 0));
@@ -112,7 +112,7 @@ public static class PayrollEndpoints
 
     private static async Task<IResult> GetPayroll(
         string id,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -170,7 +170,7 @@ public static class PayrollEndpoints
     /// </summary>
     private static async Task<IResult> GetSpend(
         string id,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);

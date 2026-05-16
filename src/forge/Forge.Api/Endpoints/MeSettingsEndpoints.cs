@@ -39,7 +39,7 @@ public static class MeSettingsEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetSettings(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSettings(ControlDbContext db, CancellationToken ct)
     {
         var userId = await ResolveUserIdAsync(db, ct);
         var row = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
@@ -58,7 +58,7 @@ public static class MeSettingsEndpoints
     /// doesn't have to re-enter ADO/GitHub defaults after the move from
     /// per-user to global keying.
     /// </summary>
-    private static async Task<UserSettingsRow> SeedGlobalFromLegacyAsync(ForgeDbContext db, CancellationToken ct)
+    private static async Task<UserSettingsRow> SeedGlobalFromLegacyAsync(ControlDbContext db, CancellationToken ct)
     {
         var legacy = await db.UserSettings.AsNoTracking()
             .Where(x => x.UserId != GlobalSettingsKey)
@@ -93,7 +93,7 @@ public static class MeSettingsEndpoints
     private static async Task<IResult> PatchSettings(
         HttpContext ctx,
         [FromBody] UpdateUserSettingsRequest req,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -130,7 +130,7 @@ public static class MeSettingsEndpoints
     /// signature is preserved so both call sites stay shape-compatible
     /// with the prior per-user resolution.
     /// </summary>
-    public static Task<string> ResolveUserIdAsync(ForgeDbContext db, CancellationToken ct)
+    public static Task<string> ResolveUserIdAsync(ControlDbContext db, CancellationToken ct)
         => Task.FromResult(GlobalSettingsKey);
 
     private static UserSettings MapSettings(UserSettingsRow r) => new(

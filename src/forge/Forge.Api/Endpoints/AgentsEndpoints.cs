@@ -44,7 +44,7 @@ public static class AgentsEndpoints
         return app;
     }
 
-    private static async Task<IResult> ListAgents(ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListAgents(ControlDbContext db, CancellationToken ct)
     {
         var rows = await db.Agents.AsNoTracking().OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
 
@@ -70,7 +70,7 @@ public static class AgentsEndpoints
         }).ToList());
     }
 
-    private static async Task<IResult> GetAgent(string agentId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetAgent(string agentId, ControlDbContext db, CancellationToken ct)
     {
         var row = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         return row is null
@@ -83,7 +83,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.PatchAgentRequest req,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -155,7 +155,7 @@ public static class AgentsEndpoints
 
     private static async Task<IResult> GetSoul(
         string agentId,
-        ForgeDbContext db,
+        ControlDbContext db,
         ISoulService soul,
         CancellationToken ct)
     {
@@ -176,7 +176,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.SoulWriteRequest req,
-        ForgeDbContext db,
+        ControlDbContext db,
         ISoulService soul,
         CancellationToken ct)
     {
@@ -209,7 +209,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.ReassignAgentRequest req,
-        ForgeDbContext db,
+        ControlDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
@@ -258,7 +258,7 @@ public static class AgentsEndpoints
         return Results.Ok(MapAgent(row));
     }
 
-    private static async Task<IResult> GetHistory(string agentId, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string agentId, ControlDbContext db, CancellationToken ct)
     {
         // Id is auto-increment monotonic; ordering by Id gives the same
         // newest-first result as ordering by At, and SQLite can translate it
@@ -299,7 +299,7 @@ public static class AgentsEndpoints
         [FromBody] StartInvocationRequest req,
         IAgentRunner runner,
         IModelRegistry models,
-        ForgeDbContext db,
+        ControlDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopes,
         ILoggerFactory loggers,
@@ -502,7 +502,7 @@ public static class AgentsEndpoints
         // is gone by the time the pump finishes. Resolve a fresh one.
         using (var scope = scopes.CreateScope())
         {
-            var pumpDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var pumpDb = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var row = await pumpDb.AgentUsage.FirstOrDefaultAsync(r => r.Id == ledgerId);
             if (row is not null)
             {
@@ -532,7 +532,7 @@ public static class AgentsEndpoints
 
     private static async Task<IResult> ListInvocations(
         string agentId,
-        ForgeDbContext db,
+        ControlDbContext db,
         int? take,
         CancellationToken ct)
     {
@@ -563,7 +563,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         IAgentRunner runner,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
@@ -576,7 +576,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         IAgentRunner runner,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);

@@ -45,7 +45,7 @@ public static class MeEndpoints
     private static async Task<IResult> PutRole(
         HttpContext ctx,
         SetRoleRequest req,
-        ForgeDbContext db,
+        ControlDbContext db,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -102,7 +102,7 @@ public static class MeEndpoints
 
     private static async Task<IResult> GetMe(
         HttpContext ctx,
-        ForgeDbContext db,
+        ControlDbContext db,
         IEnumerable<IAuthService> authServices,
         IOptions<ForgeAuthOptions> authOptions,
         CancellationToken ct)

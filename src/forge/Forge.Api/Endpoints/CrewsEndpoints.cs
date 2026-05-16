@@ -221,10 +221,10 @@ public static class CrewsEndpoints
     /// uses a decimal→double value converter that doesn't push through SUM.
     /// Volume is bounded (one crew × one day), so this is cheap.
     /// </summary>
-    public static async Task<decimal> TodaysSpendAsync(ForgeDbContext db, string crewId, CancellationToken ct)
+    public static async Task<decimal> TodaysSpendAsync(DbContext db, string crewId, CancellationToken ct)
     {
         var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await db.Set<AgentUsageRow>().AsNoTracking()
             .Where(r => r.CrewId == crewId)
             .Select(r => new { r.StartedAt, r.CostUsd })
             .ToListAsync(ct);

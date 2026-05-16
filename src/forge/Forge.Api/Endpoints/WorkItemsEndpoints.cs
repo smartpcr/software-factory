@@ -876,9 +876,9 @@ public static class WorkItemsEndpoints
     /// no PrRow exists (covers agent-created PRs that haven't been synced yet).
     /// </summary>
     internal static async Task<(string? PrId, string? PrCol)> LookupPrimaryPrAsync(
-        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+        DbContext db, string workItemId, CancellationToken ct = default)
     {
-        var pr = await db.Prs.AsNoTracking()
+        var pr = await db.Set<PrRow>().AsNoTracking()
             .Where(p => p.WorkItemId == workItemId)
             .OrderByDescending(p => p.Sort)
             .Select(p => new { p.Id, p.Col })
@@ -888,7 +888,7 @@ public static class WorkItemsEndpoints
         // Fallback: check transcript for task.pr-opened events (agent created
         // a PR on the remote but it hasn't been synced into the local prs table).
         // NOTE: Order in-memory because SQLite cannot ORDER BY DateTimeOffset.
-        var evtRows = await db.TaskTranscriptEvents.AsNoTracking()
+        var evtRows = await db.Set<TaskTranscriptEventRow>().AsNoTracking()
             .Where(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened")
             .ToListAsync(ct);
         var evt = evtRows
@@ -1016,13 +1016,13 @@ public static class WorkItemsEndpoints
     /// <see cref="Move"/> and the queue worker's PR-open path.
     /// </summary>
     internal static void RecordAssignmentTransition(
-        ForgeDbContext db, WorkItemRow row, string fromState, string toState)
+        DbContext db, WorkItemRow row, string fromState, string toState)
     {
         // → in-review (PR opened): record pr-opened, do NOT change AssignedAgentJson.
         if (toState is "in-review")
         {
             var agentIds = ParseAgentIds(row.AssignedAgentJson);
-            db.AgentAssignments.Add(new AgentAssignmentRow
+            db.Set<AgentAssignmentRow>().Add(new AgentAssignmentRow
             {
                 WorkItemId = row.Id,
                 Kind = AgentAssignmentKinds.PrOpened,
@@ -1038,7 +1038,7 @@ public static class WorkItemsEndpoints
         if (toState is "resolved" or "closed")
         {
             var agentIds = ParseAgentIds(row.AssignedAgentJson);
-            db.AgentAssignments.Add(new AgentAssignmentRow
+            db.Set<AgentAssignmentRow>().Add(new AgentAssignmentRow
             {
                 WorkItemId = row.Id,
                 Kind = AgentAssignmentKinds.Completed,
