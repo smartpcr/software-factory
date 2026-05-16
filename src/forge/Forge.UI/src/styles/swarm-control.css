@@ -846,11 +846,20 @@
  * server-assembly-and-client-sdk → internal-client rebirth). */
 .swarm-ctrl .ws-chip.pending,
 .swarm-ctrl .ws-chip.planning,
-.swarm-ctrl .ws-chip.paused,
 .swarm-ctrl .ws-chip.blocked { background: var(--sc-muted); border-color: var(--sc-text-dim); }
-/* Paused chips get a subtle double-border so the operator can tell
- * "paused" from "pending" at a glance without coloring them differently. */
-.swarm-ctrl .ws-chip.paused  { box-shadow: 0 0 0 1.5px var(--sc-text-dim), inset 0 0 0 1px var(--sc-bg-2); }
+/* Paused chips use a yellow-grey tint with a pause-stripe pattern so
+ * they're instantly distinguishable from pending (solid grey). */
+.swarm-ctrl .ws-chip.paused {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--sc-amber-d) 0,
+    var(--sc-amber-d) 2px,
+    var(--sc-muted) 2px,
+    var(--sc-muted) 4px
+  );
+  border-color: var(--sc-amber-d);
+  opacity: 0.75;
+}
 .swarm-ctrl .ws-chip.active,
 .swarm-ctrl .ws-chip.iterating { background: var(--sc-amber); border-color: var(--sc-amber-d); }
 .swarm-ctrl .ws-chip.live {

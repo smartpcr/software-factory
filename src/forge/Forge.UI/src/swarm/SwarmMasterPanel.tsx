@@ -532,18 +532,10 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
             const fileName = `${doc.key}.md`;
             const subtitle = doc.title.split('—').slice(1).join('—').trim();
             const tone = verdictTone(stats?.verdict ?? '');
-            // When the loop is blocked on operator-owed answers, append the
-            // count to the badge label so the operator sees "STALLED · 3 Q"
-            // at a glance instead of having to drill into the conversation
-            // wizard. unansweredQuestions only contributes when the status
-            // resolved to `stalled` upstream — outside that state the count
-            // is either zero or irrelevant to the loop's forward progress.
-            const unanswered = stats?.unansweredQuestions ?? 0;
-            const statusLabel = loopStatus === 'stalled' && unanswered > 0
-              ? `${loopStatus} · ${unanswered} Q`
-              : loopStatus;
-            const statusTitle = loopStatus === 'stalled' && unanswered > 0
-              ? `${unanswered} unanswered question${unanswered === 1 ? '' : 's'} blocking the pass gate — open the Conversation tab and answer to resume.`
+            // When the doc is stalled, show the stall reason in the tooltip.
+            const statusLabel = loopStatus;
+            const statusTitle = loopStatus === 'stalled' && stats?.stallReason
+              ? `stalled — ${stats.stallReason}`
               : undefined;
             return (
               <div
@@ -720,6 +712,8 @@ interface DocStats {
    *  but before the plan PR merges, `completed` after the PR merges,
    *  `pending` before the first run. */
   status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
+  /** Reason the doc is stalled — e.g. the last deliverable verdict. */
+  stallReason: string | null;
   /** Count of unanswered operator questions blocking the pass gate.
    *  Surfaced next to the stalled badge so the operator knows the
    *  loop isn't making meaningful progress until they answer. */
@@ -750,6 +744,7 @@ function useDocStats(storyId: string, keys: string[]): Record<string, DocStats |
             verdict: last?.verdict ?? '',
             cost: r.totalCostUsd,
             status: r.status,
+            stallReason: r.stallReason ?? null,
             unansweredQuestions: r.unansweredQuestions ?? 0,
             generator: r.generator,
             evaluator: r.evaluator,
