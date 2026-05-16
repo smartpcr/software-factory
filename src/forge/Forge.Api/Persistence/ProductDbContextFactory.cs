@@ -72,15 +72,37 @@ public sealed class ProductDbContextFactory : IProductDbContextFactory, IDisposa
     public ProductDbContext CreateForCurrentRequest()
     {
         var slug = this.httpContext.HttpContext?.Items[SlugItemKey] as string;
-        if (string.IsNullOrEmpty(slug))
+        if (!string.IsNullOrEmpty(slug))
         {
-            throw new InvalidOperationException(
-                "ProductDbContextFactory.CreateForCurrentRequest requires an upstream " +
-                $"ProductScopeMiddleware to have set HttpContext.Items[\"{SlugItemKey}\"]. " +
-                "Either send the X-Forge-Product-Id header / productId query parameter, " +
-                "or call CreateFor(slug) explicitly.");
+            return this.CreateFor(slug);
         }
-        return this.CreateFor(slug);
+
+        // No slug on the request — fall back to a context bound to the
+        // control DB so endpoints with no product scope (e.g., admin
+        // tooling, sync workers) still work during the Phase D interim.
+        // After Phase F, callers without a product slug must explicitly
+        // pick a product or enumerate them all.
+        return this.CreateUnscoped();
+    }
+
+    private ProductDbContext CreateUnscoped()
+    {
+        const string unscopedKey = "__unscoped__";
+        if (this.cache.TryGetValue(unscopedKey, out var cached))
+        {
+            return cached;
+        }
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = this.paths.ControlDbPath(),
+            DefaultTimeout = 30,
+        }.ToString();
+        var options = new DbContextOptionsBuilder<ProductDbContext>()
+            .UseSqlite(connectionString)
+            .Options;
+        var ctx = new ProductDbContext(options) { ProductSlug = null };
+        this.cache[unscopedKey] = ctx;
+        return ctx;
     }
 
     public void Dispose()

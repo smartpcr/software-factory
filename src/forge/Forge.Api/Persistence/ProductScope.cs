@@ -50,7 +50,7 @@ public static class ProductScope
     /// request. The aggregate <see cref="ResolveAsync"/> result also exposes
     /// the resolved productId so handlers can echo it in responses.
     /// </remarks>
-    public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, ForgeDbContext db, CancellationToken ct = default)
+    public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, DbContext db, CancellationToken ct = default)
     {
         var raw = Read(ctx);
         if (string.Equals(raw, AllScope, StringComparison.OrdinalIgnoreCase))
@@ -66,7 +66,7 @@ public static class ProductScope
         }
 
         var productId = raw;
-        var repoIds = await db.Repos.AsNoTracking()
+        var repoIds = await db.Set<RepoRow>().AsNoTracking()
             .Where(r => r.ProductId == productId)
             .Select(r => r.Id)
             .ToListAsync(ct);

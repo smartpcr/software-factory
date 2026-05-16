@@ -41,9 +41,9 @@ public static class CardsEndpoints
     }
 
     // GET /api/cards
-    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
+    private static async Task<IResult> GetAll(HttpContext ctx, ControlDbContext control, ProductDbContext db)
     {
-        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var scope = await ProductScope.ResolveAsync(ctx, control);
         var q = db.Cards.AsNoTracking().AsQueryable();
         if (!scope.IsAll)
         {
@@ -55,7 +55,7 @@ public static class CardsEndpoints
     }
 
     // GET /api/cards/{id}
-    private static async Task<IResult> Get(string id, ForgeDbContext db)
+    private static async Task<IResult> Get(string id, ProductDbContext db)
     {
         var row = await db.Cards.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id);
         return row is null ? NotFound(id) : Results.Ok(CardMapper.ToContract(row));
@@ -72,7 +72,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateCardRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
         IEnumerable<IForgeProvider> providers)
@@ -135,7 +135,7 @@ public static class CardsEndpoints
         [FromBody] CommentRequest req,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -191,7 +191,7 @@ public static class CardsEndpoints
         string id,
         [FromBody] PatchCardRequest req,
         HttpContext ctx,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
         IEnumerable<IForgeProvider> providers)
@@ -266,7 +266,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Move(
         string id,
         [FromBody] MoveCardRequest req,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub,
         ILoggerFactory loggerFactory)
     {
@@ -310,7 +310,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Delete(
         HttpContext ctx,
         string id,
-        ForgeDbContext db,
+        ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);

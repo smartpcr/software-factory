@@ -915,12 +915,12 @@ public static class WorkItemsEndpoints
     /// items without a linked PrRow.
     /// </summary>
     internal static async Task<Dictionary<string, (string PrId, string PrCol)>> LookupPrimaryPrsAsync(
-        ForgeDbContext db, IEnumerable<string> workItemIds, CancellationToken ct = default)
+        DbContext db, IEnumerable<string> workItemIds, CancellationToken ct = default)
     {
         var ids = workItemIds.ToList();
         if (ids.Count == 0) return new Dictionary<string, (string, string)>();
 
-        var prRows = await db.Prs.AsNoTracking()
+        var prRows = await db.Set<PrRow>().AsNoTracking()
             .Where(p => p.WorkItemId != null && ids.Contains(p.WorkItemId))
             .Select(p => new { p.WorkItemId, p.Id, p.Col, p.Sort })
             .ToListAsync(ct);
@@ -939,7 +939,7 @@ public static class WorkItemsEndpoints
         var missing = ids.Where(id => !result.ContainsKey(id)).ToList();
         if (missing.Count > 0)
         {
-            var events = await db.TaskTranscriptEvents.AsNoTracking()
+            var events = await db.Set<TaskTranscriptEventRow>().AsNoTracking()
                 .Where(e => missing.Contains(e.WorkItemId) && e.Kind == "task.pr-opened")
                 .ToListAsync(ct);
 

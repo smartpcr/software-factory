@@ -184,12 +184,18 @@ public class SplitContextsTests : IDisposable
     }
 
     [Fact]
-    public void Factory_CreateForCurrentRequest_ThrowsWhenSlugMissing()
+    public void Factory_CreateForCurrentRequest_FallsBackTo_ControlDbWhenSlugMissing()
     {
         var http = new TestHttpContextAccessor(); // no HttpContext set
         using var factory = new ProductDbContextFactory(this.paths, http);
 
-        Assert.Throws<InvalidOperationException>(() => factory.CreateForCurrentRequest());
+        // Phase D interim — no slug means fall back to forge.db so admin /
+        // sync paths without a product header still work. After Phase F the
+        // factory will require an explicit slug for any product-table write.
+        var ctx = factory.CreateForCurrentRequest();
+        Assert.NotNull(ctx);
+        Assert.Null(ctx.ProductSlug);
+        Assert.Contains("forge.db", ctx.Database.GetDbConnection().ConnectionString);
     }
 
     [Fact]

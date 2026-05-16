@@ -228,6 +228,13 @@ builder.Services.AddCors(options =>
     // we register it explicitly here to make the dependency obvious.
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<Forge.Api.Persistence.IProductDbContextFactory, Forge.Api.Persistence.ProductDbContextFactory>();
+    // Phase D — make ProductDbContext directly resolvable from request DI
+    // so endpoints can take it as a parameter (e.g. (ControlDbContext control,
+    // ProductDbContext db)). The factory picks the right per-product file based
+    // on the X-Forge-Product-Id header; during Phase D interim, every context
+    // binds to forge.db until Phase F lays down per-product files.
+    builder.Services.AddScoped<Forge.Api.Persistence.ProductDbContext>(sp =>
+        sp.GetRequiredService<Forge.Api.Persistence.IProductDbContextFactory>().CreateForCurrentRequest());
 }
 
 // Prevent a single BackgroundService failure from tearing down the host.
