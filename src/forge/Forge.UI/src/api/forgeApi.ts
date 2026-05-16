@@ -1493,6 +1493,9 @@ export const forgeApi = {
      *  questions blocking the pass gate — see DeliverableLoop.cs which
      *  demotes verdict=pass → iterate while unanswered questions exist. */
     status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
+    /** Reason the doc is stalled — e.g. the last deliverable verdict such
+     *  as "reject", "stalled", "sloppy". Only set when status is "stalled". */
+    stallReason: string | null;
     maxIterations: number;
     budgetSeconds: number;
     /** Count of unanswered operator questions for this work item. The

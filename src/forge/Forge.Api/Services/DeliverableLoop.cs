@@ -588,51 +588,6 @@ public sealed class DeliverableLoop : IDeliverableLoop
             }, ct);
         }
 
-        // Phase 66 — Pre-iter stall gate. If the operator has unanswered
-        // questions from a prior iter, refuse to enter the gen-eval loop:
-        // generator output will only re-emit the same unresolved questions
-        // (the prompt template requires the `## Open Questions` block), and
-        // burning another full gen+eval round to land back on the same
-        // gate is exactly the waste this phase was added to prevent
-        // (observed on code-intelligence:AGENT-MEMORY plan-doc
-        // implementation-plan.md: 105 iters, score 94, $1860.77).
-        //
-        // The gate only fires when at least one deliverable already exists
-        // (we have to run iter 1 to surface the architect's questions in
-        // the first place). The
-        // `POST /api/work-items/{id}/questions/answer` endpoint flips
-        // ExecutionStatus back to queued/idle and fire-and-forgets a
-        // resume; this same loop call re-enters, the count is now 0, and
-        // we fall through to iter N+1.
-        if (lastPersisted is not null)
-        {
-            var pendingQuestions = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
-            if (pendingQuestions > 0)
-            {
-                if (workItemRow is not null
-                    && !string.Equals(workItemRow.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
-                {
-                    workItemRow.ExecutionStatus = ExecutionStatuses.AwaitingAnswers;
-                    workItemRow.UpdatedAt = DateTimeOffset.UtcNow;
-                    await this.db.SaveChangesAsync(ct);
-                }
-                await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-questions", new
-                {
-                    iter = lastPersisted.Iter,
-                    score = lastPersisted.Score,
-                    unansweredCount = pendingQuestions,
-                    priorVerdict = lastPersisted.Verdict,
-                    phase = "pre-iter",
-                }, ct);
-                return new DeliverableLoopResult(
-                    "stalled-questions",
-                    lastPersisted.Iter,
-                    lastPersisted.Score,
-                    new List<long>(),
-                    0m);
-            }
-        }
-
         while (iter < maxIter)
         {
             // Phase 20 — re-read per-work-item override each iteration so
@@ -1048,57 +1003,6 @@ public sealed class DeliverableLoop : IDeliverableLoop
             var unansweredCount = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
 
             verdict = lastScore.Verdict;
-            // Phase 66 — Stall the loop unconditionally when operator
-            // questions remain unanswered (was: demote pass→iterate and
-            // keep looping; the keep-looping variant burned 105 iters /
-            // $1860 on code-intelligence:AGENT-MEMORY implementation-plan.md
-            // because the generator re-emits the same questions every
-            // round, so the gate fires every round, so iter cap rewrites
-            // the final verdict to "sloppy" and the orchestrator throws
-            // "plan PR will not be opened — bump max-iterations…").
-            //
-            // Exception: when the evaluator returned verdict="reject",
-            // honour the reject — the work is fundamentally wrong and
-            // operator triage is needed on the work itself, not the
-            // questions. Reject is preserved; everything else (pass,
-            // iterate) is demoted to stalled-questions.
-            if (verdict != "reject" && unansweredCount > 0)
-            {
-                verdict = "stalled-questions";
-                row.Verdict = verdict;
-                var blockNote = $"BLOCKED: {unansweredCount} open question{(unansweredCount == 1 ? string.Empty : "s")} unanswered — operator must answer via the conversation-tab wizard. The loop is parked; answering any question triggers an automatic resume from this iter's chain.";
-                row.Notes = string.IsNullOrEmpty(row.Notes) ? blockNote : row.Notes + "\n\n" + blockNote;
-                lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
-                await this.db.SaveChangesAsync(ct);
-
-                if (workItemRow is not null)
-                {
-                    workItemRow.ExecutionStatus = ExecutionStatuses.AwaitingAnswers;
-                    workItemRow.UpdatedAt = DateTimeOffset.UtcNow;
-                    await this.db.SaveChangesAsync(ct);
-                }
-
-                // Stamp the pair-assignment as Cancelled — this is an
-                // operator-input stall, not a sloppy pair signal. The
-                // existing pair gets to continue once the operator
-                // answers (no reassignment, no clean-slate wipe).
-                await this.StampPairAssignmentAsync(
-                    pairAssignmentId,
-                    AgentPairAssignmentOutcomes.Cancelled,
-                    sloppyReason: null,
-                    finalScore: lastScore.Score,
-                    ct);
-
-                await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-questions", new
-                {
-                    iter,
-                    score = lastScore.Score,
-                    unansweredCount,
-                    phase = "post-iter",
-                }, ct);
-
-                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
-            }
 
             // Phase 67 — Fast-stop on no-progress score-zero iter. When the
             // iter completed with score==0 AND the per-iter commit

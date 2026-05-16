@@ -4011,19 +4011,10 @@ public static class StoriesEndpoints
         // Status priority:
         //   1. completed         — terminal: last verdict pass AND plan PR merged.
         //   2. awaiting-pr-review — terminal: last verdict pass, PR not yet merged.
-        //   3. stalled (questions) — open questions block the pass gate
-        //      (see DeliverableLoop.cs:450 — pass is demoted to iterate when
-        //      unanswered questions exist). The loop is technically still
-        //      iterating (`live`) but it cannot reach a pass until the
-        //      operator answers, so the operator needs to see stalled to
-        //      know action is required. PROMOTED above `live` 2026-05-11
-        //      after observing iter 17-23 / score 82-86 sticking on
-        //      qq:TELEGRAM-MESSENGER-S because of open questions while
-        //      the badge stayed `live`.
-        //   4. live              — runner reports the task is actively executing.
-        //   5. pending           — no deliverables yet.
-        //   6. stalled (verdict) — last verdict was reject/stalled.
-        //   7. iterating         — default for between iterations.
+        //   3. live              — runner reports the task is actively executing.
+        //   4. pending           — no deliverables yet.
+        //   5. stalled (verdict) — last verdict was reject/stalled/sloppy.
+        //   6. iterating         — default for between iterations.
         string status;
         bool planPrMerged = false;
         // Phase 53 — when the spawn is in sequential mode, the relevant
@@ -4053,7 +4044,6 @@ public static class StoriesEndpoints
 
         if (lastWasPass && planPrMerged) status = "completed";
         else if (lastWasPass) status = "awaiting-pr-review";
-        else if (unansweredQuestions > 0) status = "stalled";
         else if (isRunnerLive || isRecentEvent) status = "live";
         else if (lastDeliverable is null) status = "pending";
         else if (lastDeliverable.Verdict != null
@@ -4061,6 +4051,13 @@ public static class StoriesEndpoints
                 || string.Equals(lastDeliverable.Verdict, "reject", StringComparison.OrdinalIgnoreCase)))
             status = "stalled";
         else status = "iterating";
+
+        // Surface the reason the doc is stalled so the UI can show it in a tooltip.
+        string? stallReason = null;
+        if (status == "stalled" && lastDeliverable?.Verdict != null)
+        {
+            stallReason = lastDeliverable.Verdict;
+        }
 
         // Agent info — name + model for the latest gen/eval pair so the doc
         // tile can render avatars with hover tooltips. Two EF passes: agents
@@ -4139,6 +4136,7 @@ public static class StoriesEndpoints
             key,
             workItemId,
             status,
+            stallReason,
             maxIterations,
             budgetSeconds,
             unansweredQuestions,

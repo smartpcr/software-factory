@@ -110,6 +110,8 @@ type RectStatus =
   | 'completed'
   | 'blocked'
   | 'stalled'
+  | 'failed'
+  | 'paused'
   | 'historic'
   | 'cancelled';
 

@@ -180,6 +180,15 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
             w.Status = "complete";
             w.StallReason = null;
             w.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            // Mirror the workstream completion on the linked work item.
+            var wi = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+            if (wi is not null && !string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase))
+            {
+                wi.State = "closed";
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
             recovered++;
         }
 
