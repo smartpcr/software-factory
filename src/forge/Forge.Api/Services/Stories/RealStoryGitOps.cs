@@ -1218,6 +1218,114 @@ public sealed class RealStoryGitOps : IStoryGitOps
         return new IterCommitSnapshot(newSha, subject, added, modified, deleted);
     }
 
+    /// <inheritdoc/>
+    public async Task<IterCommitSnapshot?> SnapshotWorktreeChangesAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string baseBranch,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return null;
+        }
+        if (string.IsNullOrEmpty(baseBranch))
+        {
+            // Without a base reference there's nothing to diff against —
+            // bail to null so the caller falls through to event aggregation.
+            return null;
+        }
+
+        // 1. Capture HEAD sha + subject so the deliverable row records
+        //    the worktree's commit anchor (matches the pre-existing
+        //    SnapshotBranchHeadAsync shape so consumers don't branch).
+        var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(worktreePath, ct, "rev-parse", "HEAD");
+        var newSha = shaCode == 0 ? shaOut.Trim() : string.Empty;
+        var subject = string.Empty;
+        if (!string.IsNullOrEmpty(newSha))
+        {
+            var (subjectCode, subjectOut, _) = await this.RunGitCaptureAsync(worktreePath, ct, "log", "-1", "--format=%s", newSha);
+            if (subjectCode == 0) subject = subjectOut.Trim();
+        }
+
+        // 2. Diff baseBranch → worktree (committed + uncommitted, tracked
+        //    files only). The 3-dot form `baseBranch...HEAD` would show
+        //    only committed deltas; we want the working-tree view so
+        //    operator-relevant WIP shows up before the final commit.
+        //    `git diff --name-status {base} -- ./` shows what's different
+        //    between baseBranch and the working tree (combines committed
+        //    deltas against base + uncommitted modifications to tracked
+        //    files).
+        var trackedPaths = new Dictionary<string, char>(StringComparer.Ordinal);
+        var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "diff", "--name-status", "-z", $"{baseBranch}", "--", "./");
+        if (diffCode == 0 && !string.IsNullOrEmpty(diffOut))
+        {
+            var fields = diffOut.Split('\0');
+            for (var i = 0; i < fields.Length; i++)
+            {
+                var status = fields[i];
+                if (string.IsNullOrEmpty(status)) continue;
+                // Rename / copy: status\0oldPath\0newPath (3 fields).
+                // All others: status\0path (2 fields).
+                var skip = status.StartsWith('R') || status.StartsWith('C') ? 2 : 1;
+                if (i + skip >= fields.Length) break;
+                // The PATH the operator cares about is the destination
+                // for renames/copies (the new path), the only path for
+                // everything else.
+                var path = fields[i + skip];
+                i += skip;
+                if (string.IsNullOrEmpty(path) || IsBuildArtifactPath(path)) continue;
+                // Status letter is the first char (R100 / C95 carry digits).
+                trackedPaths[path] = status[0];
+            }
+        }
+
+        // 3. Untracked files — `git ls-files --others --exclude-standard`
+        //    respects .gitignore so build artifacts / IDE noise stay out.
+        var untrackedPaths = new HashSet<string>(StringComparer.Ordinal);
+        var (lsCode, lsOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "ls-files", "--others", "--exclude-standard", "-z");
+        if (lsCode == 0 && !string.IsNullOrEmpty(lsOut))
+        {
+            foreach (var p in lsOut.Split('\0'))
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                if (IsBuildArtifactPath(p)) continue;
+                untrackedPaths.Add(p);
+            }
+        }
+
+        // 4. Classify A/M/D. Untracked files become Added; tracked-status
+        //    flags from the diff become Added (A/C), Modified (M/R/T),
+        //    or Deleted (D). Renames are counted as a modify on the new
+        //    path (same convention as SnapshotBranchHeadAsync).
+        int added = 0, modified = 0, deleted = 0;
+        foreach (var entry in trackedPaths)
+        {
+            switch (entry.Value)
+            {
+                case 'A': added++; break;
+                case 'C': added++; break;
+                case 'M': modified++; break;
+                case 'R': modified++; break;
+                case 'T': modified++; break;
+                case 'D': deleted++; break;
+                default: break;
+            }
+        }
+        // Untracked → Added, but only if the path wasn't already tallied
+        // as committed-added (avoids double-count when a file is staged
+        // and also appears in ls-files via a different working-tree
+        // listing path — defensive).
+        foreach (var u in untrackedPaths)
+        {
+            if (!trackedPaths.ContainsKey(u)) added++;
+        }
+
+        return new IterCommitSnapshot(newSha, subject, added, modified, deleted);
+    }
+
     /// <summary>
     /// True for paths under directories whose contents are by convention
     /// generated/cached (Rust <c>target/</c>, Node <c>node_modules/</c>,

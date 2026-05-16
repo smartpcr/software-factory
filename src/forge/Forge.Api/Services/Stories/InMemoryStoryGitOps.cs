@@ -209,6 +209,25 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
+    /// 2026-05-16 — in-memory stub for the worktree-changes snapshot. The
+    /// in-memory git surface doesn't model a working tree separately from
+    /// branch trees, so we return the same shape as
+    /// <see cref="SnapshotBranchHeadAsync"/> with zero counts. Tests that
+    /// need real per-iter file deltas should use the integration-grade
+    /// <c>RealStoryGitOps</c> against a fixture repo.
+    /// </summary>
+    public Task<IterCommitSnapshot?> SnapshotWorktreeChangesAsync(
+        RepoRow? repo, string worktreePath, string baseBranch, CancellationToken ct = default)
+    {
+        // worktreePath isn't modeled — fall back to the base-branch tip
+        // so consumers still get a non-null result for happy-path tests.
+        var key = Key(repo, baseBranch);
+        var sha = this.tips.TryGetValue(key, out var tip) ? tip : string.Empty;
+        return Task.FromResult<IterCommitSnapshot?>(
+            new IterCommitSnapshot(sha, $"in-memory worktree at {worktreePath}", 0, 0, 0));
+    }
+
+    /// <summary>
     /// Phase 45 — fast-forward the in-memory base branch to the upstream tip.
     /// Tests rely on the base branch carrying every artifact already merged
     /// into <paramref name="upstreamBranch"/>, so we copy the upstream tree

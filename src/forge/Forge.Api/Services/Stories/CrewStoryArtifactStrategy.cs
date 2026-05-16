@@ -2691,15 +2691,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? assignedGen = assignedAgents.Count > 0 ? assignedAgents[0] : null;
         string? assignedEval = assignedAgents.Count > 1 ? assignedAgents[1] : null;
 
-        // Phase 65 — track the workstream branch's HEAD across iters so the
-        // OnIterationCommit callback can compute file-change counts
-        // against the prior iter's snapshot. Engineer agents commit via
-        // their own `git_commit` tool during the iter, so HEAD advances
-        // mid-iter — capturing post-iter (after the evaluator has scored)
-        // gives a stable boundary. Iter 1 baseline is null → first
-        // snapshot returns zero counts but records HEAD; iters 2+ diff
-        // against the prior snapshot.
-        string? prevIterSha = null;
+        // 2026-05-16 — for the workstream/engineer path we snapshot the
+        // worktree's cumulative delta vs baseBranch each iter (see the
+        // OnIterationCommit comment block below for why
+        // SnapshotBranchHeadAsync was wrong here). No prevIterSha state
+        // needed — each call is self-contained against baseBranch.
 
         await this.RunGenEvalLoopAsync(
             team: "Engineer",
@@ -2726,20 +2722,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // discovering a failure the per-iter chain didn't catch.
             qualityCommands: ResolveQualityCommands(repo, workspace),
             testCommand: ResolveTestCommand(repo, workspace),
-            // Phase 65 — snapshot the workstream branch's HEAD per iter
-            // so the DeliverableRow records real file counts. Engineer
-            // agents commit via their own `git_commit` tool during the
-            // iter; HEAD may advance by 0+ commits between snapshots,
-            // and the numstat diff against prevIterSha captures the
-            // cumulative delta. When HEAD didn't advance (e.g. iter
-            // ran but agent only read files), zero counts persist
-            // and the iter cell renders as `0f` truthfully.
+            // 2026-05-16 — snapshot the WORKTREE'S current delta vs
+            // baseBranch (committed + uncommitted + untracked), not the
+            // branch HEAD's commit-delta vs prev iter. The workstream
+            // path commits ONCE at pass-time via
+            // ReadCachedWorkstreamFilesAsync → CommitFilesAsync, so
+            // SnapshotBranchHeadAsync would return 0,0,0 for every iter
+            // (HEAD stays at baseBranch until the final pass commit) and
+            // the operator sees `0f` on every iter chip even though the
+            // engineer is editing 20+ files. SnapshotWorktreeChangesAsync
+            // reads the live working tree and surfaces the cumulative
+            // WIP per iter (iter 1: ~3 files staged so far, iter 5: 22
+            // files — matching the eventual PR delta).
             onIterationCommit: async (iter, deliverableId, snapCt) =>
             {
-                if (repo is null || string.IsNullOrEmpty(workstream.Branch)) return null;
-                var snap = await this.git.SnapshotBranchHeadAsync(repo, workstream.Branch, prevIterSha, snapCt);
+                if (repo is null || string.IsNullOrEmpty(workspace)) return null;
+                var snap = await this.git.SnapshotWorktreeChangesAsync(repo, workspace, baseBranch, snapCt);
                 if (snap is null) return null;
-                prevIterSha = snap.Sha;
                 return new IterCommitInfo(
                     CommitSha: snap.Sha,
                     CommitMessage: snap.Subject,

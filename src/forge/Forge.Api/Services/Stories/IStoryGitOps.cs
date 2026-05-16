@@ -224,6 +224,34 @@ public interface IStoryGitOps
         string branch,
         string? baselineSha,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// 2026-05-16 — alternative snapshot for the workstream path where the
+    /// engineer agent edits files in the worktree across iters but the
+    /// actual commit lands ONCE at pass time (via
+    /// <c>ReadCachedWorkstreamFilesAsync</c> → <c>CommitFilesAsync</c>).
+    /// In that flow <see cref="SnapshotBranchHeadAsync"/> reports zero
+    /// counts on every iter because HEAD never advances during the
+    /// gen-eval loop — the operator sees `0f` on every iter chip while
+    /// the final PR opens with N files. This method instead diffs the
+    /// LIVE WORKTREE (committed + uncommitted + untracked) against
+    /// <paramref name="baseBranch"/> so each iter chip shows the
+    /// cumulative WIP delta. The architect / per-iter-commit path stays
+    /// on <see cref="SnapshotBranchHeadAsync"/> because there HEAD does
+    /// advance per iter.
+    ///
+    /// <para>Returns <c>null</c> when the worktree path doesn't exist or
+    /// the diff commands all fail. On success: <c>Sha</c> is the
+    /// worktree HEAD (may equal baseBranch if no commits yet),
+    /// <c>Subject</c> is HEAD's commit subject (empty when at base),
+    /// <c>Added/Modified/Deleted</c> sum committed-since-base +
+    /// uncommitted-vs-HEAD + untracked into a single per-status tally.</para>
+    /// </summary>
+    Task<IterCommitSnapshot?> SnapshotWorktreeChangesAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string baseBranch,
+        CancellationToken ct = default);
 }
 
 /// <summary>
