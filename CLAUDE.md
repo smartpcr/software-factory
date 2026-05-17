@@ -24,7 +24,9 @@ This includes:
 - Front-end (Vite) changes are safe to leave for HMR — no restart needed.
 - "Approval to restart" is per-restart. Approval given for one restart does NOT carry forward; ask each subsequent time.
 
-**NEVER auto-commit changes to git.** Always present the changes and wait for explicit user approval before running `git commit`. The user wants to review all changes before they are committed.
+**NEVER auto-commit changes to git.** Always present the changes and wait for explicit user approval before running `git commit`. The user wants to review all changes before they are committed. **"Approval to commit" is per-commit.** Approval given for one commit does NOT carry forward to subsequent commits — ask each time. Approval for an adjacent action (e.g., "yes" to restart Forge.Api, "go" for the previous commit) is NOT approval to commit anything new. Same rule applies to `git push` and `git push --force`.
+
+**NEVER rewrite git history.** No `git rebase`, `git push --force`/`--force-with-lease`, `git reset --hard`/`reset --soft`/`reset --mixed` on commits that have already been pushed, no `git commit --amend` on a pushed commit, no `git filter-branch`/`filter-repo`. To back out an unwanted commit on a pushed branch, use `git revert` (which adds a new commit). Local-only commits that have never been pushed may be reset only after explicit user approval.
 
 ## Project Overview
 
