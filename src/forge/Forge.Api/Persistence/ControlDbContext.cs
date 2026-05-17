@@ -59,6 +59,13 @@ public class ControlDbContext : DbContext
 
     public DbSet<AuditRow> Audit => this.Set<AuditRow>();
 
+    /// <summary>
+    /// Phase G — control-side "product is due" watermark. Single row per
+    /// product. Workers read this to skip products with no pending work
+    /// without opening the per-product DB.
+    /// </summary>
+    public DbSet<ProductRuntimeRow> ProductRuntime => this.Set<ProductRuntimeRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

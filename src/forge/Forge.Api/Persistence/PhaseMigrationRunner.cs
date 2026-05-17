@@ -1,0 +1,192 @@
+// -----------------------------------------------------------------------
+// <copyright file="PhaseMigrationRunner.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Persistence;
+
+using System.Reflection;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+/// <summary>
+/// Phase G.4 follow-up — dispatches phase migrations through
+/// <see cref="PhaseMigrationCatalog"/> so each migration runs against the
+/// right DB(s) for its <see cref="PhaseMigrationKind"/>:
+///
+/// <list type="bullet">
+///   <item><see cref="PhaseMigrationKind.Control"/> — invokes the migration
+///         once with <c>ControlDbContext</c> + the default
+///         <c>ProductDbContext</c> (which during Phase D interim binds to
+///         the same <c>forge.db</c> file).</item>
+///   <item><see cref="PhaseMigrationKind.Product"/> — invokes the migration
+///         once for each product DB. Pre-Phase-F: ProductDbContext falls
+///         back to <c>forge.db</c> (no <c>{slug}.db</c> files exist yet) so
+///         this collapses to one invocation against forge.db.
+///         Post-Phase-F: invokes once per <c>{slug}.db</c> so each
+///         per-product DB picks up the schema change.</item>
+///   <item><see cref="PhaseMigrationKind.Mixed"/> — touches both. Behaves
+///         like Product (invocations include the control side ops which
+///         are idempotent <c>CREATE TABLE IF NOT EXISTS</c> /
+///         <c>ALTER TABLE … ADD COLUMN</c> guarded by pragma probes).</item>
+/// </list>
+///
+/// <para>
+/// <b>Order is preserved.</b> The execution order in
+/// <see cref="ExecutionOrder"/> mirrors the historical Program.cs sequence,
+/// where some phase migrations (43, 45, 46, 47, 49, 50) must run BEFORE
+/// Phase 38 because Phase 38's EF model projection references columns
+/// they add. Re-ordering these would crash boot on legacy DBs.
+/// </para>
+/// </summary>
+public sealed class PhaseMigrationRunner
+{
+    /// <summary>
+    /// Explicit ordered list of phase migrations to run at boot.
+    /// Mirrors the historical Program.cs invocation sequence. The order
+    /// matters: Phase 42 first (EF model dependency), then 43/45/46/47/49/50
+    /// before Phase 38's backfills, etc. New phase migrations should be
+    /// appended at the end unless a specific dependency forces an earlier
+    /// position.
+    /// </summary>
+    public static readonly IReadOnlyList<int> ExecutionOrder = new[]
+    {
+        42, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        30, 31, 32, 33, 34, 35, 36, 37,
+        43, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55,
+        60, 63, 64, 65, 72,
+        38, 39, 40, 41, 44, 48,
+    };
+
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly IForgeDbPaths paths;
+    private readonly ILogger<PhaseMigrationRunner> log;
+
+    public PhaseMigrationRunner(
+        IServiceScopeFactory scopeFactory,
+        IForgeDbPaths paths,
+        ILogger<PhaseMigrationRunner> log)
+    {
+        this.scopeFactory = scopeFactory;
+        this.paths = paths;
+        this.log = log;
+    }
+
+    /// <summary>
+    /// Apply every catalogued phase migration in <see cref="ExecutionOrder"/>.
+    /// Uses the supplied <paramref name="control"/> + <paramref name="defaultDb"/>
+    /// for the default invocation (Phase D interim: both bind to forge.db).
+    /// </summary>
+    public async Task ApplyAllAsync(
+        ControlDbContext control,
+        ProductDbContext defaultDb,
+        CancellationToken ct = default)
+    {
+        var assembly = typeof(PhaseMigrationCatalog).Assembly;
+        foreach (var phase in ExecutionOrder)
+        {
+            await this.ApplyOneAsync(assembly, phase, control, defaultDb, ct);
+        }
+    }
+
+    /// <summary>
+    /// Invoke a single migration. Looks up its <see cref="PhaseMigrationSpec"/>
+    /// in the catalog and dispatches based on <see cref="PhaseMigrationKind"/>.
+    /// </summary>
+    private async Task ApplyOneAsync(
+        Assembly assembly,
+        int phase,
+        ControlDbContext control,
+        ProductDbContext defaultDb,
+        CancellationToken ct)
+    {
+        if (!PhaseMigrationCatalog.ByPhase.TryGetValue(phase, out var spec))
+        {
+            throw new InvalidOperationException(
+                $"PhaseMigrationRunner.ExecutionOrder references Phase{phase} " +
+                $"but PhaseMigrationCatalog has no entry for it. Add a " +
+                $"PhaseMigrationSpec or remove the phase from ExecutionOrder.");
+        }
+
+        var typeName = $"Forge.Api.Persistence.Phase{phase}Migration";
+        var type = assembly.GetType(typeName)
+            ?? throw new InvalidOperationException(
+                $"PhaseMigrationRunner could not find type '{typeName}' in the Forge.Api assembly. " +
+                $"PhaseMigrationCatalog claims it exists.");
+        var method = type.GetMethod("ApplyAsync", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException(
+                $"PhaseMigrationRunner could not find a public static ApplyAsync method on '{typeName}'.");
+
+        this.log.LogDebug(
+            "Applying Phase{Phase} migration ({Kind}) — control:[{ControlTables}] product:[{ProductTables}]",
+            phase, spec.Kind,
+            string.Join(",", spec.ControlTables),
+            string.Join(",", spec.ProductTables));
+
+        // Always invoke at least once with the default contexts. This matches
+        // pre-G.4 behaviour: every migration sees the control DB on the
+        // ControlDbContext side and the (forge.db-fallback) ProductDbContext.
+        // Post-Phase-F: for Product/Mixed migrations, the per-product invocation
+        // loop below also runs against each {slug}.db.
+        await this.InvokeAsync(method, control, defaultDb, ct);
+
+        // Phase F+ fan-out: when per-product DBs exist on disk, also apply
+        // Product/Mixed migrations to each so their schema stays in lockstep
+        // with what EF expects. Control-only migrations skip this (their
+        // tables don't exist in {slug}.db).
+        if (spec.Kind == PhaseMigrationKind.Control)
+        {
+            return;
+        }
+
+        var productSlugs = await this.ListSlugsWithPerProductDbAsync(control, ct);
+        if (productSlugs.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var slug in productSlugs)
+        {
+            using var slugScope = this.scopeFactory.CreateScope();
+            var productFactory = slugScope.ServiceProvider.GetRequiredService<IProductDbContextFactory>();
+            var perProductDb = productFactory.CreateFor(slug);
+            this.log.LogDebug(
+                "Fan-out: applying Phase{Phase} ({Kind}) to product '{Slug}' DB.",
+                phase, spec.Kind, slug);
+            await this.InvokeAsync(method, control, perProductDb, ct);
+        }
+    }
+
+    private Task InvokeAsync(MethodInfo method, ControlDbContext control, ProductDbContext db, CancellationToken ct)
+    {
+        var task = (Task?)method.Invoke(null, new object?[] { control, db, ct })
+            ?? throw new InvalidOperationException(
+                $"Phase migration {method.DeclaringType?.Name}.ApplyAsync returned null instead of a Task.");
+        return task;
+    }
+
+    /// <summary>
+    /// Enumerate product slugs whose <c>{slug}.db</c> file exists on disk.
+    /// Pre-Phase-F this returns an empty list (no per-product DBs yet),
+    /// keeping the fan-out a no-op. After <c>POST /api/admin/db/split-apply</c>
+    /// has produced per-product files, this returns each slug so the runner
+    /// can apply product/mixed migrations to every per-product DB.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ListSlugsWithPerProductDbAsync(
+        ControlDbContext control, CancellationToken ct)
+    {
+        var products = await control.Products
+            .AsNoTracking()
+            .Select(p => p.Slug)
+            .ToListAsync(ct);
+        var withDb = new List<string>(products.Count);
+        foreach (var slug in products)
+        {
+            if (string.IsNullOrWhiteSpace(slug)) continue;
+            if (this.paths.ProductDbExists(slug)) withDb.Add(slug);
+        }
+        return withDb;
+    }
+}

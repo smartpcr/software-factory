@@ -114,5 +114,13 @@ public static class DbModelControl
             .HasDatabaseName("IX_agent_claims_agent_released");
         mb.Entity<AgentClaimRow>().HasIndex(x => x.WorkItemId)
             .HasDatabaseName("IX_agent_claims_workitem");
+
+        // Phase G — control-side product "due" watermark. PK is the
+        // product id (one row per product). The LastPendingAt index is
+        // the hot read path used by every worker tick that needs to
+        // decide which products to fan out to.
+        mb.Entity<ProductRuntimeRow>().ToTable("product_runtime").HasKey(x => x.ProductId);
+        mb.Entity<ProductRuntimeRow>().HasIndex(x => x.LastPendingAt)
+            .HasDatabaseName("IX_product_runtime_lastpending");
     }
 }

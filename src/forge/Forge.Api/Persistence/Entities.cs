@@ -547,6 +547,48 @@ public class ProductRow
 }
 
 /// <summary>
+/// Phase G (post-split) — control-side "due/dirty" watermark per product
+/// so background workers can skip products with no pending work without
+/// opening their per-product DB. Updated on the write paths that produce
+/// work (queue enqueue, PR creation, build enqueue) and read by the
+/// orchestrator / sync workers / merge watcher to decide which products
+/// to fan out to this tick.
+///
+/// <para>Pre-Phase-F this is just an optimization hint (control DB is
+/// the same file as product DBs). Post-Phase-F it avoids the cost of
+/// opening every <c>{slug}.db</c> handle when most products have zero
+/// pending work.</para>
+///
+/// <para>Single row per product (PK = ProductId). UPSERTed by writers
+/// via SQLite's <c>INSERT … ON CONFLICT</c> against PK. The
+/// <see cref="LastPendingAt"/> index is the hot read path used by every
+/// worker tick.</para>
+/// </summary>
+public class ProductRuntimeRow
+{
+    /// <summary>FK to <see cref="ProductRow.Id"/>. One row per product.</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Most recent moment a write path put pending work into the product's
+    /// DB (e.g., a task_queue row, an open PR, a build job). Null when no
+    /// pending work has been observed since the product was created or the
+    /// last reaper sweep.
+    /// </summary>
+    public DateTimeOffset? LastPendingAt { get; set; }
+
+    /// <summary>
+    /// Cached watermark of open PRs in the product's DB. Maintained by the
+    /// PR write paths (open / merge / close) so <c>AutoMergeWatcher</c> can
+    /// skip products with zero open PRs without opening their DB.
+    /// </summary>
+    public int ActivePrCount { get; set; }
+
+    /// <summary>Last time any field on this row was written.</summary>
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
 /// Phase 10.1 — per-user preferences. PK is <see cref="UserId"/> = the
 /// owning user's id. In single-user mode the singleton row keys on
 /// <c>"default"</c> until a real signed-in identity exists; once Phase 9

@@ -267,12 +267,25 @@ public sealed class SplitApplyService
                     // is still pre.TotalRows (we haven't dropped yet). The
                     // sum across product DBs should be pre.ClassifiedRows
                     // (orphans don't move).
+                    //
+                    // For NoPartitionKey tables, all rows are routed to the
+                    // default product (see line ~219). The dry-run reports
+                    // ClassifiedRows=0 and OrphanRows=total for them (treating
+                    // every row as orphan from a partitioning standpoint), but
+                    // the apply step routes them all anyway — so the verifier
+                    // must compare against TotalRows, not ClassifiedRows, or
+                    // else NoPartitionKey tables would always trip the
+                    // mismatch and block the DROP.
+                    var expectedAttached = string.Equals(pre.Strategy, "nopartitionkey", StringComparison.OrdinalIgnoreCase)
+                        ? pre.TotalRows
+                        : pre.ClassifiedRows;
                     var attachedTotal = await SumAttachedTableAsync(conn, pre.TableName, preReport.Products, ct);
-                    if (attachedTotal != pre.ClassifiedRows)
+                    if (attachedTotal != expectedAttached)
                     {
                         errors.Add(
-                            $"Row-count mismatch for {pre.TableName}: " +
-                            $"classified={pre.ClassifiedRows} attached-sum={attachedTotal} orphans={pre.OrphanRows}. " +
+                            $"Row-count mismatch for {pre.TableName} (strategy={pre.Strategy}): " +
+                            $"expected-attached={expectedAttached} actual-attached={attachedTotal} " +
+                            $"total={pre.TotalRows} classified={pre.ClassifiedRows} orphans={pre.OrphanRows}. " +
                             $"Refusing to drop source. Restore from {backupPath}.");
                     }
                 }

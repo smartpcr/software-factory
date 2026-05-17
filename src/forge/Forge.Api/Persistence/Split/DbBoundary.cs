@@ -117,6 +117,10 @@ public static class DbBoundary
         new DbTableSpec("crews", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("domain_experts", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("products", DbKind.Control, PartitionStrategy.Global, null),
+        // Phase G "due/dirty" optimization — control-side watermark per
+        // product so background workers can skip products with no pending
+        // work without opening the per-product DB.
+        new DbTableSpec("product_runtime", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("repos", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_product_roles", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_settings", DbKind.Control, PartitionStrategy.Global, null),
