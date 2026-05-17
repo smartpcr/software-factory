@@ -200,6 +200,35 @@ to `forge.db`.
       marker absent → no throw (legacy); marker present + flag false
       → no throw (opt-in); marker present + flag true → throws with
       diagnostic message including `ControlDbPath`.
+- [ ] **2D.3 (NEW, blocking 2D activation)** — Refactor `Program.cs`
+      startup so the unscoped `ProductDbContext` resolve at line 491
+      is conditional on `!SplitMarkerCache.IsPhase73Applied`, and the
+      ~10 downstream startup operations that currently use it route
+      through `ProductFanout` per-product:
+      * lines 506-515: skip the probe-and-create when marker stamped
+        (per-product DBs already own their schemas).
+      * lines 544-553: `BuildValidationRuns` orphan-cancel — fanout
+        per-product.
+      * line 647: `ForgeSeed.EnsureCrewCatalogAsync(control, db)` —
+        crew_history is product-side, needs fanout.
+      * line 656: `ForgeSeed.EnsureDefaultProductAndRepoAsync` (test path).
+      * line 660: `CrewsEndpoints.ApplyAutoAssignAsync(control, db, …)`.
+      * line 665: `WorkstreamMergeAdvancer.BackfillAsync(control, db)`.
+      * line 678: `SpawnAutoMergeResolver.BackfillPrsAsync(control, db)`.
+      * lines 695-710: PR sync re-probe sweep.
+      * (and others — full audit via `grep "scope.*GetRequiredService<ProductDbContext>"`).
+      Additionally: `PhaseMigrationRunner.ApplyAllAsync` always
+      invokes EVERY migration once against `defaultDb` (line 133),
+      which post-split fails on Product-only migrations like
+      `Phase42Migration.EnsureColumnAsync("workstreams", ...)`
+      because forge.db has no `workstreams` table. Either skip the
+      default invocation for Product-kind migrations when the marker
+      is stamped, OR keep empty product schema stubs in forge.db as a
+      compat layer (current state).
+      **Status:** discovered 2026-05-17 during attempted activation.
+      Enabling `FailLoudOnUnscoped=true` today crashes Forge.Api at
+      boot exactly as the guard intends (correct detection). Left at
+      default `false` until this refactor lands.
 
 ### Stage 2E — Cross-product write integration test
 - [x] **2E.1** Add `Forge.Api.Tests/Phase73CrossProductWriteTests.cs`
@@ -296,3 +325,14 @@ docs/forge/fix_split_db.md                                                   (th
 - Old `forge.db` bloat after the split actually completes — Phase 73
   drops the product tables but the SQLite page file isn't compacted.
   A `VACUUM` follow-up is its own ticket.
+- **Bootstrap refactor (Stage 2D.3 above)** — the prerequisite for
+  flipping `FailLoudOnUnscoped=true`. Tracked as the only remaining
+  step before the split's defense-in-depth is fully active. Until
+  then `Program.cs`'s startup will silently no-op the per-product
+  repair passes (`BuildValidationRuns` orphan cancel, PR sync
+  re-probe, `WorkstreamMergeAdvancer.BackfillAsync`,
+  `SpawnAutoMergeResolver.BackfillPrsAsync`) because they query
+  forge.db's empty product-table stubs. Symptoms: stale "running"
+  build-validation rows persist across restarts; PR rows aren't
+  re-probed for `LastSyncAt=null` after boot; auto-merge flag
+  backfill doesn't pick up new PRs.

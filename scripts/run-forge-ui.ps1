@@ -211,6 +211,26 @@ if ($targetServer) {
     # bounds the wait if the operator walks away from the prompt.
     $env:FORGE_GIT_PROMPT_POLICY = 'Interactive'
 
+    # Phase 73 — config overrides via env var because the launcher uses
+    # `-WorkingDirectory $RepoRoot` and ASP.NET's default `appsettings.json`
+    # lookup is relative to the content root (i.e. the working directory).
+    # The repo root has no `appsettings.json`, so values defined only in
+    # `src/forge/Forge.Api/appsettings.json` do NOT take effect.
+    # Env vars use the `__` separator convention to map onto the
+    # `Forge:Db:X` config keys.
+    #   Forge:Db:SplitEnabled — gates /api/admin/db/split-* admin endpoints.
+    #
+    # NOT enabled here (deferred — see docs/forge/fix_concurrent_dispatch.md):
+    #   Forge:Db:FailLoudOnUnscoped — Phase 73 Stage 2D guard. Enabling it
+    #     today crashes Forge.Api at boot because Program.cs:485-710 has
+    #     ~10 startup operations (BuildValidationRuns repair, Pr sweep,
+    #     ForgeSeed.EnsureCrewCatalogAsync, WorkstreamMergeAdvancer.BackfillAsync,
+    #     SpawnAutoMergeResolver.BackfillPrsAsync, etc.) that resolve an
+    #     unscoped ProductDbContext. Each needs per-product fanout via
+    #     ProductFanout.ForEachProductAsync before the guard can safely
+    #     trip on real runtime call sites. Tracked as a follow-up.
+    $env:Forge__Db__SplitEnabled = 'true'
+
     Start-Process -FilePath $serverExe `
         -ArgumentList "--environment","Development" `
         -WorkingDirectory $RepoRoot `
