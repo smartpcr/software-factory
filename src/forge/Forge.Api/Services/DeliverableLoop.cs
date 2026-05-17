@@ -281,6 +281,17 @@ public static class GeneratorFailureKinds
     public const string StuckToolCall = "generator-stuck-tool-call";
 
     /// <summary>
+    /// Phase 74 — dispatcher refused the StartAsync because another
+    /// invocation for the same taskId is already live. Classified as
+    /// a transient failure: the in-flight invocation will produce the
+    /// real verdict on this same workItemId, and any caller that
+    /// observes this kind should treat its own iter as a no-op
+    /// (verdict=iterate, persisted with the explanatory note so the
+    /// operator sees what happened in the iter-KPI strip).
+    /// </summary>
+    public const string ConcurrentDispatch = "generator-concurrent-dispatch";
+
+    /// <summary>
     /// Classify a free-form Failed-event error message into one of the
     /// kinds above. Pattern-matching is conservative: we look for the
     /// exact phrases the dispatcher emits (see
@@ -290,6 +301,15 @@ public static class GeneratorFailureKinds
     public static string Classify(string? error)
     {
         if (string.IsNullOrEmpty(error)) return Other;
+        // Phase 74 — concurrent-dispatch refusal MUST be checked before
+        // any other pattern because the InvalidOperationException
+        // message also contains words that match other heuristics.
+        if (error.Contains(
+                "Concurrent dispatch refused",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return ConcurrentDispatch;
+        }
         // Copilot SDK / CrewQueueWorker max-turn loop emits
         // "Max turns ({n}) reached" verbatim (CrewQueueWorker.cs ~1450,
         // mirrored in the Copilot/SDK loop helpers). Match either
@@ -375,6 +395,35 @@ public sealed class DeliverableLoop : IDeliverableLoop
     private readonly TaskChannel? channel;
 
     /// <summary>
+    /// Phase 74 — per-<c>workItemId</c> fast-fail mutex. Two concurrent
+    /// <see cref="RunAsync"/> calls on the same work item used to share
+    /// the <c>CopilotSessionPool</c> entry; when the first reached a
+    /// terminal verdict its <c>finally</c> disposed the pool session,
+    /// killing the second mid-flight. The second then surfaced as a
+    /// fake iter row with <c>score=0, verdict=iterate, EvalCost=$0</c>.
+    /// <para>The mutex uses <see cref="SemaphoreSlim.WaitAsync(TimeSpan, CancellationToken)"/>
+    /// with a <c>TimeSpan.Zero</c> timeout: the second caller returns
+    /// immediately with a synthetic <c>verdict="skipped-concurrent"</c>
+    /// result rather than blocking. The orchestrator's tick treats
+    /// that verdict as a no-op — the in-flight call owns the turn.</para>
+    /// <para>Static so the mutex spans every <see cref="DeliverableLoop"/>
+    /// scoped instance the DI container hands out per request /
+    /// background-task scope. Keyed by <c>workItemId</c> because that
+    /// matches the <see cref="CopilotSessionPool"/> partition (which
+    /// is the resource being raced on).</para>
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> WorkItemMutexes =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Verdict literal returned by <see cref="RunAsync"/> when the
+    /// per-<c>workItemId</c> mutex was already held. Callers MUST
+    /// treat this as a no-op (don't commit, don't open PR, don't flip
+    /// workstream Status) — the in-flight caller owns the turn.
+    /// </summary>
+    public const string SkippedConcurrentVerdict = "skipped-concurrent";
+
+    /// <summary>
     /// Phase 38 (Layer A.3) — map a work item's story points to a per-loop
     /// iteration cap. Bigger work earns more attempts before the loop
     /// stalls; tiny work still gets a 5-iter floor so the gen↔eval pair has
@@ -404,11 +453,59 @@ public sealed class DeliverableLoop : IDeliverableLoop
         this.channel = channel;
     }
 
+    /// <summary>
+    /// Phase 74 test helper — clear the per-process mutex map between
+    /// test runs. Production code never calls this.
+    /// </summary>
+    public static void ResetWorkItemMutexesForTesting()
+    {
+        foreach (var sem in WorkItemMutexes.Values) { try { sem.Dispose(); } catch { } }
+        WorkItemMutexes.Clear();
+    }
+
     public async Task<DeliverableLoopResult> RunAsync(DeliverableLoopRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Generator);
         ArgumentNullException.ThrowIfNull(request.Evaluator);
+
+        // Phase 74 — per-workItemId fast-fail mutex. Block concurrent
+        // RunAsync on the same workItemId so two dispatcher invocations
+        // can't share (and then race the disposal of) the same
+        // CopilotSessionPool entry. Acquired here, released in `finally`
+        // after the loop body returns or throws.
+        var mutexKey = request.WorkItemId ?? string.Empty;
+        var mutex = WorkItemMutexes.GetOrAdd(mutexKey, _ => new SemaphoreSlim(1, 1));
+        var acquired = await mutex.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false);
+        if (!acquired)
+        {
+            await this.EmitAsync(request.WorkItemId, "task.deliverable-loop.skip-concurrent", new
+            {
+                workItemId = request.WorkItemId,
+                reason = "Another DeliverableLoop.RunAsync is already in-flight for this workItemId. "
+                    + "Skipping to avoid CopilotSessionPool collision.",
+            }, ct);
+            return new DeliverableLoopResult(
+                FinalVerdict: SkippedConcurrentVerdict,
+                Iterations: 0,
+                FinalScore: 0,
+                DeliverableRowIds: Array.Empty<long>(),
+                TotalCostUsd: 0m,
+                SloppyReason: null);
+        }
+
+        try
+        {
+            return await this.RunAsyncCore(request, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { mutex.Release(); } catch { /* best-effort */ }
+        }
+    }
+
+    private async Task<DeliverableLoopResult> RunAsyncCore(DeliverableLoopRequest request, CancellationToken ct)
+    {
 
         var rowIds = new List<long>();
         var totalCost = 0m;

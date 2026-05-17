@@ -4973,6 +4973,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             return;
         }
 
+        // Phase 74 — DeliverableLoop refused to run because another
+        // RunAsync is already in flight for this workItemId. Bail
+        // silently: no commit, no PR, no status flip. The in-flight
+        // caller owns the turn and will produce the real verdict.
+        if (string.Equals(result.FinalVerdict, DeliverableLoop.SkippedConcurrentVerdict, StringComparison.OrdinalIgnoreCase))
+        {
+            this.logger?.LogInformation(
+                "Phase 74: {Phase} skipped (concurrent dispatch); another DeliverableLoop run owns this workItemId.",
+                phaseTag);
+            return;
+        }
+
         if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(

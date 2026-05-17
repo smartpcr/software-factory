@@ -64,6 +64,17 @@ public sealed class CopilotSessionPool : IAsyncDisposable
     /// <see cref="CopilotSession"/> and must serialise their
     /// <c>SendAsync</c> calls on
     /// <see cref="PooledCopilotEntry.SendLock"/>.
+    ///
+    /// <para>Phase 74 — every acquire bumps
+    /// <see cref="PooledCopilotEntry.RefCount"/>. Callers MUST pair
+    /// each acquire with exactly one <see cref="ReleaseAsync"/> call
+    /// (typically in a <c>finally</c> block) so the entry's lifecycle
+    /// follows reference counts. The entry is disposed and removed
+    /// from the dictionary only when the count reaches zero. Without
+    /// this, a concurrent <c>RunAsync</c> on the same workItem could
+    /// dispose the shared session out from under the in-flight
+    /// caller and surface as <c>generator-inactive</c> 10 min later.
+    /// </para>
     /// </summary>
     /// <param name="factory">
     /// Builds the underlying <see cref="CopilotClient"/> +
@@ -93,7 +104,23 @@ public sealed class CopilotSessionPool : IAsyncDisposable
 
         try
         {
-            return await lazy.Value;
+            var entry = await lazy.Value;
+            // Phase 74 — every Acquire bumps the refcount. Pair with
+            // ReleaseAsync. Throws if the entry has been finalised by
+            // a concurrent ReleaseAsync racing to zero — caller must
+            // retry, which will create a fresh entry via the
+            // ConcurrentDictionary GetOrAdd path.
+            entry.IncrementRefCount();
+            return entry;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Entry was disposed between our lazy.Value resolve and our
+            // IncrementRefCount call. Drop the failed Lazy from the
+            // dictionary so the next caller re-creates a fresh entry,
+            // then retry once.
+            this.entries.TryRemove(key, out _);
+            throw;
         }
         catch
         {
@@ -105,12 +132,77 @@ public sealed class CopilotSessionPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Drop and dispose every pooled entry for a work item. Called
-    /// from <c>RunGenEvalLoopAsync</c>'s try/finally on terminal
-    /// verdict OR cancellation. Idempotent: re-disposing a work
-    /// item with no entries is a no-op.
+    /// Phase 74 — decrement the refcount on the entry for
+    /// <c>(workItemId, agentId)</c>. When the count reaches zero the
+    /// entry is disposed and removed from the dictionary. Idempotent
+    /// on missing entries (returns false). Safe to call from any
+    /// <c>finally</c> that paired with <see cref="AcquireAsync"/>.
+    /// </summary>
+    public async Task<bool> ReleaseAsync(string workItemId, string agentId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(workItemId) || string.IsNullOrEmpty(agentId)) return false;
+        var key = (workItemId, agentId);
+        if (!this.entries.TryGetValue(key, out var lazy)) return false;
+
+        PooledCopilotEntry entry;
+        try { entry = await lazy.Value; }
+        catch { return false; }
+
+        var shouldDispose = entry.DecrementRefCount();
+        if (shouldDispose)
+        {
+            this.entries.TryRemove(key, out _);
+            try { await entry.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                this.log.LogWarning(ex,
+                    "CopilotSessionPool: dispose-after-release failed for ({WorkItem}, {Agent}); leaking entry.",
+                    workItemId, agentId);
+            }
+        }
+        return shouldDispose;
+    }
+
+    /// <summary>
+    /// Phase 74 — soft signal that the caller has finished using the
+    /// session pool for this work item. Decrements the refcount on
+    /// every <c>(workItemId, *)</c> entry; entries whose count hits
+    /// zero are disposed. <strong>NOT</strong> a force-dispose;
+    /// in-flight concurrent callers keep the session alive until
+    /// they call <see cref="ReleaseAsync"/>. Backward-compatible
+    /// signature so existing call sites (single caller in
+    /// <c>CrewStoryArtifactStrategy.RunGenEvalLoopAsync</c>'s
+    /// finally) don't need source changes.
+    ///
+    /// <para>Use <see cref="DisposeForWorkItemForceAsync"/> for the
+    /// force-disposal semantic (operator cancel / restart paths
+    /// that explicitly want the session torn down).</para>
     /// </summary>
     public async Task<int> DisposeForWorkItemAsync(string workItemId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return 0;
+        var matched = this.entries
+            .Where(kv => string.Equals(kv.Key.WorkItemId, workItemId, StringComparison.Ordinal))
+            .Select(kv => kv.Key)
+            .ToList();
+
+        var released = 0;
+        foreach (var key in matched)
+        {
+            if (await this.ReleaseAsync(key.WorkItemId, key.AgentId, ct).ConfigureAwait(false))
+            {
+                released++;
+            }
+        }
+        return released;
+    }
+
+    /// <summary>
+    /// Phase 74 — force-dispose every entry for a work item regardless
+    /// of refcount. Used by operator-cancel / restart / shutdown paths
+    /// that explicitly want the in-flight session torn down.
+    /// </summary>
+    public async Task<int> DisposeForWorkItemForceAsync(string workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return 0;
         var matched = this.entries
@@ -132,7 +224,7 @@ public sealed class CopilotSessionPool : IAsyncDisposable
                 catch (Exception ex)
                 {
                     this.log.LogWarning(ex,
-                        "CopilotSessionPool: dispose failed for ({WorkItem}, {Agent}); leaking entry.",
+                        "CopilotSessionPool: force-dispose failed for ({WorkItem}, {Agent}); leaking entry.",
                         key.WorkItemId, key.AgentId);
                 }
             }
@@ -141,7 +233,7 @@ public sealed class CopilotSessionPool : IAsyncDisposable
         if (disposed > 0)
         {
             this.log.LogInformation(
-                "CopilotSessionPool: disposed {Count} session(s) for {WorkItem}.",
+                "CopilotSessionPool: force-disposed {Count} session(s) for {WorkItem}.",
                 disposed, workItemId);
         }
         return disposed;
@@ -172,9 +264,21 @@ public sealed class CopilotSessionPool : IAsyncDisposable
 /// Phase 55 / Phase E -- one cached <see cref="CopilotSession"/>
 /// plus the <see cref="CopilotClient"/> that owns it. The lock
 /// must be held while a <c>SendAsync</c> is in flight.
+///
+/// <para>Phase 74 — <see cref="RefCount"/> is bumped by every
+/// <see cref="CopilotSessionPool.AcquireAsync"/> call and dropped
+/// by every <see cref="CopilotSessionPool.ReleaseAsync"/> call.
+/// The entry is only disposed when the count reaches zero, so a
+/// concurrent caller's reference keeps the underlying SDK session
+/// alive even after the originating gen-eval loop's
+/// <c>finally</c> has called <c>DisposeForWorkItemAsync</c>.</para>
 /// </summary>
 public sealed class PooledCopilotEntry : IAsyncDisposable
 {
+    private int refCount;
+    private bool disposed;
+    private readonly object refLock = new();
+
     public PooledCopilotEntry(CopilotClient client, CopilotSession session, string workItemId, string agentId)
     {
         this.Client = client;
@@ -195,8 +299,64 @@ public sealed class PooledCopilotEntry : IAsyncDisposable
     /// <summary>Serialises <see cref="CopilotSession.SendAsync"/> calls.</summary>
     public SemaphoreSlim SendLock { get; }
 
+    /// <summary>
+    /// Phase 74 — diagnostic read-only view of the current reference
+    /// count. Production code never branches on this; tests use it
+    /// to pin the refcount semantics.
+    /// </summary>
+    public int RefCount
+    {
+        get { lock (this.refLock) { return this.refCount; } }
+    }
+
+    /// <summary>Phase 74 — bump the refcount on Acquire. Throws if the entry is already disposed.</summary>
+    internal void IncrementRefCount()
+    {
+        lock (this.refLock)
+        {
+            if (this.disposed)
+            {
+                throw new ObjectDisposedException(
+                    nameof(PooledCopilotEntry),
+                    $"PooledCopilotEntry for ({this.WorkItemId}, {this.AgentId}) was disposed; caller must retry to allocate a fresh entry.");
+            }
+            this.refCount++;
+        }
+    }
+
+    /// <summary>
+    /// Phase 74 — decrement the refcount on Release. Returns true
+    /// when the count has reached zero and the caller should
+    /// dispose the entry + remove it from the pool dictionary.
+    /// Idempotent under-zero (clamps to zero, returns false).
+    /// </summary>
+    internal bool DecrementRefCount()
+    {
+        lock (this.refLock)
+        {
+            if (this.disposed) return false;
+            if (this.refCount <= 0) return false;
+            this.refCount--;
+            if (this.refCount == 0)
+            {
+                this.disposed = true;
+                return true;
+            }
+            return false;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        // Phase 74 — mark disposed under the lock so a racing
+        // IncrementRefCount on the same entry sees the disposal and
+        // throws. Releases on a disposed entry are no-ops.
+        lock (this.refLock)
+        {
+            if (this.disposed) return;
+            this.disposed = true;
+        }
+
         try { await this.Session.DisposeAsync(); }
         catch { /* best-effort */ }
 

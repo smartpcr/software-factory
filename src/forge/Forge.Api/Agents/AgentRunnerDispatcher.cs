@@ -75,6 +75,32 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     /// </summary>
     private readonly ConcurrentDictionary<string, ActiveInvocation> active = new();
 
+    /// <summary>
+    /// Phase 74 — concurrent-dispatch discriminator. One invocation per
+    /// <c>taskId</c> at a time. Pre-fix, two callers (e.g. the
+    /// orchestrator's tick + a fire-and-forget retry endpoint) could
+    /// both reach <see cref="StartAsync"/> for the same <c>taskId</c>
+    /// and share the <see cref="CopilotSessionPool"/> entry; when the
+    /// first reached a terminal verdict its <c>finally</c> disposed
+    /// the shared session and the second silently hung 10 min for the
+    /// <c>generator-inactive</c> timeout. Now the second call throws
+    /// <see cref="InvalidOperationException"/> immediately; the
+    /// upstream loop persists it as a soft generator failure and
+    /// the orchestrator's next tick retries cleanly.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> liveInvocationsByTask =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Sentinel string included in the <see cref="InvalidOperationException.Message"/>
+    /// thrown by <see cref="StartAsync"/> when the concurrent-dispatch
+    /// discriminator refuses a second concurrent call. Callers
+    /// (DeliverableLoop) check for this substring to classify the
+    /// throw as a soft / transient generator failure rather than a
+    /// programming error.
+    /// </summary>
+    public const string ConcurrentDispatchRefusalSentinel = "Concurrent dispatch refused";
+
     private sealed record ActiveInvocation(string TaskId, CancellationTokenSource Cts);
 
     public AgentRunnerDispatcher(
@@ -102,7 +128,26 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         AgentContext context,
         CancellationToken ct)
     {
+        // Phase 74 — concurrent-dispatch discriminator. At most one
+        // invocation per taskId at any moment. The check + insert is
+        // atomic via ConcurrentDictionary.TryAdd; the matching remove
+        // happens inside WrapEvents' finally (whatever the exit path —
+        // pass, fail, cancel, exception).
         var invocationId = Guid.NewGuid().ToString("N");
+        if (!string.IsNullOrEmpty(taskId)
+            && !this.liveInvocationsByTask.TryAdd(taskId, invocationId))
+        {
+            var existing = this.liveInvocationsByTask.TryGetValue(taskId, out var inflightId)
+                ? inflightId
+                : "(unknown)";
+            throw new InvalidOperationException(
+                $"{ConcurrentDispatchRefusalSentinel}: taskId='{taskId}' already has live invocation='{existing}'. "
+                + "DeliverableLoop and other callers MUST serialise dispatches per workItemId. "
+                + "This throw catches the concurrent-dispatch race that pre-Phase-74 silently surfaced "
+                + "as 'generator-inactive' 10 minutes after the second caller's CopilotSessionPool entry "
+                + "was disposed by the first caller's terminal-verdict cleanup.");
+        }
+
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         this.active[invocationId] = new ActiveInvocation(taskId, linked);
         this.agentStates[agentId] = AgentState.Working;
@@ -174,6 +219,13 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 catch (ObjectDisposedException) { /* already torn down */ }
             }
         }
+
+        // Phase 74 — also clear the concurrent-dispatch discriminator
+        // slot for the task. A subsequent StartAsync(taskId=X) after
+        // CancelByTaskAsync(X) must succeed; without this, the slot
+        // would stay taken until WrapEvents' finally drained.
+        this.liveInvocationsByTask.TryRemove(taskId, out _);
+
         if (cancelled > 0)
         {
             this.log.LogInformation(
@@ -212,7 +264,27 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         finally
         {
             this.agentStates[agentId] = AgentState.Idle;
-            if (this.active.TryRemove(invocationId, out var entry)) entry.Cts.Dispose();
+            // Phase 74 — release the concurrent-dispatch discriminator
+            // entry BEFORE the ActiveInvocation map cleanup so a tight
+            // retry-after-cancel loop sees the slot free as soon as
+            // the events are drained. The ActiveInvocation map carries
+            // a different identity (invocation-id → cancellation source)
+            // and is the source of truth for CancelByTaskAsync.
+            if (this.active.TryRemove(invocationId, out var entry))
+            {
+                // Best-effort: clear the per-taskId live-invocation slot
+                // only when the slot still points at THIS invocation.
+                // Defends against the race where a follow-up StartAsync
+                // already added a new mapping (impossible today because
+                // the discriminator throws on collision, but the guard
+                // future-proofs against alternative dispatch policies).
+                if (!string.IsNullOrEmpty(entry.TaskId))
+                {
+                    this.liveInvocationsByTask.TryRemove(
+                        new KeyValuePair<string, string>(entry.TaskId, invocationId));
+                }
+                entry.Cts.Dispose();
+            }
         }
     }
 
