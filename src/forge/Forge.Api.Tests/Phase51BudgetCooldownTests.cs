@@ -33,17 +33,18 @@ using Xunit;
 /// </summary>
 public class Phase51BudgetCooldownTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, BudgetCooldownReconciler r)>
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, BudgetCooldownReconciler r)>
         SetupAsync(string workItemId, decimal? cap, decimal cumulativeCost, DateTimeOffset cooldownUntil, string[] priorPair)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot + migrations */ }
 
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed a crew with the supplied cap.
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-budget-test", Name = "Budget Test", Summary = string.Empty,
             Lead = "agent-gen", Model = "claude-sonnet-4-6",
@@ -72,7 +73,7 @@ public class Phase51BudgetCooldownTests
 
         // Seed an agent_usage row carrying the cumulative cost so the
         // reconciler's recomputation matches the seeded scenario.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = priorPair[0], CrewId = "crew-budget-test",
             TaskId = workItemId, Model = "claude-sonnet-4-6",
@@ -80,10 +81,10 @@ public class Phase51BudgetCooldownTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-30),
         });
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
-        return (f, db, reconciler);
+        return (f, control, db, reconciler);
     }
 
     [Fact]
@@ -91,7 +92,7 @@ public class Phase51BudgetCooldownTests
     {
         // Cumulative cost $0.50, cap raised to $5.00 ($0.50 < $5.00) →
         // capRaisedRecovery is true regardless of the cooldown timer.
-        var (f, db, r) = await SetupAsync(
+        var (f, control, db, r) = await SetupAsync(
             workItemId: "wi-cap-raised",
             cap: 5.00m,
             cumulativeCost: 0.50m,
@@ -133,7 +134,7 @@ public class Phase51BudgetCooldownTests
         // capRaisedRecovery is false. Cooldown timer expired (cooldownUntil
         // in the past) → cooldownElapsed is true. Reconciler resumes
         // and KEEPS LastPairAgentIdsJson set so the claim picker rotates.
-        var (f, db, r) = await SetupAsync(
+        var (f, control, db, r) = await SetupAsync(
             workItemId: "wi-cooldown-elapsed",
             cap: 1.00m,
             cumulativeCost: 5.00m,
@@ -171,7 +172,7 @@ public class Phase51BudgetCooldownTests
     {
         // Cumulative $5, cap $1 (over), cooldown still in the future. No
         // resume condition met — reconciler leaves the row alone.
-        var (f, db, r) = await SetupAsync(
+        var (f, control, db, r) = await SetupAsync(
             workItemId: "wi-still-parked",
             cap: 1.00m,
             cumulativeCost: 5.00m,
@@ -211,9 +212,10 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-legacy", Name = "Legacy", Summary = string.Empty,
             Lead = "agent-gen", Model = "claude-sonnet-4-6",
@@ -245,13 +247,13 @@ public class Phase51BudgetCooldownTests
             Iter = 11, Score = 82, Verdict = "stalled",
             DimsJson = "{}", CreatedAt = baseTime.AddMinutes(5),
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen", CrewId = "crew-legacy", TaskId = "wi-legacy-failed",
             Model = "claude-sonnet-4-6", CostUsd = 1.20m, CostCategory = "generator",
             StartedAt = baseTime,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var r = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         try
@@ -287,9 +289,10 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-legacy-low", Name = "Legacy Low", Summary = string.Empty,
             Lead = "agent-gen", Model = "claude-sonnet-4-6",
@@ -308,13 +311,13 @@ public class Phase51BudgetCooldownTests
             Iter = 10, Score = 80, Verdict = "stalled-budget",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen", CrewId = "crew-legacy-low", TaskId = "wi-legacy-low",
             Model = "claude-sonnet-4-6", CostUsd = 1.20m, CostCategory = "generator",
             StartedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var r = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         try
@@ -344,7 +347,7 @@ public class Phase51BudgetCooldownTests
     [Fact]
     public async Task CooldownElapsed_Resets_Budget_Window()
     {
-        var (f, db, r) = await SetupAsync(
+        var (f, control, db, r) = await SetupAsync(
             workItemId: "wi-window-reset",
             cap: 1.00m,
             cumulativeCost: 5.00m, // way over the $1 cap
@@ -361,7 +364,7 @@ public class Phase51BudgetCooldownTests
             Assert.NotNull(wi.BudgetWindowStartUtc); // ← window now set
             // The ledger row is preserved (lifetime spend stays for
             // salary roll-ups); only the meter is windowed at read time.
-            var ledgerCount = await db.AgentUsage.AsNoTracking()
+            var ledgerCount = await control.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == "wi-window-reset")
                 .CountAsync();
             Assert.Equal(1, ledgerCount);
@@ -383,11 +386,12 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var windowStart = DateTimeOffset.UtcNow.AddMinutes(-1);
 
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-win", Name = "Window", Summary = string.Empty,
             Lead = "agent-gen", Model = "claude-sonnet-4-6",
@@ -410,13 +414,13 @@ public class Phase51BudgetCooldownTests
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
         // Pre-window spend $5 (BEFORE windowStart) — should be ignored.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen", CrewId = "crew-win", TaskId = "wi-win",
             Model = "claude-sonnet-4-6", CostUsd = 5.00m, CostCategory = "generator",
             StartedAt = windowStart.AddMinutes(-10),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var r = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         try
@@ -444,9 +448,10 @@ public class Phase51BudgetCooldownTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-nbg", Name = "Not Budget", Summary = string.Empty,
             Lead = "agent-gen", Model = "claude-sonnet-4-6",
@@ -465,7 +470,7 @@ public class Phase51BudgetCooldownTests
             Iter = 1, Score = 50, Verdict = "reject",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var r = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         try

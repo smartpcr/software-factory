@@ -104,7 +104,7 @@ public sealed class AgentMemoryReaper : BackgroundService
         var totalDeleted = 0;
         var lockObj = new object();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
             // SQLite EF cannot reliably translate DateTimeOffset comparisons
             // (TEXT-stored ISO 8601 mostly orders correctly, but mixed-nullable

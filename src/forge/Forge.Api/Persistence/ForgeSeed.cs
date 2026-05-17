@@ -29,53 +29,53 @@ public static class ForgeSeed
     /// Does NOT seed prototype cards/PRs/workstreams (that path lives in
     /// <see cref="EnsureSeededAsync"/> and is gated on empty epics).
     /// </summary>
-    public static async Task EnsureCrewCatalogAsync(ProductDbContext db)
+    public static async Task EnsureCrewCatalogAsync(ControlDbContext control, ProductDbContext db)
     {
-        await EnsureSeedCrewsAsync(db);
-        await EnsureSeedAgentsAsync(db);
-        await EnsureRosterBackfillAsync(db);
+        await EnsureSeedCrewsAsync(control, db);
+        await EnsureSeedAgentsAsync(control, db);
+        await EnsureRosterBackfillAsync(control, db);
     }
 
-    public static async Task EnsureSeededAsync(ProductDbContext db)
+    public static async Task EnsureSeededAsync(ControlDbContext control, ProductDbContext db)
     {
         // Phase 8.3 — products / repos seed runs independently of the prototype
         // sample data so older DBs that already have epics still get a default
         // product + repo, and existing cards/workstreams/prs get repo_id backfilled.
-        await EnsureDefaultProductAndRepoAsync(db);
-        await BackfillRepoIdAsync(db);
+        await EnsureDefaultProductAndRepoAsync(control, db);
+        await BackfillRepoIdAsync(control, db);
 
         // Phase 10.6 — crew seed runs independently too so existing DBs
         // pick up the four crews on next boot.
-        await EnsureSeedCrewsAsync(db);
+        await EnsureSeedCrewsAsync(control, db);
 
         // Phase 11.3 — first-class agent rows. Idempotent.
-        await EnsureSeedAgentsAsync(db);
+        await EnsureSeedAgentsAsync(control, db);
 
         // Phase 18 — split half of each team's agents to its night sibling
         // crew. Runs every boot; rebalances if the current split is uneven.
-        await EnsureNightShiftSplitAsync(db);
+        await EnsureNightShiftSplitAsync(control, db);
 
         // Phase 19 — ensure every agent with a crew assignment has a
         // CrewMemberRow entry (the formal roster). Leads are tracked via
         // CrewRow.Lead and are excluded to avoid double-counting.
-        await EnsureRosterBackfillAsync(db);
+        await EnsureRosterBackfillAsync(control, db);
 
         if (!await db.Epics.AnyAsync())
         {
-            await SeedPrototypeDataAsync(db);
+            await SeedPrototypeDataAsync(control, db);
         }
 
         // Phase 13 — rename the prototype's mocked agents (Forge/Rivet/Anvil/
         // Cortex/Lattice/Atlas/Mercer) to the Ne Zha character crew. Runs every
         // boot but is a no-op once the DB rows already carry the new names, so
         // existing data (synced ADO work items, audit history) is preserved.
-        await RenameMockedAgentsAsync(db);
+        await RenameMockedAgentsAsync(control, db);
 
         // Phase 12.2 — backfill work_items from existing cards. Idempotent.
         // Runs after the prototype-data seed so first-boot picks up the 23
         // default cards; subsequent boots no-op because every id already
         // exists in work_items.
-        await BackfillWorkItemsFromCardsAsync(db);
+        await BackfillWorkItemsFromCardsAsync(control, db);
     }
 
     /// <summary>
@@ -85,7 +85,7 @@ public static class ForgeSeed
     /// character from src/forge/Forge.UI/src/crew.ts. Idempotent: each
     /// replacement only runs when the *old* string is still present.
     /// </summary>
-    private static async Task RenameMockedAgentsAsync(ProductDbContext db)
+    private static async Task RenameMockedAgentsAsync(ControlDbContext control, ProductDbContext db)
     {
         var renames = new Dictionary<string, string>
         {
@@ -160,7 +160,7 @@ public static class ForgeSeed
     /// Original Phase-0 prototype seed extracted into its own method so the
     /// Phase 12 backfill can run reliably after it on first boot.
     /// </summary>
-    private static async Task SeedPrototypeDataAsync(ProductDbContext db)
+    private static async Task SeedPrototypeDataAsync(ControlDbContext control, ProductDbContext db)
     {
 
         var serializerOpts = new JsonSerializerOptions
@@ -314,7 +314,7 @@ public static class ForgeSeed
         foreach (var w in workstreams) w.RepoId = DefaultRepoId;
         foreach (var p in prs) p.RepoId = DefaultRepoId;
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -322,13 +322,13 @@ public static class ForgeSeed
     /// <c>atlas-platform</c> repo if they don't yet exist. Used both by the
     /// boot path and by Phase 8.3 backfill against pre-existing dev DBs.
     /// </summary>
-    public static async Task EnsureDefaultProductAndRepoAsync(ProductDbContext db)
+    public static async Task EnsureDefaultProductAndRepoAsync(ControlDbContext control, ProductDbContext db)
     {
         var changed = false;
 
-        if (!await db.Products.AnyAsync(p => p.Id == DefaultProductId))
+        if (!await control.Products.AnyAsync(p => p.Id == DefaultProductId))
         {
-            db.Products.Add(new ProductRow
+            control.Products.Add(new ProductRow
             {
                 Id = DefaultProductId,
                 Sort = 0,
@@ -341,9 +341,9 @@ public static class ForgeSeed
             changed = true;
         }
 
-        if (!await db.Repos.AnyAsync(r => r.Id == DefaultRepoId))
+        if (!await control.Repos.AnyAsync(r => r.Id == DefaultRepoId))
         {
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = DefaultRepoId,
                 Sort = 0,
@@ -359,7 +359,7 @@ public static class ForgeSeed
             changed = true;
         }
 
-        if (changed) await db.SaveChangesAsync();
+        if (changed) await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -378,9 +378,9 @@ public static class ForgeSeed
     /// prefix (E* → engineering, R* → review, A* → architecture, Q* → qa).
     /// Idempotent on agent id.
     /// </summary>
-    private static async Task EnsureSeedAgentsAsync(ProductDbContext db)
+    private static async Task EnsureSeedAgentsAsync(ControlDbContext control, ProductDbContext db)
     {
-        var existing = await db.Agents.ToListAsync();
+        var existing = await control.Agents.ToListAsync();
         var existingIds = existing.Select(a => a.Id).ToHashSet();
 
         // Phase 13 — every crew member is sourced from agents/allocation.json.
@@ -436,7 +436,7 @@ public static class ForgeSeed
             }
             else
             {
-                db.Agents.Add(new AgentRow
+                control.Agents.Add(new AgentRow
                 {
                     Id = proto,
                     Sort = sort++,
@@ -465,7 +465,7 @@ public static class ForgeSeed
                 if (string.IsNullOrEmpty(row.CrewId)) row.CrewId = CrewIdFor(entry.CrewRole);
                 continue;
             }
-            db.Agents.Add(new AgentRow
+            control.Agents.Add(new AgentRow
             {
                 Id = entry.Id,
                 Sort = sort++,
@@ -477,7 +477,7 @@ public static class ForgeSeed
                 SoulPath = SoulFor(entry.Id),
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -584,7 +584,7 @@ public static class ForgeSeed
         return null;
     }
 
-    private static async Task EnsureSeedCrewsAsync(ProductDbContext db)
+    private static async Task EnsureSeedCrewsAsync(ControlDbContext control, ProductDbContext db)
     {
         // Canonical model + quotas for all crews. Pricing/quota fields are
         // owned by EnsureStartupConfigAsync (which re-asserts them on every
@@ -618,7 +618,7 @@ public static class ForgeSeed
         };
 
         var specIds = spec.Select(s => s.Id).ToList();
-        var existing = await db.Crews
+        var existing = await control.Crews
             .Where(c => specIds.Contains(c.Id))
             .ToListAsync();
         var byId = existing.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
@@ -640,7 +640,7 @@ public static class ForgeSeed
             }
             else
             {
-                db.Crews.Add(new CrewRow
+                control.Crews.Add(new CrewRow
                 {
                     Id = s.Id,
                     Sort = s.Sort,
@@ -663,7 +663,7 @@ public static class ForgeSeed
                 changed = true;
             }
         }
-        if (changed) await db.SaveChangesAsync();
+        if (changed) await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -677,7 +677,7 @@ public static class ForgeSeed
     /// initial split runs. On existing DBs with an uneven legacy split,
     /// the method rebalances until the difference is ≤ 1.
     /// </summary>
-    private static async Task EnsureNightShiftSplitAsync(ProductDbContext db)
+    private static async Task EnsureNightShiftSplitAsync(ControlDbContext control, ProductDbContext db)
     {
         var pairs = new (string Day, string Night)[]
         {
@@ -691,14 +691,14 @@ public static class ForgeSeed
 
         foreach (var (dayId, nightId) in pairs)
         {
-            var nightCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == nightId);
+            var nightCrew = await control.Crews.FirstOrDefaultAsync(c => c.Id == nightId);
             if (nightCrew is null) continue;
 
-            var dayCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == dayId);
+            var dayCrew = await control.Crews.FirstOrDefaultAsync(c => c.Id == dayId);
             var dayLeadId = dayCrew?.Lead;
 
             // Gather ALL agents for this team (both shifts).
-            var teamAgents = await db.Agents
+            var teamAgents = await control.Agents
                 .Where(a => a.CrewId == dayId || a.CrewId == nightId)
                 .OrderBy(a => a.Id)
                 .ToListAsync();
@@ -739,7 +739,7 @@ public static class ForgeSeed
             changed = true;
         }
 
-        if (changed) await db.SaveChangesAsync();
+        if (changed) await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -756,16 +756,16 @@ public static class ForgeSeed
     /// Idempotent: existing roster entries are preserved; only missing
     /// rows are added.
     /// </summary>
-    private static async Task EnsureRosterBackfillAsync(ProductDbContext db)
+    private static async Task EnsureRosterBackfillAsync(ControlDbContext control, ProductDbContext db)
     {
-        var crews = await db.Crews.ToListAsync();
+        var crews = await control.Crews.ToListAsync();
         var leadByCrewId = crews
             .Where(c => !string.IsNullOrEmpty(c.Lead))
             .ToDictionary(c => c.Id, c => c.Lead!, StringComparer.OrdinalIgnoreCase);
 
         // Reconcile lead/CrewId mismatches: ensure each crew's lead
         // agent has CrewId pointing at the crew they lead.
-        var allAgents = await db.Agents.ToListAsync();
+        var allAgents = await control.Agents.ToListAsync();
         var agentsById = allAgents.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
         foreach (var (crewId, leadId) in leadByCrewId)
         {
@@ -777,7 +777,7 @@ public static class ForgeSeed
         }
 
         // Build set of (crewId → leadId) so we skip leads in roster entries.
-        var existingMembers = await db.CrewMembers.ToListAsync();
+        var existingMembers = await control.CrewMembers.ToListAsync();
         var existingPairs = new HashSet<(string, string)>(
             existingMembers.Select(m => (m.CrewId.ToUpperInvariant(), m.AgentId.ToUpperInvariant())));
 
@@ -817,7 +817,7 @@ public static class ForgeSeed
             var role = idx % 2 == 0 ? "generator" : "evaluator";
             crewIndex[crewId] = idx + 1;
 
-            db.CrewMembers.Add(new CrewMemberRow
+            control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = crewId,
                 AgentId = agent.Id,
@@ -827,7 +827,7 @@ public static class ForgeSeed
             added = true;
         }
 
-        if (added) await db.SaveChangesAsync();
+        if (added) await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -835,7 +835,7 @@ public static class ForgeSeed
     /// <c>RepoId</c> are pinned to the default repo. Phase 8.2's migration
     /// adds the column nullable; Phase 8.3 fills it in.
     /// </summary>
-    private static async Task BackfillRepoIdAsync(ProductDbContext db)
+    private static async Task BackfillRepoIdAsync(ControlDbContext control, ProductDbContext db)
     {
         var changed = false;
         await foreach (var c in db.Cards.Where(c => c.RepoId == null).AsAsyncEnumerable())
@@ -853,7 +853,7 @@ public static class ForgeSeed
             p.RepoId = DefaultRepoId;
             changed = true;
         }
-        if (changed) await db.SaveChangesAsync();
+        if (changed) await control.SaveChangesAsync();
     }
 
     /// <summary>
@@ -864,7 +864,7 @@ public static class ForgeSeed
     /// through /api/work-items; a follow-up batch rewires /api/cards as a
     /// projection over <c>work_items</c>.
     /// </summary>
-    private static async Task BackfillWorkItemsFromCardsAsync(ProductDbContext db)
+    private static async Task BackfillWorkItemsFromCardsAsync(ControlDbContext control, ProductDbContext db)
     {
         var existingIds = await db.WorkItems.Select(w => w.Id).ToListAsync();
         var existing = new HashSet<string>(existingIds);
@@ -922,13 +922,13 @@ public static class ForgeSeed
             });
             added++;
         }
-        if (added > 0) await db.SaveChangesAsync();
+        if (added > 0) await control.SaveChangesAsync();
 
         // One-shot fix-up for rows that were backfilled with the legacy
         // Card.Agent shape (`{ id, role, name }`). The WorkItemAssignee
         // contract uses `{ kind, id, displayName, initials }`, so the legacy
         // rows surface a null displayName in the UI and crash sort/select.
-        await RepairLegacyAssigneeShapeAsync(db);
+        await RepairLegacyAssigneeShapeAsync(control, db);
     }
 
     /// <summary>
@@ -987,7 +987,7 @@ public static class ForgeSeed
     /// rewrite it as the Phase 12 WorkItemAssignee shape. Skips rows that
     /// already carry <c>displayName</c>.
     /// </summary>
-    private static async Task RepairLegacyAssigneeShapeAsync(ProductDbContext db)
+    private static async Task RepairLegacyAssigneeShapeAsync(ControlDbContext control, ProductDbContext db)
     {
         var rows = await db.WorkItems
             .Where(w => w.AssignedToJson != null && w.AssignedToJson != "")
@@ -1009,7 +1009,7 @@ public static class ForgeSeed
                 changed++;
             }
         }
-        if (changed > 0) await db.SaveChangesAsync();
+        if (changed > 0) await control.SaveChangesAsync();
     }
 
     private static string MakeInitials(string display, string? fallback)
@@ -1040,7 +1040,7 @@ public static class ForgeSeed
     /// Idempotent: writing the same values is a no-op at the SQLite layer;
     /// roster additions only happen when the guarantee is unmet.
     /// </summary>
-    public static async Task EnsureStartupConfigAsync(ProductDbContext db, ILogger? logger = null, ForgeBackendPolicy? backendPolicy = null)
+    public static async Task EnsureStartupConfigAsync(ControlDbContext control, ProductDbContext db, ILogger? logger = null, ForgeBackendPolicy? backendPolicy = null)
     {
         // ── 1. Canonical crew ids we manage. ────────────────────────────
         var canonicalIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1062,7 +1062,7 @@ public static class ForgeSeed
             policy.Canonical, policy.CanonicalInvokeMode,
             string.Join(",", policy.AllowedBackends), string.Join(",", policy.AllowedInvokeModes));
 
-        var crews = await db.Crews.Where(c => canonicalIds.Contains(c.Id)).ToListAsync();
+        var crews = await control.Crews.Where(c => canonicalIds.Contains(c.Id)).ToListAsync();
 
         // ── 2. Enforce model + quotas. ──────────────────────────────────
         const string runtimeModel  = "claude-opus-4.6-1m";
@@ -1121,7 +1121,7 @@ public static class ForgeSeed
         //        route through that backend. Model overrides on the agent
         //        row are intentionally untouched — those are about which
         //        model an agent runs, not which billing rail.
-        var agentsToHeal = await db.Agents
+        var agentsToHeal = await control.Agents
             .Where(a =>
                 (a.Backend != null && a.Backend != "")
                 || (a.InvokeMode != null && a.InvokeMode != ""))
@@ -1150,20 +1150,20 @@ public static class ForgeSeed
 
         // Persist the seed pass before the post-condition check so an
         // assert failure isn't caused by un-saved local edits.
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync();
 
         // ── 2c. Hard post-condition. After the self-heal above, every
         //        canonical crew must equal the policy and no agent override
         //        may sit outside the allow-lists. If something still does,
         //        refuse to boot — silent drift is exactly what cost $33k
         //        on 2026-05-09.
-        var stillBadCrews = await db.Crews.AsNoTracking()
+        var stillBadCrews = await control.Crews.AsNoTracking()
             .Where(c => canonicalIds.Contains(c.Id)
                 && ((c.Backend ?? string.Empty) != policy.Canonical
                     || (c.InvokeMode ?? string.Empty) != policy.CanonicalInvokeMode))
             .Select(c => new { c.Id, c.Backend, c.InvokeMode })
             .ToListAsync();
-        var allAgentOverrides = await db.Agents.AsNoTracking()
+        var allAgentOverrides = await control.Agents.AsNoTracking()
             .Where(a => (a.Backend != null && a.Backend != "") || (a.InvokeMode != null && a.InvokeMode != ""))
             .Select(a => new { a.Id, a.Backend, a.InvokeMode })
             .ToListAsync();
@@ -1193,7 +1193,7 @@ public static class ForgeSeed
             .Where(c => !string.IsNullOrEmpty(c.Lead))
             .Select(c => c.Lead!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var allMemberships = await db.CrewMembers.ToListAsync();
+        var allMemberships = await control.CrewMembers.ToListAsync();
         var rosterAgentIds = allMemberships.Select(m => m.AgentId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Globally claimed = anyone who is a lead OR a roster member of any crew.
         var globallyClaimedIds = new HashSet<string>(allLeads, StringComparer.OrdinalIgnoreCase);
@@ -1227,7 +1227,7 @@ public static class ForgeSeed
             ("crew-qa",   "crew-qa-night"),
         };
 
-        var allAgents = await db.Agents.OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync();
+        var allAgents = await control.Agents.OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync();
 
         foreach (var (dayId, nightId) in dayNightPairs)
         {
@@ -1287,7 +1287,7 @@ public static class ForgeSeed
                 // Add as roster member.
                 var idx = allMemberships.Count(m => m.CrewId == target.Id);
                 var role = idx % 2 == 0 ? "generator" : "evaluator";
-                db.CrewMembers.Add(new CrewMemberRow
+                control.CrewMembers.Add(new CrewMemberRow
                 {
                     CrewId = target.Id,
                     AgentId = agent.Id,
@@ -1303,14 +1303,14 @@ public static class ForgeSeed
             }
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync();
     }
 
     /// <summary>
     /// One-time scrub of test fixture rows that leaked into the prod DB
     /// before <c>ForgeWebApplicationFactory</c>'s in-memory config tripwire
     /// landed (the factory used to race on a global env var, so any test
-    /// class calling <c>db.Crews.Add(new CrewRow {...})</c> wrote into
+    /// class calling <c>control.Crews.Add(new CrewRow {...})</c> wrote into
     /// <c>E:\forge\forge.db</c>).
     ///
     /// <para>
@@ -1334,7 +1334,7 @@ public static class ForgeSeed
     /// rows that would be touched; pass false to actually delete.
     /// </para>
     /// </summary>
-    public static async Task<ScrubReport> ScrubTestArtifactsAsync(ProductDbContext db, bool dryRun, ILogger? logger = null)
+    public static async Task<ScrubReport> ScrubTestArtifactsAsync(ControlDbContext control, ProductDbContext db, bool dryRun, ILogger? logger = null)
     {
         var canonicalCrewIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -1355,39 +1355,39 @@ public static class ForgeSeed
         var report = new ScrubReport();
 
         // ── crew_members: any row referencing a non-canonical crew or agent.
-        var staleMembers = await db.CrewMembers
+        var staleMembers = await control.CrewMembers
             .Where(m => !canonicalCrewIds.Contains(m.CrewId) || !canonicalAgentIds.Contains(m.AgentId))
             .ToListAsync();
         report.CrewMembersDeleted = staleMembers.Count;
-        if (!dryRun) db.CrewMembers.RemoveRange(staleMembers);
+        if (!dryRun) control.CrewMembers.RemoveRange(staleMembers);
 
         // ── crew_history: rows for non-canonical crews.
-        var staleHistory = await db.CrewHistory
+        var staleHistory = await control.CrewHistory
             .Where(h => !canonicalCrewIds.Contains(h.CrewId))
             .ToListAsync();
         report.CrewHistoryDeleted = staleHistory.Count;
-        if (!dryRun) db.CrewHistory.RemoveRange(staleHistory);
+        if (!dryRun) control.CrewHistory.RemoveRange(staleHistory);
 
         // ── agent_history: rows for non-canonical agents.
-        var staleAgentHistory = await db.AgentHistory
+        var staleAgentHistory = await control.AgentHistory
             .Where(h => !canonicalAgentIds.Contains(h.AgentId))
             .ToListAsync();
         report.AgentHistoryDeleted = staleAgentHistory.Count;
-        if (!dryRun) db.AgentHistory.RemoveRange(staleAgentHistory);
+        if (!dryRun) control.AgentHistory.RemoveRange(staleAgentHistory);
 
         // ── agent_usage: cost-ledger rows for non-canonical crew or agent.
-        var staleUsage = await db.AgentUsage
+        var staleUsage = await control.AgentUsage
             .Where(u => !canonicalCrewIds.Contains(u.CrewId) || !canonicalAgentIds.Contains(u.AgentId))
             .ToListAsync();
         report.AgentUsageDeleted = staleUsage.Count;
-        if (!dryRun) db.AgentUsage.RemoveRange(staleUsage);
+        if (!dryRun) control.AgentUsage.RemoveRange(staleUsage);
 
         // ── agent_level_history: rows for non-canonical agents.
-        var staleLevels = await db.AgentLevelHistory
+        var staleLevels = await control.AgentLevelHistory
             .Where(h => !canonicalAgentIds.Contains(h.AgentId))
             .ToListAsync();
         report.AgentLevelHistoryDeleted = staleLevels.Count;
-        if (!dryRun) db.AgentLevelHistory.RemoveRange(staleLevels);
+        if (!dryRun) control.AgentLevelHistory.RemoveRange(staleLevels);
 
         // ── deliverables: rows for non-canonical crew or any participant agent.
         var staleDeliverables = await db.Deliverables
@@ -1430,22 +1430,22 @@ public static class ForgeSeed
 
         // ── agents: delete non-canonical rows. Done AFTER agent_history /
         // agent_usage / agent_level_history removal so no FK-style orphans.
-        var staleAgents = await db.Agents
+        var staleAgents = await control.Agents
             .Where(a => !canonicalAgentIds.Contains(a.Id))
             .ToListAsync();
         report.AgentsDeleted = staleAgents.Count;
         report.AgentIdsDeleted = staleAgents.Select(a => a.Id).OrderBy(s => s).ToList();
-        if (!dryRun) db.Agents.RemoveRange(staleAgents);
+        if (!dryRun) control.Agents.RemoveRange(staleAgents);
 
         // ── crews: delete non-canonical rows last.
-        var staleCrews = await db.Crews
+        var staleCrews = await control.Crews
             .Where(c => !canonicalCrewIds.Contains(c.Id))
             .ToListAsync();
         report.CrewsDeleted = staleCrews.Count;
         report.CrewIdsDeleted = staleCrews.Select(c => c.Id).OrderBy(s => s).ToList();
-        if (!dryRun) db.Crews.RemoveRange(staleCrews);
+        if (!dryRun) control.Crews.RemoveRange(staleCrews);
 
-        if (!dryRun) await db.SaveChangesAsync();
+        if (!dryRun) await control.SaveChangesAsync();
 
         logger?.LogInformation(
             "Scrub {Mode}: crews={Crews} agents={Agents} crew_members={Members} crew_history={History} agent_history={AgentHistory} agent_usage={Usage} agent_level_history={Levels} deliverables={Deliverables} task_queue.routed_nulled={Routed} task_queue.preferred_nulled={Preferred} agent_assignments.crew_nulled={Assignments}",
@@ -1497,6 +1497,7 @@ public static class ForgeSeedSpawnScrub
     /// </para>
     /// </summary>
     public static async Task<SpawnScrubReport> ScrubMockedSpawnsAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IReadOnlyCollection<string> keepSpawnIds,
         IReadOnlyCollection<string> keepWorkstreamIds,
@@ -1541,7 +1542,7 @@ public static class ForgeSeedSpawnScrub
             db.WorkstreamDeps.RemoveRange(staleDeps);
             db.Workstreams.RemoveRange(staleWs);
             db.StorySpawns.RemoveRange(staleSpawns);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync();
         }
 
         logger?.LogInformation(

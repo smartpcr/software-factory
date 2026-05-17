@@ -160,6 +160,7 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.StorySpawns.Add(new StorySpawnRow
@@ -173,9 +174,9 @@ public class Phase53PlanDocSequentialTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var result = await PlanDocStateHelpers.FindByPrIdAsync(db, "pr-legacy-42", default);
+        var result = await PlanDocStateHelpers.FindByPrIdAsync(control, db, "pr-legacy-42", default);
         Assert.NotNull(result);
         Assert.Equal("spawn-legacy", result!.Value.Spawn.Id);
         Assert.Null(result.Value.DocKey);
@@ -187,6 +188,7 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var spawn = new StorySpawnRow
@@ -204,9 +206,9 @@ public class Phase53PlanDocSequentialTests
             new PlanDocPrEntry("tech-spec", "story/story-seq/plan-tech-spec", "pr-tech-8"),
         });
         db.StorySpawns.Add(spawn);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var result = await PlanDocStateHelpers.FindByPrIdAsync(db, "pr-tech-8", default);
+        var result = await PlanDocStateHelpers.FindByPrIdAsync(control, db, "pr-tech-8", default);
         Assert.NotNull(result);
         Assert.Equal("spawn-seq", result!.Value.Spawn.Id);
         Assert.Equal("tech-spec", result.Value.DocKey);
@@ -218,8 +220,9 @@ public class Phase53PlanDocSequentialTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        Assert.Null(await PlanDocStateHelpers.FindByPrIdAsync(db, "pr-nope", default));
+        Assert.Null(await PlanDocStateHelpers.FindByPrIdAsync(control, db, "pr-nope", default));
     }
 
     // ── Endpoint contract tests ─────────────────────────────────────────────
@@ -234,6 +237,7 @@ public class Phase53PlanDocSequentialTests
         // Seed story.
         using (var seedScope = f.Services.CreateScope())
         {
+            var control_sdb = seedScope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var sdb = seedScope.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
@@ -248,6 +252,7 @@ public class Phase53PlanDocSequentialTests
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == "WI-P53-A");
         Assert.True(PlanDocStateHelpers.IsSequentialMode(spawn),
@@ -265,6 +270,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control_sdb = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
@@ -316,6 +322,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control_sdb = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {
@@ -380,6 +387,7 @@ public class Phase53PlanDocSequentialTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control_sdb = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var sdb = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             sdb.WorkItems.Add(new WorkItemRow
             {

@@ -57,6 +57,7 @@ public static class AgentAssignmentsEndpoints
 
     private static async Task<IResult> GetAssignedAgent(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -84,6 +85,7 @@ public static class AgentAssignmentsEndpoints
     private static async Task<IResult> GetAssignmentHistory(
         string id,
         [FromQuery] int? limit,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -119,6 +121,7 @@ public static class AgentAssignmentsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PostAssignmentRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -135,7 +138,7 @@ public static class AgentAssignmentsEndpoints
         if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
 
         // Validate agent IDs exist.
-        var allAgents = await db.Agents.AsNoTracking()
+        var allAgents = await control.Agents.AsNoTracking()
             .Select(a => a.Id)
             .ToListAsync(ct);
         var unknown = req.Agents.Where(a => !allAgents.Contains(a)).ToList();
@@ -188,6 +191,7 @@ public static class AgentAssignmentsEndpoints
     private static async Task<IResult> DeleteAssignedAgent(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {

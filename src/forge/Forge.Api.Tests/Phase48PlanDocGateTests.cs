@@ -38,13 +38,14 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
-        await db.SaveChangesAsync();
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Plan);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, nonPassed) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.False(allPassed);
         // Every doc is unpassed since none have deliverables.
@@ -61,19 +62,20 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Plan);
 
         // Three docs at pass, one at iterate (mid-iteration).
-        AddDeliverable(db, $"plan-doc:{SpawnId}:tech-spec.md", iter: 3, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 7, verdict: "iterate");
-        await db.SaveChangesAsync();
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:tech-spec.md", iter: 3, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 7, verdict: "iterate");
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, nonPassed) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.False(allPassed);
         Assert.Single(nonPassed);
@@ -86,18 +88,19 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Implement);
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Implement);
 
-        AddDeliverable(db, $"plan-doc:{SpawnId}:tech-spec.md", iter: 5, verdict: "stalled");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
-        await db.SaveChangesAsync();
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:tech-spec.md", iter: 5, verdict: "stalled");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, nonPassed) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.False(allPassed);
         Assert.Equal(new[] { "tech-spec" }, nonPassed);
@@ -109,17 +112,18 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Plan);
         foreach (var fileName in PlanDocFileNames)
         {
-            AddDeliverable(db, $"plan-doc:{SpawnId}:{fileName}", iter: 3, verdict: "pass");
+            AddDeliverable(control, db, $"plan-doc:{SpawnId}:{fileName}", iter: 3, verdict: "pass");
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, nonPassed) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.True(allPassed);
         Assert.Empty(nonPassed);
@@ -138,25 +142,26 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Plan);
         var docId = $"plan-doc:{SpawnId}:tech-spec.md";
 
         // Earlier iter with verdict=stalled.
-        AddDeliverable(db, docId, iter: 5, verdict: "stalled",
+        AddDeliverable(control, db, docId, iter: 5, verdict: "stalled",
             createdAt: DateTimeOffset.UtcNow.AddMinutes(-30));
         // Later iter with verdict=iterate (still in progress).
-        AddDeliverable(db, docId, iter: 6, verdict: "iterate",
+        AddDeliverable(control, db, docId, iter: 6, verdict: "iterate",
             createdAt: DateTimeOffset.UtcNow.AddMinutes(-1));
         // Other docs all pass.
-        AddDeliverable(db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
-        await db.SaveChangesAsync();
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, nonPassed) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.False(allPassed);
         Assert.Equal(new[] { "tech-spec" }, nonPassed);
@@ -172,27 +177,28 @@ public class Phase48PlanDocGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var spawn = SeedSpawn(db, StorySpawnPhases.Plan);
+        var spawn = SeedSpawn(control, db, StorySpawnPhases.Plan);
         var docId = $"plan-doc:{SpawnId}:tech-spec.md";
 
         // Score below 90 but verdict overridden to 'pass' by ACCEPT.
-        AddDeliverable(db, docId, iter: 5, verdict: "pass", score: 84);
-        AddDeliverable(db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
-        AddDeliverable(db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
-        await db.SaveChangesAsync();
+        AddDeliverable(control, db, docId, iter: 5, verdict: "pass", score: 84);
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:architecture.md", iter: 4, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:implementation-plan.md", iter: 5, verdict: "pass");
+        AddDeliverable(control, db, $"plan-doc:{SpawnId}:e2e-scenarios.md", iter: 4, verdict: "pass");
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (allPassed, _) =
-            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(db, spawn, default);
+            await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
         Assert.True(allPassed);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private static StorySpawnRow SeedSpawn(ProductDbContext db, string phase)
+    private static StorySpawnRow SeedSpawn(ControlDbContext control, ProductDbContext db, string phase)
     {
         var spawn = new StorySpawnRow
         {
@@ -210,7 +216,7 @@ public class Phase48PlanDocGateTests
     }
 
     private static void AddDeliverable(
-        ProductDbContext db, string workItemId, int iter, string verdict,
+        ControlDbContext control, ProductDbContext db, string workItemId, int iter, string verdict,
         int score = 0, DateTimeOffset? createdAt = null)
     {
         db.Deliverables.Add(new DeliverableRow

@@ -48,12 +48,13 @@ public class Phase56GateRecoveryTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
@@ -64,8 +65,8 @@ public class Phase56GateRecoveryTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     /// <summary>
@@ -77,7 +78,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_NullReturn_AcceptsPass()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-null");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-null");
         try
         {
             var validatorCalls = 0;
@@ -111,7 +112,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_NonEmptyReturn_DemotesPassToIterate()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-demote");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-demote");
         try
         {
             // Iter 1: evaluator says 95 (pass) → validator rejects.
@@ -158,7 +159,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_RejectionFlowsIntoPriorChain()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-chain");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-chain");
         try
         {
             const string rejectionText = "POST-PASS QUALITY GATE REJECTED PASS (recovery attempt 1/3)";
@@ -206,7 +207,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_Throws_PropagatesException()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-throw");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-throw");
         try
         {
             var thrown = new BuildFailedException("Recovery exhausted")
@@ -268,7 +269,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_GenericThrow_AlsoDemotes()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-generic");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-generic");
         try
         {
             var req = new DeliverableLoopRequest(
@@ -304,7 +305,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_PermanentReject_HitsLoopIterCap()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-cap");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-cap");
         try
         {
             const string rejectionText = "POST-PASS GATE REJECTED PASS";
@@ -342,7 +343,7 @@ public class Phase56GateRecoveryTests
     [Fact]
     public async Task PassValidator_WhitespaceReturn_AcceptsPass()
     {
-        var (f, db, loop) = await SetupAsync("wi-validator-ws");
+        var (f, control, db, loop) = await SetupAsync("wi-validator-ws");
         try
         {
             var req = new DeliverableLoopRequest(

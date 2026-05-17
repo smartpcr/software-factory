@@ -153,15 +153,16 @@ public class SettingsAndCrewsTests
 
         // Insert a non-PO user via the DB to simulate a populated install.
         var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
-        db.Users.Add(new Forge.Api.Persistence.UserRow
+        control.Users.Add(new Forge.Api.Persistence.UserRow
         {
             Id = "u1",
             DisplayName = "Existing user",
             Email = "owner@forge.local",
             Role = "human",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync();
 
         client.DefaultRequestHeaders.Add("X-Forge-User", "owner@forge.local");
         var resp = await client.PostAsJsonAsync(

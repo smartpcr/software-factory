@@ -86,9 +86,10 @@ public class SystemPromptSoulTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == "A1");
+        var agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == "A1");
         Assert.NotNull(agent);
         Assert.False(string.IsNullOrEmpty(agent!.SoulPath), "Agent A1 should have a SoulPath set by seed.");
     }
@@ -98,11 +99,12 @@ public class SystemPromptSoulTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Check several seeded agents — their SoulPath (or fallback) should point
         // to an existing soul.md file when running in the repo tree.
-        var agents = await db.Agents.AsNoTracking()
+        var agents = await control.Agents.AsNoTracking()
             .Where(a => a.SoulPath != null && a.SoulPath != "")
             .Take(5)
             .ToListAsync();
@@ -148,10 +150,11 @@ public class SystemPromptSoulTests
         {
             using (var scope = factory.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var row = await db.Agents.FirstAsync(a => a.Id == "E4");
+                var row = await control.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = soulFile;
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using var client = factory.CreateClient();

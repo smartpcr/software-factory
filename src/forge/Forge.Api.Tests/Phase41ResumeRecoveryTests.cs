@@ -78,6 +78,7 @@ public class Phase41ResumeRecoveryTests
         await WaitForAsync(TimeSpan.FromSeconds(2), () =>
         {
             using var scope = f.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = db.StorySpawns.AsNoTracking().FirstOrDefault(s => s.Id == spawnId);
             return string.IsNullOrEmpty(row?.ResumePendingJson);
@@ -85,6 +86,7 @@ public class Phase41ResumeRecoveryTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == spawnId);
             Assert.True(string.IsNullOrEmpty(row.ResumePendingJson),
@@ -114,10 +116,11 @@ public class Phase41ResumeRecoveryTests
         // directly in the DB without ever firing the loop.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.ResumePendingJson = "[\"architecture\",\"tech-spec\"]";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         // Drive the recovery sweep deterministically (test factory keeps the
@@ -134,6 +137,7 @@ public class Phase41ResumeRecoveryTests
         // And the marker is fully drained.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.Id == spawnId);
             Assert.True(string.IsNullOrEmpty(row.ResumePendingJson),
@@ -164,6 +168,7 @@ public class Phase41ResumeRecoveryTests
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
         {
@@ -188,7 +193,7 @@ public class Phase41ResumeRecoveryTests
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task WaitForAsync(TimeSpan timeout, Func<bool> predicate)

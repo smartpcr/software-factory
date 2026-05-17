@@ -52,8 +52,9 @@ public class AuditMiddleware
 
         var user = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "anonymous";
         var key = ctx.Request.Headers[HttpUserContext.IdempotencyHeader].FirstOrDefault();
+        var control = ctx.RequestServices.GetRequiredService<ControlDbContext>();
         var db = ctx.RequestServices.GetRequiredService<ProductDbContext>();
-        db.Audit.Add(new AuditRow
+        control.Audit.Add(new AuditRow
         {
             At = DateTimeOffset.UtcNow,
             User = user,
@@ -63,7 +64,7 @@ public class AuditMiddleware
             IdempotencyKey = key,
             RequestBodySnippet = snippet,
         });
-        try { await db.SaveChangesAsync(ctx.RequestAborted); }
+        try { await control.SaveChangesAsync(ctx.RequestAborted); }
         catch { /* never break the response on audit failure */ }
     }
 }

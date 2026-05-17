@@ -44,6 +44,7 @@ public static class QueueEndpoints
     }
 
     private static async Task<IResult> List(
+        ControlDbContext control,
         ProductDbContext db,
         string? targetKind,
         string? targetId,
@@ -126,6 +127,7 @@ public static class QueueEndpoints
         long id,
         [FromBody] ReassignQueueRequest req,
         ITaskQueueService queue,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -139,7 +141,7 @@ public static class QueueEndpoints
         // Authority: lead of the source-crew or PO of its product.
         var existing = await queue.GetAsync(id, ct);
         if (existing is null) return Results.Problem(title: $"Queue row {id} not found", statusCode: 404);
-        var gateError = await CheckLeadOrPoForCrewAsync(ctx, db, existing.RoutedToCrewId, ct);
+        var gateError = await CheckLeadOrPoForCrewAsync(ctx, control, db, existing.RoutedToCrewId, ct);
         if (gateError is not null) return gateError;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "system";
@@ -154,6 +156,7 @@ public static class QueueEndpoints
         long id,
         [FromBody] CancelQueueRequest? req,
         ITaskQueueService queue,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -162,7 +165,7 @@ public static class QueueEndpoints
         if (auth is not null) return auth;
         var existing = await queue.GetAsync(id, ct);
         if (existing is null) return Results.Problem(title: $"Queue row {id} not found", statusCode: 404);
-        var gateError = await CheckLeadOrPoForCrewAsync(ctx, db, existing.RoutedToCrewId, ct);
+        var gateError = await CheckLeadOrPoForCrewAsync(ctx, control, db, existing.RoutedToCrewId, ct);
         if (gateError is not null) return gateError;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "system";
@@ -199,7 +202,7 @@ public static class QueueEndpoints
             : Results.Ok(MapRow(row));
     }
 
-    private static async Task<IResult> ListForTeam(string teamId, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListForTeam(string teamId, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var open = TaskQueueStates.OpenStates.ToList();
         var rows = await db.TaskQueue.AsNoTracking()
@@ -209,7 +212,7 @@ public static class QueueEndpoints
         return Results.Ok(ordered.Select(MapRow).ToList());
     }
 
-    private static async Task<IResult> ListForCrew(string crewId, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListForCrew(string crewId, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var open = TaskQueueStates.OpenStates.ToList();
         var rows = await db.TaskQueue.AsNoTracking()
@@ -227,13 +230,13 @@ public static class QueueEndpoints
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    private static async Task<IResult?> CheckLeadOrPoForCrewAsync(HttpContext ctx, ProductDbContext db, string? crewId, CancellationToken ct)
+    private static async Task<IResult?> CheckLeadOrPoForCrewAsync(HttpContext ctx, ControlDbContext control, ProductDbContext db, string? crewId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(crewId)) return null; // multi-team paths can skip the crew-specific gate
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
         // PO covers all crews; otherwise the crew's own
         // lead can mutate. Single-user dev passes through.
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         return gate; // null means caller passes (PO or single-user dev); concrete result short-circuits.
     }
 

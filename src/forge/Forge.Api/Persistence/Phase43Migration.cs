@@ -16,7 +16,7 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public static class Phase43Migration
 {
-    public static async Task ApplyAsync(ProductDbContext db, CancellationToken ct = default)
+    public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);

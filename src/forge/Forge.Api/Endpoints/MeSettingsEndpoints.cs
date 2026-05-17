@@ -26,7 +26,7 @@ public static class MeSettingsEndpoints
 {
     /// <summary>
     /// Sentinel UserId for the singleton settings row. Underscore prefix
-    /// to keep it sortable below real user ids and obvious in the DB.
+    /// to keep it sortable below real user ids and obvious in the control.
     /// </summary>
     public const string GlobalSettingsKey = "_global";
 
@@ -39,13 +39,13 @@ public static class MeSettingsEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetSettings(ControlDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSettings(ControlDbContext control, CancellationToken ct)
     {
-        var userId = await ResolveUserIdAsync(db, ct);
-        var row = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
+        var userId = await ResolveUserIdAsync(control, ct);
+        var row = await control.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
         if (row is null)
         {
-            row = await SeedGlobalFromLegacyAsync(db, ct);
+            row = await SeedGlobalFromLegacyAsync(control, ct);
         }
         return Results.Ok(MapSettings(row));
     }
@@ -58,9 +58,9 @@ public static class MeSettingsEndpoints
     /// doesn't have to re-enter ADO/GitHub defaults after the move from
     /// per-user to global keying.
     /// </summary>
-    private static async Task<UserSettingsRow> SeedGlobalFromLegacyAsync(ControlDbContext db, CancellationToken ct)
+    private static async Task<UserSettingsRow> SeedGlobalFromLegacyAsync(ControlDbContext control, CancellationToken ct)
     {
-        var legacy = await db.UserSettings.AsNoTracking()
+        var legacy = await control.UserSettings.AsNoTracking()
             .Where(x => x.UserId != GlobalSettingsKey)
             .ToListAsync(ct);
         legacy.Sort((a, b) => b.UpdatedAt.CompareTo(a.UpdatedAt));
@@ -84,8 +84,8 @@ public static class MeSettingsEndpoints
 
         if (legacy.Count > 0)
         {
-            db.UserSettings.Add(row);
-            await db.SaveChangesAsync(ct);
+            control.UserSettings.Add(row);
+            await control.SaveChangesAsync(ct);
         }
         return row;
     }
@@ -93,19 +93,19 @@ public static class MeSettingsEndpoints
     private static async Task<IResult> PatchSettings(
         HttpContext ctx,
         [FromBody] UpdateUserSettingsRequest req,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var userId = await ResolveUserIdAsync(db, ct);
-        var row = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
+        var userId = await ResolveUserIdAsync(control, ct);
+        var row = await control.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
         var inserting = row is null;
         if (row is null)
         {
             row = new UserSettingsRow { UserId = userId };
-            db.UserSettings.Add(row);
+            control.UserSettings.Add(row);
         }
 
         // Treat missing keys as "leave alone"; explicit empty string clears.
@@ -121,7 +121,7 @@ public static class MeSettingsEndpoints
         if (req.PreferredGitHubAccount is not null) row.PreferredGitHubAccount = NullIfEmpty(req.PreferredGitHubAccount);
         row.UpdatedAt = DateTimeOffset.UtcNow;
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct);
         return inserting ? Results.Created($"/api/me/settings", MapSettings(row)) : Results.Ok(MapSettings(row));
     }
 
@@ -130,7 +130,7 @@ public static class MeSettingsEndpoints
     /// signature is preserved so both call sites stay shape-compatible
     /// with the prior per-user resolution.
     /// </summary>
-    public static Task<string> ResolveUserIdAsync(ControlDbContext db, CancellationToken ct)
+    public static Task<string> ResolveUserIdAsync(ControlDbContext control, CancellationToken ct)
         => Task.FromResult(GlobalSettingsKey);
 
     private static UserSettings MapSettings(UserSettingsRow r) => new(

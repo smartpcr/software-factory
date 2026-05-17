@@ -370,6 +370,7 @@ public sealed record DeliverableLoopResult(
 /// <inheritdoc cref="IDeliverableLoop"/>
 public sealed class DeliverableLoop : IDeliverableLoop
 {
+    private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly TaskChannel? channel;
 
@@ -389,15 +390,16 @@ public sealed class DeliverableLoop : IDeliverableLoop
     public static int PointsToMaxIter(int points) =>
         points <= 0 ? ScoringConstants.MaxIterations : points * IterationsPerPoint;
 
-    public DeliverableLoop(ProductDbContext db) : this(db, channel: null) { }
+    public DeliverableLoop(ControlDbContext control, ProductDbContext db) : this(control, db, channel: null) { }
 
     /// <summary>
     /// Phase 16.7 — when <paramref name="channel"/> is non-null, the loop
     /// emits <c>task.iteration.started | scored | iterated | passed |
     /// rejected | stalled</c> events on the per-work-item live channel.
     /// </summary>
-    public DeliverableLoop(ProductDbContext db, TaskChannel? channel)
+    public DeliverableLoop(ControlDbContext control, ProductDbContext db, TaskChannel? channel)
     {
+        this.control = control;
         this.db = db;
         this.channel = channel;
     }
@@ -537,11 +539,11 @@ public sealed class DeliverableLoop : IDeliverableLoop
             {
                 if (lastPersisted.Verdict == "pass")
                 {
-                    await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "active", ct);
+                    await TrySetWorkItemStateAsync(this.control, this.db, request.WorkItemId, "active", ct);
                 }
                 else if (lastPersisted.Verdict == "reject")
                 {
-                    await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "proposed", ct);
+                    await TrySetWorkItemStateAsync(this.control, this.db, request.WorkItemId, "proposed", ct);
                 }
 
                 await this.EmitAsync(request.WorkItemId, "task.iteration.terminal-replay", new
@@ -627,7 +629,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // before any iteration-chain feedback. The block is appended as
             // a `## Operator answers` section the generator can quote
             // directly into the doc/code.
-            var answersBlock = await BuildOperatorAnswersBlockAsync(this.db, request.WorkItemId, ct);
+            var answersBlock = await BuildOperatorAnswersBlockAsync(this.control, this.db, request.WorkItemId, ct);
             var iterPrelude = string.IsNullOrEmpty(answersBlock)
                 ? notesForNext
                 : answersBlock + (string.IsNullOrEmpty(notesForNext) ? string.Empty : "\n\n" + notesForNext);
@@ -697,7 +699,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     CreatedAt = DateTimeOffset.UtcNow,
                 };
                 this.db.Deliverables.Add(failRow);
-                await this.db.SaveChangesAsync(ct);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                 rowIds.Add(failRow.Id);
 
                 await this.UpdatePairAssignmentTotalsAsync(
@@ -880,7 +882,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 CreatedAt = DateTimeOffset.UtcNow,
             };
             this.db.Deliverables.Add(row);
-            await this.db.SaveChangesAsync(ct);
+            await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
             rowIds.Add(row.Id);
 
             // Phase 65 — capture per-iter commit snapshot. The producer's
@@ -911,7 +913,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         row.FilesModified = snap.FilesModified;
                         row.FilesDeleted = snap.FilesDeleted;
                         row.FilesChanged = snap.FilesChanged;
-                        await this.db.SaveChangesAsync(ct);
+                        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                     }
                 }
                 catch (OperationCanceledException) { throw; }
@@ -990,7 +992,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         CreatedAt = DateTimeOffset.UtcNow,
                     });
                 }
-                await this.db.SaveChangesAsync(ct);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
             }
 
             // Compute "currently unanswered for this work item" as a hard
@@ -1000,7 +1002,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // because the carry-forward inherited the prior answer onto
             // the new row) won't flip the gate back to blocking. See
             // CountUnansweredQuestionsAsync for the full rationale.
-            var unansweredCount = await CountUnansweredQuestionsAsync(this.db, request.WorkItemId, ct);
+            var unansweredCount = await CountUnansweredQuestionsAsync(this.control, this.db, request.WorkItemId, ct);
 
             verdict = lastScore.Verdict;
 
@@ -1040,7 +1042,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 var noProgressNote = $"SLOPPY: no-progress score-zero — iter {iter} produced score=0 AND zero file change on branch (snapshot: +{row.FilesAdded ?? 0} ~{row.FilesModified ?? 0} -{row.FilesDeleted ?? 0}). The agent ran but produced no useful output. Reassigning to a fresh pair on the next reconciler tick.";
                 row.Notes = string.IsNullOrEmpty(row.Notes) ? noProgressNote : row.Notes + "\n\n" + noProgressNote;
                 lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
-                await this.db.SaveChangesAsync(ct);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
 
                 await this.StampPairAssignmentAsync(
                     pairAssignmentId,
@@ -1094,7 +1096,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         var skipNote = $"BLOCKED: prior iteration's evaluator listed {priorUnchecked} `- [ ]` checkbox item(s); the generator's reply only marked {genChecked} as `- [x]`. Every prior checkbox must be marked FIXED or DEFERRED-with-rationale in the `### Prior feedback resolution` block before pass is allowed. Silently skipping items is the dominant cause of convergence loops — the next iteration must address the remaining {priorUnchecked - genChecked} item(s).";
                         row.Notes = string.IsNullOrEmpty(row.Notes) ? skipNote : row.Notes + "\n\n" + skipNote;
                         lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
-                        await this.db.SaveChangesAsync(ct);
+                        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                     }
                 }
             }
@@ -1141,7 +1143,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     var stallNote = $"GATE EXHAUSTED -- pass rejected, recovery cap hit. {ex.Message}";
                     row.Notes = string.IsNullOrEmpty(row.Notes) ? stallNote : row.Notes + "\n\n" + stallNote;
                     lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
-                    try { await this.db.SaveChangesAsync(ct); }
+                    try { await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct); }
                     catch { /* best-effort -- exception we're about to re-throw is more important */ }
                     throw;
                 }
@@ -1151,7 +1153,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     row.Verdict = verdict;
                     row.Notes = string.IsNullOrEmpty(row.Notes) ? rejection : row.Notes + "\n\n" + rejection;
                     lastScore = lastScore with { Verdict = verdict, Notes = row.Notes };
-                    await this.db.SaveChangesAsync(ct);
+                    await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                 }
             }
 
@@ -1174,7 +1176,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             //     "resolved" once branch is pushed and PR is created).
             if (verdict == "pass")
             {
-                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "active", ct);
+                await TrySetWorkItemStateAsync(this.control, this.db, request.WorkItemId, "active", ct);
                 // Phase 52 — stamp pair-assignment as passed. The audit row
                 // is now closed; the next claim against this work item (if
                 // any) opens a fresh sequence.
@@ -1191,7 +1193,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // (f) terminal reject → bounce back to lead, exit.
             if (verdict == "reject")
             {
-                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "proposed", ct);
+                await TrySetWorkItemStateAsync(this.control, this.db, request.WorkItemId, "proposed", ct);
                 // Phase 52 — close the pair-assignment as cancelled (no
                 // reassignment; lead must triage). The audit row reflects
                 // the pair's final score for the cost-vs-quality readout.
@@ -1210,7 +1212,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             {
                 verdict = "stalled-budget";
                 row.Verdict = verdict;
-                await this.db.SaveChangesAsync(ct);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                 await this.EmitAsync(request.WorkItemId, "task.budget-warning", new { iter, totalCostUsd = totalCost, cap }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
@@ -1242,7 +1244,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         + Math.Min(priorChain.Count, 5)
                         + " iterations. The agent cannot resolve these unilaterally — operator should either pin a decision via the spawn's decision-pins endpoint, restart the loop with smaller scope, or accept the doc at its current score.";
                     row.Notes = string.IsNullOrEmpty(row.Notes) ? loopNote : row.Notes + "\n\n" + loopNote;
-                    await this.db.SaveChangesAsync(ct);
+                    await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
                     // Phase 52 — close the pair-assignment as cancelled.
                     // stalled-no-convergence is a cross-doc decision-pin
                     // signal, not a sloppy pair signal; operator action is
@@ -1288,7 +1290,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // localized.
             var scoresInOrder = priorChain.Select(c => c.Score).ToList();
             var sloppy = await SloppyDetector.CheckAsync(
-                this.db,
+                this.control, this.db,
                 request.WorkItemId,
                 request.GeneratorAgentId,
                 budgetWindowStartUtc,
@@ -1309,7 +1311,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     _ => "SLOPPY: reassigning to a fresh pair on the next reconciler tick.",
                 };
                 row.Notes = string.IsNullOrEmpty(row.Notes) ? reasonText : row.Notes + "\n\n" + reasonText;
-                await this.db.SaveChangesAsync(ct);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
 
                 await this.StampPairAssignmentAsync(
                     pairAssignmentId,
@@ -1354,7 +1356,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         lastRow.Verdict = verdict;
         var iterCapNote = $"SLOPPY: iteration cap reached — {iter} iters consumed without a pass (best score {priorChain.Max(c => c.Score)}). Reassigning to a fresh pair on the next reconciler tick.";
         lastRow.Notes = string.IsNullOrEmpty(lastRow.Notes) ? iterCapNote : lastRow.Notes + "\n\n" + iterCapNote;
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
 
         await this.StampPairAssignmentAsync(
             pairAssignmentId,
@@ -1383,7 +1385,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// prepend).
     /// </summary>
     public static async Task<string> BuildOperatorAnswersBlockAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var rows = await db.DeliverableQuestions.AsNoTracking()
             .Where(q => q.WorkItemId == workItemId && q.Answer != null && q.Answer != string.Empty)
@@ -1424,7 +1426,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// via the wizard.</para>
     /// </summary>
     public static async Task<int> CountUnansweredQuestionsAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite can't ORDER BY DateTimeOffset; pull rows for this work
         // item, group + dedupe in memory.
@@ -1827,14 +1829,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// state-machine constraints (e.g. closed → closed is a no-op) are
     /// respected by the regular <c>WorkItemRow</c> writes.
     /// </summary>
-    private static async Task TrySetWorkItemStateAsync(ProductDbContext db, string workItemId, string newState, CancellationToken ct)
+    private static async Task TrySetWorkItemStateAsync(ControlDbContext control, ProductDbContext db, string workItemId, string newState, CancellationToken ct)
     {
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
         if (wi is null) return;
         if (string.Equals(wi.State, newState, StringComparison.OrdinalIgnoreCase)) return;
         wi.State = newState;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -1877,7 +1879,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         {
             existing.Outcome = AgentPairAssignmentOutcomes.Cancelled;
             existing.EndedAt = DateTimeOffset.UtcNow;
-            await this.db.SaveChangesAsync(ct);
+            await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
         }
 
         var maxSeq = await this.db.AgentPairAssignments
@@ -1897,7 +1899,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             CreatedAt = DateTimeOffset.UtcNow,
         };
         this.db.AgentPairAssignments.Add(newRow);
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
         return newRow.Id;
     }
 
@@ -1925,7 +1927,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         row.TotalOutputTokens += iterOutputTokens;
         row.TotalCostUsd += iterCostUsd;
         row.FinalScore = latestScore; // running tip; final value persists when stamped
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -1948,7 +1950,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         row.SloppyReason = sloppyReason;
         row.FinalScore = finalScore;
         row.EndedAt = DateTimeOffset.UtcNow;
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -1979,7 +1981,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     {
         if (string.IsNullOrEmpty(agentId)) return;
         var now = DateTimeOffset.UtcNow;
-        this.db.AgentUsage.Add(new AgentUsageRow
+        this.control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = agentId,
             CrewId = crewId,
@@ -1998,7 +2000,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             ReasoningTokens = reasoningTokens,
             ConversationTokens = conversationTokens,
         });
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
     }
 
     private async Task EmitAsync(string workItemId, string kind, object payload, CancellationToken ct)

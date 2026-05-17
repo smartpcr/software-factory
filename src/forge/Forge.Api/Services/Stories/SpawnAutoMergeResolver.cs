@@ -29,7 +29,7 @@ public static class SpawnAutoMergeResolver
     /// items, items outside the story system, missing ids).
     /// </summary>
     public static async Task<bool> ResolveAsync(
-        ProductDbContext db, string? workItemId, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, string? workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return false;
 
@@ -65,7 +65,7 @@ public static class SpawnAutoMergeResolver
     /// <c>AutoMergeWatcher</c> only iterates <c>WHERE AutoMerge=true</c>.
     /// Returns the count of rows touched.
     /// </summary>
-    public static async Task<int> BackfillPrsAsync(ProductDbContext db, CancellationToken ct = default)
+    public static async Task<int> BackfillPrsAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         // Build a set of story ids whose spawn has AutoMerge=true.
         var autoMergeStoryIds = await db.StorySpawns

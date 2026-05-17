@@ -30,27 +30,28 @@ public class Phase14DeliverableLoopTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId = "wi-1", string workItemState = "active")
     {
         var f = new ForgeWebApplicationFactory();
         // Force the host to spin up so the DB is created + migrated.
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
             Id = workItemId, Type = "step", State = workItemState,
             Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     [Fact]
     public async Task Pass_On_First_Iter_Closes_Work_Item_And_Stops()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-pass");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-pass");
         try
         {
             var req = new DeliverableLoopRequest(
@@ -81,7 +82,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task Iterates_Through_Sub90_Until_Pass()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-iter");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-iter");
         try
         {
             // Sequence: 75 → 82 → 91. Pass on iter 3.
@@ -109,7 +110,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task High_SingleIter_Input_Does_Not_Force_Sloppy()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-no-hard-cap");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-no-hard-cap");
         try
         {
             var req = new DeliverableLoopRequest(
@@ -133,7 +134,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task Sub70_On_First_Iter_Rejects_And_Bounces_Work_Item()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-rej", workItemState: "active");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-rej", workItemState: "active");
         try
         {
             var req = new DeliverableLoopRequest(
@@ -155,7 +156,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task Stalls_After_5_Iterations_Without_Pass()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-stall");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-stall");
         try
         {
             // Strict-increasing iterate-range scores (75 → 87) so plateau
@@ -185,7 +186,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task Budget_Cap_Stops_Early_With_StalledBudget()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-budget");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-budget");
         try
         {
             // Each iter costs $0.40 gen + $0.20 eval = $0.60. Cap at $1.00 → stop after iter 2 ($1.20).
@@ -208,7 +209,7 @@ public class Phase14DeliverableLoopTests
     public async Task Score_Rounded_Down_To_69_Is_Reject_Not_Iterate()
     {
         // Boundary: 69 rejects (parser test covers DeriveVerdict; this asserts the loop wires it).
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-69");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-69");
         try
         {
             var req = new DeliverableLoopRequest(
@@ -225,7 +226,7 @@ public class Phase14DeliverableLoopTests
     [Fact]
     public async Task Notes_From_Eval_Are_Threaded_Into_Next_Generator()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-notes");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-notes");
         try
         {
             var sequence = new[] { 80, 95 };
@@ -248,7 +249,7 @@ public class Phase14DeliverableLoopTests
             // generator sees the trajectory, not just the last line.
             Assert.Equal(2, capturedGenNotes.Count);
             Assert.Equal(string.Empty, capturedGenNotes[0]);
-            Assert.Contains("Iteration 1", capturedGenNotes[1]);
+            Assert.Contains("iteration 1", capturedGenNotes[1]);
             Assert.Contains("score 80", capturedGenNotes[1]);
             Assert.Contains("fix 1", capturedGenNotes[1]);
         }

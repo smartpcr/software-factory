@@ -104,14 +104,15 @@ public class WorkItemRulesTests
         // The walk from A's proposed parent (C) walks C.parent = B, B.parent = A → cycle at A.
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.AddRange(
             new WorkItemRow { Id = "A", Type = "epic", Track = "dev", State = "active", Title = "A", ParentId = null },
             new WorkItemRow { Id = "B", Type = "feature", Track = "dev", State = "active", Title = "B", ParentId = "A" },
             new WorkItemRow { Id = "C", Type = "task", Track = "dev", State = "active", Title = "C", ParentId = "B" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var hit = await WorkItemRules.DetectCycleAsync(db, "A", "C", default);
+        var hit = await WorkItemRules.DetectCycleAsync(control, db, "A", "C", default);
         Assert.NotNull(hit);
         Assert.Equal("A", hit);
     }
@@ -121,11 +122,12 @@ public class WorkItemRulesTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow { Id = "Z", Type = "epic", Track = "dev", State = "active", Title = "Z" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var hit = await WorkItemRules.DetectCycleAsync(db, "A", "Z", default);
+        var hit = await WorkItemRules.DetectCycleAsync(control, db, "A", "Z", default);
         Assert.Null(hit);
     }
 
@@ -134,8 +136,9 @@ public class WorkItemRulesTests
     {
         using var factory = new ForgeWebApplicationFactory();
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        Assert.Null(await WorkItemRules.DetectCycleAsync(db, "A", null, default));
-        Assert.Null(await WorkItemRules.DetectCycleAsync(db, "A", string.Empty, default));
+        Assert.Null(await WorkItemRules.DetectCycleAsync(control, db, "A", null, default));
+        Assert.Null(await WorkItemRules.DetectCycleAsync(control, db, "A", string.Empty, default));
     }
 }

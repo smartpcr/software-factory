@@ -122,6 +122,10 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        // Phase G — control DB stays on a single physical file; resolve
+        // once at scope level so the per-product callback can pass it to
+        // helpers that need cross-context reads.
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Phase E — fan out per product. Each product's BudgetCooldown
         // recovery is independent; we sum the per-product resume counts.
         var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
@@ -130,7 +134,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         var lockObj = new object();
         var now = DateTimeOffset.UtcNow;
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
             // Pull both row sets in one EF query — the ExecutionStatus
             // index (Phase 51 migration) covers both predicates.
@@ -148,11 +152,11 @@ public sealed class BudgetCooldownReconciler : BackgroundService
                     // Failed rows must have "budget was the wall" before
                     // we consider them recoverable.
                     if (wi.ExecutionStatus == ExecutionStatuses.Failed
-                        && !await this.IsBudgetRecoverableAsync(db, wi.Id, fct))
+                        && !await this.IsBudgetRecoverableAsync(control, db, wi.Id, fct))
                     {
                         continue;
                     }
-                    var didResume = await this.TryResumeAsync(db, queue, wi, now, fct);
+                    var didResume = await this.TryResumeAsync(control, db, queue, wi, now, fct);
                     if (didResume) perProductResumed++;
                 }
                 catch (Exception ex)
@@ -180,7 +184,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     /// re-attempted, and then failed for a downstream reason are still
     /// recovered when the operator raises the cap.
     /// </summary>
-    private async Task<bool> IsBudgetRecoverableAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private async Task<bool> IsBudgetRecoverableAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite EF can do this query server-side — both Verdict columns
         // are plain TEXT. AnyAsync short-circuits, so this is cheap even
@@ -194,6 +198,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
     }
 
     private async Task<bool> TryResumeAsync(
+        ControlDbContext control,
         ProductDbContext db,
         ITaskQueueService queue,
         WorkItemRow wi,
@@ -225,7 +230,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
             return false;
         }
 
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == lastDeliv.CrewId, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == lastDeliv.CrewId, ct);
         if (crew is null)
         {
             this.logger.LogWarning(
@@ -246,7 +251,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         // "lifetime"; once a cooldown elapses the meter zeroes so
         // recovered tasks aren't locked out by pre-window spend.
         var windowStart = wi.BudgetWindowStartUtc;
-        var usageRows = await db.AgentUsage.AsNoTracking()
+        var usageRows = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == wi.Id)
             .ToListAsync(ct);
         var windowedCost = windowStart is DateTimeOffset ws
@@ -340,7 +345,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         // item so the phase board's STALLED pill drops on the next UI
         // refresh — without this the operator sees the chip still red
         // until the orchestrator's next tick re-evaluates the row.
-        await this.ClearWorkstreamStallAsync(db, wi.Id, ct);
+        await this.ClearWorkstreamStallAsync(control, db, wi.Id, ct);
 
         // Re-enqueue. EnqueueAsync flips ExecutionStatus = Queued again
         // (idempotent) and inserts the queue row that CrewQueueWorker's
@@ -379,7 +384,7 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         return true;
     }
 
-    private async Task ClearWorkstreamStallAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private async Task ClearWorkstreamStallAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // SQLite EF can't translate JSON-array contains; materialize the
         // candidate set (every stalled workstream) and filter in memory.

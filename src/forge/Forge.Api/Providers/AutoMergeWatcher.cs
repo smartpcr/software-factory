@@ -72,12 +72,14 @@ public class AutoMergeWatcher : BackgroundService
         try
         {
             using var scope = this.services.CreateScope();
+            // Phase G — resolve control DB once at scope level for cross-context reads.
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             // Phase E — fan out per product. Each product owns its own PRs;
             // the auto-merge watcher must visit each product's `prs` table.
             var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
-            await fanout.ForEachProductAsync(async (db, slug, fct) =>
+            await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
             {
-                await this.RunOneProductAsync(scope, db, fct);
+                await this.RunOneProductAsync(scope, control, db, fct);
             }, ct);
         }
         catch (Exception ex)
@@ -86,7 +88,7 @@ public class AutoMergeWatcher : BackgroundService
         }
     }
 
-    private async Task RunOneProductAsync(IServiceScope scope, ProductDbContext db, CancellationToken ct)
+    private async Task RunOneProductAsync(IServiceScope scope, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>().ToList();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
@@ -175,7 +177,7 @@ public class AutoMergeWatcher : BackgroundService
                 // Per-PR repo coords so AdoProvider doesn't fall back to the
                 // global Forge:Ado:Repository in multi-repo deployments.
                 var repo = !string.IsNullOrEmpty(row.RepoId)
-                    ? await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct)
+                    ? await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct)
                     : null;
                 var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
                 var callCtx = new ProviderCallContext(
@@ -194,7 +196,7 @@ public class AutoMergeWatcher : BackgroundService
                     try
                     {
                         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-                        var rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, force: true, ct);
+                        var rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(control, db, git, row, force: true, ct);
                         if (!rebaseOk)
                         {
                             this.logger.LogWarning(
@@ -258,7 +260,7 @@ public class AutoMergeWatcher : BackgroundService
                     fresh.Col = "merged";
                     fresh.AutoMerge = false;
                     advancedWsIds = await WorkstreamMergeAdvancer
-                        .AdvanceForMergedPrAsync(db, fresh.Id, ct);
+                        .AdvanceForMergedPrAsync(control, db, fresh.Id, ct);
                     await db.SaveChangesAsync(ct);
                 }
                 this.logger.LogInformation("forge.auto-merge.merged pr={Pr} provider={Provider}", pr.Id, provider.Kind);

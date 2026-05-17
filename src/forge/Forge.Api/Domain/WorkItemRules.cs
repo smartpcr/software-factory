@@ -85,6 +85,7 @@ public static class WorkItemRules
     /// concurrent inserts as long as the SQL is in the same transaction.
     /// </summary>
     public static async Task<string?> ValidatePlanTreeBudgetAsync(
+        ControlDbContext control,
         ProductDbContext db,
         WorkItemRow child,
         WorkItemRow? parent,
@@ -148,6 +149,7 @@ public static class WorkItemRules
     /// is the candidate parent for <paramref name="childId"/>.
     /// </summary>
     public static async Task<string?> DetectCycleAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string childId,
         string? proposedParentId,

@@ -13,10 +13,10 @@ using Microsoft.EntityFrameworkCore;
 /// Exposes only cross-product entities: products, repos, users, crews,
 /// agents, agent_usage, agent_claims, audit (<c>forge_actions</c>), etc.
 ///
-/// <para>Co-exists with <see cref="ForgeDbContext"/> during the Phase D
-/// migration window. New endpoint code targets this context for global
-/// reads/writes; the legacy <see cref="ForgeDbContext"/> stays in place
-/// for partially-migrated consumers.</para>
+/// <para>Phase G — the legacy <c>ForgeDbContext</c> union-model class
+/// was deleted. Endpoint code now takes <see cref="ControlDbContext"/>
+/// for global reads/writes and <see cref="ProductDbContext"/> (resolved
+/// via <see cref="IProductDbContextFactory"/>) for product-scoped data.</para>
 ///
 /// <para>After Phase F runs, only this context binds to <c>forge.db</c>;
 /// every product entity moves to its own <c>{slug}.db</c> file accessed

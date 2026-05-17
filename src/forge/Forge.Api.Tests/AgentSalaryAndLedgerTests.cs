@@ -32,15 +32,16 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var startOfDay = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
-            db.AgentUsage.AddRange(
+            control.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 0.50m, startOfDay.AddHours(1)),
                 Row("E4", "crew-eng", 0.25m, startOfDay.AddMinutes(-30)), // yesterday
                 Row("E4", "crew-eng", 0.75m, startOfDay.AddDays(-3)),
                 Row("E4", "crew-eng", 0.10m, startOfDay.AddDays(-40)));   // last month
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -65,13 +66,14 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
-            db.AgentUsage.AddRange(
+            control.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 1.00m, startOfDay.AddHours(1)),
                 Row("R3", "crew-rev", 0.25m, startOfDay.AddHours(2)),
                 Row("Q2", "crew-qa",  0.10m, startOfDay.AddDays(-1)));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -95,21 +97,22 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Pin agent → crew explicitly so the test doesn't depend on the
             // shifting prototypeAlias mapping in ForgeSeed.
-            var e4 = await db.Agents.FirstOrDefaultAsync(a => a.Id == "E4");
-            var e7 = await db.Agents.FirstOrDefaultAsync(a => a.Id == "E7");
+            var e4 = await control.Agents.FirstOrDefaultAsync(a => a.Id == "E4");
+            var e7 = await control.Agents.FirstOrDefaultAsync(a => a.Id == "E7");
             if (e4 is not null) e4.CrewId = "crew-eng";
             if (e7 is not null) e7.CrewId = "crew-eng";
             // Seed: two open eng claims + one closed (released) eng claim
             // + one open claim on an agent without a CrewId (unassigned bucket).
-            db.AgentClaims.AddRange(
+            control.AgentClaims.AddRange(
                 new AgentClaimRow { AgentId = "E4", WorkItemId = "ws-1", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null },
                 new AgentClaimRow { AgentId = "E7", WorkItemId = "ws-1", Role = "evaluator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null },
                 new AgentClaimRow { AgentId = "E4", WorkItemId = "ws-old", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow.AddHours(-2), ReleasedAt = DateTimeOffset.UtcNow.AddHours(-1) },
                 new AgentClaimRow { AgentId = "ZZ-orphan", WorkItemId = "ws-2", Role = "generator", ClaimedAt = DateTimeOffset.UtcNow, ReleasedAt = null });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -145,11 +148,12 @@ public class AgentSalaryAndLedgerTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var crew = await db.Crews.FirstAsync(c => c.Id == "crew-eng");
+            var crew = await control.Crews.FirstAsync(c => c.Id == "crew-eng");
             crew.ModelInputPricePerMTok = 15m;
             crew.ModelOutputPricePerMTok = 75m;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -172,8 +176,9 @@ public class AgentSalaryAndLedgerTests
         while (DateTime.UtcNow < deadline)
         {
             using var scope = factory.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            row = await db.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
+            row = await control.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
             if (row?.Status == "finished") break;
             await Task.Delay(50);
         }
@@ -203,10 +208,11 @@ public class AgentSalaryAndLedgerTests
         {
             using (var scope = factory.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var row = await db.Agents.FirstAsync(a => a.Id == "E4");
+                var row = await control.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = Path.Combine(tmp, "E4.md");
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             // First read: file doesn't exist.

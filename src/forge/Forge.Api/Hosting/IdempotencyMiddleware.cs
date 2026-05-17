@@ -52,6 +52,7 @@ public class IdempotencyMiddleware
         }
         // Scope by method + path so the same key on different endpoints is independent.
         var scoped = $"{ctx.Request.Method} {ctx.Request.Path} {key}";
+        var control = ctx.RequestServices.GetRequiredService<ControlDbContext>();
         var db = ctx.RequestServices.GetRequiredService<ProductDbContext>();
 
         var existing = await db.Idempotency.FirstOrDefaultAsync(i => i.Key == scoped, ctx.RequestAborted);

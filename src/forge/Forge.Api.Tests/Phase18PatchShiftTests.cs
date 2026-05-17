@@ -154,8 +154,9 @@ public class Phase18PatchShiftTests
         Assert.True(resp.IsSuccessStatusCode);
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var hist = await db.CrewHistory.AsNoTracking()
+        var hist = await control.CrewHistory.AsNoTracking()
             .Where(h => h.CrewId == "p-noop" && h.Kind == "shift")
             .ToListAsync();
         Assert.Empty(hist);
@@ -215,15 +216,16 @@ public class Phase18PatchShiftTests
         // hits the human fallback in `RequireRole.CheckForProduct`.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Users.Add(new UserRow
+            control.Users.Add(new UserRow
             {
                 Id = "u-non-po",
                 DisplayName = "Non PO",
                 Email = "non-po@forge.local",
                 Role = "human",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         // Step 3 — PATCH shift as the non-PO user → 403.
@@ -235,8 +237,9 @@ public class Phase18PatchShiftTests
         // And the row must NOT have been mutated.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var row = await db.Crews.AsNoTracking().FirstAsync(x => x.Id == "p-rolegate");
+            var row = await control.Crews.AsNoTracking().FirstAsync(x => x.Id == "p-rolegate");
             Assert.Equal("day", row.Shift);
         }
     }

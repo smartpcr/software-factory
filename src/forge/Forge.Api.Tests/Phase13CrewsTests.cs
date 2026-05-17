@@ -121,10 +121,11 @@ public class Phase13CrewsTests
     private static async Task DisableSchedule(ForgeWebApplicationFactory f, string crewId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var row = await db.Crews.FirstAsync(x => x.Id == crewId);
+        var row = await control.Crews.FirstAsync(x => x.Id == crewId);
         row.ScheduleEnabled = false;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -143,8 +144,9 @@ public class Phase13CrewsTests
         // Seed a domain expert directly into the DB then retry.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.DomainExperts.Add(new DomainExpertRow
+            control.DomainExperts.Add(new DomainExpertRow
             {
                 ContentId = "sha256:abc",
                 RepoId = "repo-x",
@@ -152,7 +154,7 @@ public class Phase13CrewsTests
                 Topic = "auth",
                 Summary = "auth invariants",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         var hit = await c.PostAsJsonAsync("/api/crews/cap1/capabilities", new { contentId = "sha256:abc" }, JsonOpts);
         Assert.True(hit.IsSuccessStatusCode);

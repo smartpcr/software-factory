@@ -91,7 +91,7 @@ public sealed class PrSyncJob : BackgroundService
         // the active product's `prs` / `pr_comments` tables.
         using var outerScope = this.scopeFactory.CreateScope();
         var fanout = outerScope.ServiceProvider.GetRequiredService<ProductFanout>();
-        await fanout.ForEachProductAsync(async (_, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, _, slug, fct) =>
         {
             await this.RunSweepCoreAsync(fct, skipHistory);
         }, ct);
@@ -102,6 +102,7 @@ public sealed class PrSyncJob : BackgroundService
         List<PrSyncCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var staleThreshold = now.Subtract(StaleRunningThreshold).ToString("o");
@@ -160,7 +161,7 @@ public sealed class PrSyncJob : BackgroundService
                 .ToArray();
             var intervals = repoIds.Length == 0
                 ? new Dictionary<string, int?>()
-                : await db.Repos
+                : await control.Repos
                     .AsNoTracking()
                     .Where(r => repoIds.Contains(r.Id))
                     .ToDictionaryAsync(r => r.Id, r => r.PrSyncIntervalSeconds, ct);
@@ -227,6 +228,7 @@ public sealed class PrSyncJob : BackgroundService
         PrSyncCandidate? candidate;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var pr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
             if (pr is null) return;
@@ -257,6 +259,7 @@ public sealed class PrSyncJob : BackgroundService
         // Mark running
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == candidate.PrId, ct);
             if (row is null) return;
@@ -310,6 +313,7 @@ public sealed class PrSyncJob : BackgroundService
     private async Task ApplySnapshotAsync(PrSyncCandidate candidate, PrSyncSnapshot snapshot, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var prRow = await db.Prs.FirstOrDefaultAsync(p => p.Id == candidate.PrId, ct);
         if (prRow is null) return;
@@ -357,7 +361,7 @@ public sealed class PrSyncJob : BackgroundService
         // -- Upsert comments --
         if (snapshot.CommentsFetched && snapshot.Comments.Count > 0)
         {
-            await this.UpsertCommentsAsync(db, prRow, snapshot.Comments, ct);
+            await this.UpsertCommentsAsync(control, db, prRow, snapshot.Comments, ct);
         }
 
         prRow.LastSyncAt = DateTimeOffset.UtcNow.ToString("o");
@@ -418,7 +422,7 @@ public sealed class PrSyncJob : BackgroundService
         if (colChanged && string.Equals(newCol, "merged", StringComparison.OrdinalIgnoreCase))
         {
             advancedWsIds = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer
-                .AdvanceForMergedPrAsync(db, candidate.PrId, ct);
+                .AdvanceForMergedPrAsync(control, db, candidate.PrId, ct);
         }
 
         await db.SaveChangesAsync(ct);
@@ -444,7 +448,7 @@ public sealed class PrSyncJob : BackgroundService
                 if (runner is not null)
                 {
                     await Forge.Api.Services.Stories.PlanPrMergeReactor.OnPlanPrMergedAsync(
-                        db, runner, this.hub, candidate.PrId, this.logger, ct);
+                        control, db, runner, this.hub, candidate.PrId, this.logger, ct);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -460,8 +464,8 @@ public sealed class PrSyncJob : BackgroundService
         {
             try
             {
-                var linker = new PrCommentLinker(db, this.logger as ILogger<PrCommentLinker> ?? new LoggerWrapper<PrCommentLinker>(this.logger), this.metrics);
-                var worktreeRoot = await this.ResolveWorktreeRootAsync(db, candidate, ct);
+                var linker = new PrCommentLinker(control, db, this.logger as ILogger<PrCommentLinker> ?? new LoggerWrapper<PrCommentLinker>(this.logger), this.metrics);
+                var worktreeRoot = await this.ResolveWorktreeRootAsync(control, db, candidate, ct);
                 await linker.LinkAsync(candidate.PrId, worktreeRoot, ct);
             }
             catch (Exception ex)
@@ -473,17 +477,17 @@ public sealed class PrSyncJob : BackgroundService
         // -- Queue hook for un-addressed comments (Q24.8) --
         if (!isTerminal)
         {
-            await this.MaybeEnqueueCommentResponseAsync(db, candidate, ct);
+            await this.MaybeEnqueueCommentResponseAsync(control, db, candidate, ct);
         }
 
         // -- Worktree cleanup on terminal --
         if (isTerminal)
         {
-            await this.CleanupWorktreeAsync(candidate, db, newState, ct);
+            await this.CleanupWorktreeAsync(candidate, control, db, newState, ct);
         }
     }
 
-    private async Task UpsertCommentsAsync(ProductDbContext db, PrRow pr, IReadOnlyList<PrSyncComment> upstream, CancellationToken ct)
+    private async Task UpsertCommentsAsync(ControlDbContext control, ProductDbContext db, PrRow pr, IReadOnlyList<PrSyncComment> upstream, CancellationToken ct)
     {
         var existing = await db.PrComments
             .Where(c => c.PrId == pr.Id)
@@ -496,7 +500,7 @@ public sealed class PrSyncJob : BackgroundService
         {
             if (byProviderId.TryGetValue(u.ProviderCommentId, out var local))
             {
-                this.UpdateExisting(db, local, u, pr);
+                this.UpdateExisting(control, db, local, u, pr);
             }
             else
             {
@@ -553,7 +557,7 @@ public sealed class PrSyncJob : BackgroundService
         await db.SaveChangesAsync(ct);
     }
 
-    private void UpdateExisting(ProductDbContext db, PrCommentRow local, PrSyncComment u, PrRow pr)
+    private void UpdateExisting(ControlDbContext control, ProductDbContext db, PrCommentRow local, PrSyncComment u, PrRow pr)
     {
         if (u.UpdatedAt <= local.UpdatedAt && local.State == u.State && local.Body == u.Body) return;
         var prevState = local.State;
@@ -626,7 +630,7 @@ public sealed class PrSyncJob : BackgroundService
         }
     }
 
-    private async Task MaybeEnqueueCommentResponseAsync(ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
+    private async Task MaybeEnqueueCommentResponseAsync(ControlDbContext control, ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.WorkItemId)) return;
 
@@ -751,10 +755,10 @@ public sealed class PrSyncJob : BackgroundService
         }
     }
 
-    private async Task<string?> ResolveWorktreeRootAsync(ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
+    private async Task<string?> ResolveWorktreeRootAsync(ControlDbContext control, ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.RepoId) || string.IsNullOrEmpty(candidate.WorkItemId)) return null;
-        var repo = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
+        var repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return null;
         return Path.Combine(repo.CloneRoot, ".worktree", $"ws-{candidate.WorkItemId}");
     }
@@ -762,6 +766,7 @@ public sealed class PrSyncJob : BackgroundService
     private async Task MarkSyncResultAsync(string prId, bool success, string? error, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
         if (row is null) return;
@@ -782,14 +787,14 @@ public sealed class PrSyncJob : BackgroundService
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task CleanupWorktreeAsync(PrSyncCandidate candidate, ProductDbContext db, string prState, CancellationToken ct)
+    private async Task CleanupWorktreeAsync(PrSyncCandidate candidate, ControlDbContext control, ProductDbContext db, string prState, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.WorkItemId) || string.IsNullOrEmpty(candidate.RepoId))
             return;
 
         try
         {
-            var repo = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
+            var repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
             if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
 
             var worktreePath = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{candidate.WorkItemId}");

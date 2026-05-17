@@ -41,6 +41,7 @@ public class CostEndpointsTests
         const string sampleCardEpic = "EPIC-024";
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Cards.Add(new CardRow
             {
@@ -57,11 +58,11 @@ public class CostEndpointsTests
             // Three rows in the 7d window: two for today (one bound to
             // the card so it lands in that epic, one unassigned), one
             // four days ago.
-            db.AgentUsage.AddRange(
+            control.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 1.20m, sampleCardId, startOfToday.AddHours(2), input: 1000, output: 500),
                 Row("E4", "crew-eng", 0.30m, taskId: string.Empty, startedAt: startOfToday.AddHours(3), input: 200, output: 100),
                 Row("R3", "crew-rev", 0.40m, sampleCardId, startOfToday.AddDays(-4), input: 400, output: 100));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -99,11 +100,12 @@ public class CostEndpointsTests
 
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.AgentUsage.AddRange(
+            control.AgentUsage.AddRange(
                 Row("E4", "crew-eng", 0.50m, taskId: string.Empty, startedAt: startOfToday.AddHours(1), input: 1000, output: 500),
                 Row("E4", "crew-eng", 0.20m, taskId: string.Empty, startedAt: startOfToday.AddDays(-3), input: 400, output: 100));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();

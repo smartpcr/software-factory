@@ -36,12 +36,13 @@ public class Phase67NoProgressScoreZeroTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
@@ -53,8 +54,8 @@ public class Phase67NoProgressScoreZeroTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     /// <summary>
@@ -66,7 +67,7 @@ public class Phase67NoProgressScoreZeroTests
     public async Task ScoreZero_With_Zero_FileChange_Triggers_Sloppy_On_Iter1()
     {
         const string wi = "wi-67-iter1-trigger";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var genCallCount = 0;
@@ -98,6 +99,7 @@ public class Phase67NoProgressScoreZeroTests
             Assert.Equal(1, genCallCount);
 
             using var scope = f.Services.CreateScope();
+            var control_freshDb = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await freshDb.Deliverables.AsNoTracking().FirstAsync(d => d.WorkItemId == wi);
             Assert.Equal("sloppy", row.Verdict);
@@ -119,7 +121,7 @@ public class Phase67NoProgressScoreZeroTests
     public async Task ScoreZero_With_Some_FileChange_Does_Not_Trigger()
     {
         const string wi = "wi-67-files-changed";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var iters = 0;
@@ -164,7 +166,7 @@ public class Phase67NoProgressScoreZeroTests
     public async Task NonZero_Score_With_Zero_FileChange_Does_Not_Trigger()
     {
         const string wi = "wi-67-nonzero-score";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var iters = 0;
@@ -204,7 +206,7 @@ public class Phase67NoProgressScoreZeroTests
     public async Task Null_Snapshot_Does_Not_Trigger_Even_With_ScoreZero()
     {
         const string wi = "wi-67-no-snapshot";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var iters = 0;
@@ -239,7 +241,7 @@ public class Phase67NoProgressScoreZeroTests
     public async Task Snapshot_Returning_Null_Does_Not_Trigger()
     {
         const string wi = "wi-67-snap-null";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var iters = 0;

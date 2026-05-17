@@ -54,6 +54,14 @@ public class Phase18MigrationAndModelTests
         return new ProductDbContext(opts);
     }
 
+    private static ControlDbContext WrapInControlContext(SqliteConnection conn)
+    {
+        var opts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        return new ControlDbContext(opts);
+    }
+
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column)
     {
         await using var cmd = conn.CreateCommand();
@@ -73,9 +81,10 @@ public class Phase18MigrationAndModelTests
         await using var conn = await NewPrePhase18ConnectionAsync();
         Assert.False(await ColumnExistsAsync(conn, "crews", "Shift"));
 
+        await using var control = WrapInControlContext(conn);
         await using (var db = WrapInContext(conn))
         {
-            await Phase18Migration.ApplyAsync(db);
+            await Phase18Migration.ApplyAsync(control, db);
         }
 
         Assert.True(await ColumnExistsAsync(conn, "crews", "Shift"));
@@ -85,14 +94,15 @@ public class Phase18MigrationAndModelTests
     public async Task Migration_Is_Idempotent()
     {
         await using var conn = await NewPrePhase18ConnectionAsync();
+        await using var control = WrapInControlContext(conn);
         await using var db = WrapInContext(conn);
 
         // First call adds the column.
-        await Phase18Migration.ApplyAsync(db);
+        await Phase18Migration.ApplyAsync(control, db);
         Assert.True(await ColumnExistsAsync(conn, "crews", "Shift"));
 
         // Second call must not throw and must not duplicate the column.
-        await Phase18Migration.ApplyAsync(db);
+        await Phase18Migration.ApplyAsync(control, db);
 
         // PRAGMA table_info returns one row per column — count Shift columns.
         await using var cmd = conn.CreateCommand();
@@ -121,9 +131,10 @@ public class Phase18MigrationAndModelTests
             await insert.ExecuteNonQueryAsync();
         }
 
+        await using var control = WrapInControlContext(conn);
         await using (var db = WrapInContext(conn))
         {
-            await Phase18Migration.ApplyAsync(db);
+            await Phase18Migration.ApplyAsync(control, db);
         }
 
         // The pre-existing row must now report Shift = 'day' (Q18.2 strict-
@@ -155,8 +166,9 @@ public class Phase18MigrationAndModelTests
         using (f.CreateClient()) { /* boot to apply migrations */ }
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "round-trip",
             Name = "RT",
@@ -166,12 +178,13 @@ public class Phase18MigrationAndModelTests
             ModelOutputPricePerMTok = 1m,
             Shift = "night",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Read in a fresh tracker scope so we exercise the actual SELECT.
         using var scope2 = f.Services.CreateScope();
+        var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var read = await db2.Crews.AsNoTracking().FirstAsync(c => c.Id == "round-trip");
+        var read = await control_db2.Crews.AsNoTracking().FirstAsync(c => c.Id == "round-trip");
         Assert.Equal("night", read.Shift);
     }
 }

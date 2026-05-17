@@ -89,6 +89,8 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     public async Task<DispatchTickResult> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        // Phase G — resolve control DB once at scope level for cross-context reads.
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Phase E — fan out per product. The dispatcher's work-item scan
         // is product-scoped; crews are control-side but ProductDbContext
         // also exposes them (Phase D.2 interim compromise).
@@ -99,9 +101,9 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
         var totalOffShift = 0;
         var lockObj = new object();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
-            var perProduct = await this.DispatchForProductAsync(db, scope, fct);
+            var perProduct = await this.DispatchForProductAsync(control, db, scope, fct);
             lock (lockObj)
             {
                 totalDispatched += perProduct.Dispatched;
@@ -115,7 +117,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     }
 
     private async Task<DispatchTickResult> DispatchForProductAsync(
-        ProductDbContext db, IServiceScope scope, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, IServiceScope scope, CancellationToken ct)
     {
         var dispatched = 0;
         var skipped = 0;
@@ -126,7 +128,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
         //    agent set as a crew's Lead (rather than role='tech-lead', which
         //    is human-side). We look up by crew.Lead so the dispatcher works
         //    even if the operator hasn't backfilled role on every agent.
-        var crewsByLead = await db.Crews.AsNoTracking()
+        var crewsByLead = await control.Crews.AsNoTracking()
             .Where(c => c.Lead != null && c.Lead != "")
             .ToDictionaryAsync(c => c.Lead!, ct);
 
@@ -185,7 +187,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             generatorCrew = leadCrew;
             if (!string.IsNullOrEmpty(leadCrew.PairedWithCrewId))
             {
-                evaluatorCrew = await db.Crews.AsNoTracking()
+                evaluatorCrew = await control.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == leadCrew.PairedWithCrewId, ct);
             }
 
@@ -205,7 +207,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             // 5. Capacity pre-check — skip if the crew is at MaxConcurrent.
             //    The queue worker also checks capacity, but this avoids flooding
             //    the queue with items that can't be picked up yet.
-            if (!await HasCapacityAsync(db, generatorCrew, ct))
+            if (!await HasCapacityAsync(control, db, generatorCrew, ct))
             {
                 Refused.Add(1, KeyVal("crewId", generatorCrew.Id));
                 LatencyMs.Record(Elapsed(wi), KeyVal("crewId", generatorCrew.Id), KeyVal("pair", evaluatorCrew is not null), KeyVal("outcome", "capacity-blocked"));
@@ -233,7 +235,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             var tracked = await db.WorkItems.FirstAsync(w => w.Id == wi.Id, ct);
             tracked.AutoDispatchedAt = DateTimeOffset.UtcNow;
             tracked.UpdatedAt = DateTimeOffset.UtcNow;
-            db.Audit.Add(new AuditRow
+            control.Audit.Add(new AuditRow
             {
                 At = DateTimeOffset.UtcNow,
                 User = leadId,
@@ -251,7 +253,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                 }),
                 Supervising = false,
             });
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
             await this.channel.EmitAsync(
                 wi.Id,
@@ -299,9 +301,9 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     /// Returns true when the crew has at least one non-lead member AND the
     /// in-flight count is below <see cref="CrewRow.MaxConcurrent"/>.
     /// </summary>
-    private async Task<bool> HasCapacityAsync(ProductDbContext db, CrewRow crew, CancellationToken ct)
+    private async Task<bool> HasCapacityAsync(ControlDbContext control, ProductDbContext db, CrewRow crew, CancellationToken ct)
     {
-        var memberCount = await db.CrewMembers.AsNoTracking()
+        var memberCount = await control.CrewMembers.AsNoTracking()
             .CountAsync(m => m.CrewId == crew.Id && m.AgentId != crew.Lead, ct);
         if (memberCount == 0) return false;
 

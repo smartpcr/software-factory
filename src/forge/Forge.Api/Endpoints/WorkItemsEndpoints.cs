@@ -55,6 +55,7 @@ public static class WorkItemsEndpoints
     /// </summary>
     private static async Task<IResult> GetWorkstreamLink(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -123,6 +124,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string repoId,
         [FromBody] SyncWorkItemsRequest? req,
+        ControlDbContext control,
         ProductDbContext db,
         WorkItemSyncService syncService,
         CancellationToken ct)
@@ -130,7 +132,7 @@ public static class WorkItemsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return Results.Problem(title: $"Repo {repoId} not found", statusCode: 404);
 
         var filters = new WorkItemSyncFilters(
@@ -145,7 +147,7 @@ public static class WorkItemsEndpoints
         var ignoreThrottle = req?.IgnoreThrottle ?? false;
         if (ignoreThrottle)
         {
-            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
             if (gate is not null) return gate;
         }
 
@@ -175,6 +177,7 @@ public static class WorkItemsEndpoints
 
     private static async Task<IResult> List(
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         string? repoId,
         string? iterationRef,
@@ -195,7 +198,7 @@ public static class WorkItemsEndpoints
         // the `X-Forge-Product-Id` header, and the default-product fallback —
         // matches CardsEndpoints / PrsEndpoints / WorkstreamsEndpoints. Pass
         // `productId=all` to bypass scoping.
-        var scope = await ProductScope.ResolveAsync(ctx, db, ct);
+        var scope = await ProductScope.ResolveAsync(ctx, control, ct);
         if (!scope.IsAll)
         {
             var repoIds = scope.RepoIds!;
@@ -264,7 +267,7 @@ public static class WorkItemsEndpoints
 
     // ----- GET ------------------------------------------------------------
 
-    private static async Task<IResult> Get(string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
@@ -277,6 +280,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateWorkItemRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -342,7 +346,7 @@ public static class WorkItemsEndpoints
             if (err is not null) return Results.Problem(title: err, statusCode: 400);
 
             // Phase 16.5 — plan-tree fan-out caps (≤20 stages/phase, ≤20 steps/stage).
-            var budget = await WorkItemRules.ValidatePlanTreeBudgetAsync(db, row, parent, ct);
+            var budget = await WorkItemRules.ValidatePlanTreeBudgetAsync(control, db, row, parent, ct);
             if (budget is not null)
             {
                 return Results.Problem(
@@ -396,6 +400,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PatchWorkItemRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -472,7 +477,7 @@ public static class WorkItemsEndpoints
         if (!string.IsNullOrWhiteSpace(req.RepoId))
         {
             // Refuse if the repo isn't attached to any product (FK would dangle).
-            var exists = await db.Repos.AsNoTracking().AnyAsync(r => r.Id == req.RepoId, ct);
+            var exists = await control.Repos.AsNoTracking().AnyAsync(r => r.Id == req.RepoId, ct);
             if (!exists) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 400);
             row.RepoId = req.RepoId;
         }
@@ -533,6 +538,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Delete(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         bool? force,
@@ -544,7 +550,7 @@ public static class WorkItemsEndpoints
         if (force == true)
         {
             // Hard delete — gated to PO.
-            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
             if (gate is not null) return gate;
 
             db.WorkItems.Remove(row);
@@ -585,6 +591,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] MoveWorkItemRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -625,6 +632,7 @@ public static class WorkItemsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] ReparentWorkItemRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
@@ -643,7 +651,7 @@ public static class WorkItemsEndpoints
         }
 
         // Cycle check.
-        var cycleAt = await WorkItemRules.DetectCycleAsync(db, row.Id, newParent?.Id, ct);
+        var cycleAt = await WorkItemRules.DetectCycleAsync(control, db, row.Id, newParent?.Id, ct);
         if (cycleAt is not null)
         {
             return Results.Problem(
@@ -682,6 +690,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Resync(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         IHubContext<ForgeHub> hub,
@@ -787,6 +796,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> CreatePr(
         string id,
         [FromBody] CreatePrRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         Forge.Api.Realtime.TaskChannel taskChannel,
@@ -817,7 +827,7 @@ public static class WorkItemsEndpoints
         string? prProjectName = null;
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
-            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
             (prRepoName, prProjectName) = PrCoordsResolver.Resolve(repo, repoKind);
         }

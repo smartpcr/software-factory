@@ -50,7 +50,7 @@ public static class ProductScope
     /// request. The aggregate <see cref="ResolveAsync"/> result also exposes
     /// the resolved productId so handlers can echo it in responses.
     /// </remarks>
-    public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, DbContext db, CancellationToken ct = default)
+    public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, ControlDbContext db, CancellationToken ct = default)
     {
         var raw = Read(ctx);
         if (string.Equals(raw, AllScope, StringComparison.OrdinalIgnoreCase))

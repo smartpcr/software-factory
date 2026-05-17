@@ -40,20 +40,20 @@ public class Phase52SloppyReassignmentTests
     }
 
     private static async Task SeedRosterAsync(
-        ProductDbContext db, string crewId, string lead, params string[] memberIds)
+        ControlDbContext control, ProductDbContext db, string crewId, string lead, params string[] memberIds)
     {
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = crewId, Name = crewId, Summary = string.Empty,
             Lead = lead, Model = "claude-sonnet-4-6",
         });
         foreach (var member in memberIds)
         {
-            db.Agents.Add(new AgentRow
+            control.Agents.Add(new AgentRow
             {
                 Id = member, Name = member, Role = "eng",
             });
-            db.CrewMembers.Add(new CrewMemberRow
+            control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = crewId, AgentId = member, Role = "eng",
             });
@@ -61,12 +61,12 @@ public class Phase52SloppyReassignmentTests
         // Lead also needs an agent row.
         if (!memberIds.Contains(lead))
         {
-            db.Agents.Add(new AgentRow
+            control.Agents.Add(new AgentRow
             {
                 Id = lead, Name = lead, Role = "tech-lead",
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -74,9 +74,10 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedRosterAsync(db, "crew-sl", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d");
+        await SeedRosterAsync(control, db, "crew-sl", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d");
 
         // Work item parked in pending-reassign on its FIRST sloppy trigger:
         // PairAttemptCount = 1, PriorPairsJson contains the agent-a/agent-b pair.
@@ -114,7 +115,7 @@ public class Phase52SloppyReassignmentTests
             WorkItemId = wi.Id, Kind = "task.iteration.scored",
             PayloadJson = "{}", At = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<SloppyReassignmentReconciler>();
         var progressed = await reconciler.RunOnceAsync(CancellationToken.None);
@@ -124,6 +125,7 @@ public class Phase52SloppyReassignmentTests
         // the readback so we hit the DB cleanly (avoids any per-DbContext
         // query cache or stale connection snapshot).
         using var readScope = f.Services.CreateScope();
+        var control_readDb = readScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var readDb = readScope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var live = await readDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == wi.Id);
@@ -159,9 +161,10 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedRosterAsync(db, "crew-cap", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f");
+        await SeedRosterAsync(control, db, "crew-cap", lead: "agent-lead", "agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f");
 
         // Already at cap (PairAttemptCount == MaxPairAttempts).
         var wi = new WorkItemRow
@@ -196,7 +199,7 @@ public class Phase52SloppyReassignmentTests
             Outcome = AgentPairAssignmentOutcomes.ReassignedSloppy,
             SloppyReason = SloppyReasons.ScorePlateau,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<SloppyReassignmentReconciler>();
         var progressed = await reconciler.RunOnceAsync(CancellationToken.None);
@@ -224,11 +227,12 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Roster of exactly 5: lead + 4 members. After excluding 2 prior
         // pairs (4 agents), only `agent-e` is eligible for generator.
-        await SeedRosterAsync(db, "crew-narrow", lead: "agent-lead",
+        await SeedRosterAsync(control, db, "crew-narrow", lead: "agent-lead",
             "agent-a", "agent-b", "agent-c", "agent-d", "agent-e");
 
         var wi = new WorkItemRow
@@ -251,7 +255,7 @@ public class Phase52SloppyReassignmentTests
             Iter = 4, Score = 80, Verdict = "sloppy",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<SloppyReassignmentReconciler>();
         var progressed = await reconciler.RunOnceAsync(CancellationToken.None);
@@ -268,11 +272,12 @@ public class Phase52SloppyReassignmentTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Roster of 2 (lead + 1 member). Prior pair excluded the only
         // non-lead member → no eligible pair.
-        await SeedRosterAsync(db, "crew-stuck", lead: "agent-lead", "agent-a");
+        await SeedRosterAsync(control, db, "crew-stuck", lead: "agent-lead", "agent-a");
 
         var wi = new WorkItemRow
         {
@@ -290,7 +295,7 @@ public class Phase52SloppyReassignmentTests
             Iter = 4, Score = 75, Verdict = "sloppy",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<SloppyReassignmentReconciler>();
         var progressed = await reconciler.RunOnceAsync(CancellationToken.None);
@@ -315,9 +320,10 @@ public class Phase52SloppyReassignmentTests
         // simulating the loop's sloppy emission between each.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedRosterAsync(db, "crew-3x", lead: "agent-lead",
+        await SeedRosterAsync(control, db, "crew-3x", lead: "agent-lead",
             "agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f", "agent-g", "agent-h");
 
         // Initial state: attempt 1 just sloppied, parked.
@@ -337,7 +343,7 @@ public class Phase52SloppyReassignmentTests
             Iter = 4, Score = 78, Verdict = "sloppy",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var reconciler = scope.ServiceProvider.GetRequiredService<SloppyReassignmentReconciler>();
 
@@ -363,7 +369,7 @@ public class Phase52SloppyReassignmentTests
             Iter = 4, Score = 80, Verdict = "sloppy",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Reassignment 2 → attempt 3.
         await reconciler.RunOnceAsync(CancellationToken.None);
@@ -385,7 +391,7 @@ public class Phase52SloppyReassignmentTests
             Iter = 4, Score = 79, Verdict = "sloppy",
             DimsJson = "{}", CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Third reassignment attempt — but PairAttemptCount is already 3,
         // so the reconciler terminal-fails instead.

@@ -50,7 +50,7 @@ public static class WorkItemBaseBranchResolver
     ///   the resolver tries each table in turn.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<string> ResolveAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return "main";
 
@@ -90,7 +90,7 @@ public static class WorkItemBaseBranchResolver
         var repoId = wi?.RepoId ?? ws?.RepoId;
         if (!string.IsNullOrEmpty(repoId))
         {
-            var repo = await db.Repos.AsNoTracking()
+            var repo = await control.Repos.AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (!string.IsNullOrEmpty(repo?.DefaultBranch))
             {

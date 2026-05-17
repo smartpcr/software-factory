@@ -125,8 +125,8 @@ public class PlanDocBriefConsistencyTests
 
         Assert.Contains("`## Dependencies` section directly under the H1 heading", brief);
         Assert.Contains("`### Dependencies`", brief);
-        Assert.Contains("_none — start phase_", brief);
-        Assert.Contains("_none — start stage_", brief);
+        Assert.Contains("_none -- start phase_", brief);
+        Assert.Contains("_none -- start stage_", brief);
     }
 
     /// <summary>

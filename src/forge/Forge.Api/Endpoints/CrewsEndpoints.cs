@@ -67,12 +67,13 @@ public static class CrewsEndpoints
     /// filtered by repo or team-prefix; default returns everything.
     /// </summary>
     private static async Task<IResult> ListDomainExperts(
+        ControlDbContext control,
         ProductDbContext db,
         string? repoId,
         string? prefix,
         CancellationToken ct)
     {
-        var q = db.DomainExperts.AsNoTracking().AsQueryable();
+        var q = control.DomainExperts.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(repoId)) q = q.Where(e => e.RepoId == repoId);
         if (!string.IsNullOrWhiteSpace(prefix)) q = q.Where(e => e.ContentId.StartsWith(prefix));
         var rows = await q.OrderBy(e => e.Topic).ToListAsync(ct);
@@ -80,12 +81,12 @@ public static class CrewsEndpoints
             e.ContentId, e.RepoId, e.Path, e.Topic, e.Summary, e.IndexedAt)).ToList());
     }
 
-    private static async Task<IResult> GetSalary(string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSalary(string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await control.AgentUsage.AsNoTracking()
             .Where(r => r.CrewId == id)
             .Select(r => new { r.StartedAt, r.CostUsd })
             .ToListAsync(ct);
@@ -118,16 +119,16 @@ public static class CrewsEndpoints
             Sparkline: sparkline.Select(Round).ToList()));
     }
 
-    private static async Task<IResult> GetSalaryTodayTotal(ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSalaryTodayTotal(ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await control.AgentUsage.AsNoTracking()
             .Select(r => new { r.StartedAt, r.CostUsd, r.Status })
             .ToListAsync(ct);
         var todays = rows.Where(r => r.StartedAt >= startOfDay).ToList();
         var total = todays.Sum(r => r.CostUsd);
         // Phase 44 — active agent count from durable claims, not transient usage rows.
-        var active = await db.AgentClaims.CountAsync(c => c.ReleasedAt == null, ct);
+        var active = await control.AgentClaims.CountAsync(c => c.ReleasedAt == null, ct);
         return Results.Ok(new Forge.Api.Contracts.SalaryTodaySummary(Round(total), active));
     }
 
@@ -138,9 +139,9 @@ public static class CrewsEndpoints
     /// task_queue picked-up path. <see cref="CrewConcurrencySummary"/> for
     /// the full rationale.
     /// </summary>
-    private static async Task<IResult> GetConcurrency(ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetConcurrency(ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var crews = await db.Crews.AsNoTracking()
+        var crews = await control.Crews.AsNoTracking()
             .Select(c => new { c.Id, c.Name, c.MaxConcurrent })
             .ToListAsync(ct);
 
@@ -148,12 +149,12 @@ public static class CrewsEndpoints
         // whose row was deleted are folded into a synthetic "(unassigned)"
         // bucket so the global Active total stays honest even when an agent
         // has drifted off its crew.
-        var openClaimAgents = await db.AgentClaims.AsNoTracking()
+        var openClaimAgents = await control.AgentClaims.AsNoTracking()
             .Where(c => c.ReleasedAt == null)
             .Select(c => c.AgentId)
             .ToListAsync(ct);
 
-        var agentCrews = await db.Agents.AsNoTracking()
+        var agentCrews = await control.Agents.AsNoTracking()
             .Where(a => openClaimAgents.Contains(a.Id))
             .Select(a => new { a.Id, a.CrewId })
             .ToListAsync(ct);
@@ -200,11 +201,11 @@ public static class CrewsEndpoints
 
     private static decimal Round(decimal v) => Math.Round(v, 6);
 
-    private static async Task<IResult> GetBudget(string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetBudget(string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var spent = await TodaysSpendAsync(db, id, ct);
+        var spent = await TodaysSpendAsync(control, id, ct);
         var remaining = crew.DailyBudgetUsd is decimal cap ? cap - spent : (decimal?)null;
         return Results.Ok(new Forge.Api.Contracts.CrewBudget(
             CrewId: id,
@@ -221,7 +222,7 @@ public static class CrewsEndpoints
     /// uses a decimal→double value converter that doesn't push through SUM.
     /// Volume is bounded (one crew × one day), so this is cheap.
     /// </summary>
-    public static async Task<decimal> TodaysSpendAsync(DbContext db, string crewId, CancellationToken ct)
+    public static async Task<decimal> TodaysSpendAsync(ControlDbContext db, string crewId, CancellationToken ct)
     {
         var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
         var rows = await db.Set<AgentUsageRow>().AsNoTracking()
@@ -231,15 +232,15 @@ public static class CrewsEndpoints
         return rows.Where(r => r.StartedAt >= startOfDay).Sum(r => r.CostUsd);
     }
 
-    private static async Task<IResult> List(ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> List(ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var q = db.Crews.AsNoTracking().AsQueryable();
+        var q = control.Crews.AsNoTracking().AsQueryable();
         var rows = await q.OrderBy(c => c.Sort).ThenBy(c => c.Name).ToListAsync(ct);
 
         // Inflate the roster in a single round-trip rather than N+1. Sort
         // client-side because SQLite EF can't translate ORDER BY DateTimeOffset.
         var ids = rows.Select(r => r.Id).ToHashSet();
-        var memberRows = await db.CrewMembers.AsNoTracking()
+        var memberRows = await control.CrewMembers.AsNoTracking()
                 .Where(m => ids.Contains(m.CrewId))
                 .Select(m => new { m.CrewId, m.AgentId, m.Role, m.AddedAt, m.AddedBy })
                 .ToListAsync(ct);
@@ -257,12 +258,12 @@ public static class CrewsEndpoints
             .ToList());
     }
 
-    private static async Task<IResult> Get(string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var row = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        var row = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         return row is null
             ? Results.Problem(title: $"Crew {id} not found", statusCode: 404)
-            : Results.Ok(await MapCrewAsync(row, db, ct));
+            : Results.Ok(await MapCrewAsync(row, control, db, ct));
     }
 
     public sealed record CreateCrewRequest(
@@ -286,18 +287,19 @@ public static class CrewsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateCrewRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
         // Crew mutations require global PO (crews are not product-scoped).
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null || string.IsNullOrWhiteSpace(req.Id) || string.IsNullOrWhiteSpace(req.Name))
         {
             return Results.Problem(title: "id and name are required", statusCode: 400);
         }
-        if (await db.Crews.AnyAsync(c => c.Id == req.Id, ct))
+        if (await control.Crews.AnyAsync(c => c.Id == req.Id, ct))
         {
             return Results.Problem(title: $"Crew {req.Id} already exists", statusCode: 409);
         }
@@ -306,7 +308,7 @@ public static class CrewsEndpoints
         var depth = 0;
         if (!string.IsNullOrEmpty(req.ParentCrewId))
         {
-            var parent = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ParentCrewId, ct);
+            var parent = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ParentCrewId, ct);
             if (parent is null) return Results.Problem(title: $"Parent crew {req.ParentCrewId} not found", statusCode: 400);
             if (parent.Depth >= 2) return Results.Problem(title: "Hierarchy depth cap is 3 (Org → Team → Squad)", statusCode: 400);
             depth = parent.Depth + 1;
@@ -327,7 +329,7 @@ public static class CrewsEndpoints
         }
         var shift = NormaliseShift(req.Shift) ?? "day";
 
-        var maxSort = await db.Crews.Select(c => (int?)c.Sort).MaxAsync(ct) ?? -1;
+        var maxSort = await control.Crews.Select(c => (int?)c.Sort).MaxAsync(ct) ?? -1;
         var row = new CrewRow
         {
             Id = req.Id,
@@ -348,9 +350,9 @@ public static class CrewsEndpoints
             WeeklyCap = req.WeeklyCap ?? 20,
             Shift = shift,
         };
-        db.Crews.Add(row);
-        await db.SaveChangesAsync(ct);
-        return Results.Created($"/api/crews/{row.Id}", await MapCrewAsync(row, db, ct));
+        control.Crews.Add(row);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Created($"/api/crews/{row.Id}", await MapCrewAsync(row, control, db, ct));
     }
 
     public sealed record PatchCrewRequest(
@@ -379,14 +381,15 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PatchCrewRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var row = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
         // Crew mutations require global PO (crews are not product-scoped).
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
@@ -398,13 +401,13 @@ public static class CrewsEndpoints
             var newLead = string.IsNullOrWhiteSpace(req.Lead) ? null : req.Lead;
             if (newLead != row.Lead)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "lead", FromValue = row.Lead, ToValue = newLead, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "lead", FromValue = row.Lead, ToValue = newLead, ByUserId = caller });
                 row.Lead = newLead;
             }
         }
         if (req.Model is not null && req.Model != row.Model)
         {
-            db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "model", FromValue = row.Model, ToValue = req.Model, ByUserId = caller });
+            control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "model", FromValue = row.Model, ToValue = req.Model, ByUserId = caller });
             row.Model = req.Model;
         }
         if (req.ModelInputPricePerMTok is decimal i) row.ModelInputPricePerMTok = i;
@@ -421,7 +424,7 @@ public static class CrewsEndpoints
             if (nb is null) return Results.Problem(title: $"Unknown backend '{req.Backend}'", statusCode: 400);
             if (nb != row.Backend)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "backend", FromValue = row.Backend, ToValue = nb, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "backend", FromValue = row.Backend, ToValue = nb, ByUserId = caller });
                 row.Backend = nb;
             }
         }
@@ -431,7 +434,7 @@ public static class CrewsEndpoints
             if (nm is null) return Results.Problem(title: $"Unknown invoke mode '{req.InvokeMode}'", statusCode: 400);
             if (nm != row.InvokeMode)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "mode", FromValue = row.InvokeMode, ToValue = nm, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "mode", FromValue = row.InvokeMode, ToValue = nm, ByUserId = caller });
                 row.InvokeMode = nm;
             }
         }
@@ -450,7 +453,7 @@ public static class CrewsEndpoints
             }
             if (ns != row.Shift)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "shift", FromValue = row.Shift, ToValue = ns, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "shift", FromValue = row.Shift, ToValue = ns, ByUserId = caller });
                 row.Shift = ns;
             }
         }
@@ -462,7 +465,7 @@ public static class CrewsEndpoints
             var next = string.IsNullOrWhiteSpace(req.DefaultGeneratorAgentId) ? null : req.DefaultGeneratorAgentId;
             if (next != row.DefaultGeneratorAgentId)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "default-generator", FromValue = row.DefaultGeneratorAgentId, ToValue = next, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "default-generator", FromValue = row.DefaultGeneratorAgentId, ToValue = next, ByUserId = caller });
                 row.DefaultGeneratorAgentId = next;
             }
         }
@@ -471,7 +474,7 @@ public static class CrewsEndpoints
             var next = string.IsNullOrWhiteSpace(req.DefaultEvaluatorAgentId) ? null : req.DefaultEvaluatorAgentId;
             if (next != row.DefaultEvaluatorAgentId)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "default-evaluator", FromValue = row.DefaultEvaluatorAgentId, ToValue = next, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "default-evaluator", FromValue = row.DefaultEvaluatorAgentId, ToValue = next, ByUserId = caller });
                 row.DefaultEvaluatorAgentId = next;
             }
         }
@@ -490,7 +493,7 @@ public static class CrewsEndpoints
             }
             if (next != row.EvaluatorModel)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "evaluator-model", FromValue = row.EvaluatorModel, ToValue = next, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "evaluator-model", FromValue = row.EvaluatorModel, ToValue = next, ByUserId = caller });
                 row.EvaluatorModel = next;
             }
         }
@@ -510,7 +513,7 @@ public static class CrewsEndpoints
         {
             if (row.ParentCrewId is not null)
             {
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "parent-change", FromValue = row.ParentCrewId, ToValue = null, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "parent-change", FromValue = row.ParentCrewId, ToValue = null, ByUserId = caller });
             }
             row.ParentCrewId = null;
             row.Depth = 0;
@@ -518,41 +521,41 @@ public static class CrewsEndpoints
         else if (req.ParentCrewId is not null && req.ParentCrewId != row.ParentCrewId)
         {
             if (req.ParentCrewId == row.Id) return Results.Problem(title: "A crew cannot be its own parent", statusCode: 400);
-            var parent = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ParentCrewId, ct);
+            var parent = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ParentCrewId, ct);
             if (parent is null) return Results.Problem(title: $"Parent crew {req.ParentCrewId} not found", statusCode: 400);
             if (parent.Depth >= 2) return Results.Problem(title: "Hierarchy depth cap is 3 (Org → Team → Squad)", statusCode: 400);
-            db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "parent-change", FromValue = row.ParentCrewId, ToValue = req.ParentCrewId, ByUserId = caller });
+            control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "parent-change", FromValue = row.ParentCrewId, ToValue = req.ParentCrewId, ByUserId = caller });
             row.ParentCrewId = req.ParentCrewId;
             row.Depth = parent.Depth + 1;
         }
 
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(row, db, ct));
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(row, control, db, ct));
     }
 
-    private static async Task<IResult> Delete(HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> Delete(HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var row = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         // Break the pair link before removing so the peer doesn't end up
         // with a stale PairedWithCrewId pointing to a deleted row.
         if (!string.IsNullOrEmpty(row.PairedWithCrewId))
         {
-            var peer = await db.Crews.FirstOrDefaultAsync(c => c.Id == row.PairedWithCrewId, ct);
+            var peer = await control.Crews.FirstOrDefaultAsync(c => c.Id == row.PairedWithCrewId, ct);
             if (peer is not null)
             {
                 peer.PairRole = "standalone";
                 peer.PairedWithCrewId = null;
                 var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = peer.Id, Kind = "crew-unpaired", FromValue = row.Id, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = peer.Id, Kind = "crew-unpaired", FromValue = row.Id, ByUserId = caller });
             }
         }
 
-        db.Crews.Remove(row);
-        await db.SaveChangesAsync(ct);
+        control.Crews.Remove(row);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return Results.NoContent();
     }
 
@@ -562,12 +565,13 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AssignTaskRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         ITaskQueueService taskQueue,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
         // Lead OR global PO. Self-assignment is fine.
@@ -576,17 +580,17 @@ public static class CrewsEndpoints
         // ?force=true path — matches the convention in Check / CheckForProduct
         // so dev / contract tests can drive writes.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var role = RequireRole.ResolveRoleForProduct(ctx, db, null);
+        var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
         var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null
-                : await db.Users.AsNoTracking()
+                : await control.Users.AsNoTracking()
                     .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
                     .Select(u => new { u.Id })
                     .FirstOrDefaultAsync(ct);
             var callerAgentId = callerUser is null ? null
-                : await db.Agents.AsNoTracking().Where(a => a.Id == callerUser.Id).Select(a => (string?)a.Id).FirstOrDefaultAsync(ct);
+                : await control.Agents.AsNoTracking().Where(a => a.Id == callerUser.Id).Select(a => (string?)a.Id).FirstOrDefaultAsync(ct);
             var isLead = !string.IsNullOrEmpty(crew.Lead) && crew.Lead == callerAgentId;
             if (!isLead && !isPo)
             {
@@ -617,7 +621,7 @@ public static class CrewsEndpoints
         }
 
         // Both halves of the pair must be in the roster (or be the lead).
-        var rosterIds = await db.CrewMembers.AsNoTracking()
+        var rosterIds = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == id)
             .Select(m => m.AgentId)
             .ToListAsync(ct);
@@ -645,7 +649,7 @@ public static class CrewsEndpoints
         if (active >= crew.MaxConcurrent && req.Force)
         {
             if (!isPo) return Results.Problem(title: "Force-override requires product-scoped PO", statusCode: 403);
-            db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "quota-override", FromValue = "concurrency", ToValue = $"+1@{active}", ByUserId = caller });
+            control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "quota-override", FromValue = "concurrency", ToValue = $"+1@{active}", ByUserId = caller });
         }
 
         // Stamp the work item with the resolved pair. The plan/coding pipelines
@@ -662,7 +666,7 @@ public static class CrewsEndpoints
         var evalCrewJson = evalCrewId is not null ? $",\"evaluatorCrewId\":\"{evalCrewId}\"" : "";
         wi.AssignedToJson =
             $"{{\"crewId\":\"{id}\",\"agentId\":\"{generator}\",\"generatorAgentId\":\"{generator}\",\"evaluatorAgentId\":{evalJson}{evalCrewJson},\"by\":\"{caller}\"}}";
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         // Enqueue into the task queue so the inbox shows the assignment
         // and the queue worker can pick it up for the agent runner.
@@ -696,22 +700,23 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AddMemberRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrWhiteSpace(req.AgentId)) return Results.Problem(title: "agentId required", statusCode: 400);
-        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == req.AgentId, ct);
+        var agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == req.AgentId, ct);
         if (agent is null) return Results.Problem(title: $"Agent {req.AgentId} not found", statusCode: 404);
 
-        var existing = await db.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == req.AgentId, ct);
+        var existing = await control.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == req.AgentId, ct);
         if (existing is not null)
         {
-            return Results.Ok(await MapCrewAsync(crew, db, ct)); // idempotent
+            return Results.Ok(await MapCrewAsync(crew, control, db, ct)); // idempotent
         }
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
@@ -722,11 +727,11 @@ public static class CrewsEndpoints
         // CrewMemberRow + agents.CrewId so realtime listeners see a
         // single coherent state. Each removal records its own history row so
         // the audit trail tells the full story of the move.
-        var priorMemberships = await db.CrewMembers.Where(m => m.AgentId == req.AgentId).ToListAsync(ct);
+        var priorMemberships = await control.CrewMembers.Where(m => m.AgentId == req.AgentId).ToListAsync(ct);
         foreach (var prior in priorMemberships)
         {
-            db.CrewMembers.Remove(prior);
-            db.CrewHistory.Add(new CrewHistoryRow
+            control.CrewMembers.Remove(prior);
+            control.CrewHistory.Add(new CrewHistoryRow
             {
                 CrewId = prior.CrewId,
                 Kind = "member-move-out",
@@ -736,11 +741,11 @@ public static class CrewsEndpoints
             });
         }
         // If the agent was previously the lead of another crew, demote.
-        var leadCrews = await db.Crews.Where(c => c.Lead == req.AgentId && c.Id != id).ToListAsync(ct);
+        var leadCrews = await control.Crews.Where(c => c.Lead == req.AgentId && c.Id != id).ToListAsync(ct);
         foreach (var lc in leadCrews)
         {
             lc.Lead = null;
-            db.CrewHistory.Add(new CrewHistoryRow
+            control.CrewHistory.Add(new CrewHistoryRow
             {
                 CrewId = lc.Id,
                 Kind = "lead-clear-on-move",
@@ -750,7 +755,7 @@ public static class CrewsEndpoints
             });
         }
 
-        db.CrewMembers.Add(new CrewMemberRow
+        control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = id,
             AgentId = req.AgentId,
@@ -761,10 +766,10 @@ public static class CrewsEndpoints
         // Pin the agent's primary CrewId to the new crew so AgentRow.CrewId
         // matches the visible roster (used by `/api/agents`, salary roll-ups,
         // and the OverviewView agent list).
-        var agentRow = await db.Agents.FirstOrDefaultAsync(a => a.Id == req.AgentId, ct);
+        var agentRow = await control.Agents.FirstOrDefaultAsync(a => a.Id == req.AgentId, ct);
         if (agentRow is not null) agentRow.CrewId = id;
 
-        db.CrewHistory.Add(new CrewHistoryRow
+        control.CrewHistory.Add(new CrewHistoryRow
         {
             CrewId = id,
             Kind = priorMemberships.Count > 0 ? "member-move-in" : "member-add",
@@ -772,8 +777,8 @@ public static class CrewsEndpoints
             ToValue = req.AgentId,
             ByUserId = caller,
         });
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     public sealed record PatchMemberRequest(string Role);
@@ -783,58 +788,61 @@ public static class CrewsEndpoints
         string id,
         string agentId,
         [FromBody] PatchMemberRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
-        var member = await db.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
+        var member = await control.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
         if (member is null) return Results.Problem(title: $"{agentId} is not a member of {id}", statusCode: 404);
 
         if (string.IsNullOrWhiteSpace(req.Role)) return Results.Problem(title: "role required", statusCode: 400);
-        if (member.Role == req.Role) return Results.Ok(await MapCrewAsync(crew, db, ct));
+        if (member.Role == req.Role) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-role", FromValue = $"{agentId}:{member.Role}", ToValue = $"{agentId}:{req.Role}", ByUserId = caller });
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-role", FromValue = $"{agentId}:{member.Role}", ToValue = $"{agentId}:{req.Role}", ByUserId = caller });
         member.Role = req.Role;
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     private static async Task<IResult> RemoveMember(
         HttpContext ctx,
         string id,
         string agentId,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
-        var member = await db.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
-        if (member is null) return Results.Ok(await MapCrewAsync(crew, db, ct));
-        db.CrewMembers.Remove(member);
+        var member = await control.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
+        if (member is null) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
+        control.CrewMembers.Remove(member);
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-remove", FromValue = agentId, ByUserId = caller });
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-remove", FromValue = agentId, ByUserId = caller });
 
         // If this agent was the default generator/evaluator, clear it so the
         // crew doesn't keep pointing at someone who's no longer a member.
         if (crew.DefaultGeneratorAgentId == agentId) crew.DefaultGeneratorAgentId = null;
         if (crew.DefaultEvaluatorAgentId == agentId) crew.DefaultEvaluatorAgentId = null;
 
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     // ── Phase 13c — auto-assign unassigned agents ──────────────────────────
 
     private static async Task<IResult> AutoAssign(
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -846,9 +854,9 @@ public static class CrewsEndpoints
         if (auth is not null) return auth;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var actions = await ApplyAutoAssignAsync(db, caller, ct);
+        var actions = await ApplyAutoAssignAsync(control, db, caller, ct);
         return Results.Ok(new AutoAssignResult(
-            Inspected: await db.Agents.CountAsync(ct),
+            Inspected: await control.Agents.CountAsync(ct),
             Added: actions.Count,
             Actions: actions));
     }
@@ -869,6 +877,7 @@ public static class CrewsEndpoints
     /// Idempotent: subsequent runs no-op.
     /// </summary>
     public static async Task<List<AutoAssignAction>> ApplyAutoAssignAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string? caller,
         CancellationToken ct)
@@ -878,7 +887,7 @@ public static class CrewsEndpoints
         // Resolve crews-by-team. Match crew name prefix (Architecture / Engineering / etc.)
         // case-insensitively. If a team's crew doesn't exist this run skips it —
         // ForgeSeed creates the four canonical crews; this stays defensive.
-        var crews = await db.Crews.ToListAsync(ct);
+        var crews = await control.Crews.ToListAsync(ct);
         var crewByTeam = new Dictionary<string, CrewRow>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in crews)
         {
@@ -889,7 +898,7 @@ public static class CrewsEndpoints
         // Build the alternation seed per crew from the existing roster size.
         // If 3 members are already in, the next add is index 3 → evaluator
         // (index 0 = generator, 1 = evaluator, 2 = generator, …).
-        var memberCounts = (await db.CrewMembers.AsNoTracking()
+        var memberCounts = (await control.CrewMembers.AsNoTracking()
                 .Select(m => new { m.CrewId })
                 .ToListAsync(ct))
             .GroupBy(m => m.CrewId)
@@ -897,8 +906,8 @@ public static class CrewsEndpoints
 
         // Walk agents without a crew (CrewMembers row OR being a lead).
         var leadIds = crews.Where(c => !string.IsNullOrEmpty(c.Lead)).Select(c => c.Lead!).ToHashSet();
-        var roster = (await db.CrewMembers.AsNoTracking().Select(m => m.AgentId).ToListAsync(ct)).ToHashSet();
-        var agents = await db.Agents.OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
+        var roster = (await control.CrewMembers.AsNoTracking().Select(m => m.AgentId).ToListAsync(ct)).ToHashSet();
+        var agents = await control.Agents.OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
 
         foreach (var a in agents)
         {
@@ -919,7 +928,7 @@ public static class CrewsEndpoints
             if (string.IsNullOrEmpty(crew.Lead))
             {
                 crew.Lead = a.Id;
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "lead", FromValue = null, ToValue = a.Id, ByUserId = caller });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "lead", FromValue = null, ToValue = a.Id, ByUserId = caller });
                 actions.Add(new AutoAssignAction(a.Id, crew.Id, "lead"));
                 leadIds.Add(a.Id);
                 continue;
@@ -928,14 +937,14 @@ public static class CrewsEndpoints
             // Step 2 — alternate generator / evaluator based on current size.
             var idx = memberCounts.TryGetValue(crew.Id, out var n) ? n : 0;
             var role = idx % 2 == 0 ? "generator" : "evaluator";
-            db.CrewMembers.Add(new CrewMemberRow
+            control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = crew.Id,
                 AgentId = a.Id,
                 Role = role,
                 AddedBy = caller ?? "auto-assign",
             });
-            db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "member-add", ToValue = $"{a.Id}:{role}", ByUserId = caller ?? "auto-assign" });
+            control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "member-add", ToValue = $"{a.Id}:{role}", ByUserId = caller ?? "auto-assign" });
             roster.Add(a.Id);
             memberCounts[crew.Id] = idx + 1;
             actions.Add(new AutoAssignAction(a.Id, crew.Id, role));
@@ -946,7 +955,7 @@ public static class CrewsEndpoints
             // intervention. Subsequent runs leave it alone.
             if (crew.DefaultGeneratorAgentId is null || crew.DefaultEvaluatorAgentId is null)
             {
-                var members = await db.CrewMembers.AsNoTracking()
+                var members = await control.CrewMembers.AsNoTracking()
                     .Where(m => m.CrewId == crew.Id)
                     .Select(m => new { m.AgentId, m.Role })
                     .ToListAsync(ct);
@@ -960,12 +969,12 @@ public static class CrewsEndpoints
                 if (crew.DefaultGeneratorAgentId is null && firstGen is not null)
                 {
                     crew.DefaultGeneratorAgentId = firstGen;
-                    db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "default-generator", ToValue = firstGen, ByUserId = caller ?? "auto-assign" });
+                    control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "default-generator", ToValue = firstGen, ByUserId = caller ?? "auto-assign" });
                 }
                 if (crew.DefaultEvaluatorAgentId is null && firstEval is not null)
                 {
                     crew.DefaultEvaluatorAgentId = firstEval;
-                    db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "default-evaluator", ToValue = firstEval, ByUserId = caller ?? "auto-assign" });
+                    control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "default-evaluator", ToValue = firstEval, ByUserId = caller ?? "auto-assign" });
                 }
             }
         }
@@ -984,7 +993,7 @@ public static class CrewsEndpoints
                 if (pick is not null && pick != crew.Model)
                 {
                     crew.EvaluatorModel = pick;
-                    db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "evaluator-model", ToValue = pick, ByUserId = caller ?? "auto-assign" });
+                    control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "evaluator-model", ToValue = pick, ByUserId = caller ?? "auto-assign" });
                 }
             }
         }
@@ -996,7 +1005,7 @@ public static class CrewsEndpoints
         // as a <see cref="DomainExpertRow"/> with a stable team-scoped
         // ContentId (e.g. <c>team:engineering:coding</c>) so the existing
         // capability picker + soul.md prompt-cache prefix work unchanged.
-        await EnsureTeamCapabilitiesAsync(db, caller, ct);
+        await EnsureTeamCapabilitiesAsync(control, db, caller, ct);
 
         // Step 6 — split each team's roster evenly between day and night crews.
         // For every day crew that has a night sibling (ParentCrewId == day.Id),
@@ -1008,12 +1017,12 @@ public static class CrewsEndpoints
             var dayCrew = crews.FirstOrDefault(c => c.Id == nightCrew.ParentCrewId);
             if (dayCrew is null) continue;
 
-            var dayMembers = (await db.CrewMembers
+            var dayMembers = (await control.CrewMembers
                 .Where(m => m.CrewId == dayCrew.Id)
                 .ToListAsync(ct))
                 .OrderBy(m => m.AddedAt)
                 .ToList();
-            var nightMembers = await db.CrewMembers
+            var nightMembers = await control.CrewMembers
                 .Where(m => m.CrewId == nightCrew.Id)
                 .ToListAsync(ct);
 
@@ -1026,20 +1035,20 @@ public static class CrewsEndpoints
             var toMove = dayMembers.Skip(half).ToList();
             foreach (var m in toMove)
             {
-                db.CrewMembers.Remove(m);
-                db.CrewMembers.Add(new CrewMemberRow
+                control.CrewMembers.Remove(m);
+                control.CrewMembers.Add(new CrewMemberRow
                 {
                     CrewId = nightCrew.Id,
                     AgentId = m.AgentId,
                     Role = m.Role,
                     AddedBy = caller ?? "auto-assign",
                 });
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = dayCrew.Id, Kind = "member-move-out", ToValue = $"{m.AgentId} → {nightCrew.Id}", ByUserId = caller ?? "auto-assign" });
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = nightCrew.Id, Kind = "member-move-in", ToValue = $"{m.AgentId} ← {dayCrew.Id}", ByUserId = caller ?? "auto-assign" });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = dayCrew.Id, Kind = "member-move-out", ToValue = $"{m.AgentId} → {nightCrew.Id}", ByUserId = caller ?? "auto-assign" });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = nightCrew.Id, Kind = "member-move-in", ToValue = $"{m.AgentId} ← {dayCrew.Id}", ByUserId = caller ?? "auto-assign" });
             }
         }
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return actions;
     }
 
@@ -1085,12 +1094,13 @@ public static class CrewsEndpoints
     /// on ContentId), and capabilities already in the JSON array are skipped.
     /// </summary>
     public static async Task EnsureTeamCapabilitiesAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string? caller,
         CancellationToken ct)
     {
         // 1) Materialise one DomainExpertRow per (team, capability).
-        var existingByContentId = (await db.DomainExperts.AsNoTracking()
+        var existingByContentId = (await control.DomainExperts.AsNoTracking()
                 .Select(e => e.ContentId)
                 .ToListAsync(ct))
             .ToHashSet();
@@ -1100,7 +1110,7 @@ public static class CrewsEndpoints
             {
                 var contentId = $"team:{team.ToLowerInvariant()}:{cap.Slug}";
                 if (existingByContentId.Contains(contentId)) continue;
-                db.DomainExperts.Add(new DomainExpertRow
+                control.DomainExperts.Add(new DomainExpertRow
                 {
                     ContentId = contentId,
                     RepoId = "*",   // sentinel: built-in, not tied to a repo
@@ -1111,12 +1121,12 @@ public static class CrewsEndpoints
                 existingByContentId.Add(contentId);
             }
         }
-        await db.SaveChangesAsync(ct); // commit before crew-side update so the FK-by-content-id is satisfied
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct); // commit before crew-side update so the FK-by-content-id is satisfied
 
         // 2) Append the team's capabilities onto every matching crew's
         // CapabilitiesJson. Skip when already present (preserves operator-added
         // sha256 capabilities that may already be in the array).
-        var crews = await db.Crews.ToListAsync(ct);
+        var crews = await control.Crews.ToListAsync(ct);
         var changed = false;
         foreach (var crew in crews)
         {
@@ -1132,7 +1142,7 @@ public static class CrewsEndpoints
                 if (currentSet.Contains(contentId)) continue;
                 current.Add(contentId);
                 currentSet.Add(contentId);
-                db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "capability-add", ToValue = contentId, ByUserId = caller ?? "auto-assign" });
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "capability-add", ToValue = contentId, ByUserId = caller ?? "auto-assign" });
                 added = true;
             }
             if (added)
@@ -1141,7 +1151,7 @@ public static class CrewsEndpoints
                 changed = true;
             }
         }
-        if (changed) await db.SaveChangesAsync(ct);
+        if (changed) await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
     }
 
     private static string? TeamFromAgentRole(string role) => role?.ToLowerInvariant() switch
@@ -1203,47 +1213,49 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] CapabilityRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrWhiteSpace(req.ContentId)) return Results.Problem(title: "contentId required", statusCode: 400);
-        var exists = await db.DomainExperts.AsNoTracking().AnyAsync(e => e.ContentId == req.ContentId, ct);
+        var exists = await control.DomainExperts.AsNoTracking().AnyAsync(e => e.ContentId == req.ContentId, ct);
         if (!exists) return Results.Problem(title: $"No domain expert indexed at contentId={req.ContentId}", statusCode: 404);
 
         var caps = ParseCapsJson(crew.CapabilitiesJson);
-        if (caps.Contains(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, db, ct));
+        if (caps.Contains(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         caps.Add(req.ContentId);
         crew.CapabilitiesJson = SerialiseCaps(caps);
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-add", ToValue = req.ContentId, ByUserId = caller });
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-add", ToValue = req.ContentId, ByUserId = caller });
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     private static async Task<IResult> RemoveCapability(
         HttpContext ctx,
         string id,
         [FromBody] CapabilityRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var caps = ParseCapsJson(crew.CapabilitiesJson);
-        if (!caps.Remove(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, db, ct));
+        if (!caps.Remove(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         crew.CapabilitiesJson = SerialiseCaps(caps);
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-remove", FromValue = req.ContentId, ByUserId = caller });
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-remove", FromValue = req.ContentId, ByUserId = caller });
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     // ── Phase 16.2 — pair management ───────────────────────────────────────
@@ -1259,12 +1271,13 @@ public static class CrewsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] PairCrewRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null || string.IsNullOrWhiteSpace(req.OtherCrewId))
@@ -1275,7 +1288,7 @@ public static class CrewsEndpoints
         {
             return Results.Problem(title: "A crew cannot pair with itself.", statusCode: 400);
         }
-        var other = await db.Crews.FirstOrDefaultAsync(c => c.Id == req.OtherCrewId, ct);
+        var other = await control.Crews.FirstOrDefaultAsync(c => c.Id == req.OtherCrewId, ct);
         if (other is null) return Results.Problem(title: $"Crew {req.OtherCrewId} not found", statusCode: 404);
 
         // Q16.2 — only arch + eng crews may pair. Review and QA stay on the
@@ -1310,7 +1323,7 @@ public static class CrewsEndpoints
         // Idempotent: re-pairing the same two crews is a no-op.
         if (crew.PairedWithCrewId == other.Id && other.PairedWithCrewId == crew.Id)
         {
-            return Results.Ok(await MapCrewAsync(crew, db, ct));
+            return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         }
 
         crew.PairRole = "generator";
@@ -1319,10 +1332,10 @@ public static class CrewsEndpoints
         other.PairedWithCrewId = crew.Id;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id,  Kind = "crew-paired", ToValue = other.Id, ByUserId = caller });
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-paired", ToValue = crew.Id,  ByUserId = caller });
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id,  Kind = "crew-paired", ToValue = other.Id, ByUserId = caller });
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-paired", ToValue = crew.Id,  ByUserId = caller });
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     /// <summary>
@@ -1333,20 +1346,21 @@ public static class CrewsEndpoints
     private static async Task<IResult> UnpairCrew(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrEmpty(crew.PairedWithCrewId))
         {
-            return Results.Ok(await MapCrewAsync(crew, db, ct)); // already standalone
+            return Results.Ok(await MapCrewAsync(crew, control, db, ct)); // already standalone
         }
 
-        var other = await db.Crews.FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
+        var other = await control.Crews.FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
 
         var formerOtherId = crew.PairedWithCrewId;
@@ -1356,19 +1370,19 @@ public static class CrewsEndpoints
         {
             other.PairRole = "standalone";
             other.PairedWithCrewId = null;
-            db.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-unpaired", FromValue = crew.Id, ByUserId = caller });
+            control.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-unpaired", FromValue = crew.Id, ByUserId = caller });
         }
-        db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "crew-unpaired", FromValue = formerOtherId, ByUserId = caller });
-        await db.SaveChangesAsync(ct);
-        return Results.Ok(await MapCrewAsync(crew, db, ct));
+        control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "crew-unpaired", FromValue = formerOtherId, ByUserId = caller });
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, control, db, ct));
     }
 
     // ── Phase 13.1 — history readout ───────────────────────────────────────
 
-    private static async Task<IResult> GetHistory(string id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         // SQLite EF can't ORDER BY DateTimeOffset — pull then sort client-side.
-        var rows = await db.CrewHistory.AsNoTracking()
+        var rows = await control.CrewHistory.AsNoTracking()
             .Where(h => h.CrewId == id)
             .ToListAsync(ct);
         return Results.Ok(rows
@@ -1386,9 +1400,9 @@ public static class CrewsEndpoints
     private static async Task<IResult> PlanStub(
         HttpContext ctx, string id,
         [FromBody] PlanRequest req,
-        ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
         // Skip the schedule gate for explicit restart requests — the user
@@ -1396,7 +1410,7 @@ public static class CrewsEndpoints
         // schedule is counter-productive and breaks the UX.
         if (!req.Restart)
         {
-            var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "plan", ct);
+            var sched = await ApplyScheduleGateAsync(ctx, control, db, crew, kind: "plan", ct);
             if (sched is not null) return sched;
         }
 
@@ -1425,7 +1439,7 @@ public static class CrewsEndpoints
                     wi.State = "active";
                 }
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             }
 
             // Delete all deliverable rows so the iter counter resets to 0.
@@ -1435,7 +1449,7 @@ public static class CrewsEndpoints
             if (deliverables.Count > 0)
             {
                 db.Deliverables.RemoveRange(deliverables);
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             }
         }
 
@@ -1462,12 +1476,12 @@ public static class CrewsEndpoints
     private static async Task<IResult> CodeStub(
         HttpContext ctx, string id,
         [FromBody] CodeRequest req,
-        ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
-        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "code", ct);
+        var sched = await ApplyScheduleGateAsync(ctx, control, db, crew, kind: "code", ct);
         if (sched is not null) return sched;
 
         if (string.Equals(crew.InvokeMode, "cli", StringComparison.OrdinalIgnoreCase))
@@ -1508,6 +1522,7 @@ public static class CrewsEndpoints
     /// <param name="kind">Either <c>plan</c> or <c>code</c>; recorded in the audit row.</param>
     private static async Task<IResult?> ApplyScheduleGateAsync(
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         CrewRow crew,
         string kind,
@@ -1531,17 +1546,17 @@ public static class CrewsEndpoints
 
         // Override requested — require lead OR product-scoped PO.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var role = RequireRole.ResolveRoleForProduct(ctx, db, null);
+        var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
         var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null
-                : await db.Users.AsNoTracking()
+                : await control.Users.AsNoTracking()
                     .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
                     .Select(u => new { u.Id })
                     .FirstOrDefaultAsync(ct);
             var callerAgentId = callerUser is null ? null
-                : await db.Agents.AsNoTracking().Where(a => a.Id == callerUser.Id).Select(a => (string?)a.Id).FirstOrDefaultAsync(ct);
+                : await control.Agents.AsNoTracking().Where(a => a.Id == callerUser.Id).Select(a => (string?)a.Id).FirstOrDefaultAsync(ct);
             var isLead = !string.IsNullOrEmpty(crew.Lead) && crew.Lead == callerAgentId;
             if (!isLead && !isPo)
             {
@@ -1553,7 +1568,7 @@ public static class CrewsEndpoints
         }
 
         // Audit the bypass and let the request proceed.
-        db.CrewHistory.Add(new CrewHistoryRow
+        control.CrewHistory.Add(new CrewHistoryRow
         {
             At = DateTimeOffset.UtcNow,
             CrewId = crew.Id,
@@ -1562,16 +1577,16 @@ public static class CrewsEndpoints
             ToValue = $"local={verdict.LocalNow:u}; tz={verdict.Tz.Id}",
             ByUserId = string.IsNullOrEmpty(caller) ? null : caller,
         });
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return null;
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static async Task<Crew> MapCrewAsync(CrewRow r, ProductDbContext db, CancellationToken ct)
+    private static async Task<Crew> MapCrewAsync(CrewRow r, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         // SQLite EF can't translate ORDER BY DateTimeOffset — pull then sort.
-        var rows = await db.CrewMembers.AsNoTracking()
+        var rows = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == r.Id)
             .Select(m => new { m.AgentId, m.Role, m.AddedAt, m.AddedBy })
             .ToListAsync(ct);

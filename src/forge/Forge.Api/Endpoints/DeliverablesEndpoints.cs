@@ -36,14 +36,14 @@ public static class DeliverablesEndpoints
         return app;
     }
 
-    private static async Task<IResult> Get(long id, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> Get(long id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var row = await db.Deliverables.AsNoTracking().FirstOrDefaultAsync(d => d.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Deliverable {id} not found", statusCode: 404);
         return Results.Ok(MapToDto(row));
     }
 
-    private static async Task<IResult> ListByWorkItem(string workItemId, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListByWorkItem(string workItemId, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var rows = (await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == workItemId)
@@ -67,6 +67,7 @@ public static class DeliverablesEndpoints
         long id,
         [FromBody] DeliverableDisputeRequest req,
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -96,18 +97,18 @@ public static class DeliverablesEndpoints
         // agent's crew. Single-user-dev pass-through (RequireRole = null) is
         // tolerated to match the existing assign / patch endpoints' style.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == row.CrewId, ct);
-        var role = RequireRole.ResolveRoleForProduct(ctx, db, null);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == row.CrewId, ct);
+        var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
         var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null
-                : await db.Users.AsNoTracking()
+                : await control.Users.AsNoTracking()
                     .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
                     .Select(u => new { u.Id })
                     .FirstOrDefaultAsync(ct);
             var callerAgentId = callerUser is null ? null
-                : await db.Agents.AsNoTracking()
+                : await control.Agents.AsNoTracking()
                     .Where(a => a.Id == callerUser.Id)
                     .Select(a => (string?)a.Id)
                     .FirstOrDefaultAsync(ct);
@@ -123,7 +124,7 @@ public static class DeliverablesEndpoints
         }
 
         // Validate the judge agent exists.
-        var judgeExists = await db.Agents.AsNoTracking().AnyAsync(a => a.Id == req.JudgeAgentId, ct);
+        var judgeExists = await control.Agents.AsNoTracking().AnyAsync(a => a.Id == req.JudgeAgentId, ct);
         if (!judgeExists)
         {
             return Results.Problem(title: $"Agent '{req.JudgeAgentId}' not found", statusCode: 400);

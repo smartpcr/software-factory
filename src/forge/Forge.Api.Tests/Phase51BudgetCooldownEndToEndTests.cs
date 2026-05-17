@@ -48,9 +48,9 @@ public class Phase51BudgetCooldownEndToEndTests
     /// rosters non-lead members for round-robin, so the picker has agent-b
     /// + agent-c to pick from when agent-a is excluded.
     /// </summary>
-    private static async Task SeedCrewAndAgentsAsync(ProductDbContext db, string crewId, decimal? cap)
+    private static async Task SeedCrewAndAgentsAsync(ControlDbContext control, ProductDbContext db, string crewId, decimal? cap)
     {
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = crewId, Name = "Phase51 E2E", Summary = string.Empty,
             Lead = "agent-a", Model = "claude-sonnet-4-6", Backend = "copilot",
@@ -63,18 +63,18 @@ public class Phase51BudgetCooldownEndToEndTests
         });
         foreach (var agentId in new[] { "agent-a", "agent-b", "agent-c", "agent-d" })
         {
-            db.Agents.Add(new AgentRow
+            control.Agents.Add(new AgentRow
             {
                 Id = agentId, Name = agentId, Role = "eng",
                 CrewId = crewId, State = "idle",
             });
-            db.CrewMembers.Add(new CrewMemberRow
+            control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = crewId, AgentId = agentId, Role = "coder",
                 AddedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -85,7 +85,7 @@ public class Phase51BudgetCooldownEndToEndTests
     /// populates BudgetCooldownUntilUtc + LastPairAgentIdsJson.
     /// </summary>
     private static async Task<DeliverableLoopResult> RunLoopToBudgetStallAsync(
-        ProductDbContext db, DeliverableLoop loop,
+        ControlDbContext control, ProductDbContext db, DeliverableLoop loop,
         string workItemId, string crewId,
         string generator, string evaluator, decimal cap)
     {
@@ -111,13 +111,13 @@ public class Phase51BudgetCooldownEndToEndTests
 
         // Cost ledger row so the reconciler's cumulative cost recompute
         // matches what the loop accumulated.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = generator, CrewId = crewId, TaskId = workItemId,
             Model = "claude-sonnet-4-6", CostUsd = result.TotalCostUsd,
             CostCategory = "generator", StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return result;
     }
 
@@ -132,23 +132,24 @@ public class Phase51BudgetCooldownEndToEndTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var loop = new DeliverableLoop(db);
+        var loop = new DeliverableLoop(control, db);
         var reconciler = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
 
-        await SeedCrewAndAgentsAsync(db, crewId: "crew-cap-raise", cap: 1.00m);
+        await SeedCrewAndAgentsAsync(control, db, crewId: "crew-cap-raise", cap: 1.00m);
         db.WorkItems.Add(new WorkItemRow
         {
             Id = "wi-cap-raise", Type = "step", State = "active", Title = "T",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         try
         {
             // Step 1 — run until the loop stalls on budget.
             var stalled = await RunLoopToBudgetStallAsync(
-                db, loop, "wi-cap-raise", "crew-cap-raise",
+                control, db, loop, "wi-cap-raise", "crew-cap-raise",
                 generator: "agent-a", evaluator: "agent-b", cap: 1.00m);
             Assert.True(stalled.TotalCostUsd >= 1.00m);
 
@@ -200,24 +201,25 @@ public class Phase51BudgetCooldownEndToEndTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var loop = new DeliverableLoop(db);
+        var loop = new DeliverableLoop(control, db);
         var reconciler = scope.ServiceProvider.GetRequiredService<BudgetCooldownReconciler>();
         var worker = scope.ServiceProvider.GetRequiredService<CrewQueueWorker>();
 
-        await SeedCrewAndAgentsAsync(db, crewId: "crew-rotate", cap: 1.00m);
+        await SeedCrewAndAgentsAsync(control, db, crewId: "crew-rotate", cap: 1.00m);
         db.WorkItems.Add(new WorkItemRow
         {
             Id = "wi-rotate", Type = "step", State = "active", Title = "T",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         try
         {
             // Step 1 — burn budget, park at CooldownBudget with pair (a, b).
             var stalled = await RunLoopToBudgetStallAsync(
-                db, loop, "wi-rotate", "crew-rotate",
+                control, db, loop, "wi-rotate", "crew-rotate",
                 generator: "agent-a", evaluator: "agent-b", cap: 1.00m);
             Assert.True(stalled.TotalCostUsd >= 1.00m);
 
@@ -226,7 +228,7 @@ public class Phase51BudgetCooldownEndToEndTests
             // cooldown-elapsed branch fires on the next tick.
             var parked = await db.WorkItems.FirstAsync(w => w.Id == "wi-rotate");
             parked.BudgetCooldownUntilUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Step 3 — reconciler tick resumes the row WITH LastPairAgentIdsJson
             // still populated (so the claim picker rotates).

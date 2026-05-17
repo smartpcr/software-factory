@@ -103,6 +103,7 @@ public static class WorkstreamRecovery
     /// open-questions answers.</para>
     /// </summary>
     public static async Task<SoftResetReport> SoftResetForResumeAsync(
+        ControlDbContext control,
         ProductDbContext db,
         WorkstreamRow ws,
         WorkItemRow? wi,
@@ -162,12 +163,12 @@ public static class WorkstreamRecovery
             // attempt starts at zero. Matches the Workstream Restart
             // endpoint's wipe semantics so the operator sees consistent
             // cost-card behavior across recovery surfaces.
-            var usage = await db.AgentUsage
+            var usage = await control.AgentUsage
                 .Where(u => u.TaskId == wi.Id)
                 .ToListAsync(ct);
             if (usage.Count > 0)
             {
-                db.AgentUsage.RemoveRange(usage);
+                control.AgentUsage.RemoveRange(usage);
                 removedUsage = usage.Count;
             }
         }

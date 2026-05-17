@@ -10,8 +10,7 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>
 /// Phase D — EF model configuration for the **Product DB** entities.
-/// Called from <see cref="ForgeDbContext.OnModelCreating"/> (legacy) and
-/// from <c>ProductDbContext.OnModelCreating</c> (split).
+/// Called from <see cref="ProductDbContext.OnModelCreating"/>.
 ///
 /// <para>Cross-context FKs are dropped because EF can't model an FK
 /// across two physical DB files. The columns and indexes remain so
@@ -19,10 +18,10 @@ using Microsoft.EntityFrameworkCore;
 /// queryable as a plain string. Callers that need the joined product /
 /// repo data must read it from <c>ControlDbContext</c> separately.</para>
 ///
-/// <para>When this configuration is loaded into <see cref="ForgeDbContext"/>
-/// (Phase D interim, single forge.db file), the cross-context FK
-/// declarations are added back by <see cref="ForgeDbContext.OnModelCreating"/>
-/// so behavior matches the pre-split shape exactly.</para>
+/// <para>Phase G — cross-context relationships (e.g. <c>ProductIterationRow</c>
+/// → <c>ProductRow</c>) become loose string columns post-split. FK
+/// semantics are enforced at the application layer by
+/// <c>IProductDbContextFactory</c>.</para>
 /// </summary>
 public static class DbModelProduct
 {
@@ -89,10 +88,9 @@ public static class DbModelProduct
         mb.Entity<DeliverableQuestionRow>().HasIndex(x => new { x.WorkItemId, x.ExternalId, x.Iter });
 
         // Phase 15.1 — product-scoped iteration registry.
-        // NOTE (Phase D): cross-context FK to ProductRow is added by
-        // ForgeDbContext.OnModelCreating only (single-file mode). Inside
-        // ProductDbContext the FK declaration is omitted because EF can't
-        // model an FK across DB files.
+        // NOTE (Phase D): cross-context FK to ProductRow is omitted here
+        // because EF can't model an FK across DB files. The application
+        // layer enforces the relationship via IProductDbContextFactory.
         mb.Entity<ProductIterationRow>().ToTable("product_iterations").HasKey(x => x.Id);
         // Q15.4 — re-import resolves rename via id, so (product, providerNodeId) is unique.
         mb.Entity<ProductIterationRow>()

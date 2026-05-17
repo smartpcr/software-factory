@@ -135,10 +135,11 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed an agent_usage row carrying 500_001 generator tokens.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-cap",
             CrewId = "crew-x",
@@ -150,10 +151,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (sloppy, total) = await SloppyDetector.CheckTokenCapAsync(
-            db, "wi-token-cap", "agent-gen-cap", budgetWindowStartUtc: null, CancellationToken.None);
+            control, db, "wi-token-cap", "agent-gen-cap", budgetWindowStartUtc: null, CancellationToken.None);
         Assert.True(sloppy);
         Assert.Equal(500_001, total);
     }
@@ -164,12 +165,13 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Evaluator agent burns 600K (above cap); generator burns 100K
         // (below). The check is scoped to AgentId == generatorAgentId, so
         // the evaluator's tokens are correctly ignored.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-eval-bloat", CrewId = "crew-x", TaskId = "wi-eval-bloat",
             Model = "claude-sonnet-4-6",
@@ -177,7 +179,7 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
             CostCategory = "evaluator",
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-cool", CrewId = "crew-x", TaskId = "wi-eval-bloat",
             Model = "claude-sonnet-4-6",
@@ -185,10 +187,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (sloppy, total) = await SloppyDetector.CheckTokenCapAsync(
-            db, "wi-eval-bloat", "agent-gen-cool", budgetWindowStartUtc: null, CancellationToken.None);
+            control, db, "wi-eval-bloat", "agent-gen-cool", budgetWindowStartUtc: null, CancellationToken.None);
         Assert.False(sloppy);
         Assert.Equal(100_000, total);
     }
@@ -199,12 +201,13 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var windowStart = DateTimeOffset.UtcNow.AddMinutes(-10);
 
         // Pre-window row: 600K (would trigger if counted).
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-win", CrewId = "crew-x", TaskId = "wi-window",
             Model = "claude-sonnet-4-6",
@@ -213,7 +216,7 @@ public class Phase52SloppyDetectorTests
             CostCategory = "generator",
         });
         // Post-window row: 100K (does NOT trigger).
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-win", CrewId = "crew-x", TaskId = "wi-window",
             Model = "claude-sonnet-4-6",
@@ -221,10 +224,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = windowStart.AddMinutes(2), // inside window
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (sloppy, total) = await SloppyDetector.CheckTokenCapAsync(
-            db, "wi-window", "agent-gen-win", windowStart, CancellationToken.None);
+            control, db, "wi-window", "agent-gen-win", windowStart, CancellationToken.None);
         Assert.False(sloppy);
         Assert.Equal(100_000, total);
     }
@@ -246,10 +249,11 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Exactly at the cap → NOT sloppy (strict >, not >=).
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-edge", CrewId = "crew-x", TaskId = "wi-edge",
             Model = "claude-sonnet-4-6",
@@ -257,10 +261,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var (sloppyAt, totalAt) = await SloppyDetector.CheckTokenCapAsync(
-            db, "wi-edge", "agent-gen-edge", budgetWindowStartUtc: null, CancellationToken.None);
+            control, db, "wi-edge", "agent-gen-edge", budgetWindowStartUtc: null, CancellationToken.None);
         Assert.False(sloppyAt);
         Assert.Equal(500_000, totalAt);
     }
@@ -278,11 +282,12 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Token usage well over the cap AND a textbook plateau pattern —
         // historically both would have fired sloppy; now neither does.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-both", CrewId = "crew-x", TaskId = "wi-both",
             Model = "claude-sonnet-4-6",
@@ -290,10 +295,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var result = await SloppyDetector.CheckAsync(
-            db, "wi-both", "agent-gen-both", budgetWindowStartUtc: null,
+            control, db, "wi-both", "agent-gen-both", budgetWindowStartUtc: null,
             scoresInOrder: new[] { 78, 78, 78, 78 },
             CancellationToken.None);
 
@@ -312,12 +317,13 @@ public class Phase52SloppyDetectorTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Light token usage + strictly-improving scores — was already
         // not-sloppy pre-2026-05-13; remains not-sloppy after the
         // trigger disable.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-gen-fine", CrewId = "crew-x", TaskId = "wi-fine",
             Model = "claude-sonnet-4-6",
@@ -325,10 +331,10 @@ public class Phase52SloppyDetectorTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var result = await SloppyDetector.CheckAsync(
-            db, "wi-fine", "agent-gen-fine", budgetWindowStartUtc: null,
+            control, db, "wi-fine", "agent-gen-fine", budgetWindowStartUtc: null,
             scoresInOrder: new[] { 60, 72, 84, 92 },
             CancellationToken.None);
         Assert.False(result.IsSloppy);

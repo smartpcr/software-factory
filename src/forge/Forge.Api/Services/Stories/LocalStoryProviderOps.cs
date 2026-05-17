@@ -34,6 +34,7 @@ public sealed class LocalStoryProviderOps : IStoryProviderOps
         // singleton can't end up holding a disposed request scope. The
         // factory is itself a singleton tied to the root provider.
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
         return await body(db, hub);

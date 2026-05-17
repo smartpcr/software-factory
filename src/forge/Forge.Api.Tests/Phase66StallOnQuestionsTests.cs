@@ -53,12 +53,13 @@ public class Phase66StallOnQuestionsTests
 
     private static string GenWithoutQuestion() => "Some content without any open questions.";
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
@@ -70,8 +71,8 @@ public class Phase66StallOnQuestionsTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     /// <summary>
@@ -80,11 +81,11 @@ public class Phase66StallOnQuestionsTests
     /// the row with verdict=<c>"stalled-questions"</c> and break out
     /// instead of demoting to iterate and looping.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task PostIter_Gate_Persists_StalledQuestions_When_Pass_Score_With_Unanswered()
     {
         const string wi = "wi-66-postiter-pass";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var genCallCount = 0;
@@ -108,6 +109,7 @@ public class Phase66StallOnQuestionsTests
 
             // Refresh from a fresh DbContext so we don't read cached state.
             using var scope = f.Services.CreateScope();
+            var control_freshDb = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await freshDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi).ToListAsync();
@@ -135,11 +137,11 @@ public class Phase66StallOnQuestionsTests
     /// input is pending) — keeping iterate would burn additional rounds
     /// re-emitting the same question. Stall on iter 1, return immediately.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task PostIter_Gate_Stalls_When_Iterate_Score_With_Unanswered()
     {
         const string wi = "wi-66-postiter-iterate";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var genCallCount = 0;
@@ -168,11 +170,11 @@ public class Phase66StallOnQuestionsTests
     /// must be spent — this is the protection that prevents the
     /// 105-iter $1860 waste pattern.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task PreIter_Gate_Short_Circuits_With_Zero_Agent_Cost_When_Still_Blocked()
     {
         const string wi = "wi-66-preiter";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             // First run: emit question, score 94, stalls.
@@ -200,6 +202,7 @@ public class Phase66StallOnQuestionsTests
 
             // Only the iter-1 row remains; no extra row was persisted by the pre-iter gate.
             using var scope = f.Services.CreateScope();
+            var control_freshDb = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await freshDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi).ToListAsync();
@@ -208,7 +211,7 @@ public class Phase66StallOnQuestionsTests
             // Zero agent_usage rows (no generator turn, no evaluator turn).
             // Iter 1 wrote exactly 2 usage rows (gen + eval); the second
             // RunAsync call must NOT add any more.
-            var usage = await freshDb.AgentUsage.AsNoTracking()
+            var usage = await control_freshDb.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == wi).ToListAsync();
             Assert.Equal(2, usage.Count);
         }
@@ -220,11 +223,11 @@ public class Phase66StallOnQuestionsTests
     /// seeds the prior chain from the iter-1 row (the new "stalled-questions"
     /// is in the resume-eligible set) and continues at iter 2.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task Resume_After_Answer_Seeds_Chain_And_Continues_From_Iter2()
     {
         const string wi = "wi-66-resume";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             // Iter 1: emit question, score 94 → stalled-questions.
@@ -240,6 +243,7 @@ public class Phase66StallOnQuestionsTests
             // endpoint test below exercises the HTTP path).
             using (var s1 = f.Services.CreateScope())
             {
+                var control_d1 = s1.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var d1 = s1.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var q = await d1.DeliverableQuestions.FirstAsync(q => q.WorkItemId == wi);
                 q.Answer = "Use A";
@@ -253,8 +257,9 @@ public class Phase66StallOnQuestionsTests
             int genIterSeen = 0;
             string priorNotes = string.Empty;
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop2 = new DeliverableLoop(db2);
+            var loop2 = new DeliverableLoop(control, db2);
             var secondReq = new DeliverableLoopRequest(
                 wi, "crew-x", "gen-1", "eval-1",
                 Generator: (iter, prior, _) =>
@@ -281,11 +286,11 @@ public class Phase66StallOnQuestionsTests
     /// — reject is the operator-triage terminal signal. Stalled-questions
     /// applies only to pass / iterate.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task Reject_Verdict_Is_Preserved_Even_With_Unanswered()
     {
         const string wi = "wi-66-reject-preserved";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             var req = new DeliverableLoopRequest(
@@ -309,11 +314,11 @@ public class Phase66StallOnQuestionsTests
     /// pins that a stalled-questions row is NEVER silently flipped to
     /// sloppy by the iter-cap epilogue.
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Phase 66 open-question stall gate removed in commit cd396be0 — tests obsolete")]
     public async Task IterCap_Sloppy_Rewrite_Is_Bypassed_By_StalledQuestions_EarlyReturn()
     {
         const string wi = "wi-66-no-sloppy-rewrite";
-        var (f, db, loop) = await SetupAsync(wi);
+        var (f, control, db, loop) = await SetupAsync(wi);
         try
         {
             // MaxIterations=1 — if the loop didn't early-return on
@@ -330,6 +335,7 @@ public class Phase66StallOnQuestionsTests
             Assert.Equal("stalled-questions", result.FinalVerdict);
 
             using var scope = f.Services.CreateScope();
+            var control_freshDb = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var freshDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await freshDb.Deliverables.AsNoTracking().FirstAsync(d => d.WorkItemId == wi);
             // Must be stalled-questions, NEVER sloppy.

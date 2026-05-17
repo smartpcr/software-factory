@@ -37,6 +37,7 @@ public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsy
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var existing = await db.Prs.Select(p => p.Id).ToListAsync();
 
@@ -66,7 +67,7 @@ public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsy
                 ImplJson = JsonSerializer.Serialize(new { description = "Backoff + jitter on webhook retry." }),
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

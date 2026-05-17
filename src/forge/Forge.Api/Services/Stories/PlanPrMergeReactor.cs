@@ -42,6 +42,7 @@ internal static class PlanPrMergeReactor
     /// touched so callers can log a meaningful summary.
     /// </summary>
     public static async Task<int> OnPlanPrMergedAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub>? hub,
@@ -52,7 +53,7 @@ internal static class PlanPrMergeReactor
         // Phase 53 — locate the spawn owning this PR using the helper that
         // covers both the legacy single-PR column (PlanPrId) and the new
         // sequential-mode JSON column (PlanDocPrsJson[*].PrId).
-        var match = await PlanDocStateHelpers.FindByPrIdAsync(db, prId, ct);
+        var match = await PlanDocStateHelpers.FindByPrIdAsync(control, db, prId, ct);
         if (match is null) return 0;
         var spawn = match.Value.Spawn;
         var matchedDocKey = match.Value.DocKey;

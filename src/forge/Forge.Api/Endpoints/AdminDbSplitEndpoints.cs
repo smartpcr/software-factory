@@ -36,11 +36,12 @@ public static class AdminDbSplitEndpoints
         app.MapPost("/api/admin/db/split-dry-run", async (
             HttpContext ctx,
             IConfiguration config,
+            ControlDbContext control,
             ProductDbContext db,
             SplitDryRunService analyzer,
             CancellationToken ct) =>
         {
-            if (RequireRole.Check(ctx, db, RequireRole.ProductOwner) is { } gate) return gate;
+            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
 
             if (!IsEnabled(config))
             {
@@ -64,11 +65,12 @@ public static class AdminDbSplitEndpoints
         app.MapPost("/api/admin/db/split-apply", async (
             HttpContext ctx,
             IConfiguration config,
+            ControlDbContext control,
             ProductDbContext db,
             SplitApplyService applier,
             CancellationToken ct) =>
         {
-            if (RequireRole.Check(ctx, db, RequireRole.ProductOwner) is { } gate) return gate;
+            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
 
             if (!IsEnabled(config))
             {

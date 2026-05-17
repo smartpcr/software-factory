@@ -301,6 +301,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
         // Seed spawn with no attachments yet.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.StorySpawns.Add(new StorySpawnRow
             {
@@ -308,7 +309,7 @@ public class Phase43AttachmentPropagationTests : IDisposable
                 StoryId = storyId,
                 AttachmentsJson = null,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var scopeFactory = f.Services.GetRequiredService<IServiceScopeFactory>();
@@ -324,10 +325,11 @@ public class Phase43AttachmentPropagationTests : IDisposable
         // tick already snapshotted the spawn.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.AttachmentsJson = BuildAttachmentsJson(("late", "late.md", "attachments/up-late/late.md", 7));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var after = await strategy.LoadFreshAttachmentsJsonAsync(spawnId, CancellationToken.None);

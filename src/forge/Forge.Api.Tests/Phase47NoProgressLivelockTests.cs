@@ -43,11 +43,12 @@ public class Phase47NoProgressLivelockTests
     private static string EvalJson(int score) =>
         Fence + "json\n{ \"score\": " + score + " }\n" + Fence;
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(string workItemId)
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(string workItemId)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
@@ -58,8 +59,8 @@ public class Phase47NoProgressLivelockTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     /// <summary>
@@ -74,7 +75,7 @@ public class Phase47NoProgressLivelockTests
     [Fact]
     public async Task Stalled_At_MaxIter_Does_Not_Restart_Loop_On_Replay()
     {
-        var (f, db, loop) = await SetupAsync("wi-stalled-replay");
+        var (f, control, db, loop) = await SetupAsync("wi-stalled-replay");
         try
         {
             // Strict-increasing iterate-range scores so plateau doesn't fire
@@ -119,7 +120,7 @@ public class Phase47NoProgressLivelockTests
     [Fact]
     public async Task Reject_At_Any_Iter_Short_Circuits_On_Replay()
     {
-        var (f, db, loop) = await SetupAsync("wi-reject-replay");
+        var (f, control, db, loop) = await SetupAsync("wi-reject-replay");
         try
         {
             var firstReq = new DeliverableLoopRequest(
@@ -151,7 +152,7 @@ public class Phase47NoProgressLivelockTests
     [Fact]
     public async Task Pass_Replay_ShortCircuits_And_Restores_WorkItem_State()
     {
-        var (f, db, loop) = await SetupAsync("wi-pass-replay");
+        var (f, control, db, loop) = await SetupAsync("wi-pass-replay");
         try
         {
             // First run passes on iter 1, sets WI state to "active".
@@ -165,7 +166,7 @@ public class Phase47NoProgressLivelockTests
             // Simulate a crash that wiped state back to "proposed".
             var wi = await db.WorkItems.FirstAsync(w => w.Id == "wi-pass-replay");
             wi.State = "proposed";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Replay short-circuits AND restores state to "active".
             var replayReq = new DeliverableLoopRequest(
@@ -191,7 +192,7 @@ public class Phase47NoProgressLivelockTests
     [Fact]
     public async Task StalledBudget_Replay_Short_Circuits_Even_Below_MaxIter()
     {
-        var (f, db, loop) = await SetupAsync("wi-budget-replay");
+        var (f, control, db, loop) = await SetupAsync("wi-budget-replay");
         try
         {
             // Cap at $1.00, each iter costs $0.60. Stalls at iter 2, well below maxIter=5.
@@ -232,7 +233,7 @@ public class Phase47NoProgressLivelockTests
     [Fact]
     public async Task Stalled_Replay_With_Bumped_MaxIterOverride_Resumes_Loop()
     {
-        var (f, db, loop) = await SetupAsync("wi-resume-bump");
+        var (f, control, db, loop) = await SetupAsync("wi-resume-bump");
         try
         {
             // Strict-increasing iterate-range scores so plateau doesn't fire
@@ -257,7 +258,7 @@ public class Phase47NoProgressLivelockTests
                 MaxIterOverride = 8,
                 EnqueuedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Replay: this iter should pass on the FIRST resumed iter (which is iter 6).
             var passOnIter6 = new DeliverableLoopRequest(

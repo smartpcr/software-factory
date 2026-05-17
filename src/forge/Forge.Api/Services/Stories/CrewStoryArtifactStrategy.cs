@@ -319,8 +319,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         if (string.IsNullOrEmpty(repoId)) return null;
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        return await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        return await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
     }
 
     /// <summary>
@@ -348,6 +349,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
 
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Resolve spawn id: plan-doc:{spawnId}:{file} → spawnId; else
@@ -867,8 +869,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        return await WorkstreamWorktreeSlug.ComputeAsync(workstream, db, ct);
+        return await WorkstreamWorktreeSlug.ComputeAsync(workstream, control, db, ct);
     }
 
     /// <summary>
@@ -908,9 +911,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         LoadArchitectAndEvaluatorRostersAsync(int count, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var crew = await db.Crews.AsNoTracking()
+        var crew = await control.Crews.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == "crew-arch", ct);
         if (crew is null)
         {
@@ -920,7 +924,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var defaultGen = crew.DefaultGeneratorAgentId;
         var defaultEval = crew.DefaultEvaluatorAgentId;
 
-        var allAgents = await db.Agents.AsNoTracking()
+        var allAgents = await control.Agents.AsNoTracking()
             .Where(a => a.CrewId == "crew-arch")
             .OrderBy(a => a.Sort)
             .Select(a => a.Id)
@@ -1936,8 +1940,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (!string.IsNullOrEmpty(spawn.RepoId))
         {
             using var lookup = this.scopeFactory.CreateScope();
+            var control = lookup.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = lookup.ServiceProvider.GetRequiredService<ProductDbContext>();
-            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         }
 
         string? planMd = null;
@@ -2108,8 +2113,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             await File.WriteAllTextAsync(yamlPath, yaml, ct);
 
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Audit.Add(new AuditRow
+            control.Audit.Add(new AuditRow
             {
                 At = DateTimeOffset.UtcNow,
                 User = "system",
@@ -2120,7 +2126,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     new { spawnId, rowCount = rows.Count, legacyJsonPath },
                     JsonOpts),
             });
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2238,6 +2244,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string workItemDescription;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var wi = await db.WorkItems.AsNoTracking()
                 .FirstOrDefaultAsync(w => w.Id == workstream.Id, ct);
@@ -3343,11 +3350,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var prefix = CrewIdPrefix(team);
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var loop = scope.ServiceProvider.GetRequiredService<IDeliverableLoop>();
 
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
-            ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
+            ?? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
             ?? throw new InvalidOperationException(
                 $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
 
@@ -3365,7 +3373,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // `crew` here was a no-op for any crew with PairedWithCrewId.
 
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await ResolveAgentRunConfigAsync(
-            db, crew, useEvaluatorRole: false, workspace, budget, ct,
+            control, db, crew, useEvaluatorRole: false, workspace, budget, ct,
             // 2026-05-13 root-cause fix -- Phase 21.5 (30 turns / point).
             // Without this, the dispatcher's global MaxTurns=60 default
             // capped a 13-pt workstream's generator at turn 60 of an
@@ -3393,7 +3401,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? evalCrewId = null;
         var evalPrefix = crew.PairedWithCrewId;
         CrewRow? evalCrew = !string.IsNullOrEmpty(evalPrefix)
-            ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evalPrefix, ct)
+            ? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evalPrefix, ct)
             : crew;
 
         // Phase 50 follow-up bug fix (operator-reported 2026-05-12) --
@@ -3421,7 +3429,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             try
             {
                 var (eId, eCtx, _, _) = await ResolveAgentRunConfigAsync(
-                    db, evalCrew, useEvaluatorRole: true, workspace, budget, ct,
+                    control, db, evalCrew, useEvaluatorRole: true, workspace, budget, ct,
                     maxTurns: storyPoints > 0 ? storyPoints * 30 : null);
                 evalAgentId = eId;
                 evalContext = eCtx;
@@ -3471,12 +3479,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // an operator can flip a single agent on/off without touching
         // the rest of the crew (e.g. A/B comparing memory-enabled
         // generator against a non-memory sibling).
-        var genAgentRow = await db.Agents.AsNoTracking()
+        var genAgentRow = await control.Agents.AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == genAgentId, ct);
         AgentRow? evalAgentRow = null;
         if (!string.IsNullOrEmpty(evalAgentId))
         {
-            evalAgentRow = await db.Agents.AsNoTracking()
+            evalAgentRow = await control.Agents.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == evalAgentId, ct);
         }
         var genCrewWantsMemory = genAgentRow?.AgentMemoryOverride ?? crew.EnableAgentMemory;
@@ -4989,7 +4997,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// safe and keeps the test simple.</para>
     /// </summary>
     internal static async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
-        ProductDbContext db, CrewRow crew, bool useEvaluatorRole,
+        ControlDbContext control, ProductDbContext db, CrewRow crew, bool useEvaluatorRole,
         string workspace, TimeSpan? budget, CancellationToken ct,
         // 2026-05-13 root-cause fix -- per-task max-turns cap (Phase 21.5
         // semantics: 30 turns per story point). Without this, both the
@@ -5007,7 +5015,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ?? throw new InvalidOperationException(
                 $"Crew '{crew.Id}' has no {(useEvaluatorRole ? "Evaluator" : "Generator")} agent set.");
 
-        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
 
         var preferEvalModel = useEvaluatorRole;
         var model = preferEvalModel
@@ -5081,10 +5089,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var prefix = CrewIdPrefix(team);
 
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
-            ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
+            ?? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
             ?? throw new InvalidOperationException(
                 $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
 
@@ -5096,7 +5105,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string agentId;
         if (!string.IsNullOrEmpty(agentIdOverride))
         {
-            agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentIdOverride, ct);
+            agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentIdOverride, ct);
             if (agent is not null)
             {
                 agentId = agentIdOverride;
@@ -5110,7 +5119,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 agentId = crew.DefaultGeneratorAgentId ?? crew.Lead
                     ?? throw new InvalidOperationException(
                         $"Crew '{crew.Id}' has no Lead/DefaultGeneratorAgentId set.");
-                agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+                agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
             }
         }
         else
@@ -5118,7 +5127,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             agentId = crew.DefaultGeneratorAgentId ?? crew.Lead
                 ?? throw new InvalidOperationException(
                     $"Crew '{crew.Id}' has no Lead/DefaultGeneratorAgentId set.");
-            agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+            agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         }
 
         // When the override agent belongs to a different crew, inherit
@@ -5128,7 +5137,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (agent is not null && !string.IsNullOrEmpty(agent.CrewId)
             && !string.Equals(agent.CrewId, crew.Id, StringComparison.Ordinal))
         {
-            var agentCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == agent.CrewId, ct);
+            var agentCrew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == agent.CrewId, ct);
             if (agentCrew is not null) configCrew = agentCrew;
         }
 
@@ -5467,6 +5476,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private async Task<int> LookupWorkItemPointsAsync(string workItemId, int fallback, CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var pts = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)
@@ -5832,6 +5842,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         try
         {
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             return await db.StorySpawns.AsNoTracking()
                 .Where(s => s.Id == spawnId)

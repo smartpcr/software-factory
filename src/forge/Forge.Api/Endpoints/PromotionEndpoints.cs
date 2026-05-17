@@ -43,11 +43,12 @@ public static class PromotionEndpoints
     /// </summary>
     private static async Task<IResult> Run(
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         IPromotionRunner runner,
         CancellationToken ct)
     {
-        var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+        var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var result = await runner.RunAsync(ct);
@@ -63,10 +64,10 @@ public static class PromotionEndpoints
         return Results.Ok(resp);
     }
 
-    private static async Task<IResult> GetHistory(string agentId, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string agentId, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         // SQLite can't sort DateTimeOffset at the SQL layer; sort client-side.
-        var rows = (await db.AgentLevelHistory.AsNoTracking()
+        var rows = (await control.AgentLevelHistory.AsNoTracking()
                 .Where(h => h.AgentId == agentId)
                 .ToListAsync(ct))
             .OrderByDescending(h => h.CreatedAt)

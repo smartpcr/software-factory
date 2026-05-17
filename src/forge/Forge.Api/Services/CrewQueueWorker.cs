@@ -232,7 +232,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         var allSkips = new List<ClaimSkip>();
         var lockObj = new object();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
             var ack = await this.SafeSweepAsync("SweepAckTimeoutsAsync", () => this.SweepAckTimeoutsAsync(fct), fct);
             var claimsRes = await this.SafeSweepAsync(
@@ -311,6 +311,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         }
 
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var stale = await db.TaskQueue
@@ -379,6 +380,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepBootCrashRecoveryAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
@@ -458,6 +460,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
@@ -486,6 +489,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crewsWithQueue = await db.TaskQueue.AsNoTracking()
@@ -500,10 +504,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // this set as we pick agents within the tick so a later crew's
         // claim sees the just-picked generator/evaluator as busy and
         // diversifies against them.
-        var busyAgents = await BusyAgentsHelper.LoadBusyAgentsAsync(db, ct);
+        var busyAgents = await BusyAgentsHelper.LoadBusyAgentsAsync(control, ct);
         foreach (var crewId in crewsWithQueue)
         {
-            var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
+            var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
             if (crew is null)
             {
                 skips.Add(new ClaimSkip(crewId, "crew-not-found", null));
@@ -529,7 +533,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }
 
             // Pick a member from the roster (round-robin over non-lead members).
-            var allMembers = await db.CrewMembers.AsNoTracking()
+            var allMembers = await control.CrewMembers.AsNoTracking()
                 .Where(m => m.CrewId == crewId && m.AgentId != crew.Lead)
                 .Select(m => m.AgentId)
                 .ToListAsync(ct);
@@ -566,9 +570,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             if (headRow is not null && !string.IsNullOrEmpty(headRow.PreferredAgentId))
             {
                 var preferredId = headRow.PreferredAgentId!;
-                var preferredAgent = await db.Agents.AsNoTracking()
+                var preferredAgent = await control.Agents.AsNoTracking()
                     .FirstOrDefaultAsync(a => a.Id == preferredId, ct);
-                var inCrew = await db.CrewMembers.AsNoTracking()
+                var inCrew = await control.CrewMembers.AsNoTracking()
                     .AnyAsync(m => m.CrewId == crewId && m.AgentId == preferredId, ct);
 
                 if (preferredAgent is null)
@@ -594,7 +598,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // Lead is exempt from the schedule gate per Q18.3.
                 if (string.IsNullOrEmpty(picked) && !string.IsNullOrEmpty(crew.Lead))
                 {
-                    var lead = await db.Agents.AsNoTracking()
+                    var lead = await control.Agents.AsNoTracking()
                         .FirstOrDefaultAsync(a => a.Id == crew.Lead, ct);
                     if (lead is not null && !string.Equals(lead.State, "paused", StringComparison.OrdinalIgnoreCase))
                     {
@@ -776,7 +780,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             CrewRow? evaluatorCrew = null;
             if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
             {
-                evaluatorCrew = await db.Crews.AsNoTracking()
+                evaluatorCrew = await control.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
             }
 
@@ -806,7 +810,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // the evaluator side is best-effort, not blocking, so a
                 // capacity-saturated pair doesn't wedge the queue.
                 var evalAgentId = await ResolveDiverseEvaluatorAsync(
-                    db, crew, evaluatorCrew, picked!, busyAgents, ct);
+                    control, db, crew, evaluatorCrew, picked!, busyAgents, ct);
                 var agents = new List<string> { picked! };
                 if (evalAgentId is not null) agents.Add(evalAgentId);
                 var now = DateTimeOffset.UtcNow;
@@ -856,7 +860,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // Auto-link work item to a workstream so the Workstreams view
                 // shows the "● N live" badge. Find a workstream for this repo
                 // whose cards don't already include this work item.
-                await this.AutoLinkToWorkstreamAsync(db, wi, ct);
+                await this.AutoLinkToWorkstreamAsync(control, db, wi, ct);
 
                 await db.SaveChangesAsync(ct);
                 await this.BroadcastWorkItemChangedAsync(wi, "claimed", ct, db);
@@ -926,6 +930,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         {
             using var scope = this.scopeFactory.CreateScope();
             var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Guard: skip execution if the work item already has a delivered PR
@@ -944,7 +949,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }
 
             // Resolve the agent row for model/soul/backend overrides.
-            var agent = await db.Agents.AsNoTracking()
+            var agent = await control.Agents.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == agentId, ct);
 
             // Model: agent override → crew default.
@@ -1023,7 +1028,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var workstreamId = "";
             if (!string.IsNullOrEmpty(wi?.RepoId))
             {
-                var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
 
                 // Find the workstream whose CardsJson references this work item.
                 var workstreams = await db.Workstreams.AsNoTracking().ToListAsync(ct);
@@ -1099,7 +1104,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // either pushed to the wrong branch or skipped on "0 commits
             // ahead". See WorktreePathResolver.GetCanonicalForWorkstreamAsync.
             var canonicalSpec = await Forge.Api.Services.Stories.WorktreePathResolver
-                .GetCanonicalForWorkstreamAsync(db, workItemId, ct);
+                .GetCanonicalForWorkstreamAsync(control, db, workItemId, ct);
 
             string branchName;
             string baseBranch;
@@ -1126,7 +1131,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wiRepo = null;
                 if (!string.IsNullOrEmpty(wi?.RepoId))
                 {
-                    wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                    wiRepo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
                     if (!string.IsNullOrEmpty(wiRepo?.DefaultBranch))
                         baseBranch = wiRepo.DefaultBranch;
                     if (!string.IsNullOrEmpty(wiRepo?.CloneRoot) && Directory.Exists(wiRepo.CloneRoot))
@@ -1243,7 +1248,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // against repo default (often `main`) and inflate the
                 // pills with every upstream PR's contents.
                 var resolvedBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
-                    .ResolveAsync(db, workItemId, ct);
+                    .ResolveAsync(control, db, workItemId, ct);
                 this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath, resolvedBase);
 
                 // Scrub already-tracked .forge/ files from the index
@@ -1269,7 +1274,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 // Phase 24.9 — comment-response prompt loads the open PR comments
                 // needing response and asks the agent to reply or commit a fix.
-                prompt = await BuildCommentResponsePromptAsync(db, workItemId, title, ct);
+                prompt = await BuildCommentResponsePromptAsync(control, db, workItemId, title, ct);
             }
             else if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase))
             {
@@ -1279,7 +1284,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // work-item brief, and recent commit messages. Logs and
                 // artifacts are NOT inlined verbatim — the agent uses
                 // `read_file` to descend into specific artifact files.
-                prompt = await BuildBuildFixPromptAsync(db, workItemId, title, desc, ct);
+                prompt = await BuildBuildFixPromptAsync(control, db, workItemId, title, desc, ct);
             }
             else if (isPlanTask)
             {
@@ -1405,7 +1410,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 evaluatorAgentId = lastDeliv.EvaluatorAgentId;
                 if (!string.IsNullOrEmpty(evaluatorAgentId))
                 {
-                    var evalAgent = await db.Agents.AsNoTracking()
+                    var evalAgent = await control.Agents.AsNoTracking()
                         .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct);
                     evaluatorCrewId = evalAgent?.CrewId;
                 }
@@ -1508,7 +1513,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             CrewRow? evalCrew = null;
             if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
             {
-                evalCrew = await db.Crews.AsNoTracking()
+                evalCrew = await control.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
                 evaluatorCrewId = evalCrew?.Id;
                 // Phase 47 — prefer the evaluator the queue worker resolved
@@ -1711,7 +1716,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         0m);
                 }
 
-                var evalAgent = await db.Agents.AsNoTracking()
+                var evalAgent = await control.Agents.AsNoTracking()
                     .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, iterCt);
                 var evalModel = !string.IsNullOrEmpty(evalAgent?.EvaluatorModel)
                     ? evalAgent!.EvaluatorModel
@@ -2302,7 +2307,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     var prTitle = wi?.Title ?? workItemId;
 
                     // Resolve agent full name + role for the PR header.
-                    var agentRow = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+                    var agentRow = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
                     var agentDisplayName = agentRow?.Name ?? agentId;
                     var agentRole = string.IsNullOrEmpty(agentRow?.Role) ? "agent" : agentRow!.Role;
 
@@ -2335,7 +2340,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     // spend numbers into the merge history.
                     // Resolve evaluator agent for the PR header
                     var evalAgentRow = !string.IsNullOrEmpty(evaluatorAgentId)
-                        ? await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct)
+                        ? await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct)
                         : null;
                     var evalDisplayName = evalAgentRow?.Name ?? evaluatorAgentId;
 
@@ -2464,7 +2469,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     try
                     {
                         var inheritedAutoMerge = await Forge.Api.Services.Stories.SpawnAutoMergeResolver
-                            .ResolveAsync(db, workItemId, ct);
+                            .ResolveAsync(control, db, workItemId, ct);
                         var existingPr = await db.Prs.FirstOrDefaultAsync(p => p.Id == pr.Id, ct);
                         if (existingPr is null)
                         {
@@ -2838,6 +2843,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         {
             using var scope = this.scopeFactory.CreateScope();
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Find the picked-up row. Client-side ordering because SQLite
             // can't ORDER BY DateTimeOffset reliably.
@@ -2867,6 +2873,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         try
         {
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
             if (wi is not null)
@@ -2970,7 +2977,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// Verify a PR was created by checking if a <c>task.pr-opened</c>
     /// transcript event exists for this work item.
     /// </summary>
-    private static async Task<bool> VerifyPrCreatedAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private static async Task<bool> VerifyPrCreatedAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         return await db.TaskTranscriptEvents
             .AnyAsync(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened", ct);
@@ -2982,7 +2989,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// either reply on the thread or commit a fix to the existing PR
     /// branch (no new PR — the existing PR receives the new commit).
     /// </summary>
-    private static async Task<string> BuildCommentResponsePromptAsync(ProductDbContext db, string workItemId, string workItemTitle, CancellationToken ct)
+    private static async Task<string> BuildCommentResponsePromptAsync(ControlDbContext control, ProductDbContext db, string workItemId, string workItemTitle, CancellationToken ct)
     {
         var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
         if (pr is null)
@@ -3041,7 +3048,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// via <c>read_file</c>.
     /// </summary>
     private static async Task<string> BuildBuildFixPromptAsync(
-        ProductDbContext db, string workItemId, string title, string desc, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, string title, string desc, CancellationToken ct)
     {
         var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
         if (pr is null)
@@ -3222,6 +3229,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// evaluator can wait its turn rather than blocking the row).
     /// </summary>
     private static async Task<string?> ResolveDiverseEvaluatorAsync(
+        ControlDbContext control,
         ProductDbContext db,
         CrewRow generatorCrew,
         CrewRow? evaluatorCrew,
@@ -3231,7 +3239,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         // Build the evaluator candidate roster.
         var rosterCrewId = evaluatorCrew?.Id ?? generatorCrew.Id;
-        var roster = await db.CrewMembers.AsNoTracking()
+        var roster = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == rosterCrewId)
             .Select(m => m.AgentId)
             .ToListAsync(ct);
@@ -3272,7 +3280,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return picked;
     }
 
-    private async Task AutoLinkToWorkstreamAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task AutoLinkToWorkstreamAsync(ControlDbContext control, ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         try
         {
@@ -3286,10 +3294,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             if (string.IsNullOrEmpty(wi.RepoId)) return;
 
-            var wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            var wiRepo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (wiRepo is null || string.IsNullOrEmpty(wiRepo.ProductId)) return;
 
-            var sameProductRepoIds = await db.Repos.AsNoTracking()
+            var sameProductRepoIds = await control.Repos.AsNoTracking()
                 .Where(r => r.ProductId == wiRepo.ProductId)
                 .Select(r => r.Id)
                 .ToListAsync(ct);
@@ -3308,7 +3316,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             if (target is null)
             {
-                target = await CreateAutoWorkstreamAsync(db, wi, wiRepo, allWs, ct);
+                target = await CreateAutoWorkstreamAsync(control, db, wi, wiRepo, allWs, ct);
                 if (target is null) return;
                 allWs.Add(target);
             }
@@ -3337,6 +3345,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// failure (id collision after retry, save error, etc.).
     /// </summary>
     private async Task<WorkstreamRow?> CreateAutoWorkstreamAsync(
+        ControlDbContext control,
         ProductDbContext db,
         WorkItemRow wi,
         RepoRow repo,
@@ -3401,6 +3410,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         using var scope = this.scopeFactory.CreateScope();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var crewsWithQueue = await db.TaskQueue.AsNoTracking()
@@ -3427,7 +3437,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Resolve the lead's user channel; in single-user dev mode the
             // lead is an agent id, not a user id — broadcast on both groups
             // so whichever the UI subscribes to receives the signal.
-            var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
+            var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
             var leadId = crew?.Lead;
             var groupName = leadId is null ? $"crew.{crewId}" : $"user.{leadId}";
             await this.hub.Clients.Group(groupName).SendAsync("queue.strained", stats, ct);
@@ -3449,6 +3459,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepAbandonedAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var cutoff = DateTimeOffset.UtcNow - TaskQueueDefaults.AbandonedAfter;
@@ -3520,6 +3531,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private async Task<int> SweepLiveBadgeReconciliationAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
@@ -3574,21 +3586,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 catch (Exception ex)
                 {
                     this.logger.LogWarning(ex, "Live-badge reconcile: auto-resume EnqueueAsync failed for wi={Wi}, falling back to failed badge", wi.Id);
-                    try { await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct); }
+                    try { await this.HealStuckBadgeAsync(control, db, wi, "exec-reconciled-failed", ct); }
                     catch (Exception healEx) { this.logger.LogWarning(healEx, "Live-badge reconcile: heal-fallback also failed for wi={Wi}", wi.Id); }
                     reconciled++;
                 }
             }
             else
             {
-                await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct);
+                await this.HealStuckBadgeAsync(control, db, wi, "exec-reconciled-failed", ct);
                 reconciled++;
             }
         }
         return reconciled;
     }
 
-    private async Task HealStuckBadgeAsync(ProductDbContext db, WorkItemRow wi, string broadcastKind, CancellationToken ct)
+    private async Task HealStuckBadgeAsync(ControlDbContext control, ProductDbContext db, WorkItemRow wi, string broadcastKind, CancellationToken ct)
     {
         wi.ExecutionStatus = ExecutionStatuses.Failed;
         wi.UpdatedAt = DateTimeOffset.UtcNow;

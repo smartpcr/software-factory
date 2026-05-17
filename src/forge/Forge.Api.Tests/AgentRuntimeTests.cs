@@ -221,8 +221,9 @@ public class AgentRuntimeTests
         while (DateTime.UtcNow < deadline)
         {
             using var scope = factory.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            row = await db.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
+            row = await control.AgentUsage.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ledgerId);
             if (row?.Status == "finished") break;
             await Task.Delay(50);
         }
@@ -257,8 +258,9 @@ public class AgentRuntimeTests
         // which never happens in tests.
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Users.Add(new UserRow
+            control.Users.Add(new UserRow
             {
                 Id = "user-po",
                 DisplayName = "PO",
@@ -266,7 +268,7 @@ public class AgentRuntimeTests
                 Role = "product-owner",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            db.Users.Add(new UserRow
+            control.Users.Add(new UserRow
             {
                 Id = "user-human",
                 DisplayName = "Human",
@@ -274,7 +276,7 @@ public class AgentRuntimeTests
                 Role = "human",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var human = factory.CreateClient();

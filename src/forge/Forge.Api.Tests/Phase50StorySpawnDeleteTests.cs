@@ -169,6 +169,7 @@ public class Phase50StorySpawnDeleteTests
         prCols ??= Enumerable.Repeat("review", wsCount).ToArray();
         var spawnId = $"spawn-{storyId}";
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
@@ -272,7 +273,7 @@ public class Phase50StorySpawnDeleteTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
 
-            db.AgentClaims.Add(new AgentClaimRow
+            control.AgentClaims.Add(new AgentClaimRow
             {
                 AgentId = $"agent-{i + 1}",
                 WorkItemId = wsId,
@@ -306,7 +307,7 @@ public class Phase50StorySpawnDeleteTests
 
         // Synthetic spawn-id agent claim (covers the decompose / qa-features
         // path which uses spawn.Id directly as the work-item id).
-        db.AgentClaims.Add(new AgentClaimRow
+        control.AgentClaims.Add(new AgentClaimRow
         {
             AgentId = "agent-arch",
             WorkItemId = spawnId,
@@ -321,7 +322,7 @@ public class Phase50StorySpawnDeleteTests
         // cost cards sum these for the doc's deterministic plan-doc id.
         // Without the purge, re-spawning the same story leaks the prior
         // cycle's $$$ totals onto the brand-new doc cards.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-arch",
             CrewId = "crew-arch",
@@ -335,7 +336,7 @@ public class Phase50StorySpawnDeleteTests
         });
         for (var i = 0; i < wsCount; i++)
         {
-            db.AgentUsage.Add(new AgentUsageRow
+            control.AgentUsage.Add(new AgentUsageRow
             {
                 AgentId = $"agent-{i + 1}",
                 CrewId = "crew-eng",
@@ -349,7 +350,7 @@ public class Phase50StorySpawnDeleteTests
             });
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return (spawnId, wsIds, prIds.ToArray());
     }
 
@@ -403,6 +404,7 @@ public class Phase50StorySpawnDeleteTests
         // Seed a bare spawn — no workstreams, no PRs.
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.StorySpawns.Add(new StorySpawnRow
             {
@@ -414,13 +416,14 @@ public class Phase50StorySpawnDeleteTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await DeleteAsync(client, storyId);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
@@ -454,6 +457,7 @@ public class Phase50StorySpawnDeleteTests
         // restart-from-scratch wipes both merged + abandoned for this
         // spawn).
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         foreach (var id in prIds)
         {
@@ -474,6 +478,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.Id == spawnId));
         foreach (var wsId in wsIds)
@@ -496,10 +501,10 @@ public class Phase50StorySpawnDeleteTests
         // old `agent_usage` rows. Assert the cost ledger is now purged for
         // BOTH the synthetic plan-doc id and every workstream id (the
         // latter via CascadeDeleteWorkstreamAsync).
-        Assert.False(await verifyDb.AgentUsage.AnyAsync(u => u.TaskId == planDocId));
+        Assert.False(await control_verifyDb.AgentUsage.AnyAsync(u => u.TaskId == planDocId));
         foreach (var wsId in wsIds)
         {
-            Assert.False(await verifyDb.AgentUsage.AnyAsync(u => u.TaskId == wsId));
+            Assert.False(await control_verifyDb.AgentUsage.AnyAsync(u => u.TaskId == wsId));
         }
     }
 
@@ -515,12 +520,13 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Every claim that was active under any deleted work item should
         // now have ReleasedAt set OR the row itself should be gone (for
         // synthetic ids the cascade also removes the row).
-        var spawnClaim = await verifyDb.AgentClaims
+        var spawnClaim = await control_verifyDb.AgentClaims
             .FirstOrDefaultAsync(c => c.WorkItemId == spawnId);
         if (spawnClaim is not null)
         {
@@ -529,7 +535,7 @@ public class Phase50StorySpawnDeleteTests
 
         foreach (var wsId in wsIds)
         {
-            var claim = await verifyDb.AgentClaims
+            var claim = await control_verifyDb.AgentClaims
                 .FirstOrDefaultAsync(c => c.WorkItemId == wsId);
             if (claim is not null)
             {
@@ -558,6 +564,7 @@ public class Phase50StorySpawnDeleteTests
 
         // Spawn is gone — verify that even though we kept the base.
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }
@@ -596,6 +603,7 @@ public class Phase50StorySpawnDeleteTests
         // Spawn A should still exist (refused before any destructive
         // work — the operator can re-call without the flag).
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await verifyDb.StorySpawns.AnyAsync(s => s.Id == spawnAId));
         foreach (var wsId in wsAIds)
@@ -658,6 +666,7 @@ public class Phase50StorySpawnDeleteTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = factory.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await verifyDb.StorySpawns.AnyAsync(s => s.StoryId == storyId));
     }

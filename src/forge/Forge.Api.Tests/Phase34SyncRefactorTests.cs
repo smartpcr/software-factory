@@ -177,13 +177,19 @@ public class Phase34SyncRefactorTests
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
 
+        await using var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         await using var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
+        var _productSchema = db.Database.GenerateCreateScript();
+        await db.Database.ExecuteSqlRawAsync(_productSchema);
 
-        await Phase34Migration.ApplyAsync(db);
+        await Phase34Migration.ApplyAsync(control, db);
         // Second apply must be a no-op (idempotent).
-        await Phase34Migration.ApplyAsync(db);
+        await Phase34Migration.ApplyAsync(control, db);
 
         var cols = new HashSet<string>(StringComparer.Ordinal);
         await using (var cmd = conn.CreateCommand())

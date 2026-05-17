@@ -82,6 +82,7 @@ public sealed class PlanReconciler
     public async Task<ReconciliationReport?> ReconcileAsync(string spawnId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
@@ -99,7 +100,7 @@ public sealed class PlanReconciler
         // phase hasn't started). Treat that as "no plan" — nothing to do.
         var repo = spawn.RepoId is null
             ? null
-            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
 
         // Read from the worktree on disk, NOT via `git show origin/{branch}`.
         // The architect agent writes to the worktree and `CommitPathInWorktreeAsync`
@@ -193,18 +194,18 @@ public sealed class PlanReconciler
                 }
 
                 // Hash differs → scope edit. Branch on row state.
-                var rowState = await this.ClassifyAsync(db, row, ct);
+                var rowState = await this.ClassifyAsync(control, db, row, ct);
                 if (rowState == RowState.Shipped)
                 {
                     // Shipped + plan modified → split. Old row stays historic
                     // with its merged PR; new row picks up the delta.
                     row.Status = WorkstreamStatuses.Historic;
                     row.PlanAnchor = $"{stage.Anchor}@{row.PlanContentHash?[..8] ?? "shipped"}";
-                    UpdateMatchingWorkItem(db, row.Id, wi =>
+                    UpdateMatchingWorkItem(control, db, row.Id, wi =>
                     {
                         wi.PlanAnchor = row.PlanAnchor;
                     });
-                    InsertWorkstream(db, spawn, stage, ref maxSort, resolvedDeps);
+                    InsertWorkstream(control, db, spawn, stage, ref maxSort, resolvedDeps);
                     splitForDelta++;
                 }
                 else
@@ -215,7 +216,7 @@ public sealed class PlanReconciler
                     row.Summary = StageSummary(stage);
                     row.PlanContentHash = stage.ContentHash;
                     SyncDepsAndAnchor(row, stage, resolvedDeps);
-                    UpdateMatchingWorkItem(db, row.Id, wi =>
+                    UpdateMatchingWorkItem(control, db, row.Id, wi =>
                     {
                         wi.Title = stage.Name;
                         wi.DescriptionMd = StageDescription(stage);
@@ -226,7 +227,7 @@ public sealed class PlanReconciler
             }
             else
             {
-                InsertWorkstream(db, spawn, stage, ref maxSort, resolvedDeps);
+                InsertWorkstream(control, db, spawn, stage, ref maxSort, resolvedDeps);
                 added++;
             }
         }
@@ -252,7 +253,7 @@ public sealed class PlanReconciler
 
         foreach (var row in orphanedAnchored.Concat(legacyUnanchored))
         {
-            var rowState = await this.ClassifyAsync(db, row, ct);
+            var rowState = await this.ClassifyAsync(control, db, row, ct);
             switch (rowState)
             {
                 case RowState.Shipped:
@@ -261,12 +262,12 @@ public sealed class PlanReconciler
                     break;
 
                 case RowState.InFlight:
-                    await this.CancelInFlightAsync(db, row, ct);
+                    await this.CancelInFlightAsync(control, db, row, ct);
                     cancelledInFlight++;
                     break;
 
                 case RowState.NotStarted:
-                    await this.DropNotStartedAsync(db, row, ct);
+                    await this.DropNotStartedAsync(control, db, row, ct);
                     droppedNotStarted++;
                     break;
             }
@@ -285,7 +286,7 @@ public sealed class PlanReconciler
         var artifactWritten = false;
         try
         {
-            var artifactJson = await BuildArtifactJsonAsync(db, spawn.Id, planByAnchor, ct);
+            var artifactJson = await BuildArtifactJsonAsync(control, db, spawn.Id, planByAnchor, ct);
             spawn.DecompositionJson = artifactJson;
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -395,7 +396,7 @@ public sealed class PlanReconciler
     }
 
     private static void InsertWorkstream(
-        ProductDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
         IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
     {
         var wsId = WorkstreamIdFor(spawn.StoryId, stage.Anchor);
@@ -465,7 +466,7 @@ public sealed class PlanReconciler
         }
     }
 
-    private static void UpdateMatchingWorkItem(ProductDbContext db, string wsId, Action<WorkItemRow> mutate)
+    private static void UpdateMatchingWorkItem(ControlDbContext control, ProductDbContext db, string wsId, Action<WorkItemRow> mutate)
     {
         var wi = db.WorkItems.FirstOrDefault(w => w.Id == wsId);
         if (wi is null) return;
@@ -501,7 +502,7 @@ public sealed class PlanReconciler
         }
     }
 
-    private async Task<RowState> ClassifyAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task<RowState> ClassifyAsync(ControlDbContext control, ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Shipped: any linked PR is in the merged column, or status is a
         // shipped value.
@@ -530,7 +531,7 @@ public sealed class PlanReconciler
         return RowState.NotStarted;
     }
 
-    private async Task CancelInFlightAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task CancelInFlightAsync(ControlDbContext control, ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Mirrors WorkstreamsEndpoints.Cancel — kill agent invocations,
         // cancel queue rows, flip statuses to cancelled. We don't touch open
@@ -559,7 +560,7 @@ public sealed class PlanReconciler
         row.Status = "cancelled";
     }
 
-    private async Task DropNotStartedAsync(ProductDbContext db, WorkstreamRow row, CancellationToken ct)
+    private async Task DropNotStartedAsync(ControlDbContext control, ProductDbContext db, WorkstreamRow row, CancellationToken ct)
     {
         // Cancel queue rows defensively (a "planning" row shouldn't have any
         // but the cost of an empty Where is zero). We keep the WorkstreamRow
@@ -628,6 +629,7 @@ public sealed class PlanReconciler
     }
 
     private static async Task<string> BuildArtifactJsonAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string spawnId,
         IReadOnlyDictionary<string, PlanParser.CanonicalStage> planByAnchor,

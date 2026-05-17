@@ -69,8 +69,9 @@ public class AgentSoulAndBudgetTests
         // Seed a PO so the role gate accepts the PUT.
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Users.Add(new UserRow
+            control.Users.Add(new UserRow
             {
                 Id = "user-po",
                 DisplayName = "PO",
@@ -78,7 +79,7 @@ public class AgentSoulAndBudgetTests
                 Role = "product-owner",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         using var client = factory.CreateClient();
@@ -92,10 +93,11 @@ public class AgentSoulAndBudgetTests
         {
             using (var scope = factory.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var row = await db.Agents.FirstAsync(a => a.Id == "E4");
+                var row = await control.Agents.FirstAsync(a => a.Id == "E4");
                 row.SoulPath = Path.Combine(tmpRoot, "E4.md");
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             var contents = "---\ntools: [read_file]\n---\nFocus on small diffs.";
@@ -131,10 +133,11 @@ public class AgentSoulAndBudgetTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Users.Add(new UserRow { Id = "u-po", DisplayName = "PO", Email = "po@x", Role = "product-owner", CreatedAt = DateTimeOffset.UtcNow });
-            db.Users.Add(new UserRow { Id = "u-h", DisplayName = "H", Email = "h@x", Role = "human", CreatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            control.Users.Add(new UserRow { Id = "u-po", DisplayName = "PO", Email = "po@x", Role = "product-owner", CreatedAt = DateTimeOffset.UtcNow });
+            control.Users.Add(new UserRow { Id = "u-h", DisplayName = "H", Email = "h@x", Role = "human", CreatedAt = DateTimeOffset.UtcNow });
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "h@x");
@@ -160,8 +163,9 @@ public class AgentSoulAndBudgetTests
 
         // History row appears.
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var hist = await db.AgentHistory.AsNoTracking()
+        var hist = await control.AgentHistory.AsNoTracking()
             .Where(h => h.AgentId == "E4")
             .OrderByDescending(h => h.Id)
             .FirstOrDefaultAsync();
@@ -194,14 +198,15 @@ public class AgentSoulAndBudgetTests
         await client.PatchAsJsonAsync("/api/crews/crew-eng", new { dailyBudgetUsd = 5m, maxTaskBudgetUsd = 1m }, JsonOpts);
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.AgentUsage.Add(new AgentUsageRow
+            control.AgentUsage.Add(new AgentUsageRow
             {
                 AgentId = "E4", CrewId = "crew-eng", TaskId = "234", Model = "claude-opus-4-7",
                 InputTokens = 1000, OutputTokens = 500, CostUsd = 1.25m,
                 StartedAt = DateTimeOffset.UtcNow, EndedAt = DateTimeOffset.UtcNow, Status = "finished",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.GetAsync("/api/crews/crew-eng/budget");
@@ -223,14 +228,15 @@ public class AgentSoulAndBudgetTests
         await client.PatchAsJsonAsync("/api/crews/crew-eng", new { dailyBudgetUsd = 0.5m }, JsonOpts);
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.AgentUsage.Add(new AgentUsageRow
+            control.AgentUsage.Add(new AgentUsageRow
             {
                 AgentId = "E4", CrewId = "crew-eng", TaskId = "any", Model = "claude-opus-4-7",
                 InputTokens = 0, OutputTokens = 0, CostUsd = 1m,
                 StartedAt = DateTimeOffset.UtcNow, EndedAt = DateTimeOffset.UtcNow, Status = "finished",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsJsonAsync("/api/agents/E4/invocations", new

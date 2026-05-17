@@ -20,11 +20,13 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public sealed class TaskQueueService : ITaskQueueService
 {
+    private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly ILogger<TaskQueueService> logger;
 
-    public TaskQueueService(ProductDbContext db, ILogger<TaskQueueService> logger)
+    public TaskQueueService(ControlDbContext control, ProductDbContext db, ILogger<TaskQueueService> logger)
     {
+        this.control = control;
         this.db = db;
         this.logger = logger;
     }
@@ -136,7 +138,7 @@ public sealed class TaskQueueService : ITaskQueueService
         // (day/night) so items don't stall at awaiting-route.
         if (row.TargetKind == "team")
         {
-            var teamCrews = await this.db.Crews.AsNoTracking()
+            var teamCrews = await this.control.Crews.AsNoTracking()
                 .Where(c => c.Name.StartsWith(row.TargetId))
                 .ToListAsync(ct);
             string? routeTarget = null;

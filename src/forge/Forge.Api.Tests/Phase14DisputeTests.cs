@@ -35,13 +35,14 @@ public class Phase14DisputeTests
         string verdict = "iterate")
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         // Agents: generator, evaluator, judge.
-        if (!await db.Agents.AnyAsync(a => a.Id == "gen-1"))
+        if (!await control.Agents.AnyAsync(a => a.Id == "gen-1"))
         {
-            db.Agents.Add(new AgentRow { Id = "gen-1", Name = "Gen", Role = "eng" });
-            db.Agents.Add(new AgentRow { Id = "eval-1", Name = "Eval", Role = "rev" });
-            db.Agents.Add(new AgentRow { Id = "judge-1", Name = "Judge", Role = "arch" });
+            control.Agents.Add(new AgentRow { Id = "gen-1", Name = "Gen", Role = "eng" });
+            control.Agents.Add(new AgentRow { Id = "eval-1", Name = "Eval", Role = "rev" });
+            control.Agents.Add(new AgentRow { Id = "judge-1", Name = "Judge", Role = "arch" });
         }
         // Work item.
         if (!await db.WorkItems.AnyAsync(w => w.Id == workItemId))
@@ -66,7 +67,7 @@ public class Phase14DisputeTests
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Deliverables.Add(row);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return row.Id;
     }
 
@@ -89,6 +90,7 @@ public class Phase14DisputeTests
         Assert.Equal(95, body.RootElement.GetProperty("judgeScore").GetInt32());
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "wi-flip");
         Assert.Equal("closed", wi.State); // retroactive pass
@@ -110,6 +112,7 @@ public class Phase14DisputeTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.FirstAsync(w => w.Id == "wi-noflip");
         Assert.Equal("active", wi.State); // unchanged
@@ -206,9 +209,10 @@ public class Phase14DisputeTests
         // Three iterations on the same work item.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Agents.Add(new AgentRow { Id = "gen-1", Name = "Gen", Role = "eng" });
-            db.Agents.Add(new AgentRow { Id = "eval-1", Name = "Eval", Role = "rev" });
+            control.Agents.Add(new AgentRow { Id = "gen-1", Name = "Gen", Role = "eng" });
+            control.Agents.Add(new AgentRow { Id = "eval-1", Name = "Eval", Role = "rev" });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-list", Type = "step", State = "active",
@@ -224,7 +228,7 @@ public class Phase14DisputeTests
                     CreatedAt = DateTimeOffset.UtcNow,
                 });
             }
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await c.GetAsync("/api/work-items/wi-list/deliverables");

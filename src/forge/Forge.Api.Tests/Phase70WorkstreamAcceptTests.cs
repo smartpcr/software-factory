@@ -35,10 +35,11 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
-            AddDeliverable(db, iter: 6, score: 98, verdict: "iterate");
-            await db.SaveChangesAsync();
+            SeedWorkstream(control, db, status: "active");
+            AddDeliverable(control, db, iter: 6, score: 98, verdict: "iterate");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -47,6 +48,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var latest = (await verifyDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == WsId).ToListAsync())
@@ -70,10 +72,11 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "complete");
-            AddDeliverable(db, iter: 1, score: 95, verdict: "pass");
-            await db.SaveChangesAsync();
+            SeedWorkstream(control, db, status: "complete");
+            AddDeliverable(control, db, iter: 1, score: 95, verdict: "pass");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -93,9 +96,10 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
-            await db.SaveChangesAsync();
+            SeedWorkstream(control, db, status: "active");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -115,10 +119,11 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
-            AddDeliverable(db, iter: 3, score: 95, verdict: "pass");
-            await db.SaveChangesAsync();
+            SeedWorkstream(control, db, status: "active");
+            AddDeliverable(control, db, iter: 3, score: 95, verdict: "pass");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -127,6 +132,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var latest = (await verifyDb.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == WsId).ToListAsync())
@@ -146,9 +152,10 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
-            AddDeliverable(db, iter: 4, score: 92, verdict: "iterate");
+            SeedWorkstream(control, db, status: "active");
+            AddDeliverable(control, db, iter: 4, score: 92, verdict: "iterate");
             // TaskQueue has UNIQUE(WorkItemId, Kind), so we exercise the
             // single-row case (the typical mid-iter state). The endpoint
             // bulk-cancels via `WHERE State NOT IN ('completed','cancelled')`,
@@ -163,7 +170,7 @@ public class Phase70WorkstreamAcceptTests
                 EnqueuedAt = DateTimeOffset.UtcNow,
                 LastUpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -171,6 +178,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queueRows = await verifyDb.TaskQueue.AsNoTracking()
             .Where(q => q.WorkItemId == WsId).ToListAsync();
@@ -188,8 +196,9 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
+            SeedWorkstream(control, db, status: "active");
             // The WorkItem row (backs the workstream's persistent state).
             db.WorkItems.Add(new WorkItemRow
             {
@@ -201,8 +210,8 @@ public class Phase70WorkstreamAcceptTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            AddDeliverable(db, iter: 2, score: 88, verdict: "iterate");
-            await db.SaveChangesAsync();
+            AddDeliverable(control, db, iter: 2, score: 88, verdict: "iterate");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -210,6 +219,7 @@ public class Phase70WorkstreamAcceptTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verify = f.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
         Assert.Equal(ExecutionStatuses.Queued, wi.ExecutionStatus);
@@ -237,10 +247,11 @@ public class Phase70WorkstreamAcceptTests
 
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            SeedWorkstream(db, status: "active");
-            AddDeliverable(db, iter: 1, score: 80, verdict: "iterate");
-            await db.SaveChangesAsync();
+            SeedWorkstream(control, db, status: "active");
+            AddDeliverable(control, db, iter: 1, score: 80, verdict: "iterate");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await client.PostAsync(
@@ -250,7 +261,7 @@ public class Phase70WorkstreamAcceptTests
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static void SeedWorkstream(ProductDbContext db, string status)
+    private static void SeedWorkstream(ControlDbContext control, ProductDbContext db, string status)
     {
         db.Workstreams.Add(new WorkstreamRow
         {
@@ -263,7 +274,7 @@ public class Phase70WorkstreamAcceptTests
         });
     }
 
-    private static void AddDeliverable(ProductDbContext db, int iter, int score, string verdict)
+    private static void AddDeliverable(ControlDbContext control, ProductDbContext db, int iter, int score, string verdict)
     {
         db.Deliverables.Add(new DeliverableRow
         {

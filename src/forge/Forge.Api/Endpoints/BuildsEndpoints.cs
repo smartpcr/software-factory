@@ -47,6 +47,7 @@ public static class BuildsEndpoints
     // GET /api/prs/{prId}/builds?limit=50
     private static async Task<IResult> ListBuildsForPr(
         string prId,
+        ControlDbContext control,
         ProductDbContext db,
         [FromQuery] int limit = 50)
     {
@@ -66,7 +67,7 @@ public static class BuildsEndpoints
     }
 
     // GET /api/builds/{id} — build + stages + failure points joined.
-    private static async Task<IResult> GetBuild(long id, ProductDbContext db)
+    private static async Task<IResult> GetBuild(long id, ControlDbContext control, ProductDbContext db)
     {
         var build = await db.Builds.AsNoTracking().FirstOrDefaultAsync(b => b.Id == id);
         if (build is null) return Results.Problem(title: $"Build {id} not found", statusCode: 404);
@@ -88,7 +89,7 @@ public static class BuildsEndpoints
 
     // GET /api/builds/{id}/stages/{stageId}/logs?from=&limit=
     private static async Task<IResult> GetStageLogs(
-        long id, long stageId, ProductDbContext db,
+        long id, long stageId, ControlDbContext control, ProductDbContext db,
         [FromQuery] int from = 0,
         [FromQuery] int limit = 200)
     {
@@ -114,7 +115,7 @@ public static class BuildsEndpoints
         });
     }
 
-    private static async Task<IResult> ListArtifacts(long id, ProductDbContext db)
+    private static async Task<IResult> ListArtifacts(long id, ControlDbContext control, ProductDbContext db)
     {
         if (!await db.Builds.AnyAsync(b => b.Id == id))
             return Results.Problem(title: $"Build {id} not found", statusCode: 404);
@@ -125,7 +126,7 @@ public static class BuildsEndpoints
         return Results.Ok(new { items = rows });
     }
 
-    private static async Task<IResult> ListArtifactFiles(long id, long artifactId, ProductDbContext db)
+    private static async Task<IResult> ListArtifactFiles(long id, long artifactId, ControlDbContext control, ProductDbContext db)
     {
         var art = await db.BuildArtifacts.AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == artifactId && a.BuildId == id);
@@ -140,6 +141,7 @@ public static class BuildsEndpoints
     // POST /api/builds/{id}/sync?force=true — manual trigger.
     private static async Task<IResult> ManualSync(
         long id,
+        ControlDbContext control,
         ProductDbContext db,
         BuildSyncJob job,
         IUserContext user,
@@ -159,6 +161,7 @@ public static class BuildsEndpoints
     // POST /api/builds/{id}/annotate — operator categorisation.
     private static async Task<IResult> AnnotateBuild(
         long id,
+        ControlDbContext control,
         ProductDbContext db,
         IUserContext user,
         IHubContext<ForgeHub> hub,
@@ -211,6 +214,7 @@ public static class BuildsEndpoints
     // POST /api/queue/build-fix-pending/{id}/promote-now — operator override.
     private static async Task<IResult> PromoteBuildFixNow(
         long id,
+        ControlDbContext control,
         ProductDbContext db,
         ITaskQueueService queue,
         ForgeMetrics metrics,

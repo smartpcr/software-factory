@@ -93,6 +93,7 @@ public class WorkItemSyncJob : BackgroundService
         List<RepoSyncCandidate> repos;
         using (var scope = this.scopes.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var now = DateTimeOffset.UtcNow;
             var staleThreshold = now.AddMinutes(-SyncConstants.RunningTimeoutMinutes).ToString("o");
@@ -102,8 +103,8 @@ public class WorkItemSyncJob : BackgroundService
             // behind a few not-yet-due repos in the order-by ranking. Join to
             // products so we have the slug for the AsyncLocal slug push.
             var candidates = await (
-                from r in db.Repos
-                join p in db.Products on r.ProductId equals p.Id
+                from r in control.Repos
+                join p in control.Products on r.ProductId equals p.Id
                 where r.LastSyncStatus == "idle"
                    || r.LastSyncStatus == "failed"
                    || (r.LastSyncStatus == "running" && r.IsRunningSince != null
@@ -169,14 +170,15 @@ public class WorkItemSyncJob : BackgroundService
         var runId = $"sr-{Guid.NewGuid():N}";
 
         using var scope = this.scopes.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return;
 
         // Mark as running.
         repo.LastSyncStatus = "running";
         repo.IsRunningSince = startedAt.ToString("o");
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
@@ -248,7 +250,7 @@ public class WorkItemSyncJob : BackgroundService
                     WorkItemSyncMetrics.PaginationBatches.Add(1, KeyVal("provider", providerLabel));
 
                     var (added, updated, conflicted) = await this.CommitBatchAsync(
-                        db, repo, batch, hub, scope, runId, ct);
+                        control, db, repo, batch, hub, scope, runId, ct);
                     totalAdded += added;
                     totalUpdated += updated;
                     totalConflicted += conflicted;
@@ -265,7 +267,7 @@ public class WorkItemSyncJob : BackgroundService
 
                     // Per-batch cursor commit (Phase 23.6 resume guarantee).
                     repo.LastSyncCursor = batch.OpaqueCursor;
-                    await db.SaveChangesAsync(ct);
+                    await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -323,7 +325,7 @@ public class WorkItemSyncJob : BackgroundService
             ErrorMessage = terminalEx?.Message,
             CompletedSuccessfully = terminalEx is null,
         });
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         // Telemetry — duration histogram + counters.
         var outcome = terminalEx is null ? "success" : "failed";
@@ -372,6 +374,7 @@ public class WorkItemSyncJob : BackgroundService
     /// the caller can roll them up across the whole run.
     /// </summary>
     private async Task<(int Added, int Updated, int Conflicted)> CommitBatchAsync(
+        ControlDbContext control,
         ProductDbContext db,
         RepoRow repo,
         WorkItemBatch batch,
@@ -387,7 +390,7 @@ public class WorkItemSyncJob : BackgroundService
         foreach (var w in batch.Items)
         {
             var withRepo = w with { RepoId = repo.Id };
-            var (didInsert, didUpdate, didConflict) = await UpsertAsync(db, withRepo, ct);
+            var (didInsert, didUpdate, didConflict) = await UpsertAsync(control, db, withRepo, ct);
             if (didInsert)
             {
                 added++;
@@ -438,7 +441,7 @@ public class WorkItemSyncJob : BackgroundService
             existing.ExecutionStatus = Persistence.ExecutionStatuses.Queued;
             existing.UpdatedAt = DateTimeOffset.UtcNow;
 
-            db.Audit.Add(new AuditRow
+            control.Audit.Add(new AuditRow
             {
                 At = DateTimeOffset.UtcNow,
                 User = "sync",
@@ -468,7 +471,7 @@ public class WorkItemSyncJob : BackgroundService
                 ct);
 
             // Enqueue into the task queue so the queue worker claims it.
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             try
             {
                 var queue = scope.ServiceProvider.GetService<ITaskQueueService>();
@@ -556,13 +559,14 @@ public class WorkItemSyncJob : BackgroundService
         try
         {
             using var scope = this.scopes.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
+            var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (repo is null) return;
             repo.LastSyncStatus = "idle";
             repo.LastSyncError = "Demo placeholder — click Edit to point at your real ADO project, or attach a new repo.";
             repo.IsRunningSince = null;
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
         catch (Exception ex)
         {
@@ -578,7 +582,7 @@ public class WorkItemSyncJob : BackgroundService
     /// conflict policy lights up the divergence pill in the UI).
     /// </summary>
     private static async Task<(bool Inserted, bool Updated, bool Conflicted)> UpsertAsync(
-        ProductDbContext db, WorkItem remote, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, WorkItem remote, CancellationToken ct)
     {
         var existing = await db.WorkItems.FirstOrDefaultAsync(
             w => w.Provider == remote.Provider && w.ProviderRef == remote.ProviderRef, ct);

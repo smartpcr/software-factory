@@ -35,17 +35,18 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var product = await db.Products.FirstAsync();
-        db.Crews.Add(new CrewRow
+        var product = await control.Products.FirstAsync();
+        control.Crews.Add(new CrewRow
         {
             Id = "claim-crew", Name = "Engineering Claim",
             Lead = "claim-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,
         });
-        db.CrewMembers.Add(new CrewMemberRow
+        control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = "claim-crew", AgentId = "claim-agent",
             AddedAt = DateTimeOffset.UtcNow,
@@ -58,7 +59,7 @@ public class AgentReadyClaimStateTests
             Title = "Proposed item",
             ExecutionStatus = ExecutionStatuses.Idle,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Enqueue directly to the crew.
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -80,17 +81,18 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var product = await db.Products.FirstAsync();
-        db.Crews.Add(new CrewRow
+        var product = await control.Products.FirstAsync();
+        control.Crews.Add(new CrewRow
         {
             Id = "keep-crew", Name = "Engineering Keep",
             Lead = "keep-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,
         });
-        db.CrewMembers.Add(new CrewMemberRow
+        control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = "keep-crew", AgentId = "keep-agent",
             AddedAt = DateTimeOffset.UtcNow,
@@ -103,7 +105,7 @@ public class AgentReadyClaimStateTests
             Title = "Already active item",
             ExecutionStatus = ExecutionStatuses.Idle,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         await queue.EnqueueAsync("wi-claim-active", "crew", "keep-crew", default);
@@ -121,17 +123,18 @@ public class AgentReadyClaimStateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var product = await db.Products.FirstAsync();
-        db.Crews.Add(new CrewRow
+        var product = await control.Products.FirstAsync();
+        control.Crews.Add(new CrewRow
         {
             Id = "res-crew", Name = "Engineering Res",
             Lead = "res-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,
         });
-        db.CrewMembers.Add(new CrewMemberRow
+        control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = "res-crew", AgentId = "res-agent",
             AddedAt = DateTimeOffset.UtcNow,
@@ -144,7 +147,7 @@ public class AgentReadyClaimStateTests
             Title = "Resolved item",
             ExecutionStatus = ExecutionStatuses.Idle,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         await queue.EnqueueAsync("wi-claim-resolved", "crew", "res-crew", default);

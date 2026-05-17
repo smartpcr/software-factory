@@ -55,7 +55,7 @@ public static class CardsEndpoints
     }
 
     // GET /api/cards/{id}
-    private static async Task<IResult> Get(string id, ProductDbContext db)
+    private static async Task<IResult> Get(string id, ControlDbContext control, ProductDbContext db)
     {
         var row = await db.Cards.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id);
         return row is null ? NotFound(id) : Results.Ok(CardMapper.ToContract(row));
@@ -72,6 +72,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateCardRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
@@ -135,6 +136,7 @@ public static class CardsEndpoints
         [FromBody] CommentRequest req,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -191,6 +193,7 @@ public static class CardsEndpoints
         string id,
         [FromBody] PatchCardRequest req,
         HttpContext ctx,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
@@ -266,6 +269,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Move(
         string id,
         [FromBody] MoveCardRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         ILoggerFactory loggerFactory)
@@ -310,6 +314,7 @@ public static class CardsEndpoints
     private static async Task<IResult> Delete(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {

@@ -148,19 +148,14 @@ builder.Services.AddCors(options =>
     // Singleton: no per-request state.
     builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitApplyService>();
 
-    // Phase D step 5 — ForgeDbContext registration removed. The split
+    // Phase G — legacy ForgeDbContext class deleted. The split
     // ControlDbContext + ProductDbContext (+ IProductDbContextFactory)
-    // below cover every consumer that used to take ForgeDbContext.
-    // The class itself lives on for transitive type references in
-    // legacy XML doc comments and the OnModelCreating union helper, but
-    // it is no longer registered for DI. Delete the file in Phase G
-    // once every remaining XML doc <see cref="ForgeDbContext"/> is
-    // updated.
+    // below cover every consumer that used to take the union context.
 
-    // Phase D — ControlDbContext binds to the same forge.db file as
-    // ForgeDbContext during the migration window. After Phase F, this
-    // remains the only context bound to forge.db (everything else moves
-    // to per-product files via IProductDbContextFactory).
+    // Phase D — ControlDbContext binds to the same forge.db file as the
+    // legacy union context did during the migration window. After Phase F,
+    // this remains the only context bound to forge.db (everything else
+    // moves to per-product files via IProductDbContextFactory).
     builder.Services.AddDbContext<Forge.Api.Persistence.ControlDbContext>((sp, opt) =>
     {
         var paths = sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
@@ -177,7 +172,7 @@ builder.Services.AddCors(options =>
         }
 
         // WAL + synchronous=NORMAL bootstrap (Phase A; moved here from the
-        // legacy ForgeDbContext registration as part of Phase D step-5
+        // legacy union-context registration as part of Phase D step-5
         // cleanup). The `bootstrapped` HashSet is keyed on the resolved
         // path so a different path (tests) bootstraps separately.
         bool needBootstrap;
@@ -287,7 +282,7 @@ builder.Services.AddSingleton<ProviderSyncService>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
 // Phase 12.4 — work item sync. Singleton so the in-memory per-repo throttle
 // dictionary survives across requests; uses IServiceScopeFactory internally
-// to resolve a fresh ForgeDbContext per sync call.
+// to resolve a fresh ProductDbContext per sync call.
 builder.Services.AddSingleton<WorkItemSyncService>();
 
 // Phase 23 — scheduled work-item sync job (20-min cadence). Singleton
@@ -304,6 +299,7 @@ builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
 // Phase 16.4 — gets the live TaskChannel so iteration boundaries emit on task.{wid}.
 builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
     new Forge.Api.Services.DeliverableLoop(
+        sp.GetRequiredService<Forge.Api.Persistence.ControlDbContext>(),
         sp.GetRequiredService<Forge.Api.Persistence.ProductDbContext>(),
         sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
@@ -485,8 +481,33 @@ var app = builder.Build();
 // Ensure DB exists and is seeded (idempotent).
 using (var scope = app.Services.CreateScope())
 {
+    var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
     var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-    await db.Database.EnsureCreatedAsync();
+    // Phase G — create BOTH schemas in the same forge.db file (Phase D
+    // interim mode). ControlDbContext owns global tables (forge_actions,
+    // products, repos, users, crews, agents, etc.); ProductDbContext owns
+    // per-product tables (workstreams, work_items, deliverables, builds, etc.).
+    // EnsureCreated() is a no-op when ANY table exists in the file, so on a
+    // mixed forge.db both EnsureCreated calls turn into no-ops and we rely
+    // on the Phase migrations below to add any missing schema. On a fresh
+    // boot we run both create scripts explicitly to lay down the union.
+    await control.Database.EnsureCreatedAsync();
+    {
+        // Check if any product-side table exists (e.g. workstreams). If not,
+        // execute the product-side CREATE script. This works on fresh DBs
+        // (no product tables) AND on legacy union DBs (product tables already
+        // exist, skip the create).
+        await using var probeConn = new Microsoft.Data.Sqlite.SqliteConnection(db.Database.GetConnectionString());
+        await probeConn.OpenAsync();
+        await using var probeCmd = probeConn.CreateCommand();
+        probeCmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='workstreams';";
+        var wsExists = (long)(await probeCmd.ExecuteScalarAsync() ?? 0L) > 0;
+        if (!wsExists)
+        {
+            var productSchemaScript = db.Database.GenerateCreateScript();
+            await db.Database.ExecuteSqlRawAsync(productSchemaScript);
+        }
+    }
     // Phase 42 must run BEFORE any migration that issues an EF query against
     // workstreams / work_items. EF's SELECT lists every mapped column on
     // WorkstreamRow / WorkItemRow — including the Phase 42 additions — so an
@@ -494,71 +515,71 @@ using (var scope = app.Services.CreateScope())
     // soon as e.g. Phase 38's backfill calls db.WorkItems.ToListAsync().
     // The migration's pragma probe is a no-op when the columns already exist
     // (fresh DB created by EnsureCreatedAsync), so running it first is safe.
-    await Phase42Migration.ApplyAsync(db);
+    await Phase42Migration.ApplyAsync(control, db);
     // Phase 8.2 — additive schema upgrade for existing dev DBs that pre-date Phase 8.
-    await Phase8Migration.ApplyAsync(db);
+    await Phase8Migration.ApplyAsync(control, db);
     // Phase 11.4 — agent_usage cost ledger.
-    await Phase11Migration.ApplyAsync(db);
+    await Phase11Migration.ApplyAsync(control, db);
     // Phase 12.2 — work_items + work_item_links.
-    await Phase12Migration.ApplyAsync(db);
+    await Phase12Migration.ApplyAsync(control, db);
     // Phase 14.1 — agent level/hourly + crew schedule + deliverables/level_history tables.
-    await Phase14Migration.ApplyAsync(db);
+    await Phase14Migration.ApplyAsync(control, db);
 
-    await Phase15Migration.ApplyAsync(db);
+    await Phase15Migration.ApplyAsync(control, db);
     // Phase 16.1 — pair columns + auto-dispatch + cost-category + transcript table.
-    await Phase16Migration.ApplyAsync(db);
+    await Phase16Migration.ApplyAsync(control, db);
     // Phase 17.1 — persistent task queue + history + idempotency guard.
-    await Phase17Migration.ApplyAsync(db);
+    await Phase17Migration.ApplyAsync(control, db);
     // Phase 18 — per-crew Shift column ('day' | 'night').
-    await Phase18Migration.ApplyAsync(db);
+    await Phase18Migration.ApplyAsync(control, db);
     // Phase 19 — execution status + trial count on work items.
-    await Phase19Migration.ApplyAsync(db);
+    await Phase19Migration.ApplyAsync(control, db);
     // Phase 20 — max-iteration override on task_queue rows.
-    await Phase20Migration.ApplyAsync(db);
+    await Phase20Migration.ApplyAsync(control, db);
     // Phase 21 — SkipSoulPrompt flag on task_queue rows.
-    await Phase21Migration.ApplyAsync(db);
+    await Phase21Migration.ApplyAsync(control, db);
     // Phase 22 — AssignedAgent field + agent_assignments history + backfill.
-    await Phase22Migration.ApplyAsync(db);
+    await Phase22Migration.ApplyAsync(control, db);
     // Phase 23 — scheduled work-item sync columns + sync-runs table.
-    await Phase23Migration.ApplyAsync(db);
+    await Phase23Migration.ApplyAsync(control, db);
     // Phase 24 — PR sync + comment lifecycle tables and columns.
-    await Phase24Migration.ApplyAsync(db);
+    await Phase24Migration.ApplyAsync(control, db);
     // Phase 25 — sync run item details.
-    await Phase25Migration.ApplyAsync(db);
+    await Phase25Migration.ApplyAsync(control, db);
     // Phase 26 — build/test gate columns on repos.
-    await Phase26Migration.ApplyAsync(db);
+    await Phase26Migration.ApplyAsync(control, db);
 
-    await Phase27Migration.ApplyAsync(db);
+    await Phase27Migration.ApplyAsync(control, db);
     // Phase 28 — PR diff stats (Updates column on prs table).
-    await Phase28Migration.ApplyAsync(db);
+    await Phase28Migration.ApplyAsync(control, db);
     // Phase 29 — init/restore commands + build validation run history.
-    await Phase29Migration.ApplyAsync(db);
+    await Phase29Migration.ApplyAsync(control, db);
     // Phase 24 Q24.14 — preferred-agent pin on task_queue + livelock counter on work_items.
-    await Phase30Migration.ApplyAsync(db);
+    await Phase30Migration.ApplyAsync(control, db);
     // forge_implementation.md Phase 27 — build sync + repair loop tables.
-    await Phase31Migration.ApplyAsync(db);
+    await Phase31Migration.ApplyAsync(control, db);
     // forge_implementation.md Phase 28 — story spawns + workstream dependency edges.
-    await Phase32Migration.ApplyAsync(db);
+    await Phase32Migration.ApplyAsync(control, db);
     // Phase 33 — persisted sync settings on repos.
-    await Phase33Migration.ApplyAsync(db);
+    await Phase33Migration.ApplyAsync(control, db);
     // Phase 34 — per-repo sync cadence overrides + upstream-changedate cursor.
-    await Phase34Migration.ApplyAsync(db);
+    await Phase34Migration.ApplyAsync(control, db);
     // Phase 35 — decouple crews from products (null out ProductId).
-    await Phase35Migration.ApplyAsync(db);
+    await Phase35Migration.ApplyAsync(control, db);
     // Phase 36 — add Reaction column to pr_comments.
-    await Phase36Migration.ApplyAsync(db);
+    await Phase36Migration.ApplyAsync(control, db);
     // Phase 37 — add LastError + LastErrorAt columns to story_spawns so the
     // orchestrator can persist failure reasons and the UI can surface them.
-    await Phase37Migration.ApplyAsync(db);
+    await Phase37Migration.ApplyAsync(control, db);
     // Phase 38 — backfill WorkItemRow rows for legacy plan-doc and
     // workstream ids so DeliverableLoop.PointsToMaxIter has a real
     // wi.Points to read from.
     // Phase 43 + Phase 45 must run first — they add columns to story_spawns
     // (AttachmentsJson, BaseBranch) which Phase 38's EF query reads via the
     // mapped entity. Skipping either would crash with "no such column".
-    await Phase43Migration.ApplyAsync(db);
-    await Phase45Migration.ApplyAsync(db);
-    await Phase46Migration.ApplyAsync(db);
+    await Phase43Migration.ApplyAsync(control, db);
+    await Phase45Migration.ApplyAsync(control, db);
+    await Phase46Migration.ApplyAsync(control, db);
     // Phase 46 (spec) — workstreams.DepsJson + PhaseAnchor for v2 plan
     // layout. Filename retained as Phase47Migration on disk because
     // Phase46Migration is taken by the AutoMerge flag migration. MUST
@@ -568,20 +589,20 @@ using (var scope = app.Services.CreateScope())
     // ("SQLite Error 1: 'no such column: w.DepsJson'") because the prod
     // DB pre-dates the entity-model addition and Phase 47 was scheduled
     // after Phase 38.
-    await Phase47Migration.ApplyAsync(db);
+    await Phase47Migration.ApplyAsync(control, db);
     // Phase 49 (spec) — workstreams.StallReason for the new stalled
     // triage state (build-gate / no-progress / non-pass verdict).
     // MUST run before Phase 38 for the same reason as Phase 47: Phase
     // 38 issues `db.Workstreams.ToListAsync()` which projects every
     // mapped column including StallReason. Without this ordering the
     // prod DB crashes at boot with "no such column: w.StallReason".
-    await Phase49Migration.ApplyAsync(db);
+    await Phase49Migration.ApplyAsync(control, db);
     // Phase 50 — DecisionPinsJson on story_spawns for operator-pinned
     // decisions that break cross-doc convergence loops. MUST also run
     // before Phase 38 for the same reason: Phase38Migration reads
     // story_spawns via EF which projects DecisionPinsJson. Single
     // nullable column; safe alongside the other story_spawns migrations.
-    await Phase50Migration.ApplyAsync(db);
+    await Phase50Migration.ApplyAsync(control, db);
     // Phase 51 — BudgetCooldownUntilUtc + LastPairAgentIdsJson on
     // work_items so the BudgetCooldownReconciler can auto-resume tasks
     // parked by a stalled-budget verdict (cap raise → immediate, 10m
@@ -589,74 +610,74 @@ using (var scope = app.Services.CreateScope())
     // an ExecutionStatus index for the 15-second scan. Order: anywhere
     // before the reconciler boots is fine; placed next to Phase 50 to
     // keep the budget/cooldown story local.
-    await Phase51Migration.ApplyAsync(db);
+    await Phase51Migration.ApplyAsync(control, db);
     // Phase 52 — sloppy-iteration guard. Adds PairAttemptCount /
     // PriorPairsJson / FailureReason on work_items and the
     // agent_pair_assignment table. Order matters: must run BEFORE
     // SloppyReassignmentReconciler boots its first tick (the reconciler
     // queries the new columns).
-    await Phase52Migration.ApplyAsync(db);
+    await Phase52Migration.ApplyAsync(control, db);
     // Phase 53 — sequential plan-doc tasks. Adds PlanDocPrsJson on
     // story_spawns so each plan doc (architecture / tech-spec /
     // implementation-plan / e2e-scenarios) carries its own branch + PR
     // state and runs in strict sequence. Legacy spawns keep PlanPrId/
     // PlanBranch and use the original single-PR path.
-    await Phase53Migration.ApplyAsync(db);
-    await Phase54Migration.ApplyAsync(db);
+    await Phase53Migration.ApplyAsync(control, db);
+    await Phase54Migration.ApplyAsync(control, db);
     // Phase 55 (docs/forge/sloppy_guard.md) — agent_memory table for
     // cross-iteration continuity (Layer 2 of the gen-eval memory plan).
     // Order: any time before the runners boot is fine; placed adjacent to
     // 53/54 so the post-Phase-52 migration sequence stays grouped.
-    await Phase55Migration.ApplyAsync(db);
+    await Phase55Migration.ApplyAsync(control, db);
     // Phase 60 — bump existing plan-doc:* work_items rows with Points<3
     // to Points=3 so the next gen/eval round gets ≥90 turns and ≥15 min
     // wall-clock budget. Must run BEFORE Phase38 so the backfill below
     // sees the new floor (Phase38 is now also floor-aware, this is
     // belt-and-suspenders + corrective for live rows). Self-idempotent
     // via the SQL WHERE clause; safe to re-run on every boot.
-    await Phase60Migration.ApplyAsync(db);
+    await Phase60Migration.ApplyAsync(control, db);
     // Phase 63 — PausedFromPhase on story_spawns, PausedFromStatus on
     // workstreams for spawn-level pause / resume. Must run BEFORE
     // Phase38 because EF's model now includes these columns — any EF
     // query against story_spawns or workstreams will fail if the
     // columns don't exist yet.
-    await Phase63Migration.ApplyAsync(db);
+    await Phase63Migration.ApplyAsync(control, db);
     // Phase 64 — FailureKind + FailureReason on deliverables so the
     // generator's failure mode (timeout / max-turns / inactive) flows
     // through to workstreams.StallReason. Same ordering constraint as
     // Phase63 — EF's DeliverableRow model now references these columns,
     // so any query against deliverables would fail without them.
-    await Phase64Migration.ApplyAsync(db);
+    await Phase64Migration.ApplyAsync(control, db);
     // Phase 65 — CommitSha + FilesChanged/Added/Modified/Deleted on
     // deliverables so per-iter file-change counts are deterministic
     // (don't depend on 1Hz task.worktree-tick polling that misses the
     // iter window when the worktree is removed mid-flight or commits
     // land in the last second of an iter). Same ordering constraint as
     // Phase63/64 — EF's model now references these columns.
-    await Phase65Migration.ApplyAsync(db);
+    await Phase65Migration.ApplyAsync(control, db);
     // Phase 72 (2026-05-16) — CacheReadTokens / CacheWriteTokens /
     // ReasoningTokens / ConversationTokens on agent_usage. EF's
     // AgentUsageRow model references these columns so any agent_usage
     // INSERT or SELECT would fail without them.
-    await Phase72Migration.ApplyAsync(db);
-    await Phase38Migration.ApplyAsync(db);
+    await Phase72Migration.ApplyAsync(control, db);
+    await Phase38Migration.ApplyAsync(control, db);
     // Phase 39 — create the deliverable_questions table for the
     // open-questions wizard.
-    await Phase39Migration.ApplyAsync(db);
+    await Phase39Migration.ApplyAsync(control, db);
     // Phase 40 — backfill WorkItemRow rows for legacy story ids so the
     // ParentId on plan-docs / workstreams resolves to a real parent.
-    await Phase40Migration.ApplyAsync(db);
+    await Phase40Migration.ApplyAsync(control, db);
     // Phase 41 — ResumePendingJson column on story_spawns so a plan-doc
     // Resume kicked off via /spawn/artifacts/{key}/resume survives a
     // process restart (StoryResumeRecoveryService re-fires unfinished keys).
-    await Phase41Migration.ApplyAsync(db);
+    await Phase41Migration.ApplyAsync(control, db);
     // Phase 43 — AttachmentsJson on story_spawns for operator-uploaded reference docs.
-    await Phase43Migration.ApplyAsync(db);
+    await Phase43Migration.ApplyAsync(control, db);
     // Phase 44 — agent_claims table + MaxConcurrentTasks on agents.
-    await Phase44Migration.ApplyAsync(db);
+    await Phase44Migration.ApplyAsync(control, db);
     // Phase 47 (spec) — task_queue.RoutedEvaluatorAgentId for pair-diversity
     // (filename Phase48Migration on disk; see migration class doc).
-    await Phase48Migration.ApplyAsync(db);
+    await Phase48Migration.ApplyAsync(control, db);
     // Phase 47 (spec) — reap stale agent_usage rows from a crashed runner so
     // a permanently-busy agent doesn't wedge the diversity picker.
     // Phase 48 follow-up — by definition no invocation can be in flight at
@@ -664,7 +685,7 @@ using (var scope = app.Services.CreateScope())
     // Without this, fresh-orphaned rows from the most recent crash leave
     // their agents marked busy and plan-doc loops freeze because the
     // pair-diversity picker filters every candidate out as busy.
-    await Forge.Api.Services.BusyAgentsHelper.ReapAllOpenOnBootAsync(db);
+    await Forge.Api.Services.BusyAgentsHelper.ReapAllOpenOnBootAsync(control);
     // Phase 45 ran above (out of numeric order) so Phase 38's EF read of
     // story_spawns sees the BaseBranch column.
     // Phase 42 already ran at the top of this scope(must precede the EF
@@ -697,7 +718,7 @@ using (var scope = app.Services.CreateScope())
     // canonical 8 crews + A1/A2/E4/E7/E9/R3/R5/Q2/XD agents stay static
     // even after past test pollution flipped fields like crew-eng.Shift.
     // The pass is idempotent: a clean DB sees zero writes.
-    await ForgeSeed.EnsureCrewCatalogAsync(db);
+    await ForgeSeed.EnsureCrewCatalogAsync(control, db);
     // Test factory seeds default product+repo into an otherwise empty per-
     // instance DB so test fixtures find the baseline reference rows. Safe
     // here because Forge:Background:Disabled=true keeps the prod sync /
@@ -706,16 +727,16 @@ using (var scope = app.Services.CreateScope())
     // repo committed in forge.db.
     if (Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") == "1")
     {
-        await ForgeSeed.EnsureDefaultProductAndRepoAsync(db);
+        await ForgeSeed.EnsureDefaultProductAndRepoAsync(control, db);
     }
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
-    await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
+    await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(control, db, caller: "boot", ct: default);
     // Repair pass: any workstream stuck on review/merging whose PR is
     // already merged gets snapped to "complete". Backfills rows merged
     // before WorkstreamMergeAdvancer was wired into the merge paths.
     {
-        var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(db);
+        var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(control, db);
         if (advanced > 0)
         {
             scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("WorkstreamMergeAdvancer")
@@ -728,7 +749,7 @@ using (var scope = app.Services.CreateScope())
     // path; without this, existing PRs sit on Col=review forever because
     // AutoMergeWatcher only iterates `WHERE AutoMerge=true`.
     {
-        var touched = await Forge.Api.Services.Stories.SpawnAutoMergeResolver.BackfillPrsAsync(db);
+        var touched = await Forge.Api.Services.Stories.SpawnAutoMergeResolver.BackfillPrsAsync(control, db);
         if (touched > 0)
         {
             scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("SpawnAutoMergeResolver")
@@ -767,7 +788,7 @@ using (var scope = app.Services.CreateScope())
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
     var startupConfig = scope.ServiceProvider.GetRequiredService<IConfiguration>();
     var backendPolicy = Forge.Api.Configuration.ForgeBackendPolicy.FromConfiguration(startupConfig);
-    await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger, backendPolicy);
+    await ForgeSeed.EnsureStartupConfigAsync(control, db, startupLogger, backendPolicy);
 }
 
 // One-time CLI scrub of test fixture rows that leaked into the prod DB
@@ -780,9 +801,10 @@ if (args.Contains("--scrub-test-artifacts"))
 {
     var apply = args.Contains("--apply");
     using var scrubScope = app.Services.CreateScope();
+    var scrubControl = scrubScope.ServiceProvider.GetRequiredService<ControlDbContext>();
     var scrubDb = scrubScope.ServiceProvider.GetRequiredService<ProductDbContext>();
     var scrubLogger = scrubScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.Scrub");
-    var report = await ForgeSeed.ScrubTestArtifactsAsync(scrubDb, dryRun: !apply, scrubLogger);
+    var report = await ForgeSeed.ScrubTestArtifactsAsync(scrubControl, scrubDb, dryRun: !apply, scrubLogger);
 
     Console.WriteLine($"[Scrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
     Console.WriteLine($"  crews deleted:                    {report.CrewsDeleted}");
@@ -821,6 +843,7 @@ if (args.Contains("--scrub-mocked-spawns"))
 {
     var apply = args.Contains("--apply");
     using var spawnScope = app.Services.CreateScope();
+    var spawnControl = spawnScope.ServiceProvider.GetRequiredService<ControlDbContext>();
     var spawnDb = spawnScope.ServiceProvider.GetRequiredService<ProductDbContext>();
     var spawnLogger = spawnScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.SpawnScrub");
 
@@ -832,7 +855,7 @@ if (args.Contains("--scrub-mocked-spawns"))
     var keepWorkstreams = Array.Empty<string>();
 
     var report = await ForgeSeedSpawnScrub.ScrubMockedSpawnsAsync(
-        spawnDb, keepSpawns, keepWorkstreams, dryRun: !apply, spawnLogger);
+        spawnControl, spawnDb, keepSpawns, keepWorkstreams, dryRun: !apply, spawnLogger);
 
     Console.WriteLine($"[SpawnScrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
     Console.WriteLine($"  story_spawns deleted:    {report.StorySpawnsDeleted}");
@@ -964,6 +987,7 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 app.Lifetime.ApplicationStopping.Register(() =>
 {
     using var scope = app.Services.CreateScope();
+    var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
     var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
     db.Database.ExecuteSqlRaw("PRAGMA wal_checkpoint(TRUNCATE)");
     Console.WriteLine("[Forge] WAL checkpoint completed.");

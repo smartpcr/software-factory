@@ -57,10 +57,11 @@ public static class WorkstreamsEndpoints
     // StoriesEndpoints share the same query body.
     private static async Task<IResult> GetIterKpis(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var payload = await Forge.Api.Services.ConversationInsightQueries.GetIterKpisAsync(db, id, ct);
+        var payload = await Forge.Api.Services.ConversationInsightQueries.GetIterKpisAsync(control, db, id, ct);
         return Results.Ok(payload);
     }
 
@@ -70,10 +71,11 @@ public static class WorkstreamsEndpoints
     // for the directory walk.
     private static async Task<IResult> GetIterNotes(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, id, ct);
+        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(control, db, id, ct);
         var payload = await Forge.Api.Services.ConversationInsightQueries
             .GetIterNotesAsync(id, resolved.WorktreePath, ct);
         return Results.Ok(payload);
@@ -85,13 +87,14 @@ public static class WorkstreamsEndpoints
     // same code works for engineer workstream ids + plan-doc work items.
     private static async Task<IResult> GetMemory(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         Forge.Api.Agents.CopilotSessionPool copilotPool,
         Forge.Api.Services.MemoryCompactor compactor,
         CancellationToken ct)
     {
         var payload = await Forge.Api.Services.ConversationInsightQueries
-            .GetMemoryAsync(db, copilotPool, compactor, id, ct);
+            .GetMemoryAsync(control, db, copilotPool, compactor, id, ct);
         return Results.Ok(payload);
     }
 
@@ -103,6 +106,7 @@ public static class WorkstreamsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] OpenPrRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IEnumerable<IForgeProvider> providers,
         Forge.Api.Auth.IUserContext user,
@@ -132,7 +136,7 @@ public static class WorkstreamsEndpoints
             // Stash the new PR id on the workstream row.
             var prs = CardMapper.Deserialize<List<string>>(row.PrsJson) ?? new();
             if (!prs.Contains(pr.Id)) { prs.Add(pr.Id); row.PrsJson = CardMapper.Serialize(prs); }
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await hub.Clients.All.SendAsync("pr.changed", new { kind = "opened", source = req.Provider, pr });
             return Results.Created($"/api/prs/{pr.Id}", pr);
@@ -144,9 +148,9 @@ public static class WorkstreamsEndpoints
     }
 
     // GET /api/workstreams
-    private static async Task<IResult> GetAll(HttpContext ctx, ProductDbContext db, IGitWorktreeService git)
+    private static async Task<IResult> GetAll(HttpContext ctx, ControlDbContext control, ProductDbContext db, IGitWorktreeService git)
     {
-        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var scope = await ProductScope.ResolveAsync(ctx, control);
         var q = db.Workstreams.AsNoTracking().AsQueryable();
         if (!scope.IsAll)
         {
@@ -197,6 +201,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Create(
         HttpContext ctx,
         [FromBody] CreateWorkstreamRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IGitWorktreeService git,
         IRepoCloneService cloneSvc,
@@ -218,7 +223,7 @@ public static class WorkstreamsEndpoints
         // empty, run git clone first (silent / Q6). On hard failure we abort
         // the workstream creation rather than leaving a dangling row.
         var repoId = string.IsNullOrWhiteSpace(req.RepoId) ? ForgeSeed.DefaultRepoId : req.RepoId;
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId);
         if (repo is not null)
         {
             var clone = await cloneSvc.EnsureClonedAsync(repo);
@@ -269,7 +274,7 @@ public static class WorkstreamsEndpoints
             Planned = true,
         };
         db.Workstreams.Add(row);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         if (req.WorktreePath is not null)
         {
@@ -297,6 +302,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Sync(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IGitWorktreeService git,
         IHubContext<ForgeHub> hub)
@@ -314,7 +320,7 @@ public static class WorkstreamsEndpoints
             row.Ahead = ab.Ahead;
             row.Behind = ab.Behind;
             row.Conflicts = conflicts.Count;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         catch
         {
@@ -331,6 +337,7 @@ public static class WorkstreamsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
+        ControlDbContext control,
         ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
@@ -354,7 +361,7 @@ public static class WorkstreamsEndpoints
             }, statusCode: 422);
         }
 
-        var report = await CascadeDeleteWorkstreamAsync(db, git, paths, row, ct: ctx.RequestAborted);
+        var report = await CascadeDeleteWorkstreamAsync(control, db, git, paths, row, ct: ctx.RequestAborted);
 
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "deleted", id });
         if (!string.IsNullOrEmpty(row.StorySpawnId))
@@ -388,6 +395,7 @@ public static class WorkstreamsEndpoints
     /// resurrecting the previous attempt's PR branch.</para>
     /// </summary>
     internal static async Task<object> CascadeDeleteWorkstreamAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
@@ -445,8 +453,8 @@ public static class WorkstreamsEndpoints
         // cost ledger and the doc / workstream cards show stale dollar
         // totals (operator-reported: re-spawned story showed
         // ~$1300-$2000 per plan-doc card before any LLM had run).
-        var agentUsage = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync(ct);
-        db.AgentUsage.RemoveRange(agentUsage);
+        var agentUsage = await control.AgentUsage.Where(u => u.TaskId == id).ToListAsync(ct);
+        control.AgentUsage.RemoveRange(agentUsage);
         counts["agentUsage"] = agentUsage.Count;
 
         // Phase 52 follow-up (2026-05-13) — pair-attempt audit rows
@@ -466,8 +474,8 @@ public static class WorkstreamsEndpoints
         // unboundedly. Wipe historical claims for this work item — the
         // ledger of "which agent picked this up" is meaningless once
         // the work item itself is gone.
-        var agentClaims = await db.AgentClaims.Where(c => c.WorkItemId == id).ToListAsync(ct);
-        db.AgentClaims.RemoveRange(agentClaims);
+        var agentClaims = await control.AgentClaims.Where(c => c.WorkItemId == id).ToListAsync(ct);
+        control.AgentClaims.RemoveRange(agentClaims);
         counts["agentClaims"] = agentClaims.Count;
 
         var wsEvents = await db.WsEvents.Where(e => e.Ws == id).ToListAsync(ct);
@@ -494,7 +502,7 @@ public static class WorkstreamsEndpoints
         db.Workstreams.Remove(row);
         counts["workstream"] = 1;
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         // ── 6. On-disk artifacts (best-effort; never block the delete) ───
         var stateDir = paths.Folder;
@@ -524,7 +532,7 @@ public static class WorkstreamsEndpoints
         // ── 7. Worktree mount + local branch ─────────────────────────────
         if (!string.IsNullOrEmpty(row.Branch))
         {
-            var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
+            var repoRow = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
             var cloneRoot = repoRow?.CloneRoot;
             if (!string.IsNullOrEmpty(cloneRoot))
             {
@@ -647,6 +655,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Restart(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
@@ -673,7 +682,7 @@ public static class WorkstreamsEndpoints
             q.CompletedAt = DateTimeOffset.UtcNow;
             q.LastUpdatedAt = DateTimeOffset.UtcNow;
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // ── 1. Delete all deliverables for this workstream ──────────────
         var deliverables = await db.Deliverables.Where(d => d.WorkItemId == id).ToListAsync();
@@ -707,8 +716,8 @@ public static class WorkstreamsEndpoints
         var pairRows = await db.AgentPairAssignments.Where(p => p.WorkItemId == id).ToListAsync();
         db.AgentPairAssignments.RemoveRange(pairRows);
 
-        var usageRows = await db.AgentUsage.Where(u => u.TaskId == id).ToListAsync();
-        db.AgentUsage.RemoveRange(usageRows);
+        var usageRows = await control.AgentUsage.Where(u => u.TaskId == id).ToListAsync();
+        control.AgentUsage.RemoveRange(usageRows);
 
         // ── 4. Close upstream PRs and deactivate local rows ─────────────
         var prIds = ParseStringList(ws.PrsJson);
@@ -805,7 +814,7 @@ public static class WorkstreamsEndpoints
             }
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // ── 6. Clear the cached workspace ───────────────────────────────
         var stateDir = paths.Folder;
@@ -823,7 +832,7 @@ public static class WorkstreamsEndpoints
         // ── 7. Nuke git branch — worktree, local ref, AND remote ────────
         if (!string.IsNullOrEmpty(ws.Branch))
         {
-            var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId);
+            var repoRow = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.CloneRoot)
                 && System.IO.Directory.Exists(repoRow.CloneRoot))
             {
@@ -1055,6 +1064,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Retry(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
@@ -1117,7 +1127,7 @@ public static class WorkstreamsEndpoints
         // agent_usage rows so the orchestrator gets a clean slate.
         var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
         var report = await Forge.Api.Services.Stories.WorkstreamRecovery.SoftResetForResumeAsync(
-            db, ws, await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id), lastDel,
+            control, db, ws, await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id), lastDel,
             operatorActor: actor,
             noteSuffix: "operator clicked Retry",
             ct: ctx.RequestAborted);
@@ -1142,7 +1152,7 @@ public static class WorkstreamsEndpoints
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
             }
 
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await hub.Clients.All.SendAsync("workstream.changed", new
             {
@@ -1179,7 +1189,7 @@ public static class WorkstreamsEndpoints
             wi.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // (5) Emit a workstream-changed event so the live UI picks up the
         // new status without a manual refresh.
@@ -1236,6 +1246,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Accept(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
@@ -1317,7 +1328,7 @@ public static class WorkstreamsEndpoints
             wi.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // (4) Emit workstream-changed so the live UI refreshes without a
         // manual reload. The orchestrator's next tick (~15s) does the
@@ -1364,6 +1375,7 @@ public static class WorkstreamsEndpoints
     private static async Task<IResult> Cancel(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
@@ -1427,7 +1439,7 @@ public static class WorkstreamsEndpoints
             lastDel.Verdict = "stalled";
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "cancelled", id });
 
         return Results.Ok(new

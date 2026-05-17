@@ -64,6 +64,7 @@ public sealed class StoryResumeRecoveryService : IHostedService
         List<(string SpawnId, string Key, string PrId)> skippedMerged;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var rows = await db.StorySpawns.AsNoTracking()
                 .Where(s => s.ResumePendingJson != null && s.ResumePendingJson != string.Empty)

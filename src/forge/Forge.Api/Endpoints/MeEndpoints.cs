@@ -18,10 +18,10 @@ using Microsoft.Extensions.Options;
 /// state into a single identity record and lazy-creates a <see cref="UserRow"/>
 /// the first time a provider sign-in surfaces a fresh email.
 ///
-/// First-run rule (Phase 9.9): the very first user to register on a fresh DB
+/// First-run rule (Phase 9.9): the very first user to register on a fresh control
 /// is auto-promoted to <c>product-owner</c>. The bootstrap email from
 /// <see cref="ForgeAuthOptions.BootstrapPoEmail"/> is also auto-promoted on
-/// any visit, so the operator who registered Forge keeps PO across DB resets.
+/// any visit, so the operator who registered Forge keeps PO across control resets.
 /// </summary>
 public static class MeEndpoints
 {
@@ -45,7 +45,7 @@ public static class MeEndpoints
     private static async Task<IResult> PutRole(
         HttpContext ctx,
         SetRoleRequest req,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -61,9 +61,9 @@ public static class MeEndpoints
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         var me = string.IsNullOrEmpty(caller)
             ? null
-            : await db.Users.FirstOrDefaultAsync(
+            : await control.Users.FirstOrDefaultAsync(
                 u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
-        me ??= (await db.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
         if (me is null)
         {
             return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
@@ -73,27 +73,27 @@ public static class MeEndpoints
         {
             // Empty productId → set the user's global default role.
             me.Role = req.Role;
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct);
             return Results.Ok(new { scope = "global", userId = me.Id, role = me.Role });
         }
 
         // Per-product upsert.
-        var productExists = await db.Products.AsNoTracking().AnyAsync(p => p.Id == req.ProductId, ct);
+        var productExists = await control.Products.AsNoTracking().AnyAsync(p => p.Id == req.ProductId, ct);
         if (!productExists)
         {
             return Results.Problem(title: $"Unknown product {req.ProductId}", statusCode: 404);
         }
 
-        var row = await db.UserProductRoles
+        var row = await control.UserProductRoles
             .FirstOrDefaultAsync(r => r.UserId == me.Id && r.ProductId == req.ProductId, ct);
         if (row is null)
         {
             row = new UserProductRoleRow { UserId = me.Id, ProductId = req.ProductId };
-            db.UserProductRoles.Add(row);
+            control.UserProductRoles.Add(row);
         }
         row.Role = req.Role;
         row.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct);
 
         return Results.Ok(new { scope = "product", userId = me.Id, productId = req.ProductId, role = row.Role });
     }
@@ -102,7 +102,7 @@ public static class MeEndpoints
 
     private static async Task<IResult> GetMe(
         HttpContext ctx,
-        ControlDbContext db,
+        ControlDbContext control,
         IEnumerable<IAuthService> authServices,
         IOptions<ForgeAuthOptions> authOptions,
         CancellationToken ct)
@@ -141,15 +141,15 @@ public static class MeEndpoints
         // Lazy-create or refresh the user row.
         var row = string.IsNullOrEmpty(email)
             ? null
-            : await db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+            : await control.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
 
         if (row is null && !string.IsNullOrEmpty(email))
         {
             // First-run rule (9.9): no users yet → promote to product-owner.
             // Bootstrap match: also promote even if other users already exist,
-            // so the operator who set up Forge keeps PO after a DB reset.
-            var anyExisting = await db.Users.AnyAsync(ct);
-            var anyPo = await db.Users.AnyAsync(u => u.Role == "product-owner", ct);
+            // so the operator who set up Forge keeps PO after a control reset.
+            var anyExisting = await control.Users.AnyAsync(ct);
+            var anyPo = await control.Users.AnyAsync(u => u.Role == "product-owner", ct);
             var isBootstrap = string.Equals(email, authOptions.Value.BootstrapPoEmail, StringComparison.OrdinalIgnoreCase);
             var role = (!anyExisting || (!anyPo && isBootstrap) || isBootstrap) ? "product-owner" : "human";
 
@@ -163,8 +163,8 @@ public static class MeEndpoints
                 CreatedAt = DateTimeOffset.UtcNow,
                 LastSeenAt = DateTimeOffset.UtcNow,
             };
-            db.Users.Add(row);
-            await db.SaveChangesAsync(ct);
+            control.Users.Add(row);
+            await control.SaveChangesAsync(ct);
         }
         else if (row is not null)
         {
@@ -173,7 +173,7 @@ public static class MeEndpoints
             if (row.DisplayName != displayName) { row.DisplayName = displayName; updated = true; }
             if (github.Connected && row.Login != github.UserName) { row.Login = github.UserName; updated = true; }
             row.LastSeenAt = DateTimeOffset.UtcNow;
-            if (updated) await db.SaveChangesAsync(ct);
+            if (updated) await control.SaveChangesAsync(ct);
         }
 
         // Phase 9.12 — product-scoped role override. Falls back to the user's
@@ -181,7 +181,7 @@ public static class MeEndpoints
         var effectiveRole = row?.Role ?? "human";
         if (row is not null && !string.IsNullOrEmpty(productId) && productId != "all")
         {
-            var override_ = await db.UserProductRoles.AsNoTracking()
+            var override_ = await control.UserProductRoles.AsNoTracking()
                 .Where(r => r.UserId == row.Id && r.ProductId == productId)
                 .Select(r => r.Role)
                 .FirstOrDefaultAsync(ct);

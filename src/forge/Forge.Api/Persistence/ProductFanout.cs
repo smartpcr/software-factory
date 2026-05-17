@@ -7,6 +7,7 @@
 namespace Forge.Api.Persistence;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// Phase E — helper that iterates every product in the control DB and
@@ -40,15 +41,18 @@ public sealed class ProductFanout
 {
     private readonly ControlDbContext control;
     private readonly IProductDbContextFactory factory;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly int maxConcurrent;
 
     public ProductFanout(
         ControlDbContext control,
         IProductDbContextFactory factory,
+        IServiceScopeFactory scopeFactory,
         Microsoft.Extensions.Configuration.IConfiguration config)
     {
         this.control = control;
         this.factory = factory;
+        this.scopeFactory = scopeFactory;
         var raw = config["Forge:Db:MaxConcurrentProductDbs"];
         this.maxConcurrent = (int.TryParse(raw, out var v) && v > 0) ? v : 8;
     }
@@ -61,7 +65,7 @@ public sealed class ProductFanout
     /// attempted — a single bad product doesn't halt the tick.
     /// </summary>
     public async Task<int> ForEachProductAsync(
-        Func<ProductDbContext, string, CancellationToken, Task> action,
+        Func<ControlDbContext, ProductDbContext, string, CancellationToken, Task> action,
         CancellationToken ct = default)
     {
         var products = await this.control.Products
@@ -80,7 +84,7 @@ public sealed class ProductFanout
     /// </summary>
     public async Task<int> ForEachProductAsync(
         IReadOnlyList<string> productSlugs,
-        Func<ProductDbContext, string, CancellationToken, Task> action,
+        Func<ControlDbContext, ProductDbContext, string, CancellationToken, Task> action,
         CancellationToken ct = default)
     {
         if (productSlugs.Count == 0) return 0;
@@ -94,16 +98,18 @@ public sealed class ProductFanout
             await semaphore.WaitAsync(ct);
             tasks.Add(Task.Run(async () =>
             {
-                // Push the slug onto AsyncLocal so any deep-nested
-                // GetRequiredService<ProductDbContext> inside the callback
-                // resolves to THIS product's DB — critical for workers
-                // like CrewQueueWorker that create their own child scopes
-                // mid-tick.
+                // Phase G — each fan-out task runs in its OWN DI scope so
+                // both ControlDbContext and ProductDbContext are unique per
+                // task. Without this, concurrent callbacks share the outer
+                // scope's ControlDbContext (single-threaded EF) and throw
+                // "second operation started on context" under load.
+                using var taskScope = this.scopeFactory.CreateScope();
                 using var _ = ProductDbContextFactory.PushAsyncLocalSlug(slug);
                 try
                 {
-                    var productDb = this.factory.CreateFor(slug);
-                    await action(productDb, slug, ct);
+                    var taskControl = taskScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                    var productDb = taskScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                    await action(taskControl, productDb, slug, ct);
                 }
                 catch (Exception ex)
                 {
@@ -134,7 +140,7 @@ public sealed class ProductFanout
     /// overloads.
     /// </summary>
     public async Task<Dictionary<string, T>> CollectAsync<T>(
-        Func<ProductDbContext, string, CancellationToken, Task<T>> action,
+        Func<ControlDbContext, ProductDbContext, string, CancellationToken, Task<T>> action,
         CancellationToken ct = default)
     {
         var products = await this.control.Products
@@ -153,11 +159,14 @@ public sealed class ProductFanout
             await semaphore.WaitAsync(ct);
             tasks.Add(Task.Run(async () =>
             {
+                // Phase G — per-task scope (see ForEachProductAsync above).
+                using var taskScope = this.scopeFactory.CreateScope();
                 using var _ = ProductDbContextFactory.PushAsyncLocalSlug(slug);
                 try
                 {
-                    var productDb = this.factory.CreateFor(slug);
-                    var r = await action(productDb, slug, ct);
+                    var taskControl = taskScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                    var productDb = taskScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                    var r = await action(taskControl, productDb, slug, ct);
                     lock (results) results[slug] = r;
                 }
                 catch (Exception ex)

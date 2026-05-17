@@ -33,16 +33,26 @@ using Xunit;
 /// </summary>
 public sealed class Phase60PlanDocPointsFloorTests
 {
-    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ControlDbContext control, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("Data Source=:memory:");
         await conn.OpenAsync();
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
         var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
-        return (conn, db);
+        var _productSchema = db.Database.GenerateCreateScript();
+        foreach (var _stmt in _productSchema.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _trimmed = _stmt.Trim();
+            if (_trimmed.Length > 0) await db.Database.ExecuteSqlRawAsync(_trimmed);
+        }
+        return (conn, control, db);
     }
 
     // ── Phase60Migration ─────────────────────────────────────────────────
@@ -50,7 +60,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task Phase60Migration_BumpsExistingPlanDocPointsToFloor()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -70,9 +80,9 @@ public sealed class Phase60PlanDocPointsFloorTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await Phase60Migration.ApplyAsync(db);
+        await Phase60Migration.ApplyAsync(control, db);
 
         db.ChangeTracker.Clear();
         var row = await db.WorkItems.FirstAsync(w => w.Id == "plan-doc:spawn-x:architecture.md");
@@ -82,7 +92,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task Phase60Migration_LeavesAtOrAboveFloorRowsAlone()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -106,9 +116,9 @@ public sealed class Phase60PlanDocPointsFloorTests
             Points = 8, Priority = "med", Provider = "local",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await Phase60Migration.ApplyAsync(db);
+        await Phase60Migration.ApplyAsync(control, db);
 
         db.ChangeTracker.Clear();
         Assert.Equal(3, (await db.WorkItems.FirstAsync(w => w.Id == "plan-doc:spawn-y:tech-spec.md")).Points);
@@ -118,7 +128,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task Phase60Migration_LeavesNonPlanDocRowsAlone()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -144,9 +154,9 @@ public sealed class Phase60PlanDocPointsFloorTests
             Points = 2, Priority = "med", Provider = "local",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await Phase60Migration.ApplyAsync(db);
+        await Phase60Migration.ApplyAsync(control, db);
 
         db.ChangeTracker.Clear();
         Assert.Equal(1, (await db.WorkItems.FirstAsync(w => w.Id == "story-a")).Points);
@@ -156,7 +166,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task Phase60Migration_IsIdempotent()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -169,11 +179,11 @@ public sealed class Phase60PlanDocPointsFloorTests
             Points = 1, Priority = "med", Provider = "local",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await Phase60Migration.ApplyAsync(db);
-        await Phase60Migration.ApplyAsync(db);
-        await Phase60Migration.ApplyAsync(db);
+        await Phase60Migration.ApplyAsync(control, db);
+        await Phase60Migration.ApplyAsync(control, db);
+        await Phase60Migration.ApplyAsync(control, db);
 
         db.ChangeTracker.Clear();
         Assert.Equal(3, (await db.WorkItems.FirstAsync(w => w.Id == "plan-doc:spawn-q:architecture.md")).Points);
@@ -184,7 +194,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task Phase38Migration_AppliesFloorOnBackfill()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -212,9 +222,9 @@ public sealed class Phase60PlanDocPointsFloorTests
             Points = 2, Priority = "med", Provider = "local",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await Phase38Migration.ApplyAsync(db);
+        await Phase38Migration.ApplyAsync(control, db);
 
         db.ChangeTracker.Clear();
         var planDocs = await db.WorkItems
@@ -253,7 +263,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     }
 
     [Theory]
-    [InlineData("impl", 1, 360.0)]      // 1pt impl: max(180, 60) * 2.0 = 360s
+    [InlineData("impl", 1, 540.0)]      // 1pt impl: max(180, 60) * 3.0 = 540s
     [InlineData("review", 5, 300.0)]    // 5pt review: max(180, 300) * 1.0 = 300s
     [InlineData("decompose", 5, 210.0)] // 5pt decompose: max(180, 300) * 0.7 = 210s
     public void BudgetForPhase_NonPlanPhases_UnchangedByPhase60(string prefix, int points, double expectedSeconds)
@@ -269,7 +279,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task EnsurePlanDocWorkItemsAsync_TinyStory_LandsWithFloor3()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -293,9 +303,9 @@ public sealed class Phase60PlanDocPointsFloorTests
         };
         db.StorySpawns.Add(spawn);
         db.WorkItems.Add(story);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(db, spawn, story, default);
+        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(control, db, spawn, story, default);
 
         db.ChangeTracker.Clear();
         var planDocs = await db.WorkItems
@@ -311,7 +321,7 @@ public sealed class Phase60PlanDocPointsFloorTests
         // For stories at or above the floor, the live-create path keeps
         // the full story points (the historical behavior); the floor
         // only kicks in for sub-3 stories.
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -335,9 +345,9 @@ public sealed class Phase60PlanDocPointsFloorTests
         };
         db.StorySpawns.Add(spawn);
         db.WorkItems.Add(story);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(db, spawn, story, default);
+        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(control, db, spawn, story, default);
 
         db.ChangeTracker.Clear();
         var planDocs = await db.WorkItems
@@ -350,7 +360,7 @@ public sealed class Phase60PlanDocPointsFloorTests
     [Fact]
     public async Task EnsurePlanDocWorkItemsAsync_IsIdempotent_DoesNotResetExistingRowPoints()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using var _ = conn;
         await using var __ = db;
 
@@ -386,9 +396,9 @@ public sealed class Phase60PlanDocPointsFloorTests
             Points = 10, Priority = "med", Provider = "local",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(db, spawn, story, default);
+        await StorySpawnOrchestrator.EnsurePlanDocWorkItemsAsync(control, db, spawn, story, default);
 
         db.ChangeTracker.Clear();
         var existing = await db.WorkItems.FirstAsync(w => w.Id == "plan-doc:spawn-existing:architecture.md");

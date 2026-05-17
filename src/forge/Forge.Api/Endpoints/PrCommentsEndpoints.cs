@@ -46,6 +46,7 @@ public static class PrCommentsEndpoints
     // GET /api/prs/{prId}/comments?state=active&requiresAttention=true&skip=0&take=50
     private static async Task<IResult> ListComments(
         string prId,
+        ControlDbContext control,
         ProductDbContext db,
         [FromQuery] string? state,
         [FromQuery] bool? requiresAttention,
@@ -78,6 +79,7 @@ public static class PrCommentsEndpoints
     private static async Task<IResult> GetComment(
         string prId,
         long commentId,
+        ControlDbContext control,
         ProductDbContext db)
     {
         prId = NormalizePrId(prId);
@@ -101,6 +103,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         [FromBody] CreateCommentRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         [FromServices] IEnumerable<IForgeProvider> providers,
@@ -194,6 +197,7 @@ public static class PrCommentsEndpoints
         string prId,
         long commentId,
         [FromBody] EditCommentRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -234,6 +238,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         long commentId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -279,6 +284,7 @@ public static class PrCommentsEndpoints
         HttpContext ctx,
         string prId,
         long commentId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -327,6 +333,7 @@ public static class PrCommentsEndpoints
         string prId,
         long commentId,
         [FromBody] ReactRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         [FromServices] IEnumerable<IForgeProvider> providers,
@@ -359,7 +366,7 @@ public static class PrCommentsEndpoints
             {
                 try
                 {
-                    var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == prRow.RepoId);
+                    var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == prRow.RepoId);
                     if (repo is not null && !string.IsNullOrEmpty(repo.GhOwner) && !string.IsNullOrEmpty(repo.GhRepo))
                     {
                         var ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");

@@ -46,6 +46,7 @@ public static class StepBudgetChecker
     public static async Task<Result> CheckAsync(
         string workItemId,
         int actualFileCount,
+        ControlDbContext control,
         ProductDbContext db,
         TaskChannel channel,
         CancellationToken ct)
@@ -62,7 +63,7 @@ public static class StepBudgetChecker
 
         // Over budget — record + emit.
         OverBudgetCounter.Add(1, new KeyValuePair<string, object?>("stepId", workItemId));
-        db.Audit.Add(new AuditRow
+        control.Audit.Add(new AuditRow
         {
             At = DateTimeOffset.UtcNow,
             User = string.Empty,
@@ -79,7 +80,7 @@ public static class StepBudgetChecker
             }),
             Supervising = false,
         });
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         await channel.EmitAsync(
             workItemId,

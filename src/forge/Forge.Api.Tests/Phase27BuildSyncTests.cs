@@ -27,11 +27,12 @@ public class Phase27BuildSyncTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot triggers migrations */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Re-applying the migration is a no-op.
-        await Phase31Migration.ApplyAsync(db);
-        await Phase31Migration.ApplyAsync(db);
+        await Phase31Migration.ApplyAsync(control, db);
+        await Phase31Migration.ApplyAsync(control, db);
 
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
@@ -59,20 +60,21 @@ public class Phase27BuildSyncTests
         await using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         db.BuildFixPending.Add(new BuildFixPendingRow
         {
             WorkItemId = "wi-uniq-1", BuildId = 1, EnqueuedAt = DateTimeOffset.UtcNow.ToString("o"),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Re-insert with same WorkItemId must fail (UX_build_fix_pending_WorkItemId).
         db.BuildFixPending.Add(new BuildFixPendingRow
         {
             WorkItemId = "wi-uniq-1", BuildId = 2, EnqueuedAt = DateTimeOffset.UtcNow.ToString("o"),
         });
-        Func<Task> dup = async () => await db.SaveChangesAsync();
+        Func<Task> dup = async () => { await control.SaveChangesAsync(); await db.SaveChangesAsync(); };
         await dup.Should().ThrowAsync<DbUpdateException>();
     }
 

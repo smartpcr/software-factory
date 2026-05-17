@@ -421,8 +421,9 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         if (!string.IsNullOrEmpty(pr.RepoId))
         {
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var repoRow = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+            var repoRow = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.GhOwner) && !string.IsNullOrEmpty(repoRow.GhRepo))
             {
                 return (repoRow.GhOwner!, repoRow.GhRepo!);
@@ -435,8 +436,9 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
     private async Task<IReadOnlyDictionary<string, string>> LoadAgentLoginsAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var agents = await db.Agents.AsNoTracking().Select(a => new { a.Id, a.Name }).ToListAsync(ct);
+        var agents = await control.Agents.AsNoTracking().Select(a => new { a.Id, a.Name }).ToListAsync(ct);
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var a in agents)
         {

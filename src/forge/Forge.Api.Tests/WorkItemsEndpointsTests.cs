@@ -292,12 +292,13 @@ public class WorkItemsEndpointsTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow {
                 Id = "WI-AUTH-1", Track = "dev", Type = "task", State = "proposed",
                 Title = "x", Provider = "local",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         using var client = factory.CreateClient();
         var resp = await client.PatchAsJsonAsync("/api/work-items/WI-AUTH-1", new { title = "y" }, JsonOpts);

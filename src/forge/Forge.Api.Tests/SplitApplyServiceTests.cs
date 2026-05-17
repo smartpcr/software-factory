@@ -133,43 +133,66 @@ public class SplitApplyServiceTests : IDisposable
 
     private async Task SeedSchemaAsync()
     {
-        // Use the legacy ForgeDbContext (which has the union model) to lay
-        // down the schema so the test exercises the production schema.
-        var opt = new DbContextOptionsBuilder<ForgeDbContext>()
+        // Phase G.1 — lay down both control + product schema in the same
+        // forge.db file. EnsureCreated is one-shot per file (it skips
+        // creation if any table exists), so we run ControlDbContext's
+        // EnsureCreated and then execute ProductDbContext's
+        // GenerateCreateScript directly against the same connection.
+        var ctlOpt = new DbContextOptionsBuilder<ControlDbContext>()
             .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
             .Options;
-        await using var db = new ForgeDbContext(opt);
-        await db.Database.EnsureCreatedAsync();
+        await using (var ctl = new ControlDbContext(ctlOpt))
+        {
+            await ctl.Database.EnsureCreatedAsync();
+        }
+        var prodOpt = new DbContextOptionsBuilder<ProductDbContext>()
+            .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
+            .Options;
+        await using (var prod = new ProductDbContext(prodOpt))
+        {
+            var script = prod.Database.GenerateCreateScript();
+            foreach (var stmt in script.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var trimmed = stmt.Trim();
+                if (trimmed.Length > 0) await prod.Database.ExecuteSqlRawAsync(trimmed);
+            }
+        }
     }
 
     private async Task SeedDataAsync()
     {
-        var opt = new DbContextOptionsBuilder<ForgeDbContext>()
+        var ctlOpt = new DbContextOptionsBuilder<ControlDbContext>()
             .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
             .Options;
-        await using var db = new ForgeDbContext(opt);
+        await using var ctl = new ControlDbContext(ctlOpt);
 
-        db.Products.AddRange(
+        ctl.Products.AddRange(
             new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" },
             new ProductRow { Id = "raft", Slug = "raft", Name = "Raft" });
-        db.Repos.AddRange(
+        ctl.Repos.AddRange(
             new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
             new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
+        await ctl.SaveChangesAsync();
+
+        var prodOpt = new DbContextOptionsBuilder<ProductDbContext>()
+            .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
+            .Options;
+        await using var prod = new ProductDbContext(prodOpt);
 
         // 3 workstreams in atlas, 1 in raft.
-        db.Workstreams.AddRange(
+        prod.Workstreams.AddRange(
             new WorkstreamRow { Id = "ws-atlas-1", Name = "a1", Branch = "ws/a1", Epic = "E", Status = "active", RepoId = "r-atlas-1" },
             new WorkstreamRow { Id = "ws-atlas-2", Name = "a2", Branch = "ws/a2", Epic = "E", Status = "active", RepoId = "r-atlas-1" },
             new WorkstreamRow { Id = "ws-atlas-3", Name = "a3", Branch = "ws/a3", Epic = "E", Status = "active", RepoId = "r-atlas-1" },
             new WorkstreamRow { Id = "ws-raft-1", Name = "r1", Branch = "ws/r1", Epic = "E", Status = "active", RepoId = "r-raft-1" });
 
         // 2 work items in atlas, 1 in raft.
-        db.WorkItems.AddRange(
+        prod.WorkItems.AddRange(
             new WorkItemRow { Id = "wi-atlas-1", Title = "wi-a1", Type = "task", State = "active", RepoId = "r-atlas-1" },
             new WorkItemRow { Id = "wi-atlas-2", Title = "wi-a2", Type = "task", State = "active", RepoId = "r-atlas-1" },
             new WorkItemRow { Id = "wi-raft-1", Title = "wi-r1", Type = "task", State = "active", RepoId = "r-raft-1" });
 
-        await db.SaveChangesAsync();
+        await prod.SaveChangesAsync();
     }
 
     private static async Task<int> CountRowsAsync(string dbPath, string tableName)

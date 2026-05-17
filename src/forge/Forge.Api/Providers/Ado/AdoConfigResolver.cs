@@ -53,11 +53,12 @@ public class AdoConfigResolver : IAdoConfigResolver
         // repo is intentional and the operator expects the effective config
         // to update immediately.
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         if (!string.IsNullOrWhiteSpace(repoId))
         {
-            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+            var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (repo is not null && !string.IsNullOrWhiteSpace(repo.AdoOrg) && !string.IsNullOrWhiteSpace(repo.AdoProject))
             {
                 var orgUrl = ResolveOrgUrl(repo.AdoOrg!);
@@ -78,7 +79,7 @@ public class AdoConfigResolver : IAdoConfigResolver
         // making the provider test fail with "An invalid request URI…".
         // Prefer rows that actually have ADO config set; client-side sort by
         // UpdatedAt because SQLite can't ORDER BY DateTimeOffset.
-        var rowsWithConfig = await db.UserSettings
+        var rowsWithConfig = await control.UserSettings
             .AsNoTracking()
             .Where(s =>
                 (s.DefaultAdoOrgUrl != null && s.DefaultAdoOrgUrl != "") &&
@@ -90,7 +91,7 @@ public class AdoConfigResolver : IAdoConfigResolver
         if (settings is null)
         {
             // Fall back to any row, also sorted client-side.
-            var allRows = await db.UserSettings.AsNoTracking().ToListAsync(ct);
+            var allRows = await control.UserSettings.AsNoTracking().ToListAsync(ct);
             settings = allRows.OrderByDescending(s => s.UpdatedAt).FirstOrDefault();
         }
 

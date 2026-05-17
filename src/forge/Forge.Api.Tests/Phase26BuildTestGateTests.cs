@@ -35,6 +35,7 @@ public class Phase26BuildTestGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
@@ -98,6 +99,7 @@ public class Phase26BuildTestGateTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.NotNull(db);
     }
@@ -106,15 +108,17 @@ public class Phase26BuildTestGateTests
     public async Task Migration_Adds_BuildCommand_Column()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildCommand = "dotnet build Workflow.sln";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet build Workflow.sln", saved.BuildCommand);
         }
         finally { SafeDispose(f, scope); }
@@ -124,15 +128,17 @@ public class Phase26BuildTestGateTests
     public async Task Migration_Adds_TestCommand_Column()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.TestCommand = "dotnet test src/Foo.Tests/Foo.Tests.csproj";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet test src/Foo.Tests/Foo.Tests.csproj", saved.TestCommand);
         }
         finally { SafeDispose(f, scope); }
@@ -142,16 +148,18 @@ public class Phase26BuildTestGateTests
     public async Task Migration_Adds_Timeout_Columns()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildTimeoutSec = 300;
             repo.TestTimeoutSec = 900;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal(300, saved.BuildTimeoutSec);
             Assert.Equal(900, saved.TestTimeoutSec);
         }
@@ -162,16 +170,17 @@ public class Phase26BuildTestGateTests
     public async Task Migration_Is_Idempotent()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Run migration a second time — should not throw.
-            await Phase26Migration.ApplyAsync(db);
-            await Phase26Migration.ApplyAsync(db);
+            await Phase26Migration.ApplyAsync(control, db);
+            await Phase26Migration.ApplyAsync(control, db);
 
             // Still works.
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildCommand = "echo ok";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         finally { SafeDispose(f, scope); }
     }
@@ -180,6 +189,7 @@ public class Phase26BuildTestGateTests
     public async Task Migration_Columns_Exist_Via_Pragma()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var conn = (SqliteConnection)db.Database.GetDbConnection();
@@ -316,9 +326,10 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Sets_BuildCommand_And_Persists()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             using var client = AuthedClient(f);
 
             var patch = new { buildCommand = "dotnet build Workflow.sln" };
@@ -326,7 +337,7 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             // Verify via GET round-trip.
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
             var getResp = await client.GetAsync($"/api/products/{product.Id}/repos");
             var body = await getResp.Content.ReadAsStringAsync();
             var doc = JsonDocument.Parse(body);
@@ -341,9 +352,10 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Sets_TestCommand_And_Persists()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             using var client = AuthedClient(f);
 
             var patch = new { testCommand = "dotnet test src/Foo/Foo.csproj" };
@@ -352,8 +364,9 @@ public class Phase26BuildTestGateTests
 
             // Verify DB persistence.
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal("dotnet test src/Foo/Foo.csproj", saved.TestCommand);
         }
         finally { SafeDispose(f, scope); }
@@ -363,9 +376,10 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Sets_Timeouts_And_Persists()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             using var client = AuthedClient(f);
 
             var patch = new { buildTimeoutSec = 120, testTimeoutSec = 300 };
@@ -373,8 +387,9 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Equal(120, saved.BuildTimeoutSec);
             Assert.Equal(300, saved.TestTimeoutSec);
         }
@@ -385,12 +400,13 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Empty_Command_Clears_To_Null()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildCommand = "dotnet build";
             repo.TestCommand = "dotnet test";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
             var patch = new { buildCommand = "", testCommand = "  " };
@@ -398,8 +414,9 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Null(saved.BuildCommand);
             Assert.Null(saved.TestCommand);
         }
@@ -410,12 +427,13 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Zero_Or_Negative_Timeout_Clears_To_Null()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildTimeoutSec = 600;
             repo.TestTimeoutSec = 600;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
             var patch = new { buildTimeoutSec = 0, testTimeoutSec = -1 };
@@ -423,8 +441,9 @@ public class Phase26BuildTestGateTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == repo.Id);
             Assert.Null(saved.BuildTimeoutSec);
             Assert.Null(saved.TestTimeoutSec);
         }
@@ -435,17 +454,18 @@ public class Phase26BuildTestGateTests
     public async Task GetRepos_Returns_BuildTestFields()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             repo.BuildCommand = "dotnet build";
             repo.TestCommand = "dotnet test";
             repo.BuildTimeoutSec = 180;
             repo.TestTimeoutSec = 360;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
             var resp = await client.GetAsync($"/api/products/{product.Id}/repos");
             var body = await resp.Content.ReadAsStringAsync();
             var doc = JsonDocument.Parse(body);
@@ -510,24 +530,25 @@ public class Phase26BuildTestGateTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var product = await db.Products.FirstAsync();
+        var product = await control.Products.FirstAsync();
 
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "p26-crew", Name = "P26 Crew",
             Lead = "p26-lead", Model = "local-stub",
             ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
             MaxConcurrent = 5, ScheduleEnabled = false,
         });
-        db.CrewMembers.Add(new CrewMemberRow
+        control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = "p26-crew", AgentId = "p26-agent",
             AddedAt = DateTimeOffset.UtcNow,
         });
 
-        db.Repos.Add(new RepoRow
+        control.Repos.Add(new RepoRow
         {
             Id = "p26-repo", DisplayName = "P26 Repo", Kind = "local",
             RemoteUrl = bareDir,
@@ -547,7 +568,7 @@ public class Phase26BuildTestGateTests
             RepoId = "p26-repo",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Enqueue and run.
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -561,12 +582,13 @@ public class Phase26BuildTestGateTests
         // then the build/test gate + push pipeline. Allow enough time.
         await Task.Delay(15_000);
 
-        return new PipelineTestContext(f, scope, db, workItemId, testRoot, repoDir, bareDir);
+        return new PipelineTestContext(f, scope, control, db, workItemId, testRoot, repoDir, bareDir);
     }
 
     private sealed record PipelineTestContext(
         ForgeWebApplicationFactory Factory,
         IServiceScope Scope,
+        ControlDbContext control,
         ProductDbContext Db,
         string WorkItemId,
         string TestRoot,
@@ -1126,9 +1148,10 @@ public class Phase26BuildTestGateTests
     public async Task DetectBuild_Returns_Ecosystem_And_Commands()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var repo = await db.Repos.FirstAsync();
+            var repo = await control.Repos.FirstAsync();
             // Ensure the repo's cloneRoot exists and has a .sln file.
             if (!string.IsNullOrEmpty(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
             {
@@ -1149,7 +1172,7 @@ public class Phase26BuildTestGateTests
         try
         {
             using var client = f.CreateClient();
-            var repo = await scope.ServiceProvider.GetRequiredService<ProductDbContext>()
+            var repo = await scope.ServiceProvider.GetRequiredService<ControlDbContext>()
                 .Repos.FirstAsync();
             var resp = await client.PostAsync($"/api/repos/{repo.Id}/detect-build", null);
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
@@ -1161,16 +1184,17 @@ public class Phase26BuildTestGateTests
     public async Task DetectBuild_Returns_422_When_No_CloneRoot()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Repos.Add(new RepoRow
+            var product = await control.Products.FirstAsync();
+            control.Repos.Add(new RepoRow
             {
                 Id = "no-clone", DisplayName = "No Clone", Kind = "ado",
                 RemoteUrl = "https://example.com/repo", ProductId = product.Id,
                 CloneRoot = "/nonexistent/path/xyz",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
             var resp = await client.PostAsync("/api/repos/no-clone/detect-build", null);
@@ -1186,7 +1210,7 @@ public class Phase26BuildTestGateTests
         try
         {
             using var client = f.CreateClient();
-            var repo = await scope.ServiceProvider.GetRequiredService<ProductDbContext>()
+            var repo = await scope.ServiceProvider.GetRequiredService<ControlDbContext>()
                 .Repos.FirstAsync();
             var resp = await client.PostAsync($"/api/repos/{repo.Id}/validate-build", null);
             Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
@@ -1198,6 +1222,7 @@ public class Phase26BuildTestGateTests
     public async Task ValidateBuild_Runs_Restore_Build_Test_And_Returns_Steps()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Create a temp dir with a minimal dotnet project so all three steps run.
@@ -1207,8 +1232,8 @@ public class Phase26BuildTestGateTests
             {
                 // Seed a minimal .csproj so dotnet restore/build/test have something to work with.
                 // We use "dotnet --version" as the command since it's fast and always exits 0.
-                var product = await db.Products.FirstAsync();
-                db.Repos.Add(new RepoRow
+                var product = await control.Products.FirstAsync();
+                control.Repos.Add(new RepoRow
                 {
                     Id = "val-repo", DisplayName = "Validate Repo", Kind = "local",
                     RemoteUrl = $"https://example.com/val-{Guid.NewGuid():N}",
@@ -1217,7 +1242,7 @@ public class Phase26BuildTestGateTests
                     BuildCommand = "dotnet --version",
                     TestCommand = "dotnet --version",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
                 // No project markers — the detector won't find a restore command,
                 // so validate-build will only run the configured build + test steps.
@@ -1257,14 +1282,15 @@ public class Phase26BuildTestGateTests
     public async Task ValidateBuild_Stops_On_First_Failure()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var tempDir = Path.Combine(Path.GetTempPath(), $"valfail-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
             try
             {
-                var product = await db.Products.FirstAsync();
-                db.Repos.Add(new RepoRow
+                var product = await control.Products.FirstAsync();
+                control.Repos.Add(new RepoRow
                 {
                     Id = "valfail-repo", DisplayName = "Fail Repo", Kind = "local",
                     RemoteUrl = $"https://example.com/valfail-{Guid.NewGuid():N}",
@@ -1273,7 +1299,7 @@ public class Phase26BuildTestGateTests
                     BuildCommand = "dotnet build nonexistent-xyz.csproj",
                     TestCommand = "dotnet --version",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
                 using var client = AuthedClient(f);
                 var resp = await client.PostAsync("/api/repos/valfail-repo/validate-build", null);
@@ -1309,6 +1335,7 @@ public class Phase26BuildTestGateTests
     public async Task DetectBuild_Returns_Correct_Dotnet_Commands()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var tempDir = Path.Combine(Path.GetTempPath(), $"detect-api-{Guid.NewGuid():N}");
@@ -1316,15 +1343,15 @@ public class Phase26BuildTestGateTests
             try
             {
                 File.WriteAllText(Path.Combine(tempDir, "MyApp.sln"), "");
-                var product = await db.Products.FirstAsync();
-                db.Repos.Add(new RepoRow
+                var product = await control.Products.FirstAsync();
+                control.Repos.Add(new RepoRow
                 {
                     Id = "detect-api-repo", DisplayName = "Detect API", Kind = "local",
                     RemoteUrl = $"https://example.com/detect-api-{Guid.NewGuid():N}",
                     ProductId = product.Id,
                     CloneRoot = tempDir,
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
                 using var client = AuthedClient(f);
                 var resp = await client.PostAsync("/api/repos/detect-api-repo/detect-build", null);
@@ -1348,17 +1375,18 @@ public class Phase26BuildTestGateTests
     public async Task ValidateBuild_Returns_422_When_No_Clone()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Repos.Add(new RepoRow
+            var product = await control.Products.FirstAsync();
+            control.Repos.Add(new RepoRow
             {
                 Id = "val-noclone", DisplayName = "No Clone", Kind = "local",
                 RemoteUrl = $"https://example.com/val-noclone-{Guid.NewGuid():N}",
                 ProductId = product.Id,
                 CloneRoot = "/nonexistent/path/xyz",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
             var resp = await client.PostAsync("/api/repos/val-noclone/validate-build", null);
@@ -1371,6 +1399,7 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_With_CloneRoot_AutoDetects_BuildCommand()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Create a temp dir with a .sln file to simulate a cloned repo.
@@ -1380,15 +1409,15 @@ public class Phase26BuildTestGateTests
 
             try
             {
-                var product = await db.Products.FirstAsync();
-                db.Repos.Add(new RepoRow
+                var product = await control.Products.FirstAsync();
+                control.Repos.Add(new RepoRow
                 {
                     Id = "detect-repo", DisplayName = "Detect Repo", Kind = "ado",
                     RemoteUrl = $"https://example.com/detect-{Guid.NewGuid():N}",
                     ProductId = product.Id,
                     CloneRoot = "/old/path",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
                 using var client = AuthedClient(f);
                 var patch = new { cloneRoot = tempDir };
@@ -1397,8 +1426,9 @@ public class Phase26BuildTestGateTests
 
                 // Verify build command was auto-detected.
                 using var scope2 = f.Services.CreateScope();
+                var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "detect-repo");
+                var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "detect-repo");
                 Assert.Equal("dotnet build TestProject.sln", saved.BuildCommand);
                 Assert.Equal("dotnet test TestProject.sln", saved.TestCommand);
             }
@@ -1414,6 +1444,7 @@ public class Phase26BuildTestGateTests
     public async Task PatchRepo_Preserves_Existing_BuildCommand()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var tempDir = Path.Combine(Path.GetTempPath(), $"detect-keep-{Guid.NewGuid():N}");
@@ -1422,8 +1453,8 @@ public class Phase26BuildTestGateTests
 
             try
             {
-                var product = await db.Products.FirstAsync();
-                db.Repos.Add(new RepoRow
+                var product = await control.Products.FirstAsync();
+                control.Repos.Add(new RepoRow
                 {
                     Id = "keep-repo", DisplayName = "Keep Repo", Kind = "ado",
                     RemoteUrl = $"https://example.com/keep-{Guid.NewGuid():N}",
@@ -1431,7 +1462,7 @@ public class Phase26BuildTestGateTests
                     CloneRoot = "/old/path",
                     BuildCommand = "my-custom-build",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
                 using var client = AuthedClient(f);
                 var patch = new { cloneRoot = tempDir };
@@ -1439,8 +1470,9 @@ public class Phase26BuildTestGateTests
                 Assert.True(resp.IsSuccessStatusCode);
 
                 using var scope2 = f.Services.CreateScope();
+                var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "keep-repo");
+                var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "keep-repo");
                 Assert.Equal("my-custom-build", saved.BuildCommand); // preserved
                 Assert.Equal("dotnet test MyApp.sln", saved.TestCommand); // auto-detected
             }
@@ -1470,6 +1502,7 @@ public class Phase26BuildTestGateTests
         Directory.CreateDirectory(tempDir);
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Create a real dotnet xunit test project — this gives us a
@@ -1480,15 +1513,15 @@ public class Phase26BuildTestGateTests
             Assert.True(Directory.Exists(projectDir), $"dotnet new should create {projectDir}");
 
             // Seed a repo pointing at the project dir.
-            var product = await db.Products.FirstAsync();
-            db.Repos.Add(new RepoRow
+            var product = await control.Products.FirstAsync();
+            control.Repos.Add(new RepoRow
             {
                 Id = "e2e-dotnet", DisplayName = "E2E Dotnet", Kind = "local",
                 RemoteUrl = $"https://example.com/e2e-dotnet-{Guid.NewGuid():N}",
                 ProductId = product.Id,
                 CloneRoot = projectDir,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
 
@@ -1513,8 +1546,9 @@ public class Phase26BuildTestGateTests
 
             // Verify commands persisted.
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var savedRepo = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-dotnet");
+            var savedRepo = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-dotnet");
             Assert.Equal(detectedBuild, savedRepo.BuildCommand);
             Assert.Equal(detectedTest, savedRepo.TestCommand);
 
@@ -1570,6 +1604,7 @@ public class Phase26BuildTestGateTests
         Directory.CreateDirectory(tempDir);
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Create a real dotnet classlib project.
@@ -1577,15 +1612,15 @@ public class Phase26BuildTestGateTests
             Assert.Equal(0, code);
             var projectDir = Path.Combine(tempDir, "PatchLib");
 
-            var product = await db.Products.FirstAsync();
-            db.Repos.Add(new RepoRow
+            var product = await control.Products.FirstAsync();
+            control.Repos.Add(new RepoRow
             {
                 Id = "e2e-patch", DisplayName = "E2E Patch", Kind = "local",
                 RemoteUrl = $"https://example.com/e2e-patch-{Guid.NewGuid():N}",
                 ProductId = product.Id,
                 CloneRoot = "/nonexistent/initial",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
 
@@ -1598,8 +1633,9 @@ public class Phase26BuildTestGateTests
 
             // Verify auto-detected commands were persisted.
             using var scope2 = f.Services.CreateScope();
+            var control_db2 = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var saved = await db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-patch");
+            var saved = await control_db2.Repos.AsNoTracking().FirstAsync(r => r.Id == "e2e-patch");
             Assert.NotNull(saved.BuildCommand);
             Assert.NotNull(saved.TestCommand);
             Assert.Contains("PatchLib.csproj", saved.BuildCommand);
@@ -1625,6 +1661,7 @@ public class Phase26BuildTestGateTests
         Directory.CreateDirectory(tempDir);
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Create a real xunit project.
@@ -1643,8 +1680,8 @@ public class UnitTest1
 }
 ");
 
-            var product = await db.Products.FirstAsync();
-            db.Repos.Add(new RepoRow
+            var product = await control.Products.FirstAsync();
+            control.Repos.Add(new RepoRow
             {
                 Id = "e2e-fail", DisplayName = "E2E Fail", Kind = "local",
                 RemoteUrl = $"https://example.com/e2e-fail-{Guid.NewGuid():N}",
@@ -1653,7 +1690,7 @@ public class UnitTest1
                 BuildCommand = "dotnet build FailTests.csproj",
                 TestCommand = "dotnet test FailTests.csproj",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = AuthedClient(f);
             var valResp = await client.PostAsync("/api/repos/e2e-fail/validate-build", null);

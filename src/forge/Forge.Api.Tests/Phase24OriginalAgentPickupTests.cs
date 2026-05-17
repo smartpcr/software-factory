@@ -28,6 +28,7 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
@@ -40,7 +41,7 @@ public class Phase24OriginalAgentPickupTests
             State = "active",
             Type = "task",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var row = await queue.EnqueueAsync(
             "wi-pin-1",
@@ -63,11 +64,12 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-pin-2", Title = "Work", State = "active", Type = "task" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var row = await queue.EnqueueAsync(
             "wi-pin-2", "crew", "crew-A", System.Threading.CancellationToken.None);
@@ -80,11 +82,12 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-1", Title = "Block", State = "active", Type = "task" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var enqueued = await queue.EnqueueAsync(
             "wi-block-1", "crew", "crew-A",
@@ -111,11 +114,12 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-2", Title = "Block2", State = "active", Type = "task" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var enqueued = await queue.EnqueueAsync(
             "wi-block-2", "crew", "crew-B", System.Threading.CancellationToken.None,
@@ -139,11 +143,12 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-block-3", Title = "Block3", State = "active", Type = "task" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var first = await queue.EnqueueAsync(
             "wi-block-3", "crew", "crew-C", System.Threading.CancellationToken.None,
@@ -175,11 +180,12 @@ public class Phase24OriginalAgentPickupTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
         db.WorkItems.Add(new WorkItemRow { Id = "wi-mix-1", Title = "Work", State = "active", Type = "task" });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await queue.EnqueueAsync(
             "wi-mix-1", "crew", "crew-D", System.Threading.CancellationToken.None);

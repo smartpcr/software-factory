@@ -41,6 +41,7 @@ public class WorkItemSyncUpsertTests
         Assert.Equal(0, result.Updated);
 
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await db.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 1);
         Assert.Equal("from remote", row.Title);
@@ -76,6 +77,7 @@ public class WorkItemSyncUpsertTests
         // Pre-seed a row that already has FeatureRef set locally.
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
@@ -91,7 +93,7 @@ public class WorkItemSyncUpsertTests
                 TagsJson = "[]",
                 RemoteRevision = "rev-old",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         // Remote arrives with a different revision but no FeatureRef.
@@ -104,6 +106,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 3);
         Assert.Equal("v2", row.Title);
@@ -120,6 +123,7 @@ public class WorkItemSyncUpsertTests
 
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
@@ -135,7 +139,7 @@ public class WorkItemSyncUpsertTests
                 TagsJson = "[]",
                 RemoteRevision = "rev-old",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var sync = MakeService(factory, new[]
@@ -148,6 +152,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 4);
         Assert.NotNull(row.AssignedToJson);
@@ -161,6 +166,7 @@ public class WorkItemSyncUpsertTests
 
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.AddRange(
                 new WorkItemRow { Id = "EP-X", Track = "dev", Type = "epic", State = "active", Title = "Epic X", TagsJson = "[]" },
@@ -171,7 +177,7 @@ public class WorkItemSyncUpsertTests
                     ParentId = "EP-X",
                     TagsJson = "[]", RemoteRevision = "rev-old",
                 });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var sync = MakeService(factory, new[]
@@ -184,6 +190,7 @@ public class WorkItemSyncUpsertTests
         await sync.SyncAsync(repo, new WorkItemSyncFilters(), ignoreThrottle: true, default);
 
         using var verify = factory.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var row = await verifyDb.WorkItems.FirstAsync(w => w.Provider == "stub" && w.ProviderRef == 5);
         Assert.Equal("EP-X", row.ParentId);
@@ -240,8 +247,9 @@ public class WorkItemSyncUpsertTests
     private static async Task<RepoRow> GetRepoAsync(ForgeWebApplicationFactory factory, string id)
     {
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         return repo ?? throw new InvalidOperationException($"seed repo '{id}' not found");
     }
 

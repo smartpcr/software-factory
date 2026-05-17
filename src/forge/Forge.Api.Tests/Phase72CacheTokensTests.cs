@@ -40,6 +40,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var conn = (Microsoft.Data.Sqlite.SqliteConnection)db.Database.GetDbConnection();
@@ -62,9 +63,10 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "ag-1",
             CrewId = "crew-x",
@@ -82,11 +84,12 @@ public class Phase72CacheTokensTests
             ReasoningTokens = 800,
             ConversationTokens = 55_000,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         using var verify = f.Services.CreateScope();
+        var control_verifyDb = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var row = await verifyDb.AgentUsage.AsNoTracking().FirstAsync(u => u.TaskId == WiId);
+        var row = await control_verifyDb.AgentUsage.AsNoTracking().FirstAsync(u => u.TaskId == WiId);
 
         Assert.Equal(40_000L, row.CacheReadTokens);
         Assert.Equal(1_200L, row.CacheWriteTokens);
@@ -99,6 +102,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var iterStarted = DateTimeOffset.UtcNow.AddMinutes(-10);
@@ -119,7 +123,7 @@ public class Phase72CacheTokensTests
         });
         // One generator + one evaluator usage row inside the window.
         // ConversationTokens latest-wins → evaluator's 60K should be picked.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "ag-gen", CrewId = "crew-x", TaskId = WiId, Model = "x",
             InputTokens = 5_000, OutputTokens = 1_000, CostUsd = 0.10m,
@@ -128,7 +132,7 @@ public class Phase72CacheTokensTests
             CacheReadTokens = 30_000, CacheWriteTokens = 800, ReasoningTokens = 200,
             ConversationTokens = 45_000,
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "ag-eval", CrewId = "crew-x", TaskId = WiId, Model = "x",
             InputTokens = 3_000, OutputTokens = 500, CostUsd = 0.04m,
@@ -137,9 +141,9 @@ public class Phase72CacheTokensTests
             CacheReadTokens = 10_000, CacheWriteTokens = 400, ReasoningTokens = 100,
             ConversationTokens = 60_000,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var payload = await ConversationInsightQueries.GetIterKpisAsync(db, WiId, CancellationToken.None);
+        var payload = await ConversationInsightQueries.GetIterKpisAsync(control, db, WiId, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(payload);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
 
@@ -164,6 +168,7 @@ public class Phase72CacheTokensTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Deliverable only, no agent_usage with cache columns set —
@@ -180,7 +185,7 @@ public class Phase72CacheTokensTests
             DimsJson = "{}",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "ag-gen", CrewId = "crew-x", TaskId = WiId, Model = "x",
             InputTokens = 5_000, OutputTokens = 1_000, CostUsd = 0.10m,
@@ -188,9 +193,9 @@ public class Phase72CacheTokensTests
             Status = "finished", CostCategory = "generator",
             // No cache / reasoning / conversation columns set → null in DB.
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var payload = await ConversationInsightQueries.GetIterKpisAsync(db, WiId, CancellationToken.None);
+        var payload = await ConversationInsightQueries.GetIterKpisAsync(control, db, WiId, CancellationToken.None);
         var json = System.Text.Json.JsonSerializer.Serialize(payload);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         var iter = doc.RootElement.GetProperty("iters").EnumerateArray().First();

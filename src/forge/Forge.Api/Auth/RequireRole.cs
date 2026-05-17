@@ -23,7 +23,7 @@ public static class RequireRole
 {
     public const string ProductOwner = "product-owner";
 
-    public static IResult? Check(HttpContext ctx, DbContext db, params string[] roles)
+    public static IResult? Check(HttpContext ctx, ControlDbContext db, params string[] roles)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -45,7 +45,7 @@ public static class RequireRole
     /// specific crew / repo / work item; <see cref="Check"/> is fine for
     /// global-scope writes that don't bind to a product.
     /// </summary>
-    public static IResult? CheckForProduct(HttpContext ctx, DbContext db, string? productId, params string[] roles)
+    public static IResult? CheckForProduct(HttpContext ctx, ControlDbContext db, string? productId, params string[] roles)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -67,7 +67,7 @@ public static class RequireRole
     /// matching <c>UserProductRoleRow</c>, then falls back to the user's
     /// global <c>UserRow.Role</c>. Pre-sign-in (no users yet) returns null.
     /// </summary>
-    public static string? ResolveRoleForProduct(HttpContext ctx, DbContext db, string? productId)
+    public static string? ResolveRoleForProduct(HttpContext ctx, ControlDbContext db, string? productId)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
@@ -98,7 +98,7 @@ public static class RequireRole
     /// per-product override when X-Forge-Product-Id is present. Returns
     /// null when no signed-in users exist yet (default = open).
     /// </summary>
-    public static string? ResolveRole(HttpContext ctx, DbContext db)
+    public static string? ResolveRole(HttpContext ctx, ControlDbContext db)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
@@ -131,7 +131,7 @@ public static class RequireRole
     }
 
     /// <summary>Async sibling of <see cref="ResolveRole"/> for handlers that already do async DB work.</summary>
-    public static async Task<string?> ResolveRoleAsync(HttpContext ctx, DbContext db, CancellationToken ct = default)
+    public static async Task<string?> ResolveRoleAsync(HttpContext ctx, ControlDbContext db, CancellationToken ct = default)
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;

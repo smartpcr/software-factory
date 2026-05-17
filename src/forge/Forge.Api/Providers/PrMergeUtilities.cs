@@ -50,13 +50,13 @@ public static class PrMergeUtilities
     /// returning false; caller decides what to do.
     /// </param>
     public static async Task<bool> RebaseSourceOnBaseAsync(
-        ProductDbContext db, IStoryGitOps git, PrRow pr, bool force, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, IStoryGitOps git, PrRow pr, bool force, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(pr.Branch) || string.IsNullOrEmpty(pr.Base)) return false;
         var repo = !string.IsNullOrEmpty(pr.RepoId)
-            ? await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct)
+            ? await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct)
             : null;
-        repo ??= await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(ct);
+        repo ??= await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return false;
         return await git.MergeUpstreamIntoBranchAsync(repo, pr.Branch, pr.Base, force, ct);
     }

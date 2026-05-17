@@ -91,8 +91,9 @@ public class Phase15SprintTests
     private static async Task<RepoRow> EnsureAdoRepo(StubFactory f, string id = "atlas-platform-test")
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var existing = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var existing = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (existing is not null) return existing;
         var repo = new RepoRow
         {
@@ -106,8 +107,8 @@ public class Phase15SprintTests
             AdoOrg = "contoso",
             AdoProject = "Atlas",
         };
-        db.Repos.Add(repo);
-        await db.SaveChangesAsync();
+        control.Repos.Add(repo);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return repo;
     }
 
@@ -165,6 +166,7 @@ public class Phase15SprintTests
         DateTimeOffset firstImported, firstRefreshed;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14");
@@ -179,6 +181,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Still only two rows — re-import is upsert by (ProductId, ProviderNodeId).
             var count = await db.ProductIterations.CountAsync(i => i.ProductId == "atlas");
@@ -198,15 +201,16 @@ public class Phase15SprintTests
         using var f = new StubFactory();
         // Repo is github-kind; no need for AdoProject.
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        db.Repos.Add(new RepoRow
+        control.Repos.Add(new RepoRow
         {
             Id = "atlas-portal-test", ProductId = "atlas", Kind = "github",
             RemoteUrl = "https://github.com/atlas-corp/portal", DisplayName = "portal",
             DefaultBranch = "main", CloneRoot = "C:\\tmp\\portal",
             GhOwner = "atlas-corp", GhRepo = "portal",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         scope.Dispose();
 
         f.GitHub.Milestones =
@@ -246,6 +250,7 @@ public class Phase15SprintTests
         string iter14, iter15;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iter14 = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14")).Id;
@@ -294,6 +299,7 @@ public class Phase15SprintTests
         string iter15Id;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iter15Id = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:15")).Id;
@@ -319,6 +325,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var orphan = await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:15");
@@ -346,6 +353,7 @@ public class Phase15SprintTests
         string iterId;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             iterId = (await db.ProductIterations.AsNoTracking()
                 .FirstAsync(i => i.ProviderNodeId == "ado:iter:14")).Id;
@@ -408,6 +416,7 @@ public class Phase15SprintTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Three rows total — no duplicates.
             var ids = await db.ProductIterations.AsNoTracking()

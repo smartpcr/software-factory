@@ -36,7 +36,7 @@ public class StalledQuestionsRecoveryTests
     }
 
     private static async Task SeedStalledWorkstreamAsync(
-        ProductDbContext db, string wsId, string stallReason, string executionStatus,
+        ControlDbContext control, ProductDbContext db, string wsId, string stallReason, string executionStatus,
         string? failureReason, string? latestVerdict, string? prsJson = null)
     {
         db.Workstreams.Add(new WorkstreamRow
@@ -74,7 +74,7 @@ public class StalledQuestionsRecoveryTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -86,9 +86,10 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Sloppy-3-attempts: Failed after 3 reassignments...",
             executionStatus: ExecutionStatuses.Failed,
             failureReason: "Failed after 3 reassignments...",
@@ -102,7 +103,7 @@ public class StalledQuestionsRecoveryTests
             Kind = "open",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
@@ -113,6 +114,7 @@ public class StalledQuestionsRecoveryTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
@@ -128,10 +130,11 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Build-failure stall reason — should NOT be cleared by dismiss.
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Gate failed (build) running `dotnet build`: 3 consecutive failed iterations...",
             executionStatus: ExecutionStatuses.Failed,
             failureReason: null,
@@ -145,7 +148,7 @@ public class StalledQuestionsRecoveryTests
             Kind = "open",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
@@ -155,6 +158,7 @@ public class StalledQuestionsRecoveryTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -169,6 +173,7 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Cancelled workstreams are intentional terminal states.
@@ -195,7 +200,7 @@ public class StalledQuestionsRecoveryTests
             Kind = "open",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
@@ -203,6 +208,7 @@ public class StalledQuestionsRecoveryTests
             new { externalIds = new[] { "q1" } });
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -219,9 +225,10 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Sloppy-3-attempts: Failed after 3 reassignments...",
             executionStatus: ExecutionStatuses.Completed,
             failureReason: null,
@@ -231,6 +238,7 @@ public class StalledQuestionsRecoveryTests
         var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
         var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
@@ -246,9 +254,10 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Sloppy-3-attempts: ...",
             executionStatus: ExecutionStatuses.Completed,
             failureReason: null,
@@ -259,6 +268,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -272,9 +282,10 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Gate failed (build) running `dotnet build`: 3 consecutive failed iterations...",
             executionStatus: ExecutionStatuses.Completed,
             failureReason: null,
@@ -284,6 +295,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -297,9 +309,10 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Sloppy-3-attempts: ...",
             executionStatus: ExecutionStatuses.Queued,
             failureReason: null,
@@ -309,6 +322,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 
@@ -321,10 +335,11 @@ public class StalledQuestionsRecoveryTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // WI still carries terminal failure indication — don't recover.
-        await SeedStalledWorkstreamAsync(db, WsId,
+        await SeedStalledWorkstreamAsync(control, db, WsId,
             stallReason: "Sloppy-3-attempts: ...",
             executionStatus: ExecutionStatuses.Failed,
             failureReason: "Failed after 3 reassignments...",
@@ -334,6 +349,7 @@ public class StalledQuestionsRecoveryTests
         await reconciler.RunOnceAsync(CancellationToken.None);
 
         using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
 

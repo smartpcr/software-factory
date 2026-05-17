@@ -43,11 +43,13 @@ public sealed record PromotionRunResult(
 /// <inheritdoc cref="IPromotionRunner"/>
 public sealed class PromotionRunner : IPromotionRunner
 {
+    private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly ILogger<PromotionRunner> log;
 
-    public PromotionRunner(ProductDbContext db, ILogger<PromotionRunner> log)
+    public PromotionRunner(ControlDbContext control, ProductDbContext db, ILogger<PromotionRunner> log)
     {
+        this.control = control;
         this.db = db;
         this.log = log;
     }
@@ -55,7 +57,7 @@ public sealed class PromotionRunner : IPromotionRunner
     public async Task<PromotionRunResult> RunAsync(CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
-        var agents = await this.db.Agents.AsNoTracking().ToListAsync(ct);
+        var agents = await this.control.Agents.AsNoTracking().ToListAsync(ct);
 
         var decisions = new List<PromotionAgentResult>();
         var promoted = 0;
@@ -72,7 +74,7 @@ public sealed class PromotionRunner : IPromotionRunner
             // spec §4 (the cooldown gates promotion only). SQLite can't
             // sort DateTimeOffset at the SQL layer, so we pull + sort
             // client-side.
-            var promotions = await this.db.AgentLevelHistory.AsNoTracking()
+            var promotions = await this.control.AgentLevelHistory.AsNoTracking()
                 .Where(h => h.AgentId == agent.Id && h.Reason == PromotionPolicy.ReasonPromote)
                 .Select(h => h.CreatedAt)
                 .ToListAsync(ct);
@@ -101,7 +103,7 @@ public sealed class PromotionRunner : IPromotionRunner
                 // LeadPendingSince yet).
                 if (decision.NewLevel < ScoringConstants.LeadMinLevel)
                 {
-                    var crewLed = await this.db.Crews
+                    var crewLed = await this.control.Crews
                         .Where(c => c.Lead == agent.Id)
                         .Select(c => c.Id)
                         .FirstOrDefaultAsync(ct);
@@ -148,12 +150,12 @@ public sealed class PromotionRunner : IPromotionRunner
 
     private async Task ApplyLevelChangeAsync(string agentId, PromotionPolicy.Decision d, DateTimeOffset at, CancellationToken ct)
     {
-        var row = await this.db.Agents.FirstAsync(a => a.Id == agentId, ct);
+        var row = await this.control.Agents.FirstAsync(a => a.Id == agentId, ct);
         row.Level = d.NewLevel;
         row.LevelUpdatedAt = at;
         row.HourlyUsd = ScoringConstants.HourlyForLevel(d.NewLevel);
 
-        this.db.AgentLevelHistory.Add(new AgentLevelHistoryRow
+        this.control.AgentLevelHistory.Add(new AgentLevelHistoryRow
         {
             AgentId = agentId,
             OldLevel = d.OldLevel,
@@ -163,6 +165,6 @@ public sealed class PromotionRunner : IPromotionRunner
             CreatedAt = at,
         });
 
-        await this.db.SaveChangesAsync(ct);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
     }
 }

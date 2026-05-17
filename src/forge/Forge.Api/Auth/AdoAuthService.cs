@@ -208,8 +208,9 @@ public class AdoAuthService : IAuthService
         try
         {
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var row = await db.UserSettings.AsNoTracking()
+            var row = await control.UserSettings.AsNoTracking()
                 .OrderBy(x => x.UserId)
                 .FirstOrDefaultAsync(ct);
             var preferred = row?.PreferredAdoAccount?.Trim();

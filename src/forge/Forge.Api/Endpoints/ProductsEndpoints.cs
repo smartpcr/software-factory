@@ -72,13 +72,14 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] UpdateRepoRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (req.DisplayName is not null) row.DisplayName = req.DisplayName.Trim();
@@ -90,7 +91,7 @@ public static class ProductsEndpoints
                 return Results.Problem(title: "cloneRoot must be an absolute path", statusCode: 400);
             }
             // Q2 — same clone root cannot host two repos.
-            if (await db.Repos.AnyAsync(r => r.CloneRoot == clean && r.Id != id))
+            if (await control.Repos.AnyAsync(r => r.CloneRoot == clean && r.Id != id))
             {
                 return Results.Problem(title: "Clone root already in use", statusCode: 409);
             }
@@ -163,7 +164,7 @@ public static class ProductsEndpoints
             BuildSystemDetector.MergeInto(row, detected);
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
         return Results.Ok(repo);
@@ -180,6 +181,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> CloneRepo(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IRepoCloneService cloneSvc,
         IHubContext<ForgeHub> hub,
@@ -188,7 +190,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (Directory.Exists(row.CloneRoot))
@@ -198,7 +200,7 @@ public static class ProductsEndpoints
             var det = BuildSystemDetector.Detect(row.CloneRoot);
             if (BuildSystemDetector.MergeInto(row, det))
             {
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
                 await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo = MapRepo(row) }, ct);
             }
             return Results.Ok(new { outcome = "skipped", message = "cloneRoot already exists", detectedBuild = MapDetected(det) });
@@ -213,7 +215,7 @@ public static class ProductsEndpoints
             detected = BuildSystemDetector.Detect(row.CloneRoot);
             if (BuildSystemDetector.MergeInto(row, detected))
             {
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
                 await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo = MapRepo(row) }, ct);
             }
         }
@@ -238,12 +240,12 @@ public static class ProductsEndpoints
     /// The UI shows these to the operator who can accept or override.
     /// </summary>
     private static async Task<IResult> DetectBuild(
-        HttpContext ctx, string id, ProductDbContext db)
+        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(title: "Repo has no local clone", detail: "Set a cloneRoot and clone the repo first.", statusCode: 422);
@@ -276,12 +278,12 @@ public static class ProductsEndpoints
     /// Completion is notified via SignalR <c>repo.validation-complete</c>.
     /// </summary>
     private static async Task<IResult> ValidateBuild(
-        HttpContext ctx, string id, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(title: "Repo has no local clone", statusCode: 422);
@@ -308,7 +310,7 @@ public static class ProductsEndpoints
             TriggeredBy = triggeredBy,
         };
         db.BuildValidationRuns.Add(run);
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         var job = new BuildValidationJob(runId, id);
         if (!worker.TryEnqueue(job))
@@ -318,7 +320,7 @@ public static class ProductsEndpoints
             run.Status = "cancelled";
             run.FinishedAt = DateTime.UtcNow.ToString("O");
             run.ErrorMessage = "Superseded by concurrent request";
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             return Results.Problem(
                 title: "A validation is already running for this repo",
                 statusCode: 409);
@@ -332,9 +334,9 @@ public static class ProductsEndpoints
     /// validation runs for the repo, ordered by start time descending.
     /// </summary>
     private static async Task<IResult> GetValidationRuns(
-        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // StartedAt is stored as ISO-8601 string, so lexicographic sort = chronological.
@@ -365,7 +367,7 @@ public static class ProductsEndpoints
     /// POST /api/repos/{id}/validation-runs/{runId}/cancel — cancel a running validation.
     /// </summary>
     private static async Task<IResult> CancelValidationRun(
-        HttpContext ctx, string id, string runId, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, string runId, ControlDbContext control, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -385,7 +387,7 @@ public static class ProductsEndpoints
             run.Status = "cancelled";
             run.FinishedAt = DateTime.UtcNow.ToString("O");
             run.ErrorMessage = "Cancelled by user";
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
 
         return Results.Ok(new { runId, status = "cancelled" });
@@ -393,7 +395,7 @@ public static class ProductsEndpoints
 
     /// <summary>DELETE /api/repos/{id}/validation-runs — clear all completed validation runs.</summary>
     private static async Task<IResult> ClearValidationRuns(
-        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -402,13 +404,13 @@ public static class ProductsEndpoints
             .Where(r => r.RepoId == id && r.Status != "queued" && r.Status != "running")
             .ToListAsync(ct);
         db.BuildValidationRuns.RemoveRange(completed);
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return Results.Ok(new { deleted = completed.Count });
     }
 
     /// <summary>DELETE /api/repos/{id}/sync-work-items/runs — clear all sync run history.</summary>
     private static async Task<IResult> ClearSyncRuns(
-        HttpContext ctx, string id, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -428,7 +430,7 @@ public static class ProductsEndpoints
                 .Where(r => r.RepoId == id)
                 .ToListAsync(ct);
             db.WorkItemSyncRuns.RemoveRange(runs);
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
         return Results.Ok(new { deleted = runIds.Count });
     }
@@ -445,13 +447,13 @@ public static class ProductsEndpoints
 
     // ----- /api/products ---------------------------------------------------
 
-    private static async Task<IResult> ListProducts(ProductDbContext db) =>
-        Results.Ok((await db.Products.AsNoTracking().OrderBy(p => p.Sort).ThenBy(p => p.Name).ToListAsync())
+    private static async Task<IResult> ListProducts(ControlDbContext control, ProductDbContext db) =>
+        Results.Ok((await control.Products.AsNoTracking().OrderBy(p => p.Sort).ThenBy(p => p.Name).ToListAsync())
             .Select(MapProduct).ToList());
 
-    private static async Task<IResult> GetProduct(string id, ProductDbContext db)
+    private static async Task<IResult> GetProduct(string id, ControlDbContext control, ProductDbContext db)
     {
-        var row = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        var row = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         return row is null
             ? Results.Problem(title: $"Product {id} not found", statusCode: 404)
             : Results.Ok(MapProduct(row));
@@ -460,6 +462,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> CreateProduct(
         HttpContext ctx,
         [FromBody] CreateProductRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -471,7 +474,7 @@ public static class ProductsEndpoints
             return Results.Problem(title: "id and name are required", statusCode: 400);
         }
 
-        if (await db.Products.AnyAsync(p => p.Id == req.Id))
+        if (await control.Products.AnyAsync(p => p.Id == req.Id))
         {
             return Results.Problem(title: $"Product {req.Id} already exists", statusCode: 409);
         }
@@ -492,12 +495,12 @@ public static class ProductsEndpoints
                 statusCode: 400);
         }
 
-        if (await db.Products.AnyAsync(p => p.Slug == slug))
+        if (await control.Products.AnyAsync(p => p.Slug == slug))
         {
             return Results.Problem(title: $"Slug '{slug}' is already in use", statusCode: 409);
         }
 
-        var maxSort = await db.Products.Select(p => (int?)p.Sort).MaxAsync() ?? -1;
+        var maxSort = await control.Products.Select(p => (int?)p.Sort).MaxAsync() ?? -1;
         var row = new ProductRow
         {
             Id = req.Id,
@@ -508,8 +511,8 @@ public static class ProductsEndpoints
             OwnerUserId = req.OwnerUserId,
             CreatedAt = DateTimeOffset.UtcNow,
         };
-        db.Products.Add(row);
-        await db.SaveChangesAsync();
+        control.Products.Add(row);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var product = MapProduct(row);
         await hub.Clients.All.SendAsync("product.changed", new { kind = "created", product });
@@ -520,13 +523,14 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] UpdateProductRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+        var row = await control.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
         if (req.Name is not null) row.Name = req.Name;
@@ -544,7 +548,7 @@ public static class ProductsEndpoints
             row.ActiveIterationId = v;
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         var product = MapProduct(row);
         await hub.Clients.All.SendAsync("product.changed", new { kind = "patched", product });
         return Results.Ok(product);
@@ -554,16 +558,17 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+        var row = await control.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
-        var repoCount = await db.Repos.CountAsync(r => r.ProductId == id);
+        var repoCount = await control.Repos.CountAsync(r => r.ProductId == id);
         if (repoCount > 0 && force != true)
         {
             return Results.Json(
@@ -577,8 +582,8 @@ public static class ProductsEndpoints
         }
 
         // Cascade delete (FK with OnDelete.Cascade) removes repos automatically.
-        db.Products.Remove(row);
-        await db.SaveChangesAsync();
+        control.Products.Remove(row);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("product.changed", new { kind = "deleted", id });
         return Results.NoContent();
@@ -586,11 +591,11 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/repos ---------------------------------------
 
-    private static async Task<IResult> ListReposForProduct(string id, ProductDbContext db)
+    private static async Task<IResult> ListReposForProduct(string id, ControlDbContext control, ProductDbContext db)
     {
-        var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
-        var rows = await db.Repos.AsNoTracking().Where(r => r.ProductId == id).OrderBy(r => r.Sort).ToListAsync();
+        var rows = await control.Repos.AsNoTracking().Where(r => r.ProductId == id).OrderBy(r => r.Sort).ToListAsync();
         return Results.Ok(rows.Select(MapRepo).ToList());
     }
 
@@ -598,6 +603,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] CreateRepoRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IRepoCloneService cloneSvc,
@@ -606,13 +612,13 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+        var product = await control.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
         var validation = RepoValidation.Validate(req);
         if (validation is not null) return validation;
 
-        if (await db.Repos.AnyAsync(r => r.Id == req.Id))
+        if (await control.Repos.AnyAsync(r => r.Id == req.Id))
         {
             return Results.Problem(title: $"Repo id {req.Id} already exists", statusCode: 409);
         }
@@ -620,7 +626,7 @@ public static class ProductsEndpoints
         // Q5 — same remote URL cannot live under two products. The DB index
         // would reject this anyway, but a hand-shaped 409 with the existing
         // productId lets the UI offer "open existing product" as recovery.
-        var existingByRemote = await db.Repos.AsNoTracking()
+        var existingByRemote = await control.Repos.AsNoTracking()
             .FirstOrDefaultAsync(r => r.RemoteUrl == req.RemoteUrl);
         if (existingByRemote is not null)
         {
@@ -636,7 +642,7 @@ public static class ProductsEndpoints
         }
 
         // Q2 — same clone root cannot host two repos.
-        if (await db.Repos.AnyAsync(r => r.CloneRoot == req.CloneRoot))
+        if (await control.Repos.AnyAsync(r => r.CloneRoot == req.CloneRoot))
         {
             return Results.Problem(
                 title: "Clone root already in use",
@@ -644,7 +650,7 @@ public static class ProductsEndpoints
                 statusCode: 409);
         }
 
-        var maxSort = await db.Repos.Where(r => r.ProductId == id).Select(r => (int?)r.Sort).MaxAsync() ?? -1;
+        var maxSort = await control.Repos.Where(r => r.ProductId == id).Select(r => (int?)r.Sort).MaxAsync() ?? -1;
         var row = new RepoRow
         {
             Id = req.Id,
@@ -660,8 +666,8 @@ public static class ProductsEndpoints
             GhOwner = req.GhOwner,
             GhRepo = req.GhRepo,
         };
-        db.Repos.Add(row);
-        await db.SaveChangesAsync();
+        control.Repos.Add(row);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "attached", repo });
@@ -698,7 +704,7 @@ public static class ProductsEndpoints
             detected = BuildSystemDetector.Detect(row.CloneRoot);
             if (BuildSystemDetector.MergeInto(row, detected))
             {
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
                 repo = MapRepo(row);
                 await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo });
             }
@@ -723,12 +729,12 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/stats ---------------------------------------
 
-    private static async Task<IResult> GetProductStats(string id, ProductDbContext db)
+    private static async Task<IResult> GetProductStats(string id, ControlDbContext control, ProductDbContext db)
     {
-        var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
-        var repoIds = await db.Repos.Where(r => r.ProductId == id).Select(r => r.Id).ToListAsync();
+        var repoIds = await control.Repos.Where(r => r.ProductId == id).Select(r => r.Id).ToListAsync();
         var activeWs = repoIds.Count == 0
             ? 0
             : await db.Workstreams.CountAsync(w => repoIds.Contains(w.RepoId!) && w.Status != "merging" && !w.Planned);
@@ -751,17 +757,17 @@ public static class ProductsEndpoints
 
     // ----- /api/repos ------------------------------------------------------
 
-    private static async Task<IResult> ListAllRepos(ProductDbContext db, string? productId)
+    private static async Task<IResult> ListAllRepos(ControlDbContext control, ProductDbContext db, string? productId)
     {
-        var q = db.Repos.AsNoTracking().AsQueryable();
+        var q = control.Repos.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(productId)) q = q.Where(r => r.ProductId == productId);
         var rows = await q.OrderBy(r => r.Sort).ToListAsync();
         return Results.Ok(rows.Select(MapRepo).ToList());
     }
 
-    private static async Task<IResult> GetRepo(string id, ProductDbContext db)
+    private static async Task<IResult> GetRepo(string id, ControlDbContext control, ProductDbContext db)
     {
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
         return row is null
             ? Results.Problem(title: $"Repo {id} not found", statusCode: 404)
             : Results.Ok(MapRepo(row));
@@ -771,13 +777,14 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         bool? force,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var liveWs = await db.Workstreams.CountAsync(w => w.RepoId == id);
@@ -808,8 +815,8 @@ public static class ProductsEndpoints
             }
         }
 
-        db.Repos.Remove(row);
-        await db.SaveChangesAsync();
+        control.Repos.Remove(row);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "detached", id });
         return Results.NoContent();
@@ -889,6 +896,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] TriggerSyncRequest? req,
+        ControlDbContext control,
         ProductDbContext db,
         WorkItemSyncService syncService,
         CancellationToken ct)
@@ -896,13 +904,13 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var ignoreThrottle = req?.IgnoreThrottle ?? false;
         if (ignoreThrottle)
         {
-            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
             if (gate is not null) return gate;
         }
 
@@ -912,7 +920,7 @@ public static class ProductsEndpoints
         {
             repo.LastSyncAt = null;
             repo.LastUpstreamChangedDate = null; // Phase 34
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
 
         // Phase 34 — delta cursor sources from upstream-changedate.
@@ -955,7 +963,7 @@ public static class ProductsEndpoints
             ErrorMessage = result.Error,
             CompletedSuccessfully = result.Error is null,
         });
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         return Results.Ok(new
         {
@@ -971,12 +979,13 @@ public static class ProductsEndpoints
     private static async Task<IResult> GetRepoSyncRuns(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         [FromQuery] int? limit,
         [FromQuery] string? target,
         CancellationToken ct)
     {
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // Sync history is a "recent runs" view — not an export. Cap at 50
@@ -1016,6 +1025,7 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         string runId,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -1053,6 +1063,7 @@ public static class ProductsEndpoints
         string runId,
         string entityKind,
         string entityId,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -1184,10 +1195,11 @@ public static class ProductsEndpoints
     private static async Task<IResult> GetRepoSyncStatus(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         return Results.Ok(new

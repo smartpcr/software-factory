@@ -94,6 +94,7 @@ public sealed class BuildValidationWorker : BackgroundService
         var ct = jobCts.Token;
 
         await using var scope = this.scopeFactory.CreateAsyncScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
@@ -114,7 +115,7 @@ public sealed class BuildValidationWorker : BackgroundService
         run.StartedAt = DateTime.UtcNow.ToString("O");
         await db.SaveChangesAsync(CancellationToken.None);
 
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == job.RepoId, CancellationToken.None);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == job.RepoId, CancellationToken.None);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot) || !Directory.Exists(repo.CloneRoot))
         {
             run.Status = "failed";

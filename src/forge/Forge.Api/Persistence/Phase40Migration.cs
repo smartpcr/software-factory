@@ -21,7 +21,7 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public static class Phase40Migration
 {
-    public static async Task ApplyAsync(ProductDbContext db, CancellationToken ct = default)
+    public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         var spawns = await db.StorySpawns.AsNoTracking().ToListAsync(ct);
         if (spawns.Count == 0) return;

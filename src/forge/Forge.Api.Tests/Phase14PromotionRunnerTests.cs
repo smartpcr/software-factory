@@ -25,19 +25,19 @@ public class Phase14PromotionRunnerTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private static async Task SeedAgent(ProductDbContext db, string id, int level = 0)
+    private static async Task SeedAgent(ControlDbContext control, ProductDbContext db, string id, int level = 0)
     {
-        if (await db.Agents.AnyAsync(a => a.Id == id)) return;
-        db.Agents.Add(new AgentRow
+        if (await control.Agents.AnyAsync(a => a.Id == id)) return;
+        control.Agents.Add(new AgentRow
         {
             Id = id, Name = id, Role = "eng",
             Level = level,
             HourlyUsd = ScoringConstants.HourlyForLevel(level),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
-    private static async Task SeedDeliverables(ProductDbContext db, string genId, int count, int score, string verdict = "pass")
+    private static async Task SeedDeliverables(ControlDbContext control, ProductDbContext db, string genId, int count, int score, string verdict = "pass")
     {
         for (var i = 0; i < count; i++)
         {
@@ -53,7 +53,7 @@ public class Phase14PromotionRunnerTests
                 CreatedAt = DateTimeOffset.UtcNow.AddDays(-i),
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -63,22 +63,23 @@ public class Phase14PromotionRunnerTests
         // Boot the host so the DB is created.
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        await SeedAgent(db, "evalA");
-        await SeedAgent(db, "promote-me", level: 3);
-        await SeedDeliverables(db, "promote-me", 20, 95);
+        await SeedAgent(control, db, "evalA");
+        await SeedAgent(control, db, "promote-me", level: 3);
+        await SeedDeliverables(control, db, "promote-me", 20, 95);
 
         var runner = scope.ServiceProvider.GetRequiredService<IPromotionRunner>();
         var result = await runner.RunAsync(CancellationToken.None);
 
         Assert.True(result.Promoted >= 1);
 
-        var refreshed = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == "promote-me");
+        var refreshed = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == "promote-me");
         Assert.Equal(4, refreshed.Level);
         Assert.Equal(ScoringConstants.HourlyForLevel(4), refreshed.HourlyUsd);
         Assert.NotNull(refreshed.LevelUpdatedAt);
 
-        var hist = await db.AgentLevelHistory.Where(h => h.AgentId == "promote-me").SingleAsync();
+        var hist = await control.AgentLevelHistory.Where(h => h.AgentId == "promote-me").SingleAsync();
         Assert.Equal(3, hist.OldLevel);
         Assert.Equal(4, hist.NewLevel);
         Assert.Equal(PromotionPolicy.ReasonPromote, hist.Reason);
@@ -90,20 +91,21 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        await SeedAgent(db, "evalA");
-        await SeedAgent(db, "demote-me", level: 5);
-        await SeedDeliverables(db, "demote-me", 20, 70, verdict: "iterate");
+        await SeedAgent(control, db, "evalA");
+        await SeedAgent(control, db, "demote-me", level: 5);
+        await SeedDeliverables(control, db, "demote-me", 20, 70, verdict: "iterate");
 
         var runner = scope.ServiceProvider.GetRequiredService<IPromotionRunner>();
         var result = await runner.RunAsync(CancellationToken.None);
 
         Assert.True(result.Demoted >= 1);
 
-        var refreshed = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == "demote-me");
+        var refreshed = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == "demote-me");
         Assert.Equal(4, refreshed.Level);
 
-        var hist = await db.AgentLevelHistory.Where(h => h.AgentId == "demote-me").SingleAsync();
+        var hist = await control.AgentLevelHistory.Where(h => h.AgentId == "demote-me").SingleAsync();
         Assert.Equal(PromotionPolicy.ReasonDemote, hist.Reason);
     }
 
@@ -113,9 +115,10 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        await SeedAgent(db, "evalA");
-        await SeedAgent(db, "iter-agent", level: 3);
+        await SeedAgent(control, db, "evalA");
+        await SeedAgent(control, db, "iter-agent", level: 3);
 
         // 20 work items, each with 3 iterations: scores 50, 70, 95.
         // Average of FINAL iters = 95 → should promote. If we (wrongly)
@@ -138,12 +141,12 @@ public class Phase14PromotionRunnerTests
                 });
             }
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var runner = scope.ServiceProvider.GetRequiredService<IPromotionRunner>();
         var result = await runner.RunAsync(CancellationToken.None);
 
-        var refreshed = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == "iter-agent");
+        var refreshed = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == "iter-agent");
         Assert.Equal(4, refreshed.Level);
 
         var d = result.Decisions.First(x => x.AgentId == "iter-agent");
@@ -157,24 +160,25 @@ public class Phase14PromotionRunnerTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        await SeedAgent(db, "evalA");
-        await SeedAgent(db, "cooldown-agent", level: 4);
+        await SeedAgent(control, db, "evalA");
+        await SeedAgent(control, db, "cooldown-agent", level: 4);
         // Recent promotion 10 days ago.
-        db.AgentLevelHistory.Add(new AgentLevelHistoryRow
+        control.AgentLevelHistory.Add(new AgentLevelHistoryRow
         {
             AgentId = "cooldown-agent", OldLevel = 3, NewLevel = 4,
             Reason = PromotionPolicy.ReasonPromote,
             CreatedAt = DateTimeOffset.UtcNow.AddDays(-10),
             WindowAvg = 95,
         });
-        await db.SaveChangesAsync();
-        await SeedDeliverables(db, "cooldown-agent", 20, 95);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        await SeedDeliverables(control, db, "cooldown-agent", 20, 95);
 
         var runner = scope.ServiceProvider.GetRequiredService<IPromotionRunner>();
         var result = await runner.RunAsync(CancellationToken.None);
 
-        var refreshed = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == "cooldown-agent");
+        var refreshed = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == "cooldown-agent");
         Assert.Equal(4, refreshed.Level); // not promoted again
     }
 
@@ -186,10 +190,11 @@ public class Phase14PromotionRunnerTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            await SeedAgent(db, "evalA");
-            await SeedAgent(db, "active1", level: 3);
-            await SeedDeliverables(db, "active1", 20, 95);
+            await SeedAgent(control, db, "evalA");
+            await SeedAgent(control, db, "active1", level: 3);
+            await SeedDeliverables(control, db, "active1", 20, 95);
         }
 
         var resp = await c.PostAsJsonAsync("/api/admin/promotion/run", new { }, JsonOpts);
@@ -208,15 +213,16 @@ public class Phase14PromotionRunnerTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            await SeedAgent(db, "hist-agent");
-            db.AgentLevelHistory.Add(new AgentLevelHistoryRow
+            await SeedAgent(control, db, "hist-agent");
+            control.AgentLevelHistory.Add(new AgentLevelHistoryRow
             {
                 AgentId = "hist-agent", OldLevel = 2, NewLevel = 3,
                 Reason = PromotionPolicy.ReasonPromote,
                 CreatedAt = DateTimeOffset.UtcNow.AddDays(-1),
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await c.GetAsync("/api/agents/hist-agent/level-history");

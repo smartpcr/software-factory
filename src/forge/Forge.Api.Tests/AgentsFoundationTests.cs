@@ -76,6 +76,7 @@ public class AgentsFoundationTests
         _ = factory.CreateClient();
 
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
@@ -113,10 +114,10 @@ public class AgentsFoundationTests
             EndedAt = DateTimeOffset.UtcNow,
             Status = "finished",
         };
-        db.AgentUsage.Add(row);
-        await db.SaveChangesAsync();
+        control.AgentUsage.Add(row);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var refetched = await db.AgentUsage.AsNoTracking().FirstAsync(r => r.Id == row.Id);
+        var refetched = await control.AgentUsage.AsNoTracking().FirstAsync(r => r.Id == row.Id);
         Assert.Equal("engineering", refetched.CrewId);
         Assert.Equal("234", refetched.TaskId);
         Assert.Equal(0.0610m, refetched.CostUsd);

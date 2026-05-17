@@ -30,11 +30,13 @@ public sealed class AgentMemoryStore
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
+    private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly ILogger<AgentMemoryStore>? logger;
 
-    public AgentMemoryStore(ProductDbContext db, ILogger<AgentMemoryStore>? logger = null)
+    public AgentMemoryStore(ControlDbContext control, ProductDbContext db, ILogger<AgentMemoryStore>? logger = null)
     {
+        this.control = control;
         this.db = db;
         this.logger = logger;
     }

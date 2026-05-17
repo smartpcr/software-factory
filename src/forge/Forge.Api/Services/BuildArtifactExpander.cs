@@ -211,6 +211,7 @@ public sealed class BuildArtifactExpander
         var indexed = indexedFiles.Select(x => x.RelPath).ToList();
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var existing = await db.BuildArtifacts.FirstOrDefaultAsync(
                 a => a.BuildId == buildId && a.Name == artifactName, ct);
@@ -266,6 +267,7 @@ public sealed class BuildArtifactExpander
         var threshold = DateTimeOffset.UtcNow.AddDays(-SyncConstants.BuildArtifactRetentionDays).ToString("o");
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var expired = await db.BuildArtifacts
                 .Where(a => a.FetchedAt != null && string.Compare(a.FetchedAt, threshold) < 0)

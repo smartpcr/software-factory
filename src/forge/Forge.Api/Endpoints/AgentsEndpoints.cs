@@ -44,12 +44,12 @@ public static class AgentsEndpoints
         return app;
     }
 
-    private static async Task<IResult> ListAgents(ControlDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListAgents(ControlDbContext control, CancellationToken ct)
     {
-        var rows = await db.Agents.AsNoTracking().OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
+        var rows = await control.Agents.AsNoTracking().OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
 
         // Compute distinct work-item counts per agent from the usage ledger.
-        var taskCounts = await db.AgentUsage.AsNoTracking()
+        var taskCounts = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId != null && u.TaskId != "")
             .GroupBy(u => u.AgentId)
             .Select(g => new { AgentId = g.Key, Count = g.Select(u => u.TaskId).Distinct().Count() })
@@ -70,9 +70,9 @@ public static class AgentsEndpoints
         }).ToList());
     }
 
-    private static async Task<IResult> GetAgent(string agentId, ControlDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetAgent(string agentId, ControlDbContext control, CancellationToken ct)
     {
-        var row = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var row = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         return row is null
             ? Results.Problem(title: $"Agent {agentId} not found", statusCode: 404)
             : Results.Ok(MapAgent(row));
@@ -83,13 +83,13 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.PatchAgentRequest req,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var row = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
 
         if (!string.IsNullOrWhiteSpace(req.Name)) row.Name = req.Name.Trim();
@@ -133,7 +133,7 @@ public static class AgentsEndpoints
                 statusCode: 400);
         }
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct);
         return Results.Ok(MapAgent(row));
     }
 
@@ -155,11 +155,11 @@ public static class AgentsEndpoints
 
     private static async Task<IResult> GetSoul(
         string agentId,
-        ControlDbContext db,
+        ControlDbContext control,
         ISoulService soul,
         CancellationToken ct)
     {
-        var row = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var row = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
 
         var doc = await soul.ReadAsync(agentId, row.SoulPath, ct);
@@ -176,16 +176,16 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.SoulWriteRequest req,
-        ControlDbContext db,
+        ControlDbContext control,
         ISoulService soul,
         CancellationToken ct)
     {
-        var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+        var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null) return Results.Problem(title: "body is required", statusCode: 400);
 
-        var row = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var row = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
 
         await soul.WriteAsync(agentId, row.SoulPath, req.Contents ?? string.Empty, ct);
@@ -195,7 +195,7 @@ public static class AgentsEndpoints
         if (doc is not null)
         {
             row.CapabilitiesJson = System.Text.Json.JsonSerializer.Serialize(doc.Capabilities);
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct);
         }
         return Results.Ok(new Forge.Api.Contracts.SoulPayload(
             AgentId: agentId,
@@ -209,11 +209,11 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         [FromBody] Forge.Api.Contracts.ReassignAgentRequest req,
-        ControlDbContext db,
+        ControlDbContext control,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
-        var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+        var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null || string.IsNullOrWhiteSpace(req.CrewId))
@@ -221,24 +221,24 @@ public static class AgentsEndpoints
             return Results.Problem(title: "crewId is required", statusCode: 400);
         }
 
-        var row = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var row = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
 
-        var newCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == req.CrewId, ct);
+        var newCrew = await control.Crews.FirstOrDefaultAsync(c => c.Id == req.CrewId, ct);
         if (newCrew is null) return Results.Problem(title: $"Crew {req.CrewId} not found", statusCode: 404);
 
         // Look up old crew's model so the history row captures the diff.
         string? fromModel = null;
         if (!string.IsNullOrEmpty(row.CrewId))
         {
-            fromModel = await db.Crews.Where(c => c.Id == row.CrewId).Select(c => c.Model).FirstOrDefaultAsync(ct);
+            fromModel = await control.Crews.Where(c => c.Id == row.CrewId).Select(c => c.Model).FirstOrDefaultAsync(ct);
         }
 
         var fromCrewId = row.CrewId;
         row.CrewId = newCrew.Id;
 
         var actor = ctx.Request.Headers[Forge.Api.Auth.ForgeUser.HeaderName].FirstOrDefault();
-        db.AgentHistory.Add(new AgentHistoryRow
+        control.AgentHistory.Add(new AgentHistoryRow
         {
             At = DateTimeOffset.UtcNow,
             AgentId = agentId,
@@ -248,7 +248,7 @@ public static class AgentsEndpoints
             ToModel = newCrew.Model,
             Actor = actor,
         });
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct);
 
         await hub.Clients.All.SendAsync(
             "agent.reassigned",
@@ -258,12 +258,12 @@ public static class AgentsEndpoints
         return Results.Ok(MapAgent(row));
     }
 
-    private static async Task<IResult> GetHistory(string agentId, ControlDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetHistory(string agentId, ControlDbContext control, CancellationToken ct)
     {
         // Id is auto-increment monotonic; ordering by Id gives the same
         // newest-first result as ordering by At, and SQLite can translate it
         // (DateTimeOffset is stored as TEXT and can't be ORDER BY'd in SQL).
-        var rows = await db.AgentHistory.AsNoTracking()
+        var rows = await control.AgentHistory.AsNoTracking()
             .Where(r => r.AgentId == agentId)
             .OrderByDescending(r => r.Id)
             .Take(200)
@@ -299,7 +299,7 @@ public static class AgentsEndpoints
         [FromBody] StartInvocationRequest req,
         IAgentRunner runner,
         IModelRegistry models,
-        ControlDbContext db,
+        ControlDbContext control,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopes,
         ILoggerFactory loggers,
@@ -318,7 +318,7 @@ public static class AgentsEndpoints
         // overrode the model id, so always fetch the crew row when crewId is
         // known. The model id falls back to the crew's default when omitted.
         var crewId = req.CrewId ?? "engineering";
-        var crewLookup = await db.Crews
+        var crewLookup = await control.Crews
             .Where(c => c.Id == crewId)
             .Select(c => new { c.Model, c.ModelInputPricePerMTok, c.ModelOutputPricePerMTok })
             .FirstOrDefaultAsync(ct);
@@ -341,13 +341,13 @@ public static class AgentsEndpoints
         // crew spend already crosses DailyBudgetUsd; we don't try to predict
         // this call's cost beyond a guard band, since output tokens aren't
         // known until streaming finishes.
-        var crewBudget = await db.Crews
+        var crewBudget = await control.Crews
             .Where(c => c.Id == crewId)
             .Select(c => new { c.DailyBudgetUsd, c.MaxTaskBudgetUsd })
             .FirstOrDefaultAsync(ct);
         if (crewBudget?.DailyBudgetUsd is decimal dailyCap)
         {
-            var spent = await CrewsEndpoints.TodaysSpendAsync(db, crewId, ct);
+            var spent = await CrewsEndpoints.TodaysSpendAsync(control, crewId, ct);
             if (spent >= dailyCap)
             {
                 await hub.Clients.All.SendAsync(
@@ -384,8 +384,8 @@ public static class AgentsEndpoints
             StartedAt = DateTimeOffset.UtcNow,
             Status = "running",
         };
-        db.AgentUsage.Add(ledger);
-        await db.SaveChangesAsync(ct);
+        control.AgentUsage.Add(ledger);
+        await control.SaveChangesAsync(ct);
 
         var pumpLogger = loggers.CreateLogger("Forge.Api.Agents.InvocationPump");
         var taskChannel = ctx.RequestServices.GetService<TaskChannel>();
@@ -532,13 +532,13 @@ public static class AgentsEndpoints
 
     private static async Task<IResult> ListInvocations(
         string agentId,
-        ControlDbContext db,
+        ControlDbContext control,
         int? take,
         CancellationToken ct)
     {
         // Order by Id (monotonic auto-increment) instead of StartedAt because
         // SQLite cannot translate ORDER BY on DateTimeOffset columns.
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await control.AgentUsage.AsNoTracking()
             .Where(r => r.AgentId == agentId)
             .OrderByDescending(r => r.Id)
             .Take(Math.Clamp(take ?? 50, 1, 500))
@@ -563,10 +563,10 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         IAgentRunner runner,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
-        var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+        var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
         if (gate is not null) return gate;
         await runner.PauseAsync(agentId, ct);
         return Results.NoContent();
@@ -576,10 +576,10 @@ public static class AgentsEndpoints
         HttpContext ctx,
         string agentId,
         IAgentRunner runner,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
-        var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+        var gate = RequireRole.Check(ctx, control, RequireRole.ProductOwner);
         if (gate is not null) return gate;
         await runner.ResumeAsync(agentId, ct);
         return Results.NoContent();

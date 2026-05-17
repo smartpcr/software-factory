@@ -26,6 +26,7 @@ public class IdempotencyAndAuditTests : IClassFixture<ForgeWebApplicationFactory
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.Prs.AnyAsync(p => p.Id == "PR #229"))
         {
@@ -35,7 +36,7 @@ public class IdempotencyAndAuditTests : IClassFixture<ForgeWebApplicationFactory
                 Workstream = "ws-idempotency", Base = "main", Branch = "ws/idempotency",
                 Title = "Token store refactor", Age = "30m",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
     }
 

@@ -29,15 +29,16 @@ using Xunit;
 /// </summary>
 public class RestartBehaviorTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db, ITaskQueueService queue)> BootAsync(
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ControlDbContext control, ProductDbContext db, ITaskQueueService queue)> BootAsync(
         Dictionary<string, string?>? extraConfig = null)
     {
         var f = new ForgeWebApplicationFactory(extraConfig);
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        return (f, scope, db, queue);
+        return (f, scope, control, db, queue);
     }
 
     private static WorkItemRow NewWorkItem(string id, string state = "active", string execStatus = "idle", int points = 0) => new()
@@ -96,13 +97,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task ClearTranscript_Clears_Transcript_And_Deliverables()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-ct-1"));
             db.Deliverables.Add(NewDeliverable("wi-ct-1", "crew-x", 1, 90, "pass"));
             db.TaskTranscriptEvents.Add(NewTranscript("wi-ct-1"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             Assert.Equal(1, await db.Deliverables.CountAsync(d => d.WorkItemId == "wi-ct-1"));
             Assert.Equal(1, await db.TaskTranscriptEvents.CountAsync(e => e.WorkItemId == "wi-ct-1"));
@@ -126,13 +127,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task ClearTranscript_Idempotent_Returns_Zero_On_Second_Call()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-ct-idem"));
             db.TaskTranscriptEvents.Add(NewTranscript("wi-ct-idem"));
             db.Deliverables.Add(NewDeliverable("wi-ct-idem", "crew-x"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -153,11 +154,11 @@ public class RestartBehaviorTests
     [Fact]
     public async Task ClearTranscript_Returns_200_When_No_Rows_Exist()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-ct-empty"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -174,7 +175,7 @@ public class RestartBehaviorTests
     [Fact]
     public async Task ClearTranscript_Does_Not_Delete_Other_WorkItem_Rows()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-ct-a"));
@@ -183,7 +184,7 @@ public class RestartBehaviorTests
             db.TaskTranscriptEvents.Add(NewTranscript("wi-ct-b"));
             db.Deliverables.Add(NewDeliverable("wi-ct-a", "crew-x"));
             db.Deliverables.Add(NewDeliverable("wi-ct-b", "crew-x"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -206,15 +207,15 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Clears_Deliverables_And_Resets_Iter()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-test"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-test"));
             db.WorkItems.Add(NewWorkItem("wi-restart-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 1, 85));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 2, 72));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             Assert.Equal(2, await db.Deliverables.CountAsync(d => d.WorkItemId == "wi-restart-1"));
 
@@ -233,13 +234,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Resets_InReview_State_To_Active()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-ir"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-rst-ir"));
             db.WorkItems.Add(NewWorkItem("wi-rst-ir", state: "in-review", execStatus: "failed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -258,13 +259,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Resets_Resolved_State_To_Active()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-res"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-rst-res"));
             db.WorkItems.Add(NewWorkItem("wi-rst-res", state: "resolved", execStatus: "completed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -282,13 +283,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Resets_Closed_State_To_Active()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-cl"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-rst-cl"));
             db.WorkItems.Add(NewWorkItem("wi-rst-cl", state: "closed", execStatus: "completed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -306,13 +307,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Preserves_Active_State()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-act"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-rst-act"));
             db.WorkItems.Add(NewWorkItem("wi-rst-act", state: "active", execStatus: "failed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -330,13 +331,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Preserves_Proposed_State()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-prop"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-rst-prop"));
             db.WorkItems.Add(NewWorkItem("wi-rst-prop", state: "proposed", execStatus: "failed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -354,11 +355,11 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Enqueue_Sets_ExecutionStatus_To_Queued_From_Failed()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-exec-f", state: "active", execStatus: "failed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await queue.EnqueueAsync("wi-exec-f", "crew", "some-crew", default);
 
@@ -371,11 +372,11 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Enqueue_Sets_ExecutionStatus_To_Queued_From_Completed()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-exec-c", state: "active", execStatus: "completed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await queue.EnqueueAsync("wi-exec-c", "crew", "some-crew", default);
 
@@ -388,14 +389,14 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Non_Restart_Enqueue_Preserves_Deliverables()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-norest"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-norest"));
             db.WorkItems.Add(NewWorkItem("wi-norest-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-norest-1", "crew-norest"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -417,13 +418,13 @@ public class RestartBehaviorTests
         // but we CAN verify that restart=true skips the gate entirely:
         // a non-restart call to the same crew may be rejected while restart
         // always succeeds.
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-sched", scheduleEnabled: true));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-sched", scheduleEnabled: true));
             db.WorkItems.Add(NewWorkItem("wi-sched-1", state: "active", execStatus: "failed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -440,11 +441,11 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_On_Nonexistent_Crew_Returns_404()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-nocrw"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -459,13 +460,13 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Cancels_Prior_Open_Queue_Row()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-dupe"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-dupe"));
             db.WorkItems.Add(NewWorkItem("wi-dupe", state: "active", execStatus: "queued"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // First enqueue.
             await queue.EnqueueAsync("wi-dupe", "crew", "crew-dupe", default);
@@ -561,9 +562,9 @@ public class RestartBehaviorTests
             AllowedTools: Array.Empty<string>(),
             MaxTurns: null);
 
-        var optionsDefault = 500;
+        var optionsDefault = 60;
         var effectiveMaxTurns = context.MaxTurns ?? optionsDefault;
-        Assert.Equal(500, effectiveMaxTurns);
+        Assert.Equal(60, effectiveMaxTurns);
     }
 
     [Fact]
@@ -594,10 +595,10 @@ public class RestartBehaviorTests
     }
 
     [Fact]
-    public void AgentRunnerOptions_Default_MaxTurns_Is_500()
+    public void AgentRunnerOptions_Default_MaxTurns_Is_60()
     {
         var options = new AgentRunnerOptions();
-        Assert.Equal(500, options.MaxTurns);
+        Assert.Equal(60, options.MaxTurns);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -612,15 +613,15 @@ public class RestartBehaviorTests
     {
         // After restart, the WIT state should be "active", NOT the terminal
         // state that RunAgentAsync checks to short-circuit.
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
             var crewId = $"crew-guard-{terminalState}";
-            db.Crews.Add(NewCrew(crewId));
+            control.Crews.Add(NewCrew(crewId));
             var wiId = $"wi-guard-{terminalState}";
             db.WorkItems.Add(NewWorkItem(wiId, state: terminalState, execStatus: "completed"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -643,16 +644,16 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Setting_ExecutionStatus_Failed_Does_Not_Change_WIT_State()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-indep-f", state: "active", execStatus: "live"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await db.WorkItems.FirstAsync(w => w.Id == "wi-indep-f");
             row.ExecutionStatus = ExecutionStatuses.Failed;
             row.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var updated = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-indep-f");
             Assert.Equal("active", updated.State);
@@ -664,16 +665,16 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Setting_ExecutionStatus_Completed_Does_Not_Change_WIT_State()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-indep-c", state: "active", execStatus: "live"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await db.WorkItems.FirstAsync(w => w.Id == "wi-indep-c");
             row.ExecutionStatus = ExecutionStatuses.Completed;
             row.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var updated = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-indep-c");
             Assert.Equal("active", updated.State);
@@ -685,15 +686,15 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Does_Not_Change_AssignedTo()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-asgn"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-asgn"));
             var wi = NewWorkItem("wi-asgn", state: "active", execStatus: "failed");
             wi.AssignedToJson = "{\"kind\":\"human\",\"id\":\"XD\",\"displayName\":\"Xiaodong\"}";
             db.WorkItems.Add(wi);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -711,11 +712,11 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_Does_Not_Delete_WorkItem_Links()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-links"));
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-links"));
             db.WorkItems.Add(NewWorkItem("wi-parent", state: "active"));
             var child = NewWorkItem("wi-child", state: "active", execStatus: "failed");
             child.ParentId = "wi-parent";
@@ -727,7 +728,7 @@ public class RestartBehaviorTests
                 Kind = "subtask",
             });
             db.Deliverables.Add(NewDeliverable("wi-child", "crew-links"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -802,12 +803,12 @@ public class RestartBehaviorTests
     [Fact]
     public async Task Restart_NonExistent_WorkItem_Still_Enqueues()
     {
-        var (f, scope, db, _) = await BootAsync();
+        var (f, scope, control, db, _) = await BootAsync();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-noitem"));
-            await db.SaveChangesAsync();
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(NewCrew("crew-noitem"));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");

@@ -68,7 +68,7 @@ public static class WorkstreamWorktreeSlug
     /// overload to avoid the extra query.
     /// </summary>
     public static async Task<string> ComputeAsync(
-        WorkstreamRow workstream, ProductDbContext db, CancellationToken ct = default)
+        WorkstreamRow workstream, ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         if (workstream is null) throw new ArgumentNullException(nameof(workstream));
 

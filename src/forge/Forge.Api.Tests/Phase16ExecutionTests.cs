@@ -44,6 +44,7 @@ public class Phase16ExecutionTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
@@ -54,20 +55,21 @@ public class Phase16ExecutionTests
     public async Task Pair_Two_Arch_Crews_Sets_Symmetric_Rows()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow { Id = "arch-gen", Name = "Architecture Alpha", Lead = "L1", Model = "claude-opus-4-7", ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m });
-            db.Crews.Add(new CrewRow { Id = "arch-eval", Name = "Architecture Beta",  Lead = "L2", Model = "claude-sonnet-4-6", ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m });
-            await db.SaveChangesAsync();
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow { Id = "arch-gen", Name = "Architecture Alpha", Lead = "L1", Model = "claude-opus-4-7", ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m });
+            control.Crews.Add(new CrewRow { Id = "arch-eval", Name = "Architecture Beta",  Lead = "L2", Model = "claude-sonnet-4-6", ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m });
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
             var resp = await client.PostAsJsonAsync("/api/crews/arch-gen/pair", new { otherCrewId = "arch-eval" });
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
-            var a = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "arch-gen");
-            var b = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "arch-eval");
+            var a = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == "arch-gen");
+            var b = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == "arch-eval");
             Assert.Equal("generator", a.PairRole);
             Assert.Equal("evaluator", b.PairRole);
             Assert.Equal("arch-eval", a.PairedWithCrewId);
@@ -80,12 +82,13 @@ public class Phase16ExecutionTests
     public async Task Pair_Refuses_QA_Crew()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow { Id = "qa-1",   Name = "QA Sentinels",        Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
-            db.Crews.Add(new CrewRow { Id = "arch-1", Name = "Architecture Alpha",  Lead = "L2", Model = "y", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
-            await db.SaveChangesAsync();
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow { Id = "qa-1",   Name = "QA Sentinels",        Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            control.Crews.Add(new CrewRow { Id = "arch-1", Name = "Architecture Alpha",  Lead = "L2", Model = "y", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -99,14 +102,15 @@ public class Phase16ExecutionTests
     public async Task Pair_Refuses_Cross_Product()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Seed a second product so the two crews come from different ones.
-            db.Products.Add(new ProductRow { Id = "p2", Name = "Other", Slug = "other", CreatedAt = DateTimeOffset.UtcNow });
-            db.Crews.Add(new CrewRow { Id = "arch-a", Name = "Architecture A", Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            control.Products.Add(new ProductRow { Id = "p2", Name = "Other", Slug = "other", CreatedAt = DateTimeOffset.UtcNow });
+            control.Crews.Add(new CrewRow { Id = "arch-a", Name = "Architecture A", Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
             // The seeded "Architecture" crew already exists from ForgeSeed; pick another arch crew on a different product.
-            var seededArch = await db.Crews.FirstAsync(c => c.Name.StartsWith("Architecture") && c.Id != "arch-a");
-            await db.SaveChangesAsync();
+            var seededArch = await control.Crews.FirstAsync(c => c.Name.StartsWith("Architecture") && c.Id != "arch-a");
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -122,6 +126,7 @@ public class Phase16ExecutionTests
     public async Task Plan_Tree_21st_Stage_Returns_400()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "phase-x", Type = "phase", Track = "design", State = "active", Title = "P", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
@@ -129,7 +134,7 @@ public class Phase16ExecutionTests
             {
                 db.WorkItems.Add(new WorkItemRow { Id = $"stage-{i}", Type = "stage", Track = "design", State = "active", Title = $"S{i}", ParentId = "phase-x", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
             }
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -152,10 +157,11 @@ public class Phase16ExecutionTests
     public async Task Step_With_21_Files_Returns_400()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "stage-y", Type = "stage", Track = "design", State = "active", Title = "S", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -179,10 +185,11 @@ public class Phase16ExecutionTests
     public async Task Step_Within_Budget_Persists_ExpectedFileChanges()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "stage-ok", Type = "stage", Track = "design", State = "active", Title = "S", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -208,6 +215,7 @@ public class Phase16ExecutionTests
     public async Task Coding_Budget_Over_Triggers_Audit_And_Warning()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -221,16 +229,16 @@ public class Phase16ExecutionTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var channel = f.Services.GetRequiredService<TaskChannel>();
-            var result = await StepBudgetChecker.CheckAsync("step-coding", actualFileCount: 12, db, channel, CancellationToken.None);
+            var result = await StepBudgetChecker.CheckAsync("step-coding", actualFileCount: 12, control, db, channel, CancellationToken.None);
             Assert.False(result.WithinBudget);
             Assert.Equal(5, result.Expected);
             Assert.Equal(12, result.Actual);
 
             // Audit row recorded.
-            var audit = await db.Audit.AsNoTracking()
+            var audit = await control.Audit.AsNoTracking()
                 .Where(a => a.Path == "/api/work-items/step-coding/coding-budget")
                 .FirstAsync();
             Assert.Contains("expected", audit.RequestBodySnippet);
@@ -244,16 +252,18 @@ public class Phase16ExecutionTests
     public async Task Paired_Loop_Tags_Cost_Categories_Per_Side()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "wi-pair", Type = "step", Track = "design", State = "active", Title = "P", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Use a fresh DI scope so DeliverableLoop picks up the registered
             // TaskChannel + writes through this scope's DbContext.
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             var req = new DeliverableLoopRequest(
                 "wi-pair", "gen-crew", "G1", "E1",
@@ -265,7 +275,7 @@ public class Phase16ExecutionTests
             var result = await loop.RunAsync(req, CancellationToken.None);
             Assert.Equal("pass", result.FinalVerdict);
 
-            var usage = await db.AgentUsage.AsNoTracking()
+            var usage = await control.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == "wi-pair")
                 .ToListAsync();
             Assert.Equal(2, usage.Count);
@@ -279,12 +289,13 @@ public class Phase16ExecutionTests
     public async Task Loop_Pins_Evaluator_Across_Iterations()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "wi-pin", Type = "step", Track = "design", State = "active", Title = "P", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-            var loop = new DeliverableLoop(db);
+            var loop = new DeliverableLoop(control, db);
             var iter = 0;
             var req = new DeliverableLoopRequest(
                 "wi-pin", "crew-x", "G1", "E1",
@@ -313,10 +324,11 @@ public class Phase16ExecutionTests
     public async Task TaskChannel_Persists_And_Replays_Transcript()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow { Id = "wi-tc", Type = "step", Track = "design", State = "active", Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var ch = f.Services.GetRequiredService<TaskChannel>();
             await ch.EmitAsync("wi-tc", "task.delegated", new { leadId = "L" });
@@ -340,18 +352,19 @@ public class Phase16ExecutionTests
     public async Task AutoDispatcher_Stamps_Auto_Dispatched_At_For_Lead_Assigned_WorkItem()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Seed a crew with a lead + one member; assign a work item to the lead.
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "ad-crew", Name = "Engineering Squad",
                 Lead = "lead-a", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false, // bypass schedule gate for the test
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-crew", AgentId = "member-a", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-crew", AgentId = "member-a", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-auto",
@@ -363,7 +376,7 @@ public class Phase16ExecutionTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -373,7 +386,7 @@ public class Phase16ExecutionTests
             Assert.NotNull(wi.AutoDispatchedAt);
 
             // Audit row records the dispatch.
-            var audit = await db.Audit.AsNoTracking().Where(a => a.Path.Contains("auto-dispatched")).FirstAsync();
+            var audit = await control.Audit.AsNoTracking().Where(a => a.Path.Contains("auto-dispatched")).FirstAsync();
             Assert.Contains("wi-auto", audit.RequestBodySnippet);
 
             // Idempotency: re-running the tick must NOT re-dispatch.
@@ -387,16 +400,17 @@ public class Phase16ExecutionTests
     public async Task AutoDispatcher_Skips_When_Capacity_Full()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "ad-crew-full", Name = "Engineering Full",
                 Lead = "L", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 1, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-crew-full", AgentId = "M", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-crew-full", AgentId = "M", AddedAt = DateTimeOffset.UtcNow });
             // Pre-existing in-flight deliverable saturates the cap.
             db.WorkItems.Add(new WorkItemRow { Id = "wi-busy", Type = "step", Track = "design", State = "active", Title = "B", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
             db.Deliverables.Add(new DeliverableRow { WorkItemId = "wi-busy", CrewId = "ad-crew-full", GeneratorAgentId = "M", EvaluatorAgentId = "M", Iter = 1, Score = 80, Verdict = "iterate", CreatedAt = DateTimeOffset.UtcNow });
@@ -409,7 +423,7 @@ public class Phase16ExecutionTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -472,17 +486,18 @@ public class Phase16ExecutionTests
     public async Task AutoDispatcher_Enqueues_To_TaskQueue_On_Dispatch()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "dq-crew", Name = "DQ Squad",
                 Lead = "dq-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "dq-crew", AgentId = "dq-member", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "dq-crew", AgentId = "dq-member", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-dq-1",
@@ -491,7 +506,7 @@ public class Phase16ExecutionTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -515,17 +530,18 @@ public class Phase16ExecutionTests
     public async Task AutoDispatcher_Does_Not_Stamp_When_Enqueue_Would_Be_Duplicate()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "dup-crew", Name = "Dup Squad",
                 Lead = "dup-lead", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "dup-crew", AgentId = "dup-m", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "dup-crew", AgentId = "dup-m", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-dup",
@@ -534,7 +550,7 @@ public class Phase16ExecutionTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // First dispatch succeeds.
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
@@ -559,10 +575,11 @@ public class Phase16ExecutionTests
     public async Task ExecutionEndpoint_Resolves_EvaluatorCrewId_From_Pair()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "gen-crew", Name = "Generator",
                 Lead = "gen-lead", Model = "claude-sonnet-4-6",
@@ -570,7 +587,7 @@ public class Phase16ExecutionTests
                 MaxConcurrent = 5, ScheduleEnabled = false,
                 PairRole = "generator", PairedWithCrewId = "eval-crew",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "eval-crew", Name = "Evaluator",
                 Lead = "eval-lead", Model = "claude-sonnet-4-6",
@@ -586,7 +603,7 @@ public class Phase16ExecutionTests
                 AssignedToJson = "{\"crewId\":\"gen-crew\",\"agentId\":\"gen-member\",\"generatorAgentId\":\"gen-member\"}",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             var resp = await client.GetAsync("/api/work-items/wi-pair-exec/execution");
@@ -639,6 +656,7 @@ public class Phase16ExecutionTests
     public async Task TaskChannel_Persists_Events_With_Correct_Kind()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var channel = f.Services.GetRequiredService<TaskChannel>();
@@ -668,17 +686,18 @@ public class Phase16ExecutionTests
     public async Task EndToEnd_Dispatch_Creates_Queue_Row_And_Execution_Shows_Transcript()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "e2e-crew", Name = "E2E",
                 Lead = "e2e-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-crew", AgentId = "e2e-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-crew", AgentId = "e2e-agent", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-e2e",
@@ -686,7 +705,7 @@ public class Phase16ExecutionTests
                 AssignedToJson = "{\"kind\":\"agent\",\"id\":\"e2e-lead\",\"displayName\":\"Lead\"}",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Step 1: auto-dispatch enqueues.
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
@@ -719,24 +738,25 @@ public class Phase16ExecutionTests
     public async Task ExecutionEndpoint_Resolves_CrewId_From_Queue_Row()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "qr-crew", Name = "QR",
                 Lead = "qr-lead", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "qr-crew", AgentId = "qr-m", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "qr-crew", AgentId = "qr-m", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-qr",
                 Type = "step", Track = "design", State = "active", Title = "Queue Route",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Enqueue directly to crew (simulates manual route).
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -759,24 +779,25 @@ public class Phase16ExecutionTests
     public async Task QueueWorker_Claim_Stamps_WorkItem_And_Emits_TaskDelegated()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "qw-crew", Name = "QW Crew",
                 Lead = "qw-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "qw-crew", AgentId = "qw-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "qw-crew", AgentId = "qw-agent", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-qw",
                 Type = "step", Track = "design", State = "active", Title = "Queue Worker Test",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Enqueue directly to crew.
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -809,17 +830,18 @@ public class Phase16ExecutionTests
     public async Task QueueWorker_Claim_Runs_LocalStub_Agent_And_Produces_Transcript()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "stub-crew", Name = "Stub Crew",
                 Lead = "stub-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "stub-crew", AgentId = "stub-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "stub-crew", AgentId = "stub-agent", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-stub",
@@ -827,7 +849,7 @@ public class Phase16ExecutionTests
                 DescriptionMd = "hello",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-stub", "crew", "stub-crew", default);
@@ -899,22 +921,23 @@ public class Phase16ExecutionTests
         await RunGitAsync(repoDir, "commit", "-m", "initial seed");
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
 
             // Crew + member
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "wt-real-crew", Name = "Worktree Real",
                 Lead = "wt-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wt-real-crew", AgentId = "wt-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wt-real-crew", AgentId = "wt-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // Repo pointing at the real git dir
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = "real-repo", DisplayName = "Real Repo", Kind = "local",
                 RemoteUrl = "file://localhost/test",
@@ -932,7 +955,7 @@ public class Phase16ExecutionTests
                 RepoId = "real-repo",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Enqueue and run queue worker
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -1037,14 +1060,15 @@ public class Phase16ExecutionTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
 
             // ── Seed: paired gen + eval crews with REAL model ────────
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "e2e-ai-gen", Name = "E2E AI Gen",
                 Lead = "e2e-gen-lead",
@@ -1054,7 +1078,7 @@ public class Phase16ExecutionTests
                 PairRole = "generator", PairedWithCrewId = "e2e-ai-eval",
                 MaxTaskBudgetUsd = 25m,
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "e2e-ai-eval", Name = "E2E AI Eval",
                 Lead = "e2e-eval-lead",
@@ -1064,9 +1088,9 @@ public class Phase16ExecutionTests
                 PairRole = "evaluator", PairedWithCrewId = "e2e-ai-gen",
                 MaxTaskBudgetUsd = 25m,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-gen", AgentId = "e2e-gen-agent", AddedAt = DateTimeOffset.UtcNow });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-eval", AgentId = "e2e-eval-agent", AddedAt = DateTimeOffset.UtcNow });
-            db.Repos.Add(new RepoRow
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-gen", AgentId = "e2e-gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-eval", AgentId = "e2e-eval-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.Repos.Add(new RepoRow
             {
                 Id = "e2e-beads", DisplayName = "E2E Beads", Kind = "local",
                 RemoteUrl = "file://localhost/e2e-beads",
@@ -1083,7 +1107,7 @@ public class Phase16ExecutionTests
                 RepoId = "e2e-beads",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // ── Enqueue and let queue worker pick it up ──────────────
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -1235,14 +1259,15 @@ public class Phase16ExecutionTests
         var f = new ForgeWebApplicationFactory(extraConfig);
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
 
             // ── Seed: paired gen + eval crews with real model ────────
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "gh-e2e-gen", Name = "GH E2E Gen",
                 Lead = "gh-gen-lead",
@@ -1252,7 +1277,7 @@ public class Phase16ExecutionTests
                 PairRole = "generator", PairedWithCrewId = "gh-e2e-eval",
                 MaxTaskBudgetUsd = 25m,
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "gh-e2e-eval", Name = "GH E2E Eval",
                 Lead = "gh-eval-lead",
@@ -1262,11 +1287,11 @@ public class Phase16ExecutionTests
                 PairRole = "evaluator", PairedWithCrewId = "gh-e2e-gen",
                 MaxTaskBudgetUsd = 25m,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-gen", AgentId = "gh-gen-agent", AddedAt = DateTimeOffset.UtcNow });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-eval", AgentId = "gh-eval-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-gen", AgentId = "gh-gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-eval", AgentId = "gh-eval-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // Repo row with GitHub kind
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = "gh-beads", DisplayName = "Beads", Kind = "github",
                 RemoteUrl = $"https://github.com/{ghFullRepo}",
@@ -1287,7 +1312,7 @@ public class Phase16ExecutionTests
                 RepoId = "gh-beads",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // ── Enqueue and let queue worker pick it up ──────────────
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
@@ -1479,6 +1504,7 @@ public class Phase16ExecutionTests
     public async Task ExecutionEndpoint_Returns_Data_For_QueueOnly_Item()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // No work_items row — only a queue row.
@@ -1519,12 +1545,13 @@ public class Phase16ExecutionTests
     public async Task PairedCrew_EndToEnd_Pickup_Through_PlanAgreement()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
 
             // ── Seed: paired gen+eval crews ───────────────────────────
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "e2e-gen", Name = "E2E Generator",
                 Lead = "gen-lead", Model = "local-stub",
@@ -1532,7 +1559,7 @@ public class Phase16ExecutionTests
                 MaxConcurrent = 5, ScheduleEnabled = false,
                 PairRole = "generator", PairedWithCrewId = "e2e-eval",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "e2e-eval", Name = "E2E Evaluator",
                 Lead = "eval-lead", Model = "local-stub",
@@ -1540,11 +1567,11 @@ public class Phase16ExecutionTests
                 MaxConcurrent = 5, ScheduleEnabled = false,
                 PairRole = "evaluator", PairedWithCrewId = "e2e-gen",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-gen", AgentId = "gen-agent", AddedAt = DateTimeOffset.UtcNow });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-eval", AgentId = "eval-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-gen", AgentId = "gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-eval", AgentId = "eval-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // ── Seed: repo + workstream for worktree context ──────────
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = "e2e-repo", DisplayName = "E2E Repo", Kind = "github",
                 RemoteUrl = "https://github.com/test/e2e",
@@ -1569,7 +1596,7 @@ public class Phase16ExecutionTests
                 AssignedToJson = "{\"kind\":\"agent\",\"id\":\"gen-lead\",\"displayName\":\"Gen Lead\"}",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // ──────────────────────────────────────────────────────────
             // STEP 1: Auto-dispatch → enqueue to generator crew
@@ -1696,7 +1723,7 @@ public class Phase16ExecutionTests
             Assert.Equal("e2e-gen", deliverable!.CrewId);
 
             // Cost ledger has split categories.
-            var usageRows = await db.AgentUsage.AsNoTracking()
+            var usageRows = await control.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == "wi-e2e-pair")
                 .ToListAsync();
             Assert.Contains(usageRows, u => u.CostCategory == "generator");
@@ -1724,24 +1751,25 @@ public class Phase16ExecutionTests
     public async Task Delete_Paired_Crew_Should_Clear_Peer_Reference()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "del-gen", Name = "Engineering Gen",
                 Lead = "L1", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "del-eval",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "del-eval", Name = "Engineering Eval",
                 Lead = "L2", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 PairRole = "evaluator", PairedWithCrewId = "del-gen",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -1751,7 +1779,7 @@ public class Phase16ExecutionTests
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             // The evaluator peer must no longer reference the deleted crew.
-            var peer = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "del-eval");
+            var peer = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == "del-eval");
             Assert.Equal("standalone", peer.PairRole);
             Assert.Null(peer.PairedWithCrewId);
         }
@@ -1762,24 +1790,25 @@ public class Phase16ExecutionTests
     public async Task Unpair_Resets_Both_Sides_To_Standalone()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "up-gen", Name = "Architecture Gen",
                 Lead = "L1", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "up-eval",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "up-eval", Name = "Architecture Eval",
                 Lead = "L2", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 PairRole = "evaluator", PairedWithCrewId = "up-gen",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
@@ -1787,8 +1816,8 @@ public class Phase16ExecutionTests
             var resp = await client.DeleteAsync("/api/crews/up-gen/pair");
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
-            var gen = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-gen");
-            var eval = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-eval");
+            var gen = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-gen");
+            var eval = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-eval");
             Assert.Equal("standalone", gen.PairRole);
             Assert.Null(gen.PairedWithCrewId);
             Assert.Equal("standalone", eval.PairRole);
@@ -1801,17 +1830,18 @@ public class Phase16ExecutionTests
     public async Task Assign_On_Paired_Generator_Should_Include_EvaluatorCrewId()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "asg-gen", Name = "Engineering Gen",
                 Lead = "lead-g", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "asg-eval",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "asg-eval", Name = "Engineering Eval",
                 Lead = "lead-e", Model = "claude-sonnet-4-6",
@@ -1824,7 +1854,7 @@ public class Phase16ExecutionTests
                 State = "active", Title = "Pair Assign",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
             client.DefaultRequestHeaders.Add("X-Forge-User", "lead-g");
@@ -1880,27 +1910,28 @@ public class Phase16ExecutionTests
         await RunGitAsync(repoDir, "push", "-u", "origin", "main");
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
             var workItemId = $"WI-PUSH-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
 
             // Crew (standalone — no evaluator, so local-stub score
             // will cause the loop to pass in a single iteration).
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "push-crew", Name = "Push Crew",
                 Lead = "push-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow
+            control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = "push-crew", AgentId = "push-agent",
                 AddedAt = DateTimeOffset.UtcNow,
             });
 
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = "push-repo", DisplayName = "Push Repo", Kind = "local",
                 RemoteUrl = bareDir,
@@ -1916,7 +1947,7 @@ public class Phase16ExecutionTests
                 RepoId = "push-repo",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Pre-seed a real commit on the workstream branch. The local-stub
             // agent doesn't write files, so without this the worker's

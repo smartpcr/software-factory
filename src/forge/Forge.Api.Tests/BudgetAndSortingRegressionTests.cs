@@ -111,6 +111,7 @@ public class BudgetAndSortingRegressionTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         try
         {
@@ -149,7 +150,7 @@ public class BudgetAndSortingRegressionTests
                 CreatedAt = DateTimeOffset.UtcNow, Notes = "new-pass",
             });
 
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // DeliverableLoop resume: should pick the latest by CreatedAt
             var all = await db.Deliverables.AsNoTracking()
@@ -179,6 +180,7 @@ public class BudgetAndSortingRegressionTests
         {
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.WorkItems.Add(new WorkItemRow
                 {
@@ -210,7 +212,7 @@ public class BudgetAndSortingRegressionTests
                     CrewId = "crew-x", GeneratorAgentId = "g1", EvaluatorAgentId = "e1",
                     CreatedAt = DateTimeOffset.UtcNow, Notes = "real pass",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             var resp = await client.GetAsync("/api/work-items/wi-sort/execution");
@@ -236,6 +238,7 @@ public class BudgetAndSortingRegressionTests
         {
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.WorkItems.Add(new WorkItemRow
                 {
@@ -257,7 +260,7 @@ public class BudgetAndSortingRegressionTests
                     CrewId = "c", GeneratorAgentId = "g", EvaluatorAgentId = "e",
                     CreatedAt = t0.AddDays(1),
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             var resp = await client.GetAsync("/api/work-items/wi-order/deliverables");

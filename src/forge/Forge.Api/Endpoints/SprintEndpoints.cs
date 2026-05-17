@@ -53,17 +53,18 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SprintDiscoveryRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, id, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         if (req is null || string.IsNullOrWhiteSpace(req.RepoId))
             return Results.Problem(title: "repoId is required", statusCode: 400);
 
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 404);
         if (repo.ProductId != id) return Results.Problem(title: $"Repo {req.RepoId} is not in product {id}", statusCode: 400);
 
@@ -93,9 +94,9 @@ public static class SprintEndpoints
 
     // ── List (15.7) ──────────────────────────────────────────────────────
 
-    private static async Task<IResult> ListIterations(string id, ProductDbContext db)
+    private static async Task<IResult> ListIterations(string id, ControlDbContext control, ProductDbContext db)
     {
-        if (!await db.Products.AnyAsync(p => p.Id == id))
+        if (!await control.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
         var rows = await db.ProductIterations.AsNoTracking()
@@ -108,7 +109,7 @@ public static class SprintEndpoints
         var bindingRows = await db.RepoIterationBindings.AsNoTracking()
             .Where(b => iterIds.Contains(b.ProductIterationId))
             .ToListAsync();
-        var repoNames = await db.Repos.AsNoTracking()
+        var repoNames = await control.Repos.AsNoTracking()
             .Where(r => r.ProductId == id)
             .ToDictionaryAsync(r => r.Id, r => r.DisplayName);
         var byIter = bindingRows.GroupBy(b => b.ProductIterationId)
@@ -139,9 +140,9 @@ public static class SprintEndpoints
         return Results.Ok(list);
     }
 
-    private static async Task<IResult> ListAreaPaths(string id, ProductDbContext db)
+    private static async Task<IResult> ListAreaPaths(string id, ControlDbContext control, ProductDbContext db)
     {
-        if (!await db.Products.AnyAsync(p => p.Id == id))
+        if (!await control.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
         var rows = await db.ProductAreaPaths.AsNoTracking()
@@ -180,39 +181,42 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] ImportNodesRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
-        => await ImportNodes(ctx, id, req, kind: "iterations", db, ado, github, hub);
+        => await ImportNodes(ctx, id, req, kind: "iterations", control, db, ado, github, hub);
 
     private static async Task<IResult> ImportAreaPaths(
         HttpContext ctx,
         string id,
         [FromBody] ImportNodesRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
-        => await ImportNodes(ctx, id, req, kind: "areas", db, ado, github, hub);
+        => await ImportNodes(ctx, id, req, kind: "areas", control, db, ado, github, hub);
 
     private static async Task<IResult> ImportNodes(
         HttpContext ctx,
         string productId,
         ImportNodesRequest req,
         string kind,
+        ControlDbContext control,
         ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, productId, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, productId, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         if (req is null || string.IsNullOrWhiteSpace(req.RepoId) || req.ProviderNodeIds is null)
             return Results.Problem(title: "repoId and providerNodeIds are required", statusCode: 400);
 
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 404);
         if (repo.ProductId != productId)
             return Results.Problem(title: $"Repo {req.RepoId} is not in product {productId}", statusCode: 400);
@@ -314,8 +318,8 @@ public static class SprintEndpoints
         // event drives the SprintManager UI to refresh.
         await hub.Clients.All.SendAsync("sprint.changed", new { kind = kind == "iterations" ? "iterations-imported" : "areas-imported", productId, count = requested.Count });
 
-        if (kind == "iterations") return await ListIterations(productId, db);
-        return await ListAreaPaths(productId, db);
+        if (kind == "iterations") return await ListIterations(productId, control, db);
+        return await ListAreaPaths(productId, control, db);
     }
 
     // ── Default area path (15.2) ─────────────────────────────────────────
@@ -324,10 +328,11 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         string areaPathId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, id, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         var row = await db.ProductAreaPaths.FirstOrDefaultAsync(a => a.Id == areaPathId && a.ProductId == id);
@@ -344,20 +349,20 @@ public static class SprintEndpoints
         row.IsDefaultFilter = !row.IsDefaultFilter;
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("sprint.changed", new { kind = "default-area-changed", productId = id, areaPathId, isDefault = row.IsDefaultFilter });
-        return await ListAreaPaths(id, db);
+        return await ListAreaPaths(id, control, db);
     }
 
     // ── Saved prefixes (15.10) ───────────────────────────────────────────
 
-    private static async Task<IResult> ListSavedPrefixes(string id, ProductDbContext db)
+    private static async Task<IResult> ListSavedPrefixes(string id, ControlDbContext control, ProductDbContext db)
     {
-        if (!await db.Products.AnyAsync(p => p.Id == id))
+        if (!await control.Products.AnyAsync(p => p.Id == id))
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
         var rows = await db.ProductSavedPrefixes.AsNoTracking()
             .Where(p => p.ProductId == id)
             .OrderBy(p => p.Prefix)
             .ToListAsync();
-        var repoNames = await db.Repos.AsNoTracking()
+        var repoNames = await control.Repos.AsNoTracking()
             .Where(r => r.ProductId == id)
             .ToDictionaryAsync(r => r.Id, r => r.DisplayName);
         var list = rows.Select(p => SprintMappers.MapSavedPrefix(p,
@@ -369,10 +374,11 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SavePrefixRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, id, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
         if (req is null || string.IsNullOrWhiteSpace(req.Prefix) || string.IsNullOrWhiteSpace(req.RepoId))
             return Results.Problem(title: "prefix and repoId are required", statusCode: 400);
@@ -381,7 +387,7 @@ public static class SprintEndpoints
         if (kind != "iterations" && kind != "areas")
             return Results.Problem(title: "kind must be 'iterations' or 'areas'", statusCode: 400);
 
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null || repo.ProductId != id)
             return Results.Problem(title: "Repo does not belong to product", statusCode: 400);
 
@@ -410,10 +416,11 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long prefixId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, id, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
         var row = await db.ProductSavedPrefixes.FirstOrDefaultAsync(p => p.Id == prefixId && p.ProductId == id);
         if (row is null) return Results.NotFound();
@@ -427,17 +434,18 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long prefixId,
+        ControlDbContext control,
         ProductDbContext db,
         IAdoClassificationService ado,
         IGitHubMilestoneService github,
         IHubContext<ForgeHub> hub)
     {
-        var auth = RequireRole.CheckForProduct(ctx, db, id, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, id, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         var row = await db.ProductSavedPrefixes.FirstOrDefaultAsync(p => p.Id == prefixId && p.ProductId == id);
         if (row is null) return Results.NotFound();
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == row.RepoId);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == row.RepoId);
         if (repo is null) return Results.Problem(title: "Repo no longer exists", statusCode: 410);
 
         // Discovery → import every node that matches the prefix. Emits the
@@ -494,7 +502,7 @@ public static class SprintEndpoints
                 productId: id,
                 req: new ImportNodesRequest(repo.Id, toImport, SavedFromPrefix: row.Prefix),
                 kind: row.Kind,
-                db, ado, github, hub);
+                control, db, ado, github, hub);
         }
 
         row.LastRefreshedAt = DateTimeOffset.UtcNow;
@@ -511,6 +519,7 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         [FromBody] IterationBindingRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -521,10 +530,10 @@ public static class SprintEndpoints
         if (role != "current" && role != "next" && role != "reference")
             return Results.Problem(title: "role must be 'current' | 'next' | 'reference'", statusCode: 400);
 
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
-        var auth = RequireRole.CheckForProduct(ctx, db, repo.ProductId, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, repo.ProductId, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         var iter = await db.ProductIterations.FirstOrDefaultAsync(i => i.Id == req.ProductIterationId);
@@ -568,13 +577,14 @@ public static class SprintEndpoints
         HttpContext ctx,
         string id,
         long bindingId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
-        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
-        var auth = RequireRole.CheckForProduct(ctx, db, repo.ProductId, RequireRole.ProductOwner, "tech-lead");
+        var auth = RequireRole.CheckForProduct(ctx, control, repo.ProductId, RequireRole.ProductOwner, "tech-lead");
         if (auth is not null) return auth;
 
         var row = await db.RepoIterationBindings.FirstOrDefaultAsync(b => b.Id == bindingId && b.RepoId == id);

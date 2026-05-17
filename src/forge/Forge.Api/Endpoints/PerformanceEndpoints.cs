@@ -48,14 +48,14 @@ public static class PerformanceEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetScorecards(string? window, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetScorecards(string? window, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var windowKey = window ?? "trailing20";
         var nowUtc = DateTimeOffset.UtcNow;
 
         // ── Load all reference data (small tables) ─────────────────────
-        var agents = await db.Agents.AsNoTracking().ToListAsync(ct);
-        var crews = await db.Crews.AsNoTracking().ToListAsync(ct);
+        var agents = await control.Agents.AsNoTracking().ToListAsync(ct);
+        var crews = await control.Crews.AsNoTracking().ToListAsync(ct);
         var crewMap = crews.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
 
         // ── Load all deliverables + compute final-iteration rows ───────
@@ -78,19 +78,19 @@ public static class PerformanceEndpoints
         var wiRepo = workItems
             .Where(w => !string.IsNullOrEmpty(w.RepoId))
             .ToDictionary(w => w.Id, w => w.RepoId!, StringComparer.OrdinalIgnoreCase);
-        var repos = await db.Repos.AsNoTracking()
+        var repos = await control.Repos.AsNoTracking()
             .Select(r => new { r.Id, r.ProductId })
             .ToListAsync(ct);
         var repoProduct = repos
             .Where(r => !string.IsNullOrEmpty(r.ProductId))
             .ToDictionary(r => r.Id, r => r.ProductId!, StringComparer.OrdinalIgnoreCase);
-        var products = await db.Products.AsNoTracking()
+        var products = await control.Products.AsNoTracking()
             .Select(p => new { p.Id, p.Name })
             .ToListAsync(ct);
         var productNames = products.ToDictionary(p => p.Id, p => p.Name, StringComparer.OrdinalIgnoreCase);
 
         // ── Load cost aggregates per agent ─────────────────────────────
-        var usageRows = await db.AgentUsage.AsNoTracking()
+        var usageRows = await control.AgentUsage.AsNoTracking()
             .Select(u => new { u.AgentId, u.CostUsd, u.StartedAt })
             .ToListAsync(ct);
 
@@ -104,7 +104,7 @@ public static class PerformanceEndpoints
                 StringComparer.OrdinalIgnoreCase);
 
         // ── Load promotion history ─────────────────────────────────────
-        var promoHistory = (await db.AgentLevelHistory.AsNoTracking().ToListAsync(ct))
+        var promoHistory = (await control.AgentLevelHistory.AsNoTracking().ToListAsync(ct))
             .GroupBy(h => h.AgentId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 

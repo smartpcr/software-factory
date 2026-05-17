@@ -151,6 +151,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Spawn row + every child workstream row gone.
@@ -180,7 +181,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
             // cascade, while synthetic-id claims have ReleasedAt set.
             // Either way the claim is "no longer active" (released != null
             // OR the row is gone).
-            var claims = await db.AgentClaims.Where(c => c.WorkItemId == wid).ToListAsync();
+            var claims = await control.AgentClaims.Where(c => c.WorkItemId == wid).ToListAsync();
             foreach (var c in claims)
             {
                 Assert.NotNull(c.ReleasedAt);
@@ -334,6 +335,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // 3) Every PR row removed from the DB regardless of merged/open state.
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         foreach (var prId in seed.PrIds)
         {
@@ -378,6 +380,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // DB
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.False(await db.StorySpawns.AnyAsync(s => s.Id == seed.SpawnId));
         foreach (var wid in seed.AllWorkItemIds)
@@ -442,6 +445,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
         // Both spawn rows survive — the refusal must precede every
         // destructive step.
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         Assert.True(await db.StorySpawns.AnyAsync(s => s.Id == seedA.SpawnId));
         Assert.True(await db.StorySpawns.AnyAsync(s => s.Id == seedB.SpawnId));
@@ -507,11 +511,12 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
 
         // 2) Seed DB rows.
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        if (!await db.Products.AnyAsync(p => p.Id == "test-product"))
+        if (!await control.Products.AnyAsync(p => p.Id == "test-product"))
         {
-            db.Products.Add(new ProductRow
+            control.Products.Add(new ProductRow
             {
                 Id = "test-product",
                 Name = "test-product",
@@ -521,9 +526,9 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
             });
         }
 
-        if (!await db.Repos.AnyAsync(r => r.Id == repoId))
+        if (!await control.Repos.AnyAsync(r => r.Id == repoId))
         {
-            db.Repos.Add(new RepoRow
+            control.Repos.Add(new RepoRow
             {
                 Id = repoId,
                 ProductId = "test-product",
@@ -633,7 +638,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
                 PayloadJson = $"{{\"text\":\"event for {sid}\"}}",
                 At = DateTimeOffset.UtcNow,
             });
-            db.AgentClaims.Add(new AgentClaimRow
+            control.AgentClaims.Add(new AgentClaimRow
             {
                 AgentId = "agent-arch",
                 WorkItemId = sid,
@@ -749,7 +754,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
                 EnqueuedAt = DateTimeOffset.UtcNow,
                 PickedUpAt = DateTimeOffset.UtcNow,
             });
-            db.AgentClaims.Add(new AgentClaimRow
+            control.AgentClaims.Add(new AgentClaimRow
             {
                 AgentId = $"agent-{i}",
                 WorkItemId = wsId,
@@ -759,7 +764,7 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
             });
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // 3) On-disk artifacts under {stateDir}/storyworkspaces/{spawnId}/
         //    and {stateDir}/attachments/{spawnId}/ — both are wiped by the

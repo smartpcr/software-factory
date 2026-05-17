@@ -134,6 +134,7 @@ public static class SloppyDetector
     /// new pair.</para>
     /// </summary>
     public static async Task<(bool IsSloppy, long TotalTokens)> CheckTokenCapAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string workItemId,
         string generatorAgentId,
@@ -148,7 +149,7 @@ public static class SloppyDetector
         // existing AgentUsage index covers AgentId-scoped scans. The
         // generator-side filter also keeps the row count tight even on
         // long chains.
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId && u.AgentId == generatorAgentId)
             .Select(u => new { u.StartedAt, u.InputTokens, u.OutputTokens })
             .ToListAsync(ct);
@@ -206,6 +207,7 @@ public static class SloppyDetector
     /// </list>
     /// </summary>
     public static async Task<SloppyCheckResult> CheckAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string workItemId,
         string generatorAgentId,
@@ -217,7 +219,7 @@ public static class SloppyDetector
         // any caller that wants the numbers (UI score panel, debug
         // endpoints) — but never flip IsSloppy from Q52.1 / Q52.2.
         var (_, totalTokens) =
-            await CheckTokenCapAsync(db, workItemId, generatorAgentId, budgetWindowStartUtc, ct);
+            await CheckTokenCapAsync(control, db, workItemId, generatorAgentId, budgetWindowStartUtc, ct);
         var (_, bestIter, bestScore) = CheckScorePlateau(scoresInOrder);
 
         // Phase 61 — only ACTIVE trigger today. Fires on K trailing zeros.

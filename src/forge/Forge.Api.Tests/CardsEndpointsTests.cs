@@ -38,6 +38,7 @@ public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IA
     public async Task InitializeAsync()
     {
         using var scope = this.factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var existingColumns = await db.Columns.Select(c => c.Id).ToListAsync();
         var columns = new[]
@@ -60,7 +61,7 @@ public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IA
         };
         foreach (var c in cards) if (!existingCards.Contains(c.Id)) db.Cards.Add(c);
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

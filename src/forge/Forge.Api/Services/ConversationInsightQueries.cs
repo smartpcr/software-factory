@@ -50,7 +50,7 @@ public static class ConversationInsightQueries
     /// </list>
     /// </summary>
     public static async Task<object> GetIterKpisAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // EF/SQLite refuses server-side ORDER BY on DateTimeOffset
         // (NotSupportedException), so we materialise then sort
@@ -66,7 +66,7 @@ public static class ConversationInsightQueries
             return new { workItemId, iters = Array.Empty<object>() };
         }
 
-        var usageRows = await db.AgentUsage.AsNoTracking()
+        var usageRows = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId)
             .Select(u => new
             {
@@ -284,6 +284,7 @@ public static class ConversationInsightQueries
     /// workItemId.</para>
     /// </summary>
     public static async Task<object> GetMemoryAsync(
+        ControlDbContext control,
         ProductDbContext db,
         CopilotSessionPool copilotPool,
         MemoryCompactor compactor,
@@ -307,11 +308,11 @@ public static class ConversationInsightQueries
             .FirstOrDefault();
         if (lastDel is not null && !string.IsNullOrEmpty(lastDel.CrewId))
         {
-            wsCrew = await db.Crews.AsNoTracking()
+            wsCrew = await control.Crews.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == lastDel.CrewId, ct);
             if (wsCrew is not null && !string.IsNullOrEmpty(wsCrew.PairedWithCrewId))
             {
-                evalCrew = await db.Crews.AsNoTracking()
+                evalCrew = await control.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == wsCrew.PairedWithCrewId, ct);
             }
         }
@@ -336,7 +337,7 @@ public static class ConversationInsightQueries
                 }
             }
 
-            var agentRow = await db.Agents.AsNoTracking()
+            var agentRow = await control.Agents.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == row.AgentId, ct);
             var roleCrew = string.Equals(row.Role, "evaluator", StringComparison.OrdinalIgnoreCase)
                 ? (evalCrew ?? wsCrew)

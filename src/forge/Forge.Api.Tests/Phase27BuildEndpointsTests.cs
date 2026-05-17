@@ -51,6 +51,7 @@ public class Phase27BuildEndpointsTests
         // wiring is reachable.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             using (f.CreateClient()) { }
             db.Builds.Add(new BuildRow
@@ -61,13 +62,14 @@ public class Phase27BuildEndpointsTests
                 State = "failed",
                 IsActive = false,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         // Re-fetch the seeded build's id.
         long id;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             id = db.Builds.OrderByDescending(b => b.Id).First().Id;
         }
@@ -86,13 +88,14 @@ public class Phase27BuildEndpointsTests
         long buildId;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Builds.Add(new BuildRow
             {
                 Provider = "ado", ProviderBuildId = "1234",
                 RepoId = "repo-x", State = "failed", IsActive = false,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             buildId = db.Builds.OrderByDescending(b => b.Id).First().Id;
         }
 
@@ -113,13 +116,14 @@ public class Phase27BuildEndpointsTests
         long buildId;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.Builds.Add(new BuildRow
             {
                 Provider = "github", ProviderBuildId = "5678",
                 RepoId = "repo-y", State = "failed", IsActive = false,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             buildId = db.Builds.OrderByDescending(b => b.Id).First().Id;
         }
 

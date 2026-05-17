@@ -30,6 +30,7 @@ public class Phase27BuildFixLoopTests
         using (f.CreateClient()) { }
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
@@ -44,7 +45,7 @@ public class Phase27BuildFixLoopTests
             ExecutionStatus = "in-review",
             AssignedAgentJson = "{\"crewId\":\"crew-a\",\"agents\":[\"E1\"]}",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Open comment-response row blocks build-fix promotion.
         var crRow = await queue.EnqueueAsync(wiId, "crew", "crew-a", default,
@@ -57,7 +58,7 @@ public class Phase27BuildFixLoopTests
             BuildId = 42,
             EnqueuedAt = DateTimeOffset.UtcNow.ToString("o"),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // While CR row is open, no build-fix exists.
         var hasBuildFix = await db.TaskQueue.AnyAsync(r =>
@@ -66,7 +67,7 @@ public class Phase27BuildFixLoopTests
 
         // Move the CR row through claim → complete (must transition picked-up first).
         crRow.State = TaskQueueStates.PickedUp;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         var completed = await queue.CompleteAsync(crRow.Id, default);
         completed.Should().NotBeNull();
 
@@ -89,6 +90,7 @@ public class Phase27BuildFixLoopTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
 
@@ -99,7 +101,7 @@ public class Phase27BuildFixLoopTests
             State = "in-review", ExecutionStatus = "in-review",
             AssignedAgentJson = "{\"crewId\":\"crew-a\",\"agents\":[\"E1\"]}",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var first = await queue.EnqueueAsync(wiId, "crew", "crew-a", default,
             kind: TaskQueueKinds.BuildFix, preferredAgentId: "E1");

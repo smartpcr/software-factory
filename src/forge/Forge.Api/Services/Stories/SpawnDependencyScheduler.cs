@@ -99,6 +99,7 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         IReadOnlyList<(string StoryId, string SpawnId)> active;
         using (var scope = this.services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             // Include Done-phase spawns: when the QA pass advances the phase
             // to "done", the WI/ProductStory closure work happens on the

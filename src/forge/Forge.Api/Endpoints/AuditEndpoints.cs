@@ -15,10 +15,10 @@ public static class AuditEndpoints
 {
     public static WebApplication MapAuditEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/audit", async (ControlDbContext db, int? take) =>
+        app.MapGet("/api/audit", async (ControlDbContext control, int? take) =>
             {
                 var n = Math.Clamp(take ?? 200, 1, 1000);
-                var rows = await db.Audit.AsNoTracking()
+                var rows = await control.Audit.AsNoTracking()
                     .OrderByDescending(a => a.Id)
                     .Take(n)
                     .ToListAsync();

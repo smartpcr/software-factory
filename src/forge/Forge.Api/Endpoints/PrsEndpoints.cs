@@ -80,6 +80,7 @@ public static class PrsEndpoints
     private static async Task<IResult> ResyncPr(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
         CancellationToken ct)
@@ -127,6 +128,7 @@ public static class PrsEndpoints
     /// </summary>
     private static async Task<(IForgeProvider? Provider, ProviderCallContext Ctx, IResult? Error)>
         ResolvePrCallContextAsync(
+            ControlDbContext control,
             ProductDbContext db,
             IUserContext user,
             IEnumerable<IForgeProvider> providers,
@@ -143,7 +145,7 @@ public static class PrsEndpoints
         RepoRow? repo = null;
         if (!string.IsNullOrEmpty(row.RepoId))
         {
-            repo = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
+            repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
         }
         var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
         var ctx = user.ForProvider(provider.Kind) with
@@ -189,9 +191,9 @@ public static class PrsEndpoints
     }
 
     // GET /api/prs — list with cached state, optionally scoped to a product (Phase 8.9).
-    private static async Task<IResult> GetAll(HttpContext ctx, ProductDbContext db)
+    private static async Task<IResult> GetAll(HttpContext ctx, ControlDbContext control, ProductDbContext db)
     {
-        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var scope = await ProductScope.ResolveAsync(ctx, control);
         var q = db.Prs.AsNoTracking().AsQueryable();
         if (!scope.IsAll)
         {
@@ -216,7 +218,7 @@ public static class PrsEndpoints
     }
 
     // GET /api/prs/{id} — single PR.
-    private static async Task<IResult> Get(string id, ProductDbContext db)
+    private static async Task<IResult> Get(string id, ControlDbContext control, ProductDbContext db)
     {
         id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
@@ -239,7 +241,7 @@ public static class PrsEndpoints
         IReadOnlyList<string> Reviewers);
 
     // GET /api/prs/{id}/details — extended payload for the detail panel.
-    private static async Task<IResult> GetDetails(string id, ProductDbContext db)
+    private static async Task<IResult> GetDetails(string id, ControlDbContext control, ProductDbContext db)
     {
         id = NormalizePrId(id);
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
@@ -275,6 +277,7 @@ public static class PrsEndpoints
         HttpContext ctx,
         string id,
         [FromBody] SetAutoMergeRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -297,6 +300,7 @@ public static class PrsEndpoints
     private static async Task<IResult> RerunBuild(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
@@ -310,7 +314,7 @@ public static class PrsEndpoints
         if (row is null) return NotFound(id);
 
         // Best-effort provider trigger; cached state always flips so the UI animates.
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         // Treat "no provider" as soft-fail here so the cached state still flips
         // (the original semantics of this endpoint were best-effort).
         BuildStatus? trigger = null;
@@ -334,6 +338,7 @@ public static class PrsEndpoints
     private static async Task<IResult> CancelBuild(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IUserContext user,
@@ -346,7 +351,7 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         BuildStatus? cancel = null;
         if (provider is not null && providerErr is null)
         {
@@ -365,6 +370,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/approve — Phase 6.5.
     private static async Task<IResult> Approve(
         HttpContext ctx, string id,
+        ControlDbContext control,
         ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
@@ -376,7 +382,7 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         if (providerErr is not null) return providerErr;
         try { await provider!.ApprovePullRequestAsync(id, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider approve failed", detail: ex.Message, statusCode: 502); }
@@ -397,6 +403,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/changes — Phase 6.5.
     private static async Task<IResult> RequestChanges(
         HttpContext ctx, string id, [FromBody] ChangesRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
@@ -412,7 +419,7 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         if (providerErr is not null) return providerErr;
         try { await provider!.RequestChangesOnPullRequestAsync(id, req.Body, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider request-changes failed", detail: ex.Message, statusCode: 502); }
@@ -433,6 +440,7 @@ public static class PrsEndpoints
     // POST /api/prs/{id}/comment — Phase 6.5.
     private static async Task<IResult> Comment(
         HttpContext ctx, string id, [FromBody] PrCommentRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
@@ -448,7 +456,7 @@ public static class PrsEndpoints
         var row = await db.Prs.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
 
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         if (providerErr is not null) return providerErr;
         try { await provider!.CommentOnPullRequestAsync(id, req.Body, callCtx); }
         catch (Exception ex) { return Results.Problem(title: "Provider comment failed", detail: ex.Message, statusCode: 502); }
@@ -465,6 +473,7 @@ public static class PrsEndpoints
     // discards upstream-side changes on each conflicting hunk).
     private static async Task<IResult> Merge(
         HttpContext ctx, string id,
+        ControlDbContext control,
         ProductDbContext db,
         IUserContext user,
         IEnumerable<IForgeProvider> providers,
@@ -525,7 +534,7 @@ public static class PrsEndpoints
         var effectiveAutoMerge = row.AutoMerge;
         if (!effectiveAutoMerge)
         {
-            effectiveAutoMerge = await SpawnAutoMergeResolver.ResolveAsync(db, row.WorkItemId);
+            effectiveAutoMerge = await SpawnAutoMergeResolver.ResolveAsync(control, db, row.WorkItemId);
         }
         var effectiveForce = force ?? effectiveAutoMerge;
 
@@ -539,7 +548,7 @@ public static class PrsEndpoints
         // Pick the correct provider from the PR's provider field (ado or github)
         // and carry the PR's per-repo coords so AdoProvider doesn't fall back
         // to the global Forge:Ado:Repository config in multi-repo deployments.
-        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(db, user, providers, row);
+        var (provider, callCtx, providerErr) = await ResolvePrCallContextAsync(control, db, user, providers, row);
         if (providerErr is not null) return providerErr;
 
         // PROACTIVE FLOW (new order):
@@ -560,7 +569,7 @@ public static class PrsEndpoints
             bool rebaseOk;
             try
             {
-                rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, effectiveForce, CancellationToken.None);
+                rebaseOk = await PrMergeUtilities.RebaseSourceOnBaseAsync(control, db, git, row, effectiveForce, CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -614,7 +623,7 @@ public static class PrsEndpoints
             }
             try
             {
-                var resolved = await PrMergeUtilities.RebaseSourceOnBaseAsync(db, git, row, force: true, CancellationToken.None);
+                var resolved = await PrMergeUtilities.RebaseSourceOnBaseAsync(control, db, git, row, force: true, CancellationToken.None);
                 if (!resolved)
                 {
                     return ConflictResult(
@@ -668,7 +677,7 @@ public static class PrsEndpoints
         row.Col = "merged";
         row.AutoMerge = false;
 
-        var advancedWorkstreamIds = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, id);
+        var advancedWorkstreamIds = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, id);
 
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", pr = merged });
@@ -698,6 +707,7 @@ public static class PrsEndpoints
     private static async Task<IResult> SyncPrs(
         HttpContext ctx,
         [FromBody] PrSyncRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         [FromServices] IEnumerable<IForgeProvider> providers,
         [FromServices] IHttpClientFactory clientFactory,
@@ -712,7 +722,7 @@ public static class PrsEndpoints
             req.RepoId, req.Provider, req.CreatedBy, req.Status);
 
         // Resolve repo config from DB.
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId, ct);
         if (repo is null)
         {
             log.LogWarning("PR sync: repo '{RepoId}' not found in DB", req.RepoId);
@@ -1071,7 +1081,7 @@ public static class PrsEndpoints
                 // a story-edit cascade to flip it on.
                 var inheritedAutoMerge = !string.IsNullOrEmpty(workItemId)
                     && await Forge.Api.Services.Stories.SpawnAutoMergeResolver
-                        .ResolveAsync(db, workItemId, ct);
+                        .ResolveAsync(control, db, workItemId, ct);
                 db.Prs.Add(new PrRow
                 {
                     Id = pr.Id,

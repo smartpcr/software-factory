@@ -38,7 +38,7 @@ public static class WorktreePathResolver
     ///   <see cref="WorkstreamRow.Id"/> for engineer workstreams.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<WorktreePathResult> ResolveForWorkstreamAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         var ws = await db.Workstreams.AsNoTracking()
             .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
@@ -46,9 +46,9 @@ public static class WorktreePathResolver
 
         var repo = string.IsNullOrEmpty(ws.RepoId)
             ? null
-            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
+            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
 
-        return await ResolveForWorkstreamAsync(db, ws, repo, ct);
+        return await ResolveForWorkstreamAsync(control, db, ws, repo, ct);
     }
 
     /// <summary>
@@ -59,7 +59,7 @@ public static class WorktreePathResolver
     /// <see cref="WorktreePathResult.Empty"/>.
     /// </summary>
     public static async Task<WorktreePathResult> ResolveForWorkstreamAsync(
-        ProductDbContext db, WorkstreamRow ws, RepoRow? repo, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, WorkstreamRow ws, RepoRow? repo, CancellationToken ct = default)
     {
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot))
         {
@@ -119,7 +119,7 @@ public static class WorktreePathResolver
     ///   <see cref="PlanDocStateHelpers.PlanDocOrder"/>.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<WorktreePathResult> ResolveForPlanDocAsync(
-        ProductDbContext db, string spawnId, string docKey, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, string spawnId, string docKey, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(spawnId) || string.IsNullOrEmpty(docKey))
         {
@@ -131,7 +131,7 @@ public static class WorktreePathResolver
         if (spawn is null) return WorktreePathResult.Empty;
 
         if (string.IsNullOrEmpty(spawn.RepoId)) return WorktreePathResult.Empty;
-        var repo = await db.Repos.AsNoTracking()
+        var repo = await control.Repos.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot))
         {
@@ -187,7 +187,7 @@ public static class WorktreePathResolver
     /// lock-step.</para>
     /// </summary>
     public static async Task<CanonicalWorkstreamPathSpec?> GetCanonicalForWorkstreamAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct = default)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(workItemId)) return null;
 
@@ -196,7 +196,7 @@ public static class WorktreePathResolver
         if (ws is null) return null;
 
         if (string.IsNullOrEmpty(ws.RepoId)) return null;
-        var repo = await db.Repos.AsNoTracking()
+        var repo = await control.Repos.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return null;
 
@@ -230,7 +230,7 @@ public static class WorktreePathResolver
         // Host): spawn.BaseBranch=`feature/teams`, ws.Base=`feature/teams`,
         // but the PR opened with base=`main` and auto-merge landed
         // engineer work straight onto trunk.
-        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(db, workItemId, ct);
+        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(control, db, workItemId, ct);
 
         return new CanonicalWorkstreamPathSpec(branch, slug, path, repo.CloneRoot!, baseBranch, ws, repo);
     }

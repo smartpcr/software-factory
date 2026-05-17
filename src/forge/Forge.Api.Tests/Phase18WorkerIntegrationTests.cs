@@ -29,6 +29,7 @@ public class Phase18WorkerIntegrationTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
@@ -87,10 +88,11 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return; // wall-clock corner case — skip
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "ad-off-shift", Name = "OffShift",
                 Lead = "lead-os", Model = "x",
@@ -98,7 +100,7 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true, // schedule ENABLED so the gate would refuse pre-18.6
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-off-shift", AgentId = "member-os", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-off-shift", AgentId = "member-os", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-os",
@@ -107,7 +109,7 @@ public class Phase18WorkerIntegrationTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -130,12 +132,13 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return; // wall-clock corner case — skip
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Regression — during the band, dispatch counts behave the same as
             // pre-18.6: outcome=dispatched, no off-shift hit.
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "ad-on-shift", Name = "OnShift",
                 Lead = "lead-on", Model = "x",
@@ -143,7 +146,7 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true,
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-on-shift", AgentId = "member-on", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-on-shift", AgentId = "member-on", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-on",
@@ -152,7 +155,7 @@ public class Phase18WorkerIntegrationTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -171,10 +174,11 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return; // wall-clock corner case — skip
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "wq-off", Name = "WQ Off",
                 Lead = "lead-wq", Model = "x",
@@ -182,14 +186,14 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true,
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-off", AgentId = "m1", AddedAt = DateTimeOffset.UtcNow });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-off", AgentId = "m2", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-off", AgentId = "m1", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-off", AgentId = "m2", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-wq", Type = "step", Track = "design", State = "active", Title = "WQ",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-wq", "crew", "wq-off", default);
@@ -215,12 +219,13 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return;
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             // Regression — during the band, members claim and the lead is
             // bypassed (Phase 16.7 preference still applies inside the band).
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "wq-on", Name = "WQ On",
                 Lead = "lead-wqon", Model = "x",
@@ -228,13 +233,13 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true,
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-on", AgentId = "m-on", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-on", AgentId = "m-on", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-wqon", Type = "step", Track = "design", State = "active", Title = "On",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-wqon", "crew", "wq-on", default);
@@ -261,10 +266,11 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return;
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "wq-resume", Name = "Resume",
                 Lead = "lead-resume", Model = "x",
@@ -272,7 +278,7 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true,
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-resume", AgentId = "prior-mem", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-resume", AgentId = "prior-mem", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-resume", Type = "step", Track = "design", State = "active", Title = "R",
@@ -293,7 +299,7 @@ public class Phase18WorkerIntegrationTests
                 Verdict = "iterate",
                 CreatedAt = DateTimeOffset.UtcNow.AddHours(-3),
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-resume", "crew", "wq-resume", default);
@@ -323,10 +329,11 @@ public class Phase18WorkerIntegrationTests
         if (tz is null) return;
 
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "wq-orphan", Name = "Orphan",
                 Lead = null, // no lead — only on-shift members can pick up
@@ -335,13 +342,13 @@ public class Phase18WorkerIntegrationTests
                 MaxConcurrent = 5, ScheduleEnabled = true,
                 Timezone = tz, Shift = "day",
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-orphan", AgentId = "m-off", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-orphan", AgentId = "m-off", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-orphan", Type = "step", Track = "design", State = "active", Title = "O",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-orphan", "crew", "wq-orphan", default);
@@ -376,13 +383,14 @@ public class Phase18WorkerIntegrationTests
         // future refactor that *does* change it (e.g. adding a paused-lead
         // codepath) breaks here and forces a deliberate spec update.
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
+            var product = await control.Products.FirstAsync();
             // No-lead crew with a work item assigned via crewId. Schedule
             // disabled so wall-clock can't accidentally trigger a different
             // outcome — the dispatcher should ignore the row regardless.
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "ad-no-lead", Name = "NoLead",
                 Lead = null,
@@ -390,7 +398,7 @@ public class Phase18WorkerIntegrationTests
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-no-lead", AgentId = "m-only", AddedAt = DateTimeOffset.UtcNow });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-no-lead", AgentId = "m-only", AddedAt = DateTimeOffset.UtcNow });
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = "wi-no-lead",
@@ -399,7 +407,7 @@ public class Phase18WorkerIntegrationTests
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
             var result = await dispatcher.RunOnceAsync(CancellationToken.None);
@@ -425,10 +433,11 @@ public class Phase18WorkerIntegrationTests
         // the rewrite of the picker must preserve the pre-existing fallback
         // when the roster is empty.
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow
+            var product = await control.Products.FirstAsync();
+            control.Crews.Add(new CrewRow
             {
                 Id = "wq-leadonly", Name = "Lead Only",
                 Lead = "lone-lead", Model = "x",
@@ -440,7 +449,7 @@ public class Phase18WorkerIntegrationTests
                 Id = "wi-lone", Type = "step", Track = "design", State = "active", Title = "Lone",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync("wi-lone", "crew", "wq-leadonly", default);

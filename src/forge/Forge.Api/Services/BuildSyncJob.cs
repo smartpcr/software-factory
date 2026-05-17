@@ -92,7 +92,7 @@ public sealed class BuildSyncJob : BackgroundService
         // product's DB.
         using var outerScope = this.scopeFactory.CreateScope();
         var fanout = outerScope.ServiceProvider.GetRequiredService<ProductFanout>();
-        await fanout.ForEachProductAsync(async (_, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, _, slug, fct) =>
         {
             await this.RunSweepCoreAsync(fct);
         }, ct);
@@ -103,6 +103,7 @@ public sealed class BuildSyncJob : BackgroundService
         List<BuildSweepCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             candidates = await db.Prs.AsNoTracking()
                 .Where(p => p.IsActive)
@@ -131,7 +132,7 @@ public sealed class BuildSyncJob : BackgroundService
                 .ToArray();
             var intervals = repoIds.Length == 0
                 ? new Dictionary<string, int?>()
-                : await db.Repos
+                : await control.Repos
                     .AsNoTracking()
                     .Where(r => repoIds.Contains(r.Id))
                     .ToDictionaryAsync(r => r.Id, r => r.BuildSyncIntervalSeconds, ct);
@@ -180,6 +181,7 @@ public sealed class BuildSyncJob : BackgroundService
         BuildSweepCandidate? candidate;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             candidate = await db.Prs.AsNoTracking()
                 .Where(p => p.Id == prId)
@@ -210,8 +212,9 @@ public sealed class BuildSyncJob : BackgroundService
         RepoRow? repo;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == c.RepoId, ct);
+            repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == c.RepoId, ct);
         }
         if (repo is null)
         {
@@ -236,6 +239,7 @@ public sealed class BuildSyncJob : BackgroundService
         var transitionedToFailed = new List<long>();
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var s in snapshots)
             {
@@ -337,6 +341,7 @@ public sealed class BuildSyncJob : BackgroundService
         BuildRow? buildRow;
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             buildRow = await db.Builds.AsNoTracking().FirstOrDefaultAsync(b => b.Id == buildId, ct);
         }
@@ -358,6 +363,7 @@ public sealed class BuildSyncJob : BackgroundService
         var allLogTails = new List<(long StageId, string Content)>();
         using (var scope = this.scopeFactory.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var s in stages)
             {
@@ -430,7 +436,7 @@ public sealed class BuildSyncJob : BackgroundService
             // 3) Pass 1 over each stage tail.
             foreach (var (stageId, content) in allLogTails)
             {
-                var pts = await this.parser.ParseAsync(stageId, content, Array.Empty<(string, string)>(), db, ct);
+                var pts = await this.parser.ParseAsync(stageId, content, Array.Empty<(string, string)>(), control, db, ct);
                 if (pts.Count > 0) parsedAny = true;
             }
         }
@@ -463,10 +469,11 @@ public sealed class BuildSyncJob : BackgroundService
                     if (logFiles.Count == 0) continue;
 
                     using var scope = this.scopeFactory.CreateScope();
+                    var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                     var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     foreach (var (stageId, _) in allLogTails)
                     {
-                        var pts = await this.parser.ParseAsync(stageId, string.Empty, logFiles, db, ct);
+                        var pts = await this.parser.ParseAsync(stageId, string.Empty, logFiles, control, db, ct);
                         if (pts.Count > 0) parsedAny = true;
                     }
                 }
@@ -499,6 +506,7 @@ public sealed class BuildSyncJob : BackgroundService
         }
 
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == workItemId, ct);
         if (wi is null)

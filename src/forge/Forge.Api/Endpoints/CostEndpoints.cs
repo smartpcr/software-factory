@@ -37,7 +37,7 @@ public static class CostEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetSummary(int? days, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetSummary(int? days, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         var window = Math.Clamp(days ?? 7, 1, 30);
 
@@ -54,7 +54,7 @@ public static class CostEndpoints
         // decimal→double converter that won't push through SUM), so we
         // pull the columns and bucket in memory. Window of 7 days × all
         // crews stays small enough that this is cheap.
-        var rows = await db.AgentUsage.AsNoTracking()
+        var rows = await control.AgentUsage.AsNoTracking()
             .Select(u => new { u.AgentId, u.TaskId, u.InputTokens, u.OutputTokens, u.CostUsd, u.StartedAt })
             .ToListAsync(ct);
         rows = rows.Where(r => r.StartedAt >= windowStart).ToList();
@@ -69,7 +69,7 @@ public static class CostEndpoints
             .GroupBy(c => c.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Epic, StringComparer.OrdinalIgnoreCase);
 
-        var agents = await db.Agents.AsNoTracking()
+        var agents = await control.Agents.AsNoTracking()
             .Select(a => new { a.Id, a.Name, a.Role })
             .ToListAsync(ct);
         var agentInfo = agents.ToDictionary(
@@ -80,7 +80,7 @@ public static class CostEndpoints
         // Daily cap = sum of every crew's DailyBudgetUsd cap. If no crew
         // has a cap configured, fall back to a sensible constant so the
         // gauge still renders something defensible.
-        var caps = await db.Crews.AsNoTracking()
+        var caps = await control.Crews.AsNoTracking()
             .Where(c => c.DailyBudgetUsd != null)
             .Select(c => c.DailyBudgetUsd!.Value)
             .ToListAsync(ct);
@@ -94,14 +94,14 @@ public static class CostEndpoints
             .Where(w => !string.IsNullOrEmpty(w.RepoId))
             .GroupBy(w => w.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().RepoId!, StringComparer.OrdinalIgnoreCase);
-        var repoRows = await db.Repos.AsNoTracking()
+        var repoRows = await control.Repos.AsNoTracking()
             .Select(r => new { r.Id, r.ProductId })
             .ToListAsync(ct);
         var repoProduct = repoRows
             .Where(r => !string.IsNullOrEmpty(r.ProductId))
             .GroupBy(r => r.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().ProductId!, StringComparer.OrdinalIgnoreCase);
-        var productRows = await db.Products.AsNoTracking()
+        var productRows = await control.Products.AsNoTracking()
             .Select(p => new { p.Id, p.Name })
             .ToListAsync(ct);
         var productNames = productRows.ToDictionary(p => p.Id, p => p.Name, StringComparer.OrdinalIgnoreCase);

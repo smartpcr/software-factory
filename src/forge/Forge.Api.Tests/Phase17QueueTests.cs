@@ -21,14 +21,15 @@ using Xunit;
 /// </summary>
 public class Phase17QueueTests
 {
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db, ITaskQueueService queue)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ControlDbContext control, ProductDbContext db, ITaskQueueService queue)> BootAsync()
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        return (f, scope, db, queue);
+        return (f, scope, control, db, queue);
     }
 
     private static WorkItemRow NewWorkItem(string id, string priority = "med") => new()
@@ -47,11 +48,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task StateMachine_Happy_Path()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-1"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var enq = await queue.EnqueueAsync("wi-1", "team", "Architecture", default);
             Assert.Equal(TaskQueueStates.AwaitingAck, enq.State);
@@ -101,11 +102,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task Idempotent_Enqueue_Returns_Existing_Open_Row()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-idem"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var first  = await queue.EnqueueAsync("wi-idem", "team", "Architecture", default);
             var second = await queue.EnqueueAsync("wi-idem", "team", "Architecture", default);
@@ -121,14 +122,14 @@ public class Phase17QueueTests
     [Fact]
     public async Task Priority_Beats_Fifo()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.AddRange(
                 NewWorkItem("wi-med", "med"),
                 NewWorkItem("wi-high", "high"),
                 NewWorkItem("wi-low", "low"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Enqueue med first, then high, then low — purely team-routed
             // simulates the lead-routes-on-ack flow; we shortcut by directly
@@ -151,11 +152,12 @@ public class Phase17QueueTests
     [Fact]
     public async Task Atomic_Claim_Never_Double_Pops()
     {
-        var (f, scope, _, _) = await BootAsync();
+        var (f, scope, control, _, _) = await BootAsync();
         try
         {
             using (var setupScope = f.Services.CreateScope())
             {
+                var control_d = setupScope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var d = setupScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 d.WorkItems.Add(NewWorkItem("wi-race"));
                 await d.SaveChangesAsync();
@@ -183,17 +185,17 @@ public class Phase17QueueTests
     [Fact]
     public async Task Auto_Ack_On_Timeout_Sets_Auto_Acked_True()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-stale"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await queue.EnqueueAsync("wi-stale", "team", "Architecture", default);
             // Simulate timeout: rewind AckRequiredBy by a minute.
             var tracked = await db.TaskQueue.FirstAsync(r => r.Id == row.Id);
             tracked.AckRequiredBy = DateTimeOffset.UtcNow.AddMinutes(-1);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // The worker's RunOnceAsync should auto-ack.
             var worker = f.Services.GetRequiredService<CrewQueueWorker>();
@@ -213,11 +215,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task Reassign_Moves_Routed_Crew_Without_Touching_Work_Item()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-reassign"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await queue.EnqueueAsync("wi-reassign", "crew", "crew-a", default);
             var rows = await db.TaskQueue.AsNoTracking().Where(r => r.WorkItemId == "wi-reassign").ToListAsync();
@@ -241,11 +243,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task Cancel_Closes_Row_And_Leaves_Work_Item_State_Untouched()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-cancel"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await queue.EnqueueAsync("wi-cancel", "crew", "crew-c", default);
             var cancelled = await queue.CancelAsync(row.Id, "lead-bar", "lost relevance", default);
@@ -266,7 +268,7 @@ public class Phase17QueueTests
     [Fact]
     public async Task Strain_Detection_Fires_When_Depth_Exceeds_Threshold()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             // Five queued items > threshold of 3.
@@ -274,7 +276,7 @@ public class Phase17QueueTests
             {
                 db.WorkItems.Add(NewWorkItem($"wi-strain-{i}"));
             }
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             for (var i = 1; i <= 5; i++)
             {
                 await queue.EnqueueAsync($"wi-strain-{i}", "crew", "crew-strained", default);
@@ -286,14 +288,14 @@ public class Phase17QueueTests
 
             var worker = f.Services.GetRequiredService<CrewQueueWorker>();
             // Crew row needed for the worker's strain sweep (resolves the lead).
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-strained", Name = "Engineering Strained",
                 Lead = "lead-strain", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 1, ScheduleEnabled = false,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var first = await worker.RunOnceAsync(default);
             Assert.True(first.StrainSignals >= 1);
@@ -308,17 +310,17 @@ public class Phase17QueueTests
     [Fact]
     public async Task Restart_Resilience_Ack_Timeouts_Catch_Up_On_Boot()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-boot"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Stage a row with an already-elapsed ack deadline.
             var row = await queue.EnqueueAsync("wi-boot", "team", "Architecture", default);
             var tracked = await db.TaskQueue.FirstAsync(r => r.Id == row.Id);
             tracked.AckRequiredBy = DateTimeOffset.UtcNow.AddMinutes(-2);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // The worker's tick simulates the boot-scan path (StartAsync runs
             // RunOnceAsync once before the timer takes over).
@@ -334,10 +336,10 @@ public class Phase17QueueTests
     [Fact]
     public async Task Capacity_Gate_Holds_When_MaxConcurrent_Saturated()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-cap", Name = "Engineering Cap",
                 Lead = "lead-cap", Model = "x",
@@ -346,7 +348,7 @@ public class Phase17QueueTests
             });
             db.WorkItems.Add(NewWorkItem("wi-busy"));
             db.WorkItems.Add(NewWorkItem("wi-pending"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // First row goes to picked-up to saturate the crew.
             var busy = await queue.EnqueueAsync("wi-busy", "crew", "crew-cap", default);
@@ -368,7 +370,7 @@ public class Phase17QueueTests
     [Fact]
     public async Task Crew_Stats_Returns_Sane_Eta_For_Empty_Queue()
     {
-        var (f, scope, _, queue) = await BootAsync();
+        var (f, scope, control, _, queue) = await BootAsync();
         try
         {
             var stats = await queue.GetCrewStatsAsync("crew-empty", default);
@@ -382,11 +384,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task Endpoint_Acknowledge_Surfaces_409_When_Wrong_State()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-405"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             // Direct-to-crew row enters at 'queued', not awaiting-ack.
             var row = await queue.EnqueueAsync("wi-405", "crew", "crew-z", default);
 
@@ -403,13 +405,13 @@ public class Phase17QueueTests
     [Fact]
     public async Task AutoRoute_Single_Crew_Skips_AwaitingRoute()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             // Seed a team ("Solo") with exactly one crew whose Name starts with
             // the targetId → the ack fast-path auto-routes to queued.
-            var productId = (await db.Products.FirstAsync()).Id;
-            db.Crews.Add(new CrewRow
+            var productId = (await control.Products.FirstAsync()).Id;
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-solo", Name = "Solo",
                 Lead = "lead-solo", Model = "x",
@@ -417,7 +419,7 @@ public class Phase17QueueTests
                 MaxConcurrent = 2, ScheduleEnabled = false,
             });
             db.WorkItems.Add(NewWorkItem("wi-auto-single"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await queue.EnqueueAsync("wi-auto-single", "team", "Solo", default);
             Assert.Equal(TaskQueueStates.AwaitingAck, row.State);
@@ -436,11 +438,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task AutoRoute_Multi_Crew_Prefers_Generator_Side()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
-            var productId = (await db.Products.FirstAsync()).Id;
-            db.Crews.Add(new CrewRow
+            var productId = (await control.Products.FirstAsync()).Id;
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-multi-gen", Name = "Multi",
                 Lead = "lead-multi", Model = "x",
@@ -448,7 +450,7 @@ public class Phase17QueueTests
                 MaxConcurrent = 2, ScheduleEnabled = false,
                 PairRole = "generator", PairedWithCrewId = "crew-multi-eval",
             });
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-multi-eval", Name = "Multi (Night)",
                 Lead = null, Model = "x",
@@ -457,7 +459,7 @@ public class Phase17QueueTests
                 PairRole = "evaluator", PairedWithCrewId = "crew-multi-gen",
             });
             db.WorkItems.Add(NewWorkItem("wi-auto-multi"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await queue.EnqueueAsync("wi-auto-multi", "team", "Multi", default);
             var acked = await queue.AcknowledgeAsync(row.Id, "lead-multi", auto: false, default);
@@ -473,11 +475,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task AutoRoute_No_Matching_Crew_Stays_At_AwaitingRoute()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
             db.WorkItems.Add(NewWorkItem("wi-auto-none"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // "Phantom" has no crew whose Name starts with it → stays at awaiting-route.
             var row = await queue.EnqueueAsync("wi-auto-none", "team", "Phantom", default);
@@ -492,11 +494,11 @@ public class Phase17QueueTests
     [Fact]
     public async Task AutoRoute_Via_AckTimeout_Also_Routes()
     {
-        var (f, scope, db, queue) = await BootAsync();
+        var (f, scope, control, db, queue) = await BootAsync();
         try
         {
-            var productId = (await db.Products.FirstAsync()).Id;
-            db.Crews.Add(new CrewRow
+            var productId = (await control.Products.FirstAsync()).Id;
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-timeout-auto", Name = "Timeout",
                 Lead = "lead-timeout", Model = "x",
@@ -504,7 +506,7 @@ public class Phase17QueueTests
                 MaxConcurrent = 2, ScheduleEnabled = false,
             });
             db.WorkItems.Add(NewWorkItem("wi-auto-timeout"));
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             var row = await queue.EnqueueAsync("wi-auto-timeout", "team", "Timeout", default);
 

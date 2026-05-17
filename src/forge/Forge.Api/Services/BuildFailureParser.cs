@@ -68,6 +68,7 @@ public sealed class BuildFailureParser
         long stageId,
         string logTail,
         IReadOnlyList<(string Path, string Content)> artifactFiles,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -76,7 +77,7 @@ public sealed class BuildFailureParser
         // Persist Pass 1 hits.
         if (p1.Count > 0)
         {
-            await this.PersistAsync(stageId, p1, db, ct);
+            await this.PersistAsync(stageId, p1, control, db, ct);
             return p1;
         }
 
@@ -99,7 +100,7 @@ public sealed class BuildFailureParser
 
         if (found.Count > 0)
         {
-            await this.PersistAsync(stageId, found, db, ct);
+            await this.PersistAsync(stageId, found, control, db, ct);
         }
         return found;
     }
@@ -145,6 +146,7 @@ public sealed class BuildFailureParser
     private async Task PersistAsync(
         long stageId,
         IReadOnlyList<ParsedFailurePoint> rows,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {

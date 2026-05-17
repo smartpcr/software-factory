@@ -95,30 +95,44 @@ public class SplitContextsTests : IDisposable
         Assert.Contains("builds", entityTypes);
         Assert.Contains("idempotency", entityTypes);
 
-        // Phase D.2 interim compromise: ProductDbContext also exposes
-        // control entities so bulk-renamed legacy code keeps compiling.
-        // Phase G will tighten this back to product-only.
-        Assert.Contains("products", entityTypes);
-        Assert.Contains("repos", entityTypes);
-        Assert.Contains("users", entityTypes);
-        Assert.Contains("crews", entityTypes);
-        Assert.Contains("agents", entityTypes);
-        Assert.Contains("agent_usage", entityTypes);
-        Assert.Contains("agent_claims", entityTypes);
-        Assert.Contains("forge_actions", entityTypes);
+        // Phase G — ProductDbContext is now tightened to product-only.
+        // Control entities (products, repos, users, crews, agents,
+        // agent_usage, agent_claims, forge_actions) live on
+        // ControlDbContext. Verify they are NOT present in the
+        // ProductDbContext model.
+        Assert.DoesNotContain("products", entityTypes);
+        Assert.DoesNotContain("repos", entityTypes);
+        Assert.DoesNotContain("users", entityTypes);
+        Assert.DoesNotContain("crews", entityTypes);
+        Assert.DoesNotContain("agents", entityTypes);
+        Assert.DoesNotContain("agent_usage", entityTypes);
+        Assert.DoesNotContain("agent_claims", entityTypes);
+        Assert.DoesNotContain("forge_actions", entityTypes);
     }
 
     [Fact]
     public async Task BothContexts_ReadSameData_FromSamePhysicalFile()
     {
-        // Build schema via legacy ProductDbContext (still has the union),
-        // then read via the new split contexts. Phase D interim: both
-        // point at forge.db.
+        // Build schema via both contexts (control + product), then read via
+        // the split contexts against the same physical forge.db file.
+        // Phase G: control entities live on ControlDbContext, product
+        // entities on ProductDbContext; they share the same file in Phase D
+        // interim mode.
+        using (var legacyCtl = BuildControl())
+        {
+            await legacyCtl.Database.EnsureCreatedAsync();
+            legacyCtl.Products.Add(new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" });
+            legacyCtl.Repos.Add(new RepoRow { Id = "r1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
+            await legacyCtl.SaveChangesAsync();
+        }
         using (var legacy = BuildLegacy())
         {
-            await legacy.Database.EnsureCreatedAsync();
-            legacy.Products.Add(new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" });
-            legacy.Repos.Add(new RepoRow { Id = "r1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
+            var script = legacy.Database.GenerateCreateScript();
+            foreach (var stmt in script.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var trimmed = stmt.Trim();
+                if (trimmed.Length > 0) await legacy.Database.ExecuteSqlRawAsync(trimmed);
+            }
             legacy.Workstreams.Add(new WorkstreamRow { Id = "ws1", Name = "ws1", Branch = "ws/1", Epic = "EPIC", Status = "active", RepoId = "r1" });
             await legacy.SaveChangesAsync();
         }

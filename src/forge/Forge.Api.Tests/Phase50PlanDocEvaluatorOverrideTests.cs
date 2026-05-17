@@ -51,22 +51,32 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     private const string NightLead = "AB2";
     private const string OverrideAgent = "AG";
 
-    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ControlDbContext control, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
         var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
-        return (conn, db);
+        var _productSchema = db.Database.GenerateCreateScript();
+        foreach (var _stmt in _productSchema.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _trimmed = _stmt.Trim();
+            if (_trimmed.Length > 0) await db.Database.ExecuteSqlRawAsync(_trimmed);
+        }
+        return (conn, control, db);
     }
 
-    private static async Task SeedPairedArchCrewsAsync(ProductDbContext db)
+    private static async Task SeedPairedArchCrewsAsync(ControlDbContext control, ProductDbContext db)
     {
         // Day crew — the "work" crew (where the generator agents live).
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = DayCrewId,
             Name = "Architect (day)",
@@ -81,7 +91,7 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
         // pair-diversity gate would pass with an override; without an
         // override and with DefaultEvaluatorAgentId null, the resolver
         // falls back to Lead = NightLead, which is the bug.
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = NightCrewId,
             Name = "Architect (night)",
@@ -96,22 +106,22 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
         // Day-crew agents — the pairing algorithm picks from this pool.
         // OverrideAgent lives here (Architect Lead-bench, not the
         // night-crew lead).
-        db.Agents.Add(new AgentRow { Id = DayLead, Name = "Day Lead", Role = "arch", CrewId = DayCrewId, Sort = 0 });
-        db.Agents.Add(new AgentRow { Id = OverrideAgent, Name = "Ao Guang", Role = "arch", CrewId = DayCrewId, Sort = 1 });
-        db.Agents.Add(new AgentRow { Id = "A1", Name = "Day Agent 1", Role = "arch", CrewId = DayCrewId, Sort = 2 });
-        db.Agents.Add(new AgentRow { Id = "A2", Name = "Day Agent 2", Role = "arch", CrewId = DayCrewId, Sort = 3 });
+        control.Agents.Add(new AgentRow { Id = DayLead, Name = "Day Lead", Role = "arch", CrewId = DayCrewId, Sort = 0 });
+        control.Agents.Add(new AgentRow { Id = OverrideAgent, Name = "Ao Guang", Role = "arch", CrewId = DayCrewId, Sort = 1 });
+        control.Agents.Add(new AgentRow { Id = "A1", Name = "Day Agent 1", Role = "arch", CrewId = DayCrewId, Sort = 2 });
+        control.Agents.Add(new AgentRow { Id = "A2", Name = "Day Agent 2", Role = "arch", CrewId = DayCrewId, Sort = 3 });
 
-        db.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = DayLead });
-        db.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = OverrideAgent });
-        db.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = "A1" });
-        db.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = "A2" });
+        control.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = DayLead });
+        control.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = OverrideAgent });
+        control.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = "A1" });
+        control.CrewMembers.Add(new CrewMemberRow { CrewId = DayCrewId, AgentId = "A2" });
 
         // Night-crew agents — including the Lead AB2 which the bug
         // pinned every evaluator slot to.
-        db.Agents.Add(new AgentRow { Id = NightLead, Name = "Ao Bing", Role = "arch", CrewId = NightCrewId, Sort = 0 });
-        db.CrewMembers.Add(new CrewMemberRow { CrewId = NightCrewId, AgentId = NightLead });
+        control.Agents.Add(new AgentRow { Id = NightLead, Name = "Ao Bing", Role = "arch", CrewId = NightCrewId, Sort = 0 });
+        control.CrewMembers.Add(new CrewMemberRow { CrewId = NightCrewId, AgentId = NightLead });
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -123,22 +133,22 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     [Fact]
     public async Task ResolveAgentRunConfig_EvalOverride_OnPairedNightCrew_HonorsOverride()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedArchCrewsAsync(db);
+            await SeedPairedArchCrewsAsync(control, db);
 
             // Simulate what RunGenEvalLoopAsync does after the fix:
             // fetch the day crew (work crew), then fetch the night
             // crew via PairedWithCrewId (the evaluator crew). Write
             // the override onto the EVALUATOR crew row.
-            var dayCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
-            var nightCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
+            var dayCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
+            var nightCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
             nightCrew.DefaultEvaluatorAgentId = OverrideAgent;
 
             var (agentId, _, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, nightCrew, useEvaluatorRole: true,
+                control, db, nightCrew, useEvaluatorRole: true,
                 workspace: "/tmp/test", budget: null, CancellationToken.None);
 
             Assert.Equal(OverrideAgent, agentId);
@@ -157,21 +167,21 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     [Fact]
     public async Task ResolveAgentRunConfig_EvalOverride_WrittenToDayCrewOnly_FallsThroughToNightLead()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedArchCrewsAsync(db);
+            await SeedPairedArchCrewsAsync(control, db);
 
-            var dayCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
-            var nightCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
+            var dayCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
+            var nightCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
 
             // The bug: override goes on day crew. Night crew (the row
             // the resolver actually reads) is untouched.
             dayCrew.DefaultEvaluatorAgentId = OverrideAgent;
 
             var (agentId, _, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, nightCrew, useEvaluatorRole: true,
+                control, db, nightCrew, useEvaluatorRole: true,
                 workspace: "/tmp/test", budget: null, CancellationToken.None);
 
             Assert.Equal(NightLead, agentId);
@@ -189,20 +199,20 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     [Fact]
     public async Task ResolveAgentRunConfig_EvalOverride_UnpairedCrew_HonorsOverride()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedArchCrewsAsync(db);
+            await SeedPairedArchCrewsAsync(control, db);
 
             // Mutate the day crew to unpair it (simulating a non-paired
             // architect-only configuration).
-            var unpaired = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
+            var unpaired = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
             unpaired.PairedWithCrewId = null;
             unpaired.DefaultEvaluatorAgentId = OverrideAgent;
 
             var (agentId, _, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, unpaired, useEvaluatorRole: true,
+                control, db, unpaired, useEvaluatorRole: true,
                 workspace: "/tmp/test", budget: null, CancellationToken.None);
 
             Assert.Equal(OverrideAgent, agentId);
@@ -219,17 +229,17 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     [Fact]
     public async Task ResolveAgentRunConfig_GenOverride_HonorsOverride()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedArchCrewsAsync(db);
+            await SeedPairedArchCrewsAsync(control, db);
 
-            var dayCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
+            var dayCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
             dayCrew.DefaultGeneratorAgentId = OverrideAgent;
 
             var (agentId, _, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, dayCrew, useEvaluatorRole: false,
+                control, db, dayCrew, useEvaluatorRole: false,
                 workspace: "/tmp/test", budget: null, CancellationToken.None);
 
             Assert.Equal(OverrideAgent, agentId);
@@ -248,11 +258,11 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
     [Fact]
     public async Task ResolveAgentRunConfig_FourPlanDocs_FourDistinctEvaluators_NoneArePairedLead()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedArchCrewsAsync(db);
+            await SeedPairedArchCrewsAsync(control, db);
 
             var overrides = new[] { OverrideAgent, "A1", "A2", DayLead };
             var resolved = new List<string>();
@@ -262,12 +272,12 @@ public sealed class Phase50PlanDocEvaluatorOverrideTests
                 // Fresh evalCrew fetch per "doc" — matches the
                 // RunGenEvalLoopAsync re-entrancy on each plan-doc
                 // task in the Task.WhenAll fan-out.
-                var dayCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
-                var nightCrew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
+                var dayCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == DayCrewId);
+                var nightCrew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == dayCrew.PairedWithCrewId);
                 nightCrew.DefaultEvaluatorAgentId = ovr;
 
                 var (agentId, _, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                    db, nightCrew, useEvaluatorRole: true,
+                    control, db, nightCrew, useEvaluatorRole: true,
                     workspace: "/tmp/test", budget: null, CancellationToken.None);
                 resolved.Add(agentId);
             }

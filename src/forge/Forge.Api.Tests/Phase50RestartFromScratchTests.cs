@@ -150,10 +150,11 @@ public class Phase50RestartFromScratchTests
         // pending marker and pretend deliverables were already wiped.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstAsync(s => s.Id == spawnId);
             row.ResumePendingJson = "[\"architecture\"]";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var recovery = f.Services.GetRequiredService<StoryResumeRecoveryService>();
@@ -181,7 +182,7 @@ public class Phase50RestartFromScratchTests
     [Fact]
     public async Task EnsureFreshDocWorkspace_RestartPath_DeletesFileAndPurgesRows()
     {
-        var (f, scope, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50101");
+        var (f, scope, control, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50101");
         try
         {
             const string docWorkItemId = "plan-doc:spawn-WI-50101:architecture.md";
@@ -200,7 +201,7 @@ public class Phase50RestartFromScratchTests
                 WorkItemId = docWorkItemId, Kind = "task.token",
                 PayloadJson = "{}", At = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             Assert.True(File.Exists(diskPath));
             Assert.Equal(1, await db.Deliverables.CountAsync(d => d.WorkItemId == docWorkItemId));
@@ -236,7 +237,7 @@ public class Phase50RestartFromScratchTests
     [Fact]
     public async Task EnsureFreshDocWorkspace_FreshSpawnPath_DeletesFile()
     {
-        var (f, scope, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50102");
+        var (f, scope, control, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50102");
         try
         {
             const string docWorkItemId = "plan-doc:spawn-WI-50102:architecture.md";
@@ -270,7 +271,7 @@ public class Phase50RestartFromScratchTests
     [Fact]
     public async Task EnsureFreshDocWorkspace_NoFile_DoesNotThrow()
     {
-        var (f, scope, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50103");
+        var (f, scope, control, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50103");
         try
         {
             const string docWorkItemId = "plan-doc:spawn-WI-50103:architecture.md";
@@ -301,7 +302,7 @@ public class Phase50RestartFromScratchTests
     [Fact]
     public async Task EnsureFreshDocWorkspace_DoesNotTouchUnrelatedRows()
     {
-        var (f, scope, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50104");
+        var (f, scope, control, db, scopeFactory, tempDir, diskPath) = await SetupHelperFixtureAsync("WI-50104");
         try
         {
             const string targetDocId = "plan-doc:spawn-WI-50104:architecture.md";
@@ -317,7 +318,7 @@ public class Phase50RestartFromScratchTests
                 WorkItemId = siblingDocId, CrewId = "c", GeneratorAgentId = "g", EvaluatorAgentId = "e",
                 Iter = 1, Score = 90, Verdict = "iterate", Notes = "sibling", DimsJson = "{}",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             await CrewStoryArtifactStrategy.EnsureFreshDocWorkspaceAsync(
                 scopeFactory, logger: null, diskPath, targetDocId, restartFromScratch: true, CancellationToken.None);
@@ -344,6 +345,7 @@ public class Phase50RestartFromScratchTests
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (!await db.WorkItems.AnyAsync(w => w.Id == storyId))
         {
@@ -368,7 +370,7 @@ public class Phase50RestartFromScratchTests
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -380,6 +382,7 @@ public class Phase50RestartFromScratchTests
     private static async Task<(
         ForgeWebApplicationFactory factory,
         IServiceScope scope,
+        ControlDbContext control,
         ProductDbContext db,
         IServiceScopeFactory scopeFactory,
         string tempDir,
@@ -389,13 +392,14 @@ public class Phase50RestartFromScratchTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var scopeFactory = f.Services.GetRequiredService<IServiceScopeFactory>();
         var tempDir = Path.Combine(Path.GetTempPath(), $"forge-test-{suffix}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         var diskPath = Path.Combine(tempDir, "architecture.md");
         await Task.CompletedTask;
-        return (f, scope, db, scopeFactory, tempDir, diskPath);
+        return (f, scope, control, db, scopeFactory, tempDir, diskPath);
     }
 
     private static async Task WaitForAsync(TimeSpan timeout, Func<bool> predicate)

@@ -46,6 +46,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
 
         using var scope = this.services.CreateScope();
         var provider = ResolveProvider(scope.ServiceProvider, req.Repo.Kind);
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
@@ -164,6 +165,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task MergePrAsync(string prId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
@@ -173,7 +175,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             throw new InvalidOperationException($"PR {prId} has no provider — cannot merge.");
 
         var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
-        var ctx = await BuildCallContextAsync(db, pr, ct);
+        var ctx = await BuildCallContextAsync(control, db, pr, ct);
         await provider.MergePullRequestAsync(prId, ctx, ct);
 
         // Phase 49 follow-up — capture the FINAL stats (commit count,
@@ -225,7 +227,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             try
             {
                 var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
-                await PlanPrMergeReactor.OnPlanPrMergedAsync(db, runner, hub, prId, this.logger, ct);
+                await PlanPrMergeReactor.OnPlanPrMergedAsync(control, db, runner, hub, prId, this.logger, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -239,6 +241,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task ApprovePrAsync(string prId, string reviewerAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
@@ -248,7 +251,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             throw new InvalidOperationException($"PR {prId} has no provider — cannot approve.");
 
         var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
-        var ctx = await BuildCallContextAsync(db, pr, ct);
+        var ctx = await BuildCallContextAsync(control, db, pr, ct);
         await provider.ApprovePullRequestAsync(prId, ctx, ct);
 
         pr.ReviewJson = $"{{\"verdict\":\"approve\",\"reviewer\":\"{reviewerAgentId}\"}}";
@@ -264,6 +267,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         string prId, string filePath, int line, string body, string authorAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Local row first so the comment id is stable for downstream callers.
@@ -313,7 +317,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
             {
                 var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
                 var formatted = $"`{filePath}:{line}` — {body}\n\n_({authorAgentId})_";
-                var ctx = await BuildCallContextAsync(db, pr, ct);
+                var ctx = await BuildCallContextAsync(control, db, pr, ct);
                 await provider.CommentOnPullRequestAsync(prId, formatted, ctx, ct);
             }
             catch (Exception ex)
@@ -335,10 +339,10 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     /// path end-to-end).
     /// </summary>
     private static async Task<ProviderCallContext> BuildCallContextAsync(
-        ProductDbContext db, PrRow pr, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, PrRow pr, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(pr.RepoId)) return ProviderCallContext.Anonymous;
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
         if (repo is null) return ProviderCallContext.Anonymous;
         var (repoName, projectName) = PrCoordsResolver.Resolve(repo, repo.Kind?.ToLowerInvariant());
         return new ProviderCallContext(
@@ -352,6 +356,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task<long> ReplyPrCommentAsync(long parentCommentId, string body, string authorAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var parent = await db.PrComments.AsNoTracking().FirstOrDefaultAsync(x => x.Id == parentCommentId, ct)
@@ -401,7 +406,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
                 var provider = ResolveProvider(scope.ServiceProvider, pr.Provider);
                 var quotedPreview = parent.Body?.Length > 160 ? parent.Body[..160] + "…" : parent.Body ?? string.Empty;
                 var formatted = $"> Re: {parent.FilePath}:{parent.Line} — {quotedPreview}\n\n{body}\n\n_({authorAgentId} reply)_";
-                var ctx = await BuildCallContextAsync(db, pr, ct);
+                var ctx = await BuildCallContextAsync(control, db, pr, ct);
                 await provider.ReplyToReviewCommentAsync(parent.PrId, parent.ProviderCommentId ?? string.Empty, formatted, ctx, ct);
             }
             catch (Exception ex)
@@ -417,6 +422,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task ResolvePrCommentAsync(long commentId, string resolverAgentId, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var c = await db.PrComments.FirstOrDefaultAsync(x => x.Id == commentId, ct)
             ?? throw new InvalidOperationException($"Comment {commentId} not found.");
@@ -441,6 +447,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task UpdatePrBaseBranchAsync(string prId, string newBaseBranch, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
@@ -464,6 +471,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
     public async Task TransitionWorkItemAsync(string workItemId, string state, CancellationToken ct = default)
     {
         using var scope = this.services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);

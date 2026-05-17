@@ -143,10 +143,11 @@ public class Phase14ScheduleGateTests
     private static async Task SetCrewScheduleEnabled(ForgeWebApplicationFactory f, string id, bool enabled)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var row = await db.Crews.FirstAsync(x => x.Id == id);
+        var row = await control.Crews.FirstAsync(x => x.Id == id);
         row.ScheduleEnabled = enabled;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task PinCrewScheduleOff(ForgeWebApplicationFactory f, string id)
@@ -164,14 +165,15 @@ public class Phase14ScheduleGateTests
         // makes the band NOT contain UTC-now. We just toggle to a known-bad
         // TZ for this run.
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var row = await db.Crews.FirstAsync(x => x.Id == id);
+        var row = await control.Crews.FirstAsync(x => x.Id == id);
         row.ScheduleEnabled = true;
         // Pick the TZ that is currently OUTSIDE the 09:00-21:00 window.
         // We compute it from the test process's wall clock — hour-aware so
         // the integration test is stable regardless of when CI runs.
         row.Timezone = ChooseOffShiftTimezoneForNow();
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -267,8 +269,9 @@ public class Phase14ScheduleGateTests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var hist = await db.CrewHistory.AsNoTracking()
+        var hist = await control.CrewHistory.AsNoTracking()
             .Where(h => h.CrewId == id && h.Kind == "dispatch-after-hours")
             .ToListAsync();
         Assert.Single(hist);

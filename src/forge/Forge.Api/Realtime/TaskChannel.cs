@@ -80,6 +80,7 @@ public sealed class TaskChannel
         try
         {
             using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = new TaskTranscriptEventRow
             {
@@ -98,7 +99,7 @@ public sealed class TaskChannel
             // common case is one INSERT, no DELETE.
             if (Random.Shared.Next(100) == 0)
             {
-                await EvictOverCapAsync(db, workItemId, ct);
+                await EvictOverCapAsync(control, db, workItemId, ct);
             }
         }
         catch (Exception ex)
@@ -130,7 +131,7 @@ public sealed class TaskChannel
         }
     }
 
-    private static async Task EvictOverCapAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private static async Task EvictOverCapAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var count = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
             .CountAsync(db.TaskTranscriptEvents, e => e.WorkItemId == workItemId, ct);

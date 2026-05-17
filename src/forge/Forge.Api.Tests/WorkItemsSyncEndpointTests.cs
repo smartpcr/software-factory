@@ -110,18 +110,19 @@ public class WorkItemsSyncEndpointTests
         using var factory = new ForgeWebApplicationFactory();
         using (var scope = factory.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
-            db.Users.Add(new Forge.Api.Persistence.UserRow
+            control.Users.Add(new Forge.Api.Persistence.UserRow
             {
                 Id = "u-h", DisplayName = "H", Email = "h@x", Role = "human",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            db.Users.Add(new Forge.Api.Persistence.UserRow
+            control.Users.Add(new Forge.Api.Persistence.UserRow
             {
                 Id = "u-po", DisplayName = "PO", Email = "po@x", Role = "product-owner",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync();
         }
 
         using var human = factory.CreateClient();

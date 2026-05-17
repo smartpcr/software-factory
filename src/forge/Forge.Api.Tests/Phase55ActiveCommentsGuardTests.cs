@@ -53,6 +53,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SeedStoryAsync(ForgeWebApplicationFactory factory, string id, string title)
     {
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return;
         db.WorkItems.Add(new WorkItemRow
@@ -67,7 +68,7 @@ public class Phase55ActiveCommentsGuardTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task<HttpResponseMessage> SpawnAsync(HttpClient c, string storyId)
@@ -76,6 +77,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SetPlanPrAsync(ForgeWebApplicationFactory f, string storyId, string prId, string col)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         s.PlanPrId = prId;
@@ -96,7 +98,7 @@ public class Phase55ActiveCommentsGuardTests
                 Title = $"Plan for story {storyId}",
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -111,6 +113,7 @@ public class Phase55ActiveCommentsGuardTests
     private static async Task SeedAllPlanDocsPassedAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         var docs = new (string FileName, int Iter)[]
@@ -137,7 +140,7 @@ public class Phase55ActiveCommentsGuardTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -179,6 +182,7 @@ public class Phase55ActiveCommentsGuardTests
         long? commentId = null;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
             ws.Status = initialStatus;
@@ -212,12 +216,12 @@ public class Phase55ActiveCommentsGuardTests
                     UpdatedAt = DateTimeOffset.UtcNow,
                 };
                 db.PrComments.Add(row);
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
                 commentId = row.Id;
             }
             else
             {
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
         }
 
@@ -247,6 +251,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-defer-1";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
@@ -274,19 +279,21 @@ public class Phase55ActiveCommentsGuardTests
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId);
                 Assert.Empty(advanced);
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-defer-1");
                 Assert.Equal("review", ws.Status);
@@ -309,6 +316,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-advance-1";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
@@ -322,20 +330,22 @@ public class Phase55ActiveCommentsGuardTests
                 });
                 db.Prs.Add(new PrRow { Id = prId, Col = "merged", Branch = "story/X/ws1", Base = "main", Title = "x" });
                 // No PrComments → guard passes.
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId);
                 Assert.Single(advanced);
                 Assert.Equal("ws-advance-1", advanced[0]);
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-advance-1");
                 Assert.Equal("complete", ws.Status);
@@ -358,6 +368,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-resolved-1";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
@@ -387,19 +398,21 @@ public class Phase55ActiveCommentsGuardTests
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId);
                 Assert.Single(advanced);
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-resolved-1");
                 Assert.Equal("complete", ws.Status);
@@ -428,6 +441,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-stalled-advance-1";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
@@ -441,20 +455,22 @@ public class Phase55ActiveCommentsGuardTests
                     AgentsJson = "[]",
                 });
                 db.Prs.Add(new PrRow { Id = prId, Col = "merged", Branch = "story/X/ws1", Base = "main", Title = "x" });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId);
                 Assert.Single(advanced);
                 Assert.Equal("ws-stalled-advance-1", advanced[0]);
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-advance-1");
                 Assert.Equal("complete", ws.Status);
@@ -479,6 +495,7 @@ public class Phase55ActiveCommentsGuardTests
             const string prId = "pr-stalled-defer-1";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Workstreams.Add(new WorkstreamRow
                 {
@@ -507,18 +524,20 @@ public class Phase55ActiveCommentsGuardTests
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(db, prId);
+                var advanced = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId);
                 Assert.Empty(advanced);
             }
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == "ws-stalled-defer-1");
                 Assert.Equal(WorkstreamStatuses.Stalled, ws.Status);
@@ -555,6 +574,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
 
@@ -609,6 +629,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var humanActive = await db.PrComments.AsNoTracking()
                     .CountAsync(pc => pc.PrId == prId && pc.State == "active" && pc.AuthorKind == "user");
@@ -659,6 +680,7 @@ public class Phase55ActiveCommentsGuardTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);

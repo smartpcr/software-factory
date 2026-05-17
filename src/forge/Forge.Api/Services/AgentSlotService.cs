@@ -38,9 +38,10 @@ public class AgentSlotService
         string agentId, string workItemId, string role = "generator", CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var agent = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (agent is null)
         {
             this.logger?.LogWarning("TryClaim: agent {AgentId} not found", agentId);
@@ -48,7 +49,7 @@ public class AgentSlotService
         }
 
         // Check capacity — open claims (ReleasedAt IS NULL) vs MaxConcurrentTasks.
-        var openClaims = await db.AgentClaims
+        var openClaims = await control.AgentClaims
             .Where(c => c.AgentId == agentId && c.ReleasedAt == null)
             .CountAsync(ct);
 
@@ -61,7 +62,7 @@ public class AgentSlotService
         }
 
         // Check if this exact (agent, workItem) is already claimed.
-        var existing = await db.AgentClaims
+        var existing = await control.AgentClaims
             .FirstOrDefaultAsync(c => c.AgentId == agentId && c.WorkItemId == workItemId && c.ReleasedAt == null, ct);
         if (existing is not null)
         {
@@ -76,10 +77,10 @@ public class AgentSlotService
             Role = role,
             ClaimedAt = DateTimeOffset.UtcNow,
         };
-        db.AgentClaims.Add(claim);
+        control.AgentClaims.Add(claim);
 
         agent.State = "working";
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         this.logger?.LogInformation(
             "Claimed agent {AgentId} for {WorkItemId} (role={Role}, open={Open})",
@@ -98,9 +99,10 @@ public class AgentSlotService
         CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var claim = await db.AgentClaims
+        var claim = await control.AgentClaims
             .FirstOrDefaultAsync(c => c.AgentId == agentId && c.WorkItemId == workItemId && c.ReleasedAt == null, ct);
         if (claim is not null)
         {
@@ -111,18 +113,18 @@ public class AgentSlotService
         }
 
         // If no open claims remain for this agent, flip to idle.
-        var remaining = await db.AgentClaims
+        var remaining = await control.AgentClaims
             .CountAsync(c => c.AgentId == agentId && c.ReleasedAt == null && (claim == null || c.Id != claim.Id), ct);
         if (remaining == 0)
         {
-            var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+            var agent = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
             if (agent is not null && agent.State == "working")
             {
                 agent.State = "idle";
             }
         }
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         this.logger?.LogInformation(
             "Released agent {AgentId} from {WorkItemId} (remaining open={Remaining})",
             agentId, workItemId, remaining);
@@ -135,9 +137,10 @@ public class AgentSlotService
     public async Task ReleaseByTaskAsync(string workItemId, CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var openClaims = await db.AgentClaims
+        var openClaims = await control.AgentClaims
             .Where(c => c.WorkItemId == workItemId && c.ReleasedAt == null)
             .ToListAsync(ct);
 
@@ -150,11 +153,11 @@ public class AgentSlotService
         // For each affected agent, check if they have other open claims.
         foreach (var aid in agentIds)
         {
-            var otherOpen = await db.AgentClaims
+            var otherOpen = await control.AgentClaims
                 .CountAsync(c => c.AgentId == aid && c.ReleasedAt == null && c.WorkItemId != workItemId, ct);
             if (otherOpen == 0)
             {
-                var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == aid, ct);
+                var agent = await control.Agents.FirstOrDefaultAsync(a => a.Id == aid, ct);
                 if (agent is not null && agent.State == "working")
                 {
                     agent.State = "idle";
@@ -162,7 +165,7 @@ public class AgentSlotService
             }
         }
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         this.logger?.LogInformation(
             "Released {Count} claims for task {WorkItemId} (agents: {Agents})",
             openClaims.Count, workItemId, string.Join(", ", agentIds));
@@ -174,13 +177,14 @@ public class AgentSlotService
     public async Task<bool> IsAvailableAsync(string agentId, CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var agent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (agent is null) return false;
         if (agent.State == "paused") return false;
 
-        var openClaims = await db.AgentClaims
+        var openClaims = await control.AgentClaims
             .CountAsync(c => c.AgentId == agentId && c.ReleasedAt == null, ct);
         return openClaims < agent.MaxConcurrentTasks;
     }
@@ -191,8 +195,9 @@ public class AgentSlotService
     public async Task<IReadOnlyList<AgentClaimRow>> GetActiveClaimsAsync(CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        return await db.AgentClaims.AsNoTracking()
+        return await control.AgentClaims.AsNoTracking()
             .Where(c => c.ReleasedAt == null)
             .ToListAsync(ct);
     }
@@ -204,9 +209,10 @@ public class AgentSlotService
     public async Task RecoverOrphanedClaimsAsync(CancellationToken ct = default)
     {
         using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
-        var orphans = await db.AgentClaims
+        var orphans = await control.AgentClaims
             .Where(c => c.ReleasedAt == null)
             .ToListAsync(ct);
 
@@ -220,7 +226,7 @@ public class AgentSlotService
         }
 
         // Reset all affected agents to idle.
-        var agents = await db.Agents
+        var agents = await control.Agents
             .Where(a => agentIds.Contains(a.Id) && a.State == "working")
             .ToListAsync(ct);
         foreach (var agent in agents)
@@ -228,7 +234,7 @@ public class AgentSlotService
             agent.State = "idle";
         }
 
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         this.logger?.LogInformation(
             "Recovered {Count} orphaned agent claims on startup (agents: {Agents})",
             orphans.Count, string.Join(", ", agentIds));

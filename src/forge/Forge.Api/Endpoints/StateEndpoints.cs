@@ -28,12 +28,12 @@ public static class StateEndpoints
 
     public static WebApplication MapStateEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/state", async (HttpContext ctx, ProductDbContext db) =>
+        app.MapGet("/api/state", async (HttpContext ctx, ControlDbContext control, ProductDbContext db) =>
         {
             // Phase 8.9 — scope cards / workstreams / prs to the active product.
             // Epics, columns, ws-events, ws-stats, overview-* are NOT repo-scoped
             // today (they describe the workspace as a whole) so they ship as-is.
-            var scope = await ProductScope.ResolveAsync(ctx, db);
+            var scope = await ProductScope.ResolveAsync(ctx, control);
             var epics = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
             var cardsQ = db.Cards.AsNoTracking().AsQueryable();
             var wsQ = db.Workstreams.AsNoTracking().AsQueryable();
@@ -91,7 +91,7 @@ public static class StateEndpoints
         .WithName("GetState");
 
         var epicsGrp = app.MapGroup("/api/epics").WithTags("Epics");
-        epicsGrp.MapGet("/", async (ProductDbContext db) =>
+        epicsGrp.MapGet("/", async (ControlDbContext control, ProductDbContext db) =>
         {
             var rows = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
             return Results.Ok(rows.Select(MapEpic).ToList());
@@ -99,7 +99,7 @@ public static class StateEndpoints
 
         // ── Product-scoped stories ──────────────────────────────────
         var stories = app.MapGroup("/api/products/{productId}/stories").WithTags("Stories");
-        stories.MapGet("/", async (string productId, ProductDbContext db) =>
+        stories.MapGet("/", async (string productId, ControlDbContext control, ProductDbContext db) =>
         {
             var rows = await db.ProductStories.AsNoTracking()
                 .Where(s => s.ProductId == productId)
@@ -112,6 +112,7 @@ public static class StateEndpoints
             HttpContext ctx,
             string productId,
             [FromBody] CreateStoryRequest req,
+            ControlDbContext control,
             ProductDbContext db,
             IHubContext<ForgeHub> hub,
             IForgeDbPaths paths,
@@ -122,7 +123,7 @@ public static class StateEndpoints
             if (auth is not null) return auth;
             if (string.IsNullOrWhiteSpace(req?.Name))
                 return Results.Problem(title: "Name is required", statusCode: 400);
-            if (!await db.Products.AnyAsync(p => p.Id == productId))
+            if (!await control.Products.AnyAsync(p => p.Id == productId))
                 return Results.Problem(title: $"Product {productId} not found", statusCode: 404);
 
             var id = req.Id?.Trim();
@@ -196,7 +197,7 @@ public static class StateEndpoints
             {
                 branchWarnings.AddRange(
                     await EnsureBranchInProductReposAsync(
-                        db, productId, row.BaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+                        control, db, productId, row.BaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
             }
 
             var story = MapStory(row);
@@ -212,6 +213,7 @@ public static class StateEndpoints
             string productId,
             string storyId,
             [FromBody] PatchStoryRequest req,
+            ControlDbContext control,
             ProductDbContext db,
             IHubContext<ForgeHub> hub,
             IForgeDbPaths paths,
@@ -429,7 +431,7 @@ public static class StateEndpoints
             {
                 branchWarnings.AddRange(
                     await EnsureBranchInProductReposAsync(
-                        db, productId, newBaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+                        control, db, productId, newBaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
             }
             if (newBaseBranch is not null)
             {
@@ -444,7 +446,7 @@ public static class StateEndpoints
                     && !string.Equals(spawnRow.BaseBranch, newBaseBranch, StringComparison.Ordinal))
                 {
                     var spawnResult = await StoriesEndpoints.ApplySpawnBaseBranchChangeAsync(
-                        db, hub, git, storyProvider, spawnRow, newBaseBranch, ctx.RequestAborted);
+                        control, db, hub, git, storyProvider, spawnRow, newBaseBranch, ctx.RequestAborted);
                     if (spawnResult.PrepareError is not null)
                     {
                         // Prepare failure is non-fatal at the story level —
@@ -483,6 +485,7 @@ public static class StateEndpoints
             HttpContext ctx,
             string productId,
             string storyId,
+            ControlDbContext control,
             ProductDbContext db,
             IHubContext<ForgeHub> hub) =>
         {
@@ -551,6 +554,7 @@ public static class StateEndpoints
     /// failing the whole request.
     /// </summary>
     private static async Task<List<string>> EnsureBranchInProductReposAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string productId,
         string baseBranch,
@@ -559,7 +563,7 @@ public static class StateEndpoints
         CancellationToken ct)
     {
         var warnings = new List<string>();
-        var repos = await db.Repos.AsNoTracking()
+        var repos = await control.Repos.AsNoTracking()
             .Where(r => r.ProductId == productId)
             .ToListAsync(ct);
         if (repos.Count == 0)

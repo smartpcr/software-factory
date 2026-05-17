@@ -559,12 +559,13 @@ public class AgentReadyAuditExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
         // Pre-seed a work item with no assignee.
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "ar-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "AR", RemoteUrl = "https://x", DefaultBranch = "main",
@@ -576,7 +577,7 @@ public class AgentReadyAuditExtraTests
             Type = "task", State = "active", Title = "T", AssignedToJson = null,
             TagsJson = "[]", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Drive the agent-ready resolver against the seeded row directly —
         // the audit row write is what we assert here. (Full job→provider
@@ -587,7 +588,7 @@ public class AgentReadyAuditExtraTests
         Assert.True(result.WasAssigned);
 
         existing.AssignedToJson = result.NewAssignedToJson;
-        db.Audit.Add(new AuditRow
+        control.Audit.Add(new AuditRow
         {
             At = DateTimeOffset.UtcNow,
             User = "sync",
@@ -602,12 +603,12 @@ public class AgentReadyAuditExtraTests
             }),
             Supervising = false,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // SQLite EF can't ORDER BY DateTimeOffset server-side
         // (memory/feedback_sqlite_no_order_by_datetimeoffset.md). Sort by
         // Id desc instead — the audit table's Id is monotonic.
-        var audit = await db.Audit.AsNoTracking()
+        var audit = await control.Audit.AsNoTracking()
             .Where(a => a.User == "sync" && a.Path.Contains("auto-assigned-by-flag"))
             .OrderByDescending(a => a.Id)
             .FirstAsync();
@@ -643,22 +644,23 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
+        var product = await control.Products.FirstAsync();
 
         var freshRunning = DateTimeOffset.UtcNow.AddMinutes(-5).ToString("o");
-        db.Repos.Add(new RepoRow
+        control.Repos.Add(new RepoRow
         {
             Id = "running-fresh", ProductId = product.Id, Kind = "ado",
             DisplayName = "Fresh", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
             LastSyncStatus = "running", IsRunningSince = freshRunning,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.RunTickAsync(default);
 
-        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-fresh");
+        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-fresh");
         // Skipped — IsRunningSince is unchanged and status still 'running'.
         Assert.Equal("running", refreshed.LastSyncStatus);
         Assert.Equal(freshRunning, refreshed.IsRunningSince);
@@ -670,17 +672,18 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
+        var product = await control.Products.FirstAsync();
 
         var staleRunning = DateTimeOffset.UtcNow.AddMinutes(-30).ToString("o");
-        db.Repos.Add(new RepoRow
+        control.Repos.Add(new RepoRow
         {
             Id = "running-stale", ProductId = product.Id, Kind = "ado",
             DisplayName = "Stale", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
             LastSyncStatus = "running", IsRunningSince = staleRunning,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.RunTickAsync(default);
@@ -689,7 +692,7 @@ public class WorkItemSyncJobExtraTests
         // the sync ran cleanly) or 'failed' (if the configured ADO upstream
         // wasn't reachable). Either way it's NOT still 'running' with the
         // original timestamp.
-        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-stale");
+        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-stale");
         Assert.NotEqual(staleRunning, refreshed.IsRunningSince ?? string.Empty);
     }
 
@@ -699,23 +702,24 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
+        var product = await control.Products.FirstAsync();
 
         var priorSyncAt = DateTimeOffset.UtcNow.AddDays(-1).ToString("o");
-        db.Repos.Add(new RepoRow
+        control.Repos.Add(new RepoRow
         {
             // Unknown provider kind → resolver returns null → terminal error.
             Id = "fail-repo", ProductId = product.Id, Kind = "no-such-provider",
             DisplayName = "Fail", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
             LastSyncAt = priorSyncAt, LastSyncStatus = "idle",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.SyncRepoAsync("fail-repo", kind: null, ct: default);
 
-        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "fail-repo");
+        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "fail-repo");
         Assert.Equal("failed", refreshed.LastSyncStatus);
         Assert.NotNull(refreshed.LastSyncError);
         Assert.Equal(priorSyncAt, refreshed.LastSyncAt); // untouched
@@ -727,14 +731,15 @@ public class WorkItemSyncJobExtraTests
         using var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "run-repo", ProductId = product.Id, Kind = "no-provider",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.SyncRepoAsync("run-repo", kind: "manual", ct: default);
@@ -816,21 +821,22 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "ar-empty", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
             AreaPathsJson = """["A\\B"]""",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var resp = await c.PatchAsJsonAsync("/api/repos/ar-empty",
             new { areaPaths = Array.Empty<string>() }, JsonOpts);
         Assert.True(resp.IsSuccessStatusCode);
 
-        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "ar-empty");
+        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "ar-empty");
         // Either null or "[]" is acceptable per spec; impl normalises to null.
         Assert.True(string.IsNullOrEmpty(refreshed.AreaPathsJson) || refreshed.AreaPathsJson == "[]",
             $"Expected null/[]/empty for cleared AreaPathsJson, got: {refreshed.AreaPathsJson}");
@@ -844,15 +850,16 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "kind-full", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
             LastSyncAt = DateTimeOffset.UtcNow.AddDays(-3).ToString("o"),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var resp = await c.PostAsJsonAsync(
             "/api/repos/kind-full/sync-work-items",
@@ -862,7 +869,7 @@ public class Phase23EndpointExtraTests
         // {error}; what we care about is the side-effect on LastSyncAt.
         _ = resp; // status is provider-shape-dependent in tests.
 
-        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "kind-full");
+        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "kind-full");
         Assert.True(string.IsNullOrEmpty(refreshed.LastSyncAt),
             $"Expected LastSyncAt cleared by kind=full, got: {refreshed.LastSyncAt}");
     }
@@ -879,8 +886,9 @@ public class Phase23EndpointExtraTests
         using (f.CreateClient()) { /* trigger boot */ }
         using var scope = f.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
+        var product = await control.Products.FirstAsync();
 
         // Insert a repo whose Kind matches no real provider; Phase 13 NullForgeProvider
         // returns IsConfigured=false, so the second call (regardless of provider)
@@ -890,8 +898,8 @@ public class Phase23EndpointExtraTests
             Id = "rl-svc", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
         };
-        db.Repos.Add(repo);
-        await db.SaveChangesAsync();
+        control.Repos.Add(repo);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Force the throttle window by manually inserting a recent sync
         // timestamp. WorkItemSyncService exposes ResetThrottle for tests;
@@ -927,19 +935,20 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "rl-po", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
         });
         // Insert a non-PO user to demote subsequent callers below PO.
-        db.Users.Add(new UserRow
+        control.Users.Add(new UserRow
         {
             Id = "u-non-po", DisplayName = "Non PO", Email = "non-po@forge.local", Role = "human",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Non-PO with ignoreThrottle: true → 403.
         c.DefaultRequestHeaders.Remove("X-Forge-User");
@@ -959,9 +968,10 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "limit-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -976,7 +986,7 @@ public class Phase23EndpointExtraTests
                 CompletedSuccessfully = true,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var resp = await c.GetAsync("/api/repos/limit-repo/sync-work-items/runs?limit=3");
         Assert.True(resp.IsSuccessStatusCode);
@@ -992,9 +1002,10 @@ public class Phase23EndpointExtraTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var product = await db.Products.FirstAsync();
-        db.Repos.Add(new RepoRow
+        var product = await control.Products.FirstAsync();
+        control.Repos.Add(new RepoRow
         {
             Id = "clamp-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -1011,7 +1022,7 @@ public class Phase23EndpointExtraTests
                 CompletedSuccessfully = true,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Sync history is intentionally a "recent runs" view and capped at
         // 50 server-side. A request for 999 must clamp to 50.

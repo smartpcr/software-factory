@@ -109,6 +109,7 @@ public class WorkItemSyncService
         // request-scoped DbContext is unrelated.
         using (var scope = this.scopes.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             foreach (var w in remote)
             {
@@ -116,7 +117,7 @@ public class WorkItemSyncService
                 // provider labelled it — the operator's intent is to sync
                 // INTO this repo.
                 var withRepo = w with { RepoId = repo.Id };
-                var (didInsert, didUpdate) = await UpsertAsync(db, withRepo, ct);
+                var (didInsert, didUpdate) = await UpsertAsync(control, db, withRepo, ct);
                 if (didInsert) inserted++;
                 else if (didUpdate) updated++;
                 else skipped++;
@@ -141,7 +142,7 @@ public class WorkItemSyncService
     /// fields the remote doesn't track (e.g. <c>FeatureRef</c>, internal
     /// tags) are preserved.
     /// </summary>
-    private static async Task<(bool Inserted, bool Updated)> UpsertAsync(ProductDbContext db, WorkItem remote, CancellationToken ct)
+    private static async Task<(bool Inserted, bool Updated)> UpsertAsync(ControlDbContext control, ProductDbContext db, WorkItem remote, CancellationToken ct)
     {
         var existing = await db.WorkItems.FirstOrDefaultAsync(
             w => w.Provider == remote.Provider && w.ProviderRef == remote.ProviderRef, ct);

@@ -146,6 +146,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] SpawnRequest? req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
@@ -318,7 +319,7 @@ public static class StoriesEndpoints
             spawn.AttachmentsJson = storyAttachmentsJson;
         }
         db.StorySpawns.Add(spawn);
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "created", spawn = ToContract(spawn) });
 
@@ -336,7 +337,7 @@ public static class StoriesEndpoints
                 // orchestrator drive sees a clean state, then await the
                 // drive itself. PlanPrId is observable on the 201 response.
                 await PurgeResidualSpawnDataAsync(
-                    db, paths, deterministicSpawnId, safeStoryIdForPurge,
+                    control, db, paths, deterministicSpawnId, safeStoryIdForPurge,
                     loggerFactory.CreateLogger("forge.story-spawn.respawn-purge"),
                     ctx.RequestAborted);
                 await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
@@ -361,13 +362,14 @@ public static class StoriesEndpoints
                 try
                 {
                     using var bgScope = scopeFactory.CreateScope();
+                    var bgControl = bgScope.ServiceProvider.GetRequiredService<ControlDbContext>();
                     var bgDb = bgScope.ServiceProvider.GetRequiredService<ProductDbContext>();
                     var bgLoggerFactory = bgScope.ServiceProvider.GetRequiredService<ILoggerFactory>();
                     var bgPurgeLogger = bgLoggerFactory.CreateLogger("forge.story-spawn.respawn-purge");
                     try
                     {
                         await PurgeResidualSpawnDataAsync(
-                            bgDb, paths, spawnIdForBg, safeStoryIdForBg,
+                            bgControl, bgDb, paths, spawnIdForBg, safeStoryIdForBg,
                             bgPurgeLogger, CancellationToken.None);
                     }
                     catch (Exception ex)
@@ -410,6 +412,7 @@ public static class StoriesEndpoints
     /// </list></para>
     /// </summary>
     private static async Task PurgeResidualSpawnDataAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IForgeDbPaths paths,
         string deterministicSpawnId,
@@ -465,8 +468,8 @@ public static class StoriesEndpoints
             // (called for orphan workstreams further down) cleans the
             // workstream-keyed rows; this only covers the synthetic
             // plan-doc + spawn ids.
-            var agentUsage = await db.AgentUsage.Where(u => idList.Contains(u.TaskId)).ToListAsync(ct);
-            db.AgentUsage.RemoveRange(agentUsage);
+            var agentUsage = await control.AgentUsage.Where(u => idList.Contains(u.TaskId)).ToListAsync(ct);
+            control.AgentUsage.RemoveRange(agentUsage);
             totalRowsPurged += agentUsage.Count;
 
             var workItemLinks = await db.WorkItemLinks.Where(l => idList.Contains(l.FromId) || idList.Contains(l.ToId)).ToListAsync(ct);
@@ -485,7 +488,7 @@ public static class StoriesEndpoints
             db.Cards.RemoveRange(cards);
             totalRowsPurged += cards.Count;
 
-            await db.SaveChangesAsync(ct);
+            await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         }
         catch (Exception ex)
         {
@@ -518,7 +521,7 @@ public static class StoriesEndpoints
                     try
                     {
                         await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
-                            db, git!, paths, ws, ct, deleteRemoteBranch: true);
+                            control, db, git!, paths, ws, ct, deleteRemoteBranch: true);
                     }
                     catch (Exception innerEx)
                     {
@@ -584,7 +587,7 @@ public static class StoriesEndpoints
             // path. For locally-authored stories ProductStoryRow doesn't
             // bind a specific repo, so we scan every repo whose product
             // matches. Limited to repos with a non-null CloneRoot.
-            var candidateRepos = await db.Repos.AsNoTracking()
+            var candidateRepos = await control.Repos.AsNoTracking()
                 .Where(r => r.CloneRoot != null && r.CloneRoot != string.Empty)
                 .ToListAsync(ct);
 
@@ -714,7 +717,7 @@ public static class StoriesEndpoints
                     db.Builds.RemoveRange(builds);
                 }
                 db.Prs.RemoveRange(orphanPrs);
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             }
         }
         catch (Exception ex)
@@ -779,6 +782,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromQuery] bool? deleteBaseBranch,
+        ControlDbContext control,
         ProductDbContext db,
         IGitWorktreeService git,
         IForgeDbPaths paths,
@@ -824,7 +828,7 @@ public static class StoriesEndpoints
             spawn.Phase = StorySpawnPhases.Deleting;
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
             await SaveChangesWithBusyRetryAsync(
-                db,
+                control, db,
                 logger,
                 "delete-start-phase",
                 ctx.RequestAborted);
@@ -960,14 +964,14 @@ public static class StoriesEndpoints
         // Release any active agent claims (Released==null means the agent
         // is still "busy" on this work). Without this, the agent capacity
         // is stranded until the 24 h abandoned-recovery sweep.
-        var openClaims = await db.AgentClaims
+        var openClaims = await control.AgentClaims
             .Where(c => allWorkItemIds.Contains(c.WorkItemId) && c.ReleasedAt == null)
             .ToListAsync(ctx.RequestAborted);
         foreach (var c in openClaims) c.ReleasedAt = nowOff;
         counts["agentClaimsReleased"] = openClaims.Count;
 
         await SaveChangesWithBusyRetryAsync(
-            db,
+            control, db,
             logger,
             "cancel-inflight-work",
             ctx.RequestAborted);
@@ -1047,7 +1051,7 @@ public static class StoriesEndpoints
         counts["prsClosedUpstream"] = prsClosedUpstream;
 
         await SaveChangesWithBusyRetryAsync(
-            db,
+            control, db,
             logger,
             "remove-pr-chain",
             ctx.RequestAborted);
@@ -1061,7 +1065,7 @@ public static class StoriesEndpoints
             try
             {
                 var rep = await WorkstreamsEndpoints.CascadeDeleteWorkstreamAsync(
-                    db, git, paths, ws, ctx.RequestAborted, deleteRemoteBranch: true);
+                    control, db, git, paths, ws, ctx.RequestAborted, deleteRemoteBranch: true);
                 if (rep is { } and not null)
                 {
                     // Best-effort merge of per-workstream counts into a sum.
@@ -1138,9 +1142,9 @@ public static class StoriesEndpoints
             // step 3 above but never deletes the rows; this completes
             // the wipe so the agent-capacity sweep doesn't keep
             // re-counting them.
-            var agentClaims = await db.AgentClaims
+            var agentClaims = await control.AgentClaims
                 .Where(c => ids.Contains(c.WorkItemId)).ToListAsync(ctx.RequestAborted);
-            db.AgentClaims.RemoveRange(agentClaims);
+            control.AgentClaims.RemoveRange(agentClaims);
             counts["synthetic.agentClaims"] = agentClaims.Count;
 
             // Phase 50 follow-up (2026-05-12) — cost ledger rows for the
@@ -1153,8 +1157,8 @@ public static class StoriesEndpoints
             // showing stale dollar totals before any LLM has run on the
             // new spawn (operator-reported: re-spawned story showed
             // ~$1300-$2000 per plan-doc card with PENDING status).
-            var agentUsage = await db.AgentUsage.Where(u => ids.Contains(u.TaskId)).ToListAsync(ctx.RequestAborted);
-            db.AgentUsage.RemoveRange(agentUsage);
+            var agentUsage = await control.AgentUsage.Where(u => ids.Contains(u.TaskId)).ToListAsync(ctx.RequestAborted);
+            control.AgentUsage.RemoveRange(agentUsage);
             counts["synthetic.agentUsage"] = agentUsage.Count;
 
             var workItemLinks = await db.WorkItemLinks.Where(l => ids.Contains(l.FromId) || ids.Contains(l.ToId)).ToListAsync(ctx.RequestAborted);
@@ -1186,7 +1190,7 @@ public static class StoriesEndpoints
         }
 
         await SaveChangesWithBusyRetryAsync(
-            db,
+            control, db,
             logger,
             "remove-synthetic-rows",
             ctx.RequestAborted);
@@ -1196,7 +1200,7 @@ public static class StoriesEndpoints
         // CascadeDeleteWorkstreamAsync above. ────────────────────────────
         var repo = string.IsNullOrEmpty(spawn.RepoId)
             ? null
-            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
+            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
 
         // Track branches we've already cleaned to avoid duplicate work
         // (PR branch may equal plan branch on partial failures, etc.).
@@ -1369,7 +1373,7 @@ public static class StoriesEndpoints
         // ── 10. Delete the spawn row itself ─────────────────────────────
         db.StorySpawns.Remove(spawn);
         await SaveChangesWithBusyRetryAsync(
-            db,
+            control, db,
             logger,
             "remove-spawn-row",
             ctx.RequestAborted);
@@ -1405,6 +1409,7 @@ public static class StoriesEndpoints
     /// first collision.
     /// </summary>
     private static async Task SaveChangesWithBusyRetryAsync(
+        ControlDbContext control,
         ProductDbContext db,
         ILogger logger,
         string operation,
@@ -1417,7 +1422,7 @@ public static class StoriesEndpoints
         {
             try
             {
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
                 return;
             }
             catch (DbUpdateException ex) when (attempt < maxAttempts && IsSqliteBusy(ex))
@@ -1449,9 +1454,9 @@ public static class StoriesEndpoints
         return false;
     }
 
-    private static async Task<IResult> ListSpawns(HttpContext ctx, ProductDbContext db, [FromQuery] string? phase)
+    private static async Task<IResult> ListSpawns(HttpContext ctx, ControlDbContext control, ProductDbContext db, [FromQuery] string? phase)
     {
-        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var scope = await ProductScope.ResolveAsync(ctx, control);
         var q = db.StorySpawns.AsNoTracking().AsQueryable();
         if (!scope.IsAll)
         {
@@ -1468,7 +1473,7 @@ public static class StoriesEndpoints
         return Results.Ok(rows.Select(ToContract).ToList());
     }
 
-    private static async Task<IResult> GetSpawn(string storyId, ProductDbContext db)
+    private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -1548,7 +1553,7 @@ public static class StoriesEndpoints
 
         // Cost ledger is keyed on TaskId — the loop writes the workstream id
         // there too. Sum once per ws to avoid per-card queries.
-        var costByWs = await db.AgentUsage.AsNoTracking()
+        var costByWs = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId != null && wsIds.Contains(u.TaskId))
             .GroupBy(u => u.TaskId!)
             .Select(g => new { TaskId = g.Key, Cost = g.Sum(x => x.CostUsd) })
@@ -1797,6 +1802,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] AdvancePhaseRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
@@ -1838,12 +1844,12 @@ public static class StoriesEndpoints
         }
 
         // Gate logic — the Phase 28 "artifact check-in rule".
-        var gate = await CheckGateAsync(spawn, req.TargetPhase, db);
+        var gate = await CheckGateAsync(spawn, req.TargetPhase, control, db);
         if (gate is not null) return gate;
 
         spawn.Phase = req.TargetPhase;
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "phase-advanced", spawn = ToContract(spawn) });
         // Drive the new phase forward — e.g. on entering 'decompose' the
@@ -1868,6 +1874,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] ChangeBaseBranchRequest? req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,
@@ -1902,7 +1909,7 @@ public static class StoriesEndpoints
         }
 
         var result = await ApplySpawnBaseBranchChangeAsync(
-            db, hub, git, provider, spawn, newBase, ctx.RequestAborted);
+            control, db, hub, git, provider, spawn, newBase, ctx.RequestAborted);
         if (result.PrepareError is not null)
         {
             return Results.Problem(
@@ -1944,6 +1951,7 @@ public static class StoriesEndpoints
     /// (user requirements #5 + #6).
     /// </summary>
     internal static async Task<SpawnBaseBranchChangeResult> ApplySpawnBaseBranchChangeAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryGitOps git,
@@ -1955,7 +1963,7 @@ public static class StoriesEndpoints
         var oldBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
+            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
             : null;
 
         // (a) Ensure the new base branch exists, branched from main, and is
@@ -2100,7 +2108,7 @@ public static class StoriesEndpoints
             spawnRow.LastError = $"base-branch change replay incomplete: {string.Join("; ", replayFailures)}";
             spawnRow.LastErrorAt = DateTimeOffset.UtcNow;
         }
-        await db.SaveChangesAsync(ct);
+        await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
 
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "base-branch-changed", spawn = ToContract(spawnRow), oldBase, newBase }, ct);
@@ -2143,6 +2151,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> RetrySpawn(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
@@ -2156,7 +2165,7 @@ public static class StoriesEndpoints
         spawn.LastError = null;
         spawn.LastErrorAt = null;
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "spawn-retry", spawn = ToContract(spawn) });
@@ -2218,6 +2227,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> DismissError(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -2229,7 +2239,7 @@ public static class StoriesEndpoints
 
         spawn.LastError = null;
         spawn.LastErrorAt = null;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("storySpawn", storyId, "dismissed",
             new { kind = "spawn-error-dismissed", spawn = ToContract(spawn) });
@@ -2248,6 +2258,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactIterKpis(
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -2263,7 +2274,7 @@ public static class StoriesEndpoints
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
         var payload = await Forge.Api.Services.ConversationInsightQueries
-            .GetIterKpisAsync(db, workItemId, ct);
+            .GetIterKpisAsync(control, db, workItemId, ct);
         return Results.Ok(payload);
     }
 
@@ -2277,6 +2288,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactIterNotes(
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -2291,7 +2303,7 @@ public static class StoriesEndpoints
 
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
-        var resolved = await WorktreePathResolver.ResolveForPlanDocAsync(db, spawn.Id, key, ct);
+        var resolved = await WorktreePathResolver.ResolveForPlanDocAsync(control, db, spawn.Id, key, ct);
         var payload = await Forge.Api.Services.ConversationInsightQueries
             .GetIterNotesAsync(workItemId, resolved.WorktreePath, ct);
         return Results.Ok(payload);
@@ -2307,6 +2319,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> GetArtifactMemory(
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         Forge.Api.Agents.CopilotSessionPool copilotPool,
         Forge.Api.Services.MemoryCompactor compactor,
@@ -2324,7 +2337,7 @@ public static class StoriesEndpoints
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
         var payload = await Forge.Api.Services.ConversationInsightQueries
-            .GetMemoryAsync(db, copilotPool, compactor, workItemId, ct);
+            .GetMemoryAsync(control, db, copilotPool, compactor, workItemId, ct);
         return Results.Ok(payload);
     }
 
@@ -2345,6 +2358,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryArtifactStrategy strategy)
@@ -2383,7 +2397,7 @@ public static class StoriesEndpoints
                     if (RemoveResumePending(spawn, key.ToLowerInvariant()))
                     {
                         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-                        await db.SaveChangesAsync();
+                        await control.SaveChangesAsync(); await db.SaveChangesAsync();
                     }
                     return Results.Problem(
                         title: "Plan doc PR already merged",
@@ -2398,7 +2412,7 @@ public static class StoriesEndpoints
         // event still leaves a recovery marker.
         AddResumePending(spawn, key);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
         _ = Task.Run(() => RunResumeWithCleanupAsync(scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
@@ -2438,6 +2452,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IStoryArtifactStrategy strategy)
@@ -2549,7 +2564,7 @@ public static class StoriesEndpoints
         AddResumePending(spawn, key);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // (6) Fire the same background drive as Resume -- DeliverableLoop
         // now sees verdict="iterate" + new maxIter cap, so seeding takes
@@ -2602,6 +2617,7 @@ public static class StoriesEndpoints
         try
         {
             using var scope = scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
             var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == storyId, ct);
@@ -2644,6 +2660,7 @@ public static class StoriesEndpoints
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             using var scope = scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
             if (row is not null)
@@ -2651,7 +2668,7 @@ public static class StoriesEndpoints
                 row.LastError = $"resume {key} failed: {ex.Message}";
                 row.LastErrorAt = DateTimeOffset.UtcNow;
                 row.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(ct);
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
             }
         }
         finally
@@ -2659,6 +2676,7 @@ public static class StoriesEndpoints
             try
             {
                 using var scope = scopeFactory.CreateScope();
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, CancellationToken.None);
                 if (row is not null && RemoveResumePending(row, key))
@@ -2689,6 +2707,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub)
@@ -2752,7 +2771,7 @@ public static class StoriesEndpoints
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "artifact-cancelled", storyId, key });
 
@@ -2780,6 +2799,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
@@ -2846,7 +2866,7 @@ public static class StoriesEndpoints
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "artifact-accepted", storyId, key });
 
@@ -2881,12 +2901,13 @@ public static class StoriesEndpoints
             try
             {
                 using var scope = scopeFactory.CreateScope();
+                var scopeControl = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var scopeDb = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var scopeHub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
 
                 RepoRow? repo = null;
                 if (!string.IsNullOrEmpty(capturedRepoId))
-                    repo = await scopeDb.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == capturedRepoId);
+                    repo = await scopeControl.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == capturedRepoId);
 
                 // Push the plan branch — stages any uncommitted changes
                 // from a cancelled agent and pushes all local-only
@@ -3062,6 +3083,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string key,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
@@ -3135,8 +3157,8 @@ public static class StoriesEndpoints
         //   - Workstream cancel/restart (WorkstreamsEndpoints.cs ~458, 702)
         // Without this step, the operator saw $589.85 carried over from
         // the prior architecture.md run instead of starting fresh.
-        var usage = await db.AgentUsage.Where(u => u.TaskId == workItemId).ToListAsync();
-        db.AgentUsage.RemoveRange(usage);
+        var usage = await control.AgentUsage.Where(u => u.TaskId == workItemId).ToListAsync();
+        control.AgentUsage.RemoveRange(usage);
 
         // (3) Cancel any queued/active TaskQueue rows.
         var queueRows = await db.TaskQueue
@@ -3162,7 +3184,7 @@ public static class StoriesEndpoints
         // boot-time recovery sweep.
         AddResumePending(spawn, key);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // (6) Wipe the architect workspace on disk. Matches the path
         // convention used by CrewStoryArtifactStrategy.PrepareWorkspace
@@ -3227,6 +3249,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> Reconcile(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         Forge.Api.Services.Stories.PlanReconciler reconciler)
     {
@@ -3293,7 +3316,7 @@ public static class StoriesEndpoints
     /// Returns null when the gate is satisfied, or an IResult with the
     /// 422 problem describing the gate violation.
     /// </summary>
-    private static async Task<IResult?> CheckGateAsync(StorySpawnRow spawn, string targetPhase, ProductDbContext db)
+    private static async Task<IResult?> CheckGateAsync(StorySpawnRow spawn, string targetPhase, ControlDbContext control, ProductDbContext db)
     {
         switch (targetPhase)
         {
@@ -3405,7 +3428,7 @@ public static class StoriesEndpoints
                 }
             case StorySpawnPhases.Done:
                 {
-                    return await CheckCompletionAsync(spawn, db);
+                    return await CheckCompletionAsync(spawn, control, db);
                 }
         }
         return null;
@@ -3415,7 +3438,7 @@ public static class StoriesEndpoints
     /// 28.8 — story is complete only when every workstream PR is merged,
     /// the QA feature PR is merged, and all e2e tests pass on main.
     /// </summary>
-    private static async Task<IResult?> CheckCompletionAsync(StorySpawnRow spawn, ProductDbContext db)
+    private static async Task<IResult?> CheckCompletionAsync(StorySpawnRow spawn, ControlDbContext control, ProductDbContext db)
     {
         var workstreams = await db.Workstreams.AsNoTracking()
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -3466,6 +3489,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] DecomposeRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
@@ -3593,7 +3617,7 @@ public static class StoriesEndpoints
 
         spawn.DecompositionJson = JsonSerializer.Serialize(req.Workstreams, JsonOpts);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "decomposed", spawn = ToContract(spawn) });
         return Results.Ok(new
@@ -3606,6 +3630,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> ApproveDecomposition(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator)
@@ -3625,7 +3650,7 @@ public static class StoriesEndpoints
         }
         spawn.DecompositionApproved = true;
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "decomposition-approved", spawn = ToContract(spawn) });
         if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
@@ -3633,7 +3658,7 @@ public static class StoriesEndpoints
         return Results.Ok(ToContract(refreshed));
     }
 
-    private static async Task<IResult> GetArtifacts(string storyId, ProductDbContext db)
+    private static async Task<IResult> GetArtifacts(string storyId, ControlDbContext control, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -3706,7 +3731,7 @@ public static class StoriesEndpoints
     /// <c>decomposition</c> returns the spawn's stored decomposition JSON
     /// formatted as a markdown-friendly preview.</para>
     /// </summary>
-    private static async Task<IResult> GetArtifactContent(string storyId, string key, ProductDbContext db)
+    private static async Task<IResult> GetArtifactContent(string storyId, string key, ControlDbContext control, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -3747,7 +3772,7 @@ public static class StoriesEndpoints
         // Each source returns a distinct `source` field so the UI banner shows the
         // operator whether they're looking at WIP / shipped / pre-merge content.
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
             : null;
         var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
             ? repo.CloneRoot
@@ -3886,7 +3911,7 @@ public static class StoriesEndpoints
     /// in <see cref="Forge.Api.Services.Stories.CrewStoryArtifactStrategy.ProducePlanFileAsync"/>).
     /// Decomposition has no per-doc iterations — returns empty.
     /// </summary>
-    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ProductDbContext db)
+    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ControlDbContext control, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -3937,7 +3962,7 @@ public static class StoriesEndpoints
             .ThenBy(d => d.CreatedAt)
             .ToList();
 
-        var totalCost = await db.AgentUsage.AsNoTracking()
+        var totalCost = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId)
             .SumAsync(u => (double?)u.CostUsd) ?? 0.0;
 
@@ -4077,13 +4102,13 @@ public static class StoriesEndpoints
             if (!string.IsNullOrEmpty(genAgentId))
             {
                 (_, generatorTokensSinceWindow) = await SloppyDetector.CheckTokenCapAsync(
-                    db, workItemId, genAgentId, workItemRow?.BudgetWindowStartUtc, default);
+                    control, db, workItemId, genAgentId, workItemRow?.BudgetWindowStartUtc, default);
             }
 
             var genAgent = string.IsNullOrEmpty(genAgentId) ? null
-                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId);
+                : await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId);
             var evalAgent = string.IsNullOrEmpty(evalAgentId) ? null
-                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId);
+                : await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId);
 
             // Resolve crew model fallbacks individually. Mirror exactly the
             // runtime resolution chain in
@@ -4097,7 +4122,7 @@ public static class StoriesEndpoints
             async Task<(string? Model, string? EvalModel)> CrewModelsAsync(string? crewId)
             {
                 if (string.IsNullOrEmpty(crewId)) return (null, null);
-                var row = await db.Crews.AsNoTracking()
+                var row = await control.Crews.AsNoTracking()
                     .Where(c => c.Id == crewId)
                     .Select(c => new { c.Model, c.EvaluatorModel })
                     .FirstOrDefaultAsync();
@@ -4159,7 +4184,7 @@ public static class StoriesEndpoints
     /// </summary>
     public sealed record AddDecisionPinRequest(string Text, string? WorkItemId);
 
-    private static async Task<IResult> ListDecisionPins(string storyId, ProductDbContext db)
+    private static async Task<IResult> ListDecisionPins(string storyId, ControlDbContext control, ProductDbContext db)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -4187,6 +4212,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         [FromBody] AddDecisionPinRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -4230,7 +4256,7 @@ public static class StoriesEndpoints
 
         spawn.DecisionPinsJson = JsonSerializer.Serialize(pins, JsonOpts);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "decision-pin-added", spawn = ToContract(spawn) });
@@ -4242,6 +4268,7 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         string pinId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
@@ -4267,7 +4294,7 @@ public static class StoriesEndpoints
             // Corrupted JSON — wipe so the operator can re-pin from scratch.
             spawn.DecisionPinsJson = null;
             spawn.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             return Results.Ok(new { removed = 0 });
         }
 
@@ -4283,7 +4310,7 @@ public static class StoriesEndpoints
             ? JsonSerializer.Serialize(pins, JsonOpts)
             : null;
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         if (removed > 0)
         {
@@ -4306,6 +4333,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> PauseSpawn(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
         IHubContext<ForgeHub> hub,
@@ -4376,7 +4404,7 @@ public static class StoriesEndpoints
             q.LastUpdatedAt = nowOff;
         }
 
-        var openClaims = await db.AgentClaims
+        var openClaims = await control.AgentClaims
             .Where(c => allTaskIds.Contains(c.WorkItemId) && c.ReleasedAt == null)
             .ToListAsync(ctx.RequestAborted);
         foreach (var c in openClaims) c.ReleasedAt = nowOff;
@@ -4444,6 +4472,7 @@ public static class StoriesEndpoints
     private static async Task<IResult> ResumeSpawn(
         HttpContext ctx,
         string storyId,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         StorySpawnOrchestrator orchestrator,

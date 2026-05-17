@@ -45,6 +45,7 @@ public class Phase54PromptGrowthTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot + migrate */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         return (f, scope, db);
     }
@@ -53,6 +54,7 @@ public class Phase54PromptGrowthTests
     public async Task WriteUsage_persists_TurnSamplesJson_on_each_role_row()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -60,11 +62,12 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-write", Type = "step", Track = "design", State = "active",
                 Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             const string genSamples = "[{\"turnIndex\":1,\"inputTokens\":1000,\"outputTokens\":200,\"atUtc\":\"2026-05-12T00:00:00Z\"}]";
             const string evalSamples = "[{\"turnIndex\":1,\"inputTokens\":500,\"outputTokens\":100,\"atUtc\":\"2026-05-12T00:00:01Z\"}]";
@@ -77,7 +80,7 @@ public class Phase54PromptGrowthTests
             var result = await loop.RunAsync(req, CancellationToken.None);
             Assert.Equal("pass", result.FinalVerdict);
 
-            var usage = await db.AgentUsage.AsNoTracking()
+            var usage = await control.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == "wi-p54-write")
                 .ToListAsync();
             Assert.Equal(2, usage.Count);
@@ -93,6 +96,7 @@ public class Phase54PromptGrowthTests
     public async Task WriteUsage_persists_null_TurnSamples_when_runner_did_not_supply_any()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -100,11 +104,12 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-null", Type = "step", Track = "design", State = "active",
                 Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb);
+            var loop = new DeliverableLoop(control, loopDb);
 
             var req = new DeliverableLoopRequest(
                 "wi-p54-null", "crew-x", "G1", "E1",
@@ -113,7 +118,7 @@ public class Phase54PromptGrowthTests
                 Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(95), 0.05m, 500, 100)));
 
             await loop.RunAsync(req, CancellationToken.None);
-            var usage = await db.AgentUsage.AsNoTracking()
+            var usage = await control.AgentUsage.AsNoTracking()
                 .Where(u => u.TaskId == "wi-p54-null")
                 .ToListAsync();
             Assert.All(usage, u => Assert.Null(u.TurnSamplesJson));
@@ -125,6 +130,7 @@ public class Phase54PromptGrowthTests
     public async Task Loop_emits_prompt_growth_event_per_iter_with_correct_deltas()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -132,11 +138,12 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-growth", Type = "step", Track = "design", State = "active",
                 Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // Iter 1: gen 1000 in / eval 500 in (no prior → delta == cumulative).
             // Iter 2: gen 1500 in / eval 700 in (small growth, well below 30K threshold).
@@ -188,6 +195,7 @@ public class Phase54PromptGrowthTests
     public async Task Loop_emits_prompt_bloat_when_generator_growth_exceeds_threshold()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -195,15 +203,16 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-bloat", Type = "step", Track = "design", State = "active",
                 Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
-            // Iter 1: gen 5K in. Iter 2: gen 50K in → delta 45K > 30K threshold.
+            // Iter 1: gen 5K in. Iter 2: gen 250K in → delta 245K > 200K threshold.
             // Pass on iter 2 to keep the loop short.
-            var genIn = new[] { 5_000L, 50_000L };
+            var genIn = new[] { 5_000L, 250_000L };
             var scores = new[] { 80, 95 };
             var req = new DeliverableLoopRequest(
                 "wi-p54-bloat", "crew-x", "G1", "E1",
@@ -222,7 +231,7 @@ public class Phase54PromptGrowthTests
             var p = doc.RootElement;
             Assert.Equal(2, p.GetProperty("iter").GetInt32());
             Assert.Equal("generator", p.GetProperty("role").GetString());
-            Assert.Equal(45_000, p.GetProperty("delta").GetInt64());
+            Assert.Equal(245_000, p.GetProperty("delta").GetInt64());
             Assert.Equal(ScoringConstants.PromptBloatGrowthThreshold, p.GetProperty("threshold").GetInt64());
         }
         finally { scope.Dispose(); f.Dispose(); }
@@ -232,6 +241,7 @@ public class Phase54PromptGrowthTests
     public async Task Loop_does_not_emit_prompt_bloat_on_first_iter_even_if_above_threshold()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -239,11 +249,12 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-iter1", Type = "step", Track = "design", State = "active",
                 Title = "T", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // Iter 1 alone with absolute input 100K (passes immediately) — delta
             // from prior 0 would be +100K but we suppress the warning on the
@@ -269,6 +280,7 @@ public class Phase54PromptGrowthTests
     public async Task Snapshot_endpoint_returns_promptGrowth_array_in_iter_order()
     {
         var (f, scope, db) = await BootAsync();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             db.WorkItems.Add(new WorkItemRow
@@ -276,11 +288,12 @@ public class Phase54PromptGrowthTests
                 Id = "wi-p54-snap", Type = "step", Track = "design", State = "active",
                 Title = "T", Points = 1, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             using var s = f.Services.CreateScope();
+            var control_loopDb = s.ServiceProvider.GetRequiredService<ControlDbContext>();
             var loopDb = s.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var loop = new DeliverableLoop(loopDb, s.ServiceProvider.GetService<TaskChannel>());
+            var loop = new DeliverableLoop(control_loopDb, loopDb, s.ServiceProvider.GetService<TaskChannel>());
 
             // 3 iterations: gen input 1K → 3K → 5K; eval 800 → 1.2K → 1.5K; pass on 3.
             var genIn = new[] { 1_000L, 3_000L, 5_000L };
@@ -322,6 +335,6 @@ public class Phase54PromptGrowthTests
         // Documented contract: 30K input-token delta (iter-over-iter).
         // If this changes, update docs/forge_implementation.md Phase 54 +
         // the LiveExecutionView amber-threshold comment.
-        Assert.Equal(30_000L, ScoringConstants.PromptBloatGrowthThreshold);
+        Assert.Equal(200_000L, ScoringConstants.PromptBloatGrowthThreshold);
     }
 }

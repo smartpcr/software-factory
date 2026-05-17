@@ -71,6 +71,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task SeedStoryAsync(ForgeWebApplicationFactory factory, string id, string title)
     {
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.WorkItems.AnyAsync(w => w.Id == id)) return;
         db.WorkItems.Add(new WorkItemRow
@@ -85,7 +86,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task<HttpResponseMessage> SpawnAsync(HttpClient c, string storyId)
@@ -94,6 +95,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task SetPlanPrAsync(ForgeWebApplicationFactory f, string storyId, string prId, string col)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var s = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         s.PlanPrId = prId;
@@ -114,12 +116,13 @@ public class Phase59ReviewFixSkipMergedPrTests
                 Title = $"Plan for story {storyId}",
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task SeedAllPlanDocsPassedAsync(ForgeWebApplicationFactory f, string storyId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var spawn = await db.StorySpawns.FirstAsync(x => x.StoryId == storyId);
         var docs = new (string FileName, int Iter)[]
@@ -146,7 +149,7 @@ public class Phase59ReviewFixSkipMergedPrTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -181,6 +184,7 @@ public class Phase59ReviewFixSkipMergedPrTests
         long commentId;
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
             ws.Status = initialStatus;
@@ -213,7 +217,7 @@ public class Phase59ReviewFixSkipMergedPrTests
                 UpdatedAt = DateTimeOffset.UtcNow,
             };
             db.PrComments.Add(row);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             commentId = row.Id;
         }
 
@@ -233,6 +237,7 @@ public class Phase59ReviewFixSkipMergedPrTests
     private static async Task WipeWorktreeAsync(ForgeWebApplicationFactory f, string wsId)
     {
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
         var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
@@ -268,6 +273,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
@@ -310,6 +316,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
@@ -345,6 +352,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);
@@ -376,6 +384,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             const string wsId = "ws-phase59-direct-merged";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Prs.Add(new PrRow
                 {
@@ -386,7 +395,7 @@ public class Phase59ReviewFixSkipMergedPrTests
                     Base = "main",
                     Title = "x",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             var spawn = new StorySpawnRow { Id = "spawn-stub", StoryId = "WI-59-direct", StoryPoints = 5 };
@@ -430,6 +439,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             const string prId = "pr-phase59-direct-closed";
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 db.Prs.Add(new PrRow
                 {
@@ -440,7 +450,7 @@ public class Phase59ReviewFixSkipMergedPrTests
                     Base = "main",
                     Title = "x",
                 });
-                await db.SaveChangesAsync();
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
             }
 
             var spawn = new StorySpawnRow { Id = "spawn-stub", StoryId = "WI-59-direct-c", StoryPoints = 5 };
@@ -492,6 +502,7 @@ public class Phase59ReviewFixSkipMergedPrTests
             // WorktreeExistsAsync returns true (the gate must NOT fire).
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
                 var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
@@ -508,6 +519,7 @@ public class Phase59ReviewFixSkipMergedPrTests
 
             using (var scope = f.Services.CreateScope())
             {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var c2 = await db.PrComments.AsNoTracking().FirstAsync(pc => pc.Id == commentId);
                 Assert.Equal("resolved", c2.State);

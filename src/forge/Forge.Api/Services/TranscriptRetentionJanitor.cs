@@ -115,6 +115,8 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
         var statsLock = new object();
 
         using var scope = this.scopeFactory.CreateScope();
+        // Phase G — resolve control DB once at scope level for cross-context reads.
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Phase E — fan out per product so each product's transcript table
         // is pruned independently. Before Phase F splits the data, every
         // ProductDbContext binds to forge.db so behavior is identical to
@@ -123,9 +125,9 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
         // only path that visits all of them.
         var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
-            await this.PruneOneProductAsync(db, slug, dryRun, vacuum, stats, statsLock, fct);
+            await this.PruneOneProductAsync(control, db, slug, dryRun, vacuum, stats, statsLock, fct);
         }, ct);
 
         sw.Stop();
@@ -134,6 +136,7 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
     }
 
     private async Task PruneOneProductAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string slug,
         bool dryRun,
@@ -156,7 +159,7 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
         foreach (var wid in workItemIds)
         {
             ct.ThrowIfCancellationRequested();
-            var keepN = await this.ResolveKeepNAsync(db, wid, ct);
+            var keepN = await this.ResolveKeepNAsync(control, db, wid, ct);
 
             // task.iteration.started events demarcate iteration boundaries.
             var iterStartIds = await db.TaskTranscriptEvents.AsNoTracking()
@@ -230,7 +233,7 @@ public sealed class TranscriptRetentionJanitor : BackgroundService
     /// Failed/cancelled deliberately use the open-task window because the
     /// operator may inspect them or even resume them later.
     /// </summary>
-    private async Task<int> ResolveKeepNAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private async Task<int> ResolveKeepNAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var wi = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)

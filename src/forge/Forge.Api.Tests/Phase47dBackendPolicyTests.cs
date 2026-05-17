@@ -102,6 +102,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Seed a brand-new test agent with a disallowed override.
@@ -113,11 +114,11 @@ public class Phase47dBackendPolicyTests
                 Backend = "claude",
                 InvokeMode = "cli",
             };
-            db.Agents.Add(rogue);
-            await db.SaveChangesAsync();
+            control.Agents.Add(rogue);
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Sanity-check the override actually persisted before we run heal.
-            var beforeHeal = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
+            var beforeHeal = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
             Assert.Equal("claude", beforeHeal.Backend);
             Assert.Equal("cli", beforeHeal.InvokeMode);
 
@@ -131,10 +132,10 @@ public class Phase47dBackendPolicyTests
                 CanonicalInvokeMode: "sdk",
                 AllowedBackends: new[] { "copilot" },
                 AllowedInvokeModes: new[] { "sdk" });
-            await ForgeSeed.EnsureStartupConfigAsync(db, NullLogger.Instance, strict);
+            await ForgeSeed.EnsureStartupConfigAsync(control, db, NullLogger.Instance, strict);
 
             // Override is healed back to null; agent now inherits from crew.
-            var afterHeal = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
+            var afterHeal = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
             Assert.True(string.IsNullOrEmpty(afterHeal.Backend),
                 $"expected Backend cleared; got '{afterHeal.Backend}'");
             Assert.True(string.IsNullOrEmpty(afterHeal.InvokeMode),
@@ -157,6 +158,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             var rogue = new AgentRow
@@ -167,8 +169,8 @@ public class Phase47dBackendPolicyTests
                 Backend = "claude",
                 InvokeMode = "cli",
             };
-            db.Agents.Add(rogue);
-            await db.SaveChangesAsync();
+            control.Agents.Add(rogue);
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Policy that explicitly permits claude/cli.
             var permissive = new ForgeBackendPolicy(
@@ -177,9 +179,9 @@ public class Phase47dBackendPolicyTests
                 AllowedBackends: new[] { "copilot", "claude" },
                 AllowedInvokeModes: new[] { "sdk", "cli" });
 
-            await ForgeSeed.EnsureStartupConfigAsync(db, NullLogger.Instance, permissive);
+            await ForgeSeed.EnsureStartupConfigAsync(control, db, NullLogger.Instance, permissive);
 
-            var after = await db.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
+            var after = await control.Agents.AsNoTracking().FirstAsync(a => a.Id == rogue.Id);
             Assert.Equal("claude", after.Backend);
             Assert.Equal("cli", after.InvokeMode);
         }
@@ -201,6 +203,7 @@ public class Phase47dBackendPolicyTests
         {
             using (f.CreateClient()) { /* triggers boot */ }
             using var scope = f.Services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
             // Drift one canonical crew off the rail. We probe a single
@@ -210,20 +213,20 @@ public class Phase47dBackendPolicyTests
             // some runtime configurations, and one row is enough to
             // exercise the normalisation path.
             const string probeId = "crew-eng";
-            var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == probeId);
+            var crew = await control.Crews.FirstOrDefaultAsync(c => c.Id == probeId);
             if (crew is null) return; // factory didn't seed canonical crews — vacuously pass.
             crew.Backend = "claude";
             crew.InvokeMode = "cli";
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
             // Sanity-check the drift persisted.
-            var dirty = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == probeId);
+            var dirty = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == probeId);
             Assert.Equal("claude", dirty.Backend);
             Assert.Equal("cli", dirty.InvokeMode);
 
-            await ForgeSeed.EnsureStartupConfigAsync(db, NullLogger.Instance, ForgeBackendPolicy.Default);
+            await ForgeSeed.EnsureStartupConfigAsync(control, db, NullLogger.Instance, ForgeBackendPolicy.Default);
 
-            var after = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == probeId);
+            var after = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == probeId);
             Assert.Equal("copilot", after.Backend);
             Assert.Equal("sdk", after.InvokeMode);
         }

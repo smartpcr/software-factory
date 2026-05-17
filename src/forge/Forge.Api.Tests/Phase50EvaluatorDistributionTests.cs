@@ -47,25 +47,36 @@ public sealed class Phase50EvaluatorDistributionTests
     private static readonly string[] DayMembers = new[] { "DA", "DB", "DC", "DD" };
     private static readonly string[] NightMembers = new[] { "NA", "NB", "NC", "ND", "NE", "NF", "NG", "NH" };
 
-    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ControlDbContext control, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
         var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
-        return (conn, db);
+        var _productSchema = db.Database.GenerateCreateScript();
+        foreach (var _stmt in _productSchema.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _trimmed = _stmt.Trim();
+            if (_trimmed.Length > 0) await db.Database.ExecuteSqlRawAsync(_trimmed);
+        }
+        return (conn, control, db);
     }
 
     private static async Task SeedPairedCrewsAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string? dayDefaultEval = null,
         string? nightDefaultEval = null)
     {
         // crew-eng (day) paired with crew-eng-night.
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-eng",
             Name = "Engineer (day)",
@@ -73,7 +84,7 @@ public sealed class Phase50EvaluatorDistributionTests
             DefaultEvaluatorAgentId = dayDefaultEval,
             PairedWithCrewId = "crew-eng-night",
         });
-        db.Crews.Add(new CrewRow
+        control.Crews.Add(new CrewRow
         {
             Id = "crew-eng-night",
             Name = "Engineer (night)",
@@ -84,15 +95,15 @@ public sealed class Phase50EvaluatorDistributionTests
 
         foreach (var a in DayMembers)
         {
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-eng", AgentId = a });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-eng", AgentId = a });
         }
 
         foreach (var a in NightMembers)
         {
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-eng-night", AgentId = a });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-eng-night", AgentId = a });
         }
 
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -106,11 +117,11 @@ public sealed class Phase50EvaluatorDistributionTests
     [Fact]
     public async Task ResolveImplPairAsync_NoDefaultEval_DistributesEvaluatorAcrossNightRoster()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedCrewsAsync(db);
+            await SeedPairedCrewsAsync(control, db);
             var allocation = new AgentAllocationLoader();
             var coverage = new Dictionary<string, int>(StringComparer.Ordinal);
 
@@ -122,7 +133,7 @@ public sealed class Phase50EvaluatorDistributionTests
                 // hid the bug.
                 var busy = new HashSet<string>(StringComparer.Ordinal);
                 var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                    db, allocation, busy, seedOffset: i, CancellationToken.None);
+                    control, db, allocation, busy, seedOffset: i, CancellationToken.None);
 
                 Assert.True(pair.Length >= 2,
                     $"Expected pair to include both generator and evaluator; got {pair.Length} agents.");
@@ -161,12 +172,12 @@ public sealed class Phase50EvaluatorDistributionTests
     [Fact]
     public async Task ResolveImplPairAsync_OperatorDefaultEval_StillWinsWhenFree()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
             const string preferred = "NC"; // an arbitrary night-crew member
-            await SeedPairedCrewsAsync(db, nightDefaultEval: preferred);
+            await SeedPairedCrewsAsync(control, db, nightDefaultEval: preferred);
             var allocation = new AgentAllocationLoader();
 
             // 30 trials — the preferred agent should win the vast
@@ -179,7 +190,7 @@ public sealed class Phase50EvaluatorDistributionTests
             {
                 var busy = new HashSet<string>(StringComparer.Ordinal);
                 var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                    db, allocation, busy, seedOffset: i, CancellationToken.None);
+                    control, db, allocation, busy, seedOffset: i, CancellationToken.None);
                 if (pair.Length >= 2 && string.Equals(pair[1], preferred, StringComparison.Ordinal))
                 {
                     preferredHits++;
@@ -205,11 +216,11 @@ public sealed class Phase50EvaluatorDistributionTests
     [Fact]
     public async Task ResolveImplPairAsync_AllRosterBusy_FallsBackToLead()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            await SeedPairedCrewsAsync(db);
+            await SeedPairedCrewsAsync(control, db);
             var allocation = new AgentAllocationLoader();
 
             // Mark every roster member (both crews) busy.
@@ -218,7 +229,7 @@ public sealed class Phase50EvaluatorDistributionTests
             foreach (var a in NightMembers) busy.Add(a);
 
             var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                db, allocation, busy, seedOffset: 1, CancellationToken.None);
+                control, db, allocation, busy, seedOffset: 1, CancellationToken.None);
 
             // Generator falls back to crew-eng.Lead = "DLEAD".
             // Evaluator falls back to crew-eng-night.Lead = "NLEAD"

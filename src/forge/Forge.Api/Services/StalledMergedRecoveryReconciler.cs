@@ -102,6 +102,8 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        // Phase G — resolve control DB once at scope level for cross-context reads.
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Phase E — fan out per product. The reconciler's three recovery
         // passes (RecoverStalledWithMergedPr, ClearStaleStallReasonOnShipped,
         // RecoverBogusSloppyStallWithPassedDeliverable) all run per-product.
@@ -109,12 +111,12 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         var totalRecovered = 0;
         var lockObj = new object();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
             var recovered = 0;
-            recovered += await this.RecoverStalledWithMergedPrAsync(db, fct);
-            recovered += await this.ClearStaleStallReasonOnShippedAsync(db, fct);
-            recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(db, fct);
+            recovered += await this.RecoverStalledWithMergedPrAsync(control, db, fct);
+            recovered += await this.ClearStaleStallReasonOnShippedAsync(control, db, fct);
+            recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(control, db, fct);
             if (recovered > 0)
             {
                 lock (lockObj) totalRecovered += recovered;
@@ -128,7 +130,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         return totalRecovered;
     }
 
-    private async Task<int> RecoverStalledWithMergedPrAsync(ProductDbContext db, CancellationToken ct)
+    private async Task<int> RecoverStalledWithMergedPrAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         // Pull every stalled workstream up-front; in steady state this set
         // is small (operator-triage rows). Then resolve each row's PR list
@@ -236,7 +238,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
     /// open.</para>
     /// </summary>
     private async Task<int> RecoverBogusSloppyStallWithPassedDeliverableAsync(
-        ProductDbContext db, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         const string BogusSloppyPrefix = "Sloppy-3-attempts:";
 
@@ -354,7 +356,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         return recovered;
     }
 
-    private async Task<int> ClearStaleStallReasonOnShippedAsync(ProductDbContext db, CancellationToken ct)
+    private async Task<int> ClearStaleStallReasonOnShippedAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
         // A shipped row should never carry a StallReason. If one is set
         // here it's leftover state from a transient demotion that was

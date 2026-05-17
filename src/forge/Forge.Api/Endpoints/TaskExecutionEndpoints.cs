@@ -68,6 +68,7 @@ public static class TaskExecutionEndpoints
     /// </summary>
     private static async Task<IResult> GetQuestions(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -80,7 +81,7 @@ public static class TaskExecutionEndpoints
             // Self-heal: attempt to import questions from the doc's body
             // markdown. Only fires for plan-doc:* ids (the synthetic id
             // format we know how to resolve to a doc on disk / branch).
-            await TryImportQuestionsFromDocAsync(db, id, ct);
+            await TryImportQuestionsFromDocAsync(control, db, id, ct);
             rows = await db.DeliverableQuestions.AsNoTracking()
                 .Where(q => q.WorkItemId == id)
                 .ToListAsync(ct);
@@ -117,7 +118,7 @@ public static class TaskExecutionEndpoints
     /// when the table has zero rows for this work item.
     /// </summary>
     private static async Task TryImportQuestionsFromDocAsync(
-        ProductDbContext db, string workItemId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         if (!workItemId.StartsWith("plan-doc:", StringComparison.Ordinal)) return;
 
@@ -186,6 +187,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] DismissQuestionsRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
@@ -216,14 +218,14 @@ public static class TaskExecutionEndpoints
         }
         await db.SaveChangesAsync(ct);
 
-        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
+        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(control, db, id, ct);
 
         // Phase 66 — dismissals also clear the gate; fire the resume.
         var resumeScheduled = false;
         if (unansweredCount == 0)
         {
             resumeScheduled = await TryUnparkAndResumeAsync(
-                db, hub, scopeFactory, strategy, id, ct);
+                control, db, hub, scopeFactory, strategy, id, ct);
         }
         return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
     }
@@ -262,6 +264,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AnswerQuestionsRequest req,
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
@@ -298,14 +301,14 @@ public static class TaskExecutionEndpoints
         await db.SaveChangesAsync(ct);
 
         // Re-compute and return the updated unanswered count for the UI.
-        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
+        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(control, db, id, ct);
 
         // Phase 66 — when all questions are answered, fire the resume.
         var resumeScheduled = false;
         if (unansweredCount == 0)
         {
             resumeScheduled = await TryUnparkAndResumeAsync(
-                db, hub, scopeFactory, strategy, id, ct);
+                control, db, hub, scopeFactory, strategy, id, ct);
         }
 
         return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
@@ -340,6 +343,7 @@ public static class TaskExecutionEndpoints
     /// <returns>True when a resume was scheduled (caller can surface this
     /// to the operator); false when no further action was needed.</returns>
     private static async Task<bool> TryUnparkAndResumeAsync(
+        ControlDbContext control,
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
@@ -483,6 +487,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetExecution(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         WorktreeChangeFeed worktreeFeed,
         CancellationToken ct)
@@ -530,7 +535,7 @@ public static class TaskExecutionEndpoints
             generatorCrewId = current.CrewId;
             generatorAgentId = current.GeneratorAgentId;
             evaluatorAgentId = current.EvaluatorAgentId;
-            var evaluatorAgent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == current.EvaluatorAgentId, ct);
+            var evaluatorAgent = await control.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == current.EvaluatorAgentId, ct);
             evaluatorCrewId = evaluatorAgent?.CrewId;
         }
         else
@@ -575,7 +580,7 @@ public static class TaskExecutionEndpoints
             // Last resort: check agent_usage ledger (covers direct invocations).
             if (string.IsNullOrEmpty(generatorCrewId))
             {
-                var usageRows = await db.AgentUsage.AsNoTracking()
+                var usageRows = await control.AgentUsage.AsNoTracking()
                     .Where(u => u.TaskId == id && u.CrewId != null && u.CrewId != "")
                     .ToListAsync(ct);
                 var latestUsage = usageRows.OrderByDescending(u => u.StartedAt).FirstOrDefault();
@@ -588,7 +593,7 @@ public static class TaskExecutionEndpoints
         }
 
         // Cost: split by category from the agent_usage ledger.
-        var usage = await db.AgentUsage.AsNoTracking()
+        var usage = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == id)
             .ToListAsync(ct);
         decimal genCost  = usage.Where(u => u.CostCategory == "generator").Sum(u => u.CostUsd);
@@ -633,7 +638,7 @@ public static class TaskExecutionEndpoints
         if (!string.IsNullOrEmpty(generatorAgentId))
         {
             (_, generatorTokensSinceWindow) = await SloppyDetector.CheckTokenCapAsync(
-                db, id, generatorAgentId, wi?.BudgetWindowStartUtc, ct);
+                control, db, id, generatorAgentId, wi?.BudgetWindowStartUtc, ct);
         }
 
         // Crew budget (today's spend vs. daily cap, if any).
@@ -646,7 +651,7 @@ public static class TaskExecutionEndpoints
         string? evaluatorCrewName = null;
         if (!string.IsNullOrEmpty(generatorCrewId))
         {
-            var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
+            var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
             dailyBudget = crew?.DailyBudgetUsd;
             maxTaskBudget = crew?.MaxTaskBudgetUsd;
             generatorCrewName = crew?.Name;
@@ -658,14 +663,14 @@ public static class TaskExecutionEndpoints
             // not yet known (pre-first-iteration or AssignedToJson cleared).
             if (string.IsNullOrEmpty(evaluatorAgentId) && !string.IsNullOrEmpty(evaluatorCrewId))
             {
-                var evalCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
+                var evalCrew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
                 evaluatorAgentId = crew?.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
                 evaluatorCrewName = evalCrew?.Name;
             }
             if (crew is not null)
             {
                 var since = DateTimeOffset.UtcNow.AddHours(-24);
-                var crewUsage = (await db.AgentUsage.AsNoTracking()
+                var crewUsage = (await control.AgentUsage.AsNoTracking()
                     .Where(u => u.CrewId == crew.Id)
                     .ToListAsync(ct))
                     .Where(u => u.StartedAt >= since);
@@ -766,7 +771,7 @@ public static class TaskExecutionEndpoints
             if (string.IsNullOrEmpty(wtPath))
             {
                 var resolved = await Forge.Api.Services.Stories.WorktreePathResolver
-                    .ResolveForWorkstreamAsync(db, id, ct);
+                    .ResolveForWorkstreamAsync(control, db, id, ct);
                 if (!string.IsNullOrEmpty(resolved.WorktreePath))
                 {
                     wtPath = resolved.WorktreePath;
@@ -782,7 +787,7 @@ public static class TaskExecutionEndpoints
                     // so the disk-sample's branchDiff / ahead / behind
                     // agree with what /commits computes.
                     var execBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
-                        .ResolveAsync(db, id, ct);
+                        .ResolveAsync(control, db, id, ct);
                     var diskSnap = await worktreeFeed.SampleAsync(wtPath, execBase, ct);
                     if (diskSnap is not null)
                     {
@@ -830,7 +835,7 @@ public static class TaskExecutionEndpoints
         if (!string.IsNullOrEmpty(evaluatorAgentId)) agentIds.Add(evaluatorAgentId);
         if (agentIds.Count > 0)
         {
-            var agentRows = await db.Agents.AsNoTracking()
+            var agentRows = await control.Agents.AsNoTracking()
                 .Where(a => agentIds.Contains(a.Id))
                 .ToListAsync(ct);
             var genAgent = agentRows.FirstOrDefault(a => a.Id == generatorAgentId);
@@ -841,11 +846,11 @@ public static class TaskExecutionEndpoints
             CrewRow? genCrew = null;
             CrewRow? evalCrew = null;
             if (!string.IsNullOrEmpty(generatorCrewId))
-                genCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
+                genCrew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
             if (!string.IsNullOrEmpty(evaluatorCrewId))
                 evalCrew = evaluatorCrewId == generatorCrewId
                     ? genCrew
-                    : await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
+                    : await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
 
             generatorModel = NonEmpty(genAgent?.GeneratorModel) ?? NonEmpty(genCrew?.Model);
             evaluatorModel = NonEmpty(evalAgent?.EvaluatorModel)
@@ -912,6 +917,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> GetTranscriptEvent(
         string id,
         long eventId,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -938,6 +944,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetTranscript(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         long? from,
         long? before,
@@ -969,6 +976,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> ClearTranscript(
         HttpContext ctx,
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -1190,6 +1198,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> PatchExecution(
         string id,
         [FromBody] PatchExecutionBody body,
+        ControlDbContext control,
         ProductDbContext db,
         CancellationToken ct)
     {
@@ -1249,6 +1258,7 @@ public static class TaskExecutionEndpoints
 
     private static async Task<IResult> GetCommits(
         string id,
+        ControlDbContext control,
         ProductDbContext db,
         HttpContext httpCtx,
         CancellationToken ct)
@@ -1285,7 +1295,7 @@ public static class TaskExecutionEndpoints
         // For story-spawn workstreams that's spawn.BaseBranch (e.g.
         // `feature/xraft`); plain crew-queue items get repo default.
         var baseBranch = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
-            .ResolveAsync(db, id, ct);
+            .ResolveAsync(control, db, id, ct);
 
         // Plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
         // share the spawn's plan-branch worktree at
@@ -1356,7 +1366,7 @@ public static class TaskExecutionEndpoints
             // right convention (new short name vs. legacy long names) by
             // looking at what's actually on disk.
             var resolved = await Forge.Api.Services.Stories.WorktreePathResolver
-                .ResolveForWorkstreamAsync(db, id, ct);
+                .ResolveForWorkstreamAsync(control, db, id, ct);
             branch = !string.IsNullOrEmpty(resolved.Branch) ? resolved.Branch : $"ws/{id}";
             worktreePath = resolved.WorktreePath;
         }
@@ -1447,6 +1457,7 @@ public static class TaskExecutionEndpoints
     private static async Task<IResult> Resume(
         string id,
         [FromBody] ResumeBody? body,
+        ControlDbContext control,
         ProductDbContext db,
         Forge.Api.Services.ITaskQueueService taskQueue,
         Microsoft.AspNetCore.SignalR.IHubContext<ForgeHub> hub,

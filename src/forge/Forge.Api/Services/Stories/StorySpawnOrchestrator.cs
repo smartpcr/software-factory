@@ -182,11 +182,12 @@ public sealed class StorySpawnOrchestrator
         try
         {
             using var scope = this.services.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
             var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
             if (spawn is null) return;
-            await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
+            await this.RunOneStepAsync(control, db, hub, spawn, forceResume, ct);
         }
         finally
         {
@@ -199,7 +200,7 @@ public sealed class StorySpawnOrchestrator
     /// (so the caller can loop). Reads the spawn fresh inside its own scope.
     /// </summary>
     private async Task<bool> RunOneStepAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
     {
         // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
         // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
@@ -230,7 +231,7 @@ public sealed class StorySpawnOrchestrator
 
         var repo = spawn.RepoId is null
             ? null
-            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
 
         // Phase-specific drivers. Review/QA also re-run the implement pass
         // so blocked-then-unblocked downstream workstreams get picked up
@@ -243,26 +244,26 @@ public sealed class StorySpawnOrchestrator
             switch (spawn.Phase)
             {
                 case StorySpawnPhases.Plan:
-                    advanced |= await this.DrivePlanAsync(db, hub, spawn, story, repo, forceResume, ct);
+                    advanced |= await this.DrivePlanAsync(control, db, hub, spawn, story, repo, forceResume, ct);
                     break;
                 case StorySpawnPhases.Decompose:
-                    advanced |= await this.DriveDecomposeAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveDecomposeAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Implement:
-                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Review:
-                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Qa:
-                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
-                    advanced |= await this.DriveQaAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveQaAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Done:
-                    advanced |= await this.DriveDoneAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveDoneAsync(control, db, hub, spawn, story, repo, ct);
                     break;
             }
         }
@@ -271,7 +272,7 @@ public sealed class StorySpawnOrchestrator
             this.logger?.LogError(ex,
                 "Orchestrator phase '{Phase}' failed for spawn {SpawnId} ({StoryId}).",
                 spawn.Phase, spawn.Id, spawn.StoryId);
-            await PersistLastErrorAsync(db, spawn.Id,
+            await PersistLastErrorAsync(control, db, spawn.Id,
                 $"{spawn.Phase} failed: {FlattenMessage(ex)}", hub, ct);
         }
         return advanced;
@@ -331,7 +332,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── plan ─────────────────────────────────────────────────────────────────
     private async Task<bool> DrivePlanAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         // Phase 53 — sequential plan-doc path. Detection is strictly by
@@ -341,9 +342,9 @@ public sealed class StorySpawnOrchestrator
         // between paths mid-life, so the discriminator is unambiguous.
         if (PlanDocStateHelpers.IsSequentialMode(spawn))
         {
-            return await this.DrivePlanSequentialAsync(db, hub, spawn, story, repo, forceResume, ct);
+            return await this.DrivePlanSequentialAsync(control, db, hub, spawn, story, repo, forceResume, ct);
         }
-        return await this.DrivePlanLegacyAsync(db, hub, spawn, story, repo, forceResume, ct);
+        return await this.DrivePlanLegacyAsync(control, db, hub, spawn, story, repo, forceResume, ct);
     }
 
     /// <summary>
@@ -355,7 +356,7 @@ public sealed class StorySpawnOrchestrator
     /// deliverable verdict is <c>pass</c>.
     /// </summary>
     private async Task<bool> DrivePlanSequentialAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -364,11 +365,11 @@ public sealed class StorySpawnOrchestrator
         // Same plan-phase invariant as the legacy path: no workstream may
         // be active while Phase=Plan. Cancels stale picks from a regressed
         // implement→plan transition.
-        await this.EnforcePlanPhaseInvariantAsync(db, spawn, ct);
+        await this.EnforcePlanPhaseInvariantAsync(control, db, spawn, ct);
 
         // Ensure backing WorkItemRows for each plan doc exist (deliverables /
         // transcripts / queue rows all key on plan-doc:{spawn.Id}:{file}).
-        await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
+        await EnsurePlanDocWorkItemsAsync(control, db, spawn, story, ct);
 
         var states = PlanDocStateHelpers.GetPlanDocStates(spawn).ToList();
         var docOrder = PlanDocStateHelpers.PlanDocOrder;
@@ -377,7 +378,7 @@ public sealed class StorySpawnOrchestrator
             var docKey = docOrder[i];
             var entry = states.FirstOrDefault(e =>
                 string.Equals(e.Key, docKey, StringComparison.OrdinalIgnoreCase));
-            var prevMerged = i == 0 || await IsDocCompleteAsync(db, spawn, docOrder[i - 1], ct);
+            var prevMerged = i == 0 || await IsDocCompleteAsync(control, db, spawn, docOrder[i - 1], ct);
 
             if (entry is null || entry.Branch is null)
             {
@@ -388,7 +389,7 @@ public sealed class StorySpawnOrchestrator
                     // Surface a soft error so the operator sees why the chain isn't moving.
                     if (i > 0)
                     {
-                        await PersistLastErrorAsync(db, spawn.Id,
+                        await PersistLastErrorAsync(control, db, spawn.Id,
                             $"Plan chain waiting on '{docOrder[i - 1]}' to complete (PR merged + verdict=pass) before starting '{docKey}'.",
                             hub, ct);
                     }
@@ -402,7 +403,7 @@ public sealed class StorySpawnOrchestrator
                 var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                 PlanDocStateHelpers.SetPlanDocStates(spawnRow, states);
                 spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
-                await ClearLastErrorAsync(db, spawnRow, ct);
+                await ClearLastErrorAsync(control, db, spawnRow, ct);
                 await db.SaveChangesAsync(ct);
                 entry = new PlanDocPrEntry(docKey, newBranch, PrId: null);
             }
@@ -417,7 +418,7 @@ public sealed class StorySpawnOrchestrator
                 // keep the work idempotent.
                 try
                 {
-                    return await this.RunPlanDocAsync(db, hub, spawn, story, repo, baseBranch,
+                    return await this.RunPlanDocAsync(control, db, hub, spawn, story, repo, baseBranch,
                         docKey, entry.Branch!, forceResume, ct);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -425,7 +426,7 @@ public sealed class StorySpawnOrchestrator
                     this.logger?.LogError(ex,
                         "Plan doc '{Doc}' production failed for spawn {SpawnId} ({StoryId}).",
                         docKey, spawn.Id, spawn.StoryId);
-                    await PersistLastErrorAsync(db, spawn.Id,
+                    await PersistLastErrorAsync(control, db, spawn.Id,
                         $"plan doc '{docKey}' failed: {FlattenMessage(ex)}", hub, ct);
                     return false;
                 }
@@ -438,7 +439,7 @@ public sealed class StorySpawnOrchestrator
                 // PR row vanished (manual DB edit / external cleanup). Clear
                 // the prId so the next tick re-opens. Surface so the operator
                 // sees the recovery action.
-                await PersistLastErrorAsync(db, spawn.Id,
+                await PersistLastErrorAsync(control, db, spawn.Id,
                     $"plan doc '{docKey}' PR row {entry.PrId} not found; clearing for re-open.", hub, ct);
                 states = ReplaceOrAppend(states, new PlanDocPrEntry(docKey, entry.Branch, PrId: null));
                 var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
@@ -455,9 +456,9 @@ public sealed class StorySpawnOrchestrator
                 // Also gate on verdict=pass: an externally-merged PR with
                 // a stalled verdict still holds the chain. The merge happens
                 // here on the same tick whenever both gates open.
-                if (!await IsDocVerdictPassAsync(db, spawn, docKey, ct))
+                if (!await IsDocVerdictPassAsync(control, db, spawn, docKey, ct))
                 {
-                    await PersistLastErrorAsync(db, spawn.Id,
+                    await PersistLastErrorAsync(control, db, spawn.Id,
                         $"plan doc '{docKey}' verdict not 'pass'; PR merge blocked until gen-eval loop reaches pass.",
                         hub, ct);
                     return false;
@@ -467,7 +468,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     await this.ApproveAndMergeAsync(entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
                     var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-                    await ClearLastErrorAsync(db, sRow, ct);
+                    await ClearLastErrorAsync(control, db, sRow, ct);
                     await db.SaveChangesAsync(ct);
                     await EmitChange(hub, "plan-doc-pr-merged", sRow, ct);
                     return true;
@@ -477,7 +478,7 @@ public sealed class StorySpawnOrchestrator
                     this.logger?.LogWarning(ex,
                         "Plan doc '{Doc}' PR {PrId} auto-merge failed; surfacing to operator.",
                         docKey, entry.PrId);
-                    await PersistLastErrorAsync(db, spawn.Id,
+                    await PersistLastErrorAsync(control, db, spawn.Id,
                         $"plan doc '{docKey}' PR merge failed: {FlattenMessage(ex)}", hub, ct);
                     return false;
                 }
@@ -496,10 +497,10 @@ public sealed class StorySpawnOrchestrator
 
         // All four docs merged. Re-verify the all-passed gate (catches a
         // deliverable that got hand-edited away from pass between merges).
-        var gate = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var gate = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
         if (!gate.AllPassed)
         {
-            await PersistLastErrorAsync(db, spawn.Id,
+            await PersistLastErrorAsync(control, db, spawn.Id,
                 $"Plan docs not all passed; phase advance blocked: {string.Join(", ", gate.NonPassedKeys)}",
                 hub, ct);
             return false;
@@ -508,7 +509,7 @@ public sealed class StorySpawnOrchestrator
         var spawnAdvance = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
         spawnAdvance.Phase = StorySpawnPhases.Decompose;
         spawnAdvance.UpdatedAt = DateTimeOffset.UtcNow;
-        await ClearLastErrorAsync(db, spawnAdvance, ct);
+        await ClearLastErrorAsync(control, db, spawnAdvance, ct);
         await db.SaveChangesAsync(ct);
         await EmitChange(hub, "phase-advanced", spawnAdvance, ct);
         return true;
@@ -532,7 +533,7 @@ public sealed class StorySpawnOrchestrator
     /// unambiguous recovery anchor in <c>PlanDocPrsJson</c>.
     /// </summary>
     private async Task<bool> RunPlanDocAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
         string docKey, string docBranch, bool forceResume, CancellationToken ct)
     {
@@ -556,7 +557,7 @@ public sealed class StorySpawnOrchestrator
 
         try
         {
-            return await this.RunPlanDocInnerAsync(db, hub, spawn, story, repo, baseBranch,
+            return await this.RunPlanDocInnerAsync(control, db, hub, spawn, story, repo, baseBranch,
                 docKey, docBranch, docWorkItemId, forceResume, ct);
         }
         finally
@@ -566,7 +567,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task<bool> RunPlanDocInnerAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, string baseBranch,
         string docKey, string docBranch, string docWorkItemId, bool forceResume, CancellationToken ct)
     {
@@ -659,7 +660,7 @@ public sealed class StorySpawnOrchestrator
             await this.git.EnsureBranchFreshAsync(repo, spawnRow.QaBranch, baseBranch, ct);
         }
 
-        await ClearLastErrorAsync(db, spawnRow, ct);
+        await ClearLastErrorAsync(control, db, spawnRow, ct);
         await db.SaveChangesAsync(ct);
         await EmitChange(hub, "plan-doc-pr-opened", spawnRow, ct);
         return true;
@@ -672,7 +673,7 @@ public sealed class StorySpawnOrchestrator
     /// sequential drive.
     /// </summary>
     private static async Task<bool> IsDocVerdictPassAsync(
-        ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
     {
         if (!PlanDocStateHelpers.PlanDocFileName.TryGetValue(docKey, out var fileName)) return false;
         var docId = $"plan-doc:{spawn.Id}:{fileName}";
@@ -696,13 +697,13 @@ public sealed class StorySpawnOrchestrator
     /// Used by the sequential drive to gate the next doc's start.
     /// </summary>
     private static async Task<bool> IsDocCompleteAsync(
-        ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, string docKey, CancellationToken ct)
     {
         var entry = PlanDocStateHelpers.GetEntry(spawn, docKey);
         if (entry.PrId is null) return false;
         var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == entry.PrId, ct);
         if (pr is null || !string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase)) return false;
-        return await IsDocVerdictPassAsync(db, spawn, docKey, ct);
+        return await IsDocVerdictPassAsync(control, db, spawn, docKey, ct);
     }
 
     /// <summary>
@@ -736,7 +737,7 @@ public sealed class StorySpawnOrchestrator
     /// <see cref="DrivePlanSequentialAsync"/>.
     /// </summary>
     private async Task<bool> DrivePlanLegacyAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -767,7 +768,7 @@ public sealed class StorySpawnOrchestrator
         // streaming events post-regression. Blocked / review / merging /
         // complete / cancelled / historic rows are preserved — they
         // represent legitimate persistent state across phase moves.
-        await this.EnforcePlanPhaseInvariantAsync(db, spawn, ct);
+        await this.EnforcePlanPhaseInvariantAsync(control, db, spawn, ct);
 
         // Early exit: if the plan PR is already merged, skip artifact
         // production and advance to decompose immediately. This prevents
@@ -783,10 +784,10 @@ public sealed class StorySpawnOrchestrator
             if (mergeCheck is not null
                 && string.Equals(mergeCheck.Col, "merged", StringComparison.OrdinalIgnoreCase))
             {
-                var (earlyAllPassed, earlyNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+                var (earlyAllPassed, earlyNonPassed) = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
                 if (!earlyAllPassed)
                 {
-                    await PersistLastErrorAsync(db, spawn.Id,
+                    await PersistLastErrorAsync(control, db, spawn.Id,
                         $"Plan PR merged but docs not all passed; phase advance blocked: {string.Join(", ", earlyNonPassed)}",
                         hub, ct);
                     // Fall through to Step 1 below — we want
@@ -798,7 +799,7 @@ public sealed class StorySpawnOrchestrator
                     var earlyRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                     earlyRow.Phase = StorySpawnPhases.Decompose;
                     earlyRow.UpdatedAt = DateTimeOffset.UtcNow;
-                    await ClearLastErrorAsync(db, earlyRow, ct);
+                    await ClearLastErrorAsync(control, db, earlyRow, ct);
                     await db.SaveChangesAsync(ct);
                     await EmitChange(hub, "phase-advanced", earlyRow, ct);
 
@@ -827,7 +828,7 @@ public sealed class StorySpawnOrchestrator
         // gate; combined with the Phase 45 pass-verdict guard inside
         // ProducePlanFileAsync, only the non-passed docs run the gen-eval
         // loop and passed docs short-circuit to cached worktree content.
-        var (planAllPassed, planNonPassedKeys) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var (planAllPassed, planNonPassedKeys) = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
         var notAllPassed = !planAllPassed;
         if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume || notAllPassed)
         {
@@ -856,7 +857,7 @@ public sealed class StorySpawnOrchestrator
                     await this.git.EnsureBranchAsync(repo, planBranch, baseBranch, ct);
                 }
 
-                await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
+                await EnsurePlanDocWorkItemsAsync(control, db, spawn, story, ct);
 
                 var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
                 await this.git.CommitFilesAsync(repo, planBranch,
@@ -888,7 +889,7 @@ public sealed class StorySpawnOrchestrator
                     spawnRow.PlanBranch = planBranch;
                     spawnRow.PlanPrId = prId;
                     spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
-                    await ClearLastErrorAsync(db, spawnRow, ct);
+                    await ClearLastErrorAsync(control, db, spawnRow, ct);
                     await db.SaveChangesAsync(ct);
 
                     if (string.IsNullOrEmpty(spawnRow.QaBranch))
@@ -909,7 +910,7 @@ public sealed class StorySpawnOrchestrator
                     // PR already exists — just clear the error and notify
                     var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                     spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
-                    await ClearLastErrorAsync(db, spawnRow, ct);
+                    await ClearLastErrorAsync(control, db, spawnRow, ct);
                     await db.SaveChangesAsync(ct);
                     await EmitChange(hub, "plan-resumed", spawnRow, ct);
                 }
@@ -921,7 +922,7 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogError(ex,
                     "Plan artifact production failed for spawn {SpawnId} ({StoryId}).",
                     spawn.Id, spawn.StoryId);
-                await PersistLastErrorAsync(db, spawn.Id, $"plan artifacts failed: {FlattenMessage(ex)}", hub, ct);
+                await PersistLastErrorAsync(control, db, spawn.Id, $"plan artifacts failed: {FlattenMessage(ex)}", hub, ct);
                 return false;
             }
         }
@@ -941,7 +942,7 @@ public sealed class StorySpawnOrchestrator
             {
                 await this.ApproveAndMergeAsync(spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
                 var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-                await ClearLastErrorAsync(db, spawnRow, ct);
+                await ClearLastErrorAsync(control, db, spawnRow, ct);
                 await db.SaveChangesAsync(ct);
                 await EmitChange(hub, "plan-pr-merged", spawn, ct);
                 return true;
@@ -955,7 +956,7 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogWarning(ex,
                     "Plan PR {PrId} auto-merge failed; surfacing to operator and deferring to PrSyncJob.",
                     spawn.PlanPrId);
-                await PersistLastErrorAsync(db, spawn.Id, $"plan PR merge failed: {FlattenMessage(ex)}", hub, ct);
+                await PersistLastErrorAsync(control, db, spawn.Id, $"plan PR merge failed: {FlattenMessage(ex)}", hub, ct);
                 return false;
             }
         }
@@ -969,10 +970,10 @@ public sealed class StorySpawnOrchestrator
         // before all docs hit pass — Bug A on the failover-cluster:XRAFT
         // spawn) so the PR-merged signal alone isn't sufficient. This gate
         // closes the impl-starts-while-docs-still-iterating regression.
-        var (advanceAllPassed, advanceNonPassedKeys) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var (advanceAllPassed, advanceNonPassedKeys) = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
         if (!advanceAllPassed)
         {
-            await PersistLastErrorAsync(db, spawn.Id,
+            await PersistLastErrorAsync(control, db, spawn.Id,
                 $"Plan docs not all passed; phase advance blocked: {string.Join(", ", advanceNonPassedKeys)}",
                 hub, ct);
             return false;
@@ -981,7 +982,7 @@ public sealed class StorySpawnOrchestrator
         var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
         sRow.Phase = StorySpawnPhases.Decompose;
         sRow.UpdatedAt = DateTimeOffset.UtcNow;
-        await ClearLastErrorAsync(db, sRow, ct);
+        await ClearLastErrorAsync(control, db, sRow, ct);
         await db.SaveChangesAsync(ct);
         await EmitChange(hub, "phase-advanced", sRow, ct);
 
@@ -1003,7 +1004,7 @@ public sealed class StorySpawnOrchestrator
     /// waiting for the next /api/state poll.
     /// </summary>
     private static async Task PersistLastErrorAsync(
-        ProductDbContext db, string spawnId, string message, IHubContext<ForgeHub>? hub, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string spawnId, string message, IHubContext<ForgeHub>? hub, CancellationToken ct)
     {
         var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
         if (row is null) return;
@@ -1014,7 +1015,7 @@ public sealed class StorySpawnOrchestrator
         await EmitChange(hub, "spawn-error", row, ct);
     }
 
-    private static Task ClearLastErrorAsync(ProductDbContext db, StorySpawnRow row, CancellationToken ct)
+    private static Task ClearLastErrorAsync(ControlDbContext control, ProductDbContext db, StorySpawnRow row, CancellationToken ct)
     {
         if (row.LastError is null && row.LastErrorAt is null) return Task.CompletedTask;
         row.LastError = null;
@@ -1092,7 +1093,7 @@ public sealed class StorySpawnOrchestrator
     /// </para>
     /// </summary>
     internal static async Task<(bool AllPassed, IReadOnlyList<string> NonPassedKeys)>
-        ArePlanDocsAllPassedAsync(ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ArePlanDocsAllPassedAsync(ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
         // Materialize the full deliverable history for these docs in one
@@ -1221,7 +1222,7 @@ public sealed class StorySpawnOrchestrator
     /// /api/stories/{storyId}/spawn/artifacts/{key}/iterations queries.
     /// </summary>
     internal static async Task EnsurePlanDocWorkItemsAsync(
-        ProductDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
     {
         var docPoints = Math.Max(3, spawn.StoryPoints);
         // List<string> rather than string[] — C# 12's implicit T[] → ReadOnlySpan<T>
@@ -1278,7 +1279,7 @@ public sealed class StorySpawnOrchestrator
     /// fresh agent pairs when the spawn re-advances to Implement.</para>
     /// </summary>
     private async Task CancelInFlightImplTasksAsync(
-        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -1358,7 +1359,7 @@ public sealed class StorySpawnOrchestrator
     /// the spawn is currently in plan.
     /// </summary>
     private async Task EnforcePlanPhaseInvariantAsync(
-        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var stranded = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id && w.Status == "active")
@@ -1423,7 +1424,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task<bool> DriveDecomposeAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Phase 48 — recover from spawns whose phase advanced under the
@@ -1437,13 +1438,13 @@ public sealed class StorySpawnOrchestrator
         // "database is locked" race against a concurrent writer on
         // SQLite's single-writer journal. One write keeps the
         // transaction window tight.
-        var (decomposeAllPassed, decomposeNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var (decomposeAllPassed, decomposeNonPassed) = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
         if (!decomposeAllPassed)
         {
             // Phase 48 follow-up — cancel any in-flight impl tasks BEFORE
             // saving the phase regression so the cancel writes batch in
             // the same transaction window. Reduces SQLite lock contention.
-            await CancelInFlightImplTasksAsync(db, spawn, ct);
+            await CancelInFlightImplTasksAsync(control, db, spawn, ct);
 
             var sBack = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
             sBack.Phase = StorySpawnPhases.Plan;
@@ -1471,7 +1472,7 @@ public sealed class StorySpawnOrchestrator
             var ws = await this.strategy.ProduceDecompositionAsync(spawn, story, ct);
             if (ws.Count == 0) return false;
 
-            await this.PersistDecompositionAsync(db, spawn, ws, ct);
+            await this.PersistDecompositionAsync(control, db, spawn, ws, ct);
             await EmitChange(hub, "decomposed", spawn, ct);
             return true;
         }
@@ -1484,7 +1485,7 @@ public sealed class StorySpawnOrchestrator
         // merged?". Without this backfill the sweep sees an empty FK table,
         // treats every stage as ready, and claims all 21 stages at once on
         // the first impl tick (observed 2026-05-09 on failover-cluster:XRAFT).
-        await SyncWorkstreamDepsFromJsonAsync(db, spawn, ct);
+        await SyncWorkstreamDepsFromJsonAsync(control, db, spawn, ct);
 
         // Step 3 — auto-approve + advance to 'implement'. Per the
         // "no human gates" rule, the architect's decomposition lands
@@ -1528,7 +1529,7 @@ public sealed class StorySpawnOrchestrator
     /// titles that don't resolve to a sibling are skipped.
     /// </summary>
     private static async Task SyncWorkstreamDepsFromJsonAsync(
-        ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -1579,7 +1580,7 @@ public sealed class StorySpawnOrchestrator
     /// doesn't re-do the workstream + dep insertion every tick.
     /// </summary>
     private async Task PersistDecompositionAsync(
-        ProductDbContext db, StorySpawnRow spawn,
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn,
         IReadOnlyList<DecompositionWorkstream> ws, CancellationToken ct)
     {
         var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
@@ -1686,7 +1687,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── implement ────────────────────────────────────────────────────────────
     private async Task<bool> DriveImplementAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Phase 48 — gate the impl claim sweep on plan-doc completion.
@@ -1696,14 +1697,14 @@ public sealed class StorySpawnOrchestrator
         // requirement. Q48.3: in-flight workstreams (state=picked-up)
         // continue running — only NEW claims are blocked here.
         // Phase 48 follow-up — single SaveChangesAsync (matches DriveDecomposeAsync).
-        var (implAllPassed, implNonPassed) = await ArePlanDocsAllPassedAsync(db, spawn, ct);
+        var (implAllPassed, implNonPassed) = await ArePlanDocsAllPassedAsync(control, db, spawn, ct);
         if (!implAllPassed)
         {
             // Phase 48 follow-up — operator request 2026-05-09: stop all
             // in-flight impl tasks when phase regresses. Without this the
             // 24 active workstreams keep burning tokens against a plan
             // that's been invalidated.
-            await CancelInFlightImplTasksAsync(db, spawn, ct);
+            await CancelInFlightImplTasksAsync(control, db, spawn, ct);
 
             var sBack = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
             sBack.Phase = StorySpawnPhases.Plan;
@@ -1867,7 +1868,7 @@ public sealed class StorySpawnOrchestrator
             // sets ShouldTriggerReassign=true; we park the work item at
             // pending-reassign so Phase 52's SloppyReassignmentReconciler
             // rotates to a fresh pair on the next tick.
-            var wsPointsForGuard = await LookupWorkstreamPointsAsync(db, w.Id, spawn.StoryPoints, ct);
+            var wsPointsForGuard = await LookupWorkstreamPointsAsync(control, db, w.Id, spawn.StoryPoints, ct);
             // Phase 64 — supply the in-process active-invocation check so the
             // guard's "overran budget+slack → Allow recovery spawn" branch
             // refuses to fire when the original SDK invocation is still alive.
@@ -1877,7 +1878,7 @@ public sealed class StorySpawnOrchestrator
             Func<string, bool>? isActive = agentRunnerForGuard is null
                 ? null
                 : agentRunnerForGuard.IsTaskActive;
-            var guardDecision = await ImplSpawnGuard.CheckAsync(db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct, isActive);
+            var guardDecision = await ImplSpawnGuard.CheckAsync(control, db, w.Id, wsPointsForGuard, DateTimeOffset.UtcNow, ct, isActive);
             if (guardDecision.Outcome != ImplSpawnGuard.Decision.Allow)
             {
                 this.logger?.LogDebug(
@@ -1892,7 +1893,7 @@ public sealed class StorySpawnOrchestrator
                 // already pending-reassign or terminally failed we no-op.
                 if (guardDecision.ShouldTriggerReassign)
                 {
-                    await this.TryRouteToSloppyReassignAsync(db, w, guardDecision.ConsecutiveNoProgress, ct);
+                    await this.TryRouteToSloppyReassignAsync(control, db, w, guardDecision.ConsecutiveNoProgress, ct);
                 }
                 else if (guardDecision.Outcome == ImplSpawnGuard.Decision.SkipNoProgressBackoff
                     && guardDecision.ConsecutiveNoProgress == SyncConstants.NoProgressBackoffThreshold)
@@ -1990,8 +1991,9 @@ public sealed class StorySpawnOrchestrator
                 try
                 {
                     using var pickScope = this.services.CreateScope();
+                    var pickControl = pickScope.ServiceProvider.GetRequiredService<ControlDbContext>();
                     var pickDb = pickScope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                    var freshBusy = await Forge.Api.Services.BusyAgentsHelper.LoadBusyAgentsAsync(pickDb, ct);
+                    var freshBusy = await Forge.Api.Services.BusyAgentsHelper.LoadBusyAgentsAsync(pickControl, ct);
 
                     // Phase 65 — seed the busy set with evaluator agents
                     // already assigned to sibling workstreams in this spawn.
@@ -2018,7 +2020,7 @@ public sealed class StorySpawnOrchestrator
                     }
 
                     var assignedPair = await ResolveImplPairAsync(
-                        pickDb, this.allocation, freshBusy, w.Sort, ct);
+                        pickControl, pickDb, this.allocation, freshBusy, w.Sort, ct);
                     var assignedJson = JsonSerializer.Serialize(assignedPair);
                     w.AgentsJson = assignedJson;
                     var pickRow = await pickDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
@@ -2215,7 +2217,7 @@ public sealed class StorySpawnOrchestrator
     /// WorkItemRow keyed on the workstream id.
     /// </summary>
     private static async Task<int> LookupWorkstreamPointsAsync(
-        ProductDbContext db, string workstreamId, int storyPoints, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workstreamId, int storyPoints, CancellationToken ct)
     {
         var p = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workstreamId)
@@ -2268,6 +2270,7 @@ public sealed class StorySpawnOrchestrator
     /// </list>
     /// </summary>
     private async Task TryRouteToSloppyReassignAsync(
+        Forge.Api.Persistence.ControlDbContext control,
         Forge.Api.Persistence.ProductDbContext db,
         Forge.Api.Persistence.WorkstreamRow w,
         int consecutiveNoProgress,
@@ -2360,6 +2363,7 @@ public sealed class StorySpawnOrchestrator
         // Check if the gen/eval loop already passed for this workstream.
         // Use a fresh scope so we don't race the original DbContext.
         using var scope = this.services.CreateScope();
+        var control2 = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db2 = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var lastDel = (await db2.Deliverables.AsNoTracking()
@@ -2426,7 +2430,7 @@ public sealed class StorySpawnOrchestrator
                     // 3.1 workstream looping after restart. Idempotent:
                     // TryRouteToSloppyReassignAsync no-ops when already
                     // in pending-reassign / failed state.
-                    await this.TryRouteToSloppyReassignAsync(db2, w, consecutiveNoProgress: 0, ct);
+                    await this.TryRouteToSloppyReassignAsync(control2, db2, w, consecutiveNoProgress: 0, ct);
                     return;
                 }
                 // At cap. The reconciler's MarkTerminalFailedAsync stamps
@@ -2446,7 +2450,7 @@ public sealed class StorySpawnOrchestrator
 
             if (string.Equals(lastDel.Verdict, "stalled-budget", StringComparison.Ordinal))
             {
-                var crew = await db2.Crews.AsNoTracking()
+                var crew = await control2.Crews.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == lastDel.CrewId, ct);
                 // Windowed cost — sum agent_usage from
                 // WorkItemRow.BudgetWindowStartUtc forward so a
@@ -2458,7 +2462,7 @@ public sealed class StorySpawnOrchestrator
                 var wiForWindow = await db2.WorkItems.AsNoTracking()
                     .FirstOrDefaultAsync(x => x.Id == w.Id, ct);
                 var windowStart = wiForWindow?.BudgetWindowStartUtc;
-                var usageRows = await db2.AgentUsage.AsNoTracking()
+                var usageRows = await control2.AgentUsage.AsNoTracking()
                     .Where(u => u.TaskId == w.Id)
                     .ToListAsync(ct);
                 var cumulativeCost = windowStart is DateTimeOffset ws
@@ -2531,7 +2535,7 @@ public sealed class StorySpawnOrchestrator
 
         if (files.Count > 0)
         {
-            var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, db2, ct);
+            var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, control2, db2, ct);
             await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
                 $"impl({w.Id}): {w.Name}", ct);
         }
@@ -2581,21 +2585,21 @@ public sealed class StorySpawnOrchestrator
             var genAgentId = finalDel.GeneratorAgentId;
             var evalAgentId = finalDel.EvaluatorAgentId;
             var genAgent = !string.IsNullOrEmpty(genAgentId)
-                ? await db2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId, ct) : null;
+                ? await control2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId, ct) : null;
             var evalAgent = !string.IsNullOrEmpty(evalAgentId)
-                ? await db2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId, ct) : null;
+                ? await control2.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId, ct) : null;
             var genName = genAgent?.Name ?? genAgentId ?? "unknown";
             var evalName = evalAgent?.Name ?? evalAgentId;
 
             // Resolve models from crew config.
             string? genModel = null, evalModel = null;
             var genCrew = !string.IsNullOrEmpty(finalDel.CrewId)
-                ? await db2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == finalDel.CrewId, ct) : null;
+                ? await control2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == finalDel.CrewId, ct) : null;
             if (genCrew is not null)
             {
                 genModel = genAgent?.GeneratorModel ?? genCrew.Model;
                 var evalCrew = !string.IsNullOrEmpty(genCrew.PairedWithCrewId)
-                    ? await db2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == genCrew.PairedWithCrewId, ct) : null;
+                    ? await control2.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == genCrew.PairedWithCrewId, ct) : null;
                 evalModel = evalAgent?.EvaluatorModel ?? evalCrew?.EvaluatorModel ?? evalCrew?.Model;
             }
 
@@ -2665,7 +2669,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── review ───────────────────────────────────────────────────────────────
     private async Task<bool> DriveReviewAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         var baseBranch = BaseBranchOf(spawn);
@@ -2753,7 +2757,7 @@ public sealed class StorySpawnOrchestrator
             if (activeComments.Count > 0)
             {
                 // Phase 59 — gate the fix loop on PR/worktree liveness.
-                if (await this.TrySkipReviewFixOnStalePrAsync(db, spawn, w, prId, activeComments, repo, ct))
+                if (await this.TrySkipReviewFixOnStalePrAsync(control, db, spawn, w, prId, activeComments, repo, ct))
                 {
                     changed = true;
                     continue;
@@ -2782,7 +2786,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     w.Status = "complete";
                     await db.SaveChangesAsync(ct);
-                    await TryCloseWorkItemAsync(db, w.Id, ct);
+                    await TryCloseWorkItemAsync(control, db, w.Id, ct);
                     changed = true;
                     this.logger?.LogInformation(
                         "Workstream {WsId} PR {PrId} merged — advanced to complete.",
@@ -2814,7 +2818,7 @@ public sealed class StorySpawnOrchestrator
             {
                 w.Status = "complete";
                 await db.SaveChangesAsync(ct);
-                await TryCloseWorkItemAsync(db, w.Id, ct);
+                await TryCloseWorkItemAsync(control, db, w.Id, ct);
                 changed = true;
                 this.logger?.LogInformation(
                     "Workstream {WsId} PR {PrId} reached terminal merged state — advanced from review to complete.",
@@ -2860,7 +2864,7 @@ public sealed class StorySpawnOrchestrator
                     }
                     catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
                     {
-                        await this.StallWorkstreamForMergeFailureAsync(db, hub, spawn, w, prId, mergeEx, ct);
+                        await this.StallWorkstreamForMergeFailureAsync(control, db, hub, spawn, w, prId, mergeEx, ct);
                         changed = true;
                         continue;
                     }
@@ -2900,7 +2904,7 @@ public sealed class StorySpawnOrchestrator
             }
             catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
             {
-                await this.StallWorkstreamForMergeFailureAsync(db, hub, spawn, w, prId, mergeEx, ct);
+                await this.StallWorkstreamForMergeFailureAsync(control, db, hub, spawn, w, prId, mergeEx, ct);
                 changed = true;
             }
         }
@@ -2938,7 +2942,7 @@ public sealed class StorySpawnOrchestrator
     /// for this PR.</para>
     /// </summary>
     private async Task<bool> TrySkipReviewFixOnStalePrAsync(
-        ProductDbContext db, StorySpawnRow spawn, WorkstreamRow w, string prId,
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, WorkstreamRow w, string prId,
         IReadOnlyList<PrCommentRow> activeComments,
         RepoRow? repo, CancellationToken ct)
     {
@@ -3055,8 +3059,9 @@ public sealed class StorySpawnOrchestrator
         // boundary.
         using (var scope = this.services.CreateScope())
         {
+            var controlDefense = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var dbDefense = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            if (await this.TrySkipReviewFixOnStalePrAsync(dbDefense, spawn, w, prId, activeComments, repo, ct))
+            if (await this.TrySkipReviewFixOnStalePrAsync(controlDefense, dbDefense, spawn, w, prId, activeComments, repo, ct))
             {
                 return;
             }
@@ -3074,8 +3079,9 @@ public sealed class StorySpawnOrchestrator
                 if (!fix.IsReplyOnly)
                 {
                     using var slugScope = this.services.CreateScope();
+                    var slugControl = slugScope.ServiceProvider.GetRequiredService<ControlDbContext>();
                     var slugDb = slugScope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                    var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, slugDb, ct);
+                    var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, slugControl, slugDb, ct);
                     await this.git.CommitFilesAsync(repo, w.Branch, wsSlug,
                         new Dictionary<string, string>(StringComparer.Ordinal) { [fix.FilePath!] = fix.NewContent! },
                         $"fix({w.Id}): address review comment", ct);
@@ -3121,7 +3127,7 @@ public sealed class StorySpawnOrchestrator
     /// needed) to retry.</para>
     /// </summary>
     private async Task StallWorkstreamForMergeFailureAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkstreamRow w, string prId, Exception ex, CancellationToken ct)
     {
         this.logger?.LogWarning(ex,
@@ -3164,7 +3170,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── qa ───────────────────────────────────────────────────────────────────
     private async Task<bool> DriveQaAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
@@ -3260,7 +3266,7 @@ public sealed class StorySpawnOrchestrator
             w.PrsJson = JsonSerializer.Serialize(prsList);
             w.Status = "complete";
             await db.SaveChangesAsync(ct);
-            await TryCloseWorkItemAsync(db, w.Id, ct);
+            await TryCloseWorkItemAsync(control, db, w.Id, ct);
             changed = true;
         }
 
@@ -3291,7 +3297,7 @@ public sealed class StorySpawnOrchestrator
 
     // ── done ─────────────────────────────────────────────────────────────────
     private async Task<bool> DriveDoneAsync(
-        ProductDbContext db, IHubContext<ForgeHub>? hub,
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
         // Transition the upstream ADO work item to Closed (idempotent).
@@ -3382,6 +3388,7 @@ public sealed class StorySpawnOrchestrator
     /// claims and the ledger contention sorts itself out as runs finish.
     /// </summary>
     internal static async Task<string[]> ResolveImplPairAsync(
+        ControlDbContext control,
         ProductDbContext db,
         AgentAllocationLoader allocation,
         HashSet<string> busyAgents,
@@ -3389,8 +3396,8 @@ public sealed class StorySpawnOrchestrator
         CancellationToken ct)
     {
         const string prefix = "crew-eng";
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
-            ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
+            ?? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct);
         if (crew is null)
         {
             var fallback = allocation.ForTeam("Engineer").FirstOrDefault()?.Id ?? "eng-default";
@@ -3398,7 +3405,7 @@ public sealed class StorySpawnOrchestrator
         }
 
         var evaluatorCrew = !string.IsNullOrEmpty(crew.PairedWithCrewId)
-            ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct)
+            ? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct)
             : null;
 
         // Generator roster — engineer crew members. The schedule-gate
@@ -3408,7 +3415,7 @@ public sealed class StorySpawnOrchestrator
         // explicit approval. Fall back to the lead when no members.
         // Ordered by AgentId for a stable round-robin baseline; the
         // per-claim seed below rotates the picked index.
-        var genRoster = await db.CrewMembers.AsNoTracking()
+        var genRoster = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == crew.Id)
             .OrderBy(m => m.AgentId)
             .Select(m => m.AgentId)
@@ -3442,7 +3449,7 @@ public sealed class StorySpawnOrchestrator
         // the picked generator for a standalone crew). Phase 39 gen != eval
         // is enforced inside PickEvaluator.
         var evalRosterCrewId = evaluatorCrew?.Id ?? crew.Id;
-        var evalRoster = await db.CrewMembers.AsNoTracking()
+        var evalRoster = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == evalRosterCrewId)
             .OrderBy(m => m.AgentId)
             .Select(m => m.AgentId)
@@ -3517,7 +3524,7 @@ public sealed class StorySpawnOrchestrator
     /// Tolerates missing rows — the orchestrator should never crash
     /// because of a stale id.
     /// </summary>
-    private static async Task TryCloseWorkItemAsync(ProductDbContext db, string workstreamId, CancellationToken ct)
+    private static async Task TryCloseWorkItemAsync(ControlDbContext control, ProductDbContext db, string workstreamId, CancellationToken ct)
     {
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workstreamId, ct);
         if (wi is null) return;

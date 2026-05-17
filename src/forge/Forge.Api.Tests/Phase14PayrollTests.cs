@@ -112,17 +112,18 @@ public class Phase14PayrollTests
         // Create a crew + a couple of members directly in the DB.
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-payroll", Name = "P", Summary = "",
                 Model = "local-stub", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 Lead = "lead1", Timezone = "Etc/UTC", ScheduleEnabled = true,
             });
-            db.Agents.Add(new AgentRow { Id = "lead1", Name = "Lead", Role = "eng", Level = 5, HourlyUsd = ScoringConstants.HourlyForLevel(5) });
-            db.Agents.Add(new AgentRow { Id = "m1",    Name = "M1",   Role = "eng", Level = 3, HourlyUsd = ScoringConstants.HourlyForLevel(3) });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-payroll", AgentId = "m1", Role = "eng", AddedAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync();
+            control.Agents.Add(new AgentRow { Id = "lead1", Name = "Lead", Role = "eng", Level = 5, HourlyUsd = ScoringConstants.HourlyForLevel(5) });
+            control.Agents.Add(new AgentRow { Id = "m1",    Name = "M1",   Role = "eng", Level = 3, HourlyUsd = ScoringConstants.HourlyForLevel(3) });
+            control.CrewMembers.Add(new CrewMemberRow { CrewId = "crew-payroll", AgentId = "m1", Role = "eng", AddedAt = DateTimeOffset.UtcNow });
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await c.GetAsync("/api/crews/crew-payroll/payroll");
@@ -161,14 +162,15 @@ public class Phase14PayrollTests
 
         using (var scope = f.Services.CreateScope())
         {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            db.Crews.Add(new CrewRow
+            control.Crews.Add(new CrewRow
             {
                 Id = "crew-spend", Name = "S", Summary = "",
                 Model = "local-stub", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 Timezone = "Etc/UTC",
             });
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
 
         var resp = await c.GetAsync("/api/crews/crew-spend/spend");

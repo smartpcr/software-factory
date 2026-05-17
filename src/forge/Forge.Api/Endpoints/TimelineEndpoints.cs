@@ -38,6 +38,7 @@ public static class TimelineEndpoints
     {
         app.MapGet("/api/timeline", async (
             HttpContext ctx,
+            ControlDbContext control,
             ProductDbContext db,
             ILoggerFactory loggerFactory,
             double? from,
@@ -54,7 +55,7 @@ public static class TimelineEndpoints
             var nowUtc = DateTimeOffset.UtcNow;
 
             // Phase 8.9 — scope to active product.
-            var scope = await ProductScope.ResolveAsync(ctx, db);
+            var scope = await ProductScope.ResolveAsync(ctx, control);
             var wsQ = db.Workstreams.AsNoTracking().AsQueryable();
             if (!scope.IsAll)
             {
@@ -83,7 +84,7 @@ public static class TimelineEndpoints
             // Load real activity timestamps for computing bar positions:
             // agent_usage grouped by TaskId gives us first/last activity per
             // workstream. Deliverables give us milestone events.
-            var usageByTask = (await db.AgentUsage.AsNoTracking()
+            var usageByTask = (await control.AgentUsage.AsNoTracking()
                     .Select(u => new { u.TaskId, u.StartedAt, u.EndedAt })
                     .ToListAsync())
                 .Where(u => !string.IsNullOrEmpty(u.TaskId))

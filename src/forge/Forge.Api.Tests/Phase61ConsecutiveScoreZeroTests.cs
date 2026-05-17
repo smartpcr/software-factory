@@ -112,11 +112,13 @@ public class Phase61ConsecutiveScoreZeroTests
     [Fact]
     public async Task CheckAsync_Trailing_Zeros_Returns_Sloppy_True_With_Phase61_Reason()
     {
-        await using var db = await CreateDbAsync();
+        var (db, control) = await CreateDbAsync();
+        await using var _dbScope = db;
+        await using var _ctlScope = control;
         var scores = new[] { 78, 71, 0, 0, 82, 0, 0, 0 };
 
         var result = await SloppyDetector.CheckAsync(
-            db,
+            control, db,
             workItemId: "wi-phase61",
             generatorAgentId: "A2",
             budgetWindowStartUtc: null,
@@ -137,11 +139,13 @@ public class Phase61ConsecutiveScoreZeroTests
         // Trailing 3 = [0, 0, 82] — must NOT fire so iter-5 success has a
         // chance to land before the trigger catches the post-recovery
         // backslide.
-        await using var db = await CreateDbAsync();
+        var (db, control) = await CreateDbAsync();
+        await using var _dbScope = db;
+        await using var _ctlScope = control;
         var scores = new[] { 78, 71, 0, 0, 82 };
 
         var result = await SloppyDetector.CheckAsync(
-            db,
+            control, db,
             workItemId: "wi-phase61",
             generatorAgentId: "A2",
             budgetWindowStartUtc: null,
@@ -158,8 +162,10 @@ public class Phase61ConsecutiveScoreZeroTests
         // Q52.2 token-cap path remains explicitly off — high token totals
         // alone should NOT flip the verdict. We seed a generator usage
         // row well above the 500K cap with non-stalling scores.
-        await using var db = await CreateDbAsync();
-        db.AgentUsage.Add(new AgentUsageRow
+        var (db, control) = await CreateDbAsync();
+        await using var _dbScope = db;
+        await using var _ctlScope = control;
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "A2",
             CrewId = "crew-arch",
@@ -172,10 +178,10 @@ public class Phase61ConsecutiveScoreZeroTests
             Status = "finished",
             CostCategory = "generator",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var result = await SloppyDetector.CheckAsync(
-            db,
+            control, db,
             workItemId: "wi-phase61",
             generatorAgentId: "A2",
             budgetWindowStartUtc: null,
@@ -191,11 +197,13 @@ public class Phase61ConsecutiveScoreZeroTests
     {
         // Q52.1 plateau remains off — a flat trailing-3 below personal
         // best should NOT fire on its own (only consecutive zeros do).
-        await using var db = await CreateDbAsync();
+        var (db, control) = await CreateDbAsync();
+        await using var _dbScope = db;
+        await using var _ctlScope = control;
         var scores = new[] { 90, 80, 70, 70 }; // best=90 at iter 1, trailing-3 < best.
 
         var result = await SloppyDetector.CheckAsync(
-            db,
+            control, db,
             workItemId: "wi-phase61",
             generatorAgentId: "A2",
             budgetWindowStartUtc: null,
@@ -225,15 +233,25 @@ public class Phase61ConsecutiveScoreZeroTests
     // ── Shared SQLite-in-memory fixture (matches pattern from existing
     // SloppyDetectorTests / Phase52SloppyDetectorTests). ────────────────
 
-    private static async Task<ProductDbContext> CreateDbAsync()
+    private static async Task<(ProductDbContext db, ControlDbContext control)> CreateDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         conn.Open();
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
         var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
-        return db;
+        var _productSchema = db.Database.GenerateCreateScript();
+        foreach (var _stmt in _productSchema.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _trimmed = _stmt.Trim();
+            if (_trimmed.Length > 0) await db.Database.ExecuteSqlRawAsync(_trimmed);
+        }
+        return (db, control);
     }
 }

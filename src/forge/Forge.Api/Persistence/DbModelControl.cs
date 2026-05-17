@@ -10,9 +10,8 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>
 /// Phase D — EF model configuration for the **Control DB** entities.
-/// Called from <see cref="ForgeDbContext.OnModelCreating"/> (legacy) and
-/// from <c>ControlDbContext.OnModelCreating</c> (split). Behavior must
-/// match the pre-split ForgeDbContext shape exactly so the migrations
+/// Called from <see cref="ControlDbContext.OnModelCreating"/>. The shape
+/// must match the pre-split union-model exactly so the migrations
 /// already applied to <c>forge.db</c> remain valid.
 ///
 /// <para>See <c>docs/forge/split-db.md</c> for which tables belong here.</para>

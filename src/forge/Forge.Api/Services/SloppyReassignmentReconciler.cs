@@ -125,6 +125,8 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
+        // Phase G — resolve control DB once at scope level for cross-context reads.
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Phase E — fan out per product. PendingReassign work items are
         // product-scoped; each product's pool is processed independently.
         var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
@@ -132,7 +134,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         var totalProgressed = 0;
         var lockObj = new object();
 
-        await fanout.ForEachProductAsync(async (db, slug, fct) =>
+        await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
             var candidates = await db.WorkItems
                 .Where(w => w.ExecutionStatus == ExecutionStatuses.PendingReassign)
@@ -144,7 +146,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             {
                 try
                 {
-                    if (await this.TryReassignOrFailAsync(db, queue, wi, fct))
+                    if (await this.TryReassignOrFailAsync(control, db, queue, wi, fct))
                     {
                         perProductProgressed++;
                     }
@@ -165,6 +167,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     }
 
     private async Task<bool> TryReassignOrFailAsync(
+        ControlDbContext control,
         ProductDbContext db,
         ITaskQueueService queue,
         WorkItemRow wi,
@@ -214,7 +217,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // start a fourth attempt.
         if (wi.PairAttemptCount >= ScoringConstants.MaxPairAttempts)
         {
-            await this.MarkTerminalFailedAsync(db, wi, ct);
+            await this.MarkTerminalFailedAsync(control, db, wi, ct);
             return true;
         }
 
@@ -261,14 +264,14 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // diagnose if the agent gets confused.
         if (this.options.CurrentValue.ResetWorktreeOnReassign)
         {
-            await this.TryResetWorktreeAsync(db, wi, ct);
+            await this.TryResetWorktreeAsync(control, db, wi, ct);
         }
 
         // Pre-pick the generator via the existing diversity resolver so the
         // queue row's preferredAgentId carries the new generator. The
         // evaluator is picked at claim time by CrewQueueWorker; both sides
         // honor PriorPairsJson via the busy-set extension.
-        var preferredGenerator = await this.PickFreshGeneratorAsync(db, wi, crewId, ct);
+        var preferredGenerator = await this.PickFreshGeneratorAsync(control, db, wi, crewId, ct);
         if (preferredGenerator is null)
         {
             // No eligible pair right now. Roll back the wi state we just
@@ -327,14 +330,14 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // Mirror Phase 51's "stalled workstream un-stalled" hook so a
         // workstream-card STALLED pill (set by the orchestrator after a
         // bad verdict) clears on the next UI tick.
-        await this.ClearWorkstreamStallAsync(db, wi.Id, ct);
+        await this.ClearWorkstreamStallAsync(control, db, wi.Id, ct);
 
         await this.hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
 
         return true;
     }
 
-    private async Task MarkTerminalFailedAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task MarkTerminalFailedAsync(ControlDbContext control, ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         wi.ExecutionStatus = ExecutionStatuses.Failed;
         wi.FailureReason = ScoringConstants.SloppyTerminalFailureReason;
@@ -439,9 +442,9 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     /// retries next tick.
     /// </summary>
     private async Task<string?> PickFreshGeneratorAsync(
-        ProductDbContext db, WorkItemRow wi, string crewId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, WorkItemRow wi, string crewId, CancellationToken ct)
     {
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
         if (crew is null) return null;
 
         // Roster of crew members (excluding the lead per Phase 47 — leads
@@ -450,7 +453,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // shift; the reconciler does not re-implement schedule gating
         // because the picked agent flows into CrewQueueWorker's claim
         // path which re-applies the gate.
-        var allMembers = await db.CrewMembers.AsNoTracking()
+        var allMembers = await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == crewId)
             .Select(m => m.AgentId)
             .ToListAsync(ct);
@@ -461,7 +464,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
 
         // Build the exclusion set from PriorPairsJson + currently-busy.
         var busy = new HashSet<string>(StringComparer.Ordinal);
-        var usageBusy = await db.AgentUsage.AsNoTracking()
+        var usageBusy = await control.AgentUsage.AsNoTracking()
             .Where(u => u.EndedAt == null)
             .Select(u => u.AgentId)
             .Distinct()
@@ -520,17 +523,17 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     /// pair sees whatever's on the branch (which on a real repo is the
     /// prior pair's commits, but a fresh agent will overwrite them).</para>
     /// </summary>
-    private async Task TryResetWorktreeAsync(ProductDbContext db, WorkItemRow wi, CancellationToken ct)
+    private async Task TryResetWorktreeAsync(ControlDbContext control, ProductDbContext db, WorkItemRow wi, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(wi.RepoId)) return;
 
-        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
 
         // Resolve the worktree path via the same resolver the rest of
         // the codebase uses — handles canonical stage-* slugs, ad-hoc
         // ws-{id} fallback, and plan-doc worktrees.
-        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(db, wi.Id, ct);
+        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(control, db, wi.Id, ct);
         var worktreePath = resolved.WorktreePath;
 
         // Fallback for pure ad-hoc work items that may not have a
@@ -549,7 +552,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
 
         // Resolve the correct base branch — story-spawned workstreams
         // target the spawn's base branch, not the repo default.
-        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(db, wi.Id, ct);
+        var baseBranch = await WorkItemBaseBranchResolver.ResolveAsync(control, db, wi.Id, ct);
         try
         {
             await RunGitAsync(worktreePath, $"fetch origin {baseBranch}", ct);
@@ -602,7 +605,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         }
     }
 
-    private async Task ClearWorkstreamStallAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    private async Task ClearWorkstreamStallAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
     {
         // Mirror of BudgetCooldownReconciler.ClearWorkstreamStallAsync — keep
         // both impls in lockstep so a sloppy-reassignment un-stalls the

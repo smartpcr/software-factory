@@ -49,7 +49,7 @@ public class StalledQuestionsLeakTests
     // ── helpers ──────────────────────────────────────────────────────────
 
     private static async Task SeedSpawnPairAsync(
-        ProductDbContext db, string wsId, DateTimeOffset startedAt, bool success)
+        ControlDbContext control, ProductDbContext db, string wsId, DateTimeOffset startedAt, bool success)
     {
         db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
         {
@@ -65,11 +65,11 @@ public class StalledQuestionsLeakTests
             PayloadJson = success ? "{\"success\":true}" : "{\"success\":false}",
             At = startedAt.AddSeconds(1),
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task SeedDeliverableAsync(
-        ProductDbContext db, string wsId, int iter, int score, string verdict, DateTimeOffset createdAt)
+        ControlDbContext control, ProductDbContext db, string wsId, int iter, int score, string verdict, DateTimeOffset createdAt)
     {
         db.Deliverables.Add(new DeliverableRow
         {
@@ -83,11 +83,11 @@ public class StalledQuestionsLeakTests
             DimsJson = "{}",
             CreatedAt = createdAt,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     private static async Task SeedQuestionAsync(
-        ProductDbContext db, string wsId, string extId, int iter,
+        ControlDbContext control, ProductDbContext db, string wsId, string extId, int iter,
         DateTimeOffset createdAt, DateTimeOffset? answeredAt = null)
     {
         db.DeliverableQuestions.Add(new DeliverableQuestionRow
@@ -102,7 +102,7 @@ public class StalledQuestionsLeakTests
             AnsweredBy = answeredAt is null ? null : "operator",
             CreatedAt = createdAt,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -114,20 +114,21 @@ public class StalledQuestionsLeakTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         // Iter 1 ran, evaluator emitted a question, verdict=stalled-questions
-        await SeedDeliverableAsync(db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
-        await SeedQuestionAsync(db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1));
+        await SeedDeliverableAsync(control, db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
+        await SeedQuestionAsync(control, db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1));
         // 5+ subsequent successful spawns produce no new deliverable
         for (var i = 1; i <= 5; i++)
         {
-            await SeedSpawnPairAsync(db, WsId, baseTime.AddMinutes(i * 2), success: true);
+            await SeedSpawnPairAsync(control, db, WsId, baseTime.AddMinutes(i * 2), success: true);
         }
 
         var r = await ImplSpawnGuard.CheckAsync(
-            db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
+            control, db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
 
         Assert.Equal(ImplSpawnGuard.Decision.SkipAwaitingAnswers, r.Outcome);
         Assert.False(r.ShouldTriggerReassign);
@@ -139,24 +140,25 @@ public class StalledQuestionsLeakTests
     {
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
-        await SeedDeliverableAsync(db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
+        await SeedDeliverableAsync(control, db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
         // 5 pre-answer no-progress spawns
         for (var i = 1; i <= 5; i++)
         {
-            await SeedSpawnPairAsync(db, WsId, baseTime.AddMinutes(i * 2), success: true);
+            await SeedSpawnPairAsync(control, db, WsId, baseTime.AddMinutes(i * 2), success: true);
         }
         // Operator answers at minute 12 — AFTER the 5 spawns at minutes 2,4,6,8,10
         var answerTime = baseTime.AddMinutes(12);
-        await SeedQuestionAsync(db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1), answeredAt: answerTime);
+        await SeedQuestionAsync(control, db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1), answeredAt: answerTime);
 
         // First post-answer tick — no spawn yet after answerTime. Progress
         // boundary is the answer timestamp so pre-answer spawns do NOT
         // count toward no-progress. Allow is expected.
         var r = await ImplSpawnGuard.CheckAsync(
-            db, WsId, wsPoints: 5, baseTime.AddMinutes(15), CancellationToken.None);
+            control, db, WsId, wsPoints: 5, baseTime.AddMinutes(15), CancellationToken.None);
 
         Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
         Assert.Equal(0, r.ConsecutiveNoProgress);
@@ -173,19 +175,20 @@ public class StalledQuestionsLeakTests
         // unanswered, then post-answer the progress boundary advances.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
-        await SeedDeliverableAsync(db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
+        await SeedDeliverableAsync(control, db, WsId, iter: 1, score: 0, verdict: "stalled-questions", createdAt: baseTime);
         // Question still unanswered + 5 no-progress spawns
-        await SeedQuestionAsync(db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1));
+        await SeedQuestionAsync(control, db, WsId, extId: "q1", iter: 1, createdAt: baseTime.AddSeconds(1));
         for (var i = 1; i <= 5; i++)
         {
-            await SeedSpawnPairAsync(db, WsId, baseTime.AddMinutes(i * 2), success: true);
+            await SeedSpawnPairAsync(control, db, WsId, baseTime.AddMinutes(i * 2), success: true);
         }
 
         var r = await ImplSpawnGuard.CheckAsync(
-            db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
+            control, db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
 
         // Must NOT trigger reassign even though we have 5+ no-progress
         // spawns; the awaiting-answers short-circuit comes first.
@@ -199,18 +202,19 @@ public class StalledQuestionsLeakTests
         // legitimate no-progress detection when there are no questions.
         await using var f = await BootAsync();
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-30);
         // Old deliverable (NOT stalled-questions), then many post-deliverable spawns
-        await SeedDeliverableAsync(db, WsId, iter: 1, score: 70, verdict: "iterate", createdAt: baseTime);
+        await SeedDeliverableAsync(control, db, WsId, iter: 1, score: 70, verdict: "iterate", createdAt: baseTime);
         for (var i = 1; i <= 5; i++)
         {
-            await SeedSpawnPairAsync(db, WsId, baseTime.AddMinutes(i * 2), success: true);
+            await SeedSpawnPairAsync(control, db, WsId, baseTime.AddMinutes(i * 2), success: true);
         }
 
         var r = await ImplSpawnGuard.CheckAsync(
-            db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
+            control, db, WsId, wsPoints: 5, DateTimeOffset.UtcNow, CancellationToken.None);
 
         // No questions → progress boundary = latestDeliverableAt only →
         // 5 no-progress spawns trigger reassign as before.

@@ -128,6 +128,7 @@ public class PrsEndpointsMergeConflictTests
         string? baseBranch)
     {
         using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         if (await db.Prs.AnyAsync(p => p.Id == prId)) return;
         db.Prs.Add(new PrRow
@@ -149,7 +150,7 @@ public class PrsEndpointsMergeConflictTests
             Age = "1m",
             AutoMerge = autoMerge,
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     /// <summary>

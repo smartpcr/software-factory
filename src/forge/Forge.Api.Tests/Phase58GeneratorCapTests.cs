@@ -84,12 +84,13 @@ public sealed class Phase58GeneratorCapTests
     private static string EvalJson(int score) =>
         Fence + "json\n{ \"score\": " + score + " }\n" + Fence;
 
-    private static async Task<(ForgeWebApplicationFactory f, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
+    private static async Task<(ForgeWebApplicationFactory f, ControlDbContext control, ProductDbContext db, DeliverableLoop loop)> SetupAsync(
         string workItemId, int points = 0)
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot */ }
         var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.WorkItems.Add(new WorkItemRow
         {
@@ -101,14 +102,14 @@ public sealed class Phase58GeneratorCapTests
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
-        await db.SaveChangesAsync();
-        return (f, db, new DeliverableLoop(db));
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        return (f, control, db, new DeliverableLoop(control, db));
     }
 
     [Fact]
     public async Task DeliverableLoop_ShortCircuits_When_Generator_Returns_FailureReason_And_Skips_Evaluator()
     {
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-cap");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-cap");
         try
         {
             var evaluatorCallCount = 0;
@@ -150,7 +151,7 @@ public sealed class Phase58GeneratorCapTests
             // agent_usage row was persisted with the real (non-zero)
             // generator usage despite the abort — Fix #2's effect
             // landing through the loop's WriteUsageAsync.
-            var usage = await db.AgentUsage
+            var usage = await control.AgentUsage
                 .Where(u => u.TaskId == "wi-cap" && u.CostCategory == "generator")
                 .ToListAsync();
             Assert.Single(usage);
@@ -168,7 +169,7 @@ public sealed class Phase58GeneratorCapTests
         // applies because feeding garbled provider output into the
         // evaluator wastes evaluator tokens regardless of which
         // dispatcher path failed.
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-http");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-http");
         try
         {
             var evaluatorCalls = 0;
@@ -206,7 +207,7 @@ public sealed class Phase58GeneratorCapTests
         // null the loop must continue to call the evaluator (prior
         // behaviour) so Phase 14 / 16 / 47 / 50 / 52 / 56 semantics
         // are preserved.
-        var (f, db, loop) = await SetupAsync(workItemId: "wi-happy");
+        var (f, control, db, loop) = await SetupAsync(workItemId: "wi-happy");
         try
         {
             var evaluatorCalls = 0;
@@ -236,16 +237,26 @@ public sealed class Phase58GeneratorCapTests
     private const string CrewId = "crew-eng";
     private const string LeadId = "ENG-LEAD";
 
-    private static async Task<(SqliteConnection conn, ProductDbContext db)> NewDbAsync()
+    private static async Task<(SqliteConnection conn, ControlDbContext control, ProductDbContext db)> NewDbAsync()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         await conn.OpenAsync();
+        var ctlOpts = new DbContextOptionsBuilder<ControlDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var control = new ControlDbContext(ctlOpts);
+        await control.Database.EnsureCreatedAsync();
         var opts = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite(conn)
             .Options;
         var db = new ProductDbContext(opts);
-        await db.Database.EnsureCreatedAsync();
-        db.Crews.Add(new CrewRow
+        var _productSchema = db.Database.GenerateCreateScript();
+        foreach (var _stmt in _productSchema.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _trimmed = _stmt.Trim();
+            if (_trimmed.Length > 0) await db.Database.ExecuteSqlRawAsync(_trimmed);
+        }
+        control.Crews.Add(new CrewRow
         {
             Id = CrewId,
             Name = "Engineer",
@@ -254,7 +265,7 @@ public sealed class Phase58GeneratorCapTests
             Backend = "copilot",
             InvokeMode = "sdk",
         });
-        db.Agents.Add(new AgentRow
+        control.Agents.Add(new AgentRow
         {
             Id = LeadId,
             Name = "Lead",
@@ -262,24 +273,23 @@ public sealed class Phase58GeneratorCapTests
             CrewId = CrewId,
             Sort = 0,
         });
-        await db.SaveChangesAsync();
-        return (conn, db);
+        await control.SaveChangesAsync();
+        return (conn, control, db);
     }
 
     [Fact]
     public async Task ResolveAgentRunConfig_With_MaxTurns_Plumbs_To_AgentContext()
     {
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            var crew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
-            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, crew,
+            var crew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
+            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(control, db, crew,
                 useEvaluatorRole: false,
                 workspace: "/tmp/test",
                 budget: null,
-                CancellationToken.None,
+                ct: CancellationToken.None,
                 maxTurns: 13 * 30);
 
             Assert.Equal(390, ctx.MaxTurns);
@@ -293,17 +303,16 @@ public sealed class Phase58GeneratorCapTests
         // so the dispatcher's global default (AgentRunnerOptions.MaxTurns
         // = 60) takes over. Preserves prior behaviour for callers that
         // can't compute the cap.
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            var crew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
-            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, crew,
+            var crew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
+            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(control, db, crew,
                 useEvaluatorRole: false,
                 workspace: "/tmp/test",
                 budget: null,
-                CancellationToken.None);
+                ct: CancellationToken.None);
 
             Assert.Null(ctx.MaxTurns);
         }
@@ -315,17 +324,16 @@ public sealed class Phase58GeneratorCapTests
         // Both generator and evaluator roles must receive the same
         // per-task max-turns cap (mirrors CrewQueueWorker.cs:1405 and
         // 1702 which pass the same taskMaxTurns to both).
-        var (conn, db) = await NewDbAsync();
+        var (conn, control, db) = await NewDbAsync();
         await using (conn)
         await using (db)
         {
-            var crew = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
-            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(
-                db, crew,
+            var crew = await control.Crews.AsNoTracking().FirstAsync(c => c.Id == CrewId);
+            var (_, ctx, _, _) = await CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync(control, db, crew,
                 useEvaluatorRole: true,
                 workspace: "/tmp/test",
                 budget: null,
-                CancellationToken.None,
+                ct: CancellationToken.None,
                 maxTurns: 5 * 30);
 
             Assert.Equal(150, ctx.MaxTurns);

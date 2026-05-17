@@ -40,7 +40,7 @@ public static class Phase38Migration
         "e2e-scenarios.md",
     };
 
-    public static async Task ApplyAsync(ProductDbContext db, CancellationToken ct = default)
+    public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         var spawns = await db.StorySpawns.AsNoTracking().ToListAsync(ct);
         var workItems = await db.WorkItems.AsNoTracking().Select(w => w.Id).ToListAsync(ct);

@@ -25,7 +25,7 @@ public static class Phase22Migration
 {
     private const string BackfillSeedKey = "phase22-backfill-done";
 
-    public static async Task ApplyAsync(ProductDbContext db, CancellationToken ct = default)
+    public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)
     {
         var conn = (SqliteConnection)db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
@@ -37,7 +37,7 @@ public static class Phase22Migration
         await EnsureAgentAssignmentsTableAsync(conn, ct);
 
         // 22.7 — one-shot backfill.
-        await BackfillRuntimeAssignmentsAsync(db, conn, ct);
+        await BackfillRuntimeAssignmentsAsync(control, db, conn, ct);
     }
 
     private static async Task EnsureAgentAssignmentsTableAsync(SqliteConnection conn, CancellationToken ct)
@@ -74,7 +74,7 @@ public static class Phase22Migration
     /// Gated by a <c>forge_seed_state</c> row so re-boots skip it.
     /// </summary>
     private static async Task BackfillRuntimeAssignmentsAsync(
-        ProductDbContext db, SqliteConnection conn, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, SqliteConnection conn, CancellationToken ct)
     {
         // Gate check — skip if already done.
         if (await IsSeedStateDoneAsync(conn, BackfillSeedKey, ct)) return;
@@ -118,7 +118,7 @@ public static class Phase22Migration
                 string? team = null;
                 if (crewId is not null)
                 {
-                    var crew = await db.Crews.AsNoTracking()
+                    var crew = await control.Crews.AsNoTracking()
                         .FirstOrDefaultAsync(c => c.Id == crewId, ct);
                     if (crew is not null)
                     {

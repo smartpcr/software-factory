@@ -35,7 +35,7 @@ public class TranscriptRetentionJanitorTests
     /// task.toolresult rows. Returns the iteration.started Ids in order
     /// so tests can assert which boundary the cutoff hit.
     /// </summary>
-    private static async Task<List<long>> SeedItersAsync(ProductDbContext db, string wid, int iterCount, int eventsPerIter, DateTimeOffset baseAt)
+    private static async Task<List<long>> SeedItersAsync(ControlDbContext control, ProductDbContext db, string wid, int iterCount, int eventsPerIter, DateTimeOffset baseAt)
     {
         var iterStartIds = new List<long>();
         for (var iter = 1; iter <= iterCount; iter++)
@@ -49,7 +49,7 @@ public class TranscriptRetentionJanitorTests
                 At = startedAt,
             };
             db.TaskTranscriptEvents.Add(startRow);
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
             iterStartIds.Add(startRow.Id);
             for (var k = 0; k < eventsPerIter; k++)
             {
@@ -61,12 +61,12 @@ public class TranscriptRetentionJanitorTests
                     At = startedAt.AddSeconds(k + 1),
                 });
             }
-            await db.SaveChangesAsync();
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
         }
         return iterStartIds;
     }
 
-    private static async Task SeedDeliverablesAsync(ProductDbContext db, string wid, int count)
+    private static async Task SeedDeliverablesAsync(ControlDbContext control, ProductDbContext db, string wid, int count)
     {
         for (var iter = 1; iter <= count; iter++)
         {
@@ -85,7 +85,7 @@ public class TranscriptRetentionJanitorTests
                 CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10 * (count - iter)),
             });
         }
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -97,15 +97,16 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-closed-multi-iter";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Closed",
                 State = "closed", ExecutionStatus = ExecutionStatuses.Completed,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 5, eventsPerIter: 4, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
-            await SeedDeliverablesAsync(db, wid, 5);
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 5, eventsPerIter: 4, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await SeedDeliverablesAsync(control, db, wid, 5);
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -116,6 +117,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(20, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
+        var control_dbv = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var remainingByKind = await dbv.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == wid)
@@ -143,15 +145,16 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-open-fifteen";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Open",
                 State = "active", ExecutionStatus = ExecutionStatuses.Live,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 15, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
-            await SeedDeliverablesAsync(db, wid, 15);
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 15, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await SeedDeliverablesAsync(control, db, wid, 15);
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -162,6 +165,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(20, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
+        var control_dbv = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var startedRows = await dbv.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == wid && e.Kind == ItStartedKind)
@@ -178,14 +182,15 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-open-five";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Small open",
                 State = "active", ExecutionStatus = ExecutionStatuses.Live,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 5, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 5, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -204,14 +209,15 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-closed-one";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Closed-one",
                 State = "closed", ExecutionStatus = ExecutionStatuses.Completed,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 1, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 1, eventsPerIter: 3, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -236,6 +242,7 @@ public class TranscriptRetentionJanitorTests
         const string cancelledWid = "wi-cancelled-twelve";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
@@ -247,9 +254,9 @@ public class TranscriptRetentionJanitorTests
                 Id = cancelledWid, Type = "task", Track = "dev", Title = "Cancelled",
                 State = "active", ExecutionStatus = ExecutionStatuses.Cancelled,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, failedWid, iterCount: 12, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
-            await SeedItersAsync(db, cancelledWid, iterCount: 12, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, failedWid, iterCount: 12, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await SeedItersAsync(control, db, cancelledWid, iterCount: 12, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -269,14 +276,15 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-dryrun-twelve";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Dry-run",
                 State = "active", ExecutionStatus = ExecutionStatuses.Live,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 12, eventsPerIter: 5, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 12, eventsPerIter: 5, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -288,6 +296,7 @@ public class TranscriptRetentionJanitorTests
         Assert.Equal(12, stats.RowsDeleted);
 
         using var verify = f.Services.CreateScope();
+        var control_dbv = verify.ServiceProvider.GetRequiredService<ControlDbContext>();
         var dbv = verify.ServiceProvider.GetRequiredService<ProductDbContext>();
         var remaining = await dbv.TaskTranscriptEvents.AsNoTracking()
             .CountAsync(e => e.WorkItemId == wid);
@@ -307,8 +316,9 @@ public class TranscriptRetentionJanitorTests
         const string wid = "plan-doc:orphan-no-row";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
-            await SeedItersAsync(db, wid, iterCount: 12, eventsPerIter: 1, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await SeedItersAsync(control, db, wid, iterCount: 12, eventsPerIter: 1, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();
@@ -328,14 +338,15 @@ public class TranscriptRetentionJanitorTests
         const string wid = "wi-idempotent";
         using (var seed = f.Services.CreateScope())
         {
+            var control = seed.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = seed.ServiceProvider.GetRequiredService<ProductDbContext>();
             db.WorkItems.Add(new WorkItemRow
             {
                 Id = wid, Type = "task", Track = "dev", Title = "Idempotent",
                 State = "active", ExecutionStatus = ExecutionStatuses.Live,
             });
-            await db.SaveChangesAsync();
-            await SeedItersAsync(db, wid, iterCount: 13, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            await SeedItersAsync(control, db, wid, iterCount: 13, eventsPerIter: 2, baseAt: DateTimeOffset.UtcNow.AddDays(-1));
         }
 
         var janitor = f.Services.GetRequiredService<TranscriptRetentionJanitor>();

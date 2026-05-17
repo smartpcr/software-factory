@@ -51,16 +51,16 @@ public static class PayrollEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetPayrollTodayTotal(ControlDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetPayrollTodayTotal(ControlDbContext control, CancellationToken ct)
     {
-        var crews = await db.Crews.AsNoTracking().ToListAsync(ct);
+        var crews = await control.Crews.AsNoTracking().ToListAsync(ct);
         if (crews.Count == 0) return Results.Ok(new PayrollTodaySummary(0m, 0));
 
         // Pull every (crew, lead+roster) membership in two queries instead
         // of N. Build per-crew member id sets, then resolve every member
         // agent in a single round-trip and group by crew.
         var crewIds = crews.Select(c => c.Id).ToList();
-        var memberRows = await db.CrewMembers.AsNoTracking()
+        var memberRows = await control.CrewMembers.AsNoTracking()
             .Where(m => crewIds.Contains(m.CrewId))
             .Select(m => new { m.CrewId, m.AgentId })
             .ToListAsync(ct);
@@ -80,7 +80,7 @@ public static class PayrollEndpoints
         var allMemberIds = byCrew.Values.SelectMany(s => s).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var agents = allMemberIds.Count == 0
             ? new List<AgentRow>()
-            : await db.Agents.AsNoTracking()
+            : await control.Agents.AsNoTracking()
                 .Where(a => allMemberIds.Contains(a.Id))
                 .ToListAsync(ct);
         var agentById = agents.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
@@ -112,16 +112,16 @@ public static class PayrollEndpoints
 
     private static async Task<IResult> GetPayroll(
         string id,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
         // Resolve members: include the lead + all roster rows.
         var memberIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrEmpty(crew.Lead)) memberIds.Add(crew.Lead);
-        foreach (var rosterId in await db.CrewMembers.AsNoTracking()
+        foreach (var rosterId in await control.CrewMembers.AsNoTracking()
             .Where(m => m.CrewId == id)
             .Select(m => m.AgentId)
             .ToListAsync(ct))
@@ -130,7 +130,7 @@ public static class PayrollEndpoints
         }
         var members = memberIds.Count == 0
             ? new List<AgentRow>()
-            : await db.Agents.AsNoTracking()
+            : await control.Agents.AsNoTracking()
                 .Where(a => memberIds.Contains(a.Id))
                 .ToListAsync(ct);
 
@@ -170,10 +170,10 @@ public static class PayrollEndpoints
     /// </summary>
     private static async Task<IResult> GetSpend(
         string id,
-        ControlDbContext db,
+        ControlDbContext control,
         CancellationToken ct)
     {
-        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
         var nowUtc = DateTimeOffset.UtcNow;
@@ -188,7 +188,7 @@ public static class PayrollEndpoints
         // crew's full set then bucket in memory. Volume per crew is
         // bounded — usage stays small enough that the in-memory walk is
         // cheaper than the round-trip cost of multiple queries.
-        var allRows = await db.AgentUsage.AsNoTracking()
+        var allRows = await control.AgentUsage.AsNoTracking()
             .Where(u => u.CrewId == id)
             .Select(u => new { u.StartedAt, u.CostUsd })
             .ToListAsync(ct);

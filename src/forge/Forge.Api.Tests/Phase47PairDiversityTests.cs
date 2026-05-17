@@ -219,34 +219,35 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         // Seed three usage rows: two open, one closed. Use distinct
         // agent IDs so the busy set is unambiguous. Id is auto-incremented
         // (long PK), so we omit it.
         var now = DateTimeOffset.UtcNow;
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-A", CrewId = "crew-X",
             TaskId = "t1", Model = "m", StartedAt = now.AddMinutes(-1), EndedAt = null,
             Status = "running",
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-B", CrewId = "crew-X",
             TaskId = "t2", Model = "m", StartedAt = now.AddMinutes(-1), EndedAt = null,
             Status = "running",
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-C", CrewId = "crew-X",
             TaskId = "t3", Model = "m", StartedAt = now.AddMinutes(-2),
             EndedAt = now.AddMinutes(-1),
             Status = "completed",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var busy = await BusyAgentsHelper.LoadBusyAgentsAsync(db, default);
+        var busy = await BusyAgentsHelper.LoadBusyAgentsAsync(control, default);
 
         Assert.Contains("agent-A", busy);
         Assert.Contains("agent-B", busy);
@@ -259,10 +260,11 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-stale", CrewId = "crew-X",
             TaskId = "old", Model = "m",
@@ -270,7 +272,7 @@ public class Phase47PairDiversityTests
             EndedAt = null,
             Status = "running",
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-fresh", CrewId = "crew-X",
             TaskId = "new", Model = "m",
@@ -278,20 +280,20 @@ public class Phase47PairDiversityTests
             EndedAt = null,
             Status = "running",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var reaped = await BusyAgentsHelper.ReapStaleAsync(db);
+        var reaped = await BusyAgentsHelper.ReapStaleAsync(control);
 
         Assert.Equal(1, reaped);
 
         // Verify only the stale row was closed; the fresh one still has
         // null EndedAt and would still register as busy.
-        var stale = await db.AgentUsage.AsNoTracking().FirstAsync(u => u.AgentId == "agent-stale");
+        var stale = await control.AgentUsage.AsNoTracking().FirstAsync(u => u.AgentId == "agent-stale");
         Assert.NotNull(stale.EndedAt);
-        var fresh = await db.AgentUsage.AsNoTracking().FirstAsync(u => u.AgentId == "agent-fresh");
+        var fresh = await control.AgentUsage.AsNoTracking().FirstAsync(u => u.AgentId == "agent-fresh");
         Assert.Null(fresh.EndedAt);
 
-        var busy = await BusyAgentsHelper.LoadBusyAgentsAsync(db, default);
+        var busy = await BusyAgentsHelper.LoadBusyAgentsAsync(control, default);
         Assert.DoesNotContain("agent-stale", busy);
         Assert.Contains("agent-fresh", busy);
     }
@@ -307,13 +309,14 @@ public class Phase47PairDiversityTests
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
         var now = DateTimeOffset.UtcNow;
 
         // Two open rows — one fresh (5 min old), one stale (48 h old).
         // Both must be closed by ReapAllOpenOnBootAsync.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-fresh-orphan", CrewId = "crew-X",
             TaskId = "t-fresh", Model = "m",
@@ -321,7 +324,7 @@ public class Phase47PairDiversityTests
             EndedAt = null,
             Status = "running",
         });
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-stale-orphan", CrewId = "crew-X",
             TaskId = "t-stale", Model = "m",
@@ -330,7 +333,7 @@ public class Phase47PairDiversityTests
             Status = "running",
         });
         // Plus one already-closed row that the reaper must NOT touch.
-        db.AgentUsage.Add(new AgentUsageRow
+        control.AgentUsage.Add(new AgentUsageRow
         {
             AgentId = "agent-completed", CrewId = "crew-X",
             TaskId = "t-done", Model = "m",
@@ -338,13 +341,13 @@ public class Phase47PairDiversityTests
             EndedAt = now - TimeSpan.FromMinutes(8),
             Status = "completed",
         });
-        await db.SaveChangesAsync();
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        var reaped = await BusyAgentsHelper.ReapAllOpenOnBootAsync(db);
+        var reaped = await BusyAgentsHelper.ReapAllOpenOnBootAsync(control);
 
         Assert.Equal(2, reaped);
 
-        var bootBusy = await BusyAgentsHelper.LoadBusyAgentsAsync(db, default);
+        var bootBusy = await BusyAgentsHelper.LoadBusyAgentsAsync(control, default);
         Assert.Empty(bootBusy);
     }
 }
