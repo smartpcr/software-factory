@@ -46,7 +46,7 @@ public class Phase68MergedDocGuardTests
 
     // ── ArePlanDocsAllPassedAsync — merged + ever-passed gate ──────────────
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task Gate_accepts_merged_doc_with_prior_pass_verdict_even_when_latest_is_iterate()
     {
         var f = new ForgeWebApplicationFactory();
@@ -80,7 +80,7 @@ public class Phase68MergedDocGuardTests
         Assert.Empty(nonPassed);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task Gate_rejects_merged_doc_with_no_prior_pass_verdict()
     {
         // Defensive: an externally-merged PR (e.g. operator merged manually
@@ -111,12 +111,17 @@ public class Phase68MergedDocGuardTests
         Assert.Equal("e2e-scenarios", nonPassed[0]);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
-    public async Task Gate_rejects_unmerged_doc_with_only_prior_pass_in_history()
+    [Fact]
+    public async Task Gate_accepts_unmerged_doc_with_prior_pass_via_ever_passed_fallback()
     {
-        // Defensive: if the doc's PR is NOT merged, the latest-verdict
-        // check is the ONLY signal. A doc that passed once then went into
-        // iterate state without the PR ever merging is still iterating.
+        // 24ec1f37 "race condition for in-flight invocation" — the (a2)
+        // ever-passed fallback in ArePlanDocsAllPassedAsync treats ANY prior
+        // pass verdict as gate-satisfied, regardless of merge status. This
+        // handles the transient post-pass failure case (e.g., a
+        // generator-inactive row after a pass) so a flaky single iter doesn't
+        // permanently block the plan chain. The PR-merge requirement is now
+        // only enforced when there is NO prior pass (the "(b) merged +
+        // ever-passed" branch is a no-op when (a2) already accepted the doc).
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         using var scope = f.Services.CreateScope();
@@ -140,11 +145,11 @@ public class Phase68MergedDocGuardTests
         var (allPassed, nonPassed) =
             await StorySpawnOrchestrator.ArePlanDocsAllPassedAsync(control, db, spawn, default);
 
-        Assert.False(allPassed);
-        Assert.Equal(new[] { "e2e-scenarios" }, nonPassed);
+        Assert.True(allPassed);
+        Assert.Empty(nonPassed);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task Gate_accepts_accept_overridden_doc_via_latest_pass_path_regardless_of_merge()
     {
         // Phase 43 ACCEPT flips the latest deliverable verdict to "pass".
@@ -175,7 +180,7 @@ public class Phase68MergedDocGuardTests
 
     // ── ResumeArtifact — reject on merged doc ─────────────────────────────
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task Resume_endpoint_rejects_with_409_on_merged_doc()
     {
         var f = new ForgeWebApplicationFactory();
@@ -211,7 +216,7 @@ public class Phase68MergedDocGuardTests
         Assert.Contains("e2e-scenarios", body);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task Resume_endpoint_allows_resume_on_non_merged_doc()
     {
         // Sanity: the new guard fires ONLY when the PR is merged. An open
@@ -249,7 +254,7 @@ public class Phase68MergedDocGuardTests
 
     // ── StoryResumeRecoveryService — skip merged keys ─────────────────────
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task BootRecovery_skips_merged_doc_and_clears_stale_marker()
     {
         var f = new ForgeWebApplicationFactory();
@@ -279,7 +284,7 @@ public class Phase68MergedDocGuardTests
             $"Expected ResumePendingJson cleared; got '{refreshed.ResumePendingJson}'");
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: gate semantics changed by 24ec1f37 ever-passed fallback")]
+    [Fact]
     public async Task BootRecovery_processes_non_merged_resume_markers_normally()
     {
         var f = new ForgeWebApplicationFactory();

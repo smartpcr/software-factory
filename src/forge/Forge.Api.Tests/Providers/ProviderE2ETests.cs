@@ -37,7 +37,7 @@ public class ProviderE2ETests : IClassFixture<ProviderE2ETests.Factory>
         this.factory = factory;
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: E2E test requires live provider")]
+    [Fact]
     public async Task GitHub_Sync_Imports_Cards_And_Prs()
     {
         // Force the host to wire up so all services are available.
@@ -84,10 +84,10 @@ public class ProviderE2ETests : IClassFixture<ProviderE2ETests.Factory>
         }
 
         Assert.Contains("#42", cardIds);
-        Assert.Contains("PR #99", prIds);
+        Assert.Contains("PR ms/forge#99", prIds);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: E2E test requires live provider")]
+    [Fact]
     public async Task TestProvider_Endpoint_Returns_Health()
     {
         using var client = this.factory.CreateClient();
@@ -99,7 +99,7 @@ public class ProviderE2ETests : IClassFixture<ProviderE2ETests.Factory>
             "stub server returns 200 for /repos/{owner}/{repo} so the probe should be ok");
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: E2E test requires live provider")]
+    [Fact]
     public async Task GitHub_Webhook_Bad_Signature_Returns_401()
     {
         using var client = this.factory.CreateClient();

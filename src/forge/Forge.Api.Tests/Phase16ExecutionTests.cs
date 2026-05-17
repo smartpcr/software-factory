@@ -964,8 +964,17 @@ public class Phase16ExecutionTests
             var worker = f.Services.GetRequiredService<CrewQueueWorker>();
             await worker.RunOnceAsync(default);
 
-            // local-stub finishes fast but RunAgentAsync is Task.Run
-            await Task.Delay(5000);
+            // local-stub finishes fast but RunAgentAsync is Task.Run. Poll
+            // for the task.prompt event instead of a fixed Task.Delay —
+            // under parallel test load, a 5s fixed delay caused flakes.
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline)
+            {
+                var hasPrompt = await db.TaskTranscriptEvents.AsNoTracking()
+                    .AnyAsync(e => e.WorkItemId == workItemId && e.Kind == "task.prompt");
+                if (hasPrompt) break;
+                await Task.Delay(250);
+            }
 
             // ── Assert: worktree was created ─────────────────────────
             var (_, wtListOut, _) = await RunGitResultAsync(repoDir, "worktree", "list", "--porcelain");

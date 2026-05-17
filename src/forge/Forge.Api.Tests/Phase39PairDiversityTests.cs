@@ -32,7 +32,7 @@ public class Phase39PairDiversityTests
     /// must throw <see cref="InvalidOperationException"/> before any
     /// invocation reaches the agent runner.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: UNIQUE constraint conflict with seeded crew pairs")]
+    [Fact(Skip = "Pre-existing: test seeds no RepoId; ProducePlanArtifactsAsync now requires a repo for git worktree setup before reaching the diversity check. Test needs repo + worktree mock to exercise the path.")]
     public async Task ArchitectPair_RefusesDispatch_WhenGeneratorAndEvaluatorShareModel()
     {
         var f = new ForgeWebApplicationFactory();
@@ -93,8 +93,8 @@ public class Phase39PairDiversityTests
         // so the strategy picks our test crews.
         // Easier: just rename our crews to crew-arch / crew-arch-night.
         // Re-seed under the production names so the resolution chain hits them.
-        await db.Database.ExecuteSqlRawAsync("DELETE FROM crews WHERE Id IN ('crew-pd-day', 'crew-pd-night')");
-        await db.Database.ExecuteSqlRawAsync("DELETE FROM agents WHERE Id IN ('PD-G','PD-E','PD-G2','PD-E2')");
+        await control.Database.ExecuteSqlRawAsync("DELETE FROM crews WHERE Id IN ('crew-pd-day', 'crew-pd-night', 'crew-arch', 'crew-arch-night')");
+        await control.Database.ExecuteSqlRawAsync("DELETE FROM agents WHERE Id IN ('PD-G','PD-E','PD-G2','PD-E2','PD-AG','PD-AE','PD-AG2','PD-AE2','A1','A2','A3','A4','A5','A6','A7','A8','AB','AB1','AB2','AB3','AB4','AB5','DA-LEAD','NLEAD','BH','MG','PB','TG','RC','SK')");
         control.Crews.Add(new CrewRow
         {
             Id = "crew-arch", Name = "Architecture",
@@ -143,7 +143,7 @@ public class Phase39PairDiversityTests
     /// a runner stub that throws on first invocation — that throw must NOT
     /// be the diversity error.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: UNIQUE constraint conflict with seeded crew pairs")]
+    [Fact(Skip = "Pre-existing: test seeds no RepoId; ProducePlanArtifactsAsync now requires a repo for git worktree setup before reaching the diversity check. Test needs repo + worktree mock to exercise the path.")]
     public async Task ArchitectPair_AllowsDispatch_WhenEvaluatorModelDiffers()
     {
         var f = new ForgeWebApplicationFactory();
@@ -154,7 +154,7 @@ public class Phase39PairDiversityTests
 
         // Re-seed so crew-arch-night uses gpt-5.5 as evaluator model — the
         // production pattern (opus generator, sonnet/gpt evaluator).
-        await db.Database.ExecuteSqlRawAsync("DELETE FROM crews WHERE Id IN ('crew-arch', 'crew-arch-night')");
+        await control.Database.ExecuteSqlRawAsync("DELETE FROM crews WHERE Id IN ('crew-arch', 'crew-arch-night')");
         control.Crews.Add(new CrewRow
         {
             Id = "crew-arch", Name = "Architecture",

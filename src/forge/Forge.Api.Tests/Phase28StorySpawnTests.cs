@@ -211,7 +211,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.1 — StorySpawnRow is created with correct defaults.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task DataModel_StorySpawn_Has_Correct_Defaults()
     {
         var (f, c) = NewFactory();
@@ -241,7 +241,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.1 — Duplicate spawn for the same story is rejected with 409.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task DataModel_Duplicate_Spawn_Is_Rejected()
     {
         var (f, c) = NewFactory();
@@ -264,7 +264,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.1 — WorkstreamRow links back to StorySpawn.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task DataModel_WorkstreamRow_Links_Back_To_StorySpawn()
     {
         var (f, c) = NewFactory();
@@ -297,7 +297,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.1 — WorkstreamDepRow records the dependency.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task DataModel_WorkstreamDep_Records_Edge()
     {
         var (f, c) = NewFactory();
@@ -335,7 +335,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.2 — POST /spawn returns 201 + correct body.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Post_Spawn_Returns_201()
     {
         var (f, c) = NewFactory();
@@ -353,7 +353,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — GET /spawn returns spawn status + child workstreams.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Get_Spawn_Returns_Status_And_Workstreams()
     {
         var (f, c) = NewFactory();
@@ -380,7 +380,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — PATCH phase advances when the gate is met.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Patch_Phase_Advances_When_Gate_Met()
     {
         var (f, c) = NewFactory();
@@ -400,7 +400,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — PATCH phase is rejected (422) when plan PR is unmerged.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Patch_Phase_Rejected_When_Gate_Not_Met()
     {
         var (f, c) = NewFactory();
@@ -427,7 +427,7 @@ public class Phase28StorySpawnTests
     /// also requires every doc to have a passing terminal verdict so
     /// impl never starts before docs complete.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Drive_Advances_To_Decompose_When_Plan_Pr_Already_Merged()
     {
         var (f, c) = NewFactory();
@@ -465,7 +465,7 @@ public class Phase28StorySpawnTests
     /// non-passed keys via LastError. Closes the failover-cluster:XRAFT
     /// regression where impl started while docs were still iterating.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Drive_Holds_At_Plan_When_Pr_Merged_But_Docs_Not_All_Passed()
     {
         var (f, c) = NewFactory();
@@ -499,7 +499,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — POST /decompose persists workstream definitions and dep edges.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Post_Decompose_Persists_Workstreams_And_Deps()
     {
         var (f, c) = NewFactory();
@@ -536,7 +536,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — GET /artifacts groups by phase.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Get_Artifacts_Groups_By_Phase()
     {
         var (f, c) = NewFactory();
@@ -563,7 +563,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.2 — POST /spawn for a non-existent story returns 404.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Api_Post_Spawn_For_Missing_Story_Returns_404()
     {
         var (f, c) = NewFactory();
@@ -580,7 +580,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.3 — Spawn initializes plan-doc PR state for the sequential flow.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Plan_Spawn_Creates_Planning_Branch()
     {
         var (f, c) = NewFactory();
@@ -598,7 +598,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.3 — All four planning artifact paths are surfaced via /artifacts.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Plan_All_Required_Artifacts_Are_Listed()
     {
         var (f, c) = NewFactory();
@@ -619,7 +619,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.3 — Phase cannot advance to decompose until plan PR is merged.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Plan_Phase_Cannot_Advance_Until_Pr_Merged()
     {
         var (f, c) = NewFactory();
@@ -651,7 +651,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.4 — Empty decomposition is rejected with 422.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Decompose_Empty_Workstream_List_Rejected()
     {
         var (f, c) = NewFactory();
@@ -671,7 +671,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.4 — Workstream branch follows the naming convention.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Decompose_Workstream_Branch_Naming()
     {
         var (f, c) = NewFactory();
@@ -696,7 +696,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.4 — Circular dependencies are rejected.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Decompose_Circular_Dependencies_Are_Rejected()
     {
         var (f, c) = NewFactory();
@@ -722,7 +722,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.4 — Operator must approve the decomposition before phase advance.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Decompose_Operator_Must_Approve_Before_Implement()
     {
         var (f, c) = NewFactory();
@@ -754,7 +754,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.4 — Decomposition payload retains required metadata.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Decompose_Persists_Each_Workstream_With_Metadata()
     {
         var (f, c) = NewFactory();
@@ -797,7 +797,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.5 — Workstream with unmet dependency is reported as 'blocked'.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Implement_Unmet_Dep_Reports_Blocked()
     {
         var (f, c) = NewFactory();
@@ -826,7 +826,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.5 — Dependent workstream unblocks after upstream PR merges.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Implement_Dep_Unblocks_When_Upstream_Merged()
     {
         var (f, c) = NewFactory();
@@ -844,8 +844,10 @@ public class Phase28StorySpawnTests
                 },
             }, JsonOpts);
 
-            // Mark auth's status as 'merging' to satisfy the dep.
-            await SetWorkstreamStatusAsync(f, "ws-wi-50031-auth", "merging");
+            // Mark auth's status as 'complete' to satisfy the dep (Phase 49
+            // follow-up: only 'complete'/'historic'/'cancelled' upstream
+            // unblocks downstream; 'merging' still counts as in-progress).
+            await SetWorkstreamStatusAsync(f, "ws-wi-50031-auth", "complete");
 
             var resp = await c.GetAsync("/api/stories/WI-50031/spawn");
             var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
@@ -859,7 +861,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.5 — Parallel workstreams without mutual dependency report 'planning' (eligible).</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Implement_Parallel_Workstreams_Both_Eligible()
     {
         var (f, c) = NewFactory();
@@ -892,7 +894,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.6 — Phase cannot advance to review until all workstreams reach 'review' (or merged).</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Review_Cannot_Advance_Until_All_Workstreams_Have_Prs()
     {
         var (f, c) = NewFactory();
@@ -941,7 +943,7 @@ public class Phase28StorySpawnTests
     /// behaviors that ride on the existing Phase 24/27 flow; the Phase 28
     /// surface contract is "workstream PRs must be merged before qa".)
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Review_To_Qa_Requires_All_Workstream_Prs_Merged()
     {
         var (f, c) = NewFactory();
@@ -988,7 +990,7 @@ public class Phase28StorySpawnTests
     /// (observed 2026-05-05: 7 workstreams stuck in HIGH-MEM-CONSUMPTION).
     /// </para>
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Review_External_Merge_Advances_Workstream_To_Complete()
     {
         var (f, c) = NewFactory();
@@ -997,6 +999,10 @@ public class Phase28StorySpawnTests
             await SeedStoryAsync(f, "WI-50042", "external-merge");
             await SpawnAsync(c, "WI-50042");
             await SetPlanPrAsync(f, "WI-50042", "pr-plan-42", "merged");
+            // Phase 48 gate — seed passing plan-doc deliverables so
+            // DriveImplementAsync doesn't regress phase back to Plan before
+            // reaching the external-merge fast-path under review.
+            await SeedAllPlanDocsPassedAsync(f, "WI-50042");
             await c.PatchAsync("/api/stories/WI-50042/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsJsonAsync("/api/stories/WI-50042/spawn/decompose", new
@@ -1059,7 +1065,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.7 — QA artifacts list surfaces the feature folder once a QA PR is recorded.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Qa_Feature_Folder_Surfaced_When_Qa_Pr_Recorded()
     {
         var (f, c) = NewFactory();
@@ -1090,7 +1096,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.7 — QA branch is stored on the spawn row.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Qa_Branch_Persisted_When_Set()
     {
         var (f, c) = NewFactory();
@@ -1117,7 +1123,7 @@ public class Phase28StorySpawnTests
     /// force-cleared autoMerge for main targets; that gate has been removed
     /// so the operator can opt into auto-merging directly to main.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Spawn_Persists_AutoMerge_True_When_BaseBranch_Is_Main()
     {
         var (f, c) = NewFactory();
@@ -1149,7 +1155,7 @@ public class Phase28StorySpawnTests
     /// <c>AutoMerge=true</c> and asserts the orchestrator's plan-PR opener
     /// surfaces <c>AutoMerge=true</c> on the resulting <c>PrRow</c>.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Spawn_With_AutoMerge_On_Main_Plan_Pr_Has_AutoMerge_True()
     {
         var (f, c) = NewFactory();
@@ -1184,7 +1190,7 @@ public class Phase28StorySpawnTests
     /// preserve a previously-set autoMerge=true (no auto-clear). Operator
     /// stays in control of the flag.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Patch_Story_BaseBranch_To_Main_Preserves_AutoMerge_True()
     {
         var (f, c) = NewFactory();
@@ -1244,7 +1250,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.8 — Story completion gate fails when any workstream PR is unmerged.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Completion_Fails_When_Any_Workstream_Unmerged()
     {
         var (f, c) = NewFactory();
@@ -1271,7 +1277,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.8 — Story completes when all conditions are met.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Completion_Succeeds_When_All_Conditions_Met()
     {
         var (f, c) = NewFactory();
@@ -1297,7 +1303,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.8 — QA PR (when set) must also be merged for completion.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Completion_Fails_When_Qa_Pr_Unmerged()
     {
         var (f, c) = NewFactory();
@@ -1337,7 +1343,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.9 — story card data exposes title, phase, child workstreams.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Ui_Story_Card_Data_Contains_Phase_And_Workstreams()
     {
         var (f, c) = NewFactory();
@@ -1369,7 +1375,7 @@ public class Phase28StorySpawnTests
     /// merged plan PR. (The "files don't exist on main yet" assertion in the
     /// Gherkin maps to "PR not merged → gate trips at the API".)
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task ArtifactGate_Decompose_Blocked_Until_Plan_Pr_Merged()
     {
         var (f, c) = NewFactory();
@@ -1387,7 +1393,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.10 — Merged plan artifact unlocks downstream phase.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task ArtifactGate_Merged_Plan_Unlocks_Decompose()
     {
         var (f, c) = NewFactory();
@@ -1408,7 +1414,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>28.11 — Workstream with no dependencies is eligible immediately.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Deps_No_Deps_Eligible()
     {
         var (f, c) = NewFactory();
@@ -1430,7 +1436,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.11 — Diamond dependency (A→B, A→C, B→D, C→D) is wired correctly.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Deps_Diamond_Recorded_Correctly()
     {
         var (f, c) = NewFactory();
@@ -1468,7 +1474,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>28.11 — Deep chain (A → B → C → D) is wired sequentially.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task Deps_Deep_Chain_Recorded()
     {
         var (f, c) = NewFactory();
@@ -1510,7 +1516,7 @@ public class Phase28StorySpawnTests
     // -----------------------------------------------------------------------
 
     /// <summary>cross-cutting — phase rollback is rejected.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Phase_Rollback_Rejected()
     {
         var (f, c) = NewFactory();
@@ -1528,7 +1534,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — only one spawn per story at a time.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Only_One_Spawn_Per_Story()
     {
         var (f, c) = NewFactory();
@@ -1545,7 +1551,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — story spawn survives DbContext recreation (restart-equivalent).</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Spawn_Survives_DbContext_Recreation()
     {
         var (f, c) = NewFactory();
@@ -1566,7 +1572,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — full happy path: spawn → plan → decompose → implement → review → qa → done.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Full_Happy_Path()
     {
         var (f, c) = NewFactory();
@@ -1625,7 +1631,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — sequential single-step phase advance only.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Phase_Advance_Must_Be_Sequential()
     {
         var (f, c) = NewFactory();
@@ -1643,7 +1649,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — unknown phase string returns 400.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Unknown_Phase_Returns_400()
     {
         var (f, c) = NewFactory();
@@ -1659,7 +1665,7 @@ public class Phase28StorySpawnTests
     }
 
     /// <summary>cross-cutting — writes require X-Forge-User header.</summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task CrossCutting_Writes_Require_Auth_Header()
     {
         var f = new ForgeWebApplicationFactory();
@@ -1681,7 +1687,7 @@ public class Phase28StorySpawnTests
     /// comment on a PR halted the orchestrator with SQLite Error 19. Now
     /// each row gets a unique <c>pending:{guid}</c> placeholder.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: pre-existing — DriveAsync merge semantics changed")]
+    [Fact]
     public async Task ProviderStoryProviderOps_Post_Two_Comments_On_Same_Pr_Persists_Both()
     {
         using var factory = new ForgeWebApplicationFactory();

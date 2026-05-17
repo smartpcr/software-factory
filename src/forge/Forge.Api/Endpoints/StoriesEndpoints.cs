@@ -34,6 +34,17 @@ public static class StoriesEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
+    // Per-spawn lock pool to serialize concurrent ResumePendingJson cleanup
+    // updates. Without this, two parallel RunResumeWithCleanupAsync tasks
+    // racing on the same spawn would read the JSON, remove their respective
+    // keys, and last-write-wins clobber the other's removal — leaving stale
+    // markers behind. The lock is keyed by spawn id and uses a ConcurrentDictionary
+    // so we don't proliferate locks for non-resuming spawns.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> ResumeCleanupLocks = new();
+
+    private static SemaphoreSlim GetResumeCleanupLock(string spawnId)
+        => ResumeCleanupLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
+
     /// <summary>
     /// Set to <c>false</c> via config <c>Forge:Stories:OrchestratorEnabled</c>
     /// to skip the auto-orchestrator and only run the gate logic. Tests
@@ -2673,6 +2684,14 @@ public static class StoriesEndpoints
         }
         finally
         {
+            // Serialize concurrent cleanups for the same spawn id to avoid
+            // lost-update races where two parallel RunResumeWithCleanupAsync
+            // tasks both read ResumePendingJson, remove their respective keys,
+            // and last-write-wins clobbers the other's removal. The lock is
+            // local to this process; cross-process correctness still relies
+            // on the boot-recovery sweep.
+            var cleanupLock = GetResumeCleanupLock(spawnId);
+            await cleanupLock.WaitAsync(CancellationToken.None);
             try
             {
                 using var scope = scopeFactory.CreateScope();
@@ -2690,6 +2709,10 @@ public static class StoriesEndpoints
                 // best-effort cleanup; the next boot sweep will skip an
                 // already-completed key when the loop's last verdict is
                 // terminal anyway.
+            }
+            finally
+            {
+                cleanupLock.Release();
             }
         }
     }

@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Infrastructure;
 
 using System.Linq;
+using Forge.Api.Persistence;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -18,39 +19,62 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// Test factory that copies the production SQLite DB to a per-instance
-/// temp file so tests run against an isolated snapshot and NEVER touch
-/// the production database.
+/// Test factory that gives each test instance a private temp <b>folder</b>
+/// containing the control DB and any per-product DBs that get materialised.
+/// Tests run against fully isolated state and NEVER touch the production
+/// DB folder (<c>E:\forge</c>).
 ///
 /// <para>
-/// Setup: <c>File.Copy(ProdDbDefault, tempPath)</c> — each test gets a
-/// private copy of the production DB with realistic schema and data.
-/// Teardown: the temp copy is deleted in <see cref="Dispose"/>.
+/// <b>Phase G.3:</b> The factory uses <c>Forge:Db:Folder</c> (not the
+/// legacy <c>Forge:Db:Path</c>) so the path resolver produces a per-test
+/// control DB at <c>{folder}\forge.db</c> and per-product DBs at
+/// <c>{folder}\{slug}.db</c>. Multi-product fixtures can exercise true
+/// fan-out semantics by physicalising per-product DBs inside the same
+/// folder.
 /// </para>
 /// <para>
-/// The DB path override uses ONLY the in-memory <c>IConfiguration</c>
+/// Setup: a fresh GUID-suffixed folder is created in <c>%TEMP%</c>.
+/// Program.cs's EnsureCreatedAsync + ForgeSeed.EnsureCrewCatalogAsync
+/// build the schema and seed canonical crews+agents on first boot.
+/// Tests that need other reference rows (products, repos, work items)
+/// seed them explicitly.
+/// </para>
+/// <para>
+/// Teardown: the entire folder is removed in <see cref="Dispose"/>.
+/// </para>
+/// <para>
+/// The DB folder override uses ONLY the in-memory <c>IConfiguration</c>
 /// source — no process-global env var manipulation. This eliminates the
 /// race condition that caused the original production DB leak (parallel
 /// xUnit tests stomping each other's <c>FORGE_DB_PATH</c> env var).
-/// A post-build tripwire asserts the resolved path is under
-/// <c>%TEMP%</c> and matches this instance's copy.
+/// Two post-build tripwires assert (1) the resolved control DB path is
+/// under this instance's per-test folder and (2) the resolved product DB
+/// paths are also under that folder — so a misconfigured Phase F split
+/// can't quietly write per-product DBs into the prod folder.
 /// </para>
 /// </summary>
 public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private const string ProdFolderDefault = @"E:\forge";
     private const string ProdDbDefault = @"E:\forge\forge.db";
 
-    private readonly string dbPath = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}.db");
+    private readonly string folder = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}");
     private readonly Dictionary<string, string?> extraConfig;
 
     /// <summary>
-    /// Per-instance temp DB path. Subclasses (e.g. e2e factories that wire
-    /// real <c>IStoryGitOps</c>) read this to locate the parent state dir
-    /// where the production code resolves <c>storyworkspaces/{spawnId}</c>
-    /// and <c>attachments/{spawnId}</c> under
-    /// <c>Path.GetDirectoryName(Forge:Db:Path)</c>.
+    /// Per-instance temp folder containing the control DB and any
+    /// per-product DBs. All DB files Forge.Api creates during this test
+    /// run live inside this directory.
     /// </summary>
-    protected internal string DbPath => this.dbPath;
+    protected internal string Folder => this.folder;
+
+    /// <summary>
+    /// Per-instance control DB path. Subclasses (e.g. e2e factories that
+    /// wire real <c>IStoryGitOps</c>) read this to locate the parent state
+    /// dir where production code resolves <c>storyworkspaces/{spawnId}</c>
+    /// and <c>attachments/{spawnId}</c> under the configured DB folder.
+    /// </summary>
+    protected internal string DbPath => Path.Combine(this.folder, ForgeDbPaths.ControlDbFileName);
 
     public ForgeWebApplicationFactory() : this(null) { }
 
@@ -63,7 +87,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         // way they raced on the old per-test FORGE_DB_PATH value. Program.cs
         // refuses to open the prod DB path when this flag is set.
         Environment.SetEnvironmentVariable("FORGE_TEST_GUARDRAIL", "1");
-        // Each test gets an EMPTY temp DB — Program.cs's EnsureCreatedAsync
+        // Pre-create the folder so ForgeDbPaths' Directory.CreateDirectory
+        // call is a no-op (its ctor would otherwise create the folder lazily).
+        Directory.CreateDirectory(this.folder);
+        // Each test gets an EMPTY temp folder — Program.cs's EnsureCreatedAsync
         // builds the schema and ForgeSeed.EnsureCrewCatalogAsync seeds the
         // canonical crews+agents on boot. Tests that need other reference
         // rows (products, repos, work items) seed them explicitly.
@@ -134,10 +161,17 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         {
             var settings = new Dictionary<string, string?>
             {
-                // Point at the per-test copy. Program.cs reads this inside
+                // Phase G.3 — point ForgeDbPaths at the per-test folder. The
+                // control DB resolves to {folder}\forge.db and per-product DBs
+                // resolve to {folder}\{slug}.db. Program.cs reads this inside
                 // the AddDbContext factory delegate at DI resolution time
                 // (after Build()), so the in-memory override always wins.
-                ["Forge:Db:Path"] = this.dbPath,
+                ["Forge:Db:Folder"] = this.folder,
+                // Explicitly null out the legacy Forge:Db:Path key. Otherwise
+                // an appsettings.json or env-var setting could shadow the
+                // folder override and force the control DB onto an
+                // unexpected file path.
+                ["Forge:Db:Path"] = null,
                 // Phase 8.10 — auto-clone shells out to `git clone`, which
                 // doesn't make sense in CI / unit tests. Workstream-create
                 // tests assume the auto-clone path is a no-op.
@@ -164,34 +198,69 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
             config.AddInMemoryCollection(settings);
         });
 
-        // Tripwire that runs during Build(). The resolved Forge:Db:Path
-        // MUST be the per-test temp copy. If anything else is in scope,
-        // fail loud — a passing test against the prod DB is much worse
-        // than a failing one.
+        // Tripwires that run during Build(). Two layers of defense:
+        //   1. The resolved control DB path MUST be under this factory's
+        //      per-test folder.
+        //   2. The resolved per-product DB path for an arbitrary slug MUST
+        //      also be under this factory's per-test folder (catches
+        //      mis-routing in ProductDbPath where a Phase F split could
+        //      otherwise write per-product DBs into the prod folder).
+        // If either tripwire fires, fail loud — a passing test against the
+        // prod DB is much worse than a failing one.
         builder.ConfigureServices((ctx, services) =>
         {
-            var resolved = ctx.Configuration["Forge:Db:Path"];
-            if (string.IsNullOrEmpty(resolved))
+            // Probe IForgeDbPaths via a transient resolution so tests can't
+            // accidentally rely on a different resolver. We build a tiny
+            // throwaway provider with the current configuration.
+            var probeServices = new ServiceCollection();
+            probeServices.AddSingleton<IConfiguration>(ctx.Configuration);
+            probeServices.AddSingleton<IForgeDbPaths, ForgeDbPaths>();
+            using var probe = probeServices.BuildServiceProvider();
+            var paths = probe.GetRequiredService<IForgeDbPaths>();
+
+            var controlPath = paths.ControlDbPath();
+            if (string.IsNullOrEmpty(controlPath))
             {
                 throw new InvalidOperationException(
-                    "Forge:Db:Path is empty in test factory. The test config override didn't apply.");
+                    "ForgeDbPaths.ControlDbPath() returned empty inside the test factory. " +
+                    "The Forge:Db:Folder override didn't apply.");
             }
-            if (string.Equals(resolved, ProdDbDefault, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(controlPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Forge:Db:Path resolved to the production default '{ProdDbDefault}' inside a test. " +
+                    $"ControlDbPath resolved to the production default '{ProdDbDefault}' inside a test. " +
                     $"This means an earlier read in Program.cs already created the prod connection. " +
                     $"Move all config reads after Build() / DI resolution.");
             }
-            if (!resolved.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase))
+            if (!controlPath.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Forge:Db:Path '{resolved}' is not under %TEMP%. Tests MUST run against an isolated temp DB.");
+                    $"ControlDbPath '{controlPath}' is not under %TEMP%. Tests MUST run against an isolated temp folder.");
             }
-            if (!string.Equals(resolved, this.dbPath, StringComparison.OrdinalIgnoreCase))
+            if (!controlPath.StartsWith(this.folder, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Forge:Db:Path '{resolved}' does not match this factory's per-test path '{this.dbPath}'.");
+                    $"ControlDbPath '{controlPath}' is not under this factory's per-test folder '{this.folder}'.");
+            }
+
+            // Phase G.3 — also tripwire per-product paths. Use a sentinel
+            // slug that ForgeDbPaths.TryValidateSlug accepts (it's [a-z0-9-]
+            // and non-reserved). If ProductDbPath ever escapes the folder,
+            // catch it here.
+            const string ProbeSlug = "tripwire-probe";
+            var productPath = paths.ProductDbPath(ProbeSlug);
+            if (!productPath.StartsWith(this.folder, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"ProductDbPath('{ProbeSlug}') resolved to '{productPath}', which is not under " +
+                    $"this factory's per-test folder '{this.folder}'. Per-product DBs would leak " +
+                    $"outside the test sandbox; refusing to boot.");
+            }
+            if (string.Equals(paths.Folder, ProdFolderDefault, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"ForgeDbPaths.Folder resolved to the production default '{ProdFolderDefault}' " +
+                    $"inside a test. Override Forge:Db:Folder via in-memory configuration.");
             }
         });
 
@@ -219,12 +288,12 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        if (disposing && File.Exists(this.dbPath))
+        if (disposing && Directory.Exists(this.folder))
         {
-            try { File.Delete(this.dbPath); }
+            try { Directory.Delete(this.folder, recursive: true); }
             catch (IOException) { /* file lock — best effort */ }
+            catch (UnauthorizedAccessException) { /* file lock — best effort */ }
         }
     }
-
 }
 

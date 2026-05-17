@@ -92,6 +92,7 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        if (this.disposed) return Task.CompletedTask;
         return this.DisposeServerAsync(graceful: true);
     }
 
@@ -258,7 +259,18 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     /// </summary>
     private async Task DisposeServerAsync(bool graceful)
     {
-        await this.startLock.WaitAsync();
+        if (this.disposed) return;
+        try
+        {
+            await this.startLock.WaitAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Lifecycle race: another disposer reached startLock.Dispose()
+            // before we got here. Nothing left to do — the server has
+            // already been torn down by whoever disposed the semaphore.
+            return;
+        }
         try
         {
             if (graceful) this.stopping = true;
@@ -266,7 +278,8 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         }
         finally
         {
-            this.startLock.Release();
+            try { this.startLock.Release(); }
+            catch (ObjectDisposedException) { /* lifecycle race; safe to ignore */ }
         }
     }
 

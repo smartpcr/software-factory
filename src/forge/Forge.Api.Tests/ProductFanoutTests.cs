@@ -52,7 +52,9 @@ public class ProductFanoutTests : IDisposable
 
         var http = new FakeHttpContextAccessor();
         this.factory = new ProductDbContextFactory(this.paths, http);
-        this.fanout = new ProductFanout(this.control, this.factory, cfg);
+        // Phase G — fanout now takes IServiceScopeFactory for per-task scopes.
+        var scopeFactory = new FakeScopeFactory(this.paths);
+        this.fanout = new ProductFanout(this.control, this.factory, scopeFactory, cfg);
     }
 
     public void Dispose()
@@ -69,7 +71,7 @@ public class ProductFanoutTests : IDisposable
         var visited = new List<string>();
         var slugLock = new object();
 
-        var count = await this.fanout.ForEachProductAsync(async (db, slug, ct) =>
+        var count = await this.fanout.ForEachProductAsync(async (control, db, slug, ct) =>
         {
             lock (slugLock) visited.Add(slug);
             await Task.CompletedTask;
@@ -92,7 +94,7 @@ public class ProductFanoutTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<AggregateException>(async () =>
         {
-            await this.fanout.ForEachProductAsync(async (db, slug, ct) =>
+            await this.fanout.ForEachProductAsync(async (control, db, slug, ct) =>
             {
                 lock (lockObj) visited.Add(slug);
                 if (slug == "raft") throw new InvalidOperationException("raft is bad");
@@ -115,7 +117,7 @@ public class ProductFanoutTests : IDisposable
 
         var count = await this.fanout.ForEachProductAsync(
             new[] { "atlas", "failover-cluster" },
-            async (db, slug, ct) =>
+            async (control, db, slug, ct) =>
             {
                 lock (lockObj) visited.Add(slug);
                 await Task.CompletedTask;
@@ -130,7 +132,7 @@ public class ProductFanoutTests : IDisposable
     [Fact]
     public async Task CollectAsync_ReturnsPerProductResult()
     {
-        var result = await this.fanout.CollectAsync<string>(async (db, slug, ct) =>
+        var result = await this.fanout.CollectAsync<string>(async (control, db, slug, ct) =>
         {
             await Task.CompletedTask;
             return $"hello {slug}";
@@ -150,7 +152,7 @@ public class ProductFanoutTests : IDisposable
         var maxActive = 0;
         var activeLock = new object();
 
-        await this.fanout.ForEachProductAsync(async (db, slug, ct) =>
+        await this.fanout.ForEachProductAsync(async (control, db, slug, ct) =>
         {
             int snapshot;
             lock (activeLock)
@@ -169,5 +171,66 @@ public class ProductFanoutTests : IDisposable
     private sealed class FakeHttpContextAccessor : IHttpContextAccessor
     {
         public HttpContext? HttpContext { get; set; }
+    }
+
+    /// <summary>
+    /// Phase G — minimal IServiceScopeFactory that creates per-task scopes
+    /// containing fresh ControlDbContext + ProductDbContext bound to the
+    /// test's temp folder. Mirrors the production registration but without
+    /// the full DI container.
+    /// </summary>
+    private sealed class FakeScopeFactory : Microsoft.Extensions.DependencyInjection.IServiceScopeFactory
+    {
+        private readonly IForgeDbPaths paths;
+
+        public FakeScopeFactory(IForgeDbPaths paths) { this.paths = paths; }
+
+        public Microsoft.Extensions.DependencyInjection.IServiceScope CreateScope() => new FakeScope(this.paths);
+
+        private sealed class FakeScope : Microsoft.Extensions.DependencyInjection.IServiceScope
+        {
+            private readonly FakeServiceProvider sp;
+            public FakeScope(IForgeDbPaths paths) { this.sp = new FakeServiceProvider(paths); }
+            public IServiceProvider ServiceProvider => this.sp;
+            public void Dispose() => this.sp.Dispose();
+        }
+
+        private sealed class FakeServiceProvider : IServiceProvider, IDisposable
+        {
+            private readonly IForgeDbPaths paths;
+            private ControlDbContext? control;
+            private ProductDbContext? product;
+
+            public FakeServiceProvider(IForgeDbPaths paths) { this.paths = paths; }
+
+            public object? GetService(Type serviceType)
+            {
+                if (serviceType == typeof(ControlDbContext))
+                {
+                    return this.control ??= new ControlDbContext(
+                        new DbContextOptionsBuilder<ControlDbContext>()
+                            .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
+                            .Options);
+                }
+                if (serviceType == typeof(ProductDbContext))
+                {
+                    var slug = ProductDbContextFactory.CurrentAsyncLocalSlug;
+                    var dbPath = string.IsNullOrEmpty(slug)
+                        ? this.paths.ControlDbPath()
+                        : (File.Exists(this.paths.ProductDbPath(slug)) ? this.paths.ProductDbPath(slug) : this.paths.ControlDbPath());
+                    return this.product ??= new ProductDbContext(
+                        new DbContextOptionsBuilder<ProductDbContext>()
+                            .UseSqlite($"Data Source={dbPath}")
+                            .Options);
+                }
+                return null;
+            }
+
+            public void Dispose()
+            {
+                this.control?.Dispose();
+                this.product?.Dispose();
+            }
+        }
     }
 }

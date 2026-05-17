@@ -161,7 +161,12 @@ public class Phase41ResumeRecoveryTests
         var recovery = f.Services.GetRequiredService<StoryResumeRecoveryService>();
         await recovery.SweepAsync(awaitCompletion: true, CancellationToken.None);
 
-        Assert.Empty(DeterministicStoryArtifactStrategy.Resumed);
+        // Scope the assertion to this spawn id so parallel tests writing to
+        // the shared static Resumed dictionary don't cause spurious failures.
+        var ours = DeterministicStoryArtifactStrategy.Resumed.Keys
+            .Where(k => k.StartsWith("spawn-WI-41003:", StringComparison.Ordinal))
+            .ToList();
+        Assert.Empty(ours);
     }
 
     private static async Task SeedStoryAndSpawnAsync(

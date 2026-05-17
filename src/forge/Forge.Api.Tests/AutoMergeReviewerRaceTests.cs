@@ -42,7 +42,7 @@ public class AutoMergeReviewerRaceTests
     private const string OperatorPrId = "PR smartpcr/forge-amrr#2";
     private const string WorkstreamId = "ws-amrr-test";
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: race condition test relies on timing")]
+    [Fact]
     public async Task Workstream_Pr_With_Null_Review_Is_Not_Merged_By_Watcher()
     {
         await using var factory = new RecordingProviderFactory();
@@ -66,7 +66,7 @@ public class AutoMergeReviewerRaceTests
         Assert.NotEqual("merged", pr.Col);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: race condition test relies on timing")]
+    [Fact]
     public async Task Workstream_Pr_With_Pending_Review_Is_Not_Merged_By_Watcher()
     {
         // Fix B path — DriveReviewAsync stamps "pending"; the existing
@@ -85,7 +85,7 @@ public class AutoMergeReviewerRaceTests
             "Workstream PR with Review.verdict='pending' must NOT be merged.");
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: race condition test relies on timing")]
+    [Fact]
     public async Task Workstream_Pr_With_Approved_Review_Is_Merged_By_Watcher()
     {
         // Happy-path: once the reviewer agent has stamped 'approved' and
@@ -105,7 +105,7 @@ public class AutoMergeReviewerRaceTests
         Assert.Equal(WorkstreamPrId, factory.Provider.LastMergedPrId);
     }
 
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: race condition test relies on timing")]
+    [Fact]
     public async Task NonWorkstream_Pr_With_Null_Review_Still_Merges()
     {
         // Operator-created auto-merge PRs (no workstream association) keep

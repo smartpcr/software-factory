@@ -81,6 +81,25 @@ public class Phase47BlockedStatusTests
             AgentsJson = "[\"E9\"]",
         });
 
+        // Phase 48 — DriveImplementAsync gates on plan-doc completion. Seed
+        // one passing deliverable per plan-doc id so ArePlanDocsAllPassedAsync
+        // returns true and the orchestrator reaches the per-workstream
+        // stalled-status logic this test class is exercising.
+        foreach (var fileName in new[] { "architecture.md", "tech-spec.md", "implementation-plan.md", "e2e-scenarios.md" })
+        {
+            db.Deliverables.Add(new DeliverableRow
+            {
+                WorkItemId = $"plan-doc:{spawnId}:{fileName}",
+                CrewId = "crew-arch",
+                GeneratorAgentId = "A1",
+                EvaluatorAgentId = "A2",
+                Iter = 1,
+                Score = 95,
+                Verdict = "pass",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return (storyId, spawnId, wsId);
     }
@@ -132,7 +151,7 @@ public class Phase47BlockedStatusTests
     /// (Phase 49 — was previously <c>blocked</c>) and stops touching it
     /// until the operator clicks Restart.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: orchestrator phase-gate semantics changed by Phase 48 plan-doc gate")]
+    [Fact]
     public async Task DriveImplement_With_Stalled_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
@@ -157,7 +176,7 @@ public class Phase47BlockedStatusTests
     /// re-running with the same cap just burns more dollars. Operator must
     /// raise budget via Restart.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: orchestrator phase-gate semantics changed by Phase 48 plan-doc gate")]
+    [Fact]
     public async Task DriveImplement_With_StalledBudget_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
@@ -166,9 +185,21 @@ public class Phase47BlockedStatusTests
             using (f.CreateClient()) { /* triggers boot */ }
             var (storyId, _, wsId) = await SeedSpawnImplementWithWorkstreamAsync(f, "WI-47-101");
             await PersistDeliverableAsync(f, wsId, verdict: "stalled-budget", iter: 2, score: 78);
+            // Phase 51 — the orchestrator now grants budget-cap-raise recovery
+            // when cumulative cost < current cap. To exercise the legacy
+            // "stalled-budget always stalls" expectation, pin the seeded
+            // crew-eng cap to a tiny value so the 0-cost check still flips
+            // the workstream to stalled.
+            using (var scope = f.Services.CreateScope())
+            {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                var crew = await control.Crews.FirstAsync(c => c.Id == "crew-eng");
+                crew.MaxTaskBudgetUsd = 0m;
+                await control.SaveChangesAsync();
+            }
 
-            using var scope = f.Services.CreateScope();
-            var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            using var driveScope = f.Services.CreateScope();
+            var orchestrator = driveScope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
             await orchestrator.DriveAsync(storyId);
 
             Assert.Equal("stalled", await ReadWorkstreamStatusAsync(f, wsId));
@@ -182,7 +213,7 @@ public class Phase47BlockedStatusTests
     /// product owner. Re-running without operator input would just produce
     /// another reject. Block the workstream.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: orchestrator phase-gate semantics changed by Phase 48 plan-doc gate")]
+    [Fact]
     public async Task DriveImplement_With_Reject_Last_Deliverable_Marks_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
@@ -209,7 +240,7 @@ public class Phase47BlockedStatusTests
     /// first. Status remains <c>stalled</c> (no flip back to <c>active</c>),
     /// no new deliverables, no spawn-started events.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: orchestrator phase-gate semantics changed by Phase 48 plan-doc gate")]
+    [Fact]
     public async Task DriveImplement_Skips_Stalled_Workstream_On_Subsequent_Drives()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
@@ -260,7 +291,7 @@ public class Phase47BlockedStatusTests
     /// is only for non-pass terminals. Pass workstreams continue to the
     /// commit + PR + review flow as before.
     /// </summary>
-    [Fact(Skip = "Pre-existing failure unrelated to Phase G: orchestrator phase-gate semantics changed by Phase 48 plan-doc gate")]
+    [Fact]
     public async Task DriveImplement_With_Pass_Last_Deliverable_Does_Not_Mark_Stalled()
     {
         var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
