@@ -136,6 +136,17 @@ public sealed class StoryResumeRecoveryService : IHostedService
         {
             tasks.Add(Task.Run(async () =>
             {
+                // Phase 73 — push the product slug onto the AsyncLocal
+                // stack BEFORE opening the resume DI scope so the
+                // strategy's ProductDbContext resolves against the
+                // correct per-product DB file (and not the
+                // CreateUnscoped() control-DB fallback). Slug derived
+                // from the story-id convention `{slug}:{STORY_KEY}`.
+                // Null slug (legacy story-id without colon) falls
+                // through to the unscoped path identically to the
+                // pre-Phase-73 behaviour.
+                using var slugScope = ProductDbContextFactory.PushAsyncLocalSlug(
+                    ProductSlugExtractor.FromStoryId(storyId));
                 using var scope = this.scopeFactory.CreateScope();
                 var strategy = scope.ServiceProvider.GetRequiredService<IStoryArtifactStrategy>();
                 await StoriesEndpoints.RunResumeWithCleanupAsync(

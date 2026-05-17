@@ -191,12 +191,28 @@ public class SplitContextsTests : IDisposable
         var connectionString = ctx.Database.GetDbConnection().ConnectionString;
         Assert.Contains("forge.db", connectionString);
 
-        // Now create a per-product file and try a new slug — should pick it up.
+        // Phase 73 half-applied guard: creating a per-product file does
+        // NOT cause the factory to pick it up unless the
+        // `phase73-split-applied` marker is also stamped in
+        // `forge_seed_state`. Without the marker, the factory refuses
+        // the per-product file and continues routing to the control DB.
         var slugPath = this.paths.ProductDbPath("perproduct");
         File.WriteAllText(slugPath, string.Empty);
+        SplitMarkerCache.ResetForTesting();
         var ctx2 = factory.CreateFor("perproduct");
         var cs2 = ctx2.Database.GetDbConnection().ConnectionString;
-        Assert.Contains("perproduct.db", cs2);
+        Assert.Contains("forge.db", cs2);
+        Assert.DoesNotContain("perproduct.db", cs2);
+
+        // Phase 73 happy path: stamp the marker → the per-product file
+        // is now used. A new factory instance is required because
+        // CreateFor caches per slug.
+        StampPhase73Marker(this.paths.ControlDbPath());
+        SplitMarkerCache.ResetForTesting();
+        using var factory2 = new ProductDbContextFactory(this.paths, http);
+        var ctx3 = factory2.CreateFor("perproduct");
+        var cs3 = ctx3.Database.GetDbConnection().ConnectionString;
+        Assert.Contains("perproduct.db", cs3);
     }
 
     [Fact]
@@ -258,5 +274,30 @@ public class SplitContextsTests : IDisposable
     private sealed class TestHttpContextAccessor : IHttpContextAccessor
     {
         public HttpContext? HttpContext { get; set; }
+    }
+
+    /// <summary>
+    /// Test helper — stamps the Phase 73 split-applied marker in the
+    /// control DB so the marker-guard branch of
+    /// <see cref="ProductDbContextFactory.CreateFor"/> uses
+    /// per-product files. Creates the <c>forge_seed_state</c> table on
+    /// demand because tests don't run the Phase 22 migration.
+    /// </summary>
+    private static void StampPhase73Marker(string controlPath)
+    {
+        using var conn = new SqliteConnection($"Data Source={controlPath}");
+        conn.Open();
+        using var create = conn.CreateCommand();
+        create.CommandText =
+            "CREATE TABLE IF NOT EXISTS forge_seed_state (Key TEXT PRIMARY KEY, DoneAt TEXT NOT NULL);";
+        create.ExecuteNonQuery();
+        using var ins = conn.CreateCommand();
+        ins.CommandText =
+            "INSERT OR REPLACE INTO forge_seed_state (Key, DoneAt) VALUES ('phase73-split-applied', $at);";
+        var p = ins.CreateParameter();
+        p.ParameterName = "$at";
+        p.Value = DateTimeOffset.UtcNow.ToString("O");
+        ins.Parameters.Add(p);
+        ins.ExecuteNonQuery();
     }
 }

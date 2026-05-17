@@ -181,6 +181,25 @@ public sealed class StorySpawnOrchestrator
         gate.AcquiredAt = DateTimeOffset.UtcNow;
         try
         {
+            // Phase 73 — push the product slug onto the AsyncLocal
+            // stack BEFORE opening any DI scope so every nested
+            // CreateScope() (here, and inside every helper that runs
+            // within this try-block, including DrivePlanAsync,
+            // DriveImplementAsync, DriveReviewAsync, DriveQaAsync, and
+            // their per-WS inner scopes) resolves ProductDbContext
+            // against the correct per-product DB file rather than
+            // falling through to CreateUnscoped → control DB. The
+            // slug is derived from the story-id convention
+            // `{slug}:{STORY_KEY}`. AsyncLocal<T> flows through
+            // IServiceScopeFactory.CreateScope and through async
+            // continuations so a single push at this entry point
+            // covers the entire orchestrator turn. When the slug is
+            // null (legacy story-id without a colon) the push is a
+            // no-op and the unscoped fallback applies as before —
+            // identical to pre-Phase-73 behaviour.
+            using var slugScope = ProductDbContextFactory.PushAsyncLocalSlug(
+                ProductSlugExtractor.FromStoryId(storyId));
+
             using var scope = this.services.CreateScope();
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();

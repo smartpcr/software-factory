@@ -86,6 +86,44 @@ public static class AdminDbSplitEndpoints
             .WithTags("Admin")
             .WithName("AdminDbSplitApply");
 
+        // POST /api/admin/db/split-resume — Phase 73 Stage 2C. Recovery
+        // path for a half-applied split (per-product DB files exist on
+        // disk but `phase73-split-applied` marker is missing from
+        // `forge_seed_state`, source product tables still in
+        // `forge.db`). Idempotent (AlreadyApplied=true once stamped).
+        // Operator-only + feature-flag-gated, same as split-apply.
+        //
+        // Writers MUST be paused (Forge.Api offline or all background
+        // services stopped) for the resume window — the algorithm
+        // truncates each per-product table then replays the
+        // partition copy from `forge.db` and any in-flight writes
+        // would land in the source table after the partition copy
+        // started but before the source DROP, causing them to be
+        // lost.
+        app.MapPost("/api/admin/db/split-resume", async (
+            HttpContext ctx,
+            IConfiguration config,
+            ControlDbContext control,
+            ProductDbContext db,
+            SplitApplyService applier,
+            CancellationToken ct) =>
+        {
+            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
+
+            if (!IsEnabled(config))
+            {
+                return Results.Problem(
+                    title: "Split tooling disabled",
+                    detail: "Set Forge:Db:SplitEnabled=true to enable.",
+                    statusCode: 403);
+            }
+
+            var result = await applier.ResumeAsync(ct);
+            return Results.Ok(result);
+        })
+            .WithTags("Admin")
+            .WithName("AdminDbSplitResume");
+
         return app;
     }
 

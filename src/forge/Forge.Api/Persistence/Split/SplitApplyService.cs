@@ -350,6 +350,290 @@ public sealed class SplitApplyService
         }
     }
 
+    /// <summary>
+    /// Phase 73 Stage 2C — idempotent retry for a HALF-APPLIED split.
+    /// Distinct from <see cref="ApplyAsync"/> which refuses to run when
+    /// per-product files already exist (treating their presence as a
+    /// "didn't fully wipe last time, ambiguous" signal). Resume
+    /// explicitly handles the case the operator now needs: backup +
+    /// schema replay + partition copy ran on a prior boot, but
+    /// verification or the source-DROP step failed and left the
+    /// marker un-stamped. Algorithm:
+    ///
+    /// <list type="number">
+    ///   <item>Bail with <see cref="SplitApplyResult.AlreadyApplied"/>
+    ///         when the marker is already stamped.</item>
+    ///   <item>Pre-flight dry-run for counts + unknown-table check
+    ///         (identical to <see cref="ApplyAsync"/>).</item>
+    ///   <item>Refuse with an actionable error if any product is
+    ///         missing its per-product DB file — operator should run
+    ///         <see cref="ApplyAsync"/> from scratch instead (it
+    ///         creates the schemas).</item>
+    ///   <item>ATTACH every per-product DB.</item>
+    ///   <item>For each product table: <c>DELETE FROM
+    ///         {alias}.{table}</c> then replay the partition INSERT
+    ///         from the source. Truncate-then-fill is safe because
+    ///         the source rows are the live ones (writers have been
+    ///         landing them in <c>forge.db</c> while the per-product
+    ///         file was stale).</item>
+    ///   <item>Verify counts + DROP source tables + stamp marker +
+    ///         VACUUM (identical to <see cref="ApplyAsync"/> from
+    ///         step 6 onward).</item>
+    /// </list>
+    ///
+    /// <para>Writers MUST be paused for the duration (typically a
+    /// maintenance-window restart with Forge.Api offline) so the
+    /// truncate-then-fill is consistent against the live source.</para>
+    /// </summary>
+    public async Task<SplitApplyResult> ResumeAsync(CancellationToken ct = default)
+    {
+        var dbPath = this.paths.ControlDbPath();
+        if (!File.Exists(dbPath))
+        {
+            return new SplitApplyResult(
+                AlreadyApplied: false,
+                BackupPath: null,
+                ProductDbs: Array.Empty<string>(),
+                RowsCopied: 0,
+                Errors: new[] { "Control DB does not exist; nothing to resume." });
+        }
+
+        var cs = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            DefaultTimeout = 30,
+        }.ToString();
+        await using var conn = new SqliteConnection(cs);
+        await conn.OpenAsync(ct);
+
+        // 1. Idempotency check.
+        await EnsureSeedStateTableAsync(conn, ct);
+        if (await IsAppliedAsync(conn, ct))
+        {
+            return new SplitApplyResult(
+                AlreadyApplied: true,
+                BackupPath: null,
+                ProductDbs: Array.Empty<string>(),
+                RowsCopied: 0,
+                Errors: Array.Empty<string>());
+        }
+
+        // 2. Pre-flight dry-run.
+        var preReport = await this.analyzer.AnalyzeAsync(ct);
+        if (preReport.UnknownTables.Count > 0)
+        {
+            var names = string.Join(", ", preReport.UnknownTables.Select(t => $"{t.TableName} ({t.RowCount})"));
+            return new SplitApplyResult(
+                AlreadyApplied: false,
+                BackupPath: null,
+                ProductDbs: Array.Empty<string>(),
+                RowsCopied: 0,
+                Errors: new[]
+                {
+                    $"Refusing to resume: {preReport.UnknownTables.Count} unknown table(s) hold data: {names}. "
+                    + "Add them to DbBoundary.AllTables (or drop them) before resuming.",
+                });
+        }
+
+        // 3. All per-product files must exist (Resume's defining
+        // precondition — distinguishes it from a fresh Apply).
+        var errors = new List<string>();
+        var productDbPaths = new List<string>();
+        foreach (var product in preReport.Products)
+        {
+            var slugDbPath = this.paths.ProductDbPath(product.ProductSlug);
+            if (!File.Exists(slugDbPath))
+            {
+                errors.Add(
+                    $"Per-product DB '{slugDbPath}' is missing for product '{product.ProductSlug}'. "
+                    + "Resume expects every product to have its DB file from the prior partial apply. "
+                    + "Run ApplyAsync from scratch instead, or restore the missing file from the backup.");
+            }
+            else
+            {
+                productDbPaths.Add(slugDbPath);
+            }
+        }
+        if (errors.Count > 0)
+        {
+            return new SplitApplyResult(false, null, productDbPaths, 0, errors);
+        }
+
+        if (preReport.Products.Count > 9)
+        {
+            errors.Add(
+                $"Too many products ({preReport.Products.Count}); SQLITE_LIMIT_ATTACHED is 10.");
+            return new SplitApplyResult(false, null, productDbPaths, 0, errors);
+        }
+
+        var rowsCopied = 0;
+        try
+        {
+            // 4. ATTACH every product DB.
+            await using (var pragmaCmd = conn.CreateCommand())
+            {
+                pragmaCmd.CommandText = "PRAGMA foreign_keys = OFF;";
+                await pragmaCmd.ExecuteNonQueryAsync(ct);
+            }
+            foreach (var product in preReport.Products)
+            {
+                var slugDbPath = this.paths.ProductDbPath(product.ProductSlug);
+                var attachAlias = SqliteAlias(product.ProductSlug);
+                await using var attachCmd = conn.CreateCommand();
+                attachCmd.CommandText = $"ATTACH DATABASE @path AS {attachAlias};";
+                attachCmd.Parameters.AddWithValue("@path", slugDbPath);
+                await attachCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            // 5. For each product table: truncate, then replay the
+            // partition copy from the (live) source.
+            foreach (var spec in DbBoundary.AllTables.Where(t => t.Kind == DbKind.Product))
+            {
+                if (!await TableExistsAsync(conn, spec.TableName, ct)) continue;
+
+                foreach (var product in preReport.Products)
+                {
+                    var slug = product.ProductSlug;
+                    var attachAlias = SqliteAlias(slug);
+
+                    // Truncate the per-product table first. Skip when
+                    // the table doesn't exist in this product DB (a
+                    // schema gap from the prior partial apply — we
+                    // continue best-effort and let the verify step
+                    // catch any genuine row-count mismatch).
+                    try
+                    {
+                        await using var truncCmd = conn.CreateCommand();
+                        truncCmd.CommandText = $"DELETE FROM {attachAlias}.\"{spec.TableName}\";";
+                        await truncCmd.ExecuteNonQueryAsync(ct);
+                    }
+                    catch (SqliteException)
+                    {
+                        // Table missing in product DB — log and skip;
+                        // the operator should re-apply from scratch.
+                        this.logger?.LogWarning(
+                            "[Phase73 Resume] {Table} missing in per-product DB for {Slug}; skipping truncate.",
+                            spec.TableName, slug);
+                    }
+
+                    var partitionSql = BuildInsertSql(spec, attachAlias, product.ProductId);
+                    if (partitionSql is null)
+                    {
+                        if (product.ProductSlug == preReport.Products[0].ProductSlug)
+                        {
+                            await using var fallbackCmd = conn.CreateCommand();
+                            fallbackCmd.CommandText = $"INSERT INTO {attachAlias}.\"{spec.TableName}\" SELECT * FROM \"{spec.TableName}\";";
+                            try
+                            {
+                                var n = await fallbackCmd.ExecuteNonQueryAsync(ct);
+                                rowsCopied += n;
+                            }
+                            catch (SqliteException ex)
+                            {
+                                errors.Add($"Resume failed to copy {spec.TableName} to {slug}: {ex.Message}");
+                            }
+                        }
+                        continue;
+                    }
+
+                    await using var copyCmd = conn.CreateCommand();
+                    copyCmd.CommandText = partitionSql;
+                    try
+                    {
+                        var n = await copyCmd.ExecuteNonQueryAsync(ct);
+                        rowsCopied += n;
+                    }
+                    catch (SqliteException ex)
+                    {
+                        errors.Add($"Resume failed partition copy {spec.TableName}→{slug}: {ex.Message}");
+                    }
+                }
+
+                if (errors.Count > 0) break;
+            }
+
+            // 6. Verify counts.
+            if (errors.Count == 0)
+            {
+                foreach (var pre in preReport.Tables.Where(t => t.Kind == "product"))
+                {
+                    var expectedAttached = string.Equals(pre.Strategy, "nopartitionkey", StringComparison.OrdinalIgnoreCase)
+                        ? pre.TotalRows
+                        : pre.ClassifiedRows;
+                    var attachedTotal = await SumAttachedTableAsync(conn, pre.TableName, preReport.Products, ct);
+                    if (attachedTotal != expectedAttached)
+                    {
+                        errors.Add(
+                            $"Resume row-count mismatch for {pre.TableName} (strategy={pre.Strategy}): "
+                            + $"expected-attached={expectedAttached} actual-attached={attachedTotal} "
+                            + $"total={pre.TotalRows} classified={pre.ClassifiedRows} orphans={pre.OrphanRows}.");
+                    }
+                }
+            }
+
+            // 7. DETACH product DBs (must detach before DROP TABLE).
+            foreach (var product in preReport.Products)
+            {
+                var attachAlias = SqliteAlias(product.ProductSlug);
+                try
+                {
+                    await using var detachCmd = conn.CreateCommand();
+                    detachCmd.CommandText = $"DETACH DATABASE {attachAlias};";
+                    await detachCmd.ExecuteNonQueryAsync(ct);
+                }
+                catch (SqliteException ex)
+                {
+                    errors.Add($"Resume failed to detach {attachAlias}: {ex.Message}");
+                }
+            }
+
+            if (errors.Count > 0)
+            {
+                return new SplitApplyResult(false, null, productDbPaths, rowsCopied, errors);
+            }
+
+            // 8. DROP source product tables.
+            foreach (var spec in DbBoundary.AllTables.Where(t => t.Kind == DbKind.Product))
+            {
+                if (!await TableExistsAsync(conn, spec.TableName, ct)) continue;
+                await using var dropCmd = conn.CreateCommand();
+                dropCmd.CommandText = $"DROP TABLE \"{spec.TableName}\";";
+                await dropCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            // 9. Stamp marker.
+            await MarkAppliedAsync(conn, ct);
+
+            // 10. VACUUM source.
+            await using (var vacuumCmd = conn.CreateCommand())
+            {
+                vacuumCmd.CommandText = "VACUUM;";
+                await vacuumCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            this.logger?.LogInformation(
+                "[Phase73 Resume] Split resumed: {Products} product DB(s), {Rows} rows re-copied. forge.db is now control-only.",
+                productDbPaths.Count, rowsCopied);
+
+            // Clear the marker cache so subsequent factory resolves
+            // see the just-stamped state without a process restart.
+            SplitMarkerCache.ResetForTesting();
+
+            return new SplitApplyResult(
+                AlreadyApplied: false,
+                BackupPath: null,
+                ProductDbs: productDbPaths,
+                RowsCopied: rowsCopied,
+                Errors: Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"Unhandled exception during resume: {ex.Message}");
+            this.logger?.LogError(ex, "[Phase73 Resume] Split resume failed. Source forge.db left intact.");
+            return new SplitApplyResult(false, null, productDbPaths, rowsCopied, errors);
+        }
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private static async Task EnsureSeedStateTableAsync(SqliteConnection conn, CancellationToken ct)
