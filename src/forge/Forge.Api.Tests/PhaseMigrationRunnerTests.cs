@@ -8,6 +8,7 @@ namespace Forge.Api.Tests;
 
 using Forge.Api.Persistence;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -109,5 +110,81 @@ public class PhaseMigrationRunnerTests
         // Both per-product DBs exist on disk after the runner's fan-out.
         Assert.True(File.Exists(Path.Combine(f.Folder, "alpha.db")));
         Assert.True(File.Exists(Path.Combine(f.Folder, "beta.db")));
+    }
+
+    [Fact]
+    public async Task Runner_RebootAfterSplit_DoesNotCrashOnMixedMigrations()
+    {
+        // Regression for: 2026-05-17 server crash at boot with
+        // "no such table: forge_actions" thrown from Phase8Migration via
+        // PhaseMigrationRunner's fan-out loop. Root cause: Mixed migrations
+        // (which touch BOTH control + product tables, interleaved) were
+        // being fanned out to per-product DBs, where the control-side
+        // references (e.g. forge_actions, products) don't exist.
+        //
+        // The factory creates two products and runs split-apply, then we
+        // simulate a reboot by booting Forge.Api AGAIN against the same
+        // folder. The second boot finds the per-product DBs already on
+        // disk and exercises the fan-out path against post-split state —
+        // which is when the regression triggered in production.
+        using var f1 = await MultiProductForgeWebApplicationFactory.CreateAsync("zeta", "eta");
+        var folder = f1.Folder;
+        f1.Dispose();
+
+        // The per-product DBs persist in the folder even after Dispose
+        // until the temp folder is GC'd. Re-open a fresh factory in the
+        // SAME folder so PhaseMigrationRunner sees the {slug}.db files
+        // on disk and runs its fan-out loop.
+        Assert.True(File.Exists(Path.Combine(folder, "zeta.db")),
+            "Per-product DB should still exist after factory Dispose for this regression test.");
+        Assert.True(File.Exists(Path.Combine(folder, "eta.db")),
+            "Per-product DB should still exist after factory Dispose for this regression test.");
+
+        // Boot a fresh factory pointed at the same folder. If Mixed
+        // migrations are being fanned out, this crashes on Phase 8's
+        // forge_actions EnsureColumn call (control table absent from
+        // zeta.db / eta.db).
+        var f2 = new RebootInPlaceFactory(folder);
+        try
+        {
+            using var client = f2.CreateClient();
+            Assert.NotNull(client);
+        }
+        finally
+        {
+            f2.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Test factory variant that points <c>Forge:Db:Folder</c> at a
+    /// pre-existing folder (containing per-product DBs from a prior split)
+    /// instead of allocating a fresh GUID folder. Used by the
+    /// reboot-after-split regression test.
+    /// </summary>
+    private sealed class RebootInPlaceFactory : Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>
+    {
+        private readonly string folder;
+
+        public RebootInPlaceFactory(string folder) { this.folder = folder; }
+
+        protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
+        {
+            Environment.SetEnvironmentVariable("FORGE_TEST_GUARDRAIL", "1");
+            builder.UseEnvironment("Development");
+            builder.ConfigureAppConfiguration((_, config) =>
+            {
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Forge:Db:Folder"] = this.folder,
+                    ["Forge:Db:Path"] = null,
+                    ["Forge:Db:SplitEnabled"] = "true",
+                    ["Forge:Repo:AutoClone"] = "false",
+                    ["Forge:Background:Disabled"] = "true",
+                    ["DetailedErrors"] = "true",
+                    ["Logging:LogLevel:Default"] = "Error",
+                });
+            });
+        }
     }
 }

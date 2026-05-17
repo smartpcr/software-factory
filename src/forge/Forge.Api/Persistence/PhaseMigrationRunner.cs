@@ -128,15 +128,28 @@ public sealed class PhaseMigrationRunner
         // Always invoke at least once with the default contexts. This matches
         // pre-G.4 behaviour: every migration sees the control DB on the
         // ControlDbContext side and the (forge.db-fallback) ProductDbContext.
-        // Post-Phase-F: for Product/Mixed migrations, the per-product invocation
+        // Post-Phase-F: for Product migrations, the per-product invocation
         // loop below also runs against each {slug}.db.
         await this.InvokeAsync(method, control, defaultDb, ct);
 
         // Phase F+ fan-out: when per-product DBs exist on disk, also apply
-        // Product/Mixed migrations to each so their schema stays in lockstep
-        // with what EF expects. Control-only migrations skip this (their
-        // tables don't exist in {slug}.db).
-        if (spec.Kind == PhaseMigrationKind.Control)
+        // Product-only migrations to each so their schema stays in lockstep
+        // with what EF expects.
+        //
+        // Control-only migrations skip this (their tables don't exist in
+        // {slug}.db).
+        //
+        // Mixed migrations ALSO skip this: their migration body interleaves
+        // control + product table ops (e.g. Phase8Migration calls
+        // EnsureColumn(forge_actions, ...) AFTER EnsureColumn(cards, ...)) —
+        // running the whole body against a per-product DB would crash on the
+        // first control-table reference because forge_actions doesn't exist
+        // there. For fresh post-split per-product DBs, the schema is laid
+        // down by ProductDbContext.EnsureCreatedAsync (which projects the
+        // full EF model including all Mixed migration column additions), so
+        // skipping fan-out for Mixed is safe. Refactoring each Mixed
+        // migration into separate Control + Product passes is a follow-up.
+        if (spec.Kind != PhaseMigrationKind.Product)
         {
             return;
         }
