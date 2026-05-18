@@ -118,15 +118,15 @@ public interface IStoryArtifactStrategy
     /// Phase 79 — agent-driven merge-conflict resolver. Called by
     /// <c>StorySpawnOrchestrator.TryResolveConflictsAndRetryMergeAsync</c>
     /// when an auto-merge attempt failed with a real merge-conflict 405
-    /// AND <see cref="IStoryGitOps.RebaseAndDetectConflictsAsync"/>
-    /// reported <see cref="RebaseState.Conflicted"/>. The Engineer agent
+    /// AND <see cref="IStoryGitOps.MergeBaseIntoBranchAndDetectConflictsAsync"/>
+    /// reported <see cref="MergeState.Conflicted"/>. The Engineer agent
     /// reads each <see cref="ConflictedFile"/>'s on-disk content
     /// (markers preserved), the workstream's original task description,
     /// and a tail of the workstream's recent deliverable Notes (so it
     /// knows its own intent), then writes a resolved version of each
     /// file. The returned dict maps path → resolved content; the
     /// orchestrator hands this to
-    /// <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/>.
+    /// <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/>.
     ///
     /// <para>Per-file fast-path: lockfile / generated-file paths
     /// (<c>*.lock</c>, <c>package-lock.json</c>, <c>Cargo.lock</c>,

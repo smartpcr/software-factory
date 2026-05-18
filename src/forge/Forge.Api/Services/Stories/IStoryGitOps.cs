@@ -254,92 +254,105 @@ public interface IStoryGitOps
         CancellationToken ct = default);
 
     /// <summary>
-    /// Phase 79 — fetch <paramref name="baseBranch"/> and attempt
-    /// <c>git rebase origin/{baseBranch}</c> in the workstream worktree.
+    /// Phase 79c — fetch <paramref name="baseBranch"/> and attempt
+    /// <c>git merge origin/{baseBranch}</c> in the workstream worktree.
     /// Returns a discriminated result the orchestrator routes on:
     /// <list type="bullet">
-    ///   <item><see cref="RebaseState.Clean"/> — rebase succeeded, branch is
-    ///         ahead of base, caller force-pushes + retries the merge.</item>
-    ///   <item><see cref="RebaseState.Conflicted"/> — rebase paused on
-    ///         conflict markers; <see cref="RebaseResult.ConflictedFiles"/>
-    ///         carries each file's path + on-disk content (markers and all)
-    ///         for the agent resolver to consume.</item>
-    ///   <item><see cref="RebaseState.RebaseFailed"/> — rebase aborted for
-    ///         non-conflict reasons (missing upstream, detached HEAD, locked
-    ///         index, etc.); <see cref="RebaseResult.Detail"/> carries git
-    ///         stderr for the caller's stall reason.</item>
+    ///   <item><see cref="MergeState.Clean"/> — merge succeeded with no
+    ///         conflicts (fast-forward or new merge commit). Caller still
+    ///         calls <see cref="ContinueMergeAndPushAsync"/> with an empty
+    ///         dict so the resulting commit(s) get pushed to origin.</item>
+    ///   <item><see cref="MergeState.Conflicted"/> — merge paused with
+    ///         conflict markers in the working tree;
+    ///         <see cref="MergeResult.ConflictedFiles"/> carries each
+    ///         file's path + on-disk content for the agent resolver to
+    ///         consume.</item>
+    ///   <item><see cref="MergeState.MergeFailed"/> — merge aborted for
+    ///         non-conflict reasons (missing upstream, dirty working
+    ///         tree, fatal error, etc.); <see cref="MergeResult.Detail"/>
+    ///         carries git stderr for the caller's stall reason.</item>
     /// </list>
     ///
     /// <para>Always leaves the worktree in a recoverable state: on
-    /// <c>Conflicted</c> the rebase is in progress (caller resolves +
-    /// <see cref="ContinueRebaseAndPushAsync"/>); on <c>RebaseFailed</c>
-    /// the rebase is aborted (<c>git rebase --abort</c>) so the worktree
-    /// is back at the pre-rebase tip.</para>
+    /// <c>Conflicted</c> the merge is in progress (caller resolves +
+    /// <see cref="ContinueMergeAndPushAsync"/>); on <c>MergeFailed</c>
+    /// the merge is aborted (<c>git merge --abort</c>) so the worktree
+    /// is back at the pre-merge tip.</para>
+    ///
+    /// <para><b>Why merge rather than rebase?</b> The merge approach
+    /// preserves the ws branch's commit history and does not require
+    /// force-push, which keeps reviewer comments anchored to the lines
+    /// they were posted against. Force-pushed history (the old rebase
+    /// path) routinely orphaned late-arriving reviewer comments.</para>
     /// </summary>
-    Task<RebaseResult> RebaseAndDetectConflictsAsync(
+    Task<MergeResult> MergeBaseIntoBranchAndDetectConflictsAsync(
         RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
 
     /// <summary>
-    /// Phase 79 — apply agent-resolved file contents to the in-progress
-    /// rebase, stage them, <c>git rebase --continue</c>, and on a clean
-    /// finish <c>git push --force-with-lease</c> the branch.
+    /// Phase 79c — finish an in-progress merge: write each entry in
+    /// <paramref name="resolvedFiles"/> back into the worktree, stage
+    /// them, run <c>git commit</c> (no editor) to finalize the merge,
+    /// then <c>git push origin {branch}</c> (no <c>--force</c>).
     ///
-    /// <para>If <c>git rebase --continue</c> stops at ANOTHER conflict
-    /// commit (multi-commit rebase), the method returns
-    /// <see cref="RebaseState.Conflicted"/> with the new conflict set —
-    /// the orchestrator loops back through resolution. The full rebase
-    /// is bounded by the orchestrator's <c>MaxResolveAttempts</c> cap.</para>
+    /// <para>Unlike the prior rebase flow, a single conflict round is
+    /// expected per call: <c>git merge</c> surfaces ALL conflicts up
+    /// front, so once the agent resolves them and we commit, there is
+    /// no follow-up "another conflict commit" state. If the working
+    /// tree is already clean (caller passed an empty dict because
+    /// <see cref="MergeBaseIntoBranchAndDetectConflictsAsync"/> returned
+    /// <see cref="MergeState.Clean"/>), this method short-circuits to
+    /// the push step.</para>
     ///
-    /// <para>Force-push uses <c>--force-with-lease=origin/{branch}:{old-tip}</c>
-    /// captured before the rebase started; this rejects the push if
-    /// origin moved (e.g., concurrent operator push) instead of
-    /// clobbering. On rejection the method returns <c>RebaseFailed</c>
-    /// with the rejection detail so the caller can stall.</para>
+    /// <para>Push is a plain (non-force) push. If origin's tip moved
+    /// (concurrent operator push, etc.) the push fails and the method
+    /// returns <see cref="MergeState.MergeFailed"/> with the rejection
+    /// detail so the caller can stall.</para>
     /// </summary>
-    Task<RebaseResult> ContinueRebaseAndPushAsync(
+    Task<MergeResult> ContinueMergeAndPushAsync(
         RepoRow? repo,
         string branch,
         IReadOnlyDictionary<string, string> resolvedFiles,
         CancellationToken ct = default);
 
     /// <summary>
-    /// Phase 79 — best-effort cleanup helper. Called by the orchestrator
+    /// Phase 79c — best-effort cleanup helper. Called by the orchestrator
     /// when the resolver loop gives up (max attempts reached or
-    /// <see cref="RebaseState.RebaseFailed"/>) so the worktree is back at
-    /// a clean tip for the next iter. Idempotent; no-op when no rebase
+    /// <see cref="MergeState.MergeFailed"/>) so the worktree is back at
+    /// a clean tip for the next iter. Idempotent; no-op when no merge
     /// is in progress.
     /// </summary>
-    Task AbortRebaseAsync(RepoRow? repo, string branch, CancellationToken ct = default);
+    Task AbortMergeAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 }
 
 /// <summary>
-/// Phase 79 — outcome of <see cref="IStoryGitOps.RebaseAndDetectConflictsAsync"/>
-/// or <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/>. The state
+/// Phase 79c — outcome of <see cref="IStoryGitOps.MergeBaseIntoBranchAndDetectConflictsAsync"/>
+/// or <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/>. The state
 /// drives the orchestrator's resolver-loop control flow.
 /// </summary>
-public enum RebaseState
+public enum MergeState
 {
-    /// <summary>Rebase succeeded; branch advanced past base. Caller force-pushes + retries merge.</summary>
+    /// <summary>Merge succeeded (fast-forward or merge commit); caller pushes via <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/> with an empty dict.</summary>
     Clean,
 
-    /// <summary>Rebase paused on conflict markers; agent must resolve.</summary>
+    /// <summary>Merge paused on conflict markers; agent must resolve.</summary>
     Conflicted,
 
-    /// <summary>Rebase or force-push aborted for non-conflict reasons; caller stalls.</summary>
-    RebaseFailed,
+    /// <summary>Merge or push aborted for non-conflict reasons; caller stalls.</summary>
+    MergeFailed,
 }
 
 /// <summary>
-/// Phase 79 — return shape of the two rebase methods.
+/// Phase 79c — return shape of <see cref="IStoryGitOps.MergeBaseIntoBranchAndDetectConflictsAsync"/>
+/// and <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/>.
 /// </summary>
-public sealed record RebaseResult(
-    RebaseState State,
+public sealed record MergeResult(
+    MergeState State,
     IReadOnlyList<ConflictedFile> ConflictedFiles,
     string? Detail);
 
 /// <summary>
 /// Phase 79 — a single conflicted file as seen during an in-progress
-/// rebase. <see cref="Content"/> is the raw on-disk text with
+/// merge. <see cref="Content"/> is the raw on-disk text with
 /// <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt; / ======= / &gt;&gt;&gt;&gt;&gt;&gt;&gt;</c> markers preserved
 /// so the agent has full context for resolution.
 /// </summary>

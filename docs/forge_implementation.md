@@ -6506,3 +6506,130 @@ CREATE INDEX IF NOT EXISTS ix_wi_override_history_wid
   4 UI surface wires
 - `src/forge/Forge.Api.Tests/Phase57*.cs` (4 new files)
 - `src/forge/Forge.UI.Tests/` — Playwright override flow
+
+
+## Phase 79c — Merge-based conflict recovery (replaces rebase + force-push)
+
+### Problem
+
+The original Phase 79 resolver did `git rebase origin/{base}` in the ws
+worktree and `git push --force-with-lease` after the agent resolved any
+conflicts. Two real-world failure modes followed:
+
+1. **Reviewer comments orphaned.** When a reviewer's comment landed
+   between the merge-fail and the resolver's force-push, the force-push
+   rewrote the branch tip, leaving the comment anchored to a SHA the
+   PR view no longer carries in its diff. Reviewer comments on
+   `smartpcr/code-intelligence#41` were repeatedly stranded this way on
+   2026-05-17/18 — visible in the screenshot of
+   `code-intelligence:AGENT-MEMORY` stage 7.4 ("Snapshot verb"), where
+   the workstream stalled even though the resolver mechanically
+   succeeded.
+2. **Mid-rebase worktree detection.** A worktree paused mid-rebase
+   reports as `detached` in `git worktree list --porcelain`. The
+   pre-Phase-79b helper fell back to a sanitised slug and collided
+   with `branch already used by worktree at …`, surfacing as the
+   confusing "no worktree is registered" error on the same story's
+   stages 7.2 / 7.4. (Phase 79b separately added a
+   rebase-state-file fallback for callers that still encounter
+   mid-rebase worktrees from legacy code paths.)
+
+### Behaviour
+
+Replace the rebase API with a merge API on `IStoryGitOps`. The agent
+resolver itself (`IStoryArtifactStrategy.ProduceConflictResolutionAsync`)
+is unchanged — same prompt shape, same per-file resolution contract,
+same lockfile / regenerate sentinels.
+
+Flow (per resolver attempt, capped by `ScoringConstants.MaxResolveAttempts = 3`):
+
+1. **Fetch base.** `git fetch origin {base}` in the ws worktree.
+2. **Merge base into ws.**
+   `git merge --no-ff --no-edit origin/{base}` with `GIT_EDITOR=true` so
+   merge-commit messages never drop into the editor.
+3. **Detect.** Returns `MergeResult { State, ConflictedFiles, Detail }`:
+   - `MergeState.Clean` — merge succeeded (FF or new merge commit, no
+     conflicts). Caller still calls `ContinueMergeAndPushAsync` with an
+     empty dict so the new commit lands on origin.
+   - `MergeState.Conflicted` — unmerged paths present, one per file in
+     `ConflictedFiles`. The on-disk content has markers preserved.
+   - `MergeState.MergeFailed` — fatal error before any conflict could
+     surface (dirty tree, missing upstream). Aborts the merge and
+     returns stderr in `Detail` for the stall reason.
+4. **Resolve.** The agent reads each conflicted file's marker-preserved
+   content + workstream intent and writes a resolved version. Same
+   strategy entry point as Phase 79.
+5. **Finalize + push.** `ContinueMergeAndPushAsync`:
+   - Defense-in-depth scan: if any resolved file still contains
+     `<<<<<<<` / `>>>>>>>` markers, refuse to stage and return
+     `MergeState.Conflicted` with the leftover files. (Git would
+     happily commit any content; the strategy layer's marker-stripping
+     fallback is a backup, not a guarantee.)
+   - `git add` each resolved file.
+   - If a merge is in flight (`MERGE_HEAD` exists), `git commit --no-edit`
+     to finalize the merge commit.
+   - `git push origin {branch}` — **plain push, no `--force`**. If
+     origin's tip moved (concurrent operator push), the push fails and
+     the method returns `MergeState.MergeFailed` so the caller stalls
+     instead of clobbering.
+6. **Retry the PR merge.** Same `ApproveAndMergeAsync` retry as
+   Phase 79. If the PR-side merge fails again with a fresh conflict
+   (a sibling PR landed during the resolver run), the outer loop
+   retries until `MaxResolveAttempts` is exhausted, then stalls via
+   `StallWorkstreamForMergeFailureAsync`.
+
+Telemetry events keep the existing names so the UI doesn't need to
+re-bind: `task.merge-conflict-resolve-started`,
+`task.merge-conflict-resolved`, `task.merge-failed`.
+
+### Why merge, not rebase
+
+| Aspect | Rebase (pre-Phase 79c) | Merge (Phase 79c) |
+|--------|------------------------|-------------------|
+| Branch history | Rewritten on every resolve | Preserved; merge commits added |
+| Push | `--force-with-lease` | Plain `git push` |
+| Reviewer comments | Orphaned when force-push rewrites the SHA they anchor to | Stay anchored — the SHAs they reference are still reachable |
+| Multi-commit conflicts | Could pause repeatedly through the rebase walk; inner loop bounded by `innerSafety=5` | All conflicts surface in one batch; inner loop removed |
+| PR diff view | Re-renders entirely after each push | Shows added merge commit + the resolved files |
+
+### Code references
+
+- `src/forge/Forge.Api/Services/Stories/IStoryGitOps.cs` —
+  `MergeBaseIntoBranchAndDetectConflictsAsync`,
+  `ContinueMergeAndPushAsync`, `AbortMergeAsync` + new
+  `MergeResult` / `MergeState` records replacing the rebase variants.
+- `src/forge/Forge.Api/Services/Stories/RealStoryGitOps.cs` —
+  merge / commit / plain-push implementation; defense-in-depth marker
+  scan on the resolver's output. Rebase methods deleted.
+- `src/forge/Forge.Api/Services/Stories/InMemoryStoryGitOps.cs` —
+  in-memory fakes renamed to the merge surface; defaults model the
+  "no conflicts" happy path.
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs` —
+  `TryResolveConflictsAndRetryMergeAsync` rewritten to drive the
+  merge API. Inner conflict-round safety loop removed (merge
+  surfaces conflicts in one batch).
+- `src/forge/Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs` —
+  agent prompt wording updated from "rebase" to "merge" semantics;
+  fallback marker-stripping logic unchanged.
+- `src/forge/Forge.Api.Tests/Phase79cMergeBasedResolveTests.cs` — 3
+  end-to-end tests against a real temp git origin: conflict +
+  resolution + plain-push, no-conflict push, unresolved-markers
+  defense.
+
+### Backward compatibility
+
+- `Phase79b` worktree-detect fallback (rebase-state probe via
+  `rebase-merge/head-name`) is left in place as defensive code for
+  any legacy worktree that pre-Phase-79c rebase paths might have
+  parked mid-state.
+- `MaxResolveAttempts = 3` unchanged.
+- The strategy-layer contract (`ProduceConflictResolutionAsync`)
+  unchanged — existing test doubles keep working.
+
+### Out of scope
+
+- Cross-PR conflict batching (resolve N siblings' conflicts in one
+  pass) — `forge_v2.md` candidate.
+- Operator preview UI of the resolver's proposed diff before push —
+  Phase R candidate; today the resolver pushes immediately so the
+  operator only sees the result on origin.

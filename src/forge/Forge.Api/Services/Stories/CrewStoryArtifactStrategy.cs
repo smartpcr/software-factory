@@ -3034,10 +3034,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// (so it knows its own intent), and a tail of the upstream change
     /// summary, then writes a resolved version of each file into the
     /// workspace. Returns path → resolved content for
-    /// <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/> to apply.
+    /// <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/> to apply.
     ///
     /// <para>The agent runs OUTSIDE the worktree (in a scratch workspace)
-    /// so accidental git ops can't corrupt the in-progress rebase.</para>
+    /// so accidental git ops can't corrupt the in-progress merge.</para>
     /// </summary>
     public async Task<IReadOnlyDictionary<string, string>> ProduceConflictResolutionAsync(
         StorySpawnRow spawn,
@@ -3099,14 +3099,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             You are the Engineer agent resolving merge conflicts for
             workstream `{{workstream.Id}}` ({{workstream.Name}}).
 
-            Your task: rebase against the `{{baseBranch}}` branch produced
-            conflict markers in the files listed below. Read each
-            conflicted file, understand both sides ("<<<<<<< ours" =
-            this workstream's intent; ">>>>>>> theirs" = the upstream
-            change since this workstream diverged), then WRITE THE
-            RESOLVED CONTENT BACK to the same file path in this
-            workspace. Remove ALL conflict markers. Preserve the
-            semantic intent of BOTH sides whenever possible:
+            Your task: merging `{{baseBranch}}` into this workstream's
+            branch produced conflict markers in the files listed below.
+            Read each conflicted file, understand both sides
+            ("<<<<<<< ours" = this workstream's intent;
+            ">>>>>>> theirs" = the upstream change on `{{baseBranch}}`
+            since this workstream diverged), then WRITE THE RESOLVED
+            CONTENT BACK to the same file path in this workspace.
+            Remove ALL conflict markers. Preserve the semantic intent
+            of BOTH sides whenever possible:
 
             - If both sides made independent additions (different
               functions, different doc paragraphs), keep both.

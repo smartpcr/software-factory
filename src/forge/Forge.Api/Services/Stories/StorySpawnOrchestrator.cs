@@ -3422,7 +3422,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     /// <summary>
-    /// Phase 79 — agent-driven merge-conflict resolution. Called by the
+    /// Phase 79c — agent-driven merge-conflict resolution. Called by the
     /// orchestrator's two merge-fail catches (Step 1 no-comments path
     /// + Step 3 active-comments-resolved path) in <see cref="DriveReviewAsync"/>.
     ///
@@ -3433,20 +3433,19 @@ public sealed class StorySpawnOrchestrator
     ///         etc.), stall immediately — agent can't fix those.</item>
     ///   <item>Loop up to <see cref="ScoringConstants.MaxResolveAttempts"/>:
     ///         <list type="bullet">
-    ///           <item><see cref="IStoryGitOps.RebaseAndDetectConflictsAsync"/>.</item>
-    ///           <item>State=Clean → force-push happened inside the git op
-    ///                 (via ContinueRebaseAndPushAsync was not called yet —
-    ///                 actually Clean from RebaseAndDetectConflictsAsync
-    ///                 means rebase succeeded; we still need a push
-    ///                 because the local branch tip moved. Use a single
-    ///                 ContinueRebaseAndPushAsync with an empty dict to
-    ///                 trigger the force-push branch).</item>
-    ///           <item>State=Conflicted → strategy resolver →
-    ///                 ContinueRebaseAndPushAsync(resolved files) → loop
-    ///                 if it produces another conflict round.</item>
-    ///           <item>State=RebaseFailed → break + stall with detail.</item>
+    ///           <item><see cref="IStoryGitOps.MergeBaseIntoBranchAndDetectConflictsAsync"/>
+    ///                 — fetch base + run <c>git merge origin/{base}</c>
+    ///                 in the workstream worktree.</item>
+    ///           <item>State=Clean → no conflicts; push the resulting
+    ///                 merge commit (or FF) via
+    ///                 <see cref="IStoryGitOps.ContinueMergeAndPushAsync"/>
+    ///                 with an empty resolved-files dict.</item>
+    ///           <item>State=Conflicted → strategy resolver writes
+    ///                 resolved files → ContinueMergeAndPushAsync(resolved)
+    ///                 finalises the merge commit and plain-pushes.</item>
+    ///           <item>State=MergeFailed → break + stall with detail.</item>
     ///         </list></item>
-    ///   <item>On a successful force-push, retry <see cref="ApproveAndMergeAsync"/>.
+    ///   <item>On a successful push, retry <see cref="ApproveAndMergeAsync"/>.
     ///         If it succeeds, ws.Status="merging"; if it fails AGAIN with
     ///         a new conflict (e.g. another sibling PR landed during the
     ///         resolver run), the outer loop retries until cap.</item>
@@ -3454,6 +3453,11 @@ public sealed class StorySpawnOrchestrator
     ///         <see cref="StallWorkstreamForMergeFailureAsync"/> with the
     ///         LAST failure detail.</item>
     /// </list></para>
+    ///
+    /// <para>Phase 79c replaces the original rebase + <c>--force-with-lease</c>
+    /// flow with a merge + plain push so reviewer comments stay anchored to
+    /// their original lines (force-push routinely orphaned late-arriving
+    /// comments). The agent resolver itself is unchanged.</para>
     /// </summary>
     private async Task TryResolveConflictsAndRetryMergeAsync(
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
@@ -3464,7 +3468,7 @@ public sealed class StorySpawnOrchestrator
         if (!IsMergeConflictError(originalMergeEx))
         {
             this.logger?.LogInformation(
-                "Phase 79: merge failure on ws {WsId} PR {PrId} is NOT a merge conflict "
+                "Phase 79c: merge failure on ws {WsId} PR {PrId} is NOT a merge conflict "
                 + "(message='{Msg}'); stalling immediately — agent can't fix this class of error.",
                 w.Id, prId, FlattenMessage(originalMergeEx));
             await this.StallWorkstreamForMergeFailureAsync(control, db, hub, spawn, w, prId, originalMergeEx, ct);
@@ -3480,113 +3484,92 @@ public sealed class StorySpawnOrchestrator
         for (var attempt = 1; attempt <= ScoringConstants.MaxResolveAttempts; attempt++)
         {
             this.logger?.LogInformation(
-                "Phase 79: ws {WsId} PR {PrId} resolve attempt {Attempt}/{Max}.",
+                "Phase 79c: ws {WsId} PR {PrId} resolve attempt {Attempt}/{Max}.",
                 w.Id, prId, attempt, ScoringConstants.MaxResolveAttempts);
 
-            // 2. Rebase + detect conflicts.
-            RebaseResult rebase;
+            // 2. Fetch + merge base into ws branch in the worktree.
+            MergeResult merge;
             try
             {
-                rebase = await this.git.RebaseAndDetectConflictsAsync(repo, w.Branch, baseBranch, ct);
+                merge = await this.git.MergeBaseIntoBranchAndDetectConflictsAsync(repo, w.Branch, baseBranch, ct);
             }
             catch (Exception rex) when (rex is not OperationCanceledException)
             {
                 this.logger?.LogWarning(rex,
-                    "Phase 79: RebaseAndDetectConflictsAsync threw for ws {WsId} attempt {Attempt}.", w.Id, attempt);
+                    "Phase 79c: MergeBaseIntoBranchAndDetectConflictsAsync threw for ws {WsId} attempt {Attempt}.", w.Id, attempt);
                 lastFailure = rex;
                 break;
             }
 
-            if (rebase.State == RebaseState.RebaseFailed)
+            if (merge.State == MergeState.MergeFailed)
             {
-                lastFailure = new InvalidOperationException($"Rebase failed: {rebase.Detail}");
+                lastFailure = new InvalidOperationException($"Merge failed: {merge.Detail}");
                 this.logger?.LogWarning(
-                    "Phase 79: rebase failed on ws {WsId} attempt {Attempt}: {Detail}",
-                    w.Id, attempt, rebase.Detail);
+                    "Phase 79c: merge failed on ws {WsId} attempt {Attempt}: {Detail}",
+                    w.Id, attempt, merge.Detail);
                 break;
             }
 
-            // 3. Inner conflict-resolution loop. A multi-commit rebase
-            //    can produce successive conflict rounds; resolve each.
-            //    Bounded by a small inner cap (5) to prevent pathological
-            //    infinite loops if the agent keeps producing un-mergeable
-            //    output.
-            var innerSafety = 5;
-            while (rebase.State == RebaseState.Conflicted && innerSafety-- > 0)
+            // 3. Resolve conflicts (if any), then finalize the merge commit
+            //    + push. Unlike rebase, a merge produces ALL conflicts in
+            //    one batch — no inner conflict-round loop is needed.
+            IReadOnlyDictionary<string, string> resolved;
+            if (merge.State == MergeState.Conflicted)
             {
-                IReadOnlyDictionary<string, string> resolved;
                 try
                 {
                     resolved = await this.strategy.ProduceConflictResolutionAsync(
-                        spawn, w, rebase.ConflictedFiles, baseBranch, ct);
+                        spawn, w, merge.ConflictedFiles, baseBranch, ct);
                 }
                 catch (Exception sex) when (sex is not OperationCanceledException)
                 {
                     this.logger?.LogWarning(sex,
-                        "Phase 79: agent resolver failed for ws {WsId} attempt {Attempt}.", w.Id, attempt);
+                        "Phase 79c: agent resolver failed for ws {WsId} attempt {Attempt}.", w.Id, attempt);
                     lastFailure = sex;
-                    await this.git.AbortRebaseAsync(repo, w.Branch, ct);
-                    rebase = new RebaseResult(RebaseState.RebaseFailed, Array.Empty<ConflictedFile>(), sex.Message);
-                    break;
-                }
-                try
-                {
-                    rebase = await this.git.ContinueRebaseAndPushAsync(repo, w.Branch, resolved, ct);
-                }
-                catch (Exception cex) when (cex is not OperationCanceledException)
-                {
-                    this.logger?.LogWarning(cex,
-                        "Phase 79: ContinueRebaseAndPushAsync threw for ws {WsId} attempt {Attempt}.", w.Id, attempt);
-                    lastFailure = cex;
-                    await this.git.AbortRebaseAsync(repo, w.Branch, ct);
-                    rebase = new RebaseResult(RebaseState.RebaseFailed, Array.Empty<ConflictedFile>(), cex.Message);
+                    await this.git.AbortMergeAsync(repo, w.Branch, ct);
                     break;
                 }
             }
-
-            if (rebase.State != RebaseState.Clean)
+            else
             {
-                if (rebase.State == RebaseState.RebaseFailed)
-                {
-                    lastFailure = new InvalidOperationException($"Rebase failed: {rebase.Detail}");
-                    break;
-                }
-                // Still Conflicted after inner cap → bail this attempt.
+                // Merge was clean (FF or merge commit with no conflicts);
+                // pass an empty dict to ContinueMergeAndPushAsync so it
+                // takes the push-only path.
+                resolved = new Dictionary<string, string>(StringComparer.Ordinal);
+            }
+
+            MergeResult finalize;
+            try
+            {
+                finalize = await this.git.ContinueMergeAndPushAsync(repo, w.Branch, resolved, ct);
+            }
+            catch (Exception cex) when (cex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(cex,
+                    "Phase 79c: ContinueMergeAndPushAsync threw for ws {WsId} attempt {Attempt}.", w.Id, attempt);
+                lastFailure = cex;
+                await this.git.AbortMergeAsync(repo, w.Branch, ct);
+                break;
+            }
+
+            if (finalize.State == MergeState.Conflicted)
+            {
+                // Resolver left markers in place; give up on this attempt
+                // and let the outer loop try again (or stall when cap hits).
                 lastFailure = new InvalidOperationException(
-                    $"Agent resolver did not converge within inner cap (5 rounds) on attempt {attempt}.");
-                await this.git.AbortRebaseAsync(repo, w.Branch, ct);
+                    $"Agent resolver did not produce a clean resolution on attempt {attempt} "
+                    + $"({finalize.ConflictedFiles.Count} file(s) still conflicted).");
+                await this.git.AbortMergeAsync(repo, w.Branch, ct);
                 continue;
             }
-
-            // 4. Force-push landed; the rebase is clean. ContinueRebaseAndPushAsync
-            //    handled both the rebase --continue AND the push. If
-            //    RebaseAndDetectConflictsAsync returned Clean directly,
-            //    nothing to push — call ContinueRebaseAndPushAsync once
-            //    with empty dict to trigger the push path (idempotent
-            //    when there are no conflicts).
-            if (rebase.ConflictedFiles.Count == 0
-                && innerSafety == 5  // never entered the inner loop → no push happened
-                /* note: keeping the comment but innerSafety is post-decrement; if never entered, equals 5 */)
+            if (finalize.State == MergeState.MergeFailed)
             {
-                try
-                {
-                    rebase = await this.git.ContinueRebaseAndPushAsync(repo, w.Branch,
-                        new Dictionary<string, string>(StringComparer.Ordinal), ct);
-                }
-                catch (Exception pex) when (pex is not OperationCanceledException)
-                {
-                    // Push failure (e.g. --force-with-lease rejection).
-                    lastFailure = pex;
-                    break;
-                }
-                if (rebase.State != RebaseState.Clean)
-                {
-                    lastFailure = new InvalidOperationException($"Post-rebase push failed: {rebase.Detail}");
-                    break;
-                }
+                lastFailure = new InvalidOperationException(
+                    $"Merge finalize/push failed: {finalize.Detail}");
+                break;
             }
 
-            // 5. Retry the merge.
+            // 4. Push succeeded → retry the upstream PR merge.
             try
             {
                 await this.ApproveAndMergeAsync(prId, w.Branch, reviewerAgentId, repo, baseBranch, ct);
@@ -3597,7 +3580,7 @@ public sealed class StorySpawnOrchestrator
                     wsId = w.Id, prId, spawnId = spawn.Id, attempt,
                 }, ct);
                 this.logger?.LogInformation(
-                    "Phase 79: ws {WsId} PR {PrId} merge succeeded after {Attempt} attempt(s).",
+                    "Phase 79c: ws {WsId} PR {PrId} merge succeeded after {Attempt} attempt(s).",
                     w.Id, prId, attempt);
                 return;
             }
@@ -3611,19 +3594,19 @@ public sealed class StorySpawnOrchestrator
                 if (!IsMergeConflictError(remergeEx))
                 {
                     this.logger?.LogInformation(
-                        "Phase 79: merge retry on ws {WsId} hit a NON-conflict failure ({Msg}); stalling.",
+                        "Phase 79c: merge retry on ws {WsId} hit a NON-conflict failure ({Msg}); stalling.",
                         w.Id, FlattenMessage(remergeEx));
                     break;
                 }
                 this.logger?.LogInformation(
-                    "Phase 79: merge retry on ws {WsId} hit another conflict (probably a sibling PR landed); retrying.",
+                    "Phase 79c: merge retry on ws {WsId} hit another conflict (probably a sibling PR landed); retrying.",
                     w.Id);
             }
         }
 
-        // 6. Exhausted. Stall with the LAST failure detail.
+        // 5. Exhausted. Stall with the LAST failure detail.
         this.logger?.LogWarning(
-            "Phase 79: ws {WsId} PR {PrId} resolver exhausted {Max} attempt(s); stalling. Last error: {Msg}",
+            "Phase 79c: ws {WsId} PR {PrId} resolver exhausted {Max} attempt(s); stalling. Last error: {Msg}",
             w.Id, prId, ScoringConstants.MaxResolveAttempts, FlattenMessage(lastFailure));
         await this.StallWorkstreamForMergeFailureAsync(control, db, hub, spawn, w, prId, lastFailure, ct);
     }
