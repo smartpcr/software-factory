@@ -9,6 +9,7 @@ import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { usePrsStore } from '@/state/usePrsStore';
 import { useBoardStore } from '@/state/useBoardStore';
+import { useOperatorAvatarUrl } from '@/state/useOperatorAvatarStore';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -21,6 +22,8 @@ export function SideBar() {
   const loadProducts = useProductsStore((s) => s.load);
   const loadRepos = useProductsStore((s) => s.loadReposFor);
   const me = useCurrentUser();
+  const operatorAvatarUrl = useOperatorAvatarUrl();
+  const sidebarAvatarUrl = operatorAvatarUrl || me.avatarUrl;
   const allWorkstreams = useWorkstreamsStore((s) => s.workstreams);
   const loadWorkstreams = useWorkstreamsStore((s) => s.load);
   // Hydrate the workstreams store at sidebar mount and whenever the active
@@ -344,12 +347,12 @@ export function SideBar() {
             <div
               className="avatar"
               style={
-                me.avatarUrl
-                  ? { margin: 0, backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' }
+                sidebarAvatarUrl
+                  ? { margin: 0, backgroundImage: `url(${sidebarAvatarUrl})`, backgroundSize: 'cover' }
                   : { margin: 0 }
               }
             >
-              {me.avatarUrl ? '' : me.initials}
+              {sidebarAvatarUrl ? '' : me.initials}
             </div>
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="name">{me.displayName}</div>

@@ -10,6 +10,7 @@ using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Persistence.Split;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
 /// <summary>
@@ -31,6 +32,44 @@ public static class AdminDbSplitEndpoints
 {
     public static WebApplication MapAdminDbSplitEndpoints(this WebApplication app)
     {
+        // GET /api/admin/db/split-status — lightweight status probe so the
+        // UI can show/hide the split panel. No role gate (read-only info).
+        app.MapGet("/api/admin/db/split-status", (
+            IConfiguration config,
+            ControlDbContext control,
+            IForgeDbPaths paths) =>
+        {
+            var alreadyApplied = SplitMarkerCache.IsPhase73Applied(paths);
+            var enabled = IsEnabled(config);
+            var productCount = control.Products.Count();
+            // Check if product-side tables still exist in the control DB
+            // (they're dropped after a successful split).
+            bool controlHasProductTables;
+            try
+            {
+                var conn = (Microsoft.Data.Sqlite.SqliteConnection)control.Database.GetDbConnection();
+                if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_items' LIMIT 1";
+                controlHasProductTables = cmd.ExecuteScalar() is not null;
+            }
+            catch
+            {
+                controlHasProductTables = false;
+            }
+
+            return Results.Ok(new
+            {
+                alreadyApplied,
+                splitEnabled = enabled,
+                productCount,
+                controlHasProductTables,
+                canSplit = enabled && !alreadyApplied && productCount > 0 && controlHasProductTables,
+            });
+        })
+            .WithTags("Admin")
+            .WithName("AdminDbSplitStatus");
+
         // POST /api/admin/db/split-dry-run — read-only; returns the
         // partition/orphan report. Idempotent.
         app.MapPost("/api/admin/db/split-dry-run", async (

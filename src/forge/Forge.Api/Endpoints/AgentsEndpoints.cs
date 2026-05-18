@@ -64,7 +64,7 @@ public static class AgentsEndpoints
             {
                 detail.Id, detail.Name, detail.Role, detail.CrewId, detail.SoulPath,
                 detail.Capabilities, detail.State, detail.Backend, detail.InvokeMode,
-                detail.GeneratorModel, detail.EvaluatorModel,
+                detail.GeneratorModel, detail.EvaluatorModel, detail.Avatar,
                 WorkItemCount = wic,
             };
         }).ToList());
@@ -118,6 +118,21 @@ public static class AgentsEndpoints
         if (req.EvaluatorModel is not null)
         {
             row.EvaluatorModel = string.IsNullOrWhiteSpace(req.EvaluatorModel) ? null : req.EvaluatorModel.Trim();
+        }
+        if (req.Avatar is not null)
+        {
+            // Empty string clears; non-empty must be a safe filename (no path traversal).
+            if (string.IsNullOrWhiteSpace(req.Avatar))
+            {
+                row.Avatar = null;
+            }
+            else
+            {
+                var av = req.Avatar.Trim();
+                if (av.Contains("..") || av.Contains('/') || av.Contains('\\'))
+                    return Results.Problem(title: "Invalid avatar filename", statusCode: 400);
+                row.Avatar = av;
+            }
         }
 
         // Same diff-model rule as on Crew: when an agent pins both halves,
@@ -280,7 +295,7 @@ public static class AgentsEndpoints
             : (System.Text.Json.JsonSerializer.Deserialize<List<string>>(r.CapabilitiesJson) ?? new List<string>());
         return new Forge.Api.Contracts.AgentDetail(
             r.Id, r.Name, r.Role, r.CrewId, r.SoulPath, caps, r.State,
-            r.Backend, r.InvokeMode, r.GeneratorModel, r.EvaluatorModel);
+            r.Backend, r.InvokeMode, r.GeneratorModel, r.EvaluatorModel, r.Avatar);
     }
 
     public sealed record StartInvocationRequest(

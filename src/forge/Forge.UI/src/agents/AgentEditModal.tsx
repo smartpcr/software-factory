@@ -66,6 +66,9 @@ function AgentEditModal({ agentId, onClose }: {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [showPathField, setShowPathField] = useState(false);
+  const [avatar, setAvatar] = useState('');
+  const [availableAvatars, setAvailableAvatars] = useState<string[]>([]);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
 
   // Initial load — fetch agent, crews, models, soul in parallel.
   useEffect(() => {
@@ -93,6 +96,7 @@ function AgentEditModal({ agentId, onClose }: {
         setInvokeMode(agent.invokeMode ?? '');
         setGeneratorModel(agent.generatorModel ?? '');
         setEvaluatorModel(agent.evaluatorModel ?? '');
+        setAvatar(agent.avatar ?? '');
         if (policyResp && Array.isArray(policyResp.allowedBackends) && Array.isArray(policyResp.allowedInvokeModes)) {
           setBackendPolicy({
             allowedBackends: policyResp.allowedBackends.map((b: string) => b.toLowerCase()),
@@ -141,7 +145,8 @@ function AgentEditModal({ agentId, onClose }: {
     (backend ?? '') !== (original.backend ?? '') ||
     (invokeMode ?? '') !== (original.invokeMode ?? '') ||
     (generatorModel ?? '') !== (original.generatorModel ?? '') ||
-    (evaluatorModel ?? '') !== (original.evaluatorModel ?? '')
+    (evaluatorModel ?? '') !== (original.evaluatorModel ?? '') ||
+    (avatar ?? '') !== (original.avatar ?? '')
   );
   const soulDirty = !isHuman && soul !== null && soulText !== soul.contents;
   const dirty = metaDirty || soulDirty;
@@ -169,7 +174,7 @@ function AgentEditModal({ agentId, onClose }: {
           ? { backend: '', invokeMode: '', generatorModel: '', evaluatorModel: '' }
           : { backend, invokeMode, generatorModel, evaluatorModel };
         const next = await forgeApi.patchAgent(agentId, {
-          name, role, soulPath, ...overridePayload,
+          name, role, soulPath, avatar, ...overridePayload,
         });
         setOriginal(next);
       }
@@ -211,7 +216,9 @@ function AgentEditModal({ agentId, onClose }: {
   }
 
   const capabilities = soul?.capabilities ?? original.capabilities;
-  const avatar = avatarFor(original.id, original.name);
+  const resolvedAvatar = avatar
+    ? `/api/avatars/${avatar}`
+    : avatarFor(original.id, original.name);
 
   return (
     <div
@@ -223,7 +230,22 @@ function AgentEditModal({ agentId, onClose }: {
     >
       <div style={isHuman ? humanCardStyle : soulCardStyle}>
         <header style={soulHeadStyle}>
-          <AvatarThumb id={original.id} name={original.name} role={original.role} url={avatar} size={40} />
+          <div
+            style={{ position: 'relative', cursor: canEdit ? 'pointer' : 'default' }}
+            title={canEdit ? 'Click to change avatar' : undefined}
+            onClick={() => {
+              if (!canEdit) return;
+              if (availableAvatars.length === 0) {
+                void forgeApi.listAvatars().then(setAvailableAvatars);
+              }
+              setShowAvatarPicker((v) => !v);
+            }}
+          >
+            <AvatarThumb id={original.id} name={original.name} role={original.role} url={resolvedAvatar} size={40} />
+            {canEdit && (
+              <span style={{ position: 'absolute', bottom: -2, right: -2, fontSize: 10, background: 'var(--bg-surface)', borderRadius: 999, padding: '0 2px', border: '1px solid var(--border)' }}>✎</span>
+            )}
+          </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={eyebrowStyle}>
               {isHuman ? 'human · ' : 'agent · '}{agentId}
@@ -253,6 +275,44 @@ function AgentEditModal({ agentId, onClose }: {
           </div>
           <button onClick={onClose} style={soulCloseBtnStyle} aria-label="Close">×</button>
         </header>
+
+        {showAvatarPicker && (
+          <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', maxHeight: 200, overflowY: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.12 }}>
+                Choose avatar
+              </span>
+              {avatar && (
+                <button
+                  type="button"
+                  onClick={() => { setAvatar(''); setShowAvatarPicker(false); }}
+                  style={{ fontSize: 10, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                >
+                  Clear override
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {availableAvatars.map((file) => (
+                <img
+                  key={file}
+                  src={`/api/avatars/${file}`}
+                  alt={file}
+                  title={file.replace(/^\d+_/, '').replace(/_/g, ' ').replace(/\.png$/, '')}
+                  onClick={() => { setAvatar(file); setShowAvatarPicker(false); }}
+                  style={{
+                    width: 36, height: 36, borderRadius: 999, objectFit: 'cover', cursor: 'pointer',
+                    border: avatar === file ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    opacity: avatar === file ? 1 : 0.75,
+                  }}
+                />
+              ))}
+              {availableAvatars.length === 0 && (
+                <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Loading…</span>
+              )}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div style={{ padding: 8, fontSize: 11.5, color: 'var(--danger)', background: 'var(--danger-bg)', borderRadius: 4, margin: '8px 0' }}>

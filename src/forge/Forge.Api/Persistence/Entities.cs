@@ -912,6 +912,13 @@ public class AgentRow
     /// agent against a non-memory sibling on the same workstream type.
     /// </summary>
     public bool? AgentMemoryOverride { get; set; }
+
+    /// <summary>
+    /// Per-agent avatar override. Stores the PNG filename from the
+    /// <c>src/assets/crews/</c> folder (e.g. "01_Ne_Zha.png"). Null
+    /// means the agent uses the allocation-manifest default.
+    /// </summary>
+    public string? Avatar { get; set; }
 }
 
 /// <summary>

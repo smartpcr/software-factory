@@ -1,27 +1,12 @@
 import { create } from 'zustand';
 import type { CurrentUser } from '@/types';
 import { forgeApi, setWriterIdentity } from '@/api/forgeApi';
-import imgXiaodong from '@/assets/crews/xiaodong_small.png';
 
-// Operator portrait override. The /api/me endpoint can store an
-// AvatarUrl on the user row; until that's wired through Phase 9 sign-in,
-// match the operator on email/login and bind to the bundled crew portrait
-// so the TopBar + SideBar show a real face instead of computed initials.
-const OPERATOR_AVATARS: Array<{ match: (u: CurrentUser) => boolean; avatar: string }> = [
-  {
-    match: (u) =>
-      u.email?.toLowerCase() === 'xiaodoli@microsoft.com'
-      || u.email?.toLowerCase() === 'lingxd@gmail.com'
-      || u.login?.toLowerCase() === 'xiaodoli'
-      || u.displayName?.toLowerCase().startsWith('xiaodong') === true,
-    avatar: imgXiaodong,
-  },
-];
+// Operator portrait is now set dynamically via the UserMenu avatar picker
+// and persisted to the UserRow.AvatarUrl field on the server.
 
 function applyOperatorAvatar(user: CurrentUser): CurrentUser {
-  if (user.avatarUrl) return user; // server-provided wins
-  const hit = OPERATOR_AVATARS.find((entry) => entry.match(user));
-  return hit ? { ...user, avatarUrl: hit.avatar } : user;
+  return user;
 }
 
 interface CurrentUserState {

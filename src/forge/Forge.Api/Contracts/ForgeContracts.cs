@@ -531,7 +531,9 @@ public sealed record AgentDetail(
     string? Backend = null,
     string? InvokeMode = null,
     string? GeneratorModel = null,
-    string? EvaluatorModel = null);
+    string? EvaluatorModel = null,
+    /// <summary>PNG filename from assets/crews/ (e.g. "01_Ne_Zha.png"). Null = allocation default.</summary>
+    string? Avatar = null);
 
 /// <summary>
 /// Phase 13b/e — PATCH body for /api/agents/{id}. Empty-string on any
@@ -545,7 +547,8 @@ public sealed record PatchAgentRequest(
     string? Backend = null,
     string? InvokeMode = null,
     string? GeneratorModel = null,
-    string? EvaluatorModel = null);
+    string? EvaluatorModel = null,
+    string? Avatar = null);
 
 /// <summary>Phase 13b — POST /api/crews/auto-assign result.</summary>
 public sealed record AutoAssignResult(

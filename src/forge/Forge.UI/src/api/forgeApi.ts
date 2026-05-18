@@ -1742,6 +1742,24 @@ export const forgeApi = {
     });
   },
 
+  /** PUT /api/me/avatar — persist chosen avatar filename to user row. */
+  async setMyAvatar(avatar: string): Promise<void> {
+    await fetchJson<unknown>('/api/me/avatar', {
+      method: 'PUT',
+      body: JSON.stringify({ avatar }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PUT /api/me/display-name — update operator display name. */
+  async setMyDisplayName(displayName: string): Promise<void> {
+    await fetchJson<unknown>('/api/me/display-name', {
+      method: 'PUT',
+      body: JSON.stringify({ displayName }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   // -- Phase 10 — preferences + crews ------------------------------------
 
   /** GET /api/me/settings. */
@@ -2088,12 +2106,18 @@ export const forgeApi = {
     invokeMode?: string;
     generatorModel?: string;
     evaluatorModel?: string;
+    avatar?: string;
   }): Promise<AgentDetail> {
     return fetchJson<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** GET /api/avatars — list available avatar filenames from assets/crews/. */
+  async listAvatars(): Promise<string[]> {
+    return fetchJson<string[]>('/api/avatars');
   },
 
   /**
@@ -2733,6 +2757,29 @@ export const forgeApi = {
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
+
+  // -- DB Split -----------------------------------------------------------
+
+  /** GET /api/admin/db/split-status — check if split is possible/applied. */
+  async getDbSplitStatus(): Promise<DbSplitStatus> {
+    return fetchJson<DbSplitStatus>('/api/admin/db/split-status');
+  },
+
+  /** POST /api/admin/db/split-dry-run — analyze partition without modifying DB. */
+  async splitDryRun(): Promise<SplitDryRunReport> {
+    return fetchJson<SplitDryRunReport>('/api/admin/db/split-dry-run', {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/admin/db/split-apply — actually partition forge.db into per-product DBs. */
+  async splitApply(): Promise<SplitApplyResult> {
+    return fetchJson<SplitApplyResult>('/api/admin/db/split-apply', {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
 };
 
 export interface DbStats {
@@ -2751,6 +2798,56 @@ export interface PruneStats {
   rowsDeleted: number;
   vacuumRan: boolean;
   elapsedMs: number;
+}
+
+export interface DbSplitStatus {
+  alreadyApplied: boolean;
+  splitEnabled: boolean;
+  productCount: number;
+  controlHasProductTables: boolean;
+  canSplit: boolean;
+}
+
+export interface SplitDryRunReport {
+  generatedAt: string;
+  controlDbPath: string;
+  controlDbSizeBytes: number;
+  totalRows: number;
+  controlRows: number;
+  productRows: number;
+  orphanRows: number;
+  unknownRows: number;
+  tables: Array<{
+    tableName: string;
+    kind: string;
+    strategy: string;
+    partitionColumn: string | null;
+    totalRows: number;
+    classifiedRows: number;
+    orphanRows: number;
+  }>;
+  products: Array<{
+    productId: string;
+    productSlug: string;
+    totalRows: number;
+    rowsPerTable: Record<string, number>;
+  }>;
+  orphans: Array<{
+    tableName: string;
+    kind: string;
+    count: number;
+    detail: string;
+  }>;
+  unknownTables: Array<{ tableName: string; rowCount: number }>;
+}
+
+export interface SplitApplyResult {
+  alreadyApplied: boolean;
+  backupPath: string | null;
+  productDbs: string[];
+  rowsCopied: number;
+  errors: string[];
+  success: boolean;
 }
 
 function buildLocalTimeline(from: number, to: number): TimelineResponse {

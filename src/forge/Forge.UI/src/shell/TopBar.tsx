@@ -7,6 +7,7 @@ import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
 import { forgeApi } from '@/api/forgeApi';
 import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
+import { useOperatorAvatarUrl } from '@/state/useOperatorAvatarStore';
 import type { Crew, SalaryTodaySummary } from '@/types';
 
 interface TopBarProps {
@@ -27,6 +28,8 @@ export function TopBar({ section, current }: TopBarProps) {
   const setActive = useProductsStore((s) => s.setActive);
   const me = useCurrentUser();
   const loadMe = useCurrentUserStore((s) => s.load);
+  const operatorAvatarUrl = useOperatorAvatarUrl();
+  const displayAvatarUrl = operatorAvatarUrl || me.avatarUrl;
   const avatarRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
@@ -299,10 +302,10 @@ export function TopBar({ section, current }: TopBarProps) {
         onClick={toggleMenu}
         style={{
           cursor: 'pointer',
-          ...(me.avatarUrl ? { backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' } : {}),
+          ...(displayAvatarUrl ? { backgroundImage: `url(${displayAvatarUrl})`, backgroundSize: 'cover' } : {}),
         }}
       >
-        {me.avatarUrl ? '' : me.initials}
+        {displayAvatarUrl ? '' : me.initials}
       </div>
       <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} anchor={menuAnchor} />
     </header>

@@ -133,6 +133,9 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(77, PhaseMigrationKind.Control,
             ControlTables: new[] { "user_settings" },
             ProductTables: Array.Empty<string>()),
+        new PhaseMigrationSpec(78, PhaseMigrationKind.Control,
+            ControlTables: new[] { "agents" },
+            ProductTables: Array.Empty<string>()),
 
         // ── Product-only ─────────────────────────────────────────────────
         new PhaseMigrationSpec(12, PhaseMigrationKind.Product,

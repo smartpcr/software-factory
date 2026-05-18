@@ -33,6 +33,12 @@ public static class MeEndpoints
         app.MapPut("/api/me/role", PutRole)
             .WithTags("Me")
             .WithName("PutMyRole");
+        app.MapPut("/api/me/avatar", PutAvatar)
+            .WithTags("Me")
+            .WithName("PutMyAvatar");
+        app.MapPut("/api/me/display-name", PutDisplayName)
+            .WithTags("Me")
+            .WithName("PutMyDisplayName");
         return app;
     }
 
@@ -99,6 +105,70 @@ public static class MeEndpoints
     }
 
     public sealed record SetRoleRequest(string? ProductId, string Role);
+
+    public sealed record SetAvatarRequest(string Avatar);
+
+    public sealed record SetDisplayNameRequest(string DisplayName);
+
+    private static async Task<IResult> PutAvatar(
+        HttpContext ctx,
+        SetAvatarRequest req,
+        ControlDbContext control,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var me = string.IsNullOrEmpty(caller)
+            ? null
+            : await control.Users.FirstOrDefaultAsync(
+                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
+        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        if (me is null)
+            return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
+
+        // Empty string clears; otherwise store as a relative avatar path served via /api/avatars/.
+        if (string.IsNullOrWhiteSpace(req.Avatar))
+        {
+            me.AvatarUrl = null;
+        }
+        else
+        {
+            var av = req.Avatar.Trim();
+            if (av.Contains("..") || av.Contains('/') || av.Contains('\\'))
+                return Results.Problem(title: "Invalid avatar filename", statusCode: 400);
+            me.AvatarUrl = $"/api/avatars/{av}";
+        }
+        await control.SaveChangesAsync(ct);
+        return Results.Ok(new { userId = me.Id, avatarUrl = me.AvatarUrl });
+    }
+
+    private static async Task<IResult> PutDisplayName(
+        HttpContext ctx,
+        SetDisplayNameRequest req,
+        ControlDbContext control,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (string.IsNullOrWhiteSpace(req.DisplayName))
+            return Results.Problem(title: "Display name cannot be empty", statusCode: 400);
+
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var me = string.IsNullOrEmpty(caller)
+            ? null
+            : await control.Users.FirstOrDefaultAsync(
+                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
+        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        if (me is null)
+            return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
+
+        me.DisplayName = req.DisplayName.Trim();
+        await control.SaveChangesAsync(ct);
+        return Results.Ok(new { userId = me.Id, displayName = me.DisplayName });
+    }
 
     private static async Task<IResult> GetMe(
         HttpContext ctx,

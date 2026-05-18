@@ -59,7 +59,14 @@ for (const [proto, charId] of Object.entries(PROTOTYPE_ALIAS)) {
 }
 
 /** Returns the bundled portrait for an agent, or null if no match. */
-export function avatarFor(id: string | null | undefined, name?: string | null): string | null {
+export function avatarFor(id: string | null | undefined, name?: string | null, avatarOverride?: string | null): string | null {
+  // Server-stored avatar override takes priority.
+  if (avatarOverride) {
+    const url = urlFor(avatarOverride);
+    if (url) return url;
+    // Fall back to API URL if the file isn't bundled (shouldn't happen, but safe).
+    return `/api/avatars/${avatarOverride}`;
+  }
   if (id && BY_ID[id]) return BY_ID[id];
   if (name && BY_NAME[name]) return BY_NAME[name];
   return null;

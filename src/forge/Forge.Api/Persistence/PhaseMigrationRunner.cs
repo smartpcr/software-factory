@@ -58,7 +58,7 @@ public sealed class PhaseMigrationRunner
         43, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55,
         60, 63, 64, 65, 72,
         38, 39, 40, 41, 44, 48,
-        77,
+        77, 78,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

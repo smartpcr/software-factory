@@ -3,6 +3,7 @@ import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 import { useCurrentUserStore } from '@/state/useCurrentUserStore';
 import type { UserSettings } from '@/types';
 import { MaintenancePanel } from './MaintenancePanel';
+import { DbSplitPanel } from './DbSplitPanel';
 
 // Phase 5.4 + 5.11 — provider configuration + health.
 // Phase-5 server reads its options from configuration (user-secrets / env).
@@ -567,6 +568,7 @@ export function SettingsView() {
         </div>
         <div className="workstream-grid">
           <MaintenancePanel />
+          <DbSplitPanel />
         </div>
       </div>
     </section>

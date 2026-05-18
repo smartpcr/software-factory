@@ -810,14 +810,31 @@ app.MapHub<ForgeHub>("/hubs/forge");
 
 // Serve agent avatar PNGs from the UI assets directory so PR descriptions
 // on ADO can embed real character portraits via http://localhost:5180/api/avatars/{file}.
+app.MapGet("/api/avatars", () =>
+{
+    var assetsDir = Path.Combine(
+        ForgeSeed.FindRepoRoot(), "src", "forge", "Forge.UI", "src", "assets");
+    if (!Directory.Exists(assetsDir)) return Results.Ok(Array.Empty<string>());
+    var files = Directory.GetDirectories(assetsDir)
+        .SelectMany(dir => Directory.GetFiles(dir, "*.png"))
+        .Select(Path.GetFileName)
+        .Where(f => f is not null)
+        .OrderBy(f => f)
+        .ToList();
+    return Results.Ok(files);
+}).WithTags("Avatars").WithName("ListAvatars");
+
 app.MapGet("/api/avatars/{filename}", (string filename) =>
 {
     if (filename.Contains("..") || filename.Contains('/') || filename.Contains('\\'))
         return Results.BadRequest();
-    var crewsDir = Path.Combine(
-        ForgeSeed.FindRepoRoot(), "src", "forge", "Forge.UI", "src", "assets", "crews");
-    var filePath = Path.Combine(crewsDir, filename);
-    if (!File.Exists(filePath)) return Results.NotFound();
+    var assetsDir = Path.Combine(
+        ForgeSeed.FindRepoRoot(), "src", "forge", "Forge.UI", "src", "assets");
+    // Search all subfolders for the file.
+    var filePath = Directory.GetDirectories(assetsDir)
+        .Select(dir => Path.Combine(dir, filename))
+        .FirstOrDefault(File.Exists);
+    if (filePath is null) return Results.NotFound();
     return Results.File(filePath, "image/png");
 }).WithTags("Avatars").WithName("GetAgentAvatar");
 

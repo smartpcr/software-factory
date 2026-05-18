@@ -5,6 +5,7 @@ import { useProductsStore } from '@/state/useProductsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { forgeApi } from '@/api/forgeApi';
 import type { CurrentUserProvider } from '@/types';
+import { ALL_AVATARS, useOperatorAvatarStore } from '@/state/useOperatorAvatarStore';
 
 const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'product-owner', label: 'Product owner' },
@@ -34,6 +35,11 @@ export function UserMenu({ open, onClose, anchor }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [roleSaving, setRoleSaving] = useState(false);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const operatorFilename = useOperatorAvatarStore((s) => s.filename);
+  const operatorUrl = useOperatorAvatarStore((s) => s.url);
+  const setOperatorAvatar = useOperatorAvatarStore((s) => s.setFilename);
+  const displayAvatarUrl = operatorUrl || me.avatarUrl;
   const navigate = useNavigate();
 
   const activeProduct = useMemo(
@@ -138,13 +144,17 @@ export function UserMenu({ open, onClose, anchor }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
         <div
           className="avatar"
-          style={
-            me.avatarUrl
-              ? { margin: 0, backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' }
-              : { margin: 0 }
-          }
+          style={{
+            margin: 0,
+            cursor: 'pointer',
+            ...(displayAvatarUrl
+              ? { backgroundImage: `url(${displayAvatarUrl})`, backgroundSize: 'cover' }
+              : {}),
+          }}
+          title="Click to change avatar"
+          onClick={() => setShowAvatarPicker((v) => !v)}
         >
-          {me.avatarUrl ? '' : me.initials}
+          {displayAvatarUrl ? '' : me.initials}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -160,6 +170,34 @@ export function UserMenu({ open, onClose, anchor }: Props) {
           </div>
         </div>
       </div>
+
+      {showAvatarPicker && (
+        <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.1, marginBottom: 6 }}>
+            Choose avatar
+          </div>
+          <div style={{ maxHeight: 150, overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {ALL_AVATARS.map((a) => (
+              <img
+                key={a.filename}
+                src={a.url}
+                alt={a.displayName}
+                title={`${a.displayName} · ${a.role}`}
+                onClick={() => {
+                  setOperatorAvatar(a.filename);
+                  setShowAvatarPicker(false);
+                  void forgeApi.setMyAvatar(a.filename).then(() => refresh());
+                }}
+                style={{
+                  width: 32, height: 32, borderRadius: 999, objectFit: 'cover', cursor: 'pointer',
+                  border: operatorFilename === a.filename ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  opacity: operatorFilename === a.filename ? 1 : 0.7,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {me.id !== '' && (
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>

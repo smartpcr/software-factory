@@ -632,6 +632,8 @@ export interface AgentDetail {
   evaluatorModel?: string | null;
   /** Distinct work items this agent has worked on (from agent_usage ledger). */
   workItemCount?: number;
+  /** PNG filename from assets/crews/ (e.g. "01_Ne_Zha.png"). Null = allocation default. */
+  avatar?: string | null;
 }
 
 /** Phase 13.7 — domain-expert index entry (built-in team caps + sha256 docs). */
