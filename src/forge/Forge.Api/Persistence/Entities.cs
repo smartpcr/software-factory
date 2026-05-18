@@ -256,6 +256,20 @@ public class WorkstreamRow
     /// <see cref="Status"/> to this value and clears the field.
     /// </summary>
     public string? PausedFromStatus { get; set; }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 1.1 — discriminator for the kind of work
+    /// a workstream owns. <c>"impl"</c> (default) is a normal Stage's
+    /// implementation work; <c>"qa-e2e"</c> is the trailing per-stage
+    /// QA workstream that owns the Gherkin <c>.feature</c> file, the
+    /// step-definition file, and the e2e test run for that Stage.
+    /// Backfilled to <c>"impl"</c> for every pre-existing row by the
+    /// Phase 79 migration; new rows produced by
+    /// <c>CrewStoryArtifactStrategy.ProduceDecompositionAsync</c> set
+    /// this explicitly. The DAG view groups stacked impl/qa-e2e rows
+    /// using this column.
+    /// </summary>
+    public string Category { get; set; } = "impl";
 }
 
 public class WsEventRow

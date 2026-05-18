@@ -31,6 +31,11 @@ using YamlDotNet.Serialization.NamingConventions;
 ///     - "string"
 ///   timeline: "string"
 ///   estimatedEffort: "string"
+///   category: "impl" | "qa-e2e"   # docs/forge/e2e.md Stage 1.2,
+///                                 # omitted in the YAML output when the
+///                                 # value is the default ("impl") so the
+///                                 # operator's pre-approval diff stays
+///                                 # quiet for the common case.
 /// </code>
 /// </para>
 /// </summary>
@@ -68,6 +73,25 @@ internal static class DecompositionYamlSerializer
     {
         return Serializer.Serialize(rows);
     }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 1.2 — collapse a category string to the
+    /// YAML wire shape. Default ("impl") writes as <c>null</c> so the
+    /// serializer's <see cref="DefaultValuesHandling.OmitNull"/> drops the
+    /// key from the emitted YAML; "qa-e2e" passes through verbatim;
+    /// unknown values fall back to <c>null</c> (i.e. impl) on the wire.
+    /// </summary>
+    public static string? CategoryToYaml(string? category) =>
+        category == WorkstreamCategories.QaE2e ? WorkstreamCategories.QaE2e : null;
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 1.2 — expand a YAML category value into
+    /// the canonical record default. Null / unknown / "impl" → "impl";
+    /// "qa-e2e" → "qa-e2e". Mirrors <see cref="CategoryToYaml"/> so the
+    /// round-trip is lossless for the closed set.
+    /// </summary>
+    public static string CategoryFromYaml(string? category) =>
+        category == WorkstreamCategories.QaE2e ? WorkstreamCategories.QaE2e : WorkstreamCategories.Impl;
 }
 
 /// <summary>
@@ -91,4 +115,15 @@ internal sealed class DecompositionYamlRow
     public string? Timeline { get; set; }
 
     public string? EstimatedEffort { get; set; }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 1.2 — one of <see cref="WorkstreamCategories.Impl"/>
+    /// or <see cref="WorkstreamCategories.QaE2e"/>. Null on the wire when
+    /// the row defaults to <see cref="WorkstreamCategories.Impl"/>;
+    /// emitted as <c>category: qa-e2e</c> otherwise. Use
+    /// <see cref="DecompositionYamlSerializer.CategoryToYaml"/> /
+    /// <see cref="DecompositionYamlSerializer.CategoryFromYaml"/> when
+    /// converting between this wire field and the canonical record value.
+    /// </summary>
+    public string? Category { get; set; }
 }

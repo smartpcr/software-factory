@@ -204,5 +204,14 @@ public static class DbModelProduct
 
         // Phase 28 back-pointer index for story → workstreams roll-up.
         mb.Entity<WorkstreamRow>().HasIndex(x => x.StorySpawnId);
+
+        // docs/forge/e2e.md Stage 1.1 — composite index for the swarm-control
+        // DAG-render query (scope = single spawn, group by category to
+        // render stacked impl/qa-e2e pairs). Index name matches the
+        // CREATE INDEX emitted by Phase79Migration so upgraded DBs and
+        // freshly-EnsureCreated DBs share the same schema fingerprint.
+        mb.Entity<WorkstreamRow>()
+            .HasIndex(x => new { x.StorySpawnId, x.Category })
+            .HasDatabaseName("IX_workstreams_StorySpawnId_Category");
     }
 }

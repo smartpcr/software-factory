@@ -666,6 +666,12 @@ public sealed class PlanReconciler
             workstreamId = r.Id,
             branch = r.Branch,
             status = r.Status,
+            // docs/forge/e2e.md Stage 1.2 — preserve qa-e2e on reconcile so
+            // the regenerated workstreams.yaml still tags trailing-QA rows.
+            // Impl rows serialise as null and the YAML serializer's
+            // OmitNull handling drops the key so the operator's diff stays
+            // quiet for the common case.
+            category = r.Category == WorkstreamCategories.Impl ? null : r.Category,
         }).ToList();
 
         return JsonSerializer.Serialize(artifact, JsonOpts);

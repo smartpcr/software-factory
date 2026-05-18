@@ -138,6 +138,9 @@ public static class PhaseMigrationCatalog
             ProductTables: Array.Empty<string>()),
 
         // ── Product-only ─────────────────────────────────────────────────
+        // 79 lives in the Product bucket below alongside the other
+        // workstreams-touching migrations; entry is in the Product
+        // section to keep the alphabetised buckets honest.
         new PhaseMigrationSpec(12, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "work_item_links", "work_items" }),
@@ -237,6 +240,9 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(65, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "deliverables" }),
+        new PhaseMigrationSpec(79, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "workstreams" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

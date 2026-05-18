@@ -74,8 +74,11 @@ public class PhaseMigrationRunnerTests
         var order = PhaseMigrationRunner.ExecutionOrder.ToList();
         // 43/45/47/49/50 add columns on story_spawns or workstreams that
         // Phase 38's EF read depends on.
+        // 79 (docs/forge/e2e.md Stage 1.1) adds workstreams.Category — same
+        // constraint: Phase 38's EF projection on workstreams references
+        // WorkstreamRow.Category so the column must exist before the read.
         int p38 = order.IndexOf(38);
-        foreach (var dep in new[] { 43, 45, 47, 49, 50 })
+        foreach (var dep in new[] { 43, 45, 47, 49, 50, 79 })
         {
             int idx = order.IndexOf(dep);
             Assert.True(idx >= 0, $"Phase {dep} missing from ExecutionOrder.");

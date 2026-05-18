@@ -2084,7 +2084,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Deps: (IReadOnlyList<string>)(r.Deps ?? new List<string>()),
                 Deliverables: (IReadOnlyList<string>)(r.Deliverables ?? new List<string>()),
                 Timeline: r.Timeline ?? string.Empty,
-                EstimatedEffort: r.EstimatedEffort ?? string.Empty)).ToList();
+                EstimatedEffort: r.EstimatedEffort ?? string.Empty,
+                // docs/forge/e2e.md Stage 1.2 — honour the architect-emitted
+                // `category: qa-e2e` on the YAML row; null / impl / unknown
+                // collapses to the default (impl) via CategoryFromYaml.
+                // Stage 3.1 will add the trailing-qa-e2e emission to the
+                // plan-anchored path above; this LLM-fallback path inherits
+                // whatever the architect put in the YAML.
+                Category: DecompositionYamlSerializer.CategoryFromYaml(r.Category))).ToList();
         }
         catch (Exception ex) when (ex is YamlDotNet.Core.YamlException or InvalidOperationException)
         {

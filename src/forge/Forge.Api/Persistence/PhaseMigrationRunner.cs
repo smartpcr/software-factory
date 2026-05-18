@@ -57,6 +57,12 @@ public sealed class PhaseMigrationRunner
         30, 31, 32, 33, 34, 35, 36, 37,
         43, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55,
         60, 63, 64, 65, 72,
+        // docs/forge/e2e.md Stage 1.1 — Phase 79 adds `workstreams.Category`,
+        // which the EF model on `WorkstreamRow` references. Phase 38's
+        // ApplyAsync issues an EF query against `workstreams` that
+        // projects every mapped column, so 79 MUST run BEFORE 38 (same
+        // constraint as 43/45/47/49/50 above).
+        79,
         38, 39, 40, 41, 44, 48,
         77, 78,
     };

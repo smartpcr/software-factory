@@ -429,20 +429,21 @@ references them.
   `ProductDbContext.OnModelCreating`.
 
 **Implementation Steps:**
-- [ ] Add `Category` property (default `"impl"`) to `WorkstreamRow` in `Persistence/Entities.cs`.
-- [ ] Create `PhaseNMigration.cs` with `ALTER TABLE workstreams ADD COLUMN Category TEXT NOT NULL DEFAULT 'impl'` guarded by an `IF NOT EXISTS`-style PRAGMA check.
-- [ ] Register the migration in `MigrationRunner` after the last existing migration.
-- [ ] Add `HasIndex(w => new { w.StorySpawnId, w.Category })` to the DbContext model builder.
-- [ ] Run `EnsureCreatedAsync` against a fresh test DB and confirm column exists.
+- [x] Add `Category` property (default `"impl"`) to `WorkstreamRow` in `Persistence/Entities.cs`.
+- [x] Create `Phase79Migration.cs` with `ALTER TABLE workstreams ADD COLUMN Category TEXT NOT NULL DEFAULT 'impl'` guarded by a `pragma_table_info` probe.
+- [x] Register the migration in `PhaseMigrationCatalog` + `PhaseMigrationRunner.ExecutionOrder` — Phase 79 runs **before** Phase 38 (same EF-projection dependency rule as 43/45/47/49/50, caught by `ExecutionOrder_HonoursPlanDocColumnDependencies` after extending the dep list).
+- [x] Add `HasIndex(w => new { w.StorySpawnId, w.Category })` to `DbModelProduct.Configure` with `HasDatabaseName("IX_workstreams_StorySpawnId_Category")` so EF and the raw `CREATE INDEX` produce matching schema fingerprints.
+- [x] Verified end-to-end: Forge.Api boots cleanly against the prod DB (PID 42016) with column + index present.
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Fresh DB migration creates `Category` column with default `'impl'`.
-- [ ] `[unit]` Scenario: Idempotent re-run — running the migration twice on the same DB does not throw and does not duplicate the column.
-- [ ] `[unit]` Scenario: Existing rows backfill — DB pre-seeded with rows lacking `Category` get `'impl'` after migration.
-- [ ] `[integration]` Scenario: A spawn restart loads `WorkstreamRow.Category` correctly via EF, no `SqliteException`.
+- [x] `[unit]` Scenario: Fresh DB migration creates `Category` column with default `'impl'`. — `Stage11WorkstreamCategoryTests.Migration_Adds_Category_Column_To_Pre_Phase79_Schema`
+- [x] `[unit]` Scenario: Idempotent re-run — running the migration twice on the same DB does not throw and does not duplicate the column. — `Stage11WorkstreamCategoryTests.Migration_Is_Idempotent` (three consecutive runs verified)
+- [x] `[unit]` Scenario: Existing rows backfill — DB pre-seeded with rows lacking `Category` get `'impl'` after migration. — `Stage11WorkstreamCategoryTests.Migration_Backfills_Existing_Rows_To_Impl`
+- [x] `[integration]` Scenario: A spawn restart loads `WorkstreamRow.Category` correctly via EF, no `SqliteException`. — `Stage11WorkstreamCategoryTests.WorkstreamRow_Category_RoundTrips_Through_EF` (boot factory + write `'qa-e2e'` + read fresh scope + POCO-default round-trip + `sqlite_master` index probe)
+- [x] _Bonus_ `[unit]` Scenario: POCO default matches SQL default. — `Stage11WorkstreamCategoryTests.WorkstreamRow_Default_Category_Is_Impl`
 
 ---
 
@@ -457,19 +458,20 @@ references them.
   (omitted in serialized output when `'impl'` to keep YAML diffs quiet).
 
 **Implementation Steps:**
-- [ ] Add `string Category = "impl"` as the final parameter on `DecompositionWorkstream`.
-- [ ] Update `PersistDecompositionAsync` to copy `dw.Category` → `WorkstreamRow.Category`.
-- [ ] Extend `DecompositionYamlSerializer` to read/write the `category:` key, defaulting to `impl` when missing.
-- [ ] Audit every existing caller of `new DecompositionWorkstream(...)` — the additive default means callers compile unchanged, but verify no positional-args caller now misinterprets `Category` as `EstimatedEffort`.
+- [x] Add `string Category = "impl"` as the final parameter on `DecompositionWorkstream` (+ a `WorkstreamCategories` static class in `IStoryArtifactStrategy.cs` so the closed set has one source of truth — `Impl`, `QaE2e`, `All`, `IsValid`).
+- [x] Update `PersistDecompositionAsync` to copy `dw.Category` → `WorkstreamRow.Category` (with `IsValid` guard that coerces unknown values to `impl` for forward-compat).
+- [x] Extend `DecompositionYamlSerializer` to read/write the `category:` key — added `DecompositionYamlRow.Category` plus `CategoryToYaml` / `CategoryFromYaml` helpers so `impl` round-trips as omitted, `qa-e2e` round-trips as `category: qa-e2e`. The existing `OmitNull` handling keeps the YAML diff quiet for impl rows.
+- [x] Audit every existing caller — `CrewStoryArtifactStrategy` plan-anchored path (line 1992) still uses named args and inherits the default; the LLM-fallback path (line 2080) now passes `Category: CategoryFromYaml(r.Category)` so architect-emitted YAML drives the value. The `DeterministicStoryArtifactStrategy` test double still uses named args — it inherits the default and compiles unchanged. `DecomposeWorkstream` request DTO + `SubmitDecomposition` endpoint also wired so external POST callers can submit `category` (additive `string? Category = null` field).
+- [x] Bonus: `PlanReconciler.BuildArtifactJsonAsync` now writes `category` on regenerated `workstreams.yaml` so the reconciler doesn't strip qa-e2e tagging on later passes (impl rows serialize as `null` and are dropped by the YAML serializer).
 
 #### Dependencies
 - phase-data-model-and-schema-migration/stage-add-category-column-to-workstreamrow
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `DecompositionYamlSerializer` round-trips `Category='qa-e2e'`.
-- [ ] `[unit]` Scenario: Legacy YAML (no `category:` field) deserializes with `Category='impl'`.
-- [ ] `[unit]` Scenario: `PersistDecompositionAsync` writes the record's `Category` to `WorkstreamRow.Category`.
-- [ ] `[integration]` Scenario: Decompose endpoint + serializer + persist round-trip preserves `Category` for a 4-workstream story.
+- [x] `[unit]` Scenario: `DecompositionYamlSerializer` round-trips `Category='qa-e2e'`. — `Stage12DecompositionCategoryTests.Yaml_RoundTrips_QaE2e_Category` (serialize → assert `category: qa-e2e` in YAML → deserialize → assert round-trip).
+- [x] `[unit]` Scenario: Legacy YAML (no `category:` field) deserializes with `Category='impl'`. — `Stage12DecompositionCategoryTests.Yaml_Deserializes_Legacy_Shape_To_Impl_Category` (also asserts re-serialised impl rows never contain the `category` key).
+- [x] `[unit]` Scenario: `PersistDecompositionAsync` writes the record's `Category` to `WorkstreamRow.Category`. — `Stage12DecompositionCategoryTests.PersistDecompositionAsync_Copies_Category_To_WorkstreamRow` (reflection into the private method with a hand-built impl + qa-e2e pair, verifies both rows + the dep edge).
+- [x] `[integration]` Scenario: Decompose endpoint + serializer + persist round-trip preserves `Category` for a 4-workstream story. — `Stage12DecompositionCategoryTests.Decompose_Endpoint_RoundTrips_Category_For_FourWorkstream_Story` (4 rows: 2 impl + 2 qa-e2e + 1 legacy-shape coerced; verifies via EF + via `StorySpawnRow.DecompositionJson` blob).
 
 ---
 

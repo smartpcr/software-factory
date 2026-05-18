@@ -169,7 +169,39 @@ public sealed record DecompositionWorkstream(
     string? PlanAnchor = null,
     string? PlanContentHash = null,
     string? PhaseAnchor = null,
-    IReadOnlyList<string>? UnresolvedDeps = null);
+    IReadOnlyList<string>? UnresolvedDeps = null,
+    string Category = WorkstreamCategories.Impl);
+
+/// <summary>
+/// docs/forge/e2e.md Stage 1.2 — closed set of values for
+/// <see cref="DecompositionWorkstream.Category"/> /
+/// <c>WorkstreamRow.Category</c>. Centralised so the YAML round-trip,
+/// orchestrator persist path, and (later) the qa-e2e routing all
+/// compare against the same string.
+/// </summary>
+public static class WorkstreamCategories
+{
+    /// <summary>Normal Stage implementation work (default). Every workstream
+    /// produced by the decomposer was "impl" before Stage 1.2; the column
+    /// backfills to this value.</summary>
+    public const string Impl = "impl";
+
+    /// <summary>Trailing per-Stage QA workstream owning Gherkin
+    /// <c>.feature</c> files, step definitions, and the e2e run for a
+    /// single Stage. Emitted by the decomposer (Stage 3.1) when a Stage
+    /// declares <c>### Test Scenarios</c>; routed through a different
+    /// orchestrator path in Stage 5.1.</summary>
+    public const string QaE2e = "qa-e2e";
+
+    /// <summary>The full set, exposed for validators / linters / tests
+    /// that need to enumerate or assert membership.</summary>
+    public static readonly IReadOnlyList<string> All = new[] { Impl, QaE2e };
+
+    /// <summary>True when <paramref name="value"/> is one of the known
+    /// categories (case-sensitive — the column stores lower-kebab).</summary>
+    public static bool IsValid(string? value) =>
+        value is not null && (value == Impl || value == QaE2e);
+}
 
 /// <summary>One review-comment payload the strategy wants posted.</summary>
 public sealed record ReviewComment(string FilePath, int Line, string Body, string Severity);

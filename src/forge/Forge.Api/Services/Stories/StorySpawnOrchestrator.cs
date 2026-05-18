@@ -1689,6 +1689,11 @@ public sealed class StorySpawnOrchestrator
                 PlanContentHash = w.PlanContentHash,
                 DepsJson = depsJson,
                 PhaseAnchor = w.PhaseAnchor,
+                // docs/forge/e2e.md Stage 1.2 — carry the decomposer's
+                // Category through to the row. Falls back to the WorkstreamRow
+                // default ('impl') when the strategy didn't set it (legacy
+                // strategy bindings written before Stage 1.2).
+                Category = WorkstreamCategories.IsValid(w.Category) ? w.Category : WorkstreamCategories.Impl,
             });
 
             // Phase 38 (Layer B.2) — back the workstream with a real

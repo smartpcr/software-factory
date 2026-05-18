@@ -149,7 +149,14 @@ public static class StoriesEndpoints
         IReadOnlyList<string>? Deps,
         IReadOnlyList<string>? Deliverables,
         string? Timeline,
-        string? EstimatedEffort);
+        string? EstimatedEffort,
+        // docs/forge/e2e.md Stage 1.2 — optional Category for callers that
+        // want to submit a qa-e2e workstream directly. Null / omitted means
+        // the row defaults to 'impl' (the legacy shape). The endpoint
+        // validates against the closed set; an unknown value coerces to
+        // 'impl' rather than rejecting, so old test bodies keep working
+        // without modification.
+        string? Category = null);
 
     public sealed record AdvancePhaseRequest(string TargetPhase);
 
@@ -3616,6 +3623,11 @@ public static class StoriesEndpoints
                 BarEnd = 5,
                 Planned = true,
                 StorySpawnId = spawn.Id,
+                // docs/forge/e2e.md Stage 1.2 — honour an explicit Category in
+                // the request body when it's in the closed set; coerce
+                // anything else (null, unknown values) to 'impl' so existing
+                // request bodies keep their semantics.
+                Category = WorkstreamCategories.IsValid(w.Category) ? w.Category! : WorkstreamCategories.Impl,
             };
             db.Workstreams.Add(row);
         }
