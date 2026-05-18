@@ -2369,6 +2369,89 @@ public sealed class StorySpawnOrchestrator
     }
 
     /// <summary>
+    /// Phase 75 Fix 3 — detects when a workstream PR body embeds a
+    /// generator-failure marker that should NEVER reach a real PR
+    /// (e.g. literal "GENERATOR FAILED" from a transport-timeout
+    /// deliverable, or the "**Score:** 0 |" header from a
+    /// no-progress / empty-diff iter). Returns true when the body
+    /// should be refused.
+    /// </summary>
+    /// <param name="prBody">The assembled PR body about to be sent
+    /// to the provider.</param>
+    internal static bool PrBodyHasFailureMarker(string? prBody)
+    {
+        if (string.IsNullOrEmpty(prBody)) return false;
+        if (prBody.Contains("GENERATOR FAILED", StringComparison.OrdinalIgnoreCase)) return true;
+        // Match the `**Score:** N | **Iterations:** M` header (line 2629)
+        // when N is 0. Whitespace tolerant; case-insensitive on the
+        // surrounding markup. Score >= 1 passes the gate.
+        if (System.Text.RegularExpressions.Regex.IsMatch(
+                prBody,
+                @"\*\*Score:\*\*\s*0\s*\|",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Phase 75 Fix 1 — classifies a deliverable row's verdict=pass
+    /// state into one of three buckets so the orchestrator's
+    /// "cached-files commit + PR open" branch can refuse a corrupt
+    /// pass while still honouring genuine passes and operator
+    /// overrides. Pure function over the row fields; exposed
+    /// internal for unit testing.
+    /// </summary>
+    /// <param name="verdict">Deliverable verdict (e.g. "pass",
+    /// "iterate"). Treated case-insensitively.</param>
+    /// <param name="score">Deliverable score (0-100).</param>
+    /// <param name="failureKind">Non-null when the underlying
+    /// generator invocation aborted (transport timeout, max-turns
+    /// cap, etc.); null on a clean evaluator run.</param>
+    /// <param name="notes">Deliverable notes; Phase 70 Accept
+    /// embeds an "OPERATOR ACCEPT (…)" prefix line for the
+    /// operator-override case.</param>
+    /// <returns>An enum classifying the row; corrupt-pass rows are
+    /// the ones the orchestrator must refuse.</returns>
+    internal enum PassGateClassification
+    {
+        /// <summary>Verdict isn't "pass" — gate doesn't apply.</summary>
+        NotPass,
+
+        /// <summary>Verdict=pass AND score >= PassThreshold AND no
+        /// FailureKind — the gen-eval loop legitimately approved
+        /// the work. Open the PR.</summary>
+        NaturalPass,
+
+        /// <summary>Verdict=pass AND notes contain the Phase 70
+        /// "OPERATOR ACCEPT (…)" audit prefix — operator's manual
+        /// override. Open the PR regardless of score/failure.</summary>
+        OperatorAccepted,
+
+        /// <summary>Verdict=pass but neither NaturalPass nor
+        /// OperatorAccepted applies — score below threshold OR
+        /// non-null FailureKind, without an Accept audit prefix.
+        /// Almost certainly a buggy verdict flip; refuse to open PR
+        /// and demote back to "iterate" so gen-eval can run.</summary>
+        CorruptPass,
+    }
+
+    internal static PassGateClassification ClassifyPassGate(
+        string? verdict, int score, string? failureKind, string? notes)
+    {
+        if (!string.Equals(verdict, "pass", StringComparison.OrdinalIgnoreCase))
+        {
+            return PassGateClassification.NotPass;
+        }
+        var hasAcceptNote = !string.IsNullOrEmpty(notes)
+            && notes.Contains("OPERATOR ACCEPT (", StringComparison.Ordinal);
+        if (hasAcceptNote) return PassGateClassification.OperatorAccepted;
+        var isNatural = score >= ScoringConstants.PassThreshold && string.IsNullOrEmpty(failureKind);
+        return isNatural ? PassGateClassification.NaturalPass : PassGateClassification.CorruptPass;
+    }
+
+    /// <summary>
     /// Execute the gen↔eval loop, commit, and open PR for a single workstream.
     /// Designed to run in parallel across workstreams — uses its own
     /// <see cref="ProductDbContext"/> scope for DB writes and re-checks
@@ -2391,11 +2474,65 @@ public sealed class StorySpawnOrchestrator
             .OrderByDescending(d => d.CreatedAt)
             .FirstOrDefault();
         IReadOnlyDictionary<string, string> files;
-        if (lastDel is not null && string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+
+        // Phase 75 Fix 1 — tighten the "already passed → commit + PR" gate.
+        // Before this fix, the only check was `lastDel.Verdict == "pass"`.
+        // Observed 2026-05-17 on failover-cluster:XRAFT
+        // stage-8.2-chaos-and-stress-testing: iter 7 was a generator-timeout
+        // (verdict=iterate, score=0, FailureKind=generator-timeout), but
+        // PR #42 was opened anyway with body literally containing
+        // "GENERATOR FAILED" + "Score: 0 | Iterations: 7". Some path
+        // briefly flipped iter 7's verdict to pass long enough for this
+        // gate to fire, then it got demoted back. ClassifyPassGate
+        // (internal static helper below) buckets the verdict=pass
+        // state into:
+        //   - NaturalPass    : score >= 90 AND no FailureKind → commit
+        //   - OperatorAccepted: Phase 70 ACCEPT audit prefix in Notes → commit
+        //   - CorruptPass    : verdict=pass but neither of the above —
+        //                      refuse + demote to "iterate" so gen-eval
+        //                      can rebuild a real verdict on the next tick.
+        var passClass = lastDel is null
+            ? PassGateClassification.NotPass
+            : ClassifyPassGate(lastDel.Verdict, lastDel.Score, lastDel.FailureKind, lastDel.Notes);
+        if (passClass == PassGateClassification.CorruptPass)
+        {
+            this.logger?.LogWarning(
+                "Phase 75: workstream {WsId} has verdict=pass but score={Score} "
+                + "(< {Threshold}) AND failureKind={FailureKind} AND no OPERATOR ACCEPT "
+                + "audit prefix — refusing to commit + open PR. This row was "
+                + "likely flipped by a buggy path. Demoting verdict back to "
+                + "'iterate' so gen-eval can produce a real verdict on the next tick.",
+                w.Id, lastDel!.Score, ScoringConstants.PassThreshold,
+                lastDel.FailureKind ?? "(none)");
+            // Take a writeable handle on the corrupt-pass row and demote
+            // it back to "iterate" so DeliverableLoop's terminal-replay
+            // branch doesn't keep returning early. Audit prefix preserves
+            // the trail of "this was a pass at one point, the orchestrator
+            // refused it because score/FailureKind disagreed".
+            var liveDel = await db2.Deliverables
+                .FirstOrDefaultAsync(d => d.Id == lastDel.Id, ct);
+            if (liveDel is not null)
+            {
+                liveDel.Verdict = "iterate";
+                var demoteNote = $"PHASE 75 CORRUPT-PASS REJECT — orchestrator refused to "
+                    + $"commit a verdict=pass row with score={lastDel.Score} "
+                    + $"(< {ScoringConstants.PassThreshold}) and failureKind="
+                    + $"{lastDel.FailureKind ?? "(none)"} and no OPERATOR ACCEPT audit. "
+                    + $"Verdict demoted to 'iterate' for the next gen-eval cycle.";
+                liveDel.Notes = string.IsNullOrEmpty(liveDel.Notes)
+                    ? demoteNote
+                    : liveDel.Notes + "\n\n" + demoteNote;
+                await db2.SaveChangesAsync(ct);
+            }
+            return;
+        }
+
+        if (passClass is PassGateClassification.NaturalPass or PassGateClassification.OperatorAccepted)
         {
             this.logger?.LogInformation(
-                "Workstream {WsId} already passed (iter {Iter}, score {Score}). Skipping gen/eval, using cached workspace.",
-                w.Id, lastDel.Iter, lastDel.Score);
+                "Workstream {WsId} already passed (iter {Iter}, score {Score}, source={Source}). Skipping gen/eval, using cached workspace.",
+                w.Id, lastDel!.Iter, lastDel.Score,
+                passClass == PassGateClassification.OperatorAccepted ? "operator-accept" : "natural-pass");
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
         else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy")
@@ -2664,6 +2801,44 @@ public sealed class StorySpawnOrchestrator
             prBody = sb.ToString();
             if (prBody.Length > 3900)
                 prBody = prBody[..3900] + "\n\n…_(truncated — full details in evaluator notes)_";
+        }
+
+        // Phase 75 Fix 3 — last-mile sanity check on the PR body. If the
+        // assembled body contains generator-failure markers or an
+        // explicit score-zero header, refuse to open the PR. The orchestrator
+        // gate at the top of this method already rejects corrupt-pass
+        // states; this is belt-and-suspenders for any future path that
+        // bypasses the gate (e.g. a new endpoint that calls OpenPrAsync
+        // directly with a body the orchestrator didn't review). Observed
+        // 2026-05-17 PR #42 description embedded "GENERATOR FAILED"
+        // + "Score: 0 | Iterations: 7" — the operator immediately
+        // recognised it as broken-on-the-PR-page; making the orchestrator
+        // recognise it too prevents the embarrassment of a broken PR
+        // ever reaching the reviewer.
+        if (PrBodyHasFailureMarker(prBody))
+        {
+            this.logger?.LogError(
+                "Phase 75: workstream {WsId} PR body contains failure markers "
+                + "(GENERATOR FAILED or Score: 0). Refusing to open PR. "
+                + "Body preview: {Preview}",
+                w.Id, prBody.Length <= 400 ? prBody : prBody[..400] + "...");
+            // Mark the workstream as stalled with a clear reason so the
+            // operator sees the refusal in the UI. The gen-eval path
+            // will retry on the next tick after the operator clears the
+            // stall via Restart/Retry.
+            var stalledRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (stalledRow is not null && stalledRow.Status is not "cancelled" and not "complete")
+            {
+                stalledRow.Status = WorkstreamStatuses.Stalled;
+                stalledRow.StallReason =
+                    "Phase 75: refused to open PR because the body embedded a "
+                    + "generator-failure marker (GENERATOR FAILED or Score: 0). "
+                    + "The orchestrator gate also rejected the verdict=pass row "
+                    + "as corrupt. Restart or Retry to re-run gen-eval.";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
+            }
+            return;
         }
 
         var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
