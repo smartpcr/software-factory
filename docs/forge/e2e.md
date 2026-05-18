@@ -383,154 +383,720 @@ references them.
 
 ---
 
-## 10. Phased implementation plan
+## 10. Implementation
 
-Each phase ends with all unit + integration + e2e tests passing for the
-phase's scope. The work follows the existing Forge convention: one PR per
-stage, each PR ≤ 20 file changes.
+> **Plan shape.** This section follows the `implementation-plan.md` contract
+> (Phase → Stage → Step) defined in `CrewStoryArtifactStrategy.BuildPlanDocSpecs`:
+> a Phase is an independent feature, a Stage is the unit of PR (≤ 20 file
+> changes), each Implementation Step is one focused commit. Every Stage lists
+> explicit **Deliverables** (the concrete artifacts the PR ships) and
+> **Test Scenarios** marked `[unit]` or `[integration]` so both layers are
+> covered by construction.
+>
+> Test conventions:
+> - **`[unit]`** — xUnit in `Forge.Api.Tests`, no SignalR, no real git, no
+>   real provider. Uses `InMemoryStoryGitOps` + `LocalStoryProviderOps` +
+>   `DeterministicStoryArtifactStrategy` already in place for Phase 28.
+> - **`[integration]`** — full orchestrator drive against a temp SQLite DB
+>   in `Forge.Api.Tests/Integration/` collection `Phase28E2eRefactor`,
+>   shares the existing `[Collection("Phase28")]` annotation so the gate
+>   suite and the orchestrator suite stay isolated.
+> - **`[ui-unit]`** — vitest in `src/forge/Forge.UI/src/**.spec.ts`.
+> - **`[ui-e2e]`** — Playwright in `src/forge/Forge.UI/e2e/`.
+>
+> Tests added per Stage MUST be authored before the Stage's PR is approved;
+> the Stage's PR is the unit that ships the implementation AND its tests.
+> Acceptance for the whole refactor: every Stage's Test Scenarios checkbox
+> ticks green AND the Phase 28 gate suites (`Phase28StorySpawnTests`,
+> `Phase28OrchestratorTests`) plus the new `Phase28E2eRefactorTests` suite
+> all pass.
 
-### Phase A — Data model + decomposition (≤ 5 stages)
+---
 
-**A.1** Add `WorkstreamRow.Category` column + migration. Backfill `'impl'`
-for every existing row. Index on `(StorySpawnId, Category)` to keep the
-DAG-render fast on stories with many stages.
+### Phase 1: Data model & schema migration
 
-**A.2** Add `DecompositionWorkstream.Category` field (additive,
-default `'impl'`). Persist into `WorkstreamRow.Category` in
-`StorySpawnOrchestrator.PersistDecompositionAsync`.
+#### Dependencies
+- _none — start phase_
 
-**A.3** Extend `CrewStoryArtifactStrategy.ProduceDecompositionAsync` to
-emit the trailing `qa-e2e` workstream after each stage with
-`### Test Scenarios`. Set `PlanAnchor = $"{stage.Anchor}/e2e"` and
-`Deps = [implWorkstream.Anchor]`. Cross-stage deps from
-`### Cross-Stage Dependencies` (parser change in A.4) are appended.
+#### Stage 1.1: Add `Category` column to `WorkstreamRow`
 
-**A.4** `PlanParser` — parse optional `### Cross-Stage Dependencies` H3
-inside each stage; surface as `Stage.CrossStageE2eDeps`. Linter rejects
-unresolved anchors (re-uses `DecompositionDepsResolver`).
+**Deliverables:**
+- `Category TEXT NOT NULL DEFAULT 'impl'` column on the `workstreams` table.
+- New migration file `src/forge/Forge.Api/Persistence/PhaseNMigration.cs`
+  (next free phase number) with idempotent `ALTER TABLE ADD COLUMN`.
+- `WorkstreamRow.Category` POCO property in `Entities.cs`.
+- Composite index `IX_workstreams_StorySpawnId_Category` in
+  `ProductDbContext.OnModelCreating`.
 
-**A.5** `Phase28StorySpawnTests` + `Phase28OrchestratorTests` — add
-fixtures for: (a) stage with no test scenarios emits no qa-e2e workstream,
-(b) stage with test scenarios emits exactly one qa-e2e workstream with
-the right deps, (c) cross-stage deps round-trip through decomposition.
+**Implementation Steps:**
+- [ ] Add `Category` property (default `"impl"`) to `WorkstreamRow` in `Persistence/Entities.cs`.
+- [ ] Create `PhaseNMigration.cs` with `ALTER TABLE workstreams ADD COLUMN Category TEXT NOT NULL DEFAULT 'impl'` guarded by an `IF NOT EXISTS`-style PRAGMA check.
+- [ ] Register the migration in `MigrationRunner` after the last existing migration.
+- [ ] Add `HasIndex(w => new { w.StorySpawnId, w.Category })` to the DbContext model builder.
+- [ ] Run `EnsureCreatedAsync` against a fresh test DB and confirm column exists.
 
-**Phase A gate**: existing 51 tests still pass + new tests pass; running
-the orchestrator end-to-end on the deterministic strategy produces the
-same number of PRs per story as before (impl × N) **plus** one e2e PR per
-stage that has test scenarios.
+#### Dependencies
+- _none — start stage_
 
-### Phase B — Orchestrator: route qa-e2e workstreams through impl driver (≤ 5 stages)
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Fresh DB migration creates `Category` column with default `'impl'`.
+- [ ] `[unit]` Scenario: Idempotent re-run — running the migration twice on the same DB does not throw and does not duplicate the column.
+- [ ] `[unit]` Scenario: Existing rows backfill — DB pre-seeded with rows lacking `Category` get `'impl'` after migration.
+- [ ] `[integration]` Scenario: A spawn restart loads `WorkstreamRow.Category` correctly via EF, no `SqliteException`.
 
-**B.1** Add `IStoryArtifactStrategy.ProduceStageE2eAsync` — returns the
-`{relPath → content}` dict for the stage's `.feature` + step-def files
-(under `tests/Features/{storyId}/{phaseSlug}/` and
-`tests/Steps/{storyId}/{phaseSlug}/`). Two concrete bindings:
+---
 
-- `DeterministicStoryArtifactStrategy` — emits a passing scenario by
-  construction (same shape as today's deterministic QA path).
-- `CrewStoryArtifactStrategy` — invokes the QA crew with a prompt that
-  bundles the stage's `### Test Scenarios` bullets + the impl
-  workstream's diff so the e2e test exercises what was actually built.
+#### Stage 1.2: Extend `DecompositionWorkstream` record
 
-**B.2** `DriveImplementAsync` branches on `workstream.Category`:
-`'impl'` → existing path; `'qa-e2e'` → `ProduceStageE2eAsync`, commit
-to the same `ws/{storyId}/{slug}` branch convention (e.g.
-`ws/{storyId}/{stageSlug}-e2e`), open PR with `[e2e]` prefix in the
-title.
+**Deliverables:**
+- New `Category` parameter (additive default `"impl"`) on the
+  `DecompositionWorkstream` record in `IStoryArtifactStrategy.cs`.
+- `StorySpawnOrchestrator.PersistDecompositionAsync` writes `Category`
+  into the new `WorkstreamRow` it creates.
+- `DecompositionYamlSerializer` round-trips the `Category` field
+  (omitted in serialized output when `'impl'` to keep YAML diffs quiet).
 
-**B.3** Remove the `Qa` case from `StorySpawnOrchestrator`'s phase switch
-for spawns whose `Phase` is `'review'` and whose all-workstreams-merged
-check passes — promote to `Done` directly. Keep the `Qa` case alive but
-no-op for legacy spawns paused in the old phase (it just calls
-`DriveImplementAsync` + `DriveReviewAsync` to drain any in-flight rows).
+**Implementation Steps:**
+- [ ] Add `string Category = "impl"` as the final parameter on `DecompositionWorkstream`.
+- [ ] Update `PersistDecompositionAsync` to copy `dw.Category` → `WorkstreamRow.Category`.
+- [ ] Extend `DecompositionYamlSerializer` to read/write the `category:` key, defaulting to `impl` when missing.
+- [ ] Audit every existing caller of `new DecompositionWorkstream(...)` — the additive default means callers compile unchanged, but verify no positional-args caller now misinterprets `Category` as `EstimatedEffort`.
 
-**B.4** Done-gate (`StorySpawnOrchestrator` completion check) drops the
-"QA PR merged" predicate. Replaces it with: every workstream of every
-category is `Status='complete'`.
+#### Dependencies
+- phase-data-model-and-schema-migration/stage-add-category-column-to-workstreamrow
 
-**B.5** Tests — add an end-to-end orchestrator test that drives a spawn
-with two stages (one with test scenarios, one without) from `plan` to
-`done`, asserting the final PR count is 4 (plan + impl-A + impl-B +
-e2e-A) and `Phase` never enters `qa`. Existing back-compat test: a spawn
-seeded with `Phase='qa'` still drains correctly.
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `DecompositionYamlSerializer` round-trips `Category='qa-e2e'`.
+- [ ] `[unit]` Scenario: Legacy YAML (no `category:` field) deserializes with `Category='impl'`.
+- [ ] `[unit]` Scenario: `PersistDecompositionAsync` writes the record's `Category` to `WorkstreamRow.Category`.
+- [ ] `[integration]` Scenario: Decompose endpoint + serializer + persist round-trip preserves `Category` for a 4-workstream story.
 
-**Phase B gate**: 60+ Phase 28 tests pass; deterministic strategy produces
-exactly one e2e PR per stage with `### Test Scenarios`; ADO work-item
-closure happens after the last e2e PR merges.
+---
 
-### Phase C — `e2e-scenarios.md` setup contract (≤ 4 stages)
+### Phase 2: Plan parser cross-stage E2E dependencies
 
-**C.1** Update `BuildPlanDocSpecs["e2e-scenarios"]` Brief (`CrewStoryArtifactStrategy.cs:161`)
-with the §8.4 expanded prompt.
+#### Dependencies
+- _none — start phase_
 
-**C.2** Add an evaluator-side linter for `e2e-scenarios.md` that refuses
-pass when any phase H1 is missing `### Setup`, when the setup `Type` is
-not in the closed set, or when a `lab-*` setup lacks both KeyVault and
-GitHub-environment secret references.
+#### Stage 2.1: Parse optional `### Cross-Stage Dependencies` under a Stage
 
-**C.3** Wire the parsed setup info into the qa-e2e workstream input —
-`ProduceStageE2eAsync` reads its phase's setup block from the merged
-`e2e-scenarios.md` and includes it in the QA-crew prompt, so the
-generated `.feature` / step-defs / pipeline YAML stubs match the
-declared setup type.
+**Deliverables:**
+- New optional H3 `### Cross-Stage Dependencies` recognised inside any
+  Stage body, parsed by `PlanParser` into `Stage.CrossStageE2eDeps`
+  (`IReadOnlyList<string>` of anchor refs).
+- Validator that rejects unresolved anchors with the existing
+  `plan.dep_*` error family.
 
-**C.4** Tests — fixture stories with each of the four setup types:
-assert that the qa-e2e workstream output contains the right pipeline
-file (`azure-pipeline.yml` + `.github/workflows/*.yml`) when setup is
-`compose` or `lab-*`, and contains *only* the `.feature` + step-defs
-when setup is `inline`.
+**Implementation Steps:**
+- [ ] Add `IReadOnlyList<string> CrossStageE2eDeps` to the parser's `Stage` record (default empty).
+- [ ] Extend the section recogniser in `PlanParser` to capture the optional H3 alongside the three required subsections (Implementation Steps / Dependencies / Test Scenarios).
+- [ ] Pipe the new field through `DecompositionDepsResolver` so anchor resolution + cycle detection apply uniformly to impl deps AND cross-stage e2e deps.
+- [ ] Update the evaluator's hard-requirement list in `BuildPlanDocSpecs["implementation-plan"]` to mention the optional H3.
 
-**Phase C gate**: a smoke story with two phases (`inline` and `lab-wsfc`)
-spawns end-to-end and produces:
+#### Dependencies
+- _none — start stage_
 
-- `tests/Features/{id}/phase-1/{stage}.feature`
-- `tests/Steps/{id}/phase-1/{stage}Steps.cs`
-- `tests/Features/{id}/phase-2/{stage}.feature`
-- `tests/Steps/{id}/phase-2/{stage}Steps.cs`
-- `tests/e2e/phase-2/azure-pipeline.yml`
-- `.github/workflows/e2e-phase-2.yml`
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Stage without the H3 parses with `CrossStageE2eDeps` = empty.
+- [ ] `[unit]` Scenario: Stage with the H3 listing two anchors resolves both into the field.
+- [ ] `[unit]` Scenario: Unresolved anchor in the H3 surfaces as a `plan.dep_unresolved` parse error.
+- [ ] `[unit]` Scenario: A cycle introduced via cross-stage deps is detected by `DecompositionDepsResolver` (returns `plan.dep_cycle`).
+- [ ] `[integration]` Scenario: A full plan with cross-stage e2e deps survives a round-trip through decompose endpoint without losing the anchors.
 
-and the generated YAMLs reference `LAB_CLUSTER_FQDN` /
-`LAB_ADMIN_USER` / `LAB_ADMIN_PASSWORD` from the right secret store.
+---
 
-### Phase D — Swarm-control UI (≤ 4 stages)
+### Phase 3: Decomposition emits trailing `qa-e2e` workstreams
 
-**D.1** `SwarmMasterPanel.tsx` — render each stage as a stacked
-impl-over-e2e pair in the phase board (mode `impl`). When the stage has
-no e2e workstream, render impl only.
+#### Dependencies
+- phase-data-model-and-schema-migration
+- phase-plan-parser-cross-stage-e2e-dependencies
 
-**D.2** `SwarmStoryView.tsx` — DAG edges: per-stage downward edge from
-impl to e2e; cross-stage e2e deps render as long edges. The rightmost
-"all e2e in one column" rendering is removed.
+#### Stage 3.1: Extend `ProduceDecompositionAsync` with the qa-e2e tail
 
-**D.3** Story-card phase badge — drop `qa` from the badge for new
-spawns; keep it visible for legacy spawns whose `Phase` is still `qa`.
+**Deliverables:**
+- `CrewStoryArtifactStrategy.ProduceDecompositionAsync` emits one
+  trailing `DecompositionWorkstream` (`Category='qa-e2e'`) per Stage
+  whose `TestScenarios.Count > 0`.
+- The trailing workstream has `Title = "{stage.Name} — E2E"`,
+  `PlanAnchor = "{stage.Anchor}/e2e"`, `Deps = [stage.Anchor]`, plus
+  any anchors from `stage.CrossStageE2eDeps`.
+- `PlanReconciler` recognises `Category='qa-e2e'` rows and does not
+  delete them on re-decompose.
 
-**D.4** Vitest + Playwright UI tests — covered stages: stacked render,
-edge router for cross-stage e2e deps, badge for legacy vs new spawn.
+**Implementation Steps:**
+- [ ] Modify the `stages.Select(...)` block at `CrewStoryArtifactStrategy.cs:1982` to emit both impl + qa-e2e records.
+- [ ] Skip qa-e2e emission when `s.TestScenarios.Count == 0`.
+- [ ] Append `s.CrossStageE2eDeps` (resolved) to the qa-e2e `Deps` list.
+- [ ] Update `PlanReconciler` to match qa-e2e rows by `{stage.Anchor}/e2e` so re-runs are idempotent.
+- [ ] Update `WorkstreamWorktreeSlug.Compute` to produce a `stage-{N.M}-{slug}-e2e` slug for qa-e2e rows.
 
-**Phase D gate**: visual diff against the operator screenshot shows the
-right-column QA cluster gone, e2e rows stacked under each impl row,
-DAG edges still routing correctly for a real story (5+ stages, mixed
-inline/lab setups).
+#### Dependencies
+- phase-plan-parser-cross-stage-e2e-dependencies/stage-parse-optional-cross-stage-dependencies-under-a-stage
 
-### Phase E — Cleanup + docs (≤ 3 stages)
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Stage with zero test scenarios emits exactly one decomposition workstream (impl only).
+- [ ] `[unit]` Scenario: Stage with two test scenarios emits two decomposition workstreams (impl + qa-e2e) and the qa-e2e row has `Deps = [stage.Anchor]`.
+- [ ] `[unit]` Scenario: Cross-stage deps from the parser are appended to the qa-e2e `Deps` in plan-order.
+- [ ] `[integration]` Scenario: `PlanReconciler` re-runs on the same plan produce the identical workstream set (no qa-e2e rows deleted / re-created).
+- [ ] `[integration]` Scenario: Decompose endpoint persists qa-e2e workstreams with `Category='qa-e2e'` and the correct `WorkstreamDepRow` edges.
 
-**E.1** Mark `ProduceQaFeatureFilesAsync` + `ProduceStepDefinitionsAsync`
-`[Obsolete]` with a pointer to `ProduceStageE2eAsync`. Keep them
-implemented for one release.
+---
 
-**E.2** Update `docs/forge_implementation.md` Phase 28 sections 28.7,
-28.8, 28.9, and the lifecycle ASCII to match this doc. Cross-link
-back here from the `## Phase 28` header.
+#### Stage 3.2: Worktree slug + branch naming for qa-e2e
 
-**E.3** Add the §8 setup contract to `docs/forge/workstream.md` and
-update the `agents/templates/qa-system.md` template to include the
-setup-type-aware QA prompt.
+**Deliverables:**
+- `WorkstreamWorktreeSlug.Compute` returns
+  `stage-{N.M}-{stageSlug}-e2e` for `Category='qa-e2e'`.
+- Branch name follows
+  `ws/{storyId}/{stageSlug}-e2e` (extension of the existing
+  `ws/{storyId}/{slug}` convention — replaces the old
+  `ws/{storyId}/{slug}-steps` naming).
 
-**Phase E gate**: docs render correctly; the only references to "Phase 5
-QA" in the repo are inside this doc (explaining the migration) and inside
-legacy migration code paths.
+**Implementation Steps:**
+- [ ] Add the `-e2e` suffix branch in the `Category='qa-e2e'` branch of `WorkstreamWorktreeSlug`.
+- [ ] Update `PlanDocStateHelpers` if any canonical slug helper needs the new shape.
+- [ ] Add slug-uniqueness test against the `.worktree/` invariant in `docs/forge_implementation.md:47-58`.
+
+#### Dependencies
+- phase-decomposition-emits-trailing-qa-e2e-workstreams/stage-extend-producedecomposition-with-the-qa-e2e-tail
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `WorkstreamWorktreeSlug.Compute(qa-e2e row)` produces `stage-N.M-{slug}-e2e`.
+- [ ] `[unit]` Scenario: Slug collides with no other workstream slug in a 20-stage story.
+- [ ] `[unit]` Scenario: Slug stays under the OS `MAX_PATH` budget for the longest plausible stage title.
+
+---
+
+### Phase 4: `IStoryArtifactStrategy.ProduceStageE2eAsync`
+
+#### Dependencies
+- phase-data-model-and-schema-migration
+
+#### Stage 4.1: Define the interface method
+
+**Deliverables:**
+- `Task<IReadOnlyDictionary<string,string>> ProduceStageE2eAsync(StorySpawnRow, WorkstreamRow, CancellationToken)`
+  added to `IStoryArtifactStrategy`.
+- Method-level XML doc describing the return contract: keys are
+  repo-relative paths under `tests/Features/{storyId}/{phaseSlug}/`,
+  `tests/Steps/{storyId}/{phaseSlug}/`, and (for `compose`/`lab-*`
+  setups) `tests/e2e/{phaseSlug}/` + `.github/workflows/`.
+- `[Obsolete("Use ProduceStageE2eAsync. Removed in Phase R cleanup.")]`
+  on `ProduceQaFeatureFilesAsync` and `ProduceStepDefinitionsAsync`.
+
+**Implementation Steps:**
+- [ ] Add the new abstract method to `IStoryArtifactStrategy`.
+- [ ] Annotate the two legacy methods with `[Obsolete]`.
+- [ ] Provide a default (throw-NotImplemented) implementation in any internal test double that doesn't need it yet.
+
+#### Dependencies
+- _none — start stage_
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Interface contract test — every registered `IStoryArtifactStrategy` implementation responds to `ProduceStageE2eAsync` (reflection-driven assertion).
+- [ ] `[unit]` Scenario: `[Obsolete]` warnings surface on the legacy methods (compile-time check via roslyn analyser test).
+
+---
+
+#### Stage 4.2: `DeterministicStoryArtifactStrategy.ProduceStageE2eAsync`
+
+**Deliverables:**
+- Deterministic implementation that emits one passing `.feature` file
+  and one passing `*.Steps.cs` per stage, paths matching the §10
+  contract.
+- For `lab-*` / `compose` setups, the deterministic strategy ALSO
+  emits a minimal `azure-pipeline.yml` + `.github/workflows/e2e-{phase}.yml`
+  so the pipeline-generation path is exercisable without an LLM.
+
+**Implementation Steps:**
+- [ ] Implement `ProduceStageE2eAsync` in `Forge.Api.Tests/Infrastructure/DeterministicStoryArtifactStrategy.cs`.
+- [ ] Read the workstream's resolved `PlanAnchor` to derive `phaseSlug`/`stageSlug`.
+- [ ] Read the merged `e2e-scenarios.md` from in-memory git to detect setup type (default `inline` when absent).
+- [ ] Return the file dict; ensure paths are repo-relative with forward slashes.
+
+#### Dependencies
+- phase-istoryartifactstrategy-producestagee2easync/stage-define-the-interface-method
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `inline` setup returns exactly two entries (`*.feature` + `*Steps.cs`).
+- [ ] `[unit]` Scenario: `compose` setup returns four entries (above + ADO YAML + GH workflow).
+- [ ] `[unit]` Scenario: `lab-wsfc` setup returns four entries with `LAB_CLUSTER_FQDN` referenced as an env-var in the generated YAML.
+- [ ] `[integration]` Scenario: Full orchestrator drive (deterministic) on a 1-stage story produces these files on the qa-e2e PR branch.
+
+---
+
+#### Stage 4.3: `CrewStoryArtifactStrategy.ProduceStageE2eAsync`
+
+**Deliverables:**
+- LLM-driven implementation that bundles the stage's
+  `### Test Scenarios` bullets + the impl workstream's diff +
+  the parsed setup block from `e2e-scenarios.md` into the QA-crew
+  prompt.
+- Reuses the existing `PrepareWorkspace` + `InvokeAsync` + `ReadAllFiles`
+  pipeline (`CrewStoryArtifactStrategy.cs:3358`).
+- Honours the same `dotnet build` gate the impl path uses
+  (`CrewStoryArtifactStrategy.cs:2378`) — the qa-e2e PR cannot be
+  opened on broken code.
+
+**Implementation Steps:**
+- [ ] Implement `ProduceStageE2eAsync` on `CrewStoryArtifactStrategy`.
+- [ ] Compose the QA-crew prompt from: workstream metadata + impl-PR diff (via `git diff base..ws-branch`) + setup block from merged `e2e-scenarios.md`.
+- [ ] Run the gen↔eval loop with `BudgetForPhase(spawn.StoryPoints, "qa-e2e")` — add the budget key.
+- [ ] After loop passes, run `dotnet test --filter Category=e2e` against the produced step-defs; fail the loop on non-zero exit.
+
+#### Dependencies
+- phase-istoryartifactstrategy-producestagee2easync/stage-deterministicstoryartifactstrategy-producestagee2easync
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Prompt builder includes the impl diff under a `## Implementation diff` heading.
+- [ ] `[unit]` Scenario: Setup block is parsed from `e2e-scenarios.md` and surfaces in the prompt's `## Setup` section.
+- [ ] `[unit]` Scenario: Empty `### Test Scenarios` in the stage causes the method to throw `InvalidOperationException` (Phase 3.1 guards against this calling at all, but defense-in-depth).
+- [ ] `[integration]` Scenario: End-to-end with a fake `IAgentRunner` that returns canned files; verify the `dotnet test` gate is invoked and a non-zero exit re-enters the loop.
+
+---
+
+### Phase 5: Orchestrator routing on `Category`
+
+#### Dependencies
+- phase-data-model-and-schema-migration
+- phase-istoryartifactstrategy-producestagee2easync
+- phase-decomposition-emits-trailing-qa-e2e-workstreams
+
+#### Stage 5.1: `DriveImplementAsync` branches on `Category`
+
+**Deliverables:**
+- `DriveImplementAsync` in `StorySpawnOrchestrator` reads
+  `workstream.Category`; `'impl'` rows take the existing path,
+  `'qa-e2e'` rows take a new path that calls `ProduceStageE2eAsync`,
+  commits to `ws/{storyId}/{stageSlug}-e2e`, opens a PR with
+  `[e2e]` title prefix.
+- qa-e2e rows ALSO honour the `WorkstreamDepRow` gate — they don't
+  start until the impl row's PR has merged.
+
+**Implementation Steps:**
+- [ ] Add a `IsQaE2e(WorkstreamRow w) => w.Category == "qa-e2e"` helper.
+- [ ] In `DriveImplementAsync`'s per-workstream loop, branch on `IsQaE2e`.
+- [ ] qa-e2e branch: skip target-discovery (no impl files to edit); use the new `ProduceStageE2eAsync`.
+- [ ] PR title format: `"[e2e] {stage.Name}"`; body links back to the impl PR by id.
+- [ ] Dep-gate honoured by the existing `WorkstreamDepRow` query — no extra code path needed.
+
+#### Dependencies
+- phase-istoryartifactstrategy-producestagee2easync/stage-define-the-interface-method
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `complete` opens a PR with `[e2e]` prefix.
+- [ ] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `active` skips (returns false, no PR opened).
+- [ ] `[integration]` Scenario: A 2-stage story (both with test scenarios) drives plan→done; 5 PRs land in order: plan, impl-S1, impl-S2, e2e-S1, e2e-S2.
+- [ ] `[integration]` Scenario: A 2-stage story where S2 deps on S1 and both have e2e — the four ws PRs serialize correctly via the dep scheduler.
+
+---
+
+#### Stage 5.2: Done-gate refactor — drop "QA PR merged" predicate
+
+**Deliverables:**
+- `StorySpawnOrchestrator` completion check requires every workstream
+  (`Category` agnostic) to be `Status='complete'`.
+- The legacy `spawn.QaPrId` check is removed from the new code path
+  but kept in the legacy `DriveQaAsync` for back-compat with paused
+  spawns.
+
+**Implementation Steps:**
+- [ ] Locate the completion check (currently invoked from `DriveQaAsync` at `StorySpawnOrchestrator.cs:3717`).
+- [ ] Hoist it into a `IsSpawnDoneAsync` helper that consults workstreams only.
+- [ ] Call `IsSpawnDoneAsync` from `DriveReviewAsync` after each ws PR merge.
+- [ ] When `IsSpawnDoneAsync` returns true, advance `Phase = 'done'` and emit `done` SignalR event (existing helper).
+
+#### Dependencies
+- phase-orchestrator-routing-on-category/stage-driveimplementasync-branches-on-category
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `IsSpawnDoneAsync` returns true when all ws (impl + qa-e2e) are `complete`.
+- [ ] `[unit]` Scenario: `IsSpawnDoneAsync` returns false when one qa-e2e ws is `active`.
+- [ ] `[integration]` Scenario: After the last qa-e2e PR merges, the spawn transitions to `done` without visiting `Phase='qa'`.
+
+---
+
+#### Stage 5.3: Legacy `Phase='qa'` drain path
+
+**Deliverables:**
+- `DriveQaAsync` retained but contains no NEW behaviour — it only
+  finishes draining any in-flight QA branch / step-def PRs created
+  by an older Forge version.
+- Phase switch at `StorySpawnOrchestrator.cs:271-287` retains the
+  `Qa` case for back-compat; the case calls
+  `DriveImplementAsync + DriveReviewAsync + DriveQaAsync(legacy)`.
+- New spawns never enter `Phase='qa'` — Phase 5.2 done-gate hops
+  directly from `review` to `done`.
+
+**Implementation Steps:**
+- [ ] Audit `DriveQaAsync` (`StorySpawnOrchestrator.cs:3615`) and confirm it operates on `spawn.QaPrId` exclusively — if any branch leaks into the new path, gate it on `spawn.QaPrId is not null`.
+- [ ] Add a no-op guard at the top of `DriveQaAsync`: `if (spawn.QaPrId is null && all-workstreams-via-new-shape) return false`.
+- [ ] Emit a one-time warning log when an existing `QaPrId` is detected so operators see the legacy drain in action.
+
+#### Dependencies
+- phase-orchestrator-routing-on-category/stage-done-gate-refactor-drop-qa-pr-merged-predicate
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` non-null still drains step-def PRs.
+- [ ] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` null returns false from `DriveQaAsync` (no work attempted).
+- [ ] `[integration]` Scenario: Seed a DB with a `Phase='qa' + QaPrId=…` row, run the scheduler; spawn drains to `done` exactly as it did pre-refactor.
+
+---
+
+### Phase 6: `e2e-scenarios.md` setup contract
+
+#### Dependencies
+- _none — start phase_
+
+#### Stage 6.1: Update `BuildPlanDocSpecs["e2e-scenarios"]` brief
+
+**Deliverables:**
+- Expanded brief on `CrewStoryArtifactStrategy.cs:161-163` matching §8.4
+  — required `### Setup` block per phase, closed-set `Type` field, lab
+  secret references for both ADO + GitHub.
+
+**Implementation Steps:**
+- [ ] Replace the one-line `e2e-scenarios` entry in `BuildPlanDocSpecs` with the §8.4 prompt.
+- [ ] Add the same content to `PlanDocBriefConsistencyTests` so the resume-brief stays in sync (the test catches drift introduced in 2026-05-04).
+
+#### Dependencies
+- _none — start stage_
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `BuildPlanDocSpecs["e2e-scenarios"].Brief` contains the four required H3 sub-bullets (Type, Local, CI runner, Secrets).
+- [ ] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes — the brief returned by `ResumeSingleArtifactAsync("e2e-scenarios")` matches the one in `BuildPlanDocSpecs`.
+
+---
+
+#### Stage 6.2: Evaluator linter for setup block
+
+**Deliverables:**
+- A linter pass in the architect evaluator's `e2e-scenarios` scoring
+  path that refuses pass when:
+  - Any Phase H1 lacks `### Setup` before its `### Scenarios`.
+  - `### Setup` lacks a `- **Type**:` first bullet.
+  - `Type` is not in `{inline, compose, lab-wsfc, lab-bare-metal}`.
+  - `Type` is `lab-*` and the Secrets bullet lacks both `KeyVault` and
+    `GitHub environment` references.
+
+**Implementation Steps:**
+- [ ] Add `E2eScenariosLinter` static class with `LintResult Validate(string md)`.
+- [ ] Call the linter from the evaluator prompt builder; surface lint errors as a structured evaluator feedback section.
+- [ ] Linter error codes follow the existing `plan.*` family: `e2e.setup_missing`, `e2e.setup_type_invalid`, `e2e.lab_secrets_incomplete`.
+
+#### Dependencies
+- phase-e2e-scenarios-md-setup-contract/stage-update-buildplandocspecs-e2e-scenarios-brief
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Missing `### Setup` under a phase H1 → `e2e.setup_missing`.
+- [ ] `[unit]` Scenario: `Type: lambda` (not in closed set) → `e2e.setup_type_invalid`.
+- [ ] `[unit]` Scenario: `Type: lab-wsfc` with only a KeyVault bullet → `e2e.lab_secrets_incomplete`.
+- [ ] `[unit]` Scenario: Valid `compose` setup → no lint errors.
+- [ ] `[integration]` Scenario: Architect evaluator refuses pass (score < 90) on an `e2e-scenarios.md` that fails the linter; passes on a corrected version.
+
+---
+
+#### Stage 6.3: Thread parsed setup into `ProduceStageE2eAsync` prompt
+
+**Deliverables:**
+- Helper `E2eScenariosSetupReader` that, given the merged
+  `e2e-scenarios.md` and a `phaseSlug`, returns the setup-type +
+  full setup-block markdown.
+- `CrewStoryArtifactStrategy.ProduceStageE2eAsync` consumes it to
+  drive both prompt content AND pipeline-YAML emission.
+
+**Implementation Steps:**
+- [ ] Implement `E2eScenariosSetupReader.ReadForPhase(string md, string phaseSlug)`.
+- [ ] Wire the reader into `ProduceStageE2eAsync` (Phase 4.3) before building the QA-crew prompt.
+- [ ] Cache the parsed setup map on the strategy instance per spawn to avoid re-reading the file once per stage.
+
+#### Dependencies
+- phase-e2e-scenarios-md-setup-contract/stage-evaluator-linter-for-setup-block
+- phase-istoryartifactstrategy-producestagee2easync/stage-crewstoryartifactstrategy-producestagee2easync
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Reader returns `inline` setup for a phase whose `### Setup` declares it.
+- [ ] `[unit]` Scenario: Reader throws `InvalidOperationException` when the requested phase slug is absent.
+- [ ] `[unit]` Scenario: Cache hit — second call for the same `(spawnId, phaseSlug)` doesn't re-parse.
+- [ ] `[integration]` Scenario: A 2-phase story (`inline` + `lab-wsfc`) drives end-to-end; the qa-e2e PR for phase 2 carries the lab YAML, phase 1's qa-e2e PR doesn't.
+
+---
+
+### Phase 7: Pipeline YAML generation
+
+#### Dependencies
+- phase-e2e-scenarios-md-setup-contract
+
+#### Stage 7.1: `compose` setup — emit `docker-compose.yml` + hosted-runner YAML
+
+**Deliverables:**
+- Template under `src/forge/Forge.Api/Resources/E2eTemplates/compose/`
+  containing parameterised `docker-compose.yml` (services placeholder),
+  `azure-pipeline.yml` (ubuntu hosted runner + `docker compose up`),
+  `github-workflow.yml` (`ubuntu-latest` + matching steps).
+- `ProduceStageE2eAsync` instantiates the templates for stages whose
+  phase setup is `compose` and includes them in the output dict.
+
+**Implementation Steps:**
+- [ ] Add the three template files as embedded resources.
+- [ ] Write `ComposePipelineRenderer` that substitutes `{phaseSlug}` / `{services}` placeholders.
+- [ ] Plug the renderer into `ProduceStageE2eAsync` behind a setup-type switch.
+
+#### Dependencies
+- phase-e2e-scenarios-md-setup-contract/stage-thread-parsed-setup-into-producestagee2easync-prompt
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: Renderer produces non-empty YAML for a 2-service compose stack.
+- [ ] `[unit]` Scenario: Rendered ADO YAML's `pool:` block is `vmImage: ubuntu-latest` (hosted) — no self-hosted pool reference.
+- [ ] `[unit]` Scenario: Rendered GitHub workflow `runs-on:` is `ubuntu-latest`.
+- [ ] `[integration]` Scenario: End-to-end spawn with one `compose`-phase produces all three YAML files on the qa-e2e PR.
+
+---
+
+#### Stage 7.2: `lab-wsfc` / `lab-bare-metal` setup — emit self-hosted pipeline YAML
+
+**Deliverables:**
+- Templates under `src/forge/Forge.Api/Resources/E2eTemplates/lab/`
+  for both ADO (`azure-pipeline.yml` with `pool: forge-lab-wsfc` /
+  `forge-lab-hw`, `AzureKeyVault@2` task referencing
+  `forge-lab-kv` and variable group `forge-lab-vg`) and GitHub
+  (`github-workflow.yml` with `runs-on: [self-hosted, wsfc-lab]` /
+  `[self-hosted, lab-hw]` + `environment: lab-wsfc` / `lab-hw`).
+- Both templates wire `LAB_CLUSTER_FQDN`, `LAB_ADMIN_USER`,
+  `LAB_ADMIN_PASSWORD` as env-vars on the test step.
+
+**Implementation Steps:**
+- [ ] Add the four template files (2 setup types × 2 providers).
+- [ ] Write `LabPipelineRenderer` with `(SetupType, Provider)` parameters.
+- [ ] Wire into `ProduceStageE2eAsync` after the compose switch.
+- [ ] Include a pre-test step calling
+  `tests/e2e/{phase-slug}/bootstrap.ps1` when the setup block names one.
+
+#### Dependencies
+- phase-pipeline-yaml-generation/stage-compose-setup-emit-docker-compose-yml-hosted-runner-yaml
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `lab-wsfc` ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-vg`.
+- [ ] `[unit]` Scenario: `lab-wsfc` GH workflow uses `[self-hosted, wsfc-lab]` runner labels and `environment: lab-wsfc`.
+- [ ] `[unit]` Scenario: `lab-bare-metal` ADO YAML names `pool: forge-lab-hw`.
+- [ ] `[unit]` Scenario: Connection-string env-var names appear as `env: LAB_CLUSTER_FQDN: $(LAB_CLUSTER_FQDN)` in ADO and `${{ secrets.LAB_CLUSTER_FQDN }}` in GH.
+- [ ] `[integration]` Scenario: A `lab-wsfc` phase produces a PR whose YAML, when parsed by `YamlDotNet`, has a valid pipeline shape (smoke-validates we didn't ship malformed YAML).
+
+---
+
+#### Stage 7.3: `appsettings.e2e.json` + `SetupSkippedException`
+
+**Deliverables:**
+- Per-phase `tests/e2e/{phaseSlug}/appsettings.e2e.json` declaring
+  variable *names* with empty values.
+- Step-def base class
+  `tests/Steps/{storyId}/E2eBase.cs` (emitted once per spawn,
+  not per stage) that reads env-vars and throws
+  `SetupSkippedException` when missing — locally yellow-skipped, on
+  CI hard-failed via test settings.
+
+**Implementation Steps:**
+- [ ] Add `appsettings.e2e.json` template (one per setup type).
+- [ ] Add `E2eBase.cs` template with `SetupSkippedException`.
+- [ ] Emit `E2eBase.cs` once at the first qa-e2e PR per spawn; subsequent qa-e2e PRs only emit the per-phase appsettings + scenario files.
+
+#### Dependencies
+- phase-pipeline-yaml-generation/stage-lab-wsfc-lab-bare-metal-setup-emit-self-hosted-pipeline-yaml
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `E2eBase.cs` template compiles standalone (Roslyn parse + emit smoke).
+- [ ] `[unit]` Scenario: `appsettings.e2e.json` for `lab-wsfc` declares all three lab env-var names.
+- [ ] `[unit]` Scenario: `SetupSkippedException` carries the missing var name in its message.
+- [ ] `[integration]` Scenario: Spawn with two qa-e2e stages emits exactly one `E2eBase.cs` (idempotency check).
+
+---
+
+### Phase 8: Swarm-control UI
+
+#### Dependencies
+- phase-orchestrator-routing-on-category
+
+#### Stage 8.1: Stacked impl/e2e rows in `SwarmMasterPanel`
+
+**Deliverables:**
+- Each stage column in `SwarmMasterPanel.tsx` renders an impl row and
+  (when present) a stacked qa-e2e row directly below it.
+- qa-e2e row uses `--sc-t-qa` (green) accent; impl row keeps
+  `--sc-t-eng` (cyan).
+- When a stage has no qa-e2e workstream, only the impl row renders
+  (no empty placeholder).
+
+**Implementation Steps:**
+- [ ] Add `qaE2eByImplId: Map<string, Workstream>` derived selector to `useSpawnStore`.
+- [ ] Update the phase-board render to read both rows from the selector.
+- [ ] Add a `--sc-t-qa` CSS token if not already present.
+- [ ] Empty-state: when `qaE2eByImplId.get(impl.id)` is undefined, skip the stack — don't render a blank slot.
+
+#### Dependencies
+- _none — start stage_
+
+#### Test Scenarios
+- [ ] `[ui-unit]` Scenario: Selector returns the qa-e2e ws for an impl ws when one exists.
+- [ ] `[ui-unit]` Scenario: Selector returns undefined for an impl ws with no qa-e2e sibling.
+- [ ] `[ui-e2e]` Scenario: Playwright — story with 3 stages (2 with e2e, 1 without) renders 5 boxes in 3 columns.
+- [ ] `[ui-e2e]` Scenario: Playwright — qa-e2e box is rendered with the green team accent (computed style assertion).
+
+---
+
+#### Stage 8.2: DAG edge router updates
+
+**Deliverables:**
+- `SwarmStoryView.tsx` edge layer draws a per-stage downward edge
+  from impl box to its qa-e2e box.
+- Cross-stage e2e deps (from §7 plan parser) render as long edges
+  routed by the existing edge router.
+- The previous rightmost-column QA cluster rendering is removed.
+
+**Implementation Steps:**
+- [ ] Remove the "group qa-e2e in the rightmost column" code path.
+- [ ] Add a per-stage `{from: impl.id, to: qa-e2e.id}` edge to the input dataset.
+- [ ] Verify cross-stage e2e deps already flow through the existing edge dataset (they should — they're just `WorkstreamDepRow` rows).
+
+#### Dependencies
+- phase-swarm-control-ui/stage-stacked-impl-e2e-rows-in-swarmmasterpanel
+
+#### Test Scenarios
+- [ ] `[ui-unit]` Scenario: Edge dataset for a 2-stage story has exactly N edges where N = (deps between impls) + (impl→qa-e2e per qa-e2e stage).
+- [ ] `[ui-e2e]` Scenario: Playwright — visual diff against the screenshot in the user's request: the rightmost QA column is gone.
+- [ ] `[ui-e2e]` Scenario: Playwright — clicking a qa-e2e box opens the workstream detail panel scoped to that row (same drill-down as impl boxes).
+
+---
+
+#### Stage 8.3: Story-card phase badge + legacy compat
+
+**Deliverables:**
+- Story-card phase badge stops showing `qa` for new spawns.
+- Legacy spawns whose `Phase='qa'` continue to show the badge, with
+  a tooltip explaining it's a legacy state being drained.
+
+**Implementation Steps:**
+- [ ] Update `StoryCard.tsx` badge map to omit `qa` from the canonical phase list.
+- [ ] Add a legacy-detector: when `phase==='qa'`, render a muted badge with the tooltip.
+
+#### Dependencies
+- phase-swarm-control-ui/stage-stacked-impl-e2e-rows-in-swarmmasterpanel
+
+#### Test Scenarios
+- [ ] `[ui-unit]` Scenario: New spawn (Phase rotates plan→decompose→implement→review→done) — `qa` never appears.
+- [ ] `[ui-unit]` Scenario: Legacy spawn (Phase='qa') renders muted badge with tooltip.
+- [ ] `[ui-e2e]` Scenario: Playwright — seed a legacy spawn via API, refresh /workstreams, assert the muted badge renders.
+
+---
+
+### Phase 9: Integration tests + docs sync
+
+#### Dependencies
+- phase-orchestrator-routing-on-category
+- phase-pipeline-yaml-generation
+- phase-swarm-control-ui
+
+#### Stage 9.1: `Phase28E2eRefactorTests` integration suite
+
+**Deliverables:**
+- New test file `src/forge/Forge.Api.Tests/Phase28E2eRefactorTests.cs`,
+  `[Collection("Phase28E2eRefactor")]` annotation so it doesn't
+  collide with the existing gate/orchestrator suites.
+- Covers the headline scenarios end-to-end against the deterministic
+  strategy.
+
+**Implementation Steps:**
+- [ ] Add the file with `[Collection]` + shared fixture pattern.
+- [ ] Port the existing Phase28OrchestratorTests test bed (DI setup) into the new collection.
+- [ ] Write the scenarios listed below.
+
+#### Dependencies
+- _none — start stage_
+
+#### Test Scenarios
+- [ ] `[integration]` Scenario: Story with 3 stages (all with test scenarios) drives plan→done; 7 PRs land: plan + 3 impl + 3 qa-e2e.
+- [ ] `[integration]` Scenario: Story with 3 stages where stage 2 has no test scenarios — 6 PRs land (no qa-e2e for stage 2).
+- [ ] `[integration]` Scenario: Dependency scheduler unblocks qa-e2e-S2 only after impl-S2 PR merges, even when impl-S3 has merged earlier.
+- [ ] `[integration]` Scenario: Cross-stage e2e — qa-e2e-S3 with `Deps=[S2, S3]` waits for both impl-S2 and impl-S3 to merge.
+- [ ] `[integration]` Scenario: Restart-resume — kill the orchestrator mid-qa-e2e, restart, spawn drives to `done`.
+- [ ] `[integration]` Scenario: Spawn never enters `Phase='qa'` (assertion on the `phase-changed` event log).
+- [ ] `[integration]` Scenario: A `Phase='qa'` legacy spawn finishes draining under the new orchestrator without errors.
+
+---
+
+#### Stage 9.2: `Phase28E2eSetupContractTests` integration suite
+
+**Deliverables:**
+- New test file `src/forge/Forge.Api.Tests/Phase28E2eSetupContractTests.cs`
+  covering the §8 setup contract end-to-end (linter + reader +
+  pipeline renderer + ProduceStageE2eAsync output composition).
+
+**Implementation Steps:**
+- [ ] Author the file; reuse the deterministic strategy fixture.
+- [ ] One scenario per setup type plus the failure modes from §6.2.
+
+#### Dependencies
+- phase-integration-tests-docs-sync/stage-phase28e2erefactortests-integration-suite
+
+#### Test Scenarios
+- [ ] `[integration]` Scenario: `inline` story — qa-e2e PR contains exactly `*.feature` + `*Steps.cs` + `E2eBase.cs` (first stage only).
+- [ ] `[integration]` Scenario: `compose` story — qa-e2e PR also contains `docker-compose.yml` + `azure-pipeline.yml` + `.github/workflows/e2e-{phase}.yml`.
+- [ ] `[integration]` Scenario: `lab-wsfc` story — qa-e2e PR ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-kv` Key Vault.
+- [ ] `[integration]` Scenario: `lab-bare-metal` story — qa-e2e PR GH workflow names `[self-hosted, lab-hw]` runner labels and `environment: lab-hw`.
+- [ ] `[integration]` Scenario: Architect linter rejects an `e2e-scenarios.md` missing `### Setup` (score < 90) and accepts the corrected version on next iter.
+
+---
+
+#### Stage 9.3: Docs sync — `forge_implementation.md` + `workstream.md` + QA template
+
+**Deliverables:**
+- `docs/forge_implementation.md` Phase 28 sections 28.7 / 28.8 / 28.9
+  and the lifecycle ASCII updated to match this doc; cross-link from
+  the Phase 28 header to `docs/forge/e2e.md`.
+- `docs/forge/workstream.md` §8 setup contract appended.
+- `agents/templates/qa-system.md` updated with the setup-type-aware
+  QA prompt (mirrors the new `e2e-scenarios` brief in §8.4).
+
+**Implementation Steps:**
+- [ ] Edit `docs/forge_implementation.md` to replace the Phase 5 QA narrative with a pointer to this doc.
+- [ ] Append the §8 setup contract to `docs/forge/workstream.md`.
+- [ ] Update `agents/templates/qa-system.md` with the setup-aware prompt.
+- [ ] Search the repo for "Phase 5 QA" / "QA phase" references and update or remove them where stale.
+
+#### Dependencies
+- phase-integration-tests-docs-sync/stage-phase28e2esetupcontracttests-integration-suite
+
+#### Test Scenarios
+- [ ] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes against the new `e2e-scenarios` brief.
+- [ ] `[integration]` Scenario: No grep hits in `src/` for `DriveQaAsync.*NEW behaviour` — confirms cleanup.
+- [ ] Scenario: Manual — render the updated docs in a markdown preview and confirm the §10 implementation tree is readable.
+
+---
+
+#### Stage 9.4: Operator runbook for the refactor rollout
+
+**Deliverables:**
+- New file `docs/forge/e2e-rollout.md` (or appended section in
+  `docs/forge/setup.md`) covering:
+  - How to recognise a legacy `Phase='qa'` spawn vs a new spawn.
+  - How to manually advance a stuck legacy spawn to `done`.
+  - How to back-out the migration if production tips over (re-set
+    `Category='impl'` on every row, redeploy the prior orchestrator
+    binary).
+  - How to seed lab credentials in both ADO Key Vault and GitHub
+    environment.
+
+**Implementation Steps:**
+- [ ] Write the rollout doc.
+- [ ] Link it from `docs/forge/README.md`'s doc table.
+- [ ] Verify the back-out instructions against a snapshot DB.
+
+#### Dependencies
+- phase-integration-tests-docs-sync/stage-docs-sync-forge-implementation-md-workstream-md-qa-template
+
+#### Test Scenarios
+- [ ] Scenario: Manual — follow the legacy-drain runbook against a seeded DB; spawn reaches `done`.
+- [ ] Scenario: Manual — follow the back-out runbook; orchestrator boots on the prior binary without throwing on the new `Category` column (additive change, prior code ignores it).
+- [ ] Scenario: Manual — lab-credentials walkthrough: seed `LAB_CLUSTER_FQDN` in `forge-lab-kv`, run a `lab-wsfc` story locally, confirm the test step picks up the value.
 
 ---
 
