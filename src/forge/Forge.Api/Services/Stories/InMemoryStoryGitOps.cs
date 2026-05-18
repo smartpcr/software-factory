@@ -284,4 +284,23 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         if (salt is not null) sb.Append(salt);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
     }
+
+    // ── Phase 79 — merge-conflict resolver shims ─────────────────────────
+    // The in-memory ops never produce real conflicts (merge just copies
+    // tree entries). Tests that exercise the resolver path stub these
+    // methods on a per-test basis; the defaults model the "no conflicts"
+    // happy path so existing test suites compile.
+    public Task<RebaseResult> RebaseAndDetectConflictsAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+        => Task.FromResult(new RebaseResult(RebaseState.Clean, Array.Empty<ConflictedFile>(), null));
+
+    public Task<RebaseResult> ContinueRebaseAndPushAsync(
+        RepoRow? repo,
+        string branch,
+        IReadOnlyDictionary<string, string> resolvedFiles,
+        CancellationToken ct = default)
+        => Task.FromResult(new RebaseResult(RebaseState.Clean, Array.Empty<ConflictedFile>(), null));
+
+    public Task AbortRebaseAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+        => Task.CompletedTask;
 }

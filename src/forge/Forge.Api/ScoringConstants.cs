@@ -134,6 +134,17 @@ public static class ScoringConstants
     public const int MaxPairAttempts = 3;
 
     /// <summary>
+    /// Phase 79 — maximum number of rebase+resolve attempts the
+    /// orchestrator's <c>TryResolveConflictsAndRetryMergeAsync</c> will
+    /// make before stalling the workstream with the merge-conflict
+    /// reason. Each attempt = one full rebase cycle (may include
+    /// multiple commit-by-commit conflict rounds inside a single
+    /// rebase). On the Nth failure the workstream stalls with the
+    /// LAST resolver outcome carried as the stall detail.
+    /// </summary>
+    public const int MaxResolveAttempts = 3;
+
+    /// <summary>
     /// Q52.5 — locked terminal-failure reason for the sloppy-3-attempts path.
     /// Lifted verbatim from the operator brief; the
     /// <c>Phase14SpecConsistencyTests</c> assertion catches any drift.

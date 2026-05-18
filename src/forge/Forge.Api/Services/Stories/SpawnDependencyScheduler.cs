@@ -53,6 +53,31 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     private readonly TimeSpan stuckTaskTimeout;
     private readonly ILogger<SpawnDependencyScheduler>? logger;
 
+    /// <summary>
+    /// Phase 78 — per-spawn semaphores that prevent two scheduler ticks
+    /// from concurrently driving the same spawn. Without this, a long-
+    /// running dispatch in tick N's <see cref="RunWithTimeoutAsync"/>
+    /// (abandoned at 60 s but still running on the thread pool per the
+    /// Phase 45 follow-up rationale) would race tick N+1's fresh
+    /// <see cref="StorySpawnOrchestrator.DriveAsync"/> for the same
+    /// spawn — and the second caller's dispatcher entry trips the
+    /// Phase 74 <c>ConcurrentDispatchRefusalSentinel</c> throw,
+    /// historically surfaced as a misleading "ORCHESTRATOR HALTED"
+    /// banner masking the real workstream-level failure.
+    ///
+    /// <para>Keyed by <c>spawnId</c>. Each tick attempts a non-blocking
+    /// <see cref="SemaphoreSlim.WaitAsync(int, CancellationToken)"/>;
+    /// on miss, the tick simply skips that spawn this cycle. The
+    /// <c>DriveAsync</c> task itself takes care of cleanup via
+    /// <c>Release()</c> in a finally block.</para>
+    ///
+    /// <para>Stale entries don't leak: terminated spawns just sit with
+    /// a free semaphore that never gets acquired again — &lt; 100 bytes
+    /// per spawn ever spawned. Acceptable for the lifetime of the
+    /// process.</para>
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> spawnLocks = new();
+
     public SpawnDependencyScheduler(IServiceProvider services, ILogger<SpawnDependencyScheduler>? logger = null)
         : this(services, DefaultStuckTaskTimeout, logger)
     {
@@ -180,22 +205,61 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         var driveTasks = active.Select(item => Task.Run(async () =>
         {
             var (sid, spawnId) = item;
+
+            // Phase 78 — per-spawn lock. Prevents two ticks driving the
+            // same spawn concurrently when tick N's dispatch overran the
+            // 60 s RunWithTimeoutAsync and tick N+1 picks up while the
+            // orphan is still alive. The lock is acquired non-blocking;
+            // on miss, this tick simply skips this spawn and the next
+            // tick (15 s later) tries again. CRITICAL: when DriveAsync
+            // is orphaned by the timeout, the lock release is chained to
+            // the actual orphan task completion (NOT released on
+            // RunWithTimeoutAsync's return) so the next tick still
+            // skips the spawn while the orphan runs — that's what
+            // prevents the Phase 74 concurrent-dispatch throw.
+            var spawnLock = this.spawnLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
+            if (!await spawnLock.WaitAsync(0, ct))
+            {
+                this.logger?.LogDebug(
+                    "Skipping spawn {SpawnId} ({StoryId}) this tick — previous DriveAsync still in flight.",
+                    spawnId, sid);
+                return;
+            }
+
+            // Capture the work task BEFORE handing it to RunWithTimeoutAsync
+            // so we can attach a release-on-completion continuation when
+            // the timeout orphans it. Calling DriveAsync ONCE; the inner
+            // Func<Task> just hands the same task to RunWithTimeoutAsync.
+            var driveWork = orchestrator.DriveAsync(sid, ct);
             var driveOk = await this.RunWithTimeoutAsync(
                 "DriveAsync", spawnId, sid,
-                () => orchestrator.DriveAsync(sid, ct), ct);
+                () => driveWork, ct);
 
-            // If DriveAsync timed out, skip the reconciler for this tick.
-            // The next tick will pick up a fresh PlanReconciler invocation
-            // against whatever DriveAsync eventually persists (if it ever
-            // returns); racing them in the same tick post-timeout would
-            // burn CPU on stale state.
-            if (!driveOk) return;
-
-            if (reconciler is not null)
+            if (!driveOk)
             {
-                await this.RunWithTimeoutAsync(
-                    "PlanReconciler", spawnId, sid,
-                    () => reconciler.ReconcileAsync(spawnId, ct), ct);
+                // Orphaned. Lock stays held until the orphan finishes;
+                // continuation runs on a background thread so we don't
+                // block this tick's task. ExecuteSynchronously is safe
+                // here because Release is non-blocking.
+                _ = driveWork.ContinueWith(_ => spawnLock.Release(),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return;
+            }
+
+            try
+            {
+                if (reconciler is not null)
+                {
+                    await this.RunWithTimeoutAsync(
+                        "PlanReconciler", spawnId, sid,
+                        () => reconciler.ReconcileAsync(spawnId, ct), ct);
+                }
+            }
+            finally
+            {
+                spawnLock.Release();
             }
         }, ct)).ToArray();
 

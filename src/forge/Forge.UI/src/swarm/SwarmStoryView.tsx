@@ -332,6 +332,24 @@ export function SwarmStoryView() {
           ]}
           onBack={() => navigate('/workstreams')}
         />
+        {(() => {
+          // Phase 78 — surface workstream-level merge-conflict stalls as
+          // a dedicated banner above the spawn-level banner. Without this,
+          // the operator only sees the spawn.LastError (orchestrator-halted
+          // banner) which can mask the real cause when, e.g., a parallel
+          // PR has merge conflicts that the orchestrator correctly stalled
+          // the workstream for. The backend-side change in this phase
+          // also stops the Phase 74 dispatch-race throw from overwriting
+          // spawn.LastError, but the merge-conflict stall could still be
+          // invisible if the operator dismisses the dispatch-race banner
+          // without scrolling down to the workstream chips.
+          const mergeConflicts = detail.workstreams.filter(
+            (w) => w.status === 'stalled'
+              && (w.stallReason ?? '').toLowerCase().includes('merge failed for pr')
+          );
+          if (mergeConflicts.length === 0) return null;
+          return <MergeConflictBanner workstreams={mergeConflicts} />;
+        })()}
         {detail.spawn.lastError && (
           <SpawnErrorBanner
             storyId={storyId}
@@ -493,6 +511,65 @@ function SpawnErrorBanner(props: {
             {busy ? '⏳ retrying…' : '↻ retry'}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Phase 78 — surfaces workstream-level merge conflicts as a dedicated
+ *  amber banner above the spawn-level error banner. Triggered by any
+ *  workstream whose `status === 'stalled'` and whose `stallReason`
+ *  contains "Merge failed for PR" (set by
+ *  StorySpawnOrchestrator.StallWorkstreamForMergeFailureAsync when
+ *  ApproveAndMergeAsync throws on a GitHub 405 / dirty / blocked PR).
+ *
+ *  Resolution paths surfaced in the body:
+ *    - Open the PR in GitHub, resolve the conflict (rebase the ws
+ *      branch onto the current base tip and push), then Restart the
+ *      workstream from the chip menu.
+ *    - Or, if the work is no longer needed, cancel the workstream.
+ *
+ *  Intentionally has NO Retry button — the orchestrator cannot
+ *  resolve a merge conflict on its own; the operator (or a future
+ *  rebase-strategy implementation) must intervene first. */
+function MergeConflictBanner(props: {
+  workstreams: Array<{ id: string; name: string; prs: string[]; stallReason?: string | null }>;
+}) {
+  const { workstreams } = props;
+  return (
+    <div
+      className="spawn-error-banner spawn-error-banner--merge-conflict"
+      role="alert"
+      style={{
+        borderColor: 'var(--sc-warn, #d4a017)',
+        background: 'rgba(212, 160, 23, 0.12)',
+      }}
+    >
+      <div className="spawn-error-banner__icon" aria-hidden style={{ color: 'var(--sc-warn, #d4a017)' }}>⚠</div>
+      <div className="spawn-error-banner__body">
+        <div className="spawn-error-banner__title" style={{ color: 'var(--sc-warn, #d4a017)' }}>
+          ▌ PR MERGE CONFLICT
+          {' · '}
+          <span style={{ opacity: 0.85, fontWeight: 'normal' }}>
+            {workstreams.length} workstream{workstreams.length === 1 ? '' : 's'} blocked
+          </span>
+        </div>
+        <div className="spawn-error-banner__msg">
+          {workstreams.slice(0, 4).map((w, i) => (
+            <div key={w.id} style={{ marginTop: i === 0 ? 0 : 4 }}>
+              <strong>{w.name}</strong>
+              {w.prs.length > 0 ? <span style={{ opacity: 0.75 }}> · {w.prs[0]}</span> : null}
+            </div>
+          ))}
+          {workstreams.length > 4 && (
+            <div style={{ marginTop: 4, opacity: 0.7 }}>+ {workstreams.length - 4} more</div>
+          )}
+          <div style={{ marginTop: 8, opacity: 0.85 }}>
+            Resolve the conflict in GitHub (rebase the ws branch onto base + push),
+            then Restart from the workstream chip menu. Auto-recovery is intentionally
+            disabled — parallel PRs touching the same files require operator decision.
+          </div>
+        </div>
       </div>
     </div>
   );

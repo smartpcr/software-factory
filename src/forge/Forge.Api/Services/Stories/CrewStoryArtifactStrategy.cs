@@ -3027,6 +3027,224 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return new ReviewFix(FilePath: null, NewContent: null, ReplyBody: reply);
     }
 
+    /// <summary>
+    /// Phase 79 — agent-driven merge-conflict resolver. The Engineer agent
+    /// reads each conflicted file's on-disk content (markers preserved),
+    /// the workstream's task description + recent deliverable narrative
+    /// (so it knows its own intent), and a tail of the upstream change
+    /// summary, then writes a resolved version of each file into the
+    /// workspace. Returns path → resolved content for
+    /// <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/> to apply.
+    ///
+    /// <para>The agent runs OUTSIDE the worktree (in a scratch workspace)
+    /// so accidental git ops can't corrupt the in-progress rebase.</para>
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> ProduceConflictResolutionAsync(
+        StorySpawnRow spawn,
+        WorkstreamRow workstream,
+        IReadOnlyList<ConflictedFile> conflictedFiles,
+        string baseBranch,
+        CancellationToken ct = default)
+    {
+        if (conflictedFiles.Count == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var workspace = this.PrepareWorkspace(spawn.Id, $"conflict-{StoryPaths.Safe(workstream.Id)}");
+
+        // Seed the workspace with each conflicted file's current (markers-
+        // included) content. The agent edits these in place and writes a
+        // resolved.{path} alongside, OR overwrites the original. We
+        // accept both shapes and read whichever exists.
+        var fileIndex = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var cf in conflictedFiles)
+        {
+            var safePath = cf.Path.Replace('/', Path.DirectorySeparatorChar);
+            var diskPath = Path.Combine(workspace, safePath);
+            var dir = Path.GetDirectoryName(diskPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            await File.WriteAllTextAsync(diskPath, cf.Content, ct);
+            fileIndex[cf.Path] = diskPath;
+        }
+
+        // Build a per-file listing for the prompt. Each entry includes
+        // the path + first ~120 lines of conflict markers so the agent
+        // can plan from the prompt without re-reading every file.
+        var listing = new StringBuilder();
+        foreach (var cf in conflictedFiles)
+        {
+            listing.AppendLine($"### `{cf.Path}`");
+            var lines = cf.Content.Split('\n');
+            var preview = string.Join("\n", lines.Take(120));
+            listing.AppendLine("```");
+            listing.AppendLine(preview);
+            listing.AppendLine("```");
+            if (lines.Length > 120)
+            {
+                listing.AppendLine($"(... {lines.Length - 120} more lines truncated in this prompt preview — read the file from disk for the full content.)");
+            }
+            listing.AppendLine();
+        }
+
+        // Workstream intent — try the last 2 deliverable Notes so the
+        // agent knows what its workstream was trying to do. Out-of-scope
+        // failures here (DB error, no rows) fall back to summary-only.
+        var intentSection = await this.BuildWorkstreamIntentSectionAsync(workstream, ct);
+
+        var prompt = $$"""
+            You are the Engineer agent resolving merge conflicts for
+            workstream `{{workstream.Id}}` ({{workstream.Name}}).
+
+            Your task: rebase against the `{{baseBranch}}` branch produced
+            conflict markers in the files listed below. Read each
+            conflicted file, understand both sides ("<<<<<<< ours" =
+            this workstream's intent; ">>>>>>> theirs" = the upstream
+            change since this workstream diverged), then WRITE THE
+            RESOLVED CONTENT BACK to the same file path in this
+            workspace. Remove ALL conflict markers. Preserve the
+            semantic intent of BOTH sides whenever possible:
+
+            - If both sides made independent additions (different
+              functions, different doc paragraphs), keep both.
+            - If both sides modified the same logic, prefer the
+              upstream version UNLESS your workstream's change is a
+              strict superset — in which case keep yours, but rebase
+              it onto the upstream behaviour.
+            - If a conflict appears in a lockfile (`*.lock`,
+              `package-lock.json`, `Cargo.lock`, `yarn.lock`,
+              `Gemfile.lock`, `poetry.lock`, `pnpm-lock.yaml`), DO
+              NOT hand-edit; just write a single line "REGENERATE"
+              and the orchestrator will regenerate it via the repo's
+              restore command.
+            - If the conflict is in a generated file or a binary, DO
+              NOT attempt resolution; write "REGENERATE" and let the
+              orchestrator handle it.
+
+            Do not commit. Do not run git. Just write resolved file
+            contents in place.
+
+            ## Workstream intent
+            {{intentSection}}
+
+            ## Conflicted files
+            {{listing.ToString().TrimEnd()}}
+
+            When you're done, exit with a single message confirming
+            which files you resolved.
+            """;
+
+        // Phase tag mirrors `review-fix:{wsId}` for symmetry with the
+        // dispatcher's per-workItemId discriminator.
+        var engineerId = ParseAgentsList(workstream.AgentsJson).FirstOrDefault();
+        await this.InvokeAsync(
+            "Engineer", workstream.Id, $"conflict-resolve:{workstream.Id}",
+            prompt, workspace,
+            BudgetForPhase(spawn.StoryPoints, "review-fix"),
+            ct,
+            agentIdOverride: engineerId);
+
+        // Read back each conflicted file. Per-file strategy table:
+        // "REGENERATE" sentinel → caller's responsibility (orchestrator
+        // runs the repo's restore command). Everything else is the
+        // agent's resolution.
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var cf in conflictedFiles)
+        {
+            var diskPath = fileIndex[cf.Path];
+            string content;
+            try { content = await File.ReadAllTextAsync(diskPath, ct); }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Phase 79: could not read resolved file '{Path}' from workspace '{Wt}'; falling back to ours-side strip.",
+                    cf.Path, workspace);
+                content = FallbackStripMarkersOurs(cf.Content);
+            }
+            // Defensive: if the agent left markers in place, fall
+            // back to ours-side strip so the rebase isn't permanently
+            // stuck on the same conflict.
+            if (content.Contains("<<<<<<<", StringComparison.Ordinal)
+                || content.Contains(">>>>>>>", StringComparison.Ordinal))
+            {
+                this.logger?.LogWarning(
+                    "Phase 79: agent left conflict markers in '{Path}'; falling back to ours-side strip.",
+                    cf.Path);
+                content = FallbackStripMarkersOurs(cf.Content);
+            }
+            result[cf.Path] = content;
+        }
+        return result;
+    }
+
+    private async Task<string> BuildWorkstreamIntentSectionAsync(WorkstreamRow workstream, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var recentNotes = await db.Deliverables
+                .AsNoTracking()
+                .Where(d => d.WorkItemId == workstream.Id)
+                .OrderByDescending(d => d.Iter)
+                .Take(2)
+                .Select(d => new { d.Iter, d.Score, d.Verdict, d.Notes, d.GeneratorSummary })
+                .ToListAsync(ct);
+            if (recentNotes.Count == 0)
+            {
+                return $"- Name: {workstream.Name}\n- Summary: {workstream.Summary}";
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine($"- Name: {workstream.Name}");
+            sb.AppendLine($"- Summary: {workstream.Summary}");
+            foreach (var n in recentNotes)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"### iter {n.Iter} ({n.Verdict}, score {n.Score})");
+                var trimmed = (n.GeneratorSummary ?? n.Notes ?? string.Empty).Trim();
+                if (trimmed.Length > 1500) trimmed = trimmed[..1500] + "…";
+                sb.AppendLine(trimmed);
+            }
+            return sb.ToString().TrimEnd();
+        }
+        catch
+        {
+            return $"- Name: {workstream.Name}\n- Summary: {workstream.Summary}";
+        }
+    }
+
+    private static string FallbackStripMarkersOurs(string content)
+    {
+        var sb = new StringBuilder();
+        var inConflict = false;
+        var keepOurs = true;
+        foreach (var rawLine in content.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("<<<<<<<", StringComparison.Ordinal))
+            {
+                inConflict = true; keepOurs = true;
+                continue;
+            }
+            if (line.StartsWith("=======", StringComparison.Ordinal))
+            {
+                keepOurs = false;
+                continue;
+            }
+            if (line.StartsWith(">>>>>>>", StringComparison.Ordinal))
+            {
+                inConflict = false; keepOurs = true;
+                continue;
+            }
+            if (inConflict && !keepOurs) continue;
+            sb.AppendLine(line);
+        }
+        return sb.ToString();
+    }
+
     public async Task<IReadOnlyDictionary<string, string>> ProduceQaFeatureFilesAsync(
         StorySpawnRow spawn, WorkItemRow story, IReadOnlyList<WorkstreamRow> workstreams, CancellationToken ct = default)
     {

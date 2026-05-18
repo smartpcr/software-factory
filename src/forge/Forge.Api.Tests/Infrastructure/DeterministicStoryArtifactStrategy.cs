@@ -317,6 +317,60 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
             new Dictionary<string, string>(StringComparer.Ordinal) { [path] = body });
     }
 
+    /// <summary>
+    /// Phase 79 — deterministic stub for the conflict resolver. Tests
+    /// that exercise the merge-conflict-resolve path provide a custom
+    /// fake; the default implementation strips conflict markers
+    /// keeping "ours", producing a deterministic but trivial output.
+    /// Real strategy in <c>CrewStoryArtifactStrategy</c> dispatches the
+    /// Engineer agent.
+    /// </summary>
+    public Task<IReadOnlyDictionary<string, string>> ProduceConflictResolutionAsync(
+        StorySpawnRow spawn,
+        WorkstreamRow workstream,
+        IReadOnlyList<ConflictedFile> conflictedFiles,
+        string baseBranch,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var f in conflictedFiles)
+        {
+            result[f.Path] = StripConflictMarkers(f.Content);
+        }
+        return Task.FromResult<IReadOnlyDictionary<string, string>>(result);
+    }
+
+    private static string StripConflictMarkers(string content)
+    {
+        var sb = new StringBuilder();
+        var lines = content.Split('\n');
+        var inConflict = false;
+        var keepOurs = true;
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("<<<<<<<", StringComparison.Ordinal))
+            {
+                inConflict = true;
+                keepOurs = true;
+                continue;
+            }
+            if (line.StartsWith("=======", StringComparison.Ordinal))
+            {
+                keepOurs = false;
+                continue;
+            }
+            if (line.StartsWith(">>>>>>>", StringComparison.Ordinal))
+            {
+                inConflict = false;
+                keepOurs = true;
+                continue;
+            }
+            if (inConflict && !keepOurs) continue;
+            sb.AppendLine(line.TrimEnd('\r'));
+        }
+        return sb.ToString();
+    }
+
     private static string Pascal(string slug)
     {
         if (string.IsNullOrEmpty(slug)) return "Ws";

@@ -113,6 +113,34 @@ public interface IStoryArtifactStrategy
     /// <summary>Engineer's step-definition files for a single workstream after the QA PR merges.</summary>
     Task<IReadOnlyDictionary<string, string>> ProduceStepDefinitionsAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 79 — agent-driven merge-conflict resolver. Called by
+    /// <c>StorySpawnOrchestrator.TryResolveConflictsAndRetryMergeAsync</c>
+    /// when an auto-merge attempt failed with a real merge-conflict 405
+    /// AND <see cref="IStoryGitOps.RebaseAndDetectConflictsAsync"/>
+    /// reported <see cref="RebaseState.Conflicted"/>. The Engineer agent
+    /// reads each <see cref="ConflictedFile"/>'s on-disk content
+    /// (markers preserved), the workstream's original task description,
+    /// and a tail of the workstream's recent deliverable Notes (so it
+    /// knows its own intent), then writes a resolved version of each
+    /// file. The returned dict maps path → resolved content; the
+    /// orchestrator hands this to
+    /// <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/>.
+    ///
+    /// <para>Per-file fast-path: lockfile / generated-file paths
+    /// (<c>*.lock</c>, <c>package-lock.json</c>, <c>Cargo.lock</c>,
+    /// <c>yarn.lock</c>, etc.) are NOT sent to the agent. The strategy
+    /// regenerates them via the repo's
+    /// <see cref="Forge.Api.Persistence.RepoRow.RestoreCommand"/> instead;
+    /// agents are bad at semantic merges of large dependency manifests.</para>
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> ProduceConflictResolutionAsync(
+        StorySpawnRow spawn,
+        WorkstreamRow workstream,
+        IReadOnlyList<ConflictedFile> conflictedFiles,
+        string baseBranch,
+        CancellationToken ct = default);
 }
 
 /// <summary>

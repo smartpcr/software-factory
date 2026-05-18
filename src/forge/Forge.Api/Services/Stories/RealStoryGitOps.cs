@@ -1373,6 +1373,260 @@ public sealed class RealStoryGitOps : IStoryGitOps
         return false;
     }
 
+    // ── Phase 79 — agent-driven merge-conflict resolver ──────────────────
+
+    /// <inheritdoc/>
+    public async Task<RebaseResult> RebaseAndDetectConflictsAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var existingWtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        var wtPath = !string.IsNullOrEmpty(existingWtPath)
+            ? existingWtPath
+            : WorktreePath(root, SanitizeBranchSlug(branch));
+        await this.EnsureWorktreeAsync(root, wtPath, branch, branch, ct);
+
+        // 1. Abort any leftover rebase from a previous attempt so we start clean.
+        await this.AbortRebaseAsync(repo, branch, ct);
+
+        // 2. Refresh both refs.
+        await this.GitAsync(wtPath, ct, "fetch", "origin", baseBranch);
+        var (lsBranchCode, lsBranchOut, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "ls-remote", "--heads", "origin", branch);
+        if (lsBranchCode == 0 && !string.IsNullOrWhiteSpace(lsBranchOut))
+        {
+            await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+            await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+        }
+
+        // 3. Attempt the rebase. Capture stderr — git uses non-zero exit
+        //    for both "conflict needs resolution" and "fatal: cannot rebase".
+        var (rcCode, _, rcErr) = await this.RunGitCaptureAsync(
+            wtPath, ct, "rebase", $"origin/{baseBranch}");
+        if (rcCode == 0)
+        {
+            this.logger?.LogInformation(
+                "Phase 79: rebase of {Branch} onto origin/{BaseBranch} clean.",
+                branch, baseBranch);
+            return new RebaseResult(RebaseState.Clean, Array.Empty<ConflictedFile>(), null);
+        }
+
+        // 4. Determine whether the non-zero is a conflict or a hard fail.
+        //    `git rebase --show-current-patch` returning non-empty (any
+        //    of UU/AA/DD/UD/DU/AU/UA in status) means we're paused on a
+        //    conflict. Otherwise abort + return RebaseFailed.
+        var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "status", "--porcelain");
+        var conflictedPaths = new List<string>();
+        if (statusCode == 0)
+        {
+            foreach (var rawLine in statusOut.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (line.Length < 3) continue;
+                var x = line[0];
+                var y = line[1];
+                // Per git-status(1): unmerged paths use XY ∈ {DD, AU, UD, UA, DU, AA, UU}.
+                var unmerged = (x == 'U' || y == 'U')
+                    || (x == 'A' && y == 'A')
+                    || (x == 'D' && y == 'D');
+                if (!unmerged) continue;
+                var path = line.Substring(3).Trim();
+                if (path.StartsWith('"') && path.EndsWith('"'))
+                {
+                    path = path[1..^1];
+                }
+                if (!string.IsNullOrEmpty(path)) conflictedPaths.Add(path);
+            }
+        }
+        if (conflictedPaths.Count == 0)
+        {
+            // Hard rebase failure (no commits to rebase, unstaged changes
+            // blocking, fatal error). Abort + bubble the stderr.
+            await this.AbortRebaseAsync(repo, branch, ct);
+            return new RebaseResult(RebaseState.RebaseFailed, Array.Empty<ConflictedFile>(),
+                $"git rebase exit={rcCode}: {rcErr?.Trim()}");
+        }
+
+        // 5. Read each conflicted file's on-disk content (markers preserved).
+        var files = new List<ConflictedFile>(conflictedPaths.Count);
+        foreach (var rel in conflictedPaths)
+        {
+            var diskPath = System.IO.Path.Combine(wtPath, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+            string content;
+            try { content = await System.IO.File.ReadAllTextAsync(diskPath, ct); }
+            catch (Exception ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Phase 79: could not read conflicted file '{Path}' from worktree '{Wt}'; substituting empty content.",
+                    rel, wtPath);
+                content = string.Empty;
+            }
+            files.Add(new ConflictedFile(rel, content));
+        }
+        this.logger?.LogInformation(
+            "Phase 79: rebase of {Branch} onto origin/{BaseBranch} paused on {N} conflicted file(s).",
+            branch, baseBranch, files.Count);
+        return new RebaseResult(RebaseState.Conflicted, files, null);
+    }
+
+    /// <inheritdoc/>
+    public async Task<RebaseResult> ContinueRebaseAndPushAsync(
+        RepoRow? repo,
+        string branch,
+        IReadOnlyDictionary<string, string> resolvedFiles,
+        CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct)
+            ?? throw new InvalidOperationException(
+                $"Phase 79: ContinueRebaseAndPushAsync called for branch '{branch}' but no worktree is registered. RebaseAndDetectConflictsAsync was expected to run first.");
+
+        // 1. Write resolved files + stage them.
+        foreach (var kv in resolvedFiles)
+        {
+            var diskPath = System.IO.Path.Combine(wtPath, kv.Key.Replace('/', System.IO.Path.DirectorySeparatorChar));
+            var dir = System.IO.Path.GetDirectoryName(diskPath);
+            if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+            {
+                System.IO.Directory.CreateDirectory(dir);
+            }
+            await System.IO.File.WriteAllTextAsync(diskPath, kv.Value, ct);
+            await this.GitAsync(wtPath, ct, "add", "--", kv.Key);
+        }
+
+        // 2. Continue the rebase. May land at Clean, another conflict
+        //    round, or a hard error (resolved files didn't actually
+        //    resolve, e.g. left markers in place).
+        //    GIT_EDITOR=true prevents the rebase --continue from
+        //    prompting for an interactive commit message edit.
+        var (rcCode, _, rcErr) = await this.RunGitCaptureWithEnvAsync(
+            wtPath, ct,
+            envOverride: new Dictionary<string, string?> { ["GIT_EDITOR"] = "true" },
+            args: new[] { "rebase", "--continue" });
+
+        if (rcCode != 0)
+        {
+            // Either another conflict round or a hard failure. Re-inspect
+            // git status — same logic as the initial RebaseAndDetectConflictsAsync.
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain");
+            var conflictedPaths = new List<string>();
+            if (statusCode == 0)
+            {
+                foreach (var rawLine in statusOut.Split('\n'))
+                {
+                    var line = rawLine.TrimEnd('\r');
+                    if (line.Length < 3) continue;
+                    var x = line[0]; var y = line[1];
+                    var unmerged = (x == 'U' || y == 'U')
+                        || (x == 'A' && y == 'A')
+                        || (x == 'D' && y == 'D');
+                    if (!unmerged) continue;
+                    var path = line.Substring(3).Trim();
+                    if (path.StartsWith('"') && path.EndsWith('"')) path = path[1..^1];
+                    if (!string.IsNullOrEmpty(path)) conflictedPaths.Add(path);
+                }
+            }
+            if (conflictedPaths.Count == 0)
+            {
+                await this.AbortRebaseAsync(repo, branch, ct);
+                return new RebaseResult(RebaseState.RebaseFailed, Array.Empty<ConflictedFile>(),
+                    $"git rebase --continue exit={rcCode}: {rcErr?.Trim()}");
+            }
+            var files = new List<ConflictedFile>(conflictedPaths.Count);
+            foreach (var rel in conflictedPaths)
+            {
+                var diskPath = System.IO.Path.Combine(wtPath, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+                string content;
+                try { content = await System.IO.File.ReadAllTextAsync(diskPath, ct); }
+                catch { content = string.Empty; }
+                files.Add(new ConflictedFile(rel, content));
+            }
+            this.logger?.LogInformation(
+                "Phase 79: rebase --continue paused on {N} additional conflicted file(s) for {Branch}.",
+                files.Count, branch);
+            return new RebaseResult(RebaseState.Conflicted, files, null);
+        }
+
+        // 3. Rebase clean. Force-push with-lease.
+        //    Capture the new tip + the origin tip so --force-with-lease
+        //    can compare them. If origin/branch has moved (e.g. concurrent
+        //    operator push), the push fails safely.
+        var (oldOrigCode, oldOrigOut, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "rev-parse", $"origin/{branch}");
+        var oldOriginSha = oldOrigCode == 0 ? oldOrigOut.Trim() : string.Empty;
+        string[] pushArgs;
+        if (!string.IsNullOrEmpty(oldOriginSha))
+        {
+            pushArgs = new[]
+            {
+                "push", "--force-with-lease=" + branch + ":" + oldOriginSha,
+                "origin", branch,
+            };
+        }
+        else
+        {
+            // No origin yet for this branch (shouldn't happen at this
+            // stage of the pipeline) — fall back to a plain --force-with-lease.
+            pushArgs = new[] { "push", "--force-with-lease", "origin", branch };
+        }
+        var (pushCode, _, pushErr) = await this.RunGitCaptureAsync(wtPath, ct, pushArgs);
+        if (pushCode != 0)
+        {
+            await this.AbortRebaseAsync(repo, branch, ct);
+            return new RebaseResult(RebaseState.RebaseFailed, Array.Empty<ConflictedFile>(),
+                $"force-push exit={pushCode}: {pushErr?.Trim()}");
+        }
+
+        this.logger?.LogInformation(
+            "Phase 79: rebase of {Branch} clean + force-pushed; {N} file(s) resolved.",
+            branch, resolvedFiles.Count);
+        return new RebaseResult(RebaseState.Clean, Array.Empty<ConflictedFile>(), null);
+    }
+
+    /// <inheritdoc/>
+    public async Task AbortRebaseAsync(RepoRow? repo, string branch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        if (string.IsNullOrEmpty(wtPath)) return;
+        // Idempotent: --quit + --abort both no-op when no rebase is in progress.
+        await this.RunGitCaptureAsync(wtPath, ct, "rebase", "--abort");
+    }
+
+    /// <summary>
+    /// Like <see cref="RunGitCaptureAsync"/> but with an environment-variable
+    /// override (used by Phase 79 to set <c>GIT_EDITOR=true</c> so
+    /// <c>git rebase --continue</c> doesn't drop into the editor).
+    /// </summary>
+    private async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureWithEnvAsync(
+        string cwd, CancellationToken ct,
+        IReadOnlyDictionary<string, string?> envOverride,
+        string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        foreach (var kv in envOverride)
+        {
+            if (kv.Value is null) psi.Environment.Remove(kv.Key);
+            else psi.Environment[kv.Key] = kv.Value;
+        }
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
+        proc.Start();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        return (proc.ExitCode, await stdoutTask, await stderrTask);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>

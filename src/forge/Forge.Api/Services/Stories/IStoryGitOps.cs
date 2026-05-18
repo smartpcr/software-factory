@@ -252,7 +252,98 @@ public interface IStoryGitOps
         string worktreePath,
         string baseBranch,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 79 — fetch <paramref name="baseBranch"/> and attempt
+    /// <c>git rebase origin/{baseBranch}</c> in the workstream worktree.
+    /// Returns a discriminated result the orchestrator routes on:
+    /// <list type="bullet">
+    ///   <item><see cref="RebaseState.Clean"/> — rebase succeeded, branch is
+    ///         ahead of base, caller force-pushes + retries the merge.</item>
+    ///   <item><see cref="RebaseState.Conflicted"/> — rebase paused on
+    ///         conflict markers; <see cref="RebaseResult.ConflictedFiles"/>
+    ///         carries each file's path + on-disk content (markers and all)
+    ///         for the agent resolver to consume.</item>
+    ///   <item><see cref="RebaseState.RebaseFailed"/> — rebase aborted for
+    ///         non-conflict reasons (missing upstream, detached HEAD, locked
+    ///         index, etc.); <see cref="RebaseResult.Detail"/> carries git
+    ///         stderr for the caller's stall reason.</item>
+    /// </list>
+    ///
+    /// <para>Always leaves the worktree in a recoverable state: on
+    /// <c>Conflicted</c> the rebase is in progress (caller resolves +
+    /// <see cref="ContinueRebaseAndPushAsync"/>); on <c>RebaseFailed</c>
+    /// the rebase is aborted (<c>git rebase --abort</c>) so the worktree
+    /// is back at the pre-rebase tip.</para>
+    /// </summary>
+    Task<RebaseResult> RebaseAndDetectConflictsAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 79 — apply agent-resolved file contents to the in-progress
+    /// rebase, stage them, <c>git rebase --continue</c>, and on a clean
+    /// finish <c>git push --force-with-lease</c> the branch.
+    ///
+    /// <para>If <c>git rebase --continue</c> stops at ANOTHER conflict
+    /// commit (multi-commit rebase), the method returns
+    /// <see cref="RebaseState.Conflicted"/> with the new conflict set —
+    /// the orchestrator loops back through resolution. The full rebase
+    /// is bounded by the orchestrator's <c>MaxResolveAttempts</c> cap.</para>
+    ///
+    /// <para>Force-push uses <c>--force-with-lease=origin/{branch}:{old-tip}</c>
+    /// captured before the rebase started; this rejects the push if
+    /// origin moved (e.g., concurrent operator push) instead of
+    /// clobbering. On rejection the method returns <c>RebaseFailed</c>
+    /// with the rejection detail so the caller can stall.</para>
+    /// </summary>
+    Task<RebaseResult> ContinueRebaseAndPushAsync(
+        RepoRow? repo,
+        string branch,
+        IReadOnlyDictionary<string, string> resolvedFiles,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 79 — best-effort cleanup helper. Called by the orchestrator
+    /// when the resolver loop gives up (max attempts reached or
+    /// <see cref="RebaseState.RebaseFailed"/>) so the worktree is back at
+    /// a clean tip for the next iter. Idempotent; no-op when no rebase
+    /// is in progress.
+    /// </summary>
+    Task AbortRebaseAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Phase 79 — outcome of <see cref="IStoryGitOps.RebaseAndDetectConflictsAsync"/>
+/// or <see cref="IStoryGitOps.ContinueRebaseAndPushAsync"/>. The state
+/// drives the orchestrator's resolver-loop control flow.
+/// </summary>
+public enum RebaseState
+{
+    /// <summary>Rebase succeeded; branch advanced past base. Caller force-pushes + retries merge.</summary>
+    Clean,
+
+    /// <summary>Rebase paused on conflict markers; agent must resolve.</summary>
+    Conflicted,
+
+    /// <summary>Rebase or force-push aborted for non-conflict reasons; caller stalls.</summary>
+    RebaseFailed,
+}
+
+/// <summary>
+/// Phase 79 — return shape of the two rebase methods.
+/// </summary>
+public sealed record RebaseResult(
+    RebaseState State,
+    IReadOnlyList<ConflictedFile> ConflictedFiles,
+    string? Detail);
+
+/// <summary>
+/// Phase 79 — a single conflicted file as seen during an in-progress
+/// rebase. <see cref="Content"/> is the raw on-disk text with
+/// <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt; / ======= / &gt;&gt;&gt;&gt;&gt;&gt;&gt;</c> markers preserved
+/// so the agent has full context for resolution.
+/// </summary>
+public sealed record ConflictedFile(string Path, string Content);
 
 /// <summary>
 /// Phase 65 — return shape of <see cref="IStoryGitOps.SnapshotBranchHeadAsync"/>.
