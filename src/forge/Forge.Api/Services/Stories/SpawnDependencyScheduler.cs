@@ -97,22 +97,50 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     public async Task TickOnceAsync(CancellationToken ct = default)
     {
         IReadOnlyList<(string StoryId, string SpawnId)> active;
-        using (var scope = this.services.CreateScope())
+
+        // Phase 73 follow-up — story_spawns is a PRODUCT table; after the
+        // split it lives in each per-product DB ({slug}.db), NOT in the
+        // control DB (forge.db). Without scope context the unscoped
+        // ProductDbContext falls back to forge.db whose story_spawns
+        // table is an empty stub left behind by the split. Net effect:
+        // the scheduler saw 0 active spawns and silently no-op'd every
+        // 15 s, leaving fully-passed workstreams permanently un-PR'd.
+        //
+        // Fan out: enumerate products from control, push each slug into
+        // the AsyncLocal slot, query that product's story_spawns,
+        // aggregate. Each entry retains its story id so DriveAsync (which
+        // pushes its own slug from FromStoryId) routes to the correct
+        // per-product DB inside the orchestrator.
+        var aggregate = new List<(string StoryId, string SpawnId)>();
+        using (var ctlScope = this.services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            // Include Done-phase spawns: when the QA pass advances the phase
-            // to "done", the WI/ProductStory closure work happens on the
-            // *next* drive (DriveDoneAsync). Filtering them out here would
-            // strand the spawn at done with the work item still active.
-            // DriveDoneAsync short-circuits once the WI state is already
-            // closed, so this remains effectively a one-shot per spawn.
-            active = await db.StorySpawns
+            var control = ctlScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var slugs = await control.Products
                 .AsNoTracking()
-                .Where(s => s.Phase != StorySpawnPhases.Paused)
-                .Select(s => new ValueTuple<string, string>(s.StoryId, s.Id))
+                .Where(p => p.Slug != null && p.Slug != "")
+                .Select(p => p.Slug!)
                 .ToListAsync(ct);
+
+            foreach (var slug in slugs)
+            {
+                using var slugScope = ProductDbContextFactory.PushAsyncLocalSlug(slug);
+                using var dbScope = this.services.CreateScope();
+                var db = dbScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                // Include Done-phase spawns: when the QA pass advances the phase
+                // to "done", the WI/ProductStory closure work happens on the
+                // *next* drive (DriveDoneAsync). Filtering them out here would
+                // strand the spawn at done with the work item still active.
+                // DriveDoneAsync short-circuits once the WI state is already
+                // closed, so this remains effectively a one-shot per spawn.
+                var rows = await db.StorySpawns
+                    .AsNoTracking()
+                    .Where(s => s.Phase != StorySpawnPhases.Paused)
+                    .Select(s => new ValueTuple<string, string>(s.StoryId, s.Id))
+                    .ToListAsync(ct);
+                aggregate.AddRange(rows);
+            }
         }
+        active = aggregate;
         var orchestrator = this.services.GetRequiredService<StorySpawnOrchestrator>();
         // Phase 42 — reconciler is optional in tests; resolve once per tick.
         var reconciler = this.services.GetService<PlanReconciler>();
