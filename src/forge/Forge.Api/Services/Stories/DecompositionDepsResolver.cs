@@ -40,7 +40,20 @@ internal static class DecompositionDepsResolver
 {
     public sealed record ResolvedStageDeps(
         IReadOnlyList<string> Deps,
-        IReadOnlyList<string> UnresolvedDeps);
+        IReadOnlyList<string> UnresolvedDeps,
+        // docs/forge/e2e.md Stage 2.1 — anchor refs from the stage's
+        // `### Cross-Stage Dependencies` H3, projected to upstream stage
+        // titles (same shape as <see cref="Deps"/>). Empty when the H3 is
+        // absent. Stage 3.1 will consume this when emitting the trailing
+        // qa-e2e workstream's Deps[]. Cycle detection (this resolver
+        // already throws <c>plan.dep_cycle</c> on offence) treats these
+        // edges as first-class — a cycle that goes through a cross-stage
+        // e2e dep fires the same throw, with the cross-stage edge named in
+        // the path. An UNRESOLVED cross-stage e2e ref is fatal: the
+        // resolver throws <c>plan.dep_unresolved</c> with a structured
+        // message, mirroring the cycle path. Additive default keeps every
+        // existing caller of <c>new ResolvedStageDeps(...)</c> compiling.
+        IReadOnlyList<string>? CrossStageE2eDeps = null);
 
     /// <summary>
     /// Resolve and phase-expand the deps for every stage in the parsed plan.
@@ -146,6 +159,50 @@ internal static class DecompositionDepsResolver
                     unresolved.Add(depRef);
                 }
 
+                // docs/forge/e2e.md Stage 2.1 — cross-stage e2e deps.
+                // Resolved with the same anchor/title fallback chain as
+                // ordinary deps, BUT an unresolved ref is fatal because a
+                // trailing qa-e2e workstream cannot wait on a non-existent
+                // upstream. Resolved cross-stage e2e anchors ALSO join the
+                // cycle-detection DAG (depAnchorsByStage) so a cycle that
+                // goes through a cross-stage edge fires the same
+                // plan.dep_cycle throw.
+                var crossStageAnchors = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var depRef in stage.CrossStageE2eDeps ?? Array.Empty<string>())
+                {
+                    if (TryResolveStageAnchor(depRef, stagesByAnchor, out var upStage))
+                    {
+                        crossStageAnchors.Add(upStage.Anchor);
+                        anchors.Add(upStage.Anchor);
+                        continue;
+                    }
+                    if (TryResolvePhaseAnchor(depRef, phasesByAnchor, out var upPhase))
+                    {
+                        foreach (var upStage2 in upPhase.Stages)
+                        {
+                            crossStageAnchors.Add(upStage2.Anchor);
+                            anchors.Add(upStage2.Anchor);
+                        }
+                        continue;
+                    }
+                    if (stagesByTitle.TryGetValue(depRef, out var titleStage))
+                    {
+                        crossStageAnchors.Add(titleStage.Anchor);
+                        anchors.Add(titleStage.Anchor);
+                        continue;
+                    }
+
+                    // Fatal. Throw with the structured code so the
+                    // orchestrator's LastError + the operator's UI both see
+                    // the same string. Includes the offending stage's
+                    // anchor + the unresolved ref so the operator can fix
+                    // the plan without grepping.
+                    throw new InvalidOperationException(
+                        $"{PlanParser.ErrorCodes.DepUnresolved}: cross-stage e2e dep '{depRef}' " +
+                        $"on stage '{stage.Name}' ({stage.Anchor}) does not resolve to any phase " +
+                        $"or stage anchor in the plan.");
+                }
+
                 depAnchorsByStage[stage.Anchor] = anchors;
 
                 // Project anchors → titles for the orchestrator's title-keyed Deps[].
@@ -153,7 +210,18 @@ internal static class DecompositionDepsResolver
                     .Select(a => stagesByAnchor.TryGetValue(a, out var s) ? s.Name : a)
                     .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                resolved[stage.Anchor] = new ResolvedStageDeps(titles, unresolved);
+
+                // Project cross-stage anchors → titles too, keeping them
+                // distinct from the ordinary Deps so Stage 3.1 can wire
+                // them to the trailing qa-e2e workstream specifically.
+                var crossStageTitles = crossStageAnchors.Count == 0
+                    ? (IReadOnlyList<string>)Array.Empty<string>()
+                    : crossStageAnchors
+                        .Select(a => stagesByAnchor.TryGetValue(a, out var s) ? s.Name : a)
+                        .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                resolved[stage.Anchor] = new ResolvedStageDeps(titles, unresolved, crossStageTitles);
             }
         }
 
@@ -251,7 +319,7 @@ internal static class DecompositionDepsResolver
                                 ? $"{s.Name} ({a})"
                                 : a);
                             throw new InvalidOperationException(
-                                $"plan.dep_cycle: stage dependency cycle detected: {string.Join(" -> ", named)}");
+                                $"{PlanParser.ErrorCodes.DepCycle}: stage dependency cycle detected: {string.Join(" -> ", named)}");
                         }
                         if (c == White)
                         {

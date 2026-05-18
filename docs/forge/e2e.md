@@ -490,20 +490,22 @@ references them.
   `plan.dep_*` error family.
 
 **Implementation Steps:**
-- [ ] Add `IReadOnlyList<string> CrossStageE2eDeps` to the parser's `Stage` record (default empty).
-- [ ] Extend the section recogniser in `PlanParser` to capture the optional H3 alongside the three required subsections (Implementation Steps / Dependencies / Test Scenarios).
-- [ ] Pipe the new field through `DecompositionDepsResolver` so anchor resolution + cycle detection apply uniformly to impl deps AND cross-stage e2e deps.
-- [ ] Update the evaluator's hard-requirement list in `BuildPlanDocSpecs["implementation-plan"]` to mention the optional H3.
+- [x] Add `IReadOnlyList<string>? CrossStageE2eDeps = null` to `PlanParser.CanonicalStage` (additive default — every existing caller compiles unchanged), plus matching `MutableStage.CrossStageE2eDeps` list, `SectionKind.StageCrossStageE2eDeps = 5` (ordered AFTER `StageTestScenarios` so the existing subsection-order rule fires if the H3 lands too early), and the corresponding bullet-handler switch case.
+- [x] Extend `V2StageSubHeading` regex to recognise `Cross-Stage Dependencies` as a 4th valid subsection name, and update `ResolveStageSubsection` to map it to the new `SectionKind` (with the "Cross-Stage" check ordered BEFORE the plain "Dependencies" prefix-match so the latter doesn't steal it).
+- [x] Pipe the new field through `DecompositionDepsResolver`: extended `ResolvedStageDeps` with an additive `CrossStageE2eDeps` projection; resolved anchors flow into the cycle-detection DAG so cycles introduced via the new H3 fire `plan.dep_cycle` just like ordinary dep cycles; unresolved anchors throw a fatal `plan.dep_unresolved` (new `PlanParser.ErrorCodes.DepUnresolved` constant) with a structured message naming the offending stage + ref.
+- [x] Update `BuildPlanDocSpecs["implementation-plan"]` evaluator hard-requirements list to document the optional H3 + the `plan.dep_unresolved` / `plan.dep_cycle` failure modes.
+- [x] Bonus: unified the existing cycle throw to use the new `PlanParser.ErrorCodes.DepCycle` constant instead of the bare string literal, so test assertions and the orchestrator's `LastError` projection branch on a single source of truth.
+- [x] Stage content-hash now includes `crossStageE2eDeps|…` WHEN PRESENT, so a doc that adds / removes the H3 re-prompts the reconciler the same way a plain dep edit does. v1 + v2-without-the-H3 plans hash unchanged (back-compat).
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Stage without the H3 parses with `CrossStageE2eDeps` = empty.
-- [ ] `[unit]` Scenario: Stage with the H3 listing two anchors resolves both into the field.
-- [ ] `[unit]` Scenario: Unresolved anchor in the H3 surfaces as a `plan.dep_unresolved` parse error.
-- [ ] `[unit]` Scenario: A cycle introduced via cross-stage deps is detected by `DecompositionDepsResolver` (returns `plan.dep_cycle`).
-- [ ] `[integration]` Scenario: A full plan with cross-stage e2e deps survives a round-trip through decompose endpoint without losing the anchors.
+- [x] `[unit]` Scenario: Stage without the H3 parses with `CrossStageE2eDeps` = empty. — `Stage21CrossStageE2eDepsTests.Parser_Stage_Without_H3_Has_Empty_CrossStageE2eDeps` (3-stage harness, asserts every stage has empty list + existing fields unchanged).
+- [x] `[unit]` Scenario: Stage with the H3 listing two anchors resolves both into the field. — `Stage21CrossStageE2eDepsTests.Parser_Stage_With_H3_Captures_Both_Anchors` (parser captures both anchors verbatim; resolver projects to upstream stage titles; also asserts the content hash changes vs the no-H3 baseline so the reconciler re-prompts).
+- [x] `[unit]` Scenario: Unresolved anchor in the H3 surfaces as a `plan.dep_unresolved` parse error. — `Stage21CrossStageE2eDepsTests.Parser_Stage_With_Unresolved_H3_Anchor_Throws_DepUnresolved` (fatal throw; message starts with `plan.dep_unresolved` and names both the offending stage and the missing ref).
+- [x] `[unit]` Scenario: A cycle introduced via cross-stage deps is detected by `DecompositionDepsResolver` (returns `plan.dep_cycle`). — `Stage21CrossStageE2eDepsTests.Resolver_Cycle_Through_CrossStage_Edge_Fires_DepCycle` (API → UI ordinary edge + UI → API cross-stage edge forms a cycle; throw names both stages).
+- [x] `[integration]` Scenario: A full plan with cross-stage e2e deps survives a round-trip through decompose endpoint without losing the anchors. — `Stage21CrossStageE2eDepsTests.Pipeline_RoundTrips_CrossStageE2eDeps_Through_Parser_And_Resolver` (3-phase / 5-stage fixture: ordinary deps + phase-expansion deps + two cross-stage edges; spec-named "decompose endpoint" path is interpreted as `Parse → ResolveAll` because that's the actual pipeline `CrewStoryArtifactStrategy.ProduceDecompositionAsync` invokes before persisting — Stage 3.1 will then plug the resolver's `CrossStageE2eDeps` projection into the trailing qa-e2e workstream's `Deps[]`).
 
 ---
 

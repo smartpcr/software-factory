@@ -58,6 +58,26 @@ public static class PlanParser
         public const string FormatUnknown = "plan.format_unknown";
         public const string StageSubsectionOrderInvalid = "plan.stage_subsection_order_invalid";
         public const string DuplicateStageTitle = "plan.duplicate_stage_title";
+
+        /// <summary>
+        /// docs/forge/e2e.md Stage 2.1 — a <c>### Cross-Stage Dependencies</c>
+        /// bullet referenced a phase or stage anchor that does not exist in
+        /// the parsed plan. Raised by <see cref="DecompositionDepsResolver"/>
+        /// (via an exception whose message starts with this code) because the
+        /// resolver is the layer that owns anchor-to-stage resolution. Fatal
+        /// — a missing upstream means the trailing qa-e2e workstream would
+        /// wait forever on a non-existent dependency.
+        /// </summary>
+        public const string DepUnresolved = "plan.dep_unresolved";
+
+        /// <summary>
+        /// Phase 46 (existing) — cycle detected in the effective stage-level
+        /// DAG (declared via <c>### Dependencies</c> and / or
+        /// <c>### Cross-Stage Dependencies</c>). String exposed as an
+        /// ErrorCodes constant so test assertions and the orchestrator's
+        /// <c>LastError</c> projection can use the same literal.
+        /// </summary>
+        public const string DepCycle = "plan.dep_cycle";
     }
 
     /// <summary>
@@ -90,7 +110,16 @@ public static class PlanParser
         IReadOnlyList<string> Dependencies,
         IReadOnlyList<string> TestScenarios,
         bool IsStartStage,
-        string ContentHash);
+        string ContentHash,
+        // docs/forge/e2e.md Stage 2.1 — optional anchor refs from a Stage's
+        // `### Cross-Stage Dependencies` H3. These are deps that gate the
+        // TRAILING qa-e2e workstream (emitted in Stage 3.1), not the impl
+        // workstream itself. Empty when the H3 is absent. Additive default
+        // keeps every existing caller of `new CanonicalStage(...)` compiling
+        // unchanged. The resolver (DecompositionDepsResolver.ResolveAll)
+        // expands these against the same anchor/title fallback chain as
+        // ordinary stage deps AND includes them in the cycle-detection DAG.
+        IReadOnlyList<string>? CrossStageE2eDeps = null);
 
     /// <summary>One canonical step parsed from a checkbox bullet under <c>### Implementation Steps</c> (v2) or <c>#### Implementation Steps</c> (v1).</summary>
     public sealed record CanonicalStep(
@@ -146,8 +175,13 @@ public static class PlanParser
         @"^##\s+Dependencies\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // docs/forge/e2e.md Stage 2.1 — accept an optional `### Cross-Stage
+    // Dependencies` subsection alongside the three required ones. The
+    // hyphen between "Cross" and "Stage" is required (matches the spec
+    // wording exactly) but the inner spacing is loose via \s+ so a doc
+    // that emits "Cross-Stage  Dependencies" (double space) still parses.
     private static readonly Regex V2StageSubHeading = new(
-        @"^###\s+(?<name>Implementation\s+Steps|Dependencies|Test\s+Scenarios)\s*$",
+        @"^###\s+(?<name>Implementation\s+Steps|Dependencies|Test\s+Scenarios|Cross-Stage\s+Dependencies)\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // --- v1 (legacy) regexes -------------------------------------------------------
@@ -366,6 +400,27 @@ public static class PlanParser
                         currentStage.Scenarios.Add(text);
                         break;
                     }
+
+                // docs/forge/e2e.md Stage 2.1 — bullets under the optional
+                // `### Cross-Stage Dependencies` H3 are anchor refs in the
+                // same shape as `### Dependencies` (plain bullets, no
+                // checkbox). The resolver expands them against the same
+                // anchor/title fallback chain and includes them in cycle
+                // detection.
+                case SectionKind.StageCrossStageE2eDeps when currentStage is not null:
+                    {
+                        var bullet = PlainBullet.Match(line);
+                        if (!bullet.Success) break;
+                        var text = bullet.Groups["text"].Value.Trim();
+                        if (text.Length == 0) break;
+                        // The "_none — start stage_" sentinel is meaningless
+                        // here (there's no "start cross-stage e2e dep" concept);
+                        // silently drop it so an architect that copy-pastes
+                        // the marker doesn't poison the dep list.
+                        if (IsStartMarker(text, isPhase: false)) break;
+                        currentStage.CrossStageE2eDeps.Add(text);
+                        break;
+                    }
             }
         }
 
@@ -482,6 +537,12 @@ public static class PlanParser
         // is collapsed at the regex level via \s+, but the captured name
         // preserves multiple spaces; normalise here for the comparison.
         var compact = Regex.Replace(name, @"\s+", " ");
+
+        // Order matters: "Cross-Stage Dependencies" starts with the literal
+        // "Cross" so this check has to come BEFORE the plain "Dependencies"
+        // branch, otherwise the latter would match first.
+        if (compact.StartsWith("Cross-Stage Dependencies", StringComparison.OrdinalIgnoreCase))
+            return SectionKind.StageCrossStageE2eDeps;
         if (compact.StartsWith("Implementation Steps", StringComparison.OrdinalIgnoreCase))
             return SectionKind.StageSteps;
         if (compact.StartsWith("Dependencies", StringComparison.OrdinalIgnoreCase))
@@ -570,6 +631,14 @@ public static class PlanParser
         {
             bodyParts.Add("start|stage");
         }
+        // docs/forge/e2e.md Stage 2.1 — cross-stage e2e deps participate
+        // in the content hash WHEN PRESENT so a doc that adds / removes
+        // the H3 re-prompts the reconciler the same way a plain dep edit
+        // does. v1 + v2-without-the-H3 docs hash unchanged.
+        if (s.CrossStageE2eDeps.Count > 0)
+        {
+            bodyParts.Add($"crossStageE2eDeps|{string.Join(",", s.CrossStageE2eDeps)}");
+        }
         var bodyKey = string.Join("\n", bodyParts);
 
         return new CanonicalStage(
@@ -581,7 +650,10 @@ public static class PlanParser
             Dependencies: s.Dependencies.ToList(),
             TestScenarios: s.Scenarios.ToList(),
             IsStartStage: s.IsStartStage,
-            ContentHash: HashOf(bodyKey));
+            ContentHash: HashOf(bodyKey),
+            CrossStageE2eDeps: s.CrossStageE2eDeps.Count == 0
+                ? Array.Empty<string>()
+                : s.CrossStageE2eDeps.ToList());
     }
 
     private static CanonicalStep BuildStep(string stageAnchor, int index, string text, bool isChecked)
@@ -623,8 +695,9 @@ public static class PlanParser
 
     /// <summary>
     /// Phase 46 — section the parser is currently inside. Ordering is the
-    /// contract from Q46.3: Steps -> Dependencies -> Test Scenarios; an
-    /// out-of-order transition records <see cref="ErrorCodes.StageSubsectionOrderInvalid"/>.
+    /// contract from Q46.3: Steps -> Dependencies -> Test Scenarios -> (optional)
+    /// Cross-Stage Dependencies; an out-of-order transition records
+    /// <see cref="ErrorCodes.StageSubsectionOrderInvalid"/>.
     /// </summary>
     private enum SectionKind
     {
@@ -633,6 +706,15 @@ public static class PlanParser
         StageSteps = 2,
         StageDependencies = 3,
         StageTestScenarios = 4,
+
+        /// <summary>
+        /// docs/forge/e2e.md Stage 2.1 — optional 4th H3 under a Stage,
+        /// holding anchor refs the trailing qa-e2e workstream depends on.
+        /// Placed AFTER <see cref="StageTestScenarios"/> in the ordering so
+        /// a doc that emits Cross-Stage Dependencies in any earlier slot
+        /// trips the existing subsection-order error.
+        /// </summary>
+        StageCrossStageE2eDeps = 5,
     }
 
     private sealed class MutablePhase
@@ -663,6 +745,12 @@ public static class PlanParser
         public List<string> Scenarios { get; } = new();
 
         public bool IsStartStage { get; set; }
+
+        /// <summary>
+        /// docs/forge/e2e.md Stage 2.1 — bullet bodies under an optional
+        /// `### Cross-Stage Dependencies` H3. Empty when the H3 is absent.
+        /// </summary>
+        public List<string> CrossStageE2eDeps { get; } = new();
 
         /// <summary>Tracks the highest-ordered subsection seen so the order rule can fire on regressions.</summary>
         public SectionKind HighestSectionSeen { get; set; } = SectionKind.None;

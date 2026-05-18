@@ -145,9 +145,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 - Top-level YAML front-matter (`title:`, `storyId:`) MUST be present so the doc rendering treats phases as root sections.
                 - Each Phase is an H1 (`# Phase N: …`); Stages are H2 (`## Stage N.M: …`); subsections are H3 (`### …`).
                 - Each Phase MUST contain a `## Dependencies` section directly under the H1 heading, before any stage. An empty body MUST read `- _none -- start phase_`.
-                - Each Stage MUST contain THREE subsections in this exact order: `### Implementation Steps`, `### Dependencies`, `### Test Scenarios`.
+                - Each Stage MUST contain THREE subsections in this exact order: `### Implementation Steps`, `### Dependencies`, `### Test Scenarios`. A fourth OPTIONAL subsection `### Cross-Stage Dependencies` may appear AFTER `### Test Scenarios` when this stage's trailing qa-e2e workstream needs to wait on additional upstream stages (i.e. an e2e scenario that exercises this stage AND another stage).
                 - Dep refs use anchor form, NOT titles. Stage anchor: `phase-{phase-name-slug}/stage-{stage-name-slug}` (no phase or stage numbers -- slugs are derived from the heading name only). Phase anchor: `phase-{phase-name-slug}`.
                 - The `### Dependencies` body MUST list one bullet per upstream stage anchor (e.g. `- phase-foo/stage-bar`). An empty body MUST read `- _none -- start stage_`.
+                - The optional `### Cross-Stage Dependencies` body lists one bullet per upstream stage or phase anchor (same anchor form as `### Dependencies`). Omit the H3 entirely when the qa-e2e workstream only depends on this stage's implementation. An unresolved anchor under this H3 is fatal (parse error `plan.dep_unresolved`); cycles introduced via cross-stage e2e deps fire `plan.dep_cycle` like any other dep cycle.
                 - Phase deps may name a phase anchor (e.g. `- phase-foo`); the orchestrator expands phase deps as "every stage in this phase depends on every stage in the upstream phase".
                 - Stage TITLES must be unique across the entire plan; a duplicate title is rejected as `plan.duplicate_stage_title`.
                 - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. Each step changes ≤ 20 files in the eventual PR.
