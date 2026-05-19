@@ -2503,6 +2503,22 @@ public sealed class StorySpawnOrchestrator
         StorySpawnRow spawn, WorkstreamRow w, RepoRow? repo,
         string baseBranch, IHubContext<ForgeHub>? hub, CancellationToken ct)
     {
+        // docs/forge/e2e.md Stage 5.1 — qa-e2e workstreams take a
+        // shorter path: they don't need target discovery (no impl files
+        // to edit), don't run the impl gen↔eval loop directly (the QA
+        // strategy's ProduceStageE2eAsync drives its own loop with the
+        // post-pass dotnet-test gate), and open a `[e2e]`-prefixed PR
+        // that references the impl-sibling PR for traceability. The
+        // dep-gate at the top of DriveImplementAsync already ensures
+        // we don't reach here until the impl sibling's PR has merged
+        // (impl ws.Status == "complete"), so the e2e tests run against
+        // shipped code.
+        if (IsQaE2e(w))
+        {
+            await this.DriveOneQaE2eWorkstreamAsync(spawn, w, repo, baseBranch, hub, ct);
+            return;
+        }
+
         // Check if the gen/eval loop already passed for this workstream.
         // Use a fresh scope so we don't race the original DbContext.
         using var scope = this.services.CreateScope();
@@ -2902,6 +2918,248 @@ public sealed class StorySpawnOrchestrator
         await EmitChange(hub, "ws-pr-opened", spawn, ct);
     }
 
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.1 — true when the workstream is a
+    /// trailing per-stage QA workstream (emitted by Stage 3.1's
+    /// decomposer for any Stage with at least one acceptance scenario).
+    /// The orchestrator routes these through
+    /// <see cref="DriveOneQaE2eWorkstreamAsync"/> instead of the impl
+    /// gen↔eval loop.
+    /// </summary>
+    private static bool IsQaE2e(WorkstreamRow w) =>
+        string.Equals(w.Category, WorkstreamCategories.QaE2e, StringComparison.Ordinal);
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.1 — per-workstream driver for
+    /// <see cref="WorkstreamCategories.QaE2e"/> rows. Delegates artifact
+    /// production to <see cref="IStoryArtifactStrategy.ProduceStageE2eAsync"/>
+    /// (which runs its own gen↔eval loop + post-pass <c>dotnet test</c>
+    /// gate per Stage 4.3), commits the result to the qa-e2e branch
+    /// computed by Stage 3.1's decomposer, opens a PR with an
+    /// <c>[e2e]</c>-prefixed title that references the impl-sibling PR
+    /// id, and flips the workstream to <c>review</c> so the standard
+    /// Phase 28 review-→-merge → done lifecycle picks it up. The
+    /// dep-gate on the impl sibling is enforced by the calling sweep
+    /// (<see cref="DriveImplementAsync"/>), not here — this method only
+    /// runs after the sibling has reached <c>complete</c>.
+    /// </summary>
+    private async Task DriveOneQaE2eWorkstreamAsync(
+        StorySpawnRow spawn, WorkstreamRow w, RepoRow? repo,
+        string baseBranch, IHubContext<ForgeHub>? hub, CancellationToken ct)
+    {
+        using var scope = this.services.CreateScope();
+        var control2 = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db2 = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        // Re-check status from the live DB — operator may have cancelled
+        // between the claim sweep and this task running, or a prior tick
+        // already opened the PR (idempotency).
+        var freshRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+        if (freshRow is null) return;
+        if (freshRow.Status is "cancelled" or "paused" or "complete" or "merging" or "review")
+        {
+            this.logger?.LogDebug(
+                "qa-e2e workstream {WsId} status={Status}; skipping (idempotent).",
+                w.Id, freshRow.Status);
+            return;
+        }
+        if (ParseStringList(freshRow.PrsJson).Count > 0)
+        {
+            // PR already opened by an earlier tick. Just mark review and
+            // bail so the review loop picks it up.
+            freshRow.Status = "review";
+            await db2.SaveChangesAsync(ct);
+            return;
+        }
+
+        // Run the QA producer. The deterministic strategy returns files
+        // directly; the LLM-driven strategy runs its own gen↔eval loop
+        // with the post-pass dotnet-test gate. Failures surface here as
+        // exceptions; we mark the row stalled with a clear reason.
+        IReadOnlyDictionary<string, string> files;
+        try
+        {
+            files = await this.strategy.ProduceStageE2eAsync(spawn, w, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "qa-e2e producer threw for workstream {WsId}; marking stalled.", w.Id);
+            var stalledRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (stalledRow is not null && stalledRow.Status is not "cancelled" and not "complete")
+            {
+                stalledRow.Status = WorkstreamStatuses.Stalled;
+                stalledRow.StallReason = $"qa-e2e producer failed: {ex.GetType().Name}: {ex.Message}";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
+            }
+            return;
+        }
+
+        if (files.Count == 0)
+        {
+            // Producer succeeded but emitted nothing — treat the same as
+            // a stall so the operator sees the row needs attention.
+            var emptyRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (emptyRow is not null && emptyRow.Status is not "cancelled" and not "complete")
+            {
+                emptyRow.Status = WorkstreamStatuses.Stalled;
+                emptyRow.StallReason = "qa-e2e producer emitted zero files; no PR to open.";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
+            }
+            return;
+        }
+
+        // Commit qa-e2e files to the workstream branch. The slug
+        // computation reuses WorkstreamWorktreeSlug.Compute which
+        // (Stage 3.2) shadows the impl sibling's `stage-{N.M}-{slug}`
+        // with a `-e2e` suffix so the on-disk paths are intuitive.
+        var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, control2, db2, ct);
+        await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
+            $"qa-e2e({w.Id}): {w.Name}", ct);
+
+        // Merge latest base into the branch so the PR diff is minimal.
+        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
+
+        // Resolve the impl-sibling PR id (if any) for the body link.
+        // The sibling's PlanAnchor is this row's anchor with the `/e2e`
+        // suffix stripped; the sibling's PR id is the first entry in
+        // its PrsJson (PersistDecompositionAsync writes it there at
+        // impl PR open time).
+        var implPrRef = await ResolveImplSiblingPrAsync(db2, w, ct);
+
+        var prTitle = $"[e2e] {w.Name}";
+        var prBodyBuilder = new System.Text.StringBuilder()
+            .AppendLine($"## {prTitle}")
+            .AppendLine()
+            .AppendLine($"**Story:** {spawn.StoryId}")
+            .AppendLine($"**Stage anchor:** `{w.PlanAnchor}`")
+            .AppendLine($"**Workstream:** `{w.Id}`")
+            .AppendLine()
+            .AppendLine("Trailing qa-e2e artifacts for the stage: Gherkin `.feature` file +")
+            .AppendLine("Reqnroll step-definitions + (for `compose`/`lab-*` setup types)")
+            .AppendLine("pipeline YAML stubs. See docs/forge/e2e.md Stage 4.3 for the")
+            .AppendLine("producer contract.");
+        if (!string.IsNullOrEmpty(implPrRef))
+        {
+            prBodyBuilder.AppendLine().AppendLine($"**Impl PR:** {implPrRef}");
+        }
+
+        var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
+            Branch: w.Branch,
+            BaseBranch: baseBranch,
+            Title: prTitle,
+            Body: prBodyBuilder.ToString(),
+            Repo: repo,
+            WorkItemId: w.Id,
+            Workstream: w.Id,
+            Epic: spawn.StoryId,
+            AutoMerge: AutoMergeOf(spawn)), ct);
+
+        var liveRow = await db2.Workstreams.FirstAsync(ws => ws.Id == w.Id, ct);
+        var prsList = ParseStringList(liveRow.PrsJson);
+        if (!prsList.Contains(prId)) prsList.Add(prId);
+        liveRow.PrsJson = JsonSerializer.Serialize(prsList);
+        liveRow.Status = "review";
+        liveRow.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await db2.SaveChangesAsync(ct);
+        await EmitChange(hub, "ws-pr-opened", spawn, ct);
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.1 — find the impl-sibling workstream's
+    /// PR id for the qa-e2e body link. Returns null when no sibling
+    /// exists or it hasn't opened a PR yet (shouldn't reach here in
+    /// production because the dep-gate ensures the sibling is
+    /// <c>complete</c>, but tolerated for defense-in-depth).
+    /// </summary>
+    private static async Task<string?> ResolveImplSiblingPrAsync(
+        ProductDbContext db, WorkstreamRow qaWorkstream, CancellationToken ct)
+    {
+        var qaAnchor = qaWorkstream.PlanAnchor;
+        if (string.IsNullOrEmpty(qaAnchor)
+            || !qaAnchor.EndsWith(CrewStoryArtifactStrategy.QaE2eAnchorSuffix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var implAnchor = qaAnchor[..^CrewStoryArtifactStrategy.QaE2eAnchorSuffix.Length];
+        var impl = await db.Workstreams.AsNoTracking()
+            .FirstOrDefaultAsync(w => w.StorySpawnId == qaWorkstream.StorySpawnId
+                                    && w.PlanAnchor == implAnchor, ct);
+        if (impl is null) return null;
+        var prs = ParseStringList(impl.PrsJson);
+        return prs.Count > 0 ? prs[0] : null;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.2 — done-gate predicate. A spawn is
+    /// complete when every active workstream (impl + qa-e2e) has
+    /// <c>Status == "complete"</c>. Workstreams in terminal-but-not-
+    /// shipped states (<c>WorkstreamStatuses.Historic</c>,
+    /// <c>"cancelled"</c>) are excluded from the requirement — they
+    /// belong to a superseded decomposition or were operator-cancelled.
+    /// <c>"paused"</c> is also excluded so an operator pause on one
+    /// workstream doesn't permanently block the spawn from advancing.
+    /// Returns <c>false</c> when the spawn has zero non-terminal
+    /// workstreams (defensive — an empty decomposition shouldn't flip
+    /// to done; the operator should re-decompose).
+    /// </summary>
+    internal static async Task<bool> IsSpawnDoneAsync(
+        ProductDbContext db, string spawnId, CancellationToken ct)
+    {
+        var rows = await db.Workstreams.AsNoTracking()
+            .Where(w => w.StorySpawnId == spawnId)
+            .Select(w => w.Status)
+            .ToListAsync(ct);
+        if (rows.Count == 0) return false;
+
+        var anyActive = false;
+        foreach (var status in rows)
+        {
+            if (status == WorkstreamStatuses.Historic) continue;
+            if (status == "cancelled") continue;
+            if (status == "paused") continue;
+            anyActive = true;
+            if (status != "complete") return false;
+        }
+        return anyActive;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.2 — when every workstream is
+    /// <c>complete</c>, flip <c>StorySpawn.Phase</c> to <c>done</c>,
+    /// stamp <c>UpdatedAt</c>, persist, and emit the standard <c>done</c>
+    /// SignalR event so the UI re-fetches. No-ops when the spawn isn't
+    /// done yet OR when the phase is already <c>done</c>. Returns
+    /// <c>true</c> when it advanced the phase (so callers can chain
+    /// into <c>DriveDoneAsync</c> on the same tick).
+    /// </summary>
+    private async Task<bool> TryAdvanceToDoneAsync(
+        ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, CancellationToken ct)
+    {
+        if (string.Equals(spawn.Phase, StorySpawnPhases.Done, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        if (!await IsSpawnDoneAsync(db, spawn.Id, ct))
+        {
+            return false;
+        }
+
+        var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+        spawnRow.Phase = StorySpawnPhases.Done;
+        spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "done", spawnRow, ct);
+
+        this.logger?.LogInformation(
+            "Spawn {SpawnId} advanced to Done via the Stage 5.2 review-side gate "
+            + "(every workstream Status=complete). Previous phase: {PrevPhase}.",
+            spawn.Id, spawn.Phase);
+        return true;
+    }
+
     // ── review ───────────────────────────────────────────────────────────────
     private async Task<bool> DriveReviewAsync(
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
@@ -3036,6 +3294,18 @@ public sealed class StorySpawnOrchestrator
                     {
                         await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
                     }
+
+                    // docs/forge/e2e.md Stage 5.2 — done-gate. When this
+                    // merge was the last outstanding workstream, advance
+                    // the spawn directly from review → done WITHOUT
+                    // visiting the legacy qa phase. Legacy paused
+                    // spawns still drain via DriveQaAsync; new spawns
+                    // skip qa entirely (the qa-e2e per-stage workstreams
+                    // get merged via this same DriveReviewAsync path).
+                    if (await this.TryAdvanceToDoneAsync(db, hub, spawn, ct))
+                    {
+                        return changed;
+                    }
                 }
                 continue;
             }
@@ -3066,6 +3336,15 @@ public sealed class StorySpawnOrchestrator
                 if (repo is not null && !string.IsNullOrEmpty(w.Branch))
                 {
                     await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                }
+
+                // docs/forge/e2e.md Stage 5.2 — done-gate (external-merge
+                // fast-path). Same as the merging→complete branch above:
+                // when this was the last outstanding workstream, advance
+                // straight to done skipping the legacy qa phase.
+                if (await this.TryAdvanceToDoneAsync(db, hub, spawn, ct))
+                {
+                    return changed;
                 }
                 continue;
             }
@@ -3617,6 +3896,15 @@ public sealed class StorySpawnOrchestrator
     }
 
     // ── qa ───────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// docs/forge/e2e.md Stage 5.3 — per-process tracking of spawns
+    /// we've already emitted the legacy-drain warning for. Prevents
+    /// log spam on every orchestrator tick while a paused
+    /// <c>Phase='qa'</c> spawn slowly drains its step-def PRs.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> WarnedLegacyDrainSpawns =
+        new(StringComparer.Ordinal);
+
     private async Task<bool> DriveQaAsync(
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
@@ -3628,6 +3916,49 @@ public sealed class StorySpawnOrchestrator
             .Where(w => w.StorySpawnId == spawn.Id)
             .OrderBy(w => w.Sort)
             .ToListAsync(ct);
+
+        // docs/forge/e2e.md Stage 5.3 — legacy-drain guard. New-shape
+        // spawns (Stage 3.1+) carry qa-e2e workstreams in the same
+        // workstream set as the impl rows; their drain runs via
+        // DriveImplementAsync + DriveReviewAsync's Stage 5.2 done-gate
+        // (review → done). They MUST NOT touch the legacy QA-batch
+        // path because that path would:
+        //   (a) re-author Gherkin feature files for the whole story
+        //       (legacy assumes one .feature per workstream, not the
+        //       per-stage `.feature` Stage 4.3 emits), and
+        //   (b) open a single story-level QA PR (legacy assumes one
+        //       per spawn, not per stage).
+        // Skip the batch path when:
+        //   - no legacy QaPrId exists on the spawn (a paused-mid-drain
+        //     spawn would carry one — that case still drains), AND
+        //   - the workstream set carries at least one qa-e2e row
+        //     (proves Stage 3.1's decomposer emitted them).
+        if (string.IsNullOrEmpty(spawn.QaPrId)
+            && workstreams.Any(w => string.Equals(w.Category, WorkstreamCategories.QaE2e, StringComparison.Ordinal)))
+        {
+            this.logger?.LogInformation(
+                "DriveQaAsync no-op for spawn {SpawnId}: Phase={Phase} but workstream set carries "
+                + "qa-e2e rows (Stage 3.1+ new shape). The Stage 5.2 done-gate inside DriveReviewAsync "
+                + "advances this spawn review → done via the qa-e2e workstream PR merges; the legacy "
+                + "QA-batch path stays parked. No legacy QaPrId to drain.",
+                spawn.Id, spawn.Phase);
+            return false;
+        }
+
+        // docs/forge/e2e.md Stage 5.3 — one-time warning per process
+        // when an existing QaPrId is detected. Operators triaging a
+        // paused-mid-drain spawn see this warning ONCE in the log and
+        // know the legacy drain code is responsible for finishing it.
+        if (!string.IsNullOrEmpty(spawn.QaPrId)
+            && WarnedLegacyDrainSpawns.TryAdd(spawn.Id, 0))
+        {
+            this.logger?.LogWarning(
+                "Legacy DriveQaAsync drain: spawn {SpawnId} carries QaPrId={QaPrId} from a "
+                + "pre-Stage-3.1 Forge version. Draining the legacy QA-batch + step-def PRs to "
+                + "completion. New spawns route qa-e2e per docs/forge/e2e.md Stage 5.1+ and never "
+                + "enter Phase=qa. Operator action: none required — drain proceeds automatically.",
+                spawn.Id, spawn.QaPrId);
+        }
 
         // Step 1 — produce the QA feature files & open the QA PR (idempotent).
         if (string.IsNullOrEmpty(spawn.QaPrId))

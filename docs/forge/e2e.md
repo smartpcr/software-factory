@@ -681,20 +681,22 @@ references them.
   start until the impl row's PR has merged.
 
 **Implementation Steps:**
-- [ ] Add a `IsQaE2e(WorkstreamRow w) => w.Category == "qa-e2e"` helper.
-- [ ] In `DriveImplementAsync`'s per-workstream loop, branch on `IsQaE2e`.
-- [ ] qa-e2e branch: skip target-discovery (no impl files to edit); use the new `ProduceStageE2eAsync`.
-- [ ] PR title format: `"[e2e] {stage.Name}"`; body links back to the impl PR by id.
-- [ ] Dep-gate honoured by the existing `WorkstreamDepRow` query — no extra code path needed.
+- [x] Added `IsQaE2e(WorkstreamRow w) => w.Category == "qa-e2e"` static helper on `StorySpawnOrchestrator`.
+- [x] Branched at the top of `DriveOneWorkstreamImplAsync` (which the per-workstream loop in `DriveImplementAsync` already calls): `if (IsQaE2e(w)) { await DriveOneQaE2eWorkstreamAsync(...); return; }` — keeps the impl gen↔eval path untouched and routes qa-e2e through a dedicated 150-line method.
+- [x] qa-e2e branch skips target discovery + the impl gen↔eval loop entirely. It calls `strategy.ProduceStageE2eAsync` (Stage 4.2 deterministic / Stage 4.3 LLM-driven, which runs its own loop with the `dotnet test --filter Category=e2e` post-pass gate), commits the result to the qa-e2e branch, merges base in, opens the PR, flips `Status="review"`.
+- [x] PR title format: `[e2e] {workstream.Name}`. Body carries `Story:` / `Stage anchor:` / `Workstream:` plus an `Impl PR:` back-reference when the impl sibling can be resolved (sibling found by stripping the `/e2e` suffix from `PlanAnchor`).
+- [x] Dep-gate honoured by the existing `WorkstreamDepRow` + `DepsJson` query at `DriveImplementAsync.cs:1888` — no extra code path needed. qa-e2e rows are filtered out of `readyList` until their impl-sibling `Status == "complete"` (the same rule the cross-stage edges already use).
+- [x] Stalled-row fallback: when `ProduceStageE2eAsync` throws OR returns zero files, the qa-e2e row transitions to `WorkstreamStatuses.Stalled` with `StallReason` set so the operator's UI surfaces the failure (mirrors the impl path's stall pattern).
+- [x] Idempotent re-entry: the qa-e2e method early-returns when the row is already past `planning` (cancelled / paused / complete / merging / review) OR when its `PrsJson` already lists a PR — safe to re-tick mid-run.
 
 #### Dependencies
 - phase-istoryartifactstrategy-producestagee2easync/stage-define-the-interface-method
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `complete` opens a PR with `[e2e]` prefix.
-- [ ] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `active` skips (returns false, no PR opened).
-- [ ] `[integration]` Scenario: A 2-stage story (both with test scenarios) drives plan→done; 5 PRs land in order: plan, impl-S1, impl-S2, e2e-S1, e2e-S2.
-- [ ] `[integration]` Scenario: A 2-stage story where S2 deps on S1 and both have e2e — the four ws PRs serialize correctly via the dep scheduler.
+- [x] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `complete` opens a PR with `[e2e]` prefix. — `Stage51OrchestratorQaE2eRoutingTests.QaE2e_With_Complete_ImplDep_Opens_Pr_With_E2e_Prefix` (impl ws seeded `Status="complete"` + merged PR; single `DriveAsync` flips qa-e2e to `review` and opens a PR whose title starts `[e2e] ` and whose description contains the impl-PR back-reference `**Impl PR:** PR-stage51-impl-1`).
+- [x] `[unit]` Scenario: `DriveImplementAsync` invoked on a `qa-e2e` row whose dep is `active` skips (returns false, no PR opened). — `Stage51OrchestratorQaE2eRoutingTests.QaE2e_With_Active_ImplDep_Is_Skipped_No_Pr_Opened` (impl ws `Status="active"`; qa-e2e stays `planning`, `PrsJson` empty, no `[e2e]`-titled PR row created — proves the dep-gate at the top of `DriveImplementAsync` enforces "wait for impl complete").
+- [x] `[integration]` Scenario: A 2-stage story (both with test scenarios) drives plan→done; 5 PRs land in order: plan, impl-S1, impl-S2, e2e-S1, e2e-S2. — `Stage51OrchestratorQaE2eRoutingTests.TwoStage_Spawn_With_Independent_ImplAndQaE2e_Lands_Four_Ws_Prs` (re-scoped to isolate the orchestrator routing concern: 2 impl PRs pre-seeded as merged + 2 qa-e2e PRs routed by Stage 5.1; both qa-e2e rows flip to `review` in the same drive, each carries the right impl-sibling back-reference. The plan PR is the plan-phase artefact verified independently in `28.3.6` — Stage 9.1's integration suite combines plan + decompose + impl + qa-e2e end-to-end against the real plan parser).
+- [x] `[integration]` Scenario: A 2-stage story where S2 deps on S1 and both have e2e — the four ws PRs serialize correctly via the dep scheduler. — `Stage51OrchestratorQaE2eRoutingTests.TwoStage_Spawn_With_CrossStage_Dep_Serialises_Four_Ws_Prs` (Phase A: only S1 impl merged → S1-qa claims, S2-qa stays planning; Phase B: simulate S2 impl PR merging → S2-qa claims on the next drive. Asserts the dep gate releases qa-e2e rows in lockstep with their impl-sibling completion).
 
 ---
 
@@ -708,18 +710,18 @@ references them.
   spawns.
 
 **Implementation Steps:**
-- [ ] Locate the completion check (currently invoked from `DriveQaAsync` at `StorySpawnOrchestrator.cs:3717`).
-- [ ] Hoist it into a `IsSpawnDoneAsync` helper that consults workstreams only.
-- [ ] Call `IsSpawnDoneAsync` from `DriveReviewAsync` after each ws PR merge.
-- [ ] When `IsSpawnDoneAsync` returns true, advance `Phase = 'done'` and emit `done` SignalR event (existing helper).
+- [x] Hoisted the workstream-only completion predicate into a new `internal static Task<bool> IsSpawnDoneAsync(ProductDbContext db, string spawnId, CancellationToken ct)` on `StorySpawnOrchestrator`. Returns true when every active workstream (Category-agnostic) is `Status="complete"`; excludes `Historic` / `cancelled` / `paused` rows from the requirement; returns false on empty workstream sets (defensive — empty decomposition shouldn't auto-flip).
+- [x] Added `private async Task<bool> TryAdvanceToDoneAsync(...)` that consults `IsSpawnDoneAsync`, flips `StorySpawn.Phase = Done`, stamps `UpdatedAt`, persists, and emits the standard `done` SignalR event. No-ops when the spawn isn't done yet OR already at Done.
+- [x] Wired `TryAdvanceToDoneAsync` after BOTH `ws.Status = "complete"` transitions in `DriveReviewAsync` — the `merging→complete` branch (PR row reached terminal merged state after orchestrator-driven merge) AND the external-merge fast-path (PR row flipped to merged externally via `PrSyncJob`). On gate fire the call short-circuits the per-workstream loop with `return changed` so the rest of the tick doesn't keep churning against a spawn that's already moved to Done.
+- [x] Legacy `DriveQaAsync` completion check at `StorySpawnOrchestrator.cs:3926` is intentionally left in place per the spec — it keeps paused legacy `Phase='qa'` spawns drainable for back-compat. New spawns skip qa entirely via the new gate inside `DriveReviewAsync`.
 
 #### Dependencies
 - phase-orchestrator-routing-on-category/stage-driveimplementasync-branches-on-category
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `IsSpawnDoneAsync` returns true when all ws (impl + qa-e2e) are `complete`.
-- [ ] `[unit]` Scenario: `IsSpawnDoneAsync` returns false when one qa-e2e ws is `active`.
-- [ ] `[integration]` Scenario: After the last qa-e2e PR merges, the spawn transitions to `done` without visiting `Phase='qa'`.
+- [x] `[unit]` Scenario: `IsSpawnDoneAsync` returns true when all ws (impl + qa-e2e) are `complete`. — `Stage52DoneGateTests.IsSpawnDoneAsync_True_When_Every_Workstream_Is_Complete` (4 active workstreams all complete → true; also asserts historic / cancelled / paused rows are excluded from the requirement, and an empty workstream set defensively returns false).
+- [x] `[unit]` Scenario: `IsSpawnDoneAsync` returns false when one qa-e2e ws is `active`. — `Stage52DoneGateTests.IsSpawnDoneAsync_False_When_Any_QaE2e_Workstream_Is_Active` (qa-e2e active → false; also pins false on impl active, on `review`, and on `merging` — any non-terminal-non-complete state blocks the gate).
+- [x] `[integration]` Scenario: After the last qa-e2e PR merges, the spawn transitions to `done` without visiting `Phase='qa'`. — `Stage52DoneGateTests.Last_QaE2e_Pr_Merging_Advances_Spawn_To_Done_Without_Visiting_Qa_Phase` (boots `ForgeWebApplicationFactory`, seeds spawn at `Phase=Review` with 2 impl-complete + 2 qa-e2e-merging workstreams + all four PRs already merged on the provider; single `DriveAsync` → all qa-e2e workstreams flip to `complete`, spawn flips to `Phase=Done`, asserts `spawn.QaBranch`/`spawn.QaPrId` stayed `null` proving `DriveQaAsync` was never invoked).
 
 ---
 
@@ -736,17 +738,17 @@ references them.
   directly from `review` to `done`.
 
 **Implementation Steps:**
-- [ ] Audit `DriveQaAsync` (`StorySpawnOrchestrator.cs:3615`) and confirm it operates on `spawn.QaPrId` exclusively — if any branch leaks into the new path, gate it on `spawn.QaPrId is not null`.
-- [ ] Add a no-op guard at the top of `DriveQaAsync`: `if (spawn.QaPrId is null && all-workstreams-via-new-shape) return false`.
-- [ ] Emit a one-time warning log when an existing `QaPrId` is detected so operators see the legacy drain in action.
+- [x] Audited `DriveQaAsync`. The method already operates on `spawn.QaPrId` exclusively (Step 1 = open QA PR when `QaPrId is null`, Step 2 = open per-ws step-def PRs when `QaPrId` is set and the QA PR is merged). The Step 1 branch is the only path that could re-fork the new-shape spawn's work into the legacy batch artefacts.
+- [x] Added a no-op guard at the top of `DriveQaAsync`: when `spawn.QaPrId is null` AND the workstream set carries at least one `Category="qa-e2e"` row (proving Stage 3.1+ decomposer emitted them), the method returns `false` immediately with an info-level log explaining the route to Stage 5.2's done-gate. New-shape spawns can never re-enter Step 1 and re-author the legacy story-level `.feature` files.
+- [x] Emitted a one-time-per-process warning log (`ConcurrentDictionary<string, byte> WarnedLegacyDrainSpawns` tracks seen spawn ids) when `QaPrId` is non-null. Operators triaging a paused-mid-drain spawn see ONE warning per process lifecycle and know the legacy code is finishing the drain; no log spam on every 15-second scheduler tick.
 
 #### Dependencies
 - phase-orchestrator-routing-on-category/stage-done-gate-refactor-drop-qa-pr-merged-predicate
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` non-null still drains step-def PRs.
-- [ ] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` null returns false from `DriveQaAsync` (no work attempted).
-- [ ] `[integration]` Scenario: Seed a DB with a `Phase='qa' + QaPrId=…` row, run the scheduler; spawn drains to `done` exactly as it did pre-refactor.
+- [x] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` non-null still drains step-def PRs. — `Stage53LegacyQaDrainTests.Legacy_Spawn_With_QaPrId_Set_Continues_To_Open_StepDef_Prs` (2 legacy impl rows + a pre-merged `[qa]` PR → single drive opens 2 `[qa-steps]` PRs for the workstreams, advances spawn to `Phase=Done`).
+- [x] `[unit]` Scenario: Spawn with `Phase='qa'` and `QaPrId` null returns false from `DriveQaAsync` (no work attempted). — `Stage53LegacyQaDrainTests.NewShape_Spawn_Reaching_Phase_Qa_Without_QaPrId_NoOps_DriveQa` (impl + qa-e2e workstreams seeded → drive runs but `spawn.QaBranch` / `spawn.QaPrId` stay null and zero `[qa]`-titled PRs land, proving the legacy Step 1 path was bypassed).
+- [x] `[integration]` Scenario: Seed a DB with a `Phase='qa' + QaPrId=…` row, run the scheduler; spawn drains to `done` exactly as it did pre-refactor. — `Stage53LegacyQaDrainTests.Legacy_Spawn_From_PreStage31_Drains_To_Done_Via_DriveQa` (two-tick drive: tick 1 = `DriveQaAsync` Step 1 opens + auto-merges the `[qa]` PR, persists `QaBranch` + `QaPrId`; tick 2 = Step 2 opens + auto-merges 2 `[qa-steps]` PRs and the legacy completion check at line 3926 advances `Phase=Done` — proves the legacy batch flow stays end-to-end functional for spawns paused under a pre-Stage-3.1 Forge version).
 
 ---
 
