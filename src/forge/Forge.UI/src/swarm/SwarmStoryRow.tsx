@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ForgeApiError, forgeApi, type StorySpawn, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
+import { ForgeApiError, forgeApi, type StorySpawn, type StorySpawnDetail } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useToastStore } from '@/state/useToastStore';
 import { StoryDeliveryStrip } from './StoryDeliveryStrip';
+import { CANONICAL_PHASES, phaseBadgeProps } from './storyPhaseBadge';
 
 interface Props {
   spawn: StorySpawn;
@@ -30,7 +31,11 @@ interface Props {
   onDeleteFailed?: (storyId: string) => void;
 }
 
-const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
+// docs/forge/e2e.md Stage 8.3 — canonical phase list shrank from 6
+// to 5 (qa was drained to per-stage workstreams in Stage 5). The
+// helper imported from storyPhaseBadge is the single source of truth;
+// keep a local alias so the existing progress-pct math reads cleanly.
+const PHASES = CANONICAL_PHASES;
 
 export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props) {
   const navigate = useNavigate();
@@ -184,7 +189,24 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
         </div>
         {detail && <StoryDeliveryStrip detail={detail} />}
       </div>
-      <span className={`phase-badge ${spawn.phase}`}>{spawn.phase}</span>
+      {(() => {
+        // docs/forge/e2e.md Stage 8.3 — `phase==='qa'` is a legacy
+        // state being drained (Stage 5 split QA into per-stage
+        // workstreams). The shared helper picks the muted CSS
+        // modifier + operator-facing tooltip so a future legacy
+        // phase only needs an entry in `LEGACY_PHASES` /
+        // `LEGACY_PHASE_TOOLTIP`.
+        const badge = phaseBadgeProps(spawn.phase);
+        return (
+          <span
+            className={`phase-badge ${badge.className}`}
+            title={badge.title}
+            data-phase-legacy={badge.isLegacy || undefined}
+          >
+            {spawn.phase}
+          </span>
+        );
+      })()}
       <div className="sr-progress">
         <div className="label">{phaseIdx + 1}/{PHASES.length} phases</div>
         <div className="bar"><div className="fill" style={{ transform: `scaleX(${pct / 100})` }} /></div>

@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { CANONICAL_PHASES, isLegacyPhase, LEGACY_PHASE_TOOLTIP } from '@/swarm/storyPhaseBadge';
 
 interface Props {
   storyId: string;
@@ -16,7 +17,12 @@ interface Props {
   defaultExpanded?: boolean;
 }
 
-const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
+// docs/forge/e2e.md Stage 8.3 — canonical phase list omits `qa`
+// (drained to per-stage workstreams in Stage 5). `paused` is rendered
+// inline (transient operator state, not in the rotation). Legacy
+// spawns parked at `phase==='qa'` render the badge muted via the
+// shared `phaseBadgeStyle` branch + carry the `LEGACY_PHASE_TOOLTIP`.
+const PHASES: ReadonlyArray<StorySpawnPhase> = CANONICAL_PHASES;
 const PHASE_LABELS: Record<StorySpawnPhase, string> = {
   plan: 'PLAN',
   decompose: 'DECOMPOSE',
@@ -96,7 +102,13 @@ export function StoryCard({ storyId, defaultExpanded = false }: Props) {
         >
           {expanded ? '▾' : '▸'}
         </button>
-        <span style={phaseBadgeStyle(spawn.phase)}>{PHASE_LABELS[spawn.phase]}</span>
+        <span
+          style={phaseBadgeStyle(spawn.phase)}
+          title={isLegacyPhase(spawn.phase) ? LEGACY_PHASE_TOOLTIP[spawn.phase] : undefined}
+          data-phase-legacy={isLegacyPhase(spawn.phase) || undefined}
+        >
+          {PHASE_LABELS[spawn.phase]}
+        </span>
         <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
           {spawn.storyId}
         </span>
@@ -259,14 +271,22 @@ function phaseBadgeStyle(phase: StorySpawnPhase): React.CSSProperties {
     paused: ['#5f4d00', '#ffb400'],
   };
   const [bg, fg] = phaseColors[phase];
+  // docs/forge/e2e.md Stage 8.3 — legacy phases render muted (greyed
+  // background + reduced opacity) so the operator's eye reads them as
+  // "drain me" instead of as a normal step in the rotation. The
+  // tooltip is wired separately at the JSX site (the title attribute
+  // is not a style property).
+  const legacy = isLegacyPhase(phase);
   return {
-    background: bg,
-    color: fg,
+    background: legacy ? '#2a2a2a' : bg,
+    color: legacy ? '#888' : fg,
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: 0.5,
     padding: '3px 8px',
     borderRadius: 999,
+    opacity: legacy ? 0.65 : 1,
+    cursor: legacy ? 'help' : 'default',
   };
 }
 

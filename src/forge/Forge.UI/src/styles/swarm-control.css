@@ -656,6 +656,18 @@
 .swarm-ctrl .phase-badge.review    { color: var(--sc-magenta); border-color: var(--sc-magenta-d); }
 .swarm-ctrl .phase-badge.qa        { color: var(--sc-green);   border-color: var(--sc-green-d); }
 .swarm-ctrl .phase-badge.done      { color: var(--sc-green);   border-color: var(--sc-green-d); opacity: 0.7; }
+/* docs/forge/e2e.md Stage 8.3 — legacy phase override (currently
+ * only `qa`). Mutes the saturated palette colours so the operator's
+ * eye reads the badge as "drain me" rather than "this is a normal
+ * step in the rotation". The `cursor: help` hints the title-attr
+ * tooltip carries the explanation. */
+.swarm-ctrl .phase-badge--legacy {
+  color: var(--sc-muted) !important;
+  border-color: var(--sc-border-2) !important;
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0.7;
+  cursor: help;
+}
 
 .swarm-ctrl .sr-progress {
   align-self: start;
@@ -1066,6 +1078,33 @@
 .swarm-ctrl .phase.selected {
   box-shadow: inset 0 -2px 0 var(--sc-amber);
   background: var(--sc-surface-2);
+}
+
+/* docs/forge/e2e.md Stage 8.1 — stacked qa-e2e row beneath its impl
+ * sibling. `.phase-stack` is the wrapper that visually groups the
+ * pair (impl on top, qa-e2e on bottom) so the operator reads them
+ * as one logical stage. `.phase--qae2e` overrides the impl card's
+ * cyan accent (`--sc-t-eng`) with the green QA accent (`--sc-t-qa`)
+ * via the `::before` rail. Status-driven colour classes
+ * (`.active::before` / `.review::before`…) still apply on TOP of
+ * the variant — the qa-e2e row's runtime status is independent of
+ * the impl row's, so a cyan/active impl above a green/done qa-e2e
+ * is the desired read.
+ *
+ * Empty-state contract: when no qa-e2e companion exists for an
+ * impl row, the wrapper is NOT rendered (the impl card stands
+ * alone). No blank placeholder slot. */
+.swarm-ctrl .phase-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.swarm-ctrl .phase.phase--qae2e {
+  border-left: 3px solid var(--sc-t-qa);
+}
+.swarm-ctrl .phase.phase--qae2e::before {
+  background: var(--sc-t-qa);
+  box-shadow: 0 0 8px var(--sc-t-qa);
 }
 
 /* Themed tooltip — appears on hover for elements with [data-sc-tooltip].
@@ -2493,6 +2532,14 @@
   overflow: hidden;
 }
 .swarm-ctrl .ws-stage--cancelled { opacity: 0.55; }
+/* docs/forge/e2e.md Stage 8.2 — qa-e2e DAG card overrides the left
+ * border-color with the green QA accent (mirrors the SwarmMasterPanel
+ * stacked-row look from Stage 8.1). The runtime status-driven
+ * `borderColor` inline style still wins for the rest of the border
+ * (top / right / bottom) so a stalled qa-e2e still flashes red on
+ * those edges; only the left rail flips green to read as the stable
+ * "this is a QA row" indicator. */
+.swarm-ctrl .ws-stage--qae2e { border-left-color: var(--sc-t-qa) !important; }
 .swarm-ctrl .ws-stage__hd {
   display: flex; align-items: center; gap: 6px;
   font-size: 9px;

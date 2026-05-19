@@ -156,6 +156,15 @@ export interface StorySpawnWorkstreamSummary {
   stepDefPrId?: string | null;
   stepDefBranch?: string | null;
   stepDefMerged?: boolean;
+  /**
+   * docs/forge/e2e.md Stage 8.1 — workstream category discriminator
+   * (`"impl"` | `"qa-e2e"`). Drives the phase-board's stacked-row
+   * rendering: `qa-e2e` rows are stacked beneath their impl sibling
+   * (matched by stripping the `/e2e` suffix from `planAnchor`) instead
+   * of rendering as standalone phase cards. Backend default for
+   * legacy rows that predate Phase 79Migration is `"impl"`.
+   */
+  category?: string | null;
 }
 
 export interface StorySpawnDetail {

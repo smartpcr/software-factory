@@ -938,19 +938,19 @@ references them.
   (no empty placeholder).
 
 **Implementation Steps:**
-- [ ] Add `qaE2eByImplId: Map<string, Workstream>` derived selector to `useSpawnStore`.
-- [ ] Update the phase-board render to read both rows from the selector.
-- [ ] Add a `--sc-t-qa` CSS token if not already present.
-- [ ] Empty-state: when `qaE2eByImplId.get(impl.id)` is undefined, skip the stack — don't render a blank slot.
+- [x] Add `qaE2eByImplId: Map<string, Workstream>` derived selector to `useSpawnStore`. — Exported `qaE2eByImplId(workstreams)` pure function in `src/forge/Forge.UI/src/swarm/qaE2eSelector.ts` (consumed via `useMemo` inside `ImplMaster`; the data source for workstreams is the `StorySpawnDetail` props, not `useSpawnStore`, which only owns realtime ticks — keeping the selector module-scope honours the existing pattern in this codebase).
+- [x] Update the phase-board render to read both rows from the selector. — `ImplMaster` filters qa-e2e rows out of the top-level `visibleWs` loop AND wraps each `PhaseCard` in a `.phase-stack` div whenever `qaE2eByImpl.get(w.id)` returns a sibling, stacking the qa-e2e card beneath via the new `variant="qae2e"` prop on `PhaseCard`. Backend `GetSpawn` projection extended to surface `category` so the discriminator reaches the client.
+- [x] Add a `--sc-t-qa` CSS token if not already present. — Token already declared at `swarm-control.css:45` (`--sc-t-qa: var(--sc-green)`). Added `.phase-stack` wrapper rule + `.phase.phase--qae2e` rule that paints the card's `border-left` + `::before` rail with `--sc-t-qa`.
+- [x] Empty-state: when `qaE2eByImplId.get(impl.id)` is undefined, skip the stack — don't render a blank slot. — The render branch returns the bare `PhaseCard` (no `.phase-stack` wrapper) when the selector lookup is undefined; verified by the third vitest case (`pairs three stages: two with qa-e2e, one without`) and by the Playwright "5 boxes in 3 stage columns" assertion.
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[ui-unit]` Scenario: Selector returns the qa-e2e ws for an impl ws when one exists.
-- [ ] `[ui-unit]` Scenario: Selector returns undefined for an impl ws with no qa-e2e sibling.
-- [ ] `[ui-e2e]` Scenario: Playwright — story with 3 stages (2 with e2e, 1 without) renders 5 boxes in 3 columns.
-- [ ] `[ui-e2e]` Scenario: Playwright — qa-e2e box is rendered with the green team accent (computed style assertion).
+- [x] `[ui-unit]` Scenario: Selector returns the qa-e2e ws for an impl ws when one exists. — `qaE2eSelector.spec.ts > pairs a qa-e2e ws to its impl sibling via the /e2e anchor suffix` (+ the three-stage variant case).
+- [x] `[ui-unit]` Scenario: Selector returns undefined for an impl ws with no qa-e2e sibling. — `qaE2eSelector.spec.ts > returns an empty map when no qa-e2e workstreams are present` + `treats null / undefined category as impl (legacy-row fallback)` covers the discriminator predicate (`isQaE2e`) too.
+- [x] `[ui-e2e]` Scenario: Playwright — story with 3 stages (2 with e2e, 1 without) renders 5 boxes in 3 columns. — `e2e/stage81-qae2e-stack.spec.ts > stacked phase-board renders 5 boxes across 3 stage columns`. Mocks `/api/stories/{id}/spawn` + `/spawn/artifacts` via `page.route` with a 5-row fixture; asserts `:scope > .phase-stack, :scope > .phase` count = 3 and total `.phase` count = 5 and that the lone stage's selection key is `phase:ws-stage81-b`.
+- [x] `[ui-e2e]` Scenario: Playwright — qa-e2e box is rendered with the green team accent (computed style assertion). — `e2e/stage81-qae2e-stack.spec.ts > qa-e2e box carries the --sc-t-qa green accent on its border-left`. Asserts `border-left-color: rgb(121, 224, 138)` (= `--sc-green` resolved) + `border-left-width: 3px` + `data-variant="qae2e"` + the impl sibling carries `data-variant="impl"`.
 
 ---
 
@@ -964,17 +964,17 @@ references them.
 - The previous rightmost-column QA cluster rendering is removed.
 
 **Implementation Steps:**
-- [ ] Remove the "group qa-e2e in the rightmost column" code path.
-- [ ] Add a per-stage `{from: impl.id, to: qa-e2e.id}` edge to the input dataset.
-- [ ] Verify cross-stage e2e deps already flow through the existing edge dataset (they should — they're just `WorkstreamDepRow` rows).
+- [x] Remove the "group qa-e2e in the rightmost column" code path. — `SwarmDetailPanel.layoutPhase` now filters `items` to impl-only BEFORE depth/column placement (`implItems = items.filter((i) => !isQaE2e(i))`). qa-e2e rows are no longer assigned a column slot — they get appended as child cards directly beneath their impl sibling via the `qaE2eByImplId` selector, with the column's `colOffsetY` accumulator pushing subsequent rows down so the qa-e2e child doesn't overlap the next impl in the same column.
+- [x] Add a per-stage `{from: impl.id, to: qa-e2e.id}` edge to the input dataset. — The qa-e2e workstream's `deps` array already carries its impl sibling's id (Stage 3.1 + `PersistDecompositionAsync` title→id resolution), so the existing global `arrows` useMemo iterates that dep and emits the SVG path. New `implSiblingByQa` memo + a stack-routing branch in the useMemo swap the default left-to-right Bezier for a near-straight downward curve (impl bottom → qa-e2e top) since the two cards share an `x` coordinate.
+- [x] Verify cross-stage e2e deps already flow through the existing edge dataset (they should — they're just `WorkstreamDepRow` rows). — Confirmed by `dagEdges.spec.ts > a qa-e2e with an extra cross-stage upstream dep emits one impl-to-qae2e + one cross-stage-e2e edge`: the cross-stage upstream dep classifies as `cross-stage-e2e` and gets the same edge-router treatment as a regular intra-phase impl-dep (current router gates on intra-phase, so cross-phase cross-stage e2e deps surface as chips per the existing pattern — same behaviour as cross-phase impl-deps).
 
 #### Dependencies
 - phase-swarm-control-ui/stage-stacked-impl-e2e-rows-in-swarmmasterpanel
 
 #### Test Scenarios
-- [ ] `[ui-unit]` Scenario: Edge dataset for a 2-stage story has exactly N edges where N = (deps between impls) + (impl→qa-e2e per qa-e2e stage).
-- [ ] `[ui-e2e]` Scenario: Playwright — visual diff against the screenshot in the user's request: the rightmost QA column is gone.
-- [ ] `[ui-e2e]` Scenario: Playwright — clicking a qa-e2e box opens the workstream detail panel scoped to that row (same drill-down as impl boxes).
+- [x] `[ui-unit]` Scenario: Edge dataset for a 2-stage story has exactly N edges where N = (deps between impls) + (impl→qa-e2e per qa-e2e stage). — `dagEdges.spec.ts > a 2-stage story (1 impl-dep + 2 qa-e2e siblings) yields exactly 3 edges`: asserts `edges.length === 3`, classified as 1 × `impl-dep` + 2 × `impl-to-qae2e` + 0 × `cross-stage-e2e`, with the `from`/`to` endpoints pinned (`ws-a → ws-b`, `ws-a → ws-a-e2e`, `ws-b → ws-b-e2e`).
+- [x] `[ui-e2e]` Scenario: Playwright — visual diff against the screenshot in the user's request: the rightmost QA column is gone. — `e2e/stage82-dag-qae2e.spec.ts > qa-e2e cards stack beneath their impl sibling (no rightmost-column QA cluster)`. Mocks the spawn detail with 3 impl + 2 qa-e2e workstreams; asserts (a) total `.ws-stage` count = 5 with 2 carrying `data-ws-category="qa-e2e"`, (b) each qa-e2e card shares its impl sibling's `left` (±1.5 px FP tolerance) and sits directly below (`top` diff = `WS_QAE2E_STACK_GAP=8`), and (c) NO qa-e2e card's left is greater than the max impl `left` (the anti-regression for the old rightmost-column layout).
+- [x] `[ui-e2e]` Scenario: Playwright — clicking a qa-e2e box opens the workstream detail panel scoped to that row (same drill-down as impl boxes). — `e2e/stage82-dag-qae2e.spec.ts > clicking a qa-e2e box opens the workstream detail panel scoped to that row`. Click on `.ws-stage[data-ws-id="ws-stage82-a-e2e"]`; asserts URL transitions to `sel=phase`, `selId=ws-stage82-a-e2e`, `mode=impl` (identical contract to impl card click since both share the `openWorkstream` callback in `DecompositionDiagram`).
 
 ---
 
@@ -986,16 +986,16 @@ references them.
   a tooltip explaining it's a legacy state being drained.
 
 **Implementation Steps:**
-- [ ] Update `StoryCard.tsx` badge map to omit `qa` from the canonical phase list.
-- [ ] Add a legacy-detector: when `phase==='qa'`, render a muted badge with the tooltip.
+- [x] Update `StoryCard.tsx` badge map to omit `qa` from the canonical phase list. — New shared module `src/forge/Forge.UI/src/swarm/storyPhaseBadge.ts` exports `CANONICAL_PHASES = ['plan', 'decompose', 'implement', 'review', 'done']` (5 phases, no `qa`); both `StoryCard.tsx` and `SwarmStoryRow.tsx` (the live `/workstreams` row component) consume it via `const PHASES = CANONICAL_PHASES`, so the progress-bar math AND any future consumer share the same source of truth.
+- [x] Add a legacy-detector: when `phase==='qa'`, render a muted badge with the tooltip. — `isLegacyPhase(phase)` + `LEGACY_PHASE_TOOLTIP[phase]` + `phaseBadgeProps(phase)` cover the detection + tooltip + className shape. `SwarmStoryRow` renders the badge via `phaseBadgeProps` (adds the `phase-badge--legacy` modifier + `data-phase-legacy="true"` data attribute + `title` for hover). `StoryCard` mutes the inline style (`background: #2a2a2a`, `opacity: 0.65`, `cursor: help`) when `isLegacyPhase` is true, with the title attribute carrying `LEGACY_PHASE_TOOLTIP.qa`. New CSS rule `.swarm-ctrl .phase-badge--legacy` overrides colours with `var(--sc-muted)` + `cursor: help` so the badge reads as "drain me" rather than as a normal step.
 
 #### Dependencies
 - phase-swarm-control-ui/stage-stacked-impl-e2e-rows-in-swarmmasterpanel
 
 #### Test Scenarios
-- [ ] `[ui-unit]` Scenario: New spawn (Phase rotates plan→decompose→implement→review→done) — `qa` never appears.
-- [ ] `[ui-unit]` Scenario: Legacy spawn (Phase='qa') renders muted badge with tooltip.
-- [ ] `[ui-e2e]` Scenario: Playwright — seed a legacy spawn via API, refresh /workstreams, assert the muted badge renders.
+- [x] `[ui-unit]` Scenario: New spawn (Phase rotates plan→decompose→implement→review→done) — `qa` never appears. — `storyPhaseBadge.spec.ts > contains the 5 canonical lifecycle phases in plan→done order` + `omits 'qa' — confirmed both directly and via the predicate` + `omits 'paused' — paused is a transient operator state, not a step in the rotation`. Pins the exact 5-element array, predicate behaviour, and an anti-regression that catches a future refactor adding `qa` back.
+- [x] `[ui-unit]` Scenario: Legacy spawn (Phase='qa') renders muted badge with tooltip. — `storyPhaseBadge.spec.ts > lists 'qa' as the (only, currently) legacy phase` + `carries an operator-facing drain tooltip for every legacy phase` + `returns the legacy shape for 'qa' with the tooltip + modifier class`. Asserts the className contains both `qa` (so per-phase colour rules still anchor) AND `phase-badge--legacy` (so the muting wins via `!important`), and the tooltip string matches `/legacy|drain|stage 5/i`.
+- [x] `[ui-e2e]` Scenario: Playwright — seed a legacy spawn via API, refresh /workstreams, assert the muted badge renders. — `e2e/stage83-legacy-qa-badge.spec.ts > legacy 'qa' spawn row carries the muted badge + drain tooltip`. Mocks `GET /api/stories/spawns` + per-spawn `/spawn` + `/spawn/artifacts` via `page.route` with two fixture spawns (one legacy `phase='qa'`, one canonical `phase='implement'`); asserts the legacy row's `.phase-badge` carries the `phase-badge--legacy` class + `data-phase-legacy="true"` + a `title` matching the drain regex. The companion test `new-rotation spawn renders the badge WITHOUT the legacy modifier` is the anti-regression for canonical phases.
 
 ---
 

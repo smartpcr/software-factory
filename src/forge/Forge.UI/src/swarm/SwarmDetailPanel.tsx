@@ -9,6 +9,7 @@ import { deriveVerdict } from '@/prs/prVerdict';
 import { isBuildEvent } from '@/prs/prBuildEvents';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
+import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
 import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
@@ -1703,12 +1704,34 @@ interface PhaseLayout {
   height: number;
 }
 
+/** docs/forge/e2e.md Stage 8.2 — vertical gap between an impl card
+ *  and its stacked qa-e2e child. Smaller than `WS_ROW_GAP` so the pair
+ *  visually reads as ONE logical stage (the impl above + its trailing
+ *  qa-e2e below), not two unrelated rows. */
+const WS_QAE2E_STACK_GAP = 8;
+
 /** Topologically position a phase's stages by INTRA-phase deps only.
  *  Cross-phase deps are surfaced separately (chips) rather than as
- *  arrows that would dangle when the upstream phase is collapsed. */
+ *  arrows that would dangle when the upstream phase is collapsed.
+ *
+ *  docs/forge/e2e.md Stage 8.2 — qa-e2e workstreams are NOT positioned
+ *  as standalone column nodes (which previously bunched every qa-e2e
+ *  in the rightmost column of its phase since their depth = max).
+ *  Instead, the function partitions items into impl + qa-e2e BEFORE
+ *  depth computation, runs topological layout on impl rows only, then
+ *  appends each qa-e2e card directly beneath its impl sibling
+ *  (matched via the `qaE2eByImplId` selector). The impl-to-qa-e2e
+ *  edge that the qa-e2e row's `deps` array carries is automatically
+ *  drawn by the GLOBAL arrow overlay (see `DecompositionDiagram`'s
+ *  `arrows` useMemo) — the qa-e2e card's DOM ref registers like any
+ *  other stage, and the intra-phase predicate is satisfied (both
+ *  share the same `phaseAnchor`). */
 function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
-  const ids = new Set(items.map((i) => i.id));
-  const byId = new Map(items.map((i) => [i.id, i]));
+  const implItems = items.filter((i) => !isQaE2e(i));
+  const qaByImpl = qaE2eByImplId(items);
+
+  const ids = new Set(implItems.map((i) => i.id));
+  const byId = new Map(implItems.map((i) => [i.id, i]));
   const depths = new Map<string, number>();
 
   function getDepth(id: string, visiting: Set<string>): number {
@@ -1724,25 +1747,50 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
     depths.set(id, d);
     return d;
   }
-  for (const it of items) getDepth(it.id, new Set());
+  for (const it of implItems) getDepth(it.id, new Set());
 
   const maxDepth = Math.max(0, ...Array.from(depths.values()));
-  const cols: Array<typeof items> = [];
+  const cols: Array<typeof implItems> = [];
   for (let d = 0; d <= maxDepth; d++) {
-    cols.push(items.filter((i) => (depths.get(i.id) ?? 0) === d));
+    cols.push(implItems.filter((i) => (depths.get(i.id) ?? 0) === d));
   }
 
-  const cards = items.map((item) => {
-    const d = depths.get(item.id) ?? 0;
-    const idx = cols[d].indexOf(item);
-    return {
-      ws: item,
-      x: WS_PAD_X + d * (WS_NODE_W + WS_COL_GAP),
-      y: WS_PAD_Y + idx * (WS_NODE_H + WS_ROW_GAP),
-    };
-  });
+  // docs/forge/e2e.md Stage 8.2 — variable row heights per column.
+  // An impl row whose qa-e2e sibling is present takes a "double-tall"
+  // slot (impl + small gap + qa-e2e); a lone-impl row takes the
+  // standard single height. Track per-column slot offsets so
+  // subsequent rows in the same column don't overlap their upstream
+  // sibling's qa-e2e child.
+  const cards: PhaseLayout['cards'] = [];
+  const colOffsetY = new Array<number>(maxDepth + 1).fill(WS_PAD_Y);
+  // Iterate column-by-column so within-column slot offsets accumulate
+  // correctly (a column with [A-with-qa, B] needs A at offset 0 and B
+  // at offset = WS_NODE_H + WS_QAE2E_STACK_GAP + WS_NODE_H + WS_ROW_GAP).
+  for (let d = 0; d <= maxDepth; d++) {
+    for (const item of cols[d]) {
+      const x = WS_PAD_X + d * (WS_NODE_W + WS_COL_GAP);
+      const y = colOffsetY[d];
+      cards.push({ ws: item, x, y });
+
+      const qa = qaByImpl.get(item.id);
+      let advance = WS_NODE_H + WS_ROW_GAP;
+      if (qa) {
+        const qaY = y + WS_NODE_H + WS_QAE2E_STACK_GAP;
+        cards.push({ ws: qa, x, y: qaY });
+        advance = WS_NODE_H + WS_QAE2E_STACK_GAP + WS_NODE_H + WS_ROW_GAP;
+      }
+      colOffsetY[d] = y + advance;
+    }
+  }
   const cardById = new Map(cards.map((c) => [c.ws.id, c]));
 
+  // `arrows` here is unused by the consumer (the global SVG overlay
+  // in `DecompositionDiagram` re-derives arrows from DOM-measured
+  // positions to handle cross-phase routing). Kept for historical
+  // shape compatibility AND so a future consumer that wants a
+  // pre-laid-out arrow set can read from the return value. Includes
+  // the new impl→qa-e2e edges directly so any future consumer doesn't
+  // have to re-derive them.
   const arrows: PhaseLayout['arrows'] = [];
   for (const item of items) {
     const to = cardById.get(item.id);
@@ -1765,9 +1813,15 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
     }
   }
 
-  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  // Width: impl-only column count, NOT total items. qa-e2e cards
+  // never push the phase wider (they stack vertically inside an
+  // existing column).
   const width = WS_PAD_X * 2 + (maxDepth + 1) * WS_NODE_W + maxDepth * WS_COL_GAP;
-  const height = WS_PAD_Y * 2 + maxRows * WS_NODE_H + (maxRows - 1) * WS_ROW_GAP;
+  // Height: tallest column's accumulated offset (already includes
+  // qa-e2e double-slot expansion). Final WS_ROW_GAP shouldn't count
+  // as bottom padding so subtract it back off.
+  const tallestColEnd = Math.max(WS_PAD_Y + WS_NODE_H, ...colOffsetY);
+  const height = Math.max(WS_PAD_Y * 2 + WS_NODE_H, tallestColEnd - WS_ROW_GAP + WS_PAD_Y);
   return { cards, arrows, width, height };
 }
 
@@ -1879,6 +1933,21 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
     return m;
   }, [groups]);
 
+  // docs/forge/e2e.md Stage 8.2 — pre-compute the impl-sibling id for
+  // every qa-e2e workstream so the arrow router can pick the
+  // vertical-stack anchor pair (impl bottom → qa-e2e top) for the
+  // short downward edge instead of the default left-to-right Bezier
+  // (which would render as a backward loop since the two cards share
+  // an x coordinate). Cross-stage qa-e2e deps (the Stage 2.1 H3 dep
+  // kind) keep the default routing — they look like ordinary
+  // intra-phase impl-dep edges to the router.
+  const implSiblingByQa = useMemo(() => {
+    const qaByImpl = qaE2eByImplId(ws);
+    const m = new Map<string, string>();
+    qaByImpl.forEach((qa, implId) => m.set(qa.id, implId));
+    return m;
+  }, [ws]);
+
   type ArrowSpec = { d: string; tone: 'normal' | 'blocked'; key: string };
   const arrows = useMemo<ArrowSpec[]>(() => {
     const out: ArrowSpec[] = [];
@@ -1899,17 +1968,38 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
         const fromBox = fromCollapsed ? boxes.headers.get(upPhase) : boxes.cards.get(depId);
         if (!fromBox) continue;
 
-        // Anchor at the right edge of source, left edge of target so
-        // arrows read left-to-right (matches topological flow within a
-        // phase). The cubic Bezier with midX control points keeps the
-        // line clean and visually parses as a DAG edge rather than
-        // overlapping the cards.
+        const tone: 'normal' | 'blocked' = w.status === 'blocked' ? 'blocked' : 'normal';
+
+        // docs/forge/e2e.md Stage 8.2 — impl→qa-e2e short stacked
+        // edge: source and target share x; route bottom-of-impl to
+        // top-of-qa-e2e with a near-straight cubic Bezier so the line
+        // visually reads as "impl gates this qa-e2e" instead of a
+        // sideways loop.
+        if (implSiblingByQa.get(w.id) === depId) {
+          const x1 = fromBox.x + fromBox.w / 2;
+          const y1 = fromBox.y + fromBox.h;
+          const x2 = toBox.x + toBox.w / 2;
+          const y2 = toBox.y;
+          const midY = (y1 + y2) / 2;
+          out.push({
+            d: `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`,
+            tone,
+            key: `${depId}->${w.id}:stack`,
+          });
+          continue;
+        }
+
+        // Default left-to-right routing for intra-phase impl-dep and
+        // cross-stage qa-e2e edges. Anchor at the right edge of
+        // source, left edge of target so arrows read left-to-right
+        // (matches topological flow within a phase). The cubic Bezier
+        // with midX control points keeps the line clean and visually
+        // parses as a DAG edge rather than overlapping the cards.
         const x1 = fromBox.x + fromBox.w;
         const y1 = fromBox.y + fromBox.h / 2;
         const x2 = toBox.x;
         const y2 = toBox.y + toBox.h / 2;
         const midX = (x1 + x2) / 2;
-        const tone: 'normal' | 'blocked' = w.status === 'blocked' ? 'blocked' : 'normal';
         out.push({
           d: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
           tone,
@@ -1918,7 +2008,7 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
       }
     }
     return out;
-  }, [ws, phaseAnchorOf, collapsed, boxes]);
+  }, [ws, phaseAnchorOf, collapsed, boxes, implSiblingByQa]);
 
   function togglePhase(anchor: string) {
     setCollapsed((prev) => {
@@ -2128,10 +2218,18 @@ function WsStageCard({
     }
   }, [onClick, ws.id]);
 
+  // docs/forge/e2e.md Stage 8.2 — surface the workstream category as
+  // a data attribute so the Playwright spec can locate qa-e2e cards
+  // without relying on the visual style. Also drives the optional
+  // `ws-stage--qae2e` class which tints the card's border with the
+  // green QA accent (mirrors the SwarmMasterPanel stacked-row look
+  // from Stage 8.1 so the operator's mental model carries across).
+  const category = isQaE2e(ws) ? 'qa-e2e' : 'impl';
+  const variantCls = category === 'qa-e2e' ? ' ws-stage--qae2e' : '';
   return (
     <div
       ref={cb}
-      className={`ws-stage ws-stage--${ws.status}`}
+      className={`ws-stage ws-stage--${ws.status}${variantCls}`}
       style={{
         position: 'absolute',
         left,
@@ -2142,6 +2240,7 @@ function WsStageCard({
         cursor: 'pointer',
       }}
       data-ws-id={ws.id}
+      data-ws-category={category}
       role="button"
       tabIndex={0}
       onClick={handleCardClick}

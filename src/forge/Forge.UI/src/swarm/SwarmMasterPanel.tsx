@@ -7,6 +7,7 @@ import {
   PHASE_STATUS_FILTER_KEYS,
   type PhaseStatusFilterKey,
 } from '@/state/useWorkstreamsStore';
+import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
 export interface Selection {
@@ -211,6 +212,13 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
     return m;
   }, [ws]);
 
+  // docs/forge/e2e.md Stage 8.1 — pair qa-e2e workstreams with their
+  // impl siblings so the phase-board can stack the qa-e2e row directly
+  // beneath the impl row (instead of rendering each qa-e2e as a
+  // standalone top-level phase card). The selector is exported so a
+  // vitest unit lock-in covers the pairing contract.
+  const qaE2eByImpl = useMemo(() => qaE2eByImplId(ws), [ws]);
+
   // Phase-board status filter — operator narrows which phase rows render.
   // Counts shown on chips are derived from the unfiltered list so the
   // operator always sees the full picture even when the filter is on.
@@ -239,9 +247,16 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   // Phase numbers are positional within the *unfiltered* workstream list
   // so the title stays consistent across filter changes (e.g., a row that
   // is "PHASE 12" under `all` must still read "PHASE 12" under `active`).
+  //
+  // docs/forge/e2e.md Stage 8.1 — qa-e2e rows are removed from the
+  // top-level loop: they render stacked beneath their impl sibling
+  // via the qaE2eByImpl selector below. Without this filter every
+  // qa-e2e row would also appear as a standalone phase card, doubling
+  // the visible card count for stages that have one.
   const visibleWs = useMemo(
     () => ws
       .map((w, originalIndex) => ({ w, originalIndex }))
+      .filter(({ w }) => !isQaE2e(w))
       .filter(({ w }) => {
         const bucket = w.status === 'historic' ? 'complete' : w.status;
         return (effectiveFilter as readonly string[]).includes(bucket);
@@ -353,18 +368,44 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
           </div>
         ) : (
           <div className="phase-board">
-            {visibleWs.map(({ w, originalIndex }) => (
-              <PhaseCard
-                key={w.id}
-                ws={w}
-                index={originalIndex}
-                stageNum={stageNumOf.get(w.id) ?? `${originalIndex + 1}`}
-                stageNumOf={stageNumOf}
-                wsNameById={wsNameById}
-                selected={selection.kind === 'phase' && selection.id === w.id}
-                onSelect={() => onSelect({ kind: 'phase', id: w.id })}
-              />
-            ))}
+            {visibleWs.map(({ w, originalIndex }) => {
+              // docs/forge/e2e.md Stage 8.1 — render the impl card,
+              // then (when present) stack the qa-e2e sibling directly
+              // beneath it inside a `.phase-stack` wrapper. When the
+              // impl row has no qa-e2e companion (selector returns
+              // undefined), render the impl card alone — no empty
+              // placeholder slot.
+              const qa = qaE2eByImpl.get(w.id);
+              const stageNum = stageNumOf.get(w.id) ?? `${originalIndex + 1}`;
+              const implCard = (
+                <PhaseCard
+                  key={w.id}
+                  ws={w}
+                  index={originalIndex}
+                  stageNum={stageNum}
+                  stageNumOf={stageNumOf}
+                  wsNameById={wsNameById}
+                  selected={selection.kind === 'phase' && selection.id === w.id}
+                  onSelect={() => onSelect({ kind: 'phase', id: w.id })}
+                />
+              );
+              if (!qa) return implCard;
+              return (
+                <div key={w.id} className="phase-stack" data-impl-id={w.id}>
+                  {implCard}
+                  <PhaseCard
+                    ws={qa}
+                    index={originalIndex}
+                    stageNum={`${stageNum}-e2e`}
+                    stageNumOf={stageNumOf}
+                    wsNameById={wsNameById}
+                    selected={selection.kind === 'phase' && selection.id === qa.id}
+                    onSelect={() => onSelect({ kind: 'phase', id: qa.id })}
+                    variant="qae2e"
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -380,9 +421,14 @@ interface PhaseCardProps {
   wsNameById: Map<string, string>;
   selected: boolean;
   onSelect: () => void;
+  /** docs/forge/e2e.md Stage 8.1 — `'qae2e'` swaps the card's accent
+   *  to the green QA team colour (`--sc-t-qa`) and adds the
+   *  `phase--qae2e` CSS modifier so it visually reads as a stacked
+   *  child of its impl sibling. Defaults to `'impl'`. */
+  variant?: 'impl' | 'qae2e';
 }
 
-function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }: PhaseCardProps) {
+function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, variant = 'impl' }: PhaseCardProps) {
   const phaseCls = STATUS_TO_PHASE_CLASS[ws.status] ?? 'queued';
   const badgeCls = STATUS_TO_BADGE[ws.status] ?? 'blocked';
   const pct = STATUS_PROGRESS[ws.status] ?? 0;
@@ -393,11 +439,13 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect }:
   // targeted has been superseded. Tooltip mirrors the same model.
   const isObsolete = ws.status === 'historic';
   const lifecycleLabel = isObsolete ? 'complete' : ws.status;
+  const variantCls = variant === 'qae2e' ? ' phase--qae2e' : '';
 
   return (
     <div
-      className={`phase ${phaseCls}${selected ? ' selected' : ''}`}
+      className={`phase ${phaseCls}${selected ? ' selected' : ''}${variantCls}`}
       data-sel-key={`phase:${ws.id}`}
+      data-variant={variant}
       onClick={onSelect}
       data-sc-tooltip={
         ws.status === 'stalled' && ws.stallReason

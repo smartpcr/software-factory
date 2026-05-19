@@ -1736,6 +1736,14 @@ public static class StoriesEndpoints
                 // predate Phase 47Migration.
                 phaseAnchor = w.PhaseAnchor,
                 planAnchor = w.PlanAnchor,
+                // docs/forge/e2e.md Stage 8.1 — surface the workstream
+                // category discriminator ("impl" / "qa-e2e") so the
+                // swarm phase-board can stack qa-e2e rows beneath
+                // their impl sibling instead of rendering them as
+                // standalone phase cards. Added by Phase 79Migration;
+                // null on legacy rows defaults to "impl" via the
+                // entity property's default.
+                category = w.Category,
                 // ── live runtime fields ──────────────────────────────────
                 agents = wsAgents,
                 iter = wsDeliverables.Count,
