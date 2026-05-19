@@ -68,6 +68,133 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.logger = logger;
     }
 
+    // ── Decomposition shape (shared by decomposer + reconciler) ──────────────
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — synthetic anchor suffix appended to
+    /// a Stage's anchor to produce the qa-e2e companion's anchor
+    /// (e.g. <c>phase-foo/stage-bar/e2e</c>). Single source of truth so
+    /// the decomposer, the reconciler, and the qa-e2e routing layer
+    /// (Stage 5.1) all compare against the same literal.
+    /// </summary>
+    public const string QaE2eAnchorSuffix = "/e2e";
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — anchor for the qa-e2e companion of
+    /// the given impl-stage anchor. Pure function so unit tests and the
+    /// reconciler share one definition.
+    /// </summary>
+    public static string QaE2eAnchorFor(string stageAnchor) =>
+        stageAnchor + QaE2eAnchorSuffix;
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — pure projection of a parsed plan +
+    /// resolved deps into the canonical <see cref="DecompositionWorkstream"/>
+    /// list the orchestrator persists. Emits one impl row per stage AND
+    /// one trailing <see cref="WorkstreamCategories.QaE2e"/> row per
+    /// stage that declares at least one <c>### Test Scenarios</c>
+    /// checkbox.
+    ///
+    /// <para>The qa-e2e row's <c>Deps</c> contains its impl sibling's
+    /// title (so the existing title-keyed dep wiring in
+    /// <c>StorySpawnOrchestrator.PersistDecompositionAsync</c> routes the
+    /// edge correctly) followed by every upstream title from the
+    /// resolver's <c>CrossStageE2eDeps</c> projection — the cross-stage
+    /// edges declared via the Stage 2.1 H3. Stage 3.2 will rewrite the
+    /// branch / worktree-slug shape; for now the slug fall-out of
+    /// <c>PlanAnchor.Replace('/', '-')</c> already gives qa-e2e rows
+    /// distinct ids (<c>ws-{storyId}-{anchor}-e2e</c>).</para>
+    ///
+    /// <para>Static so unit tests can feed it a parsed plan + resolver
+    /// output directly; the strategy's instance method
+    /// <see cref="ProduceDecompositionAsync"/> just calls this after
+    /// reading the plan file from git.</para>
+    /// </summary>
+    internal static IReadOnlyList<DecompositionWorkstream> BuildDecompositionFromPlan(
+        PlanParser.CanonicalPlan canonical,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolved)
+    {
+        var stages = canonical.AllStages().ToList();
+        var output = new List<DecompositionWorkstream>(stages.Count * 2);
+
+        foreach (var s in stages)
+        {
+            resolved.TryGetValue(s.Anchor, out var rd);
+            var deps = rd?.Deps ?? Array.Empty<string>();
+            var unresolved = rd?.UnresolvedDeps ?? Array.Empty<string>();
+            // Phase 46 -- cache the phase-{slug} prefix so the swarm
+            // DAG can group cards without re-parsing the plan.
+            var slash = s.Anchor.IndexOf('/');
+            var phaseAnchor = slash > 0 ? s.Anchor[..slash] : s.Anchor;
+
+            output.Add(new DecompositionWorkstream(
+                Title: s.Name,
+                Description: s.Steps.Count == 0
+                    ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
+                    : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
+                AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
+                Deps: deps,
+                Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
+                Timeline: string.Empty,
+                EstimatedEffort: string.Empty,
+                PlanAnchor: s.Anchor,
+                PlanContentHash: s.ContentHash,
+                PhaseAnchor: phaseAnchor,
+                UnresolvedDeps: unresolved.Count == 0 ? null : unresolved,
+                Category: WorkstreamCategories.Impl));
+
+            // docs/forge/e2e.md Stage 3.1 — trailing qa-e2e row when the
+            // stage declares any test scenarios. Skipped silently for
+            // stages whose `### Test Scenarios` block is empty (legacy
+            // plans / utility stages with no observable behaviour).
+            if (s.TestScenarios.Count == 0) continue;
+
+            // Deps shape: [impl-sibling-title, ...cross-stage e2e upstream
+            // titles]. PersistDecompositionAsync resolves Deps through a
+            // title→id map (siblings are titles, not ids), so the impl
+            // sibling's title is exactly what we need; the resolver's
+            // CrossStageE2eDeps projection is already in the same title
+            // form because ResolveAll projects anchors → titles via
+            // stagesByAnchor.
+            var qaDeps = new List<string>(1 + (rd?.CrossStageE2eDeps?.Count ?? 0)) { s.Name };
+            if (rd is { CrossStageE2eDeps: { Count: > 0 } crossE2eDeps })
+            {
+                foreach (var t in crossE2eDeps)
+                {
+                    // Preserve plan-order (resolver alphabetises already);
+                    // dedupe defensively in case a plan declares the impl
+                    // sibling as both an ordinary AND a cross-stage dep.
+                    if (!qaDeps.Contains(t, StringComparer.OrdinalIgnoreCase))
+                    {
+                        qaDeps.Add(t);
+                    }
+                }
+            }
+
+            output.Add(new DecompositionWorkstream(
+                Title: $"{s.Name} — E2E",
+                Description: $"E2E tests for {s.Name}: Gherkin feature + step definitions + e2e run "
+                    + $"covering {s.TestScenarios.Count} acceptance "
+                    + (s.TestScenarios.Count == 1 ? "scenario." : "scenarios."),
+                AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
+                Deps: qaDeps,
+                Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
+                Timeline: string.Empty,
+                EstimatedEffort: string.Empty,
+                PlanAnchor: QaE2eAnchorFor(s.Anchor),
+                // Reuse the parent stage's content hash. Stage 2.1 already
+                // folds TestScenarios + CrossStageE2eDeps into the stage's
+                // hash, so any change to either re-prompts both the impl
+                // and qa-e2e rows under this stage.
+                PlanContentHash: s.ContentHash,
+                PhaseAnchor: phaseAnchor,
+                UnresolvedDeps: null,
+                Category: WorkstreamCategories.QaE2e));
+        }
+
+        return output;
+    }
+
     // ── Per-phase entry points ───────────────────────────────────────────────
 
     /// <summary>
@@ -1980,31 +2107,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // as the spawn's LastError.
             var resolved = DecompositionDepsResolver.ResolveAll(canonical);
 
-            return stages.Select(s =>
-            {
-                resolved.TryGetValue(s.Anchor, out var rd);
-                var deps = rd?.Deps ?? Array.Empty<string>();
-                var unresolved = rd?.UnresolvedDeps ?? Array.Empty<string>();
-                // Phase 46 -- cache the phase-{slug} prefix so the swarm
-                // DAG can group cards without re-parsing the plan.
-                var slash = s.Anchor.IndexOf('/');
-                var phaseAnchor = slash > 0 ? s.Anchor[..slash] : s.Anchor;
-
-                return new DecompositionWorkstream(
-                    Title: s.Name,
-                    Description: s.Steps.Count == 0
-                        ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
-                        : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
-                    AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
-                    Deps: deps,
-                    Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
-                    Timeline: string.Empty,
-                    EstimatedEffort: string.Empty,
-                    PlanAnchor: s.Anchor,
-                    PlanContentHash: s.ContentHash,
-                    PhaseAnchor: phaseAnchor,
-                    UnresolvedDeps: unresolved.Count == 0 ? null : unresolved);
-            }).ToList();
+            return BuildDecompositionFromPlan(canonical, resolved);
         }
 
         // Fallback -- plan file is missing or unparseable. Keep the original

@@ -232,6 +232,54 @@ public sealed class PlanReconciler
             }
         }
 
+        // docs/forge/e2e.md Stage 3.1 — qa-e2e companion pass. For each
+        // plan stage with at least one test scenario, ensure a trailing
+        // qa-e2e WorkstreamRow exists with anchor `{stage.Anchor}/e2e`.
+        // Same diff semantics as the impl loop above: insert if missing,
+        // update (re-sync DepsJson against the resolver) if present and
+        // the content hash drifted. Pass 2 below treats these synthetic
+        // anchors as part of the plan so they don't get swept as orphans.
+        foreach (var stage in planStages)
+        {
+            if (stage.TestScenarios.Count == 0) continue;
+
+            var qaAnchor = CrewStoryArtifactStrategy.QaE2eAnchorFor(stage.Anchor);
+            if (active.TryGetValue(qaAnchor, out var qaRow))
+            {
+                if (string.Equals(qaRow.PlanContentHash, stage.ContentHash, StringComparison.Ordinal))
+                {
+                    // No-op: hash unchanged. Backfill DepsJson + PhaseAnchor
+                    // for any legacy qa-e2e row inserted before this layer
+                    // existed (DepsJson must reflect impl-sibling title +
+                    // cross-stage e2e titles).
+                    SyncQaE2eDepsAndAnchor(qaRow, stage, resolvedDeps);
+                    noop++;
+                    continue;
+                }
+
+                // Scope edit on the parent stage → re-sync qa-e2e brief
+                // and deps. We never split qa-e2e rows (no shipped/historic
+                // delta path); the row is regenerated content-wise on
+                // every plan change.
+                qaRow.Summary = QaE2eStageSummary(stage);
+                qaRow.PlanContentHash = stage.ContentHash;
+                SyncQaE2eDepsAndAnchor(qaRow, stage, resolvedDeps);
+                UpdateMatchingWorkItem(control, db, qaRow.Id, wi =>
+                {
+                    wi.Title = $"{stage.Name} — E2E";
+                    wi.DescriptionMd = QaE2eStageDescription(stage);
+                    wi.PlanContentHash = stage.ContentHash;
+                    wi.UpdatedAt = DateTimeOffset.UtcNow;
+                });
+                updated++;
+            }
+            else
+            {
+                InsertQaE2eWorkstream(control, db, spawn, stage, ref maxSort, resolvedDeps);
+                added++;
+            }
+        }
+
         // Pass 2 — orphaned rows: anchors in DB but not in plan, PLUS
         // legacy rows that pre-date Phase 42 and have no anchor at all.
         // Both are obsolete relative to the current plan — they should
@@ -241,8 +289,23 @@ public sealed class PlanReconciler
         // Filtering by StorySpawnId (already applied to `existing`) keeps
         // this scoped to this spawn's decomposition; manually-created
         // workstreams (StorySpawnId=null) are never in the existing set.
+        //
+        // docs/forge/e2e.md Stage 3.1 — qa-e2e companion anchors
+        // (`{stage.Anchor}/e2e`) count as "in plan" when their parent
+        // stage is still in the plan AND still declares at least one
+        // test scenario. A qa-e2e row whose parent stage's TestScenarios
+        // became empty (or whose parent stage was removed entirely) is
+        // genuinely orphaned and runs through the same cancel / historic
+        // sweep as impl rows.
+        var qaE2eAnchorsInPlan = new HashSet<string>(
+            planStages
+                .Where(s => s.TestScenarios.Count > 0)
+                .Select(s => CrewStoryArtifactStrategy.QaE2eAnchorFor(s.Anchor)),
+            StringComparer.Ordinal);
+
         var orphanedAnchored = active.Values
-            .Where(w => !planByAnchor.ContainsKey(w.PlanAnchor!))
+            .Where(w => !planByAnchor.ContainsKey(w.PlanAnchor!)
+                     && !qaE2eAnchorsInPlan.Contains(w.PlanAnchor!))
             .ToList();
         var legacyUnanchored = existing
             .Where(w => w.Status != WorkstreamStatuses.Historic
@@ -471,6 +534,181 @@ public sealed class PlanReconciler
         var wi = db.WorkItems.FirstOrDefault(w => w.Id == wsId);
         if (wi is null) return;
         mutate(wi);
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — insert a trailing qa-e2e WorkstreamRow
+    /// for a Stage that declares <c>### Test Scenarios</c>. Mirrors
+    /// <see cref="InsertWorkstream"/> but uses the synthetic anchor
+    /// <c>{stage.Anchor}/e2e</c>, sets <c>Category="qa-e2e"</c>, and
+    /// composes the row's DepsJson as <c>[impl-sibling-title,
+    /// …cross-stage e2e titles]</c> so the existing title-keyed dep
+    /// wiring in <see cref="StorySpawnOrchestrator"/>.PersistDecompositionAsync
+    /// routes the edges correctly.
+    /// </summary>
+    private static void InsertQaE2eWorkstream(
+        ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, PlanParser.CanonicalStage stage, ref int maxSort,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
+    {
+        var qaAnchor = CrewStoryArtifactStrategy.QaE2eAnchorFor(stage.Anchor);
+        var wsId = WorkstreamIdFor(spawn.StoryId, qaAnchor);
+        if (db.Workstreams.Any(x => x.Id == wsId)) return; // idempotent
+
+        var safeStory = StoryPaths.Safe(spawn.StoryId);
+        var branchSlug = qaAnchor.Replace('/', '-').Replace('@', '-');
+
+        var deps = BuildQaE2eDeps(stage, resolvedDeps);
+        var depsJson = deps.Count > 0 ? JsonSerializer.Serialize(deps) : null;
+        var slash = stage.Anchor.IndexOf('/');
+        var phaseAnchor = slash > 0 ? stage.Anchor[..slash] : stage.Anchor;
+
+        db.Workstreams.Add(new WorkstreamRow
+        {
+            Id = wsId,
+            Sort = ++maxSort,
+            RepoId = spawn.RepoId,
+            Name = $"{stage.Name} — E2E",
+            // Stage 3.2 will rewrite the branch shape (`ws/{storyId}/{stageSlug}-e2e`).
+            // For Stage 3.1 the anchor-derived slug already yields a
+            // distinct branch under the same prefix.
+            Branch = $"ws/{safeStory}/{branchSlug}",
+            Base = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch,
+            Epic = spawn.StoryId,
+            Status = "planning",
+            WorktreeJson = "[\"(not yet created)\"]",
+            AgentsJson = "[]",
+            PrsJson = "[]",
+            CardsJson = "[]",
+            Summary = QaE2eStageSummary(stage),
+            BarStart = 0,
+            BarEnd = 5,
+            Planned = true,
+            StorySpawnId = spawn.Id,
+            PlanAnchor = qaAnchor,
+            PlanContentHash = stage.ContentHash,
+            DepsJson = depsJson,
+            PhaseAnchor = phaseAnchor,
+            Category = WorkstreamCategories.QaE2e,
+        });
+
+        if (!db.WorkItems.Any(x => x.Id == wsId))
+        {
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = wsId,
+                ParentId = spawn.StoryId,
+                FeatureRef = spawn.StoryId,
+                RepoId = spawn.RepoId,
+                Provider = "local",
+                Track = "dev",
+                Type = "task",
+                State = "active",
+                Title = $"{stage.Name} — E2E",
+                DescriptionMd = QaE2eStageDescription(stage),
+                Points = Math.Max(1, spawn.StoryPoints),
+                Priority = "med",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                PlanAnchor = qaAnchor,
+                PlanContentHash = stage.ContentHash,
+            });
+        }
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — re-derive DepsJson + PhaseAnchor for
+    /// an existing qa-e2e row. Idempotent (only writes when the value
+    /// would change). Mirrors <see cref="SyncDepsAndAnchor"/> but uses
+    /// the qa-e2e dep composition (impl-sibling + cross-stage e2e
+    /// upstreams) instead of the impl stage's resolver deps.
+    /// </summary>
+    private static void SyncQaE2eDepsAndAnchor(
+        WorkstreamRow row,
+        PlanParser.CanonicalStage stage,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
+    {
+        var deps = BuildQaE2eDeps(stage, resolvedDeps);
+        var newDepsJson = deps.Count > 0 ? JsonSerializer.Serialize(deps) : null;
+        if (!string.Equals(row.DepsJson, newDepsJson, StringComparison.Ordinal))
+        {
+            row.DepsJson = newDepsJson;
+        }
+
+        var slash = stage.Anchor.IndexOf('/');
+        var newPhaseAnchor = slash > 0 ? stage.Anchor[..slash] : stage.Anchor;
+        if (!string.Equals(row.PhaseAnchor, newPhaseAnchor, StringComparison.Ordinal))
+        {
+            row.PhaseAnchor = newPhaseAnchor;
+        }
+
+        // Defensive: legacy qa-e2e rows that pre-date the Category column
+        // backfill (Stage 1.1 migration runs before this reconcile, but a
+        // hand-crafted DB seed could still slip through with Category='impl').
+        if (row.Category != WorkstreamCategories.QaE2e)
+        {
+            row.Category = WorkstreamCategories.QaE2e;
+        }
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — compose the qa-e2e dep list for a
+    /// stage: <c>[impl-sibling-title, …resolver.CrossStageE2eDeps]</c>,
+    /// deduped against the impl sibling and stable in plan order.
+    /// </summary>
+    private static List<string> BuildQaE2eDeps(
+        PlanParser.CanonicalStage stage,
+        IReadOnlyDictionary<string, DecompositionDepsResolver.ResolvedStageDeps> resolvedDeps)
+    {
+        resolvedDeps.TryGetValue(stage.Anchor, out var rd);
+        var deps = new List<string>(1 + (rd?.CrossStageE2eDeps?.Count ?? 0)) { stage.Name };
+        if (rd?.CrossStageE2eDeps is { Count: > 0 } crossE2eDeps)
+        {
+            foreach (var t in crossE2eDeps)
+            {
+                if (!deps.Contains(t, StringComparer.OrdinalIgnoreCase))
+                {
+                    deps.Add(t);
+                }
+            }
+        }
+        return deps;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — short summary string for a qa-e2e
+    /// WorkstreamRow.Summary. Mirrors <c>StageSummary</c>'s shape.
+    /// </summary>
+    private static string QaE2eStageSummary(PlanParser.CanonicalStage stage) =>
+        $"E2E for Stage {stage.PhaseNumber}.{stage.StageNumber}: Gherkin + step-defs + e2e run "
+            + $"covering {stage.TestScenarios.Count} acceptance "
+            + (stage.TestScenarios.Count == 1 ? "scenario." : "scenarios.");
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 3.1 — long-form description used as the
+    /// qa-e2e WorkItem's DescriptionMd. The QA / engineer agents read this
+    /// at iter-build time to know which scenarios they're implementing.
+    /// </summary>
+    private static string QaE2eStageDescription(PlanParser.CanonicalStage stage)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("E2E tests for Stage ").Append(stage.PhaseNumber).Append('.').Append(stage.StageNumber)
+            .Append(" of `implementation-plan.md` — ").AppendLine(stage.Name);
+        sb.AppendLine();
+        sb.AppendLine("Trails the impl workstream for this Stage. Owns the Gherkin");
+        sb.AppendLine("`.feature` file, the matching step-definition file, and the e2e");
+        sb.AppendLine("run that gates the Stage's completion. Implementation lands");
+        sb.AppendLine("under the per-stage `tests/Features/{storyId}/{phaseSlug}/` and");
+        sb.AppendLine("`tests/Steps/{storyId}/{phaseSlug}/` subtrees (Stage 4.2 onward).");
+        sb.AppendLine();
+        if (stage.TestScenarios.Count > 0)
+        {
+            sb.AppendLine("## Test Scenarios (from implementation-plan.md)");
+            foreach (var sc in stage.TestScenarios)
+            {
+                sb.Append("- ").AppendLine(sc);
+            }
+        }
+        return sb.ToString();
     }
 
     /// <summary>

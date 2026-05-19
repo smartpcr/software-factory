@@ -528,21 +528,21 @@ references them.
   delete them on re-decompose.
 
 **Implementation Steps:**
-- [ ] Modify the `stages.Select(...)` block at `CrewStoryArtifactStrategy.cs:1982` to emit both impl + qa-e2e records.
-- [ ] Skip qa-e2e emission when `s.TestScenarios.Count == 0`.
-- [ ] Append `s.CrossStageE2eDeps` (resolved) to the qa-e2e `Deps` list.
-- [ ] Update `PlanReconciler` to match qa-e2e rows by `{stage.Anchor}/e2e` so re-runs are idempotent.
-- [ ] Update `WorkstreamWorktreeSlug.Compute` to produce a `stage-{N.M}-{slug}-e2e` slug for qa-e2e rows.
+- [x] Extracted the per-stage decomposition projection out of `ProduceDecompositionAsync` into a pure `internal static CrewStoryArtifactStrategy.BuildDecompositionFromPlan(CanonicalPlan, IReadOnlyDictionary<…, ResolvedStageDeps>)` helper so the same logic drives both the strategy AND the reconciler insert path; added `QaE2eAnchorSuffix = "/e2e"` + `QaE2eAnchorFor(string)` as the single source of truth for the synthetic anchor shape.
+- [x] `BuildDecompositionFromPlan` emits one trailing `DecompositionWorkstream` (`Category="qa-e2e"`, `Title="{stage.Name} — E2E"`, `PlanAnchor="{stage.Anchor}/e2e"`, `PlanContentHash` reused from the parent stage so any test-scenario / cross-stage-dep edit re-prompts both the impl AND the qa-e2e row) per Stage whose `TestScenarios.Count > 0`; stages with no test scenarios silently emit impl-only.
+- [x] `Deps` for the qa-e2e row are `[impl-sibling-title, ...resolver.CrossStageE2eDeps]`, deduped against the impl sibling so an architect's title-form self-ref doesn't double-list. The existing title-keyed wiring in `StorySpawnOrchestrator.PersistDecompositionAsync` / `StoriesEndpoints.SubmitDecomposition` then routes the edges into `WorkstreamDepRow` rows.
+- [x] `PlanReconciler` extended with a qa-e2e companion pass (between Pass 1 and Pass 2): insert missing qa-e2e rows for stages with TestScenarios, sync DepsJson / PhaseAnchor / Category on existing qa-e2e rows when the parent stage's content hash changes, and (defensively) backfill `Category="qa-e2e"` on any legacy row that slipped through with the impl default. Pass 2's orphan sweep now treats `{stage.Anchor}/e2e` anchors as "in plan" when their parent stage exists AND still declares test scenarios — so re-runs are idempotent and a qa-e2e is only dropped when its parent stage was removed (or its TestScenarios block went empty).
+- [x] _Deferred to Stage 3.2_: `WorkstreamWorktreeSlug.Compute` rewrite. Stage 3.1 ships the synthetic anchor `{stage.Anchor}/e2e` whose `Replace('/', '-')` slug fall-out (e.g. `ws-{storyId}-phase-foo-stage-bar-e2e`) already gives qa-e2e rows distinct ids + distinct branches under the existing `ws/{storyId}/{slug}` shape; Stage 3.2 owns the formal `stage-{N.M}-{stageSlug}-e2e` slug rewrite per the spec split.
 
 #### Dependencies
 - phase-plan-parser-cross-stage-e2e-dependencies/stage-parse-optional-cross-stage-dependencies-under-a-stage
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Stage with zero test scenarios emits exactly one decomposition workstream (impl only).
-- [ ] `[unit]` Scenario: Stage with two test scenarios emits two decomposition workstreams (impl + qa-e2e) and the qa-e2e row has `Deps = [stage.Anchor]`.
-- [ ] `[unit]` Scenario: Cross-stage deps from the parser are appended to the qa-e2e `Deps` in plan-order.
-- [ ] `[integration]` Scenario: `PlanReconciler` re-runs on the same plan produce the identical workstream set (no qa-e2e rows deleted / re-created).
-- [ ] `[integration]` Scenario: Decompose endpoint persists qa-e2e workstreams with `Category='qa-e2e'` and the correct `WorkstreamDepRow` edges.
+- [x] `[unit]` Scenario: Stage with zero test scenarios emits exactly one decomposition workstream (impl only). — `Stage31DecompositionQaE2eTests.BuildDecomposition_StageWithoutScenarios_EmitsImplOnly` (two-stage fixture: Scaffold = no scenarios → impl only; Endpoints = 2 scenarios → impl + qa-e2e; total 3 rows).
+- [x] `[unit]` Scenario: Stage with two test scenarios emits two decomposition workstreams (impl + qa-e2e) and the qa-e2e row has `Deps = [stage.Anchor]`. — `Stage31DecompositionQaE2eTests.BuildDecomposition_QaE2eRow_DepsOnImplSibling_Only` (asserts Deps singleton = impl-sibling title "Endpoints", PlanAnchor = `phase-foundation/stage-endpoints/e2e`, PhaseAnchor cached for swarm-DAG grouping, AcceptanceCriteria = verbatim test scenarios, Description encodes the scenario count).
+- [x] `[unit]` Scenario: Cross-stage deps from the parser are appended to the qa-e2e `Deps` in plan-order. — `Stage31DecompositionQaE2eTests.BuildDecomposition_QaE2eRow_AppendsCrossStageDeps_InPlanOrder` (3-phase / 3-stage fixture; UI's qa-e2e Deps = `[UI, API, Setup]` — impl-sibling first then resolver-ordered upstreams; also verifies the title-collision dedupe and that the no-cross-stage case stays single-element).
+- [x] `[integration]` Scenario: `PlanReconciler` re-runs on the same plan produce the identical workstream set (no qa-e2e rows deleted / re-created). — `Stage31DecompositionQaE2eTests.Reconciler_ReRun_Produces_Identical_Workstream_Set_No_Duplicates` (real `PlanReconciler` driven against `InMemoryStoryGitOps`-seeded plan; 3 consecutive `ReconcileAsync` runs; snapshot equality on `(anchor, category, status)`; `MarkedHistoric` / `CancelledInFlight` / `DroppedNotStarted` all = 0 across runs 2 + 3).
+- [x] `[integration]` Scenario: Decompose endpoint persists qa-e2e workstreams with `Category='qa-e2e'` and the correct `WorkstreamDepRow` edges. — `Stage31DecompositionQaE2eTests.Decompose_Endpoint_Persists_QaE2e_Workstreams_And_DepEdges` (POST `/spawn/decompose` with 2 impl + 1 qa-e2e body, `Deps = ["Endpoints", "Schema"]`; asserts both edges land in `workstream_deps` hanging off the qa-e2e row + zero reverse edges from the impl rows).
 
 ---
 
@@ -557,17 +557,19 @@ references them.
   `ws/{storyId}/{slug}-steps` naming).
 
 **Implementation Steps:**
-- [ ] Add the `-e2e` suffix branch in the `Category='qa-e2e'` branch of `WorkstreamWorktreeSlug`.
-- [ ] Update `PlanDocStateHelpers` if any canonical slug helper needs the new shape.
-- [ ] Add slug-uniqueness test against the `.worktree/` invariant in `docs/forge_implementation.md:47-58`.
+- [x] Added a qa-e2e branch in `WorkstreamWorktreeSlug.Compute`: when the target row's `Category == "qa-e2e"` and its `PlanAnchor` ends with `/e2e`, the slug recurses into the impl sibling's `Compute` result and appends `-e2e`. Falls through to a position-from-anchor + StageTitleSlug-derived `-e2e` path when the impl sibling is absent (defensive — production always carries both).
+- [x] `ComputePosition` now skips qa-e2e rows when bucketing impl-stage positions, so a trailing qa-e2e between two impl stages does NOT renumber the downstream impls (pinned by `Compute_QaE2e_Does_Not_Renumber_Following_Impl_Stages`).
+- [x] No `PlanDocStateHelpers` changes needed — its `CanonicalQaWorktreeSlug` / `CanonicalQaStepsWorktreeSlug` helpers belong to the legacy Phase 5 QA batch flow (kept for back-compat with paused legacy spawns). The new per-stage qa-e2e workstreams route through `WorkstreamWorktreeSlug.Compute` via the impl-style code path.
+- [x] No branch-shape changes needed — `PlanReconciler.InsertQaE2eWorkstream` and `StorySpawnOrchestrator.PersistDecompositionAsync` both flatten the qa-e2e anchor `phase-foo/stage-bar/e2e` via `Replace('/', '-')` to produce `ws/{storyId}/phase-foo-stage-bar-e2e`, which matches the spec's `ws/{storyId}/{stageSlug}-e2e` shape (extension of the existing impl convention, replacing the old `*-steps` naming).
+- [x] Slug uniqueness pinned with a 20-stage-story unit test (40 workstreams: 20 impl + 20 qa-e2e companions).
 
 #### Dependencies
 - phase-decomposition-emits-trailing-qa-e2e-workstreams/stage-extend-producedecomposition-with-the-qa-e2e-tail
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `WorkstreamWorktreeSlug.Compute(qa-e2e row)` produces `stage-N.M-{slug}-e2e`.
-- [ ] `[unit]` Scenario: Slug collides with no other workstream slug in a 20-stage story.
-- [ ] `[unit]` Scenario: Slug stays under the OS `MAX_PATH` budget for the longest plausible stage title.
+- [x] `[unit]` Scenario: `WorkstreamWorktreeSlug.Compute(qa-e2e row)` produces `stage-N.M-{slug}-e2e`. — `Stage32QaE2eWorktreeSlugTests.Compute_QaE2e_Row_Shadows_Impl_Sibling_Position_With_E2e_Suffix` (impl=`stage-3.3-log-replication`, qa-e2e=`stage-3.3-log-replication-e2e`; asserts no `/e2e` segment leakage and no `3.4` renumbering); fall-through path covered by `Compute_QaE2e_Row_FallsThrough_When_Impl_Sibling_Missing_FromList`.
+- [x] `[unit]` Scenario: Slug collides with no other workstream slug in a 20-stage story. — `Stage32QaE2eWorktreeSlugTests.Compute_Slug_Is_Unique_Across_TwentyStage_Story_With_QaE2e_Companions` (40 workstreams, `slugs.Distinct().Count == 40`; also spot-checks that every impl + "-e2e" matches the corresponding qa-e2e slug); the no-renumber invariant covered by `Compute_QaE2e_Does_Not_Renumber_Following_Impl_Stages`.
+- [x] `[unit]` Scenario: Slug stays under the OS `MAX_PATH` budget for the longest plausible stage title. — `Stage32QaE2eWorktreeSlugTests.Compute_QaE2e_Slug_Stays_Under_MaxPath_For_Realistic_Stage_Titles` (worst-case position `stage-20.20` + 40-60 char realistic stage title; asserts slug ≤ 100-char comfortable budget AND well under the Win32 260-char MAX_PATH hard wall, with the impl + qa-e2e pairing intact).
 
 ---
 

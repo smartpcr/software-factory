@@ -43,6 +43,15 @@ public static class WorkstreamWorktreeSlug
     /// pure / DB-free); the iteration order determines the
     /// phase / stage numbering, so callers should sort by
     /// <see cref="WorkstreamRow.Sort"/> ascending before invoking.
+    ///
+    /// <para>docs/forge/e2e.md Stage 3.2 — qa-e2e workstreams
+    /// (<see cref="WorkstreamCategories.QaE2e"/>) shadow their impl
+    /// sibling's position so the slug reads
+    /// <c>stage-{N.M}-{stageTitle}-e2e</c> (NOT
+    /// <c>stage-{N.(M+1)}-…-e2e</c>); they don't bump the impl-stage
+    /// numbering. Impl rows compute position against impl-only siblings
+    /// so a trailing qa-e2e row in the middle of a phase doesn't
+    /// renumber the impls that come after it.</para>
     /// </summary>
     public static string Compute(WorkstreamRow workstream, IReadOnlyList<WorkstreamRow> sameSpawnWorkstreams)
     {
@@ -51,6 +60,28 @@ public static class WorkstreamWorktreeSlug
         // Plan-anchored workstreams take the canonical short name.
         if (!string.IsNullOrWhiteSpace(workstream.PlanAnchor))
         {
+            // docs/forge/e2e.md Stage 3.2 — qa-e2e shadows its impl
+            // sibling's slug + "-e2e" suffix. Recurse to compute the
+            // sibling's slug; falls through to the position-from-anchor
+            // path when the impl sibling isn't in the spawn list yet
+            // (defensive — production always carries both rows).
+            if (workstream.Category == WorkstreamCategories.QaE2e
+                && workstream.PlanAnchor!.EndsWith(CrewStoryArtifactStrategy.QaE2eAnchorSuffix, StringComparison.Ordinal))
+            {
+                var implAnchor = workstream.PlanAnchor[..^CrewStoryArtifactStrategy.QaE2eAnchorSuffix.Length];
+                var implSibling = sameSpawnWorkstreams.FirstOrDefault(
+                    w => string.Equals(w.PlanAnchor, implAnchor, StringComparison.Ordinal));
+                if (implSibling is not null)
+                {
+                    return Compute(implSibling, sameSpawnWorkstreams) + "-e2e";
+                }
+                // Fall through to the position-from-anchor path below.
+                // StageTitleSlug strips the leading `stage-` AND folds the
+                // trailing `/e2e` into `-e2e`, so the resulting slug is
+                // `stage-{N.M}-{stageTitle}-e2e` even without the impl
+                // sibling, which matches the spec.
+            }
+
             var (phaseNum, stageNum) = ComputePosition(workstream, sameSpawnWorkstreams);
             var stageTitle = StageTitleSlug(workstream.PlanAnchor!);
             return $"stage-{phaseNum}.{stageNum}-{stageTitle}";
@@ -123,6 +154,15 @@ public static class WorkstreamWorktreeSlug
     /// <paramref name="target"/>. Rows without a PhaseAnchor land in
     /// a synthetic <c>__workstreams__</c> bucket so the numbering is
     /// always defined.
+    ///
+    /// <para>docs/forge/e2e.md Stage 3.2 — qa-e2e rows are excluded from
+    /// the bucket (they shadow their impl sibling via the recursion in
+    /// <see cref="Compute"/>) so a trailing qa-e2e between two impl
+    /// stages doesn't renumber the impl stages that come after it. The
+    /// (rare) fall-through path that lands a qa-e2e target here — when
+    /// its impl sibling isn't in the spawn list — also uses the impl
+    /// bucket positioning for stage numbering, which is the closest
+    /// approximation to the "shadow the impl" rule.</para>
     /// </summary>
     private static (int PhaseNum, int StageNum) ComputePosition(
         WorkstreamRow target, IReadOnlyList<WorkstreamRow> sameSpawnWorkstreams)
@@ -134,6 +174,9 @@ public static class WorkstreamWorktreeSlug
 
         foreach (var w in sameSpawnWorkstreams.OrderBy(w => w.Sort))
         {
+            // Stage 3.2 — qa-e2e siblings don't claim a bucket slot.
+            // Their position is the impl sibling's position (see Compute).
+            if (w.Category == WorkstreamCategories.QaE2e) continue;
             var pa = string.IsNullOrWhiteSpace(w.PhaseAnchor) ? SyntheticPhase : w.PhaseAnchor!;
             if (!buckets.TryGetValue(pa, out var list))
             {
@@ -155,6 +198,15 @@ public static class WorkstreamWorktreeSlug
         var stageIdx = buckets[targetPhase].IndexOf(target.Id);
         if (stageIdx < 0)
         {
+            // Stage 3.2 — qa-e2e fall-through path: the impl sibling
+            // wasn't in the spawn list (unusual; production always
+            // carries both). Use the count of impl rows already seen in
+            // this phase as the stage number so the qa-e2e slug still
+            // shadows the most recent impl number.
+            if (target.Category == WorkstreamCategories.QaE2e && buckets.TryGetValue(targetPhase, out var implsInPhase))
+            {
+                return (phaseIdx + 1, Math.Max(1, implsInPhase.Count));
+            }
             return (phaseIdx + 1, Math.Max(1, target.Sort));
         }
         return (phaseIdx + 1, stageIdx + 1);
