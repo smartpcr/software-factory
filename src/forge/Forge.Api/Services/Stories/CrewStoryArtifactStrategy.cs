@@ -13,6 +13,7 @@ using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Forge.Api.Services;
+using Forge.Api.Services.Stories.Templates;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -81,6 +82,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.phaseSetupCache.TryRemove(spawnId, out _);
         this.phaseSetupCacheMisses.TryRemove(spawnId, out _);
     }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 7.3 — per-spawn idempotency marker for
+    /// <c>E2eBase.cs</c>. The first <see cref="ProduceStageE2eAsync"/>
+    /// call that wins <c>TryAdd</c> on this set folds the rendered
+    /// base-class file into its output dict; subsequent qa-e2e
+    /// workstreams for the same spawn skip the entry so the spawn ends
+    /// up with exactly one <c>tests/Steps/{storyId}/E2eBase.cs</c>.
+    /// On orchestrator restart this set clears (strategy is a
+    /// singleton); the per-spawn re-emission is harmless because git
+    /// commits are content-idempotent.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> e2eBaseEmittedForSpawn =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Test hook — has this strategy instance already emitted
+    /// the per-spawn E2eBase.cs for <paramref name="spawnId"/>?</summary>
+    internal bool HasEmittedE2eBaseFor(string spawnId) =>
+        this.e2eBaseEmittedForSpawn.ContainsKey(spawnId);
+
+    /// <summary>Test hook — forget the per-spawn E2eBase marker so the
+    /// next <see cref="ProduceStageE2eAsync"/> call for the spawn
+    /// re-emits. Used by integration tests that span a strategy
+    /// "restart" without spinning up a new instance.</summary>
+    internal void ResetE2eBaseEmittedFor(string spawnId) =>
+        this.e2eBaseEmittedForSpawn.TryRemove(spawnId, out _);
 
     public CrewStoryArtifactStrategy(
         IServiceScopeFactory scopeFactory,
@@ -3536,7 +3563,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException(
                 $"QA crew produced no files for qa-e2e workstream {workstream.Id}. Workspace: {workspace}");
         }
-        return files;
+
+        // docs/forge/e2e.md Stage 7.3 — fold the deterministic
+        // appsettings template (per-phase) and the per-spawn E2eBase.cs
+        // into the LLM output before returning. These two files are
+        // pure templates that don't benefit from agent generation; the
+        // shared renderer guarantees byte-identical output to the
+        // deterministic test strategy. TryAdd's atomic CAS picks the
+        // first qa-e2e workstream per spawn to carry the base class.
+        // Any path the LLM happened to emit at the same key gets
+        // overwritten by the deterministic template (last-write-wins
+        // on the merged dict) so the operator's appsettings/baseclass
+        // contract stays canonical.
+        var mergedFiles = new Dictionary<string, string>(files, StringComparer.Ordinal);
+        var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
+        foreach (var (path, body) in E2eBaseRenderer.RenderAll(
+            spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase))
+        {
+            mergedFiles[path] = body;
+        }
+        return mergedFiles;
     }
 
     /// <summary>

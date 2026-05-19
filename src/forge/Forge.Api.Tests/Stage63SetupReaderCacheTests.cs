@@ -407,17 +407,27 @@ public class Stage63SetupReaderCacheTests
             labFiles = await strategy.ProduceStageE2eAsync(spawn, labWs, default);
         }
 
-        // Inline phase: 2 files (feature + steps), no pipeline YAML.
-        Assert.Equal(2, foundationFiles.Count);
+        // Inline phase: 4 files — feature + steps + Stage 7.3 pair
+        // (appsettings.e2e.json + E2eBase.cs). The foundation
+        // workstream fires FIRST and wins the per-spawn E2eBase cache
+        // TryAdd, so it carries the base class entry.
+        Assert.Equal(4, foundationFiles.Count);
         Assert.Contains(foundationFiles.Keys, k => k.EndsWith(".feature", StringComparison.Ordinal));
         Assert.Contains(foundationFiles.Keys, k => k.EndsWith("Steps.cs", StringComparison.Ordinal));
         Assert.DoesNotContain(foundationFiles.Keys,
             k => k.Contains("azure-pipeline.yml", StringComparison.Ordinal));
         Assert.DoesNotContain(foundationFiles.Keys,
             k => k.Contains(".github/workflows/", StringComparison.Ordinal));
+        // Stage 7.3 — first qa-e2e per spawn includes E2eBase + per-phase appsettings.
+        Assert.Contains("tests/e2e/foundation/appsettings.e2e.json", foundationFiles.Keys);
+        Assert.Contains($"tests/Steps/{storyId}/E2eBase.cs", foundationFiles.Keys);
 
-        // Lab phase: 4 files (feature + steps + ADO YAML + GH workflow).
-        Assert.Equal(4, labFiles.Count);
+        // Lab phase: 5 files — feature + steps + ADO YAML + GH
+        // workflow + per-phase appsettings.e2e.json. E2eBase.cs is
+        // NOT re-emitted because the cache marker is already set by
+        // the foundation call above (Stage 7.3 per-spawn
+        // idempotency).
+        Assert.Equal(5, labFiles.Count);
         var adoPath = "tests/e2e/lab-work/azure-pipeline.yml";
         var ghPath = ".github/workflows/e2e-lab-work.yml";
         Assert.True(labFiles.ContainsKey(adoPath),
@@ -426,5 +436,10 @@ public class Stage63SetupReaderCacheTests
         Assert.Contains("name: forge-lab-wsfc", labFiles[adoPath]);
         Assert.Contains("LAB_CLUSTER_FQDN", labFiles[adoPath]);
         Assert.Contains("runs-on: [self-hosted, wsfc-lab]", labFiles[ghPath]);
+
+        // Stage 7.3 — lab appsettings present, but E2eBase.cs is NOT
+        // re-emitted (per-spawn idempotency).
+        Assert.Contains("tests/e2e/lab-work/appsettings.e2e.json", labFiles.Keys);
+        Assert.DoesNotContain($"tests/Steps/{storyId}/E2eBase.cs", labFiles.Keys);
     }
 }

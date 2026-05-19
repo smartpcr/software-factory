@@ -70,23 +70,34 @@ public class Stage42DeterministicQaE2eTests
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 
-    // ── 1. [unit] `inline` setup → 2 entries (feature + steps) ───────────
+    // ── 1. [unit] `inline` setup → 4 entries (feature + steps + appsettings + E2eBase) ──
+    //
+    // Stage 7.3 added per-phase appsettings.e2e.json + per-spawn
+    // E2eBase.cs emission; the original Stage 4.2 spec asserted 2
+    // entries. Count bumped to 4 (first qa-e2e per spawn always
+    // carries E2eBase).
 
     [Fact]
-    public async Task ProduceStageE2eAsync_Inline_Setup_Returns_Two_Entries()
+    public async Task ProduceStageE2eAsync_Inline_Setup_Returns_Four_Entries()
     {
         var strategy = new DeterministicStoryArtifactStrategy(); // no git → fallback to inline
 
         var files = await strategy.ProduceStageE2eAsync(Spawn(), QaE2eRow(), default);
 
-        Assert.Equal(2, files.Count);
+        Assert.Equal(4, files.Count);
 
         var featurePath = $"tests/Features/{StoryId}/foundation/setup.feature";
         var stepsPath = $"tests/Steps/{StoryId}/foundation/SetupSteps.cs";
+        var appsPath = $"tests/e2e/foundation/appsettings.e2e.json";
+        var basePath = $"tests/Steps/{StoryId}/E2eBase.cs";
         Assert.True(files.ContainsKey(featurePath),
             $"Inline setup must emit {featurePath}; got [{string.Join(", ", files.Keys)}]");
         Assert.True(files.ContainsKey(stepsPath),
             $"Inline setup must emit {stepsPath}; got [{string.Join(", ", files.Keys)}]");
+        Assert.True(files.ContainsKey(appsPath),
+            $"Stage 7.3 must emit {appsPath}; got [{string.Join(", ", files.Keys)}]");
+        Assert.True(files.ContainsKey(basePath),
+            $"Stage 7.3 must emit {basePath} on the first qa-e2e per spawn; got [{string.Join(", ", files.Keys)}]");
 
         // Feature carries the @setup-inline tag so the test framework can
         // filter by setup type. Steps file is compilable C# with the
@@ -99,12 +110,21 @@ public class Stage42DeterministicQaE2eTests
         // No pipeline YAML for inline setup.
         Assert.DoesNotContain(files.Keys, k => k.Contains("azure-pipeline.yml", StringComparison.Ordinal));
         Assert.DoesNotContain(files.Keys, k => k.Contains(".github/workflows/", StringComparison.Ordinal));
+
+        // Inline appsettings carries an empty E2e section (no env vars).
+        Assert.Contains("\"E2e\":", files[appsPath]);
+        Assert.DoesNotContain("LAB_CLUSTER_FQDN", files[appsPath]);
+        Assert.DoesNotContain("COMPOSE_REDIS_HOST", files[appsPath]);
     }
 
-    // ── 2. [unit] `compose` setup → 4 entries (above + ADO + GH) ─────────
+    // ── 2. [unit] `compose` setup → 7 entries (above + docker-compose + ADO + GH + Stage 7.3 pair) ──
+    //
+    // Stage 7.1 added docker-compose.yml emission via E2eComposeRenderer
+    // (was 4 → 5); Stage 7.3 added appsettings.e2e.json + E2eBase.cs
+    // (5 → 7). Test renamed + count bumped each time.
 
     [Fact]
-    public async Task ProduceStageE2eAsync_Compose_Setup_Returns_Four_Entries()
+    public async Task ProduceStageE2eAsync_Compose_Setup_Returns_Seven_Entries()
     {
         var setupMd = """
             # Phase 1: Foundation
@@ -123,19 +143,37 @@ public class Stage42DeterministicQaE2eTests
 
         var files = await strategy.ProduceStageE2eAsync(Spawn(), QaE2eRow(), default);
 
-        Assert.Equal(4, files.Count);
+        // docs/forge/e2e.md Stage 7.3 — compose now emits the 5 Stage 7.1
+        // files + appsettings.e2e.json + E2eBase.cs (7 total).
+        Assert.Equal(7, files.Count);
 
         var featurePath = $"tests/Features/{StoryId}/foundation/setup.feature";
         var stepsPath = $"tests/Steps/{StoryId}/foundation/SetupSteps.cs";
+        var composePath = "tests/e2e/foundation/docker-compose.yml";
         var adoPath = "tests/e2e/foundation/azure-pipeline.yml";
         var ghPath = ".github/workflows/e2e-foundation.yml";
+        var appsPath = "tests/e2e/foundation/appsettings.e2e.json";
+        var basePath = $"tests/Steps/{StoryId}/E2eBase.cs";
 
         Assert.True(files.ContainsKey(featurePath));
         Assert.True(files.ContainsKey(stepsPath));
+        Assert.True(files.ContainsKey(composePath),
+            $"Compose setup must emit {composePath} (Stage 7.1); got [{string.Join(", ", files.Keys)}]");
         Assert.True(files.ContainsKey(adoPath),
             $"Compose setup must emit {adoPath}; got [{string.Join(", ", files.Keys)}]");
         Assert.True(files.ContainsKey(ghPath),
             $"Compose setup must emit {ghPath}; got [{string.Join(", ", files.Keys)}]");
+        Assert.True(files.ContainsKey(appsPath),
+            $"Stage 7.3 must emit {appsPath}; got [{string.Join(", ", files.Keys)}]");
+        Assert.True(files.ContainsKey(basePath),
+            $"Stage 7.3 must emit {basePath} on the first qa-e2e per spawn; got [{string.Join(", ", files.Keys)}]");
+
+        // Compose appsettings declares the two compose-scaffold env vars
+        // (sourced from default app + redis services); confirms Stage
+        // 7.3's per-setup-type EnvVarNames routing.
+        Assert.Contains("COMPOSE_REDIS_HOST", files[appsPath]);
+        Assert.Contains("COMPOSE_REDIS_PORT", files[appsPath]);
+        Assert.DoesNotContain("LAB_CLUSTER_FQDN", files[appsPath]);
 
         // Feature + steps tagged `@setup-compose`.
         Assert.Contains("@setup-compose", files[featurePath]);
@@ -151,10 +189,10 @@ public class Stage42DeterministicQaE2eTests
         Assert.DoesNotContain("forge-lab-kv", files[adoPath]);
     }
 
-    // ── 3. [unit] `lab-wsfc` setup → 4 entries with lab env-vars ─────────
+    // ── 3. [unit] `lab-wsfc` setup → 6 entries with lab env-vars + Stage 7.3 pair ──
 
     [Fact]
-    public async Task ProduceStageE2eAsync_LabWsfc_Setup_Returns_Four_Entries_With_LabSecrets()
+    public async Task ProduceStageE2eAsync_LabWsfc_Setup_Returns_Six_Entries_With_LabSecrets()
     {
         var setupMd = """
             # Phase 1: Foundation
@@ -173,10 +211,14 @@ public class Stage42DeterministicQaE2eTests
 
         var files = await strategy.ProduceStageE2eAsync(Spawn(), QaE2eRow(), default);
 
-        Assert.Equal(4, files.Count);
+        // Stage 7.3 bumps lab-wsfc total to 6: feature + steps + ADO +
+        // GH workflow + appsettings.e2e.json + E2eBase.cs.
+        Assert.Equal(6, files.Count);
 
         var adoPath = "tests/e2e/foundation/azure-pipeline.yml";
         var ghPath = ".github/workflows/e2e-foundation.yml";
+        var appsPath = "tests/e2e/foundation/appsettings.e2e.json";
+        var basePath = $"tests/Steps/{StoryId}/E2eBase.cs";
 
         // ADO YAML: self-hosted lab pool + lab variable group + KeyVault task.
         var ado = files[adoPath];
@@ -199,6 +241,16 @@ public class Stage42DeterministicQaE2eTests
         // Feature carries the @setup-lab-wsfc tag.
         Assert.Contains("@setup-lab-wsfc",
             files[$"tests/Features/{StoryId}/foundation/setup.feature"]);
+
+        // Stage 7.3 — lab appsettings declares the 3 lab env-vars;
+        // E2eBase.cs ships the SetupSkippedException + RequireEnv helper.
+        Assert.True(files.ContainsKey(appsPath));
+        Assert.True(files.ContainsKey(basePath));
+        Assert.Contains("LAB_CLUSTER_FQDN", files[appsPath]);
+        Assert.Contains("LAB_ADMIN_USER", files[appsPath]);
+        Assert.Contains("LAB_ADMIN_PASSWORD", files[appsPath]);
+        Assert.Contains("class SetupSkippedException", files[basePath]);
+        Assert.Contains("RequireEnv", files[basePath]);
     }
 
     // ── 4. [integration] Boot factory + DI-resolved strategy + real git ──
@@ -301,21 +353,29 @@ public class Stage42DeterministicQaE2eTests
             files = await strategy.ProduceStageE2eAsync(spawn, ws, default);
         }
 
-        // 4 entries — feature + steps + ADO YAML + GH workflow.
-        Assert.Equal(4, files.Count);
+        // Stage 7.3 — 6 entries: feature + steps + ADO YAML + GH
+        // workflow + appsettings.e2e.json + E2eBase.cs.
+        Assert.Equal(6, files.Count);
         var adoPath = "tests/e2e/foundation/azure-pipeline.yml";
         var ghPath = ".github/workflows/e2e-foundation.yml";
+        var appsPath = "tests/e2e/foundation/appsettings.e2e.json";
+        var basePath = $"tests/Steps/{StoryId}/E2eBase.cs";
 
         Assert.True(files.ContainsKey($"tests/Features/{StoryId}/foundation/setup.feature"));
         Assert.True(files.ContainsKey($"tests/Steps/{StoryId}/foundation/SetupSteps.cs"));
         Assert.True(files.ContainsKey(adoPath));
         Assert.True(files.ContainsKey(ghPath));
+        Assert.True(files.ContainsKey(appsPath));
+        Assert.True(files.ContainsKey(basePath));
 
         // The end-to-end read picked up the lab-bare-metal setup type
         // — confirms IStoryGitOps + scope-factory wiring through DI.
         Assert.Contains("name: forge-lab-hw", files[adoPath]);
         Assert.Contains("runs-on: [self-hosted, lab-hw]", files[ghPath]);
         Assert.Contains("environment: lab-hw", files[ghPath]);
+
+        // Lab-bare-metal shares the 3 LAB_* env vars with lab-wsfc.
+        Assert.Contains("LAB_CLUSTER_FQDN", files[appsPath]);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ namespace Forge.Api.Tests.Infrastructure;
 using System.Text;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Stories;
+using Forge.Api.Services.Stories.Templates;
 
 /// <summary>
 /// TEST-ONLY <see cref="IStoryArtifactStrategy"/> — produces deterministic
@@ -32,6 +33,32 @@ using Forge.Api.Services.Stories;
 public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
 {
     private readonly IStoryGitOps? git;
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 7.3 — per-spawn idempotency marker for
+    /// the per-spawn <c>E2eBase.cs</c> emission. The FIRST
+    /// <see cref="ProduceStageE2eAsync"/> call for a given spawn includes
+    /// the base class in its output dict; every subsequent qa-e2e
+    /// workstream for the same spawn finds the spawn id already in the
+    /// set and skips the entry. Same shape as
+    /// <c>CrewStoryArtifactStrategy.e2eBaseEmittedForSpawn</c> so both
+    /// producers honour identical idempotency semantics.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> e2eBaseEmittedForSpawn =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Test hook — true when the per-spawn E2eBase has already
+    /// been emitted by this strategy instance. Used by Stage 7.3's
+    /// idempotency integration test.</summary>
+    internal bool HasEmittedE2eBaseFor(string spawnId) =>
+        this.e2eBaseEmittedForSpawn.ContainsKey(spawnId);
+
+    /// <summary>Test hook — forget the per-spawn E2eBase marker so a
+    /// subsequent qa-e2e call re-emits. Mirrors the cache-purge hook on
+    /// <see cref="CrewStoryArtifactStrategy"/>; primarily used to reset
+    /// state between integration test cases.</summary>
+    internal void ResetE2eBaseEmittedFor(string spawnId) =>
+        this.e2eBaseEmittedForSpawn.TryRemove(spawnId, out _);
 
     /// <summary>
     /// Default zero-arg ctor — keeps direct construction working for
@@ -324,19 +351,44 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         var stepsPath = $"tests/Steps/{storySafe}/{phaseSlug}/{stepsClassName}.cs";
         dict[stepsPath] = BuildStepsFile(spawn, workstream, phaseSlug, stageSlug, stepsClassName, setupType);
 
-        // Conditional: pipeline YAML stubs for compose / lab-* setups so
-        // Stage 7's pipeline-generation path has something to assert
-        // against even without the LLM-driven producer. Per docs/forge/e2e.md
-        // Stage 4.2 spec the deterministic strategy emits ONLY the two
-        // CI pipeline files; the full docker-compose stub + bootstrap
-        // script templates ship in Stage 7.1 / 7.2.
-        if (E2eScenariosSetupReader.RequiresPipelineYaml(setupType))
+        // docs/forge/e2e.md Stage 7.1 + 7.2 — both compose AND lab
+        // setups now run through their respective production
+        // renderers. Inline setups skip the pipeline-YAML branch
+        // entirely (no infra to spin up). The Stage 7 renderers are
+        // shared with the LLM-driven CrewStoryArtifactStrategy so
+        // both producers emit byte-identical pipeline files for the
+        // same (setupType, phaseSlug, stageSlug) input.
+        if (setupType == E2eSetupType.Compose)
         {
-            var adoPath = $"tests/e2e/{phaseSlug}/azure-pipeline.yml";
-            dict[adoPath] = BuildAzurePipelineYaml(phaseSlug, stageSlug, setupType);
+            foreach (var (path, body) in E2eComposeRenderer.RenderAll(phaseSlug, stageSlug))
+            {
+                dict[path] = body;
+            }
+        }
+        else if (setupType is E2eSetupType.LabWsfc or E2eSetupType.LabBareMetal)
+        {
+            // Stage 7.2: the parsed setup block's `Pre-test bootstrap`
+            // bullet may name `tests/e2e/{phaseSlug}/bootstrap.ps1`.
+            // The deterministic strategy's setup parsing doesn't surface
+            // that field yet; pass false here so the renderer omits the
+            // bootstrap step. The LLM strategy (Stage 4.3) can detect
+            // it from the resolved PhaseSetup body and pass true.
+            foreach (var (path, body) in E2eLabRenderer.RenderAll(setupType, phaseSlug, stageSlug, includeBootstrap: false))
+            {
+                dict[path] = body;
+            }
+        }
 
-            var ghPath = $".github/workflows/e2e-{phaseSlug}.yml";
-            dict[ghPath] = BuildGitHubWorkflowYaml(phaseSlug, stageSlug, setupType);
+        // docs/forge/e2e.md Stage 7.3 — always emit the per-phase
+        // appsettings.e2e.json; emit the per-spawn E2eBase.cs only on
+        // the FIRST qa-e2e workstream for the spawn. TryAdd's atomic
+        // semantics over the ConcurrentDictionary make the
+        // "first-wins" decision race-safe even when two qa-e2e
+        // workstreams for the same spawn fire concurrently.
+        var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
+        foreach (var (path, body) in E2eBaseRenderer.RenderAll(spawn.StoryId, phaseSlug, setupType, includeBaseClass: includeBase))
+        {
+            dict[path] = body;
         }
 
         return dict;
@@ -448,104 +500,6 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine("}");
         return sb.ToString();
     }
-
-    private static string BuildAzurePipelineYaml(string phaseSlug, string stageSlug, E2eSetupType setupType)
-    {
-        // Stage 4.2 emits a minimal-but-valid pipeline shape; Stage 7
-        // ships the full templated renderer with bootstrap script
-        // wiring + variable groups. For now the YAML names the right
-        // pool / vmImage and references the lab secret env-vars by name
-        // so the operator's structural review is meaningful.
-        var sb = new StringBuilder();
-        sb.AppendLine($"# docs/forge/e2e.md Stage 4.2 — deterministic ADO pipeline stub for phase `{phaseSlug}`");
-        sb.AppendLine($"# Setup type: {E2eScenariosSetupReader.ToWire(setupType)}");
-        sb.AppendLine();
-        sb.AppendLine("trigger: none");
-        sb.AppendLine();
-        if (setupType == E2eSetupType.Compose)
-        {
-            sb.AppendLine("pool:");
-            sb.AppendLine("  vmImage: ubuntu-latest");
-        }
-        else
-        {
-            var poolName = setupType == E2eSetupType.LabWsfc ? "forge-lab-wsfc" : "forge-lab-hw";
-            sb.AppendLine("pool:");
-            sb.AppendLine($"  name: {poolName}");
-            sb.AppendLine();
-            sb.AppendLine("variables:");
-            sb.AppendLine("  - group: forge-lab-vg");
-        }
-        sb.AppendLine();
-        sb.AppendLine("steps:");
-        if (setupType == E2eSetupType.Compose)
-        {
-            // Compose stack is templated in Stage 7.1 (deterministic emits
-            // only the pipeline YAMLs per the spec); reference the future
-            // file path so the operator sees where the docker-compose.yml
-            // will land once Stage 7.1 ships.
-            sb.AppendLine($"  # docker compose -f tests/e2e/{phaseSlug}/docker-compose.yml up -d  # Stage 7.1 will template this");
-        }
-        if (E2eScenariosSetupReader.RequiresLabSecrets(setupType))
-        {
-            sb.AppendLine("  - task: AzureKeyVault@2");
-            sb.AppendLine("    inputs:");
-            sb.AppendLine("      ConnectedServiceName: forge-lab-sc");
-            sb.AppendLine("      KeyVaultName: forge-lab-kv");
-            sb.AppendLine("      SecretsFilter: 'LAB_CLUSTER_FQDN,LAB_ADMIN_USER,LAB_ADMIN_PASSWORD'");
-        }
-        sb.AppendLine("  - script: dotnet test --filter Category=e2e");
-        sb.AppendLine($"    displayName: Run e2e for phase {phaseSlug} stage {stageSlug}");
-        if (E2eScenariosSetupReader.RequiresLabSecrets(setupType))
-        {
-            sb.AppendLine("    env:");
-            sb.AppendLine("      LAB_CLUSTER_FQDN: $(LAB_CLUSTER_FQDN)");
-            sb.AppendLine("      LAB_ADMIN_USER: $(LAB_ADMIN_USER)");
-            sb.AppendLine("      LAB_ADMIN_PASSWORD: $(LAB_ADMIN_PASSWORD)");
-        }
-        return sb.ToString();
-    }
-
-    private static string BuildGitHubWorkflowYaml(string phaseSlug, string stageSlug, E2eSetupType setupType)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"# docs/forge/e2e.md Stage 4.2 — deterministic GH workflow stub for phase `{phaseSlug}`");
-        sb.AppendLine($"# Setup type: {E2eScenariosSetupReader.ToWire(setupType)}");
-        sb.AppendLine();
-        sb.AppendLine($"name: e2e-{phaseSlug}");
-        sb.AppendLine("on:");
-        sb.AppendLine("  workflow_dispatch:");
-        sb.AppendLine();
-        sb.AppendLine("jobs:");
-        sb.AppendLine($"  e2e-{phaseSlug}:");
-        if (setupType == E2eSetupType.Compose)
-        {
-            sb.AppendLine("    runs-on: ubuntu-latest");
-        }
-        else
-        {
-            var labels = setupType == E2eSetupType.LabWsfc ? "[self-hosted, wsfc-lab]" : "[self-hosted, lab-hw]";
-            var envName = setupType == E2eSetupType.LabWsfc ? "lab-wsfc" : "lab-hw";
-            sb.AppendLine($"    runs-on: {labels}");
-            sb.AppendLine($"    environment: {envName}");
-        }
-        sb.AppendLine("    steps:");
-        sb.AppendLine("      - uses: actions/checkout@v4");
-        if (setupType == E2eSetupType.Compose)
-        {
-            sb.AppendLine($"      # - run: docker compose -f tests/e2e/{phaseSlug}/docker-compose.yml up -d  # Stage 7.1 will template this");
-        }
-        sb.AppendLine("      - run: dotnet test --filter Category=e2e");
-        if (E2eScenariosSetupReader.RequiresLabSecrets(setupType))
-        {
-            sb.AppendLine("        env:");
-            sb.AppendLine("          LAB_CLUSTER_FQDN: ${{ secrets.LAB_CLUSTER_FQDN }}");
-            sb.AppendLine("          LAB_ADMIN_USER: ${{ secrets.LAB_ADMIN_USER }}");
-            sb.AppendLine("          LAB_ADMIN_PASSWORD: ${{ secrets.LAB_ADMIN_PASSWORD }}");
-        }
-        return sb.ToString();
-    }
-
 
     [Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]
     public Task<IReadOnlyDictionary<string, string>> ProduceQaFeatureFilesAsync(

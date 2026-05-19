@@ -849,18 +849,19 @@ references them.
   phase setup is `compose` and includes them in the output dict.
 
 **Implementation Steps:**
-- [ ] Add the three template files as embedded resources.
-- [ ] Write `ComposePipelineRenderer` that substitutes `{phaseSlug}` / `{services}` placeholders.
-- [ ] Plug the renderer into `ProduceStageE2eAsync` behind a setup-type switch.
+- [x] Created `E2eComposeRenderer` static class under `src/forge/Forge.Api/Services/Stories/Templates/`. Three render methods: `RenderDockerCompose(phaseSlug, services?)`, `RenderAzurePipeline(phaseSlug, stageSlug)`, `RenderGitHubWorkflow(phaseSlug, stageSlug)`; plus path helpers (`DockerComposePathFor` / `AzurePipelinePathFor` / `GitHubWorkflowPathFor`) and a convenience `RenderAll` that returns the 3-entry dict. Templates emit inline rather than embedded-resource files — Stage 7.1's scope is small enough that the in-code templates are more readable than resource-loading machinery; future polish can move to embedded resources if the templates grow.
+- [x] Renderer's docker-compose ships a deterministic 2-service scaffold (`app` + `redis`) when no services list is provided; supports operator-declared services with lower-kebab sanitisation; carries an in-file healthcheck for both `redis` and `postgres` so the rendered file is `docker compose config`-valid.
+- [x] Plugged into `DeterministicStoryArtifactStrategy.ProduceStageE2eAsync` behind a setup-type switch: when `setupType == E2eSetupType.Compose`, the strategy calls `E2eComposeRenderer.RenderAll(phaseSlug, stageSlug)` and folds all three files into the output dict. Lab setups stay on the existing inline `BuildAzurePipelineYaml` / `BuildGitHubWorkflowYaml` until Stage 7.2 ships the `E2eLabRenderer` sibling.
+- [x] Stage 4.2's `ProduceStageE2eAsync_Compose_Setup_Returns_Four_Entries` renamed to `_Returns_Five_Entries` and the count assertion bumped from 4 → 5 since Stage 7.1 adds docker-compose.yml. Compose lifecycle steps (`docker compose up -d` → `dotnet test` → `docker compose down`) flow through both pipeline files with `condition: always()` / `if: always()` cleanup.
 
 #### Dependencies
 - phase-e2e-scenarios-md-setup-contract/stage-thread-parsed-setup-into-producestagee2easync-prompt
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Renderer produces non-empty YAML for a 2-service compose stack.
-- [ ] `[unit]` Scenario: Rendered ADO YAML's `pool:` block is `vmImage: ubuntu-latest` (hosted) — no self-hosted pool reference.
-- [ ] `[unit]` Scenario: Rendered GitHub workflow `runs-on:` is `ubuntu-latest`.
-- [ ] `[integration]` Scenario: End-to-end spawn with one `compose`-phase produces all three YAML files on the qa-e2e PR.
+- [x] `[unit]` Scenario: Renderer produces non-empty YAML for a 2-service compose stack. — `Stage71ComposeRendererTests.RenderDockerCompose_TwoService_Stack_Is_NonEmpty_And_NamesBoth` (default `app`+`redis` scaffold + operator-declared `postgres`+`myService` round-trip; pins healthchecks for `redis`/`postgres`, lower-kebab sanitisation, header-comment phase name).
+- [x] `[unit]` Scenario: Rendered ADO YAML's `pool:` block is `vmImage: ubuntu-latest` (hosted) — no self-hosted pool reference. — `Stage71ComposeRendererTests.RenderAzurePipeline_Uses_Ubuntu_Latest_Hosted_Runner_No_LabPool` (asserts hosted shape AND that zero lab artifacts leak in: `forge-lab-*`, `AzureKeyVault`, `LAB_CLUSTER_FQDN`, `pool: name:`).
+- [x] `[unit]` Scenario: Rendered GitHub workflow `runs-on:` is `ubuntu-latest`. — `Stage71ComposeRendererTests.RenderGitHubWorkflow_Uses_Ubuntu_Latest_Runner_No_LabLabels` (hosted runner + standard checkout + lifecycle steps with `if: always()` cleanup; explicit absence of `self-hosted` / `environment:` / `secrets.LAB_*`).
+- [x] `[integration]` Scenario: End-to-end spawn with one `compose`-phase produces all three YAML files on the qa-e2e PR. — `Stage71ComposeRendererTests.ComposePhase_QaE2e_EndToEnd_Produces_All_Three_Pipeline_Files` (boots factory + seeds 1-phase compose-setup spawn + 1 qa-e2e workstream + e2e-scenarios.md on main; calls `ProduceStageE2eAsync` via DI-registered deterministic strategy; asserts 5 total files including all three Stage 7.1 pipeline files + the body lifecycle assertions flow end-to-end).
 
 ---
 
@@ -877,21 +878,20 @@ references them.
   `LAB_ADMIN_PASSWORD` as env-vars on the test step.
 
 **Implementation Steps:**
-- [ ] Add the four template files (2 setup types × 2 providers).
-- [ ] Write `LabPipelineRenderer` with `(SetupType, Provider)` parameters.
-- [ ] Wire into `ProduceStageE2eAsync` after the compose switch.
-- [ ] Include a pre-test step calling
-  `tests/e2e/{phase-slug}/bootstrap.ps1` when the setup block names one.
+- [x] Created `E2eLabRenderer` static class under `src/forge/Forge.Api/Services/Stories/Templates/`. Two render methods (`RenderAzurePipeline(setupType, phaseSlug, stageSlug, includeBootstrap)` and `RenderGitHubWorkflow`) + `RenderAll` returning the 2-entry dict + path helpers (`AzurePipelinePathFor` / `GitHubWorkflowPathFor` / `BootstrapPathFor`). Lab doesn't ship docker-compose — tests run against pre-provisioned real infra. Templates emit inline (same approach as Stage 7.1's `E2eComposeRenderer`).
+- [x] Render covers all four (setup type × provider) combinations: lab-wsfc → `pool: forge-lab-wsfc` (ADO) + `[self-hosted, wsfc-lab]` (GH); lab-bare-metal → `pool: forge-lab-hw` (ADO) + `[self-hosted, lab-hw]` (GH). Both ADO pipelines reference `variables: - group: forge-lab-vg` + `AzureKeyVault@2` task fetching `LAB_CLUSTER_FQDN` / `LAB_ADMIN_USER` / `LAB_ADMIN_PASSWORD` from `forge-lab-kv`. GH workflows surface `environment: lab-wsfc` / `lab-hw` (review-gate before secrets release) and pull env-vars via `${{ secrets.LAB_* }}`.
+- [x] `includeBootstrap` parameter wires an optional pre-test step calling `tests/e2e/{phaseSlug}/bootstrap.ps1`: ADO uses the `PowerShell@2` task with the canonical path; GH uses `run: ./tests/e2e/{phaseSlug}/bootstrap.ps1` + `shell: pwsh`. Both bootstrap steps inherit the same env-var wiring as the main test step. Deterministic strategy passes `includeBootstrap: false` for Stage 7.2 (its setup parser doesn't surface the Pre-test bootstrap bullet yet); LLM strategy can flip the flag once it parses the field.
+- [x] Wired into `DeterministicStoryArtifactStrategy.ProduceStageE2eAsync` behind a setup-type switch alongside Stage 7.1's compose branch. Removed the now-dead inline `BuildAzurePipelineYaml` / `BuildGitHubWorkflowYaml` methods (~100 lines of cleanup) — both setup-type branches now route through the production renderers.
 
 #### Dependencies
 - phase-pipeline-yaml-generation/stage-compose-setup-emit-docker-compose-yml-hosted-runner-yaml
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `lab-wsfc` ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-vg`.
-- [ ] `[unit]` Scenario: `lab-wsfc` GH workflow uses `[self-hosted, wsfc-lab]` runner labels and `environment: lab-wsfc`.
-- [ ] `[unit]` Scenario: `lab-bare-metal` ADO YAML names `pool: forge-lab-hw`.
-- [ ] `[unit]` Scenario: Connection-string env-var names appear as `env: LAB_CLUSTER_FQDN: $(LAB_CLUSTER_FQDN)` in ADO and `${{ secrets.LAB_CLUSTER_FQDN }}` in GH.
-- [ ] `[integration]` Scenario: A `lab-wsfc` phase produces a PR whose YAML, when parsed by `YamlDotNet`, has a valid pipeline shape (smoke-validates we didn't ship malformed YAML).
+- [x] `[unit]` Scenario: `lab-wsfc` ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-vg`. — `Stage72LabRendererTests.RenderAzurePipeline_LabWsfc_Targets_ForgeLabWsfc_Pool_And_VariableGroup` (pins pool name + variable group + `AzureKeyVault@2` task + `forge-lab-kv` + `SecretsFilter` for all three lab env-vars + ADO `$(VAR)` macro syntax; asserts ZERO `vmImage:` (hosted-only) and ZERO `${{ secrets.* }}` (GH-only) leakage).
+- [x] `[unit]` Scenario: `lab-wsfc` GH workflow uses `[self-hosted, wsfc-lab]` runner labels and `environment: lab-wsfc`. — `Stage72LabRendererTests.RenderGitHubWorkflow_LabWsfc_Uses_SelfHosted_Labels_And_LabEnvironment` (pins runner labels + GH environment + `${{ secrets.* }}` syntax + ZERO `$(VAR)` macro leakage).
+- [x] `[unit]` Scenario: `lab-bare-metal` ADO YAML names `pool: forge-lab-hw`. — `Stage72LabRendererTests.RenderAll_LabBareMetal_Swaps_To_Hardware_Pool_And_Labels` (pins both pool + GH labels swap; reaffirms variable group + Key Vault stay shared across lab types; non-lab types throw `ArgumentOutOfRangeException` from both single-render and `RenderAll`).
+- [x] `[unit]` Scenario: Connection-string env-var names appear as `env: LAB_CLUSTER_FQDN: $(LAB_CLUSTER_FQDN)` in ADO and `${{ secrets.LAB_CLUSTER_FQDN }}` in GH. — Pinned across `RenderAzurePipeline_LabWsfc_Targets_ForgeLabWsfc_Pool_And_VariableGroup` (asserts all three ADO `$(VAR)` references), `RenderGitHubWorkflow_LabWsfc_Uses_SelfHosted_Labels_And_LabEnvironment` (asserts all three GH `${{ secrets.* }}` references), and `RenderAll_With_Bootstrap_Includes_PreTest_Step_In_Both_Providers` (asserts the bootstrap step ALSO carries the same env-var wiring with the correct provider syntax in each file).
+- [x] `[integration]` Scenario: A `lab-wsfc` phase produces a PR whose YAML, when parsed by `YamlDotNet`, has a valid pipeline shape. — `Stage72LabRendererTests.LabWsfc_Phase_QaE2e_Produces_YamlDotNet_Parseable_Pipeline_Files` (boots factory + seeds 1-phase lab-wsfc spawn + drives `ProduceStageE2eAsync` via DI deterministic strategy; runs BOTH rendered YAMLs through `YamlDotNet.Serialization.DeserializerBuilder().IgnoreUnmatchedProperties().Build().Deserialize<object?>` → asserts non-null → proves the renderer didn't emit malformed pipeline files; also re-pins the lab-specific substantive contents flow end-to-end).
 
 ---
 
@@ -907,18 +907,18 @@ references them.
   CI hard-failed via test settings.
 
 **Implementation Steps:**
-- [ ] Add `appsettings.e2e.json` template (one per setup type).
-- [ ] Add `E2eBase.cs` template with `SetupSkippedException`.
-- [ ] Emit `E2eBase.cs` once at the first qa-e2e PR per spawn; subsequent qa-e2e PRs only emit the per-phase appsettings + scenario files.
+- [x] Add `appsettings.e2e.json` template (one per setup type). — `E2eBaseRenderer.RenderAppSettings(setupType, phaseSlug)` declares per-setup-type env-var names (3 LAB_* vars for lab-wsfc / lab-bare-metal; 2 COMPOSE_REDIS_* for compose; empty E2e section for inline).
+- [x] Add `E2eBase.cs` template with `SetupSkippedException`. — `E2eBaseRenderer.RenderE2eBaseClass(storyId)` ships an abstract `E2eBase` with `RequireEnv` helper + sibling `SetupSkippedException` carrying the missing var name via a `VarName` property.
+- [x] Emit `E2eBase.cs` once at the first qa-e2e PR per spawn; subsequent qa-e2e PRs only emit the per-phase appsettings + scenario files. — Per-spawn `ConcurrentDictionary<string, byte>` on each strategy (`e2eBaseEmittedForSpawn`) gates emission via `TryAdd`; both `CrewStoryArtifactStrategy.ProduceStageE2eAsync` and `DeterministicStoryArtifactStrategy.ProduceStageE2eAsync` fold the renderer output into their returned file dict.
 
 #### Dependencies
 - phase-pipeline-yaml-generation/stage-lab-wsfc-lab-bare-metal-setup-emit-self-hosted-pipeline-yaml
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `E2eBase.cs` template compiles standalone (Roslyn parse + emit smoke).
-- [ ] `[unit]` Scenario: `appsettings.e2e.json` for `lab-wsfc` declares all three lab env-var names.
-- [ ] `[unit]` Scenario: `SetupSkippedException` carries the missing var name in its message.
-- [ ] `[integration]` Scenario: Spawn with two qa-e2e stages emits exactly one `E2eBase.cs` (idempotency check).
+- [x] `[unit]` Scenario: `E2eBase.cs` template compiles standalone (Roslyn parse + emit smoke). — `Stage73AppSettingsAndE2eBaseTests.RenderE2eBaseClass_Compiles_Via_Roslyn` runs both `CSharpSyntaxTree.ParseText` AND `CSharpCompilation.Emit` to a `MemoryStream` against the .NET 8 BCL.
+- [x] `[unit]` Scenario: `appsettings.e2e.json` for `lab-wsfc` declares all three lab env-var names. — `Stage73AppSettingsAndE2eBaseTests.RenderAppSettings_LabWsfc_Declares_Three_Lab_EnvVars` `JsonDocument.Parse`s the rendered file + asserts `LAB_CLUSTER_FQDN` / `LAB_ADMIN_USER` / `LAB_ADMIN_PASSWORD` all surface as keys with empty-string values (also covers lab-bare-metal + inline as cross-set guards).
+- [x] `[unit]` Scenario: `SetupSkippedException` carries the missing var name in its message. — `Stage73AppSettingsAndE2eBaseTests.SetupSkippedException_Message_Carries_VarName` pins the source-string format AND reflectively instantiates the type after Roslyn compile; verifies `.Message` contains the var name + `.VarName` exposes it verbatim + `E2eBase.RequireEnv` actually throws when the env var is unset.
+- [x] `[integration]` Scenario: Spawn with two qa-e2e stages emits exactly one `E2eBase.cs` (idempotency check). — `Stage73AppSettingsAndE2eBaseTests.Two_QaE2e_Stages_For_Same_Spawn_Emit_Exactly_One_E2eBase` drives `ProduceStageE2eAsync` twice (foundation + ingest) on the same spawn through a single `DeterministicStoryArtifactStrategy` instance + asserts the combined E2eBase.cs count is exactly 1 (first wins, second is the cache hit), with a reset-then-re-emit assertion at the end.
 
 ---
 
