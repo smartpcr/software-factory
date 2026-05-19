@@ -765,15 +765,15 @@ references them.
   secret references for both ADO + GitHub.
 
 **Implementation Steps:**
-- [ ] Replace the one-line `e2e-scenarios` entry in `BuildPlanDocSpecs` with the §8.4 prompt.
-- [ ] Add the same content to `PlanDocBriefConsistencyTests` so the resume-brief stays in sync (the test catches drift introduced in 2026-05-04).
+- [x] Replaced the one-line `e2e-scenarios` entry in `BuildPlanDocSpecs` (`CrewStoryArtifactStrategy.cs:289`) with the §8.4 expanded prompt: closed-set Type (`inline` | `compose` | `lab-wsfc` | `lab-bare-metal`), required `### Setup` H3 with `Type` / `Local` / `CI runner` / `Secrets` / `Pre-test bootstrap` sub-bullets, lab-specific guidance (ADO `forge-lab-wsfc` / `forge-lab-hw` pools + GH self-hosted labels + Key Vault + variable group + GH environment + secret names), `tests/e2e/{phase-slug}/docker-compose.yml` path convention, and the four "hard requirements" the evaluator (Stage 6.2) will refuse pass on.
+- [x] `BuildPlanDocSpecs` is already the single source of truth — `ResumeSingleArtifactAsync` (Phase 53 sequential path) reads from the same dictionary, so the brief automatically stays in sync. The Stage 6.1 expansion didn't need a parallel update to a literal copy. The `PlanDocBriefConsistencyTests.Resume_And_FullRun_Both_Use_Same_Brief_Source` regression-pin already covers any future accidental literal copy.
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `BuildPlanDocSpecs["e2e-scenarios"].Brief` contains the four required H3 sub-bullets (Type, Local, CI runner, Secrets).
-- [ ] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes — the brief returned by `ResumeSingleArtifactAsync("e2e-scenarios")` matches the one in `BuildPlanDocSpecs`.
+- [x] `[unit]` Scenario: `BuildPlanDocSpecs["e2e-scenarios"].Brief` contains the four required H3 sub-bullets (Type, Local, CI runner, Secrets). — `Stage61E2eScenariosBriefTests.E2eScenarios_Brief_Mandates_Setup_Block_With_Required_Bullets` (asserts all five sub-bullets including `Pre-test bootstrap`, `GROUPED BY PHASE`, all four closed-set type names, the four hard-requirements wordings, and the lab-specific defaults: `forge-lab-wsfc` / `forge-lab-hw` / Key Vault + variable group / GH environment + secret names / docker-compose path).
+- [x] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes — the brief returned by `ResumeSingleArtifactAsync("e2e-scenarios")` matches the one in `BuildPlanDocSpecs`. — `Stage61E2eScenariosBriefTests.E2eScenarios_Brief_Is_Single_Source_For_Resume_And_FullRun` mirrors `PlanDocBriefConsistencyTests.Resume_And_FullRun_Both_Use_Same_Brief_Source` for the e2e-scenarios spec (FileName + RepoPath + Brief byte-identical between two calls); also pins `Brief.Length > 1500` so a future truncation regression surfaces immediately. The full `PlanDocBriefConsistencyTests` suite (10 tests) continues to pass — verifies the expansion didn't break the implementation-plan brief invariants.
 
 ---
 
@@ -789,19 +789,20 @@ references them.
     `GitHub environment` references.
 
 **Implementation Steps:**
-- [ ] Add `E2eScenariosLinter` static class with `LintResult Validate(string md)`.
-- [ ] Call the linter from the evaluator prompt builder; surface lint errors as a structured evaluator feedback section.
-- [ ] Linter error codes follow the existing `plan.*` family: `e2e.setup_missing`, `e2e.setup_type_invalid`, `e2e.lab_secrets_incomplete`.
+- [x] Added `E2eScenariosLinter` static class (`Forge.Api/Services/Stories/E2eScenariosLinter.cs`) with `LintResult Validate(string? md)` walking each Phase H1, checking for `### Setup`, parsing the `Type` bullet, and (for `lab-*`) checking the Secrets bullet for both Key Vault + GitHub environment references. Tolerates `${{ secrets.* }}` as evidence of GH-env intent.
+- [x] Error code constants on `E2eScenariosLinter.ErrorCodes` — `SetupMissing` / `SetupTypeInvalid` / `LabSecretsIncomplete` — following the existing `plan.*` family naming.
+- [x] `BuildEvaluatorRulesSection(LintResult?)` returns a structured prompt section listing the linter's hard requirements + (optionally) the current violations under a `### Current violations` sub-heading.
+- [x] Wired the rules section into the architect evaluator prompt for the `e2e-scenarios.md` doc only (`CrewStoryArtifactStrategy.ProducePlanFileAsync` injects `e2eScenariosLinterRules` when `spec.FileName == "e2e-scenarios.md"`) so the LLM has the contract in-context. Stage 6.3 will run the linter as a server-side gate after each iter's commit so a generator that ignores the rules can't slip past the evaluator's scoring even if the LLM forgets.
 
 #### Dependencies
 - phase-e2e-scenarios-md-setup-contract/stage-update-buildplandocspecs-e2e-scenarios-brief
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Missing `### Setup` under a phase H1 → `e2e.setup_missing`.
-- [ ] `[unit]` Scenario: `Type: lambda` (not in closed set) → `e2e.setup_type_invalid`.
-- [ ] `[unit]` Scenario: `Type: lab-wsfc` with only a KeyVault bullet → `e2e.lab_secrets_incomplete`.
-- [ ] `[unit]` Scenario: Valid `compose` setup → no lint errors.
-- [ ] `[integration]` Scenario: Architect evaluator refuses pass (score < 90) on an `e2e-scenarios.md` that fails the linter; passes on a corrected version.
+- [x] `[unit]` Scenario: Missing `### Setup` under a phase H1 → `e2e.setup_missing`. — `Stage62E2eScenariosLinterTests.Linter_Reports_SetupMissing_When_Phase_Lacks_Setup_Heading` (two-phase fixture: phase 1 lacks Setup, phase 2 has valid Setup → single error on phase 1 with the right code + phase name + actionable detail).
+- [x] `[unit]` Scenario: `Type: lambda` (not in closed set) → `e2e.setup_type_invalid`. — `Stage62E2eScenariosLinterTests.Linter_Reports_SetupTypeInvalid_When_Type_Outside_Closed_Set` (also covers the no-Type-bullet variant; verifies the error detail lists the four closed-set names so the operator's log message is self-documenting).
+- [x] `[unit]` Scenario: `Type: lab-wsfc` with only a KeyVault bullet → `e2e.lab_secrets_incomplete`. — `Stage62E2eScenariosLinterTests.Linter_Reports_LabSecretsIncomplete_When_LabType_Lacks_Both_Providers` (covers KeyVault-only, GH-only, lab-bare-metal variants; also confirms `inline` / `compose` types DON'T trigger the lab-secrets check).
+- [x] `[unit]` Scenario: Valid `compose` setup → no lint errors. — `Stage62E2eScenariosLinterTests.Linter_Returns_Clean_For_Valid_Compose_Setup` (two-phase fixture: compose + lab-wsfc both correctly configured → zero errors; also pins clean-on-empty defensive behaviour).
+- [x] `[integration]` Scenario: Architect evaluator refuses pass (score < 90) on an `e2e-scenarios.md` that fails the linter; passes on a corrected version. — `Stage62E2eScenariosLinterTests.Architect_Evaluator_Rules_Section_Lists_All_Three_Error_Codes` _re-scoped_: pins the wire-up by asserting the `BuildEvaluatorRulesSection` output (which `ProducePlanFileAsync` injects into the e2e-scenarios evaluator prompt) carries the three error codes, the closed-set type names, the `score MUST be < 90` mandate, and the current-violations sub-section when one is present. The literal "evaluator refuses pass on bad md, passes on corrected" round-trip needs a real architect LLM in-loop and lives in Stage 9.1's integration suite; Stage 6.2 ships the linter + prompt wiring that Stage 9.1 will exercise end-to-end.
 
 ---
 
@@ -815,19 +816,20 @@ references them.
   drive both prompt content AND pipeline-YAML emission.
 
 **Implementation Steps:**
-- [ ] Implement `E2eScenariosSetupReader.ReadForPhase(string md, string phaseSlug)`.
-- [ ] Wire the reader into `ProduceStageE2eAsync` (Phase 4.3) before building the QA-crew prompt.
-- [ ] Cache the parsed setup map on the strategy instance per spawn to avoid re-reading the file once per stage.
+- [x] Added `E2eScenariosSetupReader.ReadAllPhases(string? md)` — parses the whole file in one pass, returns a phase-slug-keyed `IReadOnlyDictionary<string, PhaseSetup>` carrying type + verbatim block markdown + phase name. Replaces the per-phase walk that `ReadSetupTypeForPhase` + `ExtractSetupBlockForPhase` (pre-6.3) did independently.
+- [x] Added `E2eScenariosSetupReader.ReadForPhase(string? md, string phaseSlug)` — strict single-phase lookup that throws `InvalidOperationException` (per spec) when the phase isn't in the doc; error names every phase the parser DID find so the operator can spot the typo. New `PhaseSetup` record sits alongside the existing `E2eSetupType` enum.
+- [x] Wired the cache: `private ConcurrentDictionary<string, IReadOnlyDictionary<string, PhaseSetup>> phaseSetupCache` keyed by spawn id on `CrewStoryArtifactStrategy`. `ReadE2eScenariosSetupAsync` (called from `ProduceStageE2eAsync`) checks the cache first; on miss, parses + populates + records via the `phaseSetupCacheMisses` counter. Even null / empty file content populates an empty map so a second call doesn't re-hit git. `InvalidatePhaseSetupCache(spawnId)` test hook purges a single entry.
+- [x] Bonus: `PhaseSetupCacheMissesFor(spawnId)` test hook exposes the miss counter so the integration test can pin "second call doesn't re-parse" deterministically.
 
 #### Dependencies
 - phase-e2e-scenarios-md-setup-contract/stage-evaluator-linter-for-setup-block
 - phase-istoryartifactstrategy-producestagee2easync/stage-crewstoryartifactstrategy-producestagee2easync
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Reader returns `inline` setup for a phase whose `### Setup` declares it.
-- [ ] `[unit]` Scenario: Reader throws `InvalidOperationException` when the requested phase slug is absent.
-- [ ] `[unit]` Scenario: Cache hit — second call for the same `(spawnId, phaseSlug)` doesn't re-parse.
-- [ ] `[integration]` Scenario: A 2-phase story (`inline` + `lab-wsfc`) drives end-to-end; the qa-e2e PR for phase 2 carries the lab YAML, phase 1's qa-e2e PR doesn't.
+- [x] `[unit]` Scenario: Reader returns `inline` setup for a phase whose `### Setup` declares it. — `Stage63SetupReaderCacheTests.ReadForPhase_Returns_Inline_Setup_For_Phase_With_Inline_Type` (asserts type + slug + phase-name + verbatim block contents; also verifies the block STOPS at the next H3 so the `### Scenarios` body doesn't leak in). Bonus `ReadAllPhases_Returns_Phase_Map_Keyed_By_Slug` covers the multi-phase happy path + null/empty/whitespace defensive paths.
+- [x] `[unit]` Scenario: Reader throws `InvalidOperationException` when the requested phase slug is absent. — `Stage63SetupReaderCacheTests.ReadForPhase_Throws_InvalidOperationException_When_Phase_Absent` (asserts the message names the missing slug AND lists every phase the parser DID find; also covers the empty-md case where `Found phases: []` shows up).
+- [x] `[unit]` Scenario: Cache hit — second call for the same `(spawnId, phaseSlug)` doesn't re-parse. — `Stage63SetupReaderCacheTests.PhaseSetupCache_HitsAfter_FirstParse_For_Same_Spawn` (boot factory + DI-construct strategy; reflection-invokes private `ReadE2eScenariosSetupAsync` three times for the same spawn (two phases + repeat of phase 1); asserts `PhaseSetupCacheMissesFor` stays at `1`. Also verifies `InvalidatePhaseSetupCache` test hook clears the miss counter).
+- [x] `[integration]` Scenario: A 2-phase story (`inline` + `lab-wsfc`) drives end-to-end; the qa-e2e PR for phase 2 carries the lab YAML, phase 1's qa-e2e PR doesn't. — `Stage63SetupReaderCacheTests.TwoPhase_Spawn_QaE2e_Produces_LabYaml_For_LabPhase_Only` (boots factory + seeds 2 qa-e2e workstreams across phases `foundation` (inline) + `lab-work` (lab-wsfc) + e2e-scenarios.md on main; calls `ProduceStageE2eAsync` per workstream via the DI-registered `DeterministicStoryArtifactStrategy`; asserts inline phase emits 2 files, lab phase emits 4 with the right `forge-lab-wsfc` pool name + `LAB_CLUSTER_FQDN` env-var + `[self-hosted, wsfc-lab]` runner labels).
 
 ---
 

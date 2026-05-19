@@ -46,6 +46,42 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly CopilotSessionPool copilotPool;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — per-spawn cache of the parsed
+    /// <c>e2e-scenarios.md</c> phase map. An N-stage story whose
+    /// stages spread across multiple phases would otherwise read +
+    /// parse the file once per stage in <c>ProduceStageE2eAsync</c>;
+    /// this cache reduces that to once per spawn. Cache key is the
+    /// spawn id (stable across stages within a single spawn);
+    /// value is the result of <see cref="E2eScenariosSetupReader.ReadAllPhases"/>
+    /// applied to the merged file's content. <see cref="InvalidatePhaseSetupCache"/>
+    /// purges a single entry when the spawn's e2e-scenarios.md changes
+    /// (e.g. operator Resume on the artifact); orchestrator restart
+    /// drops the whole map since the strategy is a singleton.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyDictionary<string, E2eScenariosSetupReader.PhaseSetup>> phaseSetupCache =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — test hook: count of cache misses
+    /// per spawn id. Exposed so the integration test can prove the
+    /// cache short-circuits a second call for the same spawn without
+    /// re-parsing. Best-effort observability; not used in production
+    /// logic.
+    /// </summary>
+    internal int PhaseSetupCacheMissesFor(string spawnId) =>
+        this.phaseSetupCacheMisses.TryGetValue(spawnId, out var n) ? n : 0;
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> phaseSetupCacheMisses =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Test hook — purges the phase-setup cache for a single spawn.</summary>
+    internal void InvalidatePhaseSetupCache(string spawnId)
+    {
+        this.phaseSetupCache.TryRemove(spawnId, out _);
+        this.phaseSetupCacheMisses.TryRemove(spawnId, out _);
+    }
+
     public CrewStoryArtifactStrategy(
         IServiceScopeFactory scopeFactory,
         IAgentRunner runner,
@@ -287,7 +323,46 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"{docDir}/implementation-plan.md"),
 
             ["e2e-scenarios"] = ("e2e-scenarios.md",
-                "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
+                """
+                Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then)
+                covering happy paths and edge cases QA will run, GROUPED BY PHASE.
+
+                Each Phase H1 (`# Phase N: ...`) MUST be followed by:
+
+                  ### Setup
+                  - **Type**: inline | compose | lab-wsfc | lab-bare-metal
+                  - **Local**: <how a developer runs this on their workstation>
+                  - **CI runner**: <runner pool / labels / hosted image>
+                  - **Secrets**: <none | KeyVault path | GH environment + secret names>
+                  - **Pre-test bootstrap**: <command(s), or "none">
+
+                  ### Scenarios
+                  - **Scenario:** ...
+
+                Setup type MUST be one of: `inline`, `compose`, `lab-wsfc`,
+                `lab-bare-metal`. State the type explicitly as the first sub-bullet of
+                `### Setup` (e.g. `- **Type**: lab-wsfc`).
+
+                When a phase needs `docker-compose`, name the compose file path at
+                `tests/e2e/{phase-slug}/docker-compose.yml` and list the services it
+                starts.
+
+                When a phase needs a lab environment (Windows Server Failover Cluster,
+                CAU, hardware-specific NIC, etc.), state:
+                  - the ADO agent pool name (default `forge-lab-wsfc` for clusters,
+                    `forge-lab-hw` for hardware),
+                  - the GitHub self-hosted runner labels,
+                  - the Azure Key Vault name and variable group (ADO),
+                  - the GitHub environment name and secret names.
+
+                Hard requirements (evaluator refuses pass otherwise):
+                - Every Phase H1 has a `### Setup` H3 directly before `### Scenarios`.
+                - Setup `Type` is one of the closed set above.
+                - When Type is `lab-*`, the Secrets bullet names BOTH a KeyVault entry
+                  AND a GitHub environment (Forge supports both providers).
+                - Connection strings are referenced as env-var names, never literal
+                  hostnames or credentials.
+                """,
                 $"{docDir}/e2e-scenarios.md"),
         };
     }
@@ -1608,9 +1683,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Reply `DONE` after the summary and stop.
             """;
 
+        // docs/forge/e2e.md Stage 6.2 — for the e2e-scenarios.md doc,
+        // inject the linter's hard requirements into the evaluator
+        // prompt so the LLM has the closed-set Setup contract in-context.
+        // The linter is also exposed via `E2eScenariosLinter.Validate`
+        // so a future server-side gate can refuse pass on the committed
+        // file regardless of the evaluator's score.
+        var e2eScenariosLinterRules =
+            string.Equals(spec.FileName, "e2e-scenarios.md", StringComparison.OrdinalIgnoreCase)
+                ? "\n" + E2eScenariosLinter.BuildEvaluatorRulesSection() + "\n"
+                : string.Empty;
+
         var evaluatorPrompt = $$"""
             You are the Architect-reviewer scoring another architect's draft of
             `{{spec.RepoPath}}` for story `{{spawn.StoryId}}`.
+            {{e2eScenariosLinterRules}}
 
             ## Story title
             {{story.Title}}
@@ -3706,6 +3793,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private async Task<(E2eSetupType Type, string BlockMd)> ReadE2eScenariosSetupAsync(
         StorySpawnRow spawn, string phaseSlug, CancellationToken ct)
     {
+        // docs/forge/e2e.md Stage 6.3 — per-spawn cache. The first
+        // ProduceStageE2eAsync call for a given spawn parses the
+        // e2e-scenarios.md once; every subsequent stage of the same
+        // spawn reads from the cached phase map. The cache key is the
+        // spawn id; the file's path is derived from the spawn id +
+        // base branch so two stages of one spawn always resolve to the
+        // same on-disk file.
+        if (this.phaseSetupCache.TryGetValue(spawn.Id, out var cached))
+        {
+            return ProjectPhaseSetup(cached, phaseSlug);
+        }
+
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         if (repo is null) return (E2eSetupType.Inline, string.Empty);
 
@@ -3716,11 +3815,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         try { md = await this.git.ReadFileAsync(repo, baseBranch, path, ct); }
         catch { md = null; }
 
-        if (string.IsNullOrWhiteSpace(md)) return (E2eSetupType.Inline, string.Empty);
+        // Parse + populate the cache. Even when the file is missing or
+        // empty we populate (with an empty map) so a second call doesn't
+        // re-hit git. The cache miss counter increments here so the
+        // integration test can prove cache-hit behaviour.
+        this.phaseSetupCacheMisses.AddOrUpdate(spawn.Id, 1, (_, n) => n + 1);
+        var phaseMap = E2eScenariosSetupReader.ReadAllPhases(md);
+        this.phaseSetupCache[spawn.Id] = phaseMap;
 
-        var type = E2eScenariosSetupReader.ReadSetupTypeForPhase(md, phaseSlug);
-        var block = ExtractSetupBlockForPhase(md, phaseSlug);
-        return (type, block);
+        return ProjectPhaseSetup(phaseMap, phaseSlug);
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — project a parsed phase map down
+    /// to the legacy <c>(Type, BlockMd)</c> tuple. Returns the inline
+    /// fallback when the phase isn't in the map (mirrors
+    /// <see cref="E2eScenariosSetupReader.ReadSetupTypeForPhase"/>'s
+    /// pre-Stage-6.3 defensive default).
+    /// </summary>
+    private static (E2eSetupType Type, string BlockMd) ProjectPhaseSetup(
+        IReadOnlyDictionary<string, E2eScenariosSetupReader.PhaseSetup> phaseMap,
+        string phaseSlug)
+    {
+        return phaseMap.TryGetValue(phaseSlug, out var setup)
+            ? (setup.Type, setup.BlockMarkdown)
+            : (E2eSetupType.Inline, string.Empty);
     }
 
     /// <summary>

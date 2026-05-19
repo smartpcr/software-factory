@@ -190,6 +190,135 @@ public static class E2eScenariosSetupReader
     /// for the lab connection.</summary>
     public static bool RequiresLabSecrets(E2eSetupType type) =>
         type is E2eSetupType.LabWsfc or E2eSetupType.LabBareMetal;
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — the full parse result for one
+    /// phase's <c>### Setup</c> block. <see cref="Type"/> is the
+    /// closed-set enum value; <see cref="BlockMarkdown"/> is the raw
+    /// bullet body the operator authored (verbatim, trimmed of
+    /// surrounding whitespace) so the LLM prompt + the qa-e2e file
+    /// emitter both see the original wording rather than a
+    /// reconstructed approximation.
+    /// </summary>
+    public sealed record PhaseSetup(string PhaseSlug, string PhaseName, E2eSetupType Type, string BlockMarkdown);
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — parse every Phase H1 in
+    /// <paramref name="markdown"/> and return a phase-slug-keyed map of
+    /// the per-phase setup. Phases with no <c>### Setup</c> block still
+    /// appear in the map with <see cref="E2eSetupType.Inline"/> + an
+    /// empty block (so the caller can distinguish "phase exists but no
+    /// setup declared" from "phase doesn't exist at all"). Returns an
+    /// empty dictionary for null / whitespace input.
+    ///
+    /// <para>Used by <c>CrewStoryArtifactStrategy</c>'s per-spawn cache:
+    /// parse the whole file once per spawn, then look up each stage's
+    /// phase by slug. Saves N-1 file-reads for an N-stage story whose
+    /// stages spread across multiple phases.</para>
+    /// </summary>
+    public static IReadOnlyDictionary<string, PhaseSetup> ReadAllPhases(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            return new Dictionary<string, PhaseSetup>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var normalised = markdown.Replace("\r\n", "\n").Replace('\r', '\n');
+        var lines = normalised.Split('\n');
+
+        var result = new Dictionary<string, PhaseSetup>(StringComparer.OrdinalIgnoreCase);
+
+        string? currentPhaseName = null;
+        string? currentPhaseSlug = null;
+        var inSetup = false;
+        var hasSetup = false;
+        string? typeValue = null;
+        var blockSb = new System.Text.StringBuilder();
+
+        void Flush()
+        {
+            if (currentPhaseSlug is null || currentPhaseName is null) return;
+            var type = Parse(typeValue);
+            // When a Type bullet was found but the value doesn't match
+            // the closed set, the linter (Stage 6.2) flags it; the
+            // reader collapses to Inline so callers always have a sane
+            // default. The block markdown is preserved verbatim so the
+            // operator can see exactly what they typed.
+            result[currentPhaseSlug] = new PhaseSetup(
+                currentPhaseSlug, currentPhaseName, type, blockSb.ToString().Trim());
+        }
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+
+            var phaseMatch = PhaseH1.Match(line);
+            if (phaseMatch.Success)
+            {
+                Flush();
+                currentPhaseName = phaseMatch.Groups["name"].Value.Trim();
+                currentPhaseSlug = PlanParser.Slug(currentPhaseName);
+                inSetup = false;
+                hasSetup = false;
+                typeValue = null;
+                blockSb.Clear();
+                continue;
+            }
+
+            if (currentPhaseSlug is null) continue;
+
+            if (SetupH3.IsMatch(line))
+            {
+                inSetup = true;
+                hasSetup = true;
+                continue;
+            }
+
+            if (!inSetup) continue;
+
+            // Any new H1 ends the phase; any new H3 (Scenarios etc.)
+            // ends the Setup block but stays inside the phase.
+            if (AnyH1.IsMatch(line) || (AnyH3OrHigher.IsMatch(line) && !SetupH3.IsMatch(line)))
+            {
+                inSetup = false;
+                continue;
+            }
+
+            blockSb.AppendLine(line);
+
+            if (typeValue is null)
+            {
+                var typeMatch = TypeBullet.Match(line);
+                if (typeMatch.Success) typeValue = typeMatch.Groups["value"].Value;
+            }
+        }
+
+        Flush();
+        return result;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 6.3 — look up a single phase's setup
+    /// from <paramref name="markdown"/>. Throws
+    /// <see cref="InvalidOperationException"/> when the requested
+    /// <paramref name="phaseSlug"/> isn't present in the doc — strict
+    /// contract for the LLM-driven qa-e2e producer (Stage 4.3) where
+    /// missing-phase means the architect's plan / scenarios drifted
+    /// and the operator needs to fix it before the qa-e2e workstream
+    /// can run.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// When <paramref name="markdown"/> has no Phase H1 whose name
+    /// slug matches <paramref name="phaseSlug"/>.
+    /// </exception>
+    public static PhaseSetup ReadForPhase(string? markdown, string phaseSlug)
+    {
+        var all = ReadAllPhases(markdown);
+        if (all.TryGetValue(phaseSlug, out var found)) return found;
+        throw new InvalidOperationException(
+            $"e2e-scenarios.md has no Phase H1 whose name slug matches '{phaseSlug}'. "
+            + $"Found phases: [{string.Join(", ", all.Keys.OrderBy(k => k, StringComparer.Ordinal))}].");
+    }
 }
 
 /// <summary>
