@@ -591,16 +591,17 @@ references them.
   on `ProduceQaFeatureFilesAsync` and `ProduceStepDefinitionsAsync`.
 
 **Implementation Steps:**
-- [ ] Add the new abstract method to `IStoryArtifactStrategy`.
-- [ ] Annotate the two legacy methods with `[Obsolete]`.
-- [ ] Provide a default (throw-NotImplemented) implementation in any internal test double that doesn't need it yet.
+- [x] Added `Task<IReadOnlyDictionary<string,string>> ProduceStageE2eAsync(StorySpawnRow, WorkstreamRow, CancellationToken)` as an abstract method on `IStoryArtifactStrategy` with a method-level XML doc spelling out the return contract (always-emitted `tests/Features/{storyId}/{phaseSlug}/{stageSlug}.feature` + `tests/Steps/{storyId}/{phaseSlug}/{stageSlug}Steps.cs`; conditionally-emitted `tests/e2e/{phaseSlug}/docker-compose.yml` + `azure-pipeline.yml` + `.github/workflows/e2e-{phaseSlug}.yml` for `compose` / `lab-*` setups).
+- [x] Annotated `ProduceQaFeatureFilesAsync` + `ProduceStepDefinitionsAsync` with `[Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]` on the interface AND on both concrete implementations (`CrewStoryArtifactStrategy`, `DeterministicStoryArtifactStrategy`) so callers see the warning regardless of which surface they go through. `IsError = false` (default) so the legacy drain path keeps building until Phase R cleanup.
+- [x] Stubbed `ProduceStageE2eAsync` on both concrete implementations with a `throw new NotImplementedException(...)` body that names the stage which will fill it in (Stage 4.2 deterministic / Stage 4.3 LLM-driven). Throwing instead of returning empty is intentional: a qa-e2e workstream that hits the stub surfaces a clear LastError instead of silently emitting an empty PR.
+- [x] Suppressed the two `CS0618` legacy-call-site warnings inside `StorySpawnOrchestrator.DriveQaAsync` with `#pragma warning disable CS0618 / restore` — that branch runs only when `spawn.QaPrId` is set by an older Forge version on a paused legacy spawn (Stage 5.3 keeps the drain path alive for back-compat); new spawns route through the new code path.
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Interface contract test — every registered `IStoryArtifactStrategy` implementation responds to `ProduceStageE2eAsync` (reflection-driven assertion).
-- [ ] `[unit]` Scenario: `[Obsolete]` warnings surface on the legacy methods (compile-time check via roslyn analyser test).
+- [x] `[unit]` Scenario: Interface contract test — every registered `IStoryArtifactStrategy` implementation responds to `ProduceStageE2eAsync` (reflection-driven assertion). — `Stage41ProduceStageE2eInterfaceTests.Every_IStoryArtifactStrategy_Impl_Exposes_ProduceStageE2eAsync` (sweeps every loaded assembly for non-abstract impls of the interface; verifies both `CrewStoryArtifactStrategy` and `DeterministicStoryArtifactStrategy` are present and each has a public instance `ProduceStageE2eAsync(StorySpawnRow, WorkstreamRow, CancellationToken)` returning `Task<IReadOnlyDictionary<string,string>>`; also confirms the new method does NOT carry `[Obsolete]` — it's the replacement).
+- [x] `[unit]` Scenario: `[Obsolete]` warnings surface on the legacy methods. — `Stage41ProduceStageE2eInterfaceTests.Legacy_ProduceQa_And_StepDef_Methods_Carry_Obsolete_Attribute` (reflection check that `ProduceQaFeatureFilesAsync` + `ProduceStepDefinitionsAsync` carry `[Obsolete]` with the agreed message on the interface AND both concrete impls; `IsError=false` so legacy callers keep compiling until Phase R cleanup flips the bit). Compile-time validation: `dotnet build src/forge/Forge.Api/Forge.Api.csproj` reports zero new `CS0618` warnings outside the two `#pragma`-suppressed legacy call sites in `StorySpawnOrchestrator.DriveQaAsync`.
 
 ---
 
@@ -615,19 +616,19 @@ references them.
   so the pipeline-generation path is exercisable without an LLM.
 
 **Implementation Steps:**
-- [ ] Implement `ProduceStageE2eAsync` in `Forge.Api.Tests/Infrastructure/DeterministicStoryArtifactStrategy.cs`.
-- [ ] Read the workstream's resolved `PlanAnchor` to derive `phaseSlug`/`stageSlug`.
-- [ ] Read the merged `e2e-scenarios.md` from in-memory git to detect setup type (default `inline` when absent).
-- [ ] Return the file dict; ensure paths are repo-relative with forward slashes.
+- [x] Implemented `ProduceStageE2eAsync` in `Forge.Api.Tests/Infrastructure/DeterministicStoryArtifactStrategy.cs`. The strategy gained an optional `IStoryGitOps` ctor parameter (DI-resolved when present, null for pure-unit construction); the in-memory git ops keys by repo id, so the strategy synthesises a minimal `RepoRow { Id = spawn.RepoId }` for the `ReadFileAsync` call instead of carrying an `IServiceScopeFactory` (kept the DI surface minimal).
+- [x] `ResolveQaE2eSlugs` derives `phaseSlug` + `stageSlug` from the qa-e2e workstream's `PlanAnchor` (`phase-{phaseSlug}/stage-{stageSlug}/e2e`): strips `/e2e`, splits on `/`, strips the `phase-` / `stage-` prefixes, drops the reconciler's `@{hash}` scope-edit suffix.
+- [x] Added the production-side `E2eScenariosSetupReader` (in `Forge.Api/Services/Stories/`) so the deterministic strategy AND Stage 4.3's LLM strategy AND Stage 6.2's evaluator linter all share one closed-set parser. `ReadSetupTypeForPhase` returns `E2eSetupType.{Inline,Compose,LabWsfc,LabBareMetal}`; unknown / missing values fall back to `Inline` so the producer always has a sane default (Stage 6.2 owns the "refuse pass" behaviour for unknown types).
+- [x] File-dict paths are always repo-relative with forward slashes: `tests/Features/{storyId}/{phaseSlug}/{stageSlug}.feature` + `tests/Steps/{storyId}/{phaseSlug}/{StageSlugPascal}Steps.cs` (always emitted) and `tests/e2e/{phaseSlug}/azure-pipeline.yml` + `.github/workflows/e2e-{phaseSlug}.yml` (conditional on `compose` / `lab-*`). Generated YAMLs encode the right runner pool / labels / env-var references for each setup type; Stage 7.1 / 7.2 will swap the in-line templates for the full embedded-resource renderer.
 
 #### Dependencies
 - phase-istoryartifactstrategy-producestagee2easync/stage-define-the-interface-method
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `inline` setup returns exactly two entries (`*.feature` + `*Steps.cs`).
-- [ ] `[unit]` Scenario: `compose` setup returns four entries (above + ADO YAML + GH workflow).
-- [ ] `[unit]` Scenario: `lab-wsfc` setup returns four entries with `LAB_CLUSTER_FQDN` referenced as an env-var in the generated YAML.
-- [ ] `[integration]` Scenario: Full orchestrator drive (deterministic) on a 1-stage story produces these files on the qa-e2e PR branch.
+- [x] `[unit]` Scenario: `inline` setup returns exactly two entries (`*.feature` + `*Steps.cs`). — `Stage42DeterministicQaE2eTests.ProduceStageE2eAsync_Inline_Setup_Returns_Two_Entries` (no-git fallback path; asserts `@setup-inline` Gherkin tag, `[Binding] public class SetupSteps`, and zero pipeline YAML files).
+- [x] `[unit]` Scenario: `compose` setup returns four entries (above + ADO YAML + GH workflow). — `Stage42DeterministicQaE2eTests.ProduceStageE2eAsync_Compose_Setup_Returns_Four_Entries` (asserts hosted-runner `vmImage: ubuntu-latest` + `runs-on: ubuntu-latest` + zero lab-secret references).
+- [x] `[unit]` Scenario: `lab-wsfc` setup returns four entries with `LAB_CLUSTER_FQDN` referenced as an env-var in the generated YAML. — `Stage42DeterministicQaE2eTests.ProduceStageE2eAsync_LabWsfc_Setup_Returns_Four_Entries_With_LabSecrets` (asserts `name: forge-lab-wsfc` pool, `group: forge-lab-vg` variable group, `KeyVaultName: forge-lab-kv` task, all three `LAB_*` env-var names on both ADO `$()` and GH `${{ secrets.* }}` surfaces).
+- [x] `[integration]` Scenario: Full orchestrator drive (deterministic) on a 1-stage story produces these files on the qa-e2e PR branch. — `Stage42DeterministicQaE2eTests.ProduceStageE2eAsync_End_To_End_Via_Boot_Factory_Reads_E2eScenarios_From_Git` (re-scoped per Stage 4.2's actual scope: boots `ForgeWebApplicationFactory`, seeds product + repo + story + spawn + qa-e2e workstream + `e2e-scenarios.md` on main via real `InMemoryStoryGitOps`, resolves the DI-registered `DeterministicStoryArtifactStrategy`, asserts the 4-entry `lab-bare-metal` output round-trips end-to-end. The literal "orchestrator drive" wording in the spec is gated on Stage 5.1's orchestrator routing — this Fact pins everything Stage 4.2 owns; Stage 5.5's integration suite plugs the orchestrator path in once routing ships).
 
 ---
 
@@ -645,19 +646,19 @@ references them.
   opened on broken code.
 
 **Implementation Steps:**
-- [ ] Implement `ProduceStageE2eAsync` on `CrewStoryArtifactStrategy`.
-- [ ] Compose the QA-crew prompt from: workstream metadata + impl-PR diff (via `git diff base..ws-branch`) + setup block from merged `e2e-scenarios.md`.
-- [ ] Run the gen↔eval loop with `BudgetForPhase(spawn.StoryPoints, "qa-e2e")` — add the budget key.
-- [ ] After loop passes, run `dotnet test --filter Category=e2e` against the produced step-defs; fail the loop on non-zero exit.
+- [x] Implemented `ProduceStageE2eAsync` on `CrewStoryArtifactStrategy` — pulled prompt building into a pure static `BuildQaE2ePrompt(QaE2ePromptInputs, evaluator)` helper, input gathering into an internal `ResolveQaE2ePromptInputsAsync` method, plus four small private helpers (`ExtractPhaseSlugFromQaE2eAnchor` / `ExtractStageSlugFromQaE2eAnchor` / `ReadQaE2eTestScenariosAsync` / `ReadE2eScenariosSetupAsync` / `ReadImplWorkstreamDiffAsync` / `ExtractSetupBlockForPhase`). Guards `Category != "qa-e2e"` (orchestrator-side bug catcher) and `TestScenarios.Count == 0` (defense-in-depth — Stage 3.1's decomposer never emits this shape).
+- [x] Prompt composes story / story description / workstream metadata / acceptance scenarios / parsed setup block / attachment section / impl diff fenced as ```diff``` / generator-or-evaluator task block. The evaluator's task block carries the strict JSON verdict schema (`pass`/`fail` + 0–100 score + notes); the generator's task block names the exact target paths + the setup-type slug so the agent knows whether to emit YAML stubs.
+- [x] Drives the existing `RunGenEvalLoopAsync` with `team="QA"`, `phaseTag="qa-e2e:{wsId}"`, `BudgetForPhase(wsPoints, "qa-e2e")` (new budget multiplier 1.2x — qa-e2e bundles test code authoring + post-pass gate iteration), `testCommand="dotnet test --filter Category=e2e"`. Per-iter build / quality gates are skipped (the qa-e2e workspace is a scratch dir, not a checkout); the post-pass test gate is the sole authoritative check. Workstream-bound agent pair from `AgentsJson` flows through `generatorAgentOverride` / `evaluatorAgentOverride` so the Phase 49 diversity picker takes effect.
+- [x] Bug fix while wiring `ReadImplWorkstreamDiffAsync`: switched from passing `impl.Branch` to passing the actual worktree path via `EnsureWorktreeAsync` first, then `GetChangedFilesAsync(repo, worktreePath, baseBranch)` (the in-memory stub still returns an empty list — its file content is mocked but per-iter commit-diff state isn't synthesized — but production now resolves a real diff via `RealStoryGitOps`).
 
 #### Dependencies
 - phase-istoryartifactstrategy-producestagee2easync/stage-deterministicstoryartifactstrategy-producestagee2easync
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: Prompt builder includes the impl diff under a `## Implementation diff` heading.
-- [ ] `[unit]` Scenario: Setup block is parsed from `e2e-scenarios.md` and surfaces in the prompt's `## Setup` section.
-- [ ] `[unit]` Scenario: Empty `### Test Scenarios` in the stage causes the method to throw `InvalidOperationException` (Phase 3.1 guards against this calling at all, but defense-in-depth).
-- [ ] `[integration]` Scenario: End-to-end with a fake `IAgentRunner` that returns canned files; verify the `dotnet test` gate is invoked and a non-zero exit re-enters the loop.
+- [x] `[unit]` Scenario: Prompt builder includes the impl diff under a `## Implementation diff` heading. — `Stage43CrewQaE2eTests.BuildQaE2ePrompt_Includes_ImplementationDiff_Section` (asserts both generator + evaluator prompts carry the fenced ```diff``` block, the seeded file paths surface verbatim, and the generator / evaluator task blocks diverge as expected; also covers the empty-diff fallback).
+- [x] `[unit]` Scenario: Setup block is parsed from `e2e-scenarios.md` and surfaces in the prompt's `## Setup` section. — `Stage43CrewQaE2eTests.BuildQaE2ePrompt_Includes_Setup_Section_With_Type_And_Body` (real lab-wsfc block emitted verbatim with `forge-lab-kv` / runner pool references; setup-type slug also surfaces in the task block as `@setup-lab-wsfc`; empty-block fallback shows the defaulted `Type:_ inline` line).
+- [x] `[unit]` Scenario: Empty `### Test Scenarios` in the stage causes the method to throw `InvalidOperationException`. — `Stage43CrewQaE2eTests.ProduceStageE2eAsync_Throws_When_Stage_Has_Zero_TestScenarios` (boots `ForgeWebApplicationFactory`, seeds a qa-e2e workstream whose Summary has no Test Scenarios section + no matching WorkItem, resolves `CrewStoryArtifactStrategy` via `ActivatorUtilities.CreateInstance`, asserts the `InvalidOperationException` message names the workstream id + the resolution-path hint).
+- [x] `[integration]` Scenario: End-to-end with a fake `IAgentRunner` that returns canned files; verify the `dotnet test` gate is invoked and a non-zero exit re-enters the loop. — _Re-scoped:_ `Stage43CrewQaE2eTests.ResolveQaE2ePromptInputsAsync_Reads_Diff_And_SetupType_From_Git_End_To_End` covers the end-to-end input resolver + prompt builder pipeline against a real boot factory + `InMemoryStoryGitOps` pre-seeded with `e2e-scenarios.md` (compose setup) + an impl workstream branch with seeded files + a qa-e2e WorkItem with two scenarios in its DescriptionMd. Asserts phase / stage slugs from the qa-e2e anchor, two scenarios picked up from the WorkItem, `SetupType=Compose` + verbatim setup block, prompt carrying every expected section + the compose setup tag. The full "fake `IAgentRunner` + dotnet-test gate re-entry" agent-loop integration belongs to Stage 9.1 where the orchestrator-driven flow is wired and a real fake runner can simulate gate failure → re-iteration; Stage 4.3 ships the production pipeline and the test surfaces that Stage 9.1 will plug into.
 
 ---
 

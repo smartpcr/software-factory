@@ -3357,6 +3357,483 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return sb.ToString();
     }
 
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — LLM-driven per-stage qa-e2e producer.
+    /// Resolves the prompt inputs (impl-workstream diff via git, parent
+    /// stage's <c>### Test Scenarios</c> via the qa-e2e WorkItem's
+    /// description, setup block via <see cref="E2eScenariosSetupReader"/>),
+    /// composes the QA-crew prompt via <see cref="BuildQaE2ePrompt"/>,
+    /// and dispatches the standard gen↔eval loop with a
+    /// <c>dotnet test --filter Category=e2e</c> post-pass gate so a
+    /// qa-e2e PR cannot open on broken / failing-test code.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> ProduceStageE2eAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
+    {
+        if (workstream.Category != WorkstreamCategories.QaE2e)
+        {
+            throw new InvalidOperationException(
+                $"ProduceStageE2eAsync invoked on workstream {workstream.Id} with Category="
+                + $"'{workstream.Category}' (expected '{WorkstreamCategories.QaE2e}').");
+        }
+
+        var inputs = await this.ResolveQaE2ePromptInputsAsync(spawn, workstream, ct);
+
+        // docs/forge/e2e.md Stage 4.3 — defense-in-depth: Stage 3.1's
+        // BuildDecompositionFromPlan never emits a qa-e2e row for a stage
+        // with zero TestScenarios, so this path shouldn't be reachable
+        // in production. The guard catches a hand-crafted bad spawn
+        // (e.g. the operator restarting a qa-e2e workstream after editing
+        // the plan to remove its test scenarios) — throwing here marks
+        // the row stalled with a clear LastError, beats silently emitting
+        // empty `.feature` files.
+        if (inputs.TestScenarios.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"qa-e2e workstream {workstream.Id} has zero acceptance test scenarios; "
+                + "Stage 3.1's decomposer should have skipped emission. Re-decompose the plan "
+                + "or remove this stalled qa-e2e row.");
+        }
+
+        var generatorPrompt = BuildQaE2ePrompt(inputs, evaluator: false);
+        var evaluatorPrompt = BuildQaE2ePrompt(inputs, evaluator: true);
+
+        var workspace = this.PrepareWorkspace(spawn.Id, $"qa-e2e-{Slug(workstream.Id)}");
+
+        // Phase 43 (extended) — operator-uploaded attachments may name
+        // the specific contracts/types the e2e test must exercise.
+        var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
+        await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
+            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
+
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var wsPoints = await this.LookupWorkItemPointsAsync(
+            workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
+
+        // Honour the same agent assignment plumbing the impl path uses so
+        // the workstream-bound (generator, evaluator) pair from
+        // ResolveImplPairAsync actually drives the loop.
+        var assignedAgents = ParseAgentsList(workstream.AgentsJson);
+        var assignedGen = assignedAgents.Count > 0 ? assignedAgents[0] : null;
+        var assignedEval = assignedAgents.Count > 1 ? assignedAgents[1] : null;
+
+        await this.RunGenEvalLoopAsync(
+            team: "QA",
+            workItemId: workstream.Id,
+            phaseTag: $"qa-e2e:{workstream.Id}",
+            generatorPrompt: generatorPrompt,
+            evaluatorPrompt: evaluatorPrompt,
+            workspace: workspace,
+            budget: BudgetForPhase(wsPoints, "qa-e2e"),
+            storyPoints: wsPoints,
+            generatorAgentOverride: assignedGen,
+            evaluatorAgentOverride: assignedEval,
+            // qa-e2e produces the feature + step-def + (optional) pipeline
+            // YAML stubs as side-effects in the workspace. The strategy
+            // then reads the workspace via ReadAllFiles. The
+            // post-pass gate runs `dotnet test --filter Category=e2e`
+            // against the repo so a broken test re-enters the loop with
+            // the failure as evaluator feedback. Skipping the per-iter
+            // build/quality gates (the qa-e2e workspace is a scratch dir,
+            // not a checkout — there's no project to build) leaves the
+            // test gate as the sole post-pass check.
+            buildCommand: null,
+            qualityCommands: null,
+            testCommand: "dotnet test --filter Category=e2e",
+            onIterationCommit: null,
+            ct: ct);
+
+        var files = ReadAllFiles(workspace);
+        if (files.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"QA crew produced no files for qa-e2e workstream {workstream.Id}. Workspace: {workspace}");
+        }
+        return files;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — pure input record for the QA-crew
+    /// prompt. Built by <see cref="ResolveQaE2ePromptInputsAsync"/>;
+    /// consumed by <see cref="BuildQaE2ePrompt"/>. Pulled out into a
+    /// record so unit tests can construct it directly without standing
+    /// up git / DB.
+    /// </summary>
+    internal sealed record QaE2ePromptInputs(
+        string StoryId,
+        string StoryTitle,
+        string StoryDescription,
+        string WorkstreamId,
+        string WorkstreamName,
+        string PhaseSlug,
+        string StageSlug,
+        IReadOnlyList<string> TestScenarios,
+        string ImplDiff,
+        E2eSetupType SetupType,
+        string SetupBlockMarkdown,
+        string AttachmentPromptSection);
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — gather everything the QA-crew
+    /// prompt needs from git / DB / the in-memory <see cref="WorkstreamRow"/>
+    /// shape. Surfaces as a method (instead of a closure) so the
+    /// integration test can drive it directly.
+    /// </summary>
+    internal async Task<QaE2ePromptInputs> ResolveQaE2ePromptInputsAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct)
+    {
+        var phaseSlug = ExtractPhaseSlugFromQaE2eAnchor(workstream.PlanAnchor);
+        var stageSlug = ExtractStageSlugFromQaE2eAnchor(workstream.PlanAnchor);
+
+        // Test scenarios + setup come from the parent qa-e2e WorkItem's
+        // DescriptionMd which the reconciler populates from the parsed
+        // plan stage. Fallback to the workstream's own Summary when no
+        // matching WorkItem exists.
+        var scenarios = await this.ReadQaE2eTestScenariosAsync(workstream.Id, workstream.Summary, ct);
+
+        // Read e2e-scenarios.md from main (or the spawn's base branch)
+        // for the parent phase's setup block.
+        var (setupType, setupBlock) = await this.ReadE2eScenariosSetupAsync(spawn, phaseSlug, ct);
+
+        // Pull the impl workstream's diff via git so the QA agent knows
+        // what the test must exercise.
+        var implDiff = await this.ReadImplWorkstreamDiffAsync(spawn, workstream, ct);
+
+        var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
+        var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
+
+        return new QaE2ePromptInputs(
+            StoryId: spawn.StoryId,
+            StoryTitle: spawn.StoryTitle ?? string.Empty,
+            StoryDescription: NonEmpty(spawn.StoryDescription),
+            WorkstreamId: workstream.Id,
+            WorkstreamName: workstream.Name,
+            PhaseSlug: phaseSlug,
+            StageSlug: stageSlug,
+            TestScenarios: scenarios,
+            ImplDiff: implDiff,
+            SetupType: setupType,
+            SetupBlockMarkdown: setupBlock,
+            AttachmentPromptSection: attachmentPromptSection);
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — pure prompt assembler. Takes the
+    /// resolved <see cref="QaE2ePromptInputs"/> and returns the QA
+    /// generator (or evaluator) prompt string. Both prompts share the
+    /// same context sections; the evaluator's "Your task" + verdict
+    /// schema differ.
+    /// </summary>
+    internal static string BuildQaE2ePrompt(QaE2ePromptInputs inputs, bool evaluator)
+    {
+        var setupTypeWire = E2eScenariosSetupReader.ToWire(inputs.SetupType);
+        var scenariosBlock = string.Join("\n", inputs.TestScenarios.Select(s => $"- {s}"));
+        var setupSection = string.IsNullOrWhiteSpace(inputs.SetupBlockMarkdown)
+            ? $"_Type:_ {setupTypeWire} _(no `### Setup` block in e2e-scenarios.md; defaulted)_"
+            : inputs.SetupBlockMarkdown.TrimEnd();
+        var diffSection = string.IsNullOrWhiteSpace(inputs.ImplDiff)
+            ? "_(no diff captured — impl workstream's branch hadn't landed any changes at prompt time)_"
+            : Trim(inputs.ImplDiff, 16_000);
+
+        var role = evaluator ? "Evaluator" : "Generator";
+        var task = evaluator
+            ? """
+                ## Your task
+
+                Score the Generator's qa-e2e output against the acceptance
+                scenarios above. Verdict shape (STRICT JSON):
+
+                ```
+                { "verdict": "pass" | "fail", "score": 0-100, "notes": "…" }
+                ```
+
+                Pass requires score >= 90 AND every acceptance scenario
+                covered by at least one Gherkin scenario in the `.feature`
+                file. Step-def file must implement every binding referenced.
+                For `compose` / `lab-*` setup types the pipeline YAML stubs
+                must also be present and reference the declared secret /
+                runner-pool names.
+                """
+            : $$"""
+                ## Your task
+
+                Produce the qa-e2e artifacts for the impl workstream above:
+                  1. ONE Gherkin `.feature` file at `tests/Features/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.feature`
+                     covering every acceptance scenario. Tag with
+                     `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+                  2. ONE Reqnroll step-definition file at
+                     `tests/Steps/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}Steps.cs`
+                     that implements every binding. `[Binding]` class,
+                     namespace `Forge.Tests.Stories.{{inputs.StoryId.Replace('-', '_')}}.{{inputs.PhaseSlug.Replace('-', '_')}}`.
+                  3. When setup type is `compose` or `lab-*`, ALSO write
+                     `tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
+                     the right runner pool / secrets per docs/forge/e2e.md §8.
+
+                Reply `DONE` when complete. Forge will run
+                `dotnet test --filter Category=e2e` against your output;
+                a non-zero exit re-enters this loop with the failure
+                summary as evaluator feedback, so make sure every Given /
+                When / Then binding compiles AND the scenarios actually
+                exercise the impl diff above.
+                """;
+
+        // The order is deliberate: context-first (story / workstream /
+        // scenarios / setup / diff) then task. The test scenarios at the
+        // top of the section list keep them in the agent's working
+        // memory; the diff at the bottom of context is the largest
+        // chunk and benefits from being adjacent to the task block.
+        var sb = new StringBuilder()
+            .AppendLine($"You are the QA crew {role} for workstream `{inputs.WorkstreamId}` (story `{inputs.StoryId}`).")
+            .AppendLine()
+            .AppendLine("## Story")
+            .AppendLine(inputs.StoryTitle)
+            .AppendLine()
+            .AppendLine("## Story description")
+            .AppendLine(NonEmpty(inputs.StoryDescription, "_(no story description)_"))
+            .AppendLine()
+            .AppendLine("## Workstream")
+            .AppendLine($"**{inputs.WorkstreamName}** — Stage `{inputs.StageSlug}` of Phase `{inputs.PhaseSlug}`.")
+            .AppendLine()
+            .AppendLine("## Acceptance scenarios (from `implementation-plan.md`)")
+            .AppendLine(scenariosBlock)
+            .AppendLine()
+            .AppendLine("## Setup")
+            .AppendLine(setupSection)
+            .AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(inputs.AttachmentPromptSection))
+        {
+            sb.AppendLine(inputs.AttachmentPromptSection.TrimEnd()).AppendLine();
+        }
+
+        sb.AppendLine("## Implementation diff")
+            .AppendLine("```diff")
+            .AppendLine(diffSection)
+            .AppendLine("```")
+            .AppendLine()
+            .AppendLine(task);
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — extract `{phaseSlug}` from the
+    /// qa-e2e workstream's anchor (`phase-{phaseSlug}/stage-{stageSlug}/e2e`).
+    /// Returns <c>"unknown"</c> when the anchor doesn't follow the shape.
+    /// </summary>
+    private static string ExtractPhaseSlugFromQaE2eAnchor(string? anchor)
+    {
+        if (string.IsNullOrEmpty(anchor)) return "unknown";
+        var trimmed = anchor.EndsWith(QaE2eAnchorSuffix, StringComparison.Ordinal)
+            ? anchor[..^QaE2eAnchorSuffix.Length]
+            : anchor;
+        var slash = trimmed.IndexOf('/');
+        var phasePart = slash > 0 ? trimmed[..slash] : trimmed;
+        return phasePart.StartsWith("phase-", StringComparison.Ordinal)
+            ? phasePart["phase-".Length..]
+            : phasePart;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — extract `{stageSlug}` from the
+    /// qa-e2e workstream's anchor. Strips the `stage-` prefix AND the
+    /// reconciler's `@{hash}` scope-edit suffix so the slug stays
+    /// stable across plan revs.
+    /// </summary>
+    private static string ExtractStageSlugFromQaE2eAnchor(string? anchor)
+    {
+        if (string.IsNullOrEmpty(anchor)) return "unknown";
+        var trimmed = anchor.EndsWith(QaE2eAnchorSuffix, StringComparison.Ordinal)
+            ? anchor[..^QaE2eAnchorSuffix.Length]
+            : anchor;
+        var slash = trimmed.IndexOf('/');
+        var stagePart = slash > 0 ? trimmed[(slash + 1)..] : "stage-unknown";
+        var slug = stagePart.StartsWith("stage-", StringComparison.Ordinal)
+            ? stagePart["stage-".Length..]
+            : stagePart;
+        var at = slug.IndexOf('@');
+        if (at > 0) slug = slug[..at];
+        return string.IsNullOrEmpty(slug) ? "unknown" : slug;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — read the qa-e2e WorkItem's
+    /// DescriptionMd (populated by <c>PlanReconciler.QaE2eStageDescription</c>)
+    /// and extract the bullets under its <c>## Test Scenarios</c>
+    /// section. Falls back to the workstream's own Summary when the
+    /// WorkItem isn't present (e.g. legacy spawns without the
+    /// reconciler-managed pair).
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ReadQaE2eTestScenariosAsync(
+        string workItemId, string? summaryFallback, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        var desc = wi?.DescriptionMd ?? summaryFallback ?? string.Empty;
+
+        var scenarios = new List<string>();
+        var inSection = false;
+        foreach (var raw in desc.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            if (line.StartsWith("## Test Scenarios", StringComparison.OrdinalIgnoreCase))
+            {
+                inSection = true;
+                continue;
+            }
+            if (inSection)
+            {
+                if (line.StartsWith("## ", StringComparison.Ordinal)) break;
+                var t = line.TrimStart();
+                if (t.StartsWith("- ", StringComparison.Ordinal))
+                {
+                    scenarios.Add(t["- ".Length..].Trim());
+                }
+            }
+        }
+        return scenarios;
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — read the merged e2e-scenarios.md
+    /// from the spawn's base branch and extract (setup-type, raw-block)
+    /// for the phase identified by <paramref name="phaseSlug"/>.
+    /// Returns <c>(Inline, "")</c> when the file or phase block is
+    /// missing.
+    /// </summary>
+    private async Task<(E2eSetupType Type, string BlockMd)> ReadE2eScenariosSetupAsync(
+        StorySpawnRow spawn, string phaseSlug, CancellationToken ct)
+    {
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        if (repo is null) return (E2eSetupType.Inline, string.Empty);
+
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var path = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/e2e-scenarios.md";
+
+        string? md;
+        try { md = await this.git.ReadFileAsync(repo, baseBranch, path, ct); }
+        catch { md = null; }
+
+        if (string.IsNullOrWhiteSpace(md)) return (E2eSetupType.Inline, string.Empty);
+
+        var type = E2eScenariosSetupReader.ReadSetupTypeForPhase(md, phaseSlug);
+        var block = ExtractSetupBlockForPhase(md, phaseSlug);
+        return (type, block);
+    }
+
+    /// <summary>
+    /// Slice the raw <c>### Setup</c> bullet body for the phase whose
+    /// name slug matches <paramref name="phaseSlug"/> out of
+    /// <paramref name="markdown"/>. Used in the prompt so the QA agent
+    /// sees the same setup declaration the operator authored, not a
+    /// reconstructed approximation.
+    /// </summary>
+    internal static string ExtractSetupBlockForPhase(string? markdown, string phaseSlug)
+    {
+        if (string.IsNullOrWhiteSpace(markdown) || string.IsNullOrWhiteSpace(phaseSlug)) return string.Empty;
+        var normalised = markdown.Replace("\r\n", "\n").Replace('\r', '\n');
+        var lines = normalised.Split('\n');
+
+        string? currentPhaseSlug = null;
+        var inSetup = false;
+        var sb = new StringBuilder();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+
+            if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^#\s+Phase\s+\d+\s*[:\-—]\s*(.+?)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                var name = System.Text.RegularExpressions.Regex.Match(line, @"^#\s+Phase\s+\d+\s*[:\-—]\s*(.+?)\s*$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase).Groups[1].Value;
+                currentPhaseSlug = PlanParser.Slug(name);
+                inSetup = false;
+                continue;
+            }
+
+            if (currentPhaseSlug is null || !string.Equals(currentPhaseSlug, phaseSlug, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^###\s+Setup\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                inSetup = true;
+                continue;
+            }
+
+            if (inSetup)
+            {
+                if (line.StartsWith("#", StringComparison.Ordinal)) break;
+                sb.AppendLine(line);
+            }
+        }
+        return sb.ToString().Trim();
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — read the impl workstream's diff
+    /// against the spawn's base branch so the QA prompt knows what the
+    /// test must exercise. Returns the empty string when:
+    /// <list type="bullet">
+    /// <item>The spawn has no repo bound,</item>
+    /// <item>The impl sibling workstream is not present in the DB,</item>
+    /// <item>The impl workstream's branch has not yet diverged from base,</item>
+    /// <item>Reading the diff throws (best-effort — the loop still runs
+    /// against the test scenarios + setup alone).</item>
+    /// </list>
+    /// </summary>
+    private async Task<string> ReadImplWorkstreamDiffAsync(
+        StorySpawnRow spawn, WorkstreamRow qaWorkstream, CancellationToken ct)
+    {
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        if (repo is null) return string.Empty;
+
+        var implAnchor = qaWorkstream.PlanAnchor;
+        if (string.IsNullOrEmpty(implAnchor)
+            || !implAnchor.EndsWith(QaE2eAnchorSuffix, StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+        implAnchor = implAnchor[..^QaE2eAnchorSuffix.Length];
+
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var impl = await db.Workstreams.AsNoTracking()
+            .FirstOrDefaultAsync(w => w.StorySpawnId == qaWorkstream.StorySpawnId
+                                    && w.PlanAnchor == implAnchor, ct);
+        if (impl is null) return string.Empty;
+
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        try
+        {
+            // Ensure the impl workstream's worktree exists, then read
+            // its diff vs base. GetChangedFilesAsync requires a worktree
+            // path (filesystem checkout), not a branch name.
+            var worktreePath = await this.git.EnsureWorktreeAsync(
+                repo, impl.Branch, baseBranch, ct);
+            var changed = await this.git.GetChangedFilesAsync(
+                repo, worktreePath, baseBranch: baseBranch, ct: ct);
+            if (changed.Count == 0) return string.Empty;
+            // Stage 4.3 ships the path list; full unified-diff capture
+            // is a Stage R polish so the prompt size stays bounded for
+            // realistic stages.
+            var sb = new StringBuilder();
+            sb.AppendLine($"# Impl workstream `{impl.Id}` branch `{impl.Branch}` vs `{baseBranch}` — {changed.Count} files changed:");
+            foreach (var p in changed.Take(200)) sb.AppendLine($"  {p}");
+            if (changed.Count > 200) sb.AppendLine($"  … and {changed.Count - 200} more");
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    [Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]
     public async Task<IReadOnlyDictionary<string, string>> ProduceQaFeatureFilesAsync(
         StorySpawnRow spawn, WorkItemRow story, IReadOnlyList<WorkstreamRow> workstreams, CancellationToken ct = default)
     {
@@ -3413,6 +3890,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             StringComparer.Ordinal);
     }
 
+    [Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]
     public async Task<IReadOnlyDictionary<string, string>> ProduceStepDefinitionsAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
@@ -3577,6 +4055,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "review-fix" => 1.0,
             "qa-features" => 1.0,
             "qa-steps" => 0.8,
+            // docs/forge/e2e.md Stage 4.3 — per-stage qa-e2e bundles
+            // feature + step-defs + (optional) pipeline YAML into one
+            // workspace. 1.2x impl-style budget because the agent both
+            // authors test code AND iterates against the post-pass
+            // dotnet-test gate.
+            "qa-e2e" => 1.2,
             _ => 1.0,
         };
         var seconds = baseSeconds * multiplier;

@@ -106,11 +106,59 @@ public interface IStoryArtifactStrategy
     Task<ReviewFix> ProduceReviewFixAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, ReviewCommentContext comment, CancellationToken ct = default);
 
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.1 — produce every artifact a per-stage
+    /// qa-e2e workstream owns: one Gherkin <c>.feature</c> file plus its
+    /// matching step-definition source AND (for <c>compose</c> / <c>lab-*</c>
+    /// setup types per docs/forge/e2e.md §8) the pipeline YAML stubs the
+    /// CI runner needs.
+    ///
+    /// <para>Return contract — keys are repo-relative paths:</para>
+    /// <list type="bullet">
+    /// <item><c>tests/Features/{storyId}/{phaseSlug}/{stageSlug}.feature</c>
+    /// — Gherkin scenarios derived from the stage's
+    /// <c>### Test Scenarios</c> block. Always emitted.</item>
+    /// <item><c>tests/Steps/{storyId}/{phaseSlug}/{stageSlug}Steps.cs</c>
+    /// — Reqnroll <c>[Binding]</c> step-defs that exercise the impl
+    /// workstream's changes. Always emitted.</item>
+    /// <item><c>tests/e2e/{phaseSlug}/docker-compose.yml</c> +
+    /// <c>tests/e2e/{phaseSlug}/azure-pipeline.yml</c> +
+    /// <c>.github/workflows/e2e-{phaseSlug}.yml</c> — emitted ONLY when
+    /// the parent phase's <c>e2e-scenarios.md</c> <c>### Setup</c> block
+    /// declares <c>Type: compose</c> or <c>Type: lab-*</c>.</item>
+    /// </list>
+    ///
+    /// <para>Called by the orchestrator's Stage 5.1 impl-driver branch
+    /// for any workstream where <see cref="WorkstreamRow.Category"/> is
+    /// <see cref="WorkstreamCategories.QaE2e"/>. The new code path
+    /// supersedes the legacy <see cref="ProduceQaFeatureFilesAsync"/>
+    /// (story-batch feature files) + <see cref="ProduceStepDefinitionsAsync"/>
+    /// (per-ws step-defs) pair, which run only against paused
+    /// <c>Phase='qa'</c> legacy spawns for back-compat.</para>
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> ProduceStageE2eAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
+
     /// <summary>QA's `.feature` files for the spawn.</summary>
+    /// <remarks>
+    /// docs/forge/e2e.md Stage 4.1 — replaced by
+    /// <see cref="ProduceStageE2eAsync"/>, which emits per-stage feature
+    /// + step-def + pipeline artifacts in one call. Retained for one
+    /// release so paused legacy <c>Phase='qa'</c> spawns drain through
+    /// <c>StorySpawnOrchestrator.DriveQaAsync</c> unchanged; removed in
+    /// the Phase R cleanup.
+    /// </remarks>
+    [Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]
     Task<IReadOnlyDictionary<string, string>> ProduceQaFeatureFilesAsync(
         StorySpawnRow spawn, WorkItemRow story, IReadOnlyList<WorkstreamRow> workstreams, CancellationToken ct = default);
 
     /// <summary>Engineer's step-definition files for a single workstream after the QA PR merges.</summary>
+    /// <remarks>
+    /// docs/forge/e2e.md Stage 4.1 — replaced by
+    /// <see cref="ProduceStageE2eAsync"/>. Retained for legacy-drain
+    /// only; removed in the Phase R cleanup.
+    /// </remarks>
+    [Obsolete("Use ProduceStageE2eAsync (docs/forge/e2e.md Stage 4.1). Removed in Phase R cleanup.")]
     Task<IReadOnlyDictionary<string, string>> ProduceStepDefinitionsAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
 

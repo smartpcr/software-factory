@@ -3634,7 +3634,16 @@ public sealed class StorySpawnOrchestrator
         {
             var qaBranch = spawn.QaBranch ?? $"story/{GitSafe(spawn.StoryId)}/qa";
             await this.git.EnsureBranchAsync(repo, qaBranch, baseBranch, ct);
+            // docs/forge/e2e.md Stage 4.1 — DriveQaAsync is the legacy
+            // Phase 5 QA-batch drain path (Stage 5.3 keeps it alive for
+            // paused legacy spawns only). The new code path emits per-stage
+            // qa-e2e artifacts via ProduceStageE2eAsync inside the impl
+            // driver. Suppress CS0618 here because the obsolete call is
+            // intentional: this branch runs only when spawn.QaPrId is set
+            // by an older Forge version on a paused spawn.
+#pragma warning disable CS0618 // Type or member is obsolete
             var files = await this.strategy.ProduceQaFeatureFilesAsync(spawn, story, workstreams, ct);
+#pragma warning restore CS0618 // Type or member is obsolete
             await this.git.CommitFilesAsync(repo, qaBranch,
                 PlanDocStateHelpers.CanonicalQaWorktreeSlug(spawn.StoryId),
                 files,
@@ -3684,7 +3693,12 @@ public sealed class StorySpawnOrchestrator
             if (existing is not null) continue;
 
             await this.git.EnsureBranchAsync(repo, stepBranch, baseBranch, ct);
+            // docs/forge/e2e.md Stage 4.1 — legacy step-def drain path. Same
+            // back-compat suppression as the qa-features call above; new
+            // spawns route through ProduceStageE2eAsync instead.
+#pragma warning disable CS0618 // Type or member is obsolete
             var files = await this.strategy.ProduceStepDefinitionsAsync(spawn, w, ct);
+#pragma warning restore CS0618 // Type or member is obsolete
             await this.git.CommitFilesAsync(repo, stepBranch,
                 PlanDocStateHelpers.CanonicalQaStepsWorktreeSlug(w.Id),
                 files,
