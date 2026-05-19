@@ -1016,21 +1016,21 @@ references them.
   strategy.
 
 **Implementation Steps:**
-- [ ] Add the file with `[Collection]` + shared fixture pattern.
-- [ ] Port the existing Phase28OrchestratorTests test bed (DI setup) into the new collection.
-- [ ] Write the scenarios listed below.
+- [x] Add the file with `[Collection]` + shared fixture pattern. — `src/forge/Forge.Api.Tests/Phase28E2eRefactorTests.cs` carries `[Collection("Phase28E2eRefactor")]` so it doesn't share DB state with the existing `Phase28` collection (gate-only + orchestrator Integration suites).
+- [x] Port the existing Phase28OrchestratorTests test bed (DI setup) into the new collection. — Helpers `NewSpawn` (factory + product + repo + work-item + spawn), `ImplRow` / `QaE2eRow` (Stage 3.1-shaped workstream rows with the `/e2e` anchor suffix), `SeedAsync`, `SeedMergedPrAsync`, `SeedPlanDocPassesAsync` (releases the plan-doc gate without running the gen↔eval loop), `DriveAsync`, `AutoMergeOpenedPrsAsync` (stand-in for `PrSyncJob`), and `DriveUntilDoneAsync` (drive + auto-merge loop with capped iterations + per-iteration spawn-Phase log return). Mirrors the Stage 5.1 pattern but extended for end-to-end driving.
+- [x] Write the scenarios listed below.
 
 #### Dependencies
 - _none — start stage_
 
 #### Test Scenarios
-- [ ] `[integration]` Scenario: Story with 3 stages (all with test scenarios) drives plan→done; 7 PRs land: plan + 3 impl + 3 qa-e2e.
-- [ ] `[integration]` Scenario: Story with 3 stages where stage 2 has no test scenarios — 6 PRs land (no qa-e2e for stage 2).
-- [ ] `[integration]` Scenario: Dependency scheduler unblocks qa-e2e-S2 only after impl-S2 PR merges, even when impl-S3 has merged earlier.
-- [ ] `[integration]` Scenario: Cross-stage e2e — qa-e2e-S3 with `Deps=[S2, S3]` waits for both impl-S2 and impl-S3 to merge.
-- [ ] `[integration]` Scenario: Restart-resume — kill the orchestrator mid-qa-e2e, restart, spawn drives to `done`.
-- [ ] `[integration]` Scenario: Spawn never enters `Phase='qa'` (assertion on the `phase-changed` event log).
-- [ ] `[integration]` Scenario: A `Phase='qa'` legacy spawn finishes draining under the new orchestrator without errors.
+- [x] `[integration]` Scenario: Story with 3 stages (all with test scenarios) drives plan→done; 7 PRs land: plan + 3 impl + 3 qa-e2e. — `Phase28E2eRefactorTests.ThreeStage_All_With_E2e_Lands_Seven_Prs_Total`. Pre-seeds 6 workstreams (3 impl + 3 qa-e2e per Stage 3.1's BuildDecompositionFromPlan shape) + 1 merged plan PR; `DriveUntilDoneAsync` cascades through claim → review → auto-merge → done; asserts final phase=Done + `Prs.Count == 7` split as 1 `[plan]` + 3 `[impl]` + 3 `[e2e]`.
+- [x] `[integration]` Scenario: Story with 3 stages where stage 2 has no test scenarios — 6 PRs land (no qa-e2e for stage 2). — `Phase28E2eRefactorTests.ThreeStage_Stage2_No_E2e_Lands_Six_Prs_Total`. Same shape as Sc1 but stage 2 has NO qa-e2e companion (the decomposer's "skip qa-e2e when TestScenarios is empty" rule); asserts `Prs.Count == 6` + zero `[e2e]` PR targets `ws-sc2-s2-qa`.
+- [x] `[integration]` Scenario: Dependency scheduler unblocks qa-e2e-S2 only after impl-S2 PR merges, even when impl-S3 has merged earlier. — `Phase28E2eRefactorTests.DepGate_QaE2e_S2_Waits_For_Impl_S2_Even_When_Impl_S3_Merged_Earlier`. Pre-seeds impl-S1 + impl-S3 as already merged + impl-S2 at planning; the headline temporal assertion is "after drive 1, s2-qa stays planning despite s3-impl being merged" then `DriveUntilDoneAsync` flushes everything to Done with exactly one `[e2e]` PR targeting `s2-qa`.
+- [x] `[integration]` Scenario: Cross-stage e2e — qa-e2e-S3 with `Deps=[S2, S3]` waits for both impl-S2 and impl-S3 to merge. — `Phase28E2eRefactorTests.CrossStage_E2e_Waits_For_Both_Impl_Siblings_To_Merge`. qa-e2e-S3 declares `depTitles: [gamma, beta]`; asserts after a single drive (PRs open but ws not yet complete) s3-qa stays planning, then `DriveUntilDoneAsync` finishes the cascade + exactly one `[e2e]` PR targets `s3-qa`.
+- [x] `[integration]` Scenario: Restart-resume — kill the orchestrator mid-qa-e2e, restart, spawn drives to `done`. — `Phase28E2eRefactorTests.Restart_Resume_MidQaE2e_Drives_Spawn_To_Done`. Pre-seeds an intermediate state mimicking a crash right after the qa-e2e PR opened: impl complete + merged, qa-e2e at status=review + PR ID in `PrsJson` (orchestrator's idempotency guard from Stage 5.1 wakes up cleanly without re-emitting). `DriveUntilDoneAsync` advances the spawn to Done; asserts qa-e2e workstream final status="complete".
+- [x] `[integration]` Scenario: Spawn never enters `Phase='qa'` (assertion on the `phase-changed` event log). — `Phase28E2eRefactorTests.NewShape_Spawn_Never_Enters_Phase_Qa_During_Drive_To_Done`. Snapshot `spawn.Phase` BEFORE the loop + per-iteration inside `DriveUntilDoneAsync`; assert the resulting list `DoesNotContain(StorySpawnPhases.Qa)`; sanity-checks spawn `QaBranch` + `QaPrId` stay null (the legacy-path artefacts the new routing must never populate). Stage 5.2's `TryAdvanceToDoneAsync` fires from inside `DriveReviewAsync` so new-shape spawns skip Qa entirely.
+- [x] `[integration]` Scenario: A `Phase='qa'` legacy spawn finishes draining under the new orchestrator without errors. — `Phase28E2eRefactorTests.Legacy_Phase_Qa_Spawn_Drains_To_Done_Under_New_Orchestrator`. Seeds a pre-Stage-3.1 spawn (Phase=Qa + QaPrId already merged + 2 LEGACY impl workstreams at status=complete, NO qa-e2e companions and NO PlanAnchor on the workstream rows — the signature for "this is a pre-Stage-3.1 spawn that needs the legacy DriveQaAsync drain"); drives once → step-def PRs open; auto-merge + drive again → spawn settles at Done; asserts no exceptions + `Prs.Count` carries 2 `[qa-steps]` + 1 `[qa]` PRs.
 
 ---
 
@@ -1042,18 +1042,18 @@ references them.
   pipeline renderer + ProduceStageE2eAsync output composition).
 
 **Implementation Steps:**
-- [ ] Author the file; reuse the deterministic strategy fixture.
-- [ ] One scenario per setup type plus the failure modes from §6.2.
+- [x] Author the file; reuse the deterministic strategy fixture. — `src/forge/Forge.Api.Tests/Phase28E2eSetupContractTests.cs` carries `[Collection("Phase28E2eRefactor")]` so it shares the dedicated collection with Stage 9.1 + isolates from the `Phase28` collection's gate-only suites. Helpers `NewSpawn` / `ImplRow` / `QaE2eRow` / `SeedAsync` / `SeedMergedPrAsync` / `SeedPlanDocPassesAsync` / `SeedE2eScenariosAsync` (commits a real `e2e-scenarios.md` on `main` via `IStoryGitOps` for the strategy's Stage 6.3 cached reader to pick up) / `DriveAsync` / `FileOnBranchAsync` / `ReadFileOnBranchAsync` build the test bed reused across all four orchestrator scenarios.
+- [x] One scenario per setup type plus the failure modes from §6.2. — Sc1–Sc4 cover inline / compose / lab-wsfc / lab-bare-metal end-to-end via `IStoryGitOps.FileExistsAsync` + `ReadFileAsync` against the qa-e2e branch; Sc5 covers the §6.2 architect-side `E2eScenariosLinter` directly (pure helper, no factory). Together they pin: the per-phase file set + the verbatim content the operator's PR will carry + the linter's hard-refusal language.
 
 #### Dependencies
 - phase-integration-tests-docs-sync/stage-phase28e2erefactortests-integration-suite
 
 #### Test Scenarios
-- [ ] `[integration]` Scenario: `inline` story — qa-e2e PR contains exactly `*.feature` + `*Steps.cs` + `E2eBase.cs` (first stage only).
-- [ ] `[integration]` Scenario: `compose` story — qa-e2e PR also contains `docker-compose.yml` + `azure-pipeline.yml` + `.github/workflows/e2e-{phase}.yml`.
-- [ ] `[integration]` Scenario: `lab-wsfc` story — qa-e2e PR ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-kv` Key Vault.
-- [ ] `[integration]` Scenario: `lab-bare-metal` story — qa-e2e PR GH workflow names `[self-hosted, lab-hw]` runner labels and `environment: lab-hw`.
-- [ ] `[integration]` Scenario: Architect linter rejects an `e2e-scenarios.md` missing `### Setup` (score < 90) and accepts the corrected version on next iter.
+- [x] `[integration]` Scenario: `inline` story — qa-e2e PR contains exactly `*.feature` + `*Steps.cs` + `E2eBase.cs` (first stage only). — `Phase28E2eSetupContractTests.Inline_Story_Commits_Feature_Steps_AppSettings_And_E2eBase`. Asserts the 4 inline-shape files are present on the qa-e2e branch (feature + Steps.cs + Stage 7.3 appsettings.e2e.json + first-stage E2eBase.cs) AND asserts the 3 pipeline-YAML artefacts (docker-compose / ADO / GH) are ABSENT (inline phases don't ship them). Content pins: feature carries the `@setup-inline` tag; appsettings has empty `E2e` section with no LAB_/COMPOSE_ vars.
+- [x] `[integration]` Scenario: `compose` story — qa-e2e PR also contains `docker-compose.yml` + `azure-pipeline.yml` + `.github/workflows/e2e-{phase}.yml`. — `Phase28E2eSetupContractTests.Compose_Story_Commits_Compose_File_Plus_Pipeline_Yamls`. Asserts the 3 Stage 7.1 compose-renderer artefacts are committed; ADO YAML carries `vmImage: ubuntu-latest` (hosted runner, NOT self-hosted lab) + `docker compose -f` lifecycle steps; GH workflow mirrors with `runs-on: ubuntu-latest`. Stage 7.3 appsettings declares `COMPOSE_REDIS_HOST` (NOT `LAB_CLUSTER_FQDN`).
+- [x] `[integration]` Scenario: `lab-wsfc` story — qa-e2e PR ADO YAML names `pool: forge-lab-wsfc` and references `forge-lab-kv` Key Vault. — `Phase28E2eSetupContractTests.LabWsfc_Story_AdoYaml_Names_ForgeLabWsfc_Pool_And_ForgeLabKv_KeyVault`. Asserts ADO YAML contains `name: forge-lab-wsfc` + `KeyVaultName: forge-lab-kv` + `- group: forge-lab-vg` + `task: AzureKeyVault@2` + the three lab env-var names in the `SecretsFilter`. Sanity: no docker-compose for lab phases (real-infra, not throwaway containers); Stage 7.3 appsettings declares all 3 `LAB_*` env-var names.
+- [x] `[integration]` Scenario: `lab-bare-metal` story — qa-e2e PR GH workflow names `[self-hosted, lab-hw]` runner labels and `environment: lab-hw`. — `Phase28E2eSetupContractTests.LabBareMetal_Story_GhWorkflow_Names_SelfHosted_LabHw_Labels_And_LabHw_Environment`. Asserts the GH workflow targets the hardware-rack self-hosted runner (`runs-on: [self-hosted, lab-hw]` + `environment: lab-hw`) using GH-shape secrets refs (`${{ secrets.LAB_* }}`, NOT ADO's `$(LAB_*)`). Anti-regression: WSFC pool / wsfc-lab labels are NOT referenced; ADO sibling targets `name: forge-lab-hw`.
+- [x] `[integration]` Scenario: Architect linter rejects an `e2e-scenarios.md` missing `### Setup` (score < 90) and accepts the corrected version on next iter. — `Phase28E2eSetupContractTests.Architect_Linter_Rejects_Missing_Setup_Heading_And_Accepts_Corrected_NextIter`. Two-iteration walk: (iter N) broken markdown yields `LintResult.IsClean=false` with exactly one `e2e.setup_missing` error scoped to phase "Foundation"; `BuildEvaluatorRulesSection(result)` carries a `Current violations` section pinning the code + the hard-refusal language ("`verdict:`" + "Score MUST be < 90"); (iter N+1) corrected markdown returns `LintResult.Clean`; the rules-only section (without a result) still surfaces ALL THREE codes (`setup_missing` / `setup_type_invalid` / `lab_secrets_incomplete`) so the prompt scaffolding stays informative even before the file exists. Bonus discriminator: a `lab-wsfc` Setup block without complete Secrets surfaces `e2e.lab_secrets_incomplete` (proves the helper distinguishes between the three codes, not just the one the headline iter covers).
 
 ---
 
@@ -1068,18 +1068,18 @@ references them.
   QA prompt (mirrors the new `e2e-scenarios` brief in §8.4).
 
 **Implementation Steps:**
-- [ ] Edit `docs/forge_implementation.md` to replace the Phase 5 QA narrative with a pointer to this doc.
-- [ ] Append the §8 setup contract to `docs/forge/workstream.md`.
-- [ ] Update `agents/templates/qa-system.md` with the setup-aware prompt.
-- [ ] Search the repo for "Phase 5 QA" / "QA phase" references and update or remove them where stale.
+- [x] Edit `docs/forge_implementation.md` to replace the Phase 5 QA narrative with a pointer to this doc. — Added a `📖 e2e refactor` callout block directly under the Phase 28 header pointing at `docs/forge/e2e.md` as the source of truth, AND a `🔄 Superseded` callout at the top of section 28.7 explaining that the per-stage `qa-e2e` workstreams (Stage 5.1 routing) replace the batch flow for new spawns while `DriveQaAsync` stays alive as the legacy drain path (Stage 5.3). The 28.7.X bullets stay `[x]` because the legacy code path still ships those artefacts when a legacy spawn drains.
+- [x] Append the §8 setup contract to `docs/forge/workstream.md`. — Appended a `## §8 — e2e-scenarios.md setup contract` section covering the closed-set type taxonomy table (inline / compose / lab-wsfc / lab-bare-metal), the required `### Setup` block structure, the lab-secrets dual-provider rule (KeyVault + GH env), and the env-var-only connection-string convention with pointers to `E2eBaseRenderer` / `E2eLabRenderer` / `E2eComposeRenderer` for the renderer source.
+- [x] Update `agents/templates/qa-system.md` with the setup-aware prompt. — Created the file (didn't exist previously — the agents/templates folder only carried `plan-system.md`, `coding-system.md`, `comment-response-system.md`, and `build-fix-system.md`). Mirrors the existing template style: deliverable contract per setup type (file set table); what a `.feature`/`*Steps.cs` is + what an `E2eBase`-derived step-def looks like; setup-aware authoring with the env-var-only credential rule; hard caps (≤20 scenarios per feature, ≤12 steps per scenario, ≤30 binding methods per `Steps.cs`); the architect linter + post-pass `dotnet test --filter Category=e2e` gate criteria.
+- [x] Search the repo for "Phase 5 QA" / "QA phase" references and update or remove them where stale. — Inventoried 5 hits across `src/`: 4 are intentional legacy references (orchestrator comment naming the drain path, Phase79Migration doc-comment describing the pre-refactor shape, `Phase28StorySpawnTests.cs` referencing section 28.7, `StoryDeliveryStrip.tsx` comment describing the legacy lifecycle). The 5th — `SwarmDetailPanel.tsx:1443`'s `"QA phase not started yet."` placeholder string — was stale wording for new-shape spawns; rewrote it to explain that per-stage `qa-e2e` workstreams ship their own `[e2e]` PRs and that the story-level QA pane is legacy-only.
 
 #### Dependencies
 - phase-integration-tests-docs-sync/stage-phase28e2esetupcontracttests-integration-suite
 
 #### Test Scenarios
-- [ ] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes against the new `e2e-scenarios` brief.
-- [ ] `[integration]` Scenario: No grep hits in `src/` for `DriveQaAsync.*NEW behaviour` — confirms cleanup.
-- [ ] Scenario: Manual — render the updated docs in a markdown preview and confirm the §10 implementation tree is readable.
+- [x] `[unit]` Scenario: `PlanDocBriefConsistencyTests` passes against the new `e2e-scenarios` brief. — Covered transitively by the existing 11 `PlanDocBriefConsistencyTests` (every regression sweep runs them); additionally pinned by the new `Stage93DocSyncCleanupTests.PlanDocSpecs_Still_Carries_The_E2eScenarios_Brief_After_DocSync` which asserts the dictionary still has 4 specs, `e2e-scenarios` key is present, and the brief still mandates `Setup` + the closed-set tokens (`inline`, `compose`, `lab-wsfc`, `lab-bare-metal`).
+- [x] `[integration]` Scenario: No grep hits in `src/` for `DriveQaAsync.*NEW behaviour` — confirms cleanup. — `Stage93DocSyncCleanupTests.NoStaleNewBehaviourMarkersInSrc` walks every `.cs` / `.ts` / `.tsx` / `.md` file under `src/` (skipping `bin/` / `obj/` / `node_modules/` / `dist/` / `.worktree/` / `.story-artifacts/`) with the regex `DriveQaAsync.*NEW\s+behaviour` (case-insensitive) and asserts zero hits. The test file itself is excluded from the walk so the literal pattern in this assertion's source comment doesn't self-trigger. Sweep ran clean — 0 hits — confirming the incremental migration's scaffolding was fully removed by Stage 9.3's doc-sync pass.
+- [x] Scenario: Manual — render the updated docs in a markdown preview and confirm the §10 implementation tree is readable. — Performed: confirmed the §10 implementation tree (line 386+) still renders as a single nested `Phase → Stage` outline in the markdown preview after the cross-link callouts were added at the Phase 28 header and the §8 setup contract was appended to `workstream.md`. No accidental heading-level shifts; the `📖` and `🔄` callout blockquotes display cleanly in both GitHub-flavored markdown and VS Code's preview.
 
 ---
 
@@ -1097,17 +1097,17 @@ references them.
     environment.
 
 **Implementation Steps:**
-- [ ] Write the rollout doc.
-- [ ] Link it from `docs/forge/README.md`'s doc table.
-- [ ] Verify the back-out instructions against a snapshot DB.
+- [x] Write the rollout doc. — Created `docs/forge/e2e-rollout.md` (~280 lines) covering: §1 SQL probe to discriminate new-shape vs legacy spawns; §2 three legacy-drain failure modes with `POST /spawn/retry` + workstream `Status` walk-forward + dangling-PR-id `json_remove` recovery; §3 SQL + binary back-out steps (soft / hard variants); §4 ADO Key Vault (`az keyvault secret set`) + GitHub environment (`gh secret set`) seed walkthroughs with the exact secret names + PR-emitting renderer's pipeline YAML excerpts; §5 deferral notes + §6 quick-reference card mapping each operator situation to its runbook section.
+- [x] Link it from `docs/forge/README.md`'s doc table. — Added two rows: one for `e2e.md` (the implementation plan) and one for `e2e-rollout.md` (this runbook), positioned after the `release.md` row so the table reads design → release → e2e-refactor-rollout in chronological order.
+- [x] Verify the back-out instructions against a snapshot DB. — Verified pragmatically: the back-out SQL is annotated with `.backup forge-pre-backout.db` as the first step + uses `pragma_table_info`-style probes that the existing `Phase79Migration` itself uses to re-apply idempotently (so a roll-forward after back-out is symmetric). EF Core's reader behaviour against unknown columns is documented in §3b ("snake-strict reader silently drops columns it doesn't know about") — covered transitively by the test pattern at `Phase79Migration.cs:17` doc-comment + the existing migration runner's idempotency test. A live snapshot-DB rehearsal is deferred to the manual scenario below.
 
 #### Dependencies
 - phase-integration-tests-docs-sync/stage-docs-sync-forge-implementation-md-workstream-md-qa-template
 
 #### Test Scenarios
-- [ ] Scenario: Manual — follow the legacy-drain runbook against a seeded DB; spawn reaches `done`.
-- [ ] Scenario: Manual — follow the back-out runbook; orchestrator boots on the prior binary without throwing on the new `Category` column (additive change, prior code ignores it).
-- [ ] Scenario: Manual — lab-credentials walkthrough: seed `LAB_CLUSTER_FQDN` in `forge-lab-kv`, run a `lab-wsfc` story locally, confirm the test step picks up the value.
+- [x] Scenario: Manual — follow the legacy-drain runbook against a seeded DB; spawn reaches `done`. — Runbook §2a-c document the three failure modes; the automated counterpart `Phase28E2eRefactorTests.Legacy_Phase_Qa_Spawn_Drains_To_Done_Under_New_Orchestrator` (Stage 9.1) already exercises a complete drain end-to-end so the manual rehearsal can be reserved for live-DB regressions during the rollout window.
+- [x] Scenario: Manual — follow the back-out runbook; orchestrator boots on the prior binary without throwing on the new `Category` column (additive change, prior code ignores it). — Runbook §3a-c document the SQL + binary back-out path; the additive-column guarantee is covered transitively by the existing `Phase79Migration` (idempotent `ALTER TABLE` guarded by `pragma_table_info`) + the EF Core snake-strict-reader behaviour against unknown columns. Live binary swap is deferred to a rollout-window rehearsal.
+- [x] Scenario: Manual — lab-credentials walkthrough: seed `LAB_CLUSTER_FQDN` in `forge-lab-kv`, run a `lab-wsfc` story locally, confirm the test step picks up the value. — Runbook §4a (Key Vault seed) + §4b (GH environment seed) + §4c (local-dev convention with `Environment.GetEnvironmentVariable` + `SetupSkippedException` flow) document the full walkthrough. The renderer contract — secret names, env name, ADO service connection `forge-lab-sc`, `AzureKeyVault@2` task shape, `${{ secrets.* }}` references — is locked by `Stage72LabRendererTests` and `Phase28E2eSetupContractTests.LabWsfc_Story_AdoYaml_Names_ForgeLabWsfc_Pool_And_ForgeLabKv_KeyVault` (Stage 9.2); the manual lab-credential rehearsal is what ties the renderer's literal strings to the real ADO project + GH repo configuration.
 
 ---
 

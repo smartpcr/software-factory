@@ -3211,6 +3211,8 @@ PR card build chip (`PrCard.tsx`):
 
 > **Replaces the ad-hoc "spawn workstream" flow.** Instead of manually creating a branch + worktree, the operator selects a **story** (a complex, cross-cutting feature) and Forge orchestrates the full delivery lifecycle across Architect, Engineer, Review, and QA teams with explicit phase gates and artifact hand-offs.
 
+> **📖 e2e refactor (Q2 2026) — `docs/forge/e2e.md`** is the source of truth for the post-refactor lifecycle: QA is no longer a separate **Phase 5** trailing batch; instead, each Stage with `### Test Scenarios` ships a paired `qa-e2e` workstream that opens its own `[e2e]` PR after the impl PR merges. Sections 28.7 / 28.8 below describe the **legacy** Phase 5 QA batch flow which is still drained for back-compat (legacy `Phase='qa'` spawns) but never entered by new spawns. The lifecycle ASCII at line 3244 ("Phase 5 — QA") is preserved as a historical reference for those legacy paths.
+
 ### Concept — Story lifecycle
 
 A **story** is the unit of end-to-end delivery. It progresses through ordered phases, each owned by a specific team. Phases are gated: the next phase cannot start until the current phase's artifacts are committed via a merged PR.
@@ -3397,6 +3399,8 @@ This model is what the implementation in 28.1–28.12 below realises. Where a su
 - [x] **28.6.8** PR merges via `IStoryProviderOps.MergePrAsync` and the in-memory git tree is fast-forwarded to `main` so downstream phases see the artifacts (28.10.2 verification).
 
 #### 28.7 — Phase 5: QA (parallel with implement / review)
+
+> **🔄 Superseded by `docs/forge/e2e.md` (Stage 9.3 doc-sync).** The Phase 5 QA narrative below describes the original batch flow: a single story-level QA PR + per-workstream step-def PRs after merge. **New spawns no longer enter Phase 5.** The e2e refactor in `docs/forge/e2e.md` replaced this with per-stage **`qa-e2e` workstreams** (one per Stage with `### Test Scenarios`) routed through `StorySpawnOrchestrator.DriveOneQaE2eWorkstreamAsync` (Stage 5.1), which opens an `[e2e]`-prefixed PR after the impl sibling PR merges. `DriveQaAsync` (the batch path that drives 28.7.X below) remains alive as the **legacy-drain code path** (Stage 5.3) for spawns paused at `Phase='qa'` under the old orchestrator — see `Stage53LegacyQaDrainTests` and `Phase28E2eRefactorTests.Legacy_Phase_Qa_Spawn_Drains_To_Done_Under_New_Orchestrator` for the drain contract. The 28.7.X bullets stay `[x]` because the legacy code path still ships those artefacts when a legacy spawn drains — they're not removed, just rerouted for new spawns.
 
 - [x] **28.7.1** `QaBranch` / `QaPrId` columns on `StorySpawnRow` for tracking the QA artifact PR.
 - [x] **28.7.2** Artifacts endpoint surfaces `tests/Features/{storyId}/` once `QaPrId` is set.

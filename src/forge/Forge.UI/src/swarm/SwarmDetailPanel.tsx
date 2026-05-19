@@ -1437,10 +1437,22 @@ function QaPane({ detail, artifacts }: { detail: StorySpawnDetail; artifacts: St
   }, [qaPrId]);
 
   if (!qaPrId) {
+    // docs/forge/e2e.md Stage 9.3 — new-shape spawns never enter the
+    // legacy `Phase='qa'` and never populate `spawn.QaPrId`. The
+    // per-stage qa-e2e workstreams open `[e2e]` PRs visible in the
+    // SwarmMasterPanel stacked rows + the workstream-detail tabs;
+    // this story-level QA pane is now a legacy-only surface that
+    // only renders for spawns parked at the old QA batch flow.
     return (
       <div className="tab-placeholder">
         <div className="lbl">▌ QA / E2E</div>
-        <div className="sub">QA phase not started yet.</div>
+        <div className="sub">
+          No story-level QA PR for this spawn — per-stage `qa-e2e`
+          workstreams ship their own `[e2e]` PRs (see the stacked rows in
+          the phase board). The legacy story-level QA batch flow only
+          fires for spawns paused under the pre-Stage-3.1 orchestrator
+          (`Phase='qa'` + `QaPrId` set).
+        </div>
       </div>
     );
   }
