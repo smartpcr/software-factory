@@ -89,7 +89,7 @@ After this story ships:
 | O5 | Automatic refactoring execution | Hotspot output suggests patterns; execution is manual or a separate agent |
 | O6 | Git hosting provider integrations (GitHub Apps, ADO extensions) | CI invokes the CLI; provider-specific adapters are out of scope |
 | O7 | Metrics for non-C# languages (Java, TypeScript, Go) | Future stories may add language-specific calculators |
-| O8 | Historical trend storage beyond git notes | Temporal databases or time-series stores are external; JSON export suffices |
+| O8 | Dedicated time-series or temporal trend database | Git notes store per-branch baselines for delta comparison. For cross-repo scenarios, `MetricSnapshot` objects are pushed to Neo4j as graph nodes (per architecture.md section 6.2) enabling historical queries via Cypher. No additional time-series database (InfluxDB, Prometheus, etc.) is introduced by this story. |
 
 ---
 
@@ -125,7 +125,7 @@ related:
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | .NET 8.0, Windows-only (`win-x64`) | Solution-wide `RuntimeIdentifier` in `Directory.Build.props` |
+| C1 | .NET 8.0, Windows-only (`win-x64`) | `TargetFramework` is set solution-wide in `Directory.Build.props`; `RuntimeIdentifier: win-x64` is declared per-project in individual `.csproj` files (e.g., `EtlIterator.csproj`, `Forge.Api.csproj`). New assemblies must follow the same pattern. |
 | C2 | Must integrate with existing `Ast.Core.HypergraphData` as primary input | Existing code intelligence pipeline; no parallel parsing step |
 | C3 | Must reuse `ArchitectureMetricsCalculator` output where overlap exists | D7 decision in architecture.md; avoids duplicating coupling/cohesion logic |
 | C4 | Evaluator runs as CLI subprocess, not inside Forge agent loop | D2 decision in architecture.md; bounded latency for PR gates (<60s) |
