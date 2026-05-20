@@ -11,8 +11,8 @@
 
 ### Setup
 - **Type**: inline
-- **Local**: `dotnet test src/ast/CleanCode.Metrics.UnitTests/CleanCode.Metrics.UnitTests.csproj`
-- **CI runner**: `ubuntu-latest` (hosted) or `windows-latest` for win-x64 builds
+- **Local**: `dotnet build Workflow.sln && dotnet test src/ast/CleanCode.Metrics/CleanCode.Metrics.csproj` (unit tests embedded in project for Phase 1 model validation only)
+- **CI runner**: `windows-latest`
 - **Secrets**: none
 - **Pre-test bootstrap**: `dotnet restore Workflow.sln`
 
@@ -415,9 +415,9 @@ Feature: Evaluator service with LLM contract
     And "snapshot.metrics" is an array of metric objects with id, value, threshold fields
 
   Scenario: LLM endpoint is configurable via environment variable
-    Given env var CLEANCODE_LLM_ENDPOINT is set to "http://localhost:11434/v1/chat"
+    Given env var CLEANCODE_LLM_ENDPOINT is set to a valid URL
     When EvaluatorService initializes
-    Then it uses that endpoint URL for LLM calls
+    Then it uses the value of CLEANCODE_LLM_ENDPOINT for LLM calls
     And does not read the .cleancode.yaml endpoint field
 
   Scenario: Evaluator completes within performance budget
@@ -600,14 +600,14 @@ Feature: CLI baseline command
 - **Pre-test bootstrap**: `docker-compose -f tests/e2e/cross-repo/docker-compose.yml up -d --wait`
 
 The compose file at `tests/e2e/cross-repo/docker-compose.yml` starts:
-- `neo4j` -- Neo4j 5.26-community on ports 7474/7687 with APOC plugin
-- `qdrant` -- Qdrant latest on ports 6333/6334
+- `neo4j` -- Neo4j 5.26-community with APOC plugin
+- `qdrant` -- Qdrant latest
 
-Environment variables:
-- `NEO4J_URI=bolt://localhost:7687`
-- `NEO4J_USER=neo4j`
-- `NEO4J_PASSWORD` (from compose env, default test value)
-- `QDRANT_URI=http://localhost:6333`
+Environment variables (injected by compose `.env` file; no literal values in test code):
+- `NEO4J_URI` -- bolt connection string for Neo4j
+- `NEO4J_USER` -- Neo4j authentication user (set in compose `.env`)
+- `NEO4J_PASSWORD` -- Neo4j authentication password (set in compose `.env`)
+- `QDRANT_URI` -- HTTP endpoint for Qdrant vector store
 
 ### Scenarios
 
@@ -708,16 +708,16 @@ Feature: Hotspot ranking
 - **Pre-test bootstrap**: `docker-compose -f tests/e2e/full-pipeline/docker-compose.yml up -d --wait && dotnet build Workflow.sln`
 
 The compose file at `tests/e2e/full-pipeline/docker-compose.yml` starts:
-- `neo4j` -- Neo4j 5.26-community on ports 7474/7687
-- `qdrant` -- Qdrant latest on ports 6333/6334
-- `wiremock` -- WireMock for mock LLM endpoint on port 8089
+- `neo4j` -- Neo4j 5.26-community with APOC plugin
+- `qdrant` -- Qdrant latest
+- `wiremock` -- WireMock for mock LLM endpoint
 
-Environment variables:
-- `NEO4J_URI=bolt://localhost:7687`
-- `NEO4J_USER=neo4j`
-- `NEO4J_PASSWORD` (from compose env)
-- `QDRANT_URI=http://localhost:6333`
-- `CLEANCODE_LLM_ENDPOINT=http://localhost:8089/v1/chat`
+Environment variables (injected by compose `.env` file; no literal values in test code):
+- `NEO4J_URI` -- bolt connection string for Neo4j
+- `NEO4J_USER` -- Neo4j authentication user (set in compose `.env`)
+- `NEO4J_PASSWORD` -- Neo4j authentication password (set in compose `.env`)
+- `QDRANT_URI` -- HTTP endpoint for Qdrant vector store
+- `CLEANCODE_LLM_ENDPOINT` -- URL for mock LLM service (WireMock)
 
 ### Scenarios
 
