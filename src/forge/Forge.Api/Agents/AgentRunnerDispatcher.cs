@@ -1269,40 +1269,44 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                     agentId,
                     async (factoryCt) =>
                     {
-                        // Same retry-once pattern as the non-pooled path
-                        // below. The factory runs at most once per pool
-                        // key per process lifetime.
-                        CopilotClient? c = null;
+                        // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires
+                        // sessions to be created on the SAME CopilotClient
+                        // instance that authenticated the shared server.
+                        // Constructing a new CopilotClient(clientOptions)
+                        // against the server's CliUrl produces a fresh
+                        // (unauthenticated) client and CreateSessionAsync
+                        // throws AUTHENTICATION_FAILED. Delegate to the
+                        // CopilotServerManager so the session is created
+                        // on the shared, already-authenticated client.
                         for (var attempt = 0; attempt < 2; attempt++)
                         {
                             try
                             {
-                                // 2026-05-13 -- defensive worktree-existence
+                                // 2026-05-13 — defensive worktree-existence
                                 // pre-check. The shared copilot.exe server
                                 // validates cwd inside `session.create` and
                                 // returns "Directory does not exist or cannot
                                 // be accessed: <path>" when the worktree
                                 // got wiped between EnsureWorktreeAsync's
-                                // success and this CreateSessionAsync call
-                                // (observed on local:UPDATE-HISTORY-IN-CL ->
-                                // architecture.md iter 3 at 5:22 PM after a
-                                // Forge.Api restart cycle). Throwing here
-                                // with a sentinel message routes the error
-                                // into the existing IsProcessLaunchError
-                                // retry-once arm and surfaces a clearer
-                                // diagnostic if the second attempt also
-                                // fails.
+                                // success and this CreateSessionAsync call.
                                 EnsureWorkingDirectoryAccessible(sessionConfig);
-                                c = new CopilotClient(clientOptions);
-                                var s = await c.CreateSessionAsync(sessionConfig, factoryCt);
-                                return (c, s);
+                                var s = await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
+                                    ?? throw new InvalidOperationException(
+                                        "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                                // The pool entry retains a CopilotClient
+                                // reference for diagnostics and parity with
+                                // legacy code paths; in the shared-server
+                                // model it points at the shared client but
+                                // disposal of the pool entry must NOT
+                                // dispose it (PooledCopilotEntry.DisposeAsync
+                                // unconditionally disposes its Client, so
+                                // pass null to keep the shared client alive).
+                                return ((CopilotClient?)null!, s);
                             }
                             catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
                             {
                                 this.log.LogWarning(ex,
                                     "Copilot SDK connection failed (pool factory attempt 1), retrying after delay");
-                                try { if (c is not null) await c.DisposeAsync(); } catch { }
-                                c = null;
                                 await Task.Delay(2000, factoryCt);
                             }
                         }
@@ -1318,25 +1322,25 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             }
             else
             {
-                // Retry once on connection/launch failures. With the shared server
-                // this mainly covers transient connection errors or server restarts.
+                // 2026-05-20 — Phase 75b: same shared-client requirement
+                // for non-pooled callers. Delegate to the manager so the
+                // shared server's already-authenticated CopilotClient
+                // owns the session.
                 for (var attempt = 0; attempt < 2; attempt++)
                 {
                     try
                     {
-                        // 2026-05-13 -- worktree-existence pre-check; see
-                        // companion comment in the pooled branch above.
                         EnsureWorkingDirectoryAccessible(sessionConfig);
-                        client = new CopilotClient(clientOptions);
-                        session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
+                        session = await this.copilotServer.CreateSessionAsync(sessionConfig, effectiveCt)
+                            ?? throw new InvalidOperationException(
+                                "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                        client = null;  // shared; do NOT dispose in finally
                         break;
                     }
                     catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
                     {
                         this.log.LogWarning(ex,
                             "Copilot SDK connection failed (attempt 1), retrying after delay");
-                        try { if (client is not null) await client.DisposeAsync(); } catch { }
-                        client = null;
                         session = null;
                         await Task.Delay(2000, effectiveCt);
                     }

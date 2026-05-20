@@ -72,9 +72,24 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
 
 ## 1. Persistence & migrations
 
-**Stack:** `Microsoft.Data.Sqlite` + EF Core. DB file `forge.db` next to the binary, override
-`Forge:Db:Path`. Entities in `Forge.Api/Persistence/Entities.cs`; `ForgeDbContext` registers
-them. Seeding in `ForgeSeed` (idempotent on boot; reads `agents/allocation.json`).
+**Stack:** `Microsoft.Data.Sqlite` + EF Core. **DB location is configured in
+`Forge.Api/appsettings.json` under `Forge:Db` — NOT next to the binary.** Prefer
+`Forge:Db:Folder` (default `E:\forge`): the **control DB** resolves to `{folder}\forge.db` and
+**per-product split DBs** to `{folder}\{slug}.db`. `Forge:Db:Path` is **legacy** — when set it
+wins and the control DB lives at that exact path (used by the test factory's per-test temp DB;
+Docker sets `Forge__Db__Path=/data/forge.db`). `IForgeDbPaths`/`ForgeDbPaths` (singleton,
+`Persistence/ForgeDbPaths.cs`) is the **only** path resolver — never inline a `forge.db` fallback.
+The folder is the canonical "Forge state root" (`storyworkspaces/`, `attachments/` hang off it).
+Entities in `Forge.Api/Persistence/Entities.cs`; `ForgeDbContext` registers them. Seeding in
+`ForgeSeed` (idempotent on boot; reads `agents/allocation.json`).
+
+**Per-product DB split (Phases A–G, `docs/forge/split-db.md`):** gated by `Forge:Db:SplitEnabled`
+(+ `Forge:Db:MaxConcurrentProductDbs`, default 8). `ControlDbContext` binds the control DB
+(cross-product entities — products, repos, users, crews, agents, agent_usage, audit, idempotency);
+per-product entities route through `IProductDbContextFactory` → `{slug}.db`. Product slugs are
+validated/sanitized (`ForgeDbPaths.TryValidateSlug`, `[a-z0-9-]` + reserved-name guard) so they
+can't escape the folder or shadow `forge.db`. Phase F runs the auto-split-on-first-boot migration;
+until then everything stays in the control DB.
 
 **Migrations** are hand-written idempotent `PhaseNNMigration.cs` classes (each guards with
 `pragma_table_info` / `CREATE ... IF NOT EXISTS`), chained in `Program.cs` after

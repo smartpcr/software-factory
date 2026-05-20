@@ -7,6 +7,7 @@
 namespace Forge.Api.Agents;
 
 using System.Diagnostics;
+using Forge.Api.Auth;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -37,6 +38,7 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
 {
     private readonly IOptions<AgentRunnerOptions> options;
     private readonly ILogger<CopilotServerManager> log;
+    private readonly IAuthService? ghAuth;
     private readonly SemaphoreSlim startLock = new(1, 1);
 
     private CopilotClient? serverClient;
@@ -56,10 +58,26 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
 
     public CopilotServerManager(
         IOptions<AgentRunnerOptions> options,
-        ILogger<CopilotServerManager> log)
+        ILogger<CopilotServerManager> log,
+        IEnumerable<IAuthService> authServices)
     {
         this.options = options;
         this.log = log;
+        // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires CLI-level
+        // authentication via env var (COPILOT_GITHUB_TOKEN). The 0.3.0
+        // SDK accepted SessionConfig.GitHubToken at per-session
+        // CreateSessionAsync time and bound the shared CLI in
+        // unauthenticated mode; 1.0.x rejects every JSON-RPC call
+        // (including VerifyProtocolVersionAsync) with
+        // RemoteRpcException("AUTHENTICATION_FAILED") when the CLI was
+        // launched without credentials. Resolve the GitHub auth service
+        // (registered as one of multiple IAuthService impls) so the
+        // shared CLI spawn at EnsureRunningAsync can pass through the
+        // operator's signed-in token. Null when no GitHub auth provider
+        // is registered (e.g. ADO-only deployments) — the spawn will
+        // still proceed and fail with the same AUTHENTICATION_FAILED on
+        // first session call, giving the operator a clear diagnostic.
+        this.ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");
     }
 
     /// <summary>
@@ -71,10 +89,35 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     public async Task<CopilotClientOptions> GetClientOptionsAsync(CancellationToken ct)
     {
         await this.EnsureRunningAsync(ct);
+
+        // 2026-05-20 — Phase 75b: In CliUrl mode the SDK 1.0.0-beta.x
+        // explicitly rejects `GitHubToken` and `UseLoggedInUser` —
+        // "external server manages its own auth" — so per-session
+        // clients connect bare. The shared server was already
+        // authenticated at EnsureRunningAsync time.
         return new CopilotClientOptions
         {
             CliUrl = $"localhost:{this.resolvedPort}",
         };
+    }
+
+    /// <summary>
+    /// 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x rejects per-session
+    /// <see cref="CopilotClient"/> instances constructed against the
+    /// shared server's <c>CliUrl</c> with <c>AUTHENTICATION_FAILED</c>
+    /// even when the shared server itself is authenticated — auth state
+    /// is bound to the originating <see cref="CopilotClient"/> instance,
+    /// not the CLI process. This method lets callers create sessions on
+    /// the manager's already-authenticated client, then dispose the
+    /// returned session (but NOT the underlying client) when done.
+    /// Returns null when the shared server isn't running and can't be
+    /// started.
+    /// </summary>
+    public async Task<CopilotSession?> CreateSessionAsync(SessionConfig config, CancellationToken ct)
+    {
+        await this.EnsureRunningAsync(ct);
+        if (this.serverClient is null) return null;
+        return await this.serverClient.CreateSessionAsync(config, ct);
     }
 
     /// <summary>
@@ -150,6 +193,59 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
             var snapshotBefore = WindowsProcessTree.Snapshot();
             var baselinePids = WindowsProcessTree.SnapshotCopilotPids(snapshotBefore);
 
+            // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires the
+            // copilot.exe CLI to be authenticated at spawn time. The 0.3.0
+            // SDK accepted SessionConfig.GitHubToken at per-session
+            // CreateSessionAsync time and tolerated an unauthenticated
+            // shared CLI; 1.0.x rejects every JSON-RPC call (including
+            // VerifyProtocolVersionAsync) with
+            // RemoteRpcException("AUTHENTICATION_FAILED") when the CLI
+            // wasn't authenticated at spawn.
+            //
+            // Strategy: feed the CLI auth two ways for robustness:
+            //   1. CopilotClientOptions.GitHubToken — when we have a host
+            //      gh token, pass it via the SDK's documented API. When
+            //      provided, the SDK sets `UseLoggedInUser = false`
+            //      automatically (per README §CopilotClient Options).
+            //   2. Environment forwarding — also set
+            //      COPILOT_GITHUB_TOKEN on the spawned process env (the
+            //      CLI's own auth path per `copilot login --help`).
+            //      Inherit the parent process's full environment first;
+            //      a bare `Environment = { COPILOT_GITHUB_TOKEN = ... }`
+            //      replaces the spawn's env entirely, which crashed the
+            //      Node runtime ("Assertion failed: ncrypto::CSPRNG")
+            //      because PATH/USERPROFILE/SYSTEMROOT/etc were lost.
+            //
+            // Fall-back when no host gh token is available: rely on
+            // `UseLoggedInUser = true` (the SDK default) so the CLI uses
+            // credentials from a prior interactive `copilot login` stored
+            // in the OS credential store / ~/.copilot/. That suffices on
+            // a workstation where the operator already signed in
+            // (verified by `copilot -p "ping"` returning a real response).
+            var spawnEnv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                if (entry.Key is string key && entry.Value is string value)
+                {
+                    spawnEnv[key] = value;
+                }
+            }
+            string? ghToken = null;
+            if (this.ghAuth is not null)
+            {
+                try { ghToken = await this.ghAuth.GetAccessTokenAsync(ct); }
+                catch (Exception ex)
+                {
+                    this.log.LogWarning(ex,
+                        "Failed to obtain GitHub token for shared Copilot CLI spawn; "
+                        + "falling back to UseLoggedInUser=true (operator must have run `copilot login`).");
+                }
+            }
+            if (!string.IsNullOrEmpty(ghToken))
+            {
+                spawnEnv["COPILOT_GITHUB_TOKEN"] = ghToken;
+            }
+
             var serverOptions = new CopilotClientOptions
             {
                 CliPath = cliPath,
@@ -157,7 +253,28 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
                 UseStdio = false,
                 Port = 0,
                 AutoStart = false,
+                Environment = spawnEnv,
             };
+            // Set client-level auth options ONLY when we have an explicit
+            // token; otherwise the SDK default (UseLoggedInUser=true)
+            // handles credential lookup. Setting GitHubToken=null
+            // explicitly is harmless but UseLoggedInUser doesn't expose
+            // its default reset on this property when nulling.
+            if (!string.IsNullOrEmpty(ghToken))
+            {
+                serverOptions.GitHubToken = ghToken;
+                this.log.LogInformation(
+                    "Authenticating shared Copilot CLI via CopilotClientOptions.GitHubToken (length={Len}) "
+                    + "+ COPILOT_GITHUB_TOKEN env var (belt-and-suspenders; parent-env inherited, {Count} vars).",
+                    ghToken.Length, spawnEnv.Count);
+            }
+            else
+            {
+                this.log.LogInformation(
+                    "Authenticating shared Copilot CLI via UseLoggedInUser=true (SDK default; no host gh token). "
+                    + "Requires a prior `copilot login` in the OS credential store. Parent-env inherited ({Count} vars).",
+                    spawnEnv.Count);
+            }
 
             var client = new CopilotClient(serverOptions);
             await client.StartAsync();

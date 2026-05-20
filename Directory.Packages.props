@@ -130,7 +130,10 @@
     <!-- Tokenization (tiktoken) -->
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
-    <!-- GitHub Copilot SDK -->
-    <PackageVersion Include="GitHub.Copilot.SDK" Version="0.3.0" />
+    <!-- GitHub Copilot SDK — 1.0.0-beta tracks the GitHub Copilot CLI 1.0.x
+         protocol. SDK 0.3.0 was incompatible with copilot CLI ≥ 1.0.51
+         (PingResponse/timestamp schema change breaks SDK 0.3.0's
+         VerifyProtocolVersionAsync at client.StartAsync). 2026-05-20. -->
+    <PackageVersion Include="GitHub.Copilot.SDK" Version="1.0.0-beta.4" />
   </ItemGroup>
 </Project>
