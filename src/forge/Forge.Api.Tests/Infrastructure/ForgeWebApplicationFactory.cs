@@ -184,6 +184,12 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // the gate-only (manual-API) flow. End-to-end orchestrator tests
                 // override this to "true" via the dedicated factory ctor.
                 ["Forge:Stories:OrchestratorEnabled"] = "false",
+                // docs/forge/e2e.md §2.1 — pin the orchestrator integration
+                // tests to the legacy parallel flow (impl waits on prior impl
+                // only). Production defaults this ON; the gate's own behaviour
+                // is covered by ImplGatesOnPriorStageE2eTests. A test that
+                // wants the gated flow can override via extraConfig.
+                ["Forge:Stories:GateImplOnPriorStageE2e"] = "false",
                 // Keep prod hosted services (CrewQueueWorker, ProviderSyncService,
                 // WorkItemSyncJob, BuildSyncJob, AutoMergeWatcher, etc.) registered
                 // in DI but not auto-started. Tests that need them call

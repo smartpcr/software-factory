@@ -92,6 +92,20 @@ public interface IStoryGitOps
     Task<bool> MergeUpstreamIntoBranchAsync(RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns <c>true</c> when <paramref name="branch"/> carries any file diff
+    /// on top of <paramref name="baseBranch"/> (three-dot, from the merge-base
+    /// to the branch tip). The qa-e2e / impl drivers call this after committing
+    /// to decide whether opening a PR is worthwhile: when the produced files all
+    /// matched a repo <c>.gitignore</c> rule, <see cref="CommitFilesAsync"/>
+    /// stages nothing and the branch ends up identical to base — opening a PR
+    /// then just creates empty review noise. Production runs
+    /// <c>git diff --quiet origin/{base}...origin/{branch}</c>; on any git error
+    /// the implementation returns <c>true</c> (fail-open, so a legitimate PR is
+    /// never suppressed by a transient check failure).
+    /// </summary>
+    Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>
     /// and return its absolute disk path. Use as the agent's working
     /// directory when running plan / coding tasks so the agent's tools see

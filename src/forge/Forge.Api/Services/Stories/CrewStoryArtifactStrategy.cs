@@ -2411,6 +2411,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // as the spawn's LastError.
             var resolved = DecompositionDepsResolver.ResolveAll(canonical);
 
+            // Operator gate (default on): make each impl stage wait for the
+            // prior stage's e2e (not just its impl PR) by rewriting impl deps
+            // D → "D — E2E". The PlanReconciler applies the same post-pass so
+            // re-derived DepsJson stays in lockstep. Off-switch:
+            // Forge:Stories:GateImplOnPriorStageE2e=false (legacy Phase 58
+            // parallel behaviour, e2e trails and gates only story completion).
+            if (this.config.GetValue<bool?>("Forge:Stories:GateImplOnPriorStageE2e") ?? true)
+            {
+                resolved = DecompositionDepsResolver.GateImplDepsOnPriorStageE2e(canonical, resolved);
+            }
+
             return BuildDecompositionFromPlan(canonical, resolved);
         }
 
@@ -3781,6 +3792,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             mergedFiles[path] = body;
         }
+
         return mergedFiles;
     }
 

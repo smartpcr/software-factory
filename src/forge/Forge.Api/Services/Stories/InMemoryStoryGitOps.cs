@@ -92,6 +92,21 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.FromResult(sha);
     }
 
+    public Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var branchTree = this.trees.TryGetValue(Key(repo, branch), out var b)
+            ? b : new Dictionary<string, string>(StringComparer.Ordinal);
+        var baseTree = this.trees.TryGetValue(Key(repo, baseBranch), out var bb)
+            ? bb : new Dictionary<string, string>(StringComparer.Ordinal);
+        // Changed when any path added/modified on the branch, or a base path
+        // dropped from it. The fake doesn't model .gitignore, so a normal
+        // commit always registers as a change (the production gitignore case
+        // is exercised by RealStoryGitOps + the live system).
+        var changed = branchTree.Count != baseTree.Count
+            || branchTree.Any(kv => !baseTree.TryGetValue(kv.Key, out var v) || v != kv.Value);
+        return Task.FromResult(changed);
+    }
+
     public Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default) =>
         Task.FromResult(this.trees.TryGetValue(Key(repo, branch), out var t) && t.ContainsKey(filePath));
 

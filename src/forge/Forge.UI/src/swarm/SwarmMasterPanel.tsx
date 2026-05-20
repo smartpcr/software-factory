@@ -8,6 +8,7 @@ import {
   type PhaseStatusFilterKey,
 } from '@/state/useWorkstreamsStore';
 import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
+import { computeStageNumbers } from './stageNumbering';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
 export interface Selection {
@@ -178,33 +179,14 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
     });
   };
 
-  // Phase 49 — compute the canonical `phaseNum.stageNum` label for every
-  // workstream. Drives both the phase-card title ("1.1 Cargo Workspace
-  // and Crate Layout" instead of "PHASE 01") and the deps row's chip
-  // list. Identical numbering to the workstream DAG view (right pane);
-  // the Sort field is the source of truth and was renumbered to match
-  // implementation-plan.md so the operator sees one consistent set of
-  // phase / stage numbers everywhere.
-  const stageNumOf = useMemo(() => {
-    const m = new Map<string, string>();
-    const buckets = new Map<string, string[]>();
-    const phaseOrder: string[] = [];
-    for (const w of ws) {
-      const pa = w.phaseAnchor && w.phaseAnchor.length > 0 ? w.phaseAnchor : '__workstreams__';
-      if (!buckets.has(pa)) {
-        phaseOrder.push(pa);
-        buckets.set(pa, []);
-      }
-      buckets.get(pa)!.push(w.id);
-    }
-    phaseOrder.forEach((pa, gi) => {
-      const items = buckets.get(pa)!;
-      items.forEach((id, si) => {
-        m.set(id, `${gi + 1}.${si + 1}`);
-      });
-    });
-    return m;
-  }, [ws]);
+  // Phase 49 — canonical `phaseNum.stageNum` label for every workstream.
+  // Drives both the phase-card title ("1.1 Cargo Workspace and Crate
+  // Layout" instead of "PHASE 01") and the deps row's chip list. Shared
+  // with the workstream DAG view (right pane, SwarmDetailPanel) via
+  // `computeStageNumbers` so both panels stay numerically identical.
+  // qa-e2e rows are labelled `{implNum}-e2e` and do NOT consume a stage
+  // slot (docs/forge/e2e.md Stage 8.1).
+  const stageNumOf = useMemo(() => computeStageNumbers(ws), [ws]);
 
   const wsNameById = useMemo(() => {
     const m = new Map<string, string>();

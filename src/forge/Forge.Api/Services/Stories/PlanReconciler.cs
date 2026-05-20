@@ -148,6 +148,18 @@ public sealed class PlanReconciler
         // ProduceDecompositionAsync output.
         var resolvedDeps = DecompositionDepsResolver.ResolveAll(canonical);
 
+        // Apply the same operator gate as ProduceDecompositionAsync so the
+        // reconciler re-derives e2e-gated impl DepsJson rather than the
+        // un-gated form (otherwise it would clobber the orchestrator's deps
+        // on every tick). Default on; off-switch
+        // Forge:Stories:GateImplOnPriorStageE2e=false.
+        var gateImplOnPriorE2e = scope.ServiceProvider.GetService<IConfiguration>()
+            ?.GetValue<bool?>("Forge:Stories:GateImplOnPriorStageE2e") ?? true;
+        if (gateImplOnPriorE2e)
+        {
+            resolvedDeps = DecompositionDepsResolver.GateImplDepsOnPriorStageE2e(canonical, resolvedDeps);
+        }
+
         var existing = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
             .ToListAsync(ct);
@@ -339,6 +351,16 @@ public sealed class PlanReconciler
         // Persist DB writes before the artifact commit so a git failure
         // doesn't leave the DB in a half-state.
         await db.SaveChangesAsync(ct);
+
+        // Rebuild the WorkstreamDep FK edge table authoritatively from the
+        // freshly-persisted (gated) DepsJson. The GetSpawn endpoint + claim
+        // sweep read a union of the FK table and DepsJson, so a DepsJson
+        // change (e.g. the Forge:Stories:GateImplOnPriorStageE2e impl→e2e
+        // rewrite) shows up immediately in blocking; this call clears the
+        // stale FK edges so the DAG matches too — without waiting for the
+        // orchestrator's implement-tick (whose drive may be locked behind a
+        // long-running agent invocation).
+        await StorySpawnOrchestrator.SyncWorkstreamDepsFromJsonAsync(control, db, spawn, ct);
 
         // Rewrite spawn.DecompositionJson + commit workstreams.yaml on the
         // plan branch so the artifact stays in lockstep with the plan.

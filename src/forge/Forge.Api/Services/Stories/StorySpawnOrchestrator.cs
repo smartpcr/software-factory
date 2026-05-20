@@ -1579,11 +1579,17 @@ public sealed class StorySpawnOrchestrator
     /// the rows already exist (PlanReconciler-seeded), the FK table stays
     /// empty. This helper closes the gap: walks each workstream of the
     /// spawn, parses <c>DepsJson</c>, resolves each title to a workstream
-    /// id via the same-spawn name→id map, and inserts any missing
-    /// <see cref="WorkstreamDepRow"/>. Idempotent — existing rows and
-    /// titles that don't resolve to a sibling are skipped.
+    /// id via the same-spawn name→id map, and rebuilds the FK edge set
+    /// AUTHORITATIVELY — adds missing edges AND removes edges the row's
+    /// DepsJson no longer names. This is what propagates a DepsJson change
+    /// (e.g. the Forge:Stories:GateImplOnPriorStageE2e rewrite of an impl
+    /// dep from <c>D</c> → <c>D — E2E</c>) onto the edge table that the DAG
+    /// + claim sweep read. Idempotent — a stable DepsJson produces no
+    /// writes; titles that don't resolve to a sibling are skipped; a row
+    /// with null/unparseable <c>DepsJson</c> is left untouched (a transient
+    /// empty value can't wipe real edges).
     /// </summary>
-    private static async Task SyncWorkstreamDepsFromJsonAsync(
+    internal static async Task SyncWorkstreamDepsFromJsonAsync(
         ControlDbContext control, ProductDbContext db, StorySpawnRow spawn, CancellationToken ct)
     {
         var workstreams = await db.Workstreams
@@ -1603,7 +1609,12 @@ public sealed class StorySpawnOrchestrator
         var existingSet = new HashSet<(string From, string To)>(
             existing.Select(e => (e.WorkstreamId, e.DependsOnId)));
 
-        var added = 0;
+        // Desired edge set per workstream, resolved from its DepsJson titles.
+        // Only workstreams with a parseable DepsJson get an authoritative
+        // rebuild; a row with null / unparseable DepsJson is left untouched so
+        // a transient empty value can't wipe real edges. An empty list ("[]")
+        // is authoritative ("no deps") and DOES drop the row's stale edges.
+        var desiredByFrom = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         foreach (var w in workstreams)
         {
             if (string.IsNullOrEmpty(w.DepsJson)) continue;
@@ -1611,23 +1622,50 @@ public sealed class StorySpawnOrchestrator
             try { titles = JsonSerializer.Deserialize<List<string>>(w.DepsJson); }
             catch { continue; }
             if (titles is null) continue;
+
+            var desired = new HashSet<string>(StringComparer.Ordinal);
             foreach (var t in titles)
             {
                 if (string.IsNullOrWhiteSpace(t)) continue;
                 if (!nameToId.TryGetValue(t.Trim(), out var depId)) continue;
                 if (string.Equals(depId, w.Id, StringComparison.Ordinal)) continue;
-                if (existingSet.Contains((w.Id, depId))) continue;
+                desired.Add(depId);
+            }
+            desiredByFrom[w.Id] = desired;
+        }
+
+        var changed = false;
+
+        // Authoritative rewrite: drop edges no longer named by the row's
+        // DepsJson. Scoped to rows that HAVE a desired set (parseable DepsJson)
+        // so rows we didn't recompute keep their edges.
+        foreach (var e in existing)
+        {
+            if (!desiredByFrom.TryGetValue(e.WorkstreamId, out var desired)) continue;
+            if (!desired.Contains(e.DependsOnId))
+            {
+                db.WorkstreamDeps.Remove(e);
+                changed = true;
+            }
+        }
+
+        // Add edges the row now declares but the table is missing.
+        foreach (var (fromId, desired) in desiredByFrom)
+        {
+            foreach (var depId in desired)
+            {
+                if (existingSet.Contains((fromId, depId))) continue;
                 db.WorkstreamDeps.Add(new WorkstreamDepRow
                 {
-                    WorkstreamId = w.Id,
+                    WorkstreamId = fromId,
                     DependsOnId = depId,
                     CreatedAt = DateTimeOffset.UtcNow,
                 });
-                existingSet.Add((w.Id, depId));
-                added++;
+                changed = true;
             }
         }
-        if (added > 0) await db.SaveChangesAsync(ct);
+
+        if (changed) await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -1757,7 +1795,7 @@ public sealed class StorySpawnOrchestrator
     /// Heading text mirrors <c>PlanReconciler.QaE2eStageDescription</c> so both
     /// write paths converge on one parseable shape.
     /// </summary>
-    private static string ComposeWorkItemDescriptionMd(DecompositionWorkstream w)
+    internal static string ComposeWorkItemDescriptionMd(DecompositionWorkstream w)
     {
         var summary = w.Description ?? string.Empty;
         if (!string.Equals(w.Category, WorkstreamCategories.QaE2e, StringComparison.Ordinal)
@@ -1816,6 +1854,15 @@ public sealed class StorySpawnOrchestrator
 
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
         var baseBranch = BaseBranchOf(spawn);
+
+        // Keep the WorkstreamDep FK table in lockstep with each workstream's
+        // (gated) DepsJson on every implement tick — not just at decompose.
+        // The PlanReconciler re-derives DepsJson with the operator's
+        // e2e-gate applied (Forge:Stories:GateImplOnPriorStageE2e); rebuilding
+        // the edge table authoritatively here propagates that to a spawn whose
+        // edges were persisted before the gate, and keeps any spawn consistent
+        // when the plan's deps change mid-flight.
+        await SyncWorkstreamDepsFromJsonAsync(control, db, spawn, ct);
 
         var workstreams = await db.Workstreams
             .Where(w => w.StorySpawnId == spawn.Id)
@@ -3144,6 +3191,36 @@ public sealed class StorySpawnOrchestrator
         // Merge latest base into the branch so the PR diff is minimal.
         await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
 
+        // Skip the PR when the commit produced no diff vs base. This happens
+        // when every file the producer emitted matched a repo `.gitignore`
+        // rule (observed on the `update` repo: its `.gitignore` line `/*/`
+        // ignores all top-level dirs, so the producer's `tests/...` artifacts
+        // were staged as nothing and CommitFilesAsync committed an empty
+        // tree). Opening a PR then just creates empty review noise, so stall
+        // with an actionable reason instead.
+        if (!await this.git.BranchHasChangesVsBaseAsync(repo, w.Branch, baseBranch, ct))
+        {
+            var noChangeRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (noChangeRow is not null && noChangeRow.Status is not "cancelled" and not "complete")
+            {
+                noChangeRow.Status = WorkstreamStatuses.Stalled;
+                noChangeRow.StallReason =
+                    $"qa-e2e produced {files.Count} file(s) but committed nothing to "
+                    + $"{w.Branch} — every path was excluded by the repo's .gitignore "
+                    + "(the e2e output root is gitignored in this repo). No PR opened. "
+                    + "Fix the repo .gitignore or point the e2e output at a tracked test "
+                    + "directory, then Restart.";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
+            }
+
+            this.logger?.LogWarning(
+                "qa-e2e {WsId}: branch {Branch} has no diff vs {Base} after commit "
+                + "({FileCount} files emitted, all gitignored?); skipping empty PR.",
+                w.Id, w.Branch, baseBranch, files.Count);
+            return;
+        }
+
         // Resolve the impl-sibling PR id (if any) for the body link.
         // The sibling's PlanAnchor is this row's anchor with the `/e2e`
         // suffix stripped; the sibling's PR id is the first entry in
@@ -3498,6 +3575,12 @@ public sealed class StorySpawnOrchestrator
                         changed = true;
                         continue;
                     }
+                    catch (EmptyPrMergeRefusedException emptyEx)
+                    {
+                        await this.StallForEmptyMergeAsync(db, hub, spawn, w, emptyEx, ct);
+                        changed = true;
+                        continue;
+                    }
                     catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
                     {
                         await this.TryResolveConflictsAndRetryMergeAsync(
@@ -3537,6 +3620,11 @@ public sealed class StorySpawnOrchestrator
                 await this.ApproveAndMergeAsync(prId, w.Branch, approveReviewer, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
+                changed = true;
+            }
+            catch (EmptyPrMergeRefusedException emptyEx)
+            {
+                await this.StallForEmptyMergeAsync(db, hub, spawn, w, emptyEx, ct);
                 changed = true;
             }
             catch (Exception mergeEx) when (mergeEx is not OperationCanceledException)
@@ -4251,10 +4339,46 @@ public sealed class StorySpawnOrchestrator
     /// merge target.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Stall a workstream whose PR merge was refused by the empty-PR guard
+    /// (<see cref="EmptyPrMergeRefusedException"/>). Distinct from a merge
+    /// conflict: no resolver retry — the branch committed nothing (usually a
+    /// gitignored output path), so the row needs operator attention.
+    /// </summary>
+    private async Task StallForEmptyMergeAsync(
+        ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn,
+        WorkstreamRow w, EmptyPrMergeRefusedException ex, CancellationToken ct)
+    {
+        this.logger?.LogWarning(
+            "Refused to merge {PrId} for ws {WsId}: branch has no diff vs {Base}; stalling.",
+            ex.PrId, w.Id, ex.BaseBranch);
+        w.Status = WorkstreamStatuses.Stalled;
+        w.StallReason =
+            $"Refused to merge {ex.PrId}: branch has no diff vs {ex.BaseBranch} "
+            + "(empty PR). The producer committed nothing — usually the output "
+            + "path is excluded by the repo's .gitignore. No merge performed. "
+            + "Fix the .gitignore (or the output path), then Restart.";
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "ws-stalled", spawn, ct);
+    }
+
     private async Task ApproveAndMergeAsync(
         string prId, string branch, string reviewerAgentId,
         RepoRow? repo, string baseBranch, CancellationToken ct)
     {
+        // Merge-side empty-PR guard. The open-side guard
+        // (DriveOneQaE2eWorkstreamAsync) blocks NEW empty PRs, but PRs opened
+        // before it existed can still reach this merge path; merging one lands
+        // nothing and falsely marks the stage done. Refuse to merge a branch
+        // with no diff vs base. BranchHasChangesVsBaseAsync fails open (returns
+        // true) on a git error, so a transient check failure never blocks a
+        // legitimate merge.
+        if (repo is not null
+            && !await this.git.BranchHasChangesVsBaseAsync(repo, branch, baseBranch, ct))
+        {
+            throw new EmptyPrMergeRefusedException(prId, branch, baseBranch);
+        }
+
         try
         {
             await this.provider.ApprovePrAsync(prId, reviewerAgentId, ct);
