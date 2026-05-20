@@ -2683,6 +2683,17 @@ public static class StoriesEndpoints
                 // Best-effort — the scheduler tick will retry.
             }
         }
+        catch (Forge.Api.Services.Stories.PlanDocInFlightException)
+        {
+            // 2026-05-20 — the resume lost the per-doc production lock to an
+            // already in-flight run (typically the SpawnDependencyScheduler
+            // tick driving the same doc, or a not-yet-drained cancelled run).
+            // Transient + expected: the winning run produces the doc, so this
+            // is a no-op, NOT a failure. Do NOT record a spawn LastError —
+            // that would paint a false "ORCHESTRATOR HALTED" banner over a
+            // healthy in-flight run. The finally below still clears the
+            // resume-pending marker; the scheduler owns production from here.
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             using var scope = scopeFactory.CreateScope();

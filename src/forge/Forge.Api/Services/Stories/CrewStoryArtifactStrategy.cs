@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -1410,6 +1411,43 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return (generators, evaluators);
     }
 
+    /// <summary>
+    /// 2026-05-20 — per-plan-doc production lock, keyed by the synthetic
+    /// <c>plan-doc:{spawnId}:{file}</c> work-item id. Acquired at the top of
+    /// <see cref="ProducePlanFileAsync"/> — before the fresh-start cleanup
+    /// that deletes the on-disk doc — so an operator Restart's fire-and-forget
+    /// resume and the <c>SpawnDependencyScheduler</c> tick can't both produce
+    /// the same doc at once (the resume path bypasses the orchestrator's
+    /// <c>planDocInFlight</c> guard, so that guard alone doesn't cover it).
+    /// The loser fails fast with <see cref="PlanDocInFlightException"/> BEFORE
+    /// deleting anything, so it neither stomps the winner's file nor halts the
+    /// orchestrator (both the orchestrator catch and the resume wrapper treat
+    /// it as "retry next tick"). Broader than DeliverableLoop's own
+    /// per-workItemId mutex, which only guards the gen-eval loop body — this
+    /// also covers the cleanup + worktree steps that run before it.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PlanDocProductionLocks =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Releases a held plan-doc production lock on dispose, so
+    /// <see cref="ProducePlanFileAsync"/> can hold it for its whole lifetime
+    /// via <c>using var</c> instead of wrapping its ~750-line body in a manual
+    /// try/finally.
+    /// </summary>
+    private readonly struct PlanDocLockReleaser : IDisposable
+    {
+        private readonly SemaphoreSlim semaphore;
+
+        public PlanDocLockReleaser(SemaphoreSlim semaphore) => this.semaphore = semaphore;
+
+        public void Dispose()
+        {
+            try { this.semaphore.Release(); }
+            catch (SemaphoreFullException) { /* already released — defensive */ }
+        }
+    }
+
     private async Task<string> ProducePlanFileAsync(
         StorySpawnRow spawn, WorkItemRow story,
         (string FileName, string Brief, string RepoPath) spec,
@@ -1432,6 +1470,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         Directory.CreateDirectory(Path.GetDirectoryName(diskPath)!);
 
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+
+        // 2026-05-20 — single-producer guard. Acquire the per-doc production
+        // lock BEFORE the fresh-start cleanup below deletes the on-disk doc.
+        // If another run already owns this doc (an operator Restart resume
+        // racing the scheduler tick), bail immediately with a transient
+        // signal — without touching the file, worktree, or DB — so the
+        // in-flight winner produces the doc and the orchestrator retries on
+        // its next tick. Held for the whole method via `using var`.
+        var productionLock = PlanDocProductionLocks.GetOrAdd(docWorkItemId, _ => new SemaphoreSlim(1, 1));
+        if (!await productionLock.WaitAsync(TimeSpan.Zero, ct))
+        {
+            throw new PlanDocInFlightException(spec.RepoPath, docWorkItemId);
+        }
+        using var productionLockHold = new PlanDocLockReleaser(productionLock);
 
         // Phase 45 follow-up -- pass-verdict guard. If the latest deliverable
         // for this doc already evaluated to `pass`, do NOT spin up another
@@ -2075,7 +2127,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // diffs against it, and so on.
         string? prevIterSha = null;
 
-        await this.RunGenEvalLoopAsync(
+        var skippedConcurrent = await this.RunGenEvalLoopAsync(
             team: "Architect",
             workItemId: docWorkItemId,
             phaseTag: $"plan:{spec.FileName}",
@@ -2153,6 +2205,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     FilesDeleted: snap.Deleted);
             },
             ct: ct);
+
+        // 2026-05-20 — Phase 74 follow-up. When the gen-eval loop was a
+        // no-op because another RunAsync already owns this workItemId (e.g.
+        // an operator Restart racing the SpawnDependencyScheduler tick),
+        // this call produced nothing. A fresh-start Restart has just
+        // deleted the on-disk doc above, so the File.Exists check below
+        // would throw "Architect did not produce" and HALT the orchestrator
+        // on a purely transient race — even though the winning in-flight run
+        // is producing the file right now (observed 2026-05-20 on
+        // code-intelligence:CLEAN-CODE architecture.md immediately after a
+        // Restart). Surface a typed transient signal instead; the
+        // orchestrator treats it as "retry next tick", not a failure.
+        if (skippedConcurrent)
+        {
+            throw new PlanDocInFlightException(spec.RepoPath, docWorkItemId);
+        }
 
         if (!File.Exists(diskPath))
         {
@@ -4474,7 +4542,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <see cref="InvokeAsync"/> emits on the spawn id, which doesn't
     /// surface on per-workstream cards.
     /// </summary>
-    private async Task RunGenEvalLoopAsync(
+    /// <summary>
+    /// Runs the gen↔eval loop. Returns <c>true</c> when the loop was a
+    /// no-op because another <c>DeliverableLoop.RunAsync</c> already owns
+    /// this workItemId (Phase 74 skipped-concurrent — e.g. an operator
+    /// Restart racing the scheduler tick). Returns <c>false</c> on a
+    /// terminal <c>pass</c> or a parked <c>stalled-questions</c>. Throws
+    /// on any other terminal verdict. Callers that materialise an artifact
+    /// (the plan-doc producer) use the bool to avoid mistaking "another run
+    /// owns it" for "the agent produced nothing".
+    /// </summary>
+    private async Task<bool> RunGenEvalLoopAsync(
         string team,
         string workItemId,
         string phaseTag,
@@ -6173,19 +6251,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             this.logger?.LogInformation(
                 "Phase 66: {Phase} parked on stalled-questions at iter {Iter} (score {Score}); awaiting operator answers.",
                 phaseTag, result.Iterations, result.FinalScore);
-            return;
+            return false;
         }
 
         // Phase 74 — DeliverableLoop refused to run because another
         // RunAsync is already in flight for this workItemId. Bail
         // silently: no commit, no PR, no status flip. The in-flight
         // caller owns the turn and will produce the real verdict.
+        // Return true so an artifact-materialising caller distinguishes
+        // this "another run owns it" no-op from a genuine "agent produced
+        // nothing" failure (which must still hard-fail).
         if (string.Equals(result.FinalVerdict, DeliverableLoop.SkippedConcurrentVerdict, StringComparison.OrdinalIgnoreCase))
         {
             this.logger?.LogInformation(
                 "Phase 74: {Phase} skipped (concurrent dispatch); another DeliverableLoop run owns this workItemId.",
                 phaseTag);
-            return;
+            return true;
         }
 
         if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
@@ -6193,6 +6274,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException(
                 $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened -- bump max-iterations or restart the architect crew.");
         }
+
+        // Terminal pass — not skipped; the caller proceeds to commit / PR.
+        return false;
     }
 
     /// <summary>
@@ -7109,4 +7193,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <param name="Command">Exact command that ran (e.g. <c>cargo fmt --check --all</c>).</param>
     /// <param name="Result">Underlying runner result with exit code, error counts, and error summary.</param>
     private sealed record GateFailure(string Stage, string Command, StoryBuildResult Result);
+}
+
+/// <summary>
+/// 2026-05-20 — transient signal thrown by the plan-doc producer when the
+/// gen-eval loop was a no-op because another <c>DeliverableLoop.RunAsync</c>
+/// already owns the work item (Phase 74 skipped-concurrent — typically an
+/// operator Restart racing the <c>SpawnDependencyScheduler</c> tick). The
+/// winning in-flight run produces the artifact; this run produced nothing
+/// and its worktree may not hold the file yet. The orchestrator catches it
+/// and retries on the next tick instead of recording an "ORCHESTRATOR
+/// HALTED" failure.
+/// </summary>
+public sealed class PlanDocInFlightException : Exception
+{
+    public PlanDocInFlightException(string repoPath, string workItemId)
+        : base($"Plan doc '{repoPath}' (workItem {workItemId}) skipped: another in-flight run owns it; retry next tick.")
+    {
+        this.RepoPath = repoPath;
+        this.WorkItemId = workItemId;
+    }
+
+    public string RepoPath { get; }
+
+    public string WorkItemId { get; }
 }

@@ -112,12 +112,23 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     /// returned session (but NOT the underlying client) when done.
     /// Returns null when the shared server isn't running and can't be
     /// started.
+    ///
+    /// <para>2026-05-20 — Phase 75c: snapshot
+    /// <see cref="serverClient"/> BEFORE awaiting CreateSessionAsync so
+    /// a concurrent <see cref="DisposeServerInnerAsync"/> (triggered by
+    /// the next caller's ping-fail → restart path) can't dispose the
+    /// instance we're about to call on. The caller still sees
+    /// <see cref="System.ObjectDisposedException"/> when the snapshot
+    /// itself races a dispose — that surfaces via
+    /// <c>AgentRunnerDispatcher.IsProcessLaunchError</c> and routes
+    /// through the Phase 75 transient-transport recovery path.</para>
     /// </summary>
     public async Task<CopilotSession?> CreateSessionAsync(SessionConfig config, CancellationToken ct)
     {
         await this.EnsureRunningAsync(ct);
-        if (this.serverClient is null) return null;
-        return await this.serverClient.CreateSessionAsync(config, ct);
+        var snapshot = this.serverClient;
+        if (snapshot is null) return null;
+        return await snapshot.CreateSessionAsync(config, ct);
     }
 
     /// <summary>

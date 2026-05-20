@@ -27,6 +27,27 @@ plan, implement, review, and QA work end-to-end.
 > approval — it hosts long-running agent loops + queue work. `dotnet build` to compile-check
 > is fine; Vite/HMR for front-end is fine.
 
+## Running & restarting — `scripts\run-forge-ui.ps1`
+
+The single launcher for both tiers. **Always use it** to start/stop/rebuild rather than `dotnet run`
+or ad-hoc `taskkill`: it finds processes by name **and** by listening port (`:5180` API / `:5181` UI),
+cleans stale PowerShell jobs, and launches `Forge.Api.exe` detached (no stdio-forwarding wrapper holding
+the caller's console).
+
+| Command | Effect |
+|---|---|
+| `.\scripts\run-forge-ui.ps1` | Stop, then start **both** API (`:5180`) + UI (`:5181`) — incremental build |
+| `.\scripts\run-forge-ui.ps1 -Rebuild` | **Clean rebuild of both**: `dotnet build` (API) + `npm ci && npm run build` (UI), then start |
+| `.\scripts\run-forge-ui.ps1 -ServerOnly` / `-ServerOnly -Rebuild` | Just the API — leaves a running Vite UI untouched |
+| `.\scripts\run-forge-ui.ps1 -UIOnly` / `-UIOnly -Rebuild` | Just the Vite UI |
+| `.\scripts\run-forge-ui.ps1 -Stop` (add `-ServerOnly` / `-UIOnly` to scope) | Stop |
+| `.\scripts\run-forge-ui.ps1 -Status` | Show what's running on each port |
+
+- **Pick up backend (`.cs`) edits:** `-ServerOnly -Rebuild` — still needs **per-restart approval** (rule above).
+- **Front-end edits:** no restart — Vite HMR reloads them.
+- **Compile-check only:** plain `dotnet build` is fine without restarting; the `Forge.Api.exe` copy-lock
+  error (`MSB3027`/`MSB3021`) while the server is running is expected and harmless.
+
 ## Where to make a change (quick index)
 
 | I want to… | Go to area |

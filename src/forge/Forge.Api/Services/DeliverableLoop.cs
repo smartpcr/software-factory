@@ -349,6 +349,31 @@ public static class GeneratorFailureKinds
         {
             return Inactive;
         }
+        // 2026-05-20 — counterpart to the SendAsync transport fix above.
+        // The session-acquire path (AgentRunnerDispatcher.cs ~line 1444)
+        // wraps any non-cancellation acquire failure (Copilot CLI crash,
+        // JSON-RPC connection dropped during CreateSessionAsync, server
+        // restart racing the new request, etc.) with the literal prefix
+        // "Copilot SDK session acquire failed:". The dispatcher's
+        // intent — stated verbatim in its log line — is "surfacing as
+        // transient transport failure" and it sets
+        // `transportFailedSendAsync = true` to force the next iter to
+        // open a fresh pool entry against the recovered shared client.
+        // Without this pattern, observed messages like
+        // "Copilot SDK session acquire failed: Communication error with
+        // Copilot CLI: The JSON-RPC connection was lost." fell through
+        // to `Other`, which DeliverableLoop's transient/non-transient
+        // split routed to verdict=stalled — terminating the loop
+        // immediately instead of auto-retrying. Symptom on
+        // code-intelligence:AGENT-MEMORY load-test-calibration: ws went
+        // STALLED at iter 20 of 50 on a single dropped JSON-RPC
+        // connection even though the dispatcher had already disposed
+        // the bad pool entry and the next iter would have started
+        // cleanly.
+        if (error.Contains("session acquire failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return Inactive;
+        }
         if (error.Contains(" exit=", StringComparison.OrdinalIgnoreCase))
         {
             return CliExit;
@@ -403,6 +428,18 @@ public sealed record DeliverableLoopResult(
 /// <inheritdoc cref="IDeliverableLoop"/>
 public sealed class DeliverableLoop : IDeliverableLoop
 {
+    /// <summary>
+    /// 2026-05-20 — persistence-layer cap on evaluator <c>Notes</c>. The
+    /// parsed notes are both stored on <c>deliverables.Notes</c> and fed
+    /// back into the next iteration's generator prompt, so an unbounded
+    /// value bloats the per-product DB, makes the conversation / iter views
+    /// unloadable, and balloons the next prompt's input cost. A runaway
+    /// evaluator turn wrote a 110 MB Notes value on
+    /// code-intelligence:CLEAN-CODE architecture.md before this cap existed.
+    /// 64 KB is far above any legitimate critique while keeping rows small.
+    /// </summary>
+    private const int MaxNotesChars = 64 * 1024;
+
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly TaskChannel? channel;
@@ -868,6 +905,24 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
+
+            // 2026-05-20 — cap the evaluator Notes before they are persisted
+            // (deliverables.Notes) AND fed back into the next iter's generator
+            // prompt. A runaway evaluator turn produced a 110 MB Notes value
+            // on code-intelligence:CLEAN-CODE architecture.md, which bloated
+            // the per-product DB, made the conversation / iter views
+            // unloadable, and re-entered the next prompt to balloon input cost
+            // exponentially. RunCopilotSdk's output ceiling prevents most of
+            // this upstream; this is the persistence-layer backstop.
+            if (lastScore.Notes is { Length: > MaxNotesChars } longNotes)
+            {
+                lastScore = lastScore with
+                {
+                    Notes = string.Concat(
+                        longNotes.AsSpan(0, MaxNotesChars),
+                        $"\n\n…[truncated {longNotes.Length - MaxNotesChars:N0} chars by Forge: evaluator notes exceeded the {MaxNotesChars:N0}-char cap]"),
+                };
+            }
             await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, eval.TurnSamplesJson, eval.CacheReadTokens, eval.CacheWriteTokens, eval.ReasoningTokens, eval.ConversationTokens, ct);
 
             // Phase 54 — compute per-iteration prompt-size growth deltas
