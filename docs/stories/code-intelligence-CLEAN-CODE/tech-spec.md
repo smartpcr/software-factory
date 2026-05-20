@@ -128,9 +128,9 @@ related:
 | C1 | .NET 8.0, Windows-only (`win-x64`) | `TargetFramework` is set solution-wide in `Directory.Build.props`; `RuntimeIdentifier: win-x64` is declared per-project in individual `.csproj` files (e.g., `EtlIterator.csproj`, `Forge.Api.csproj`). New assemblies must follow the same pattern. |
 | C2 | Must integrate with existing `Ast.Core.HypergraphData` as primary input | Existing code intelligence pipeline; no parallel parsing step |
 | C3 | Must reuse `ArchitectureMetricsCalculator` output where overlap exists | D7 decision in architecture.md; avoids duplicating coupling/cohesion logic |
-| C4 | Evaluator runs as CLI subprocess, not inside Forge agent loop | D2 decision in architecture.md; bounded latency for PR gates (<60s) |
+| C4 | Evaluator runs as CLI subprocess, not inside Forge agent loop | architecture.md section 10.2 (Evaluator Hosting); bounded latency for PR gates (<60s) |
 | C5 | SARIF as primary CI output format | Industry standard; integrates with GitHub Advanced Security, ADO, VS Code |
-| C6 | Baseline snapshots stored in `refs/notes/metrics/<branch>` | D1 storage decision; no extra branch clutter |
+| C6 | Baseline snapshots stored in `refs/notes/metrics/<branch>` | architecture.md section 10.1 (Baseline Storage); no extra branch clutter |
 | C7 | All new assemblies must follow existing project conventions | File headers, `this.` qualifier, `using` inside namespace, BDD tests |
 | C8 | CLI exit codes: 0 = pass, 1 = fail, 2 = warn-only | CI gate integration contract |
 | C9 | Incremental (diff) mode must re-analyze only changed files | PR feedback loop latency requirement |
