@@ -7,6 +7,7 @@
 namespace Forge.Api.Agents;
 
 using System.Diagnostics;
+using System.Text.Json;
 using Forge.Api.Auth;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Hosting;
@@ -40,6 +41,19 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     private readonly ILogger<CopilotServerManager> log;
     private readonly IAuthService? ghAuth;
     private readonly SemaphoreSlim startLock = new(1, 1);
+
+    /// <summary>
+    /// 2026-05-20 — disposal-cascade hysteresis. After a fast-path ping
+    /// fails on the shared <see cref="serverClient"/>, the lock-acquired
+    /// re-ping waits this long before its single retry. Anything below
+    /// ~100ms doesn't actually let a transient blip recover (it's the
+    /// same syscall arena); anything above ~1s delays legitimate restarts
+    /// noticeably under load. 250ms empirically rides the line — long
+    /// enough to absorb the JSON-RPC pressure / GC pause that triggered
+    /// the false-positive, short enough that a real server death only
+    /// adds a quarter-second to the restart-and-recover sequence.
+    /// </summary>
+    private const int PingRetryDelayMs = 250;
 
     private CopilotClient? serverClient;
     private Process? serverProcess;
@@ -162,9 +176,48 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
                 await this.serverClient.PingAsync("health", ct);
                 return;
             }
-            catch
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                this.log.LogWarning("Shared Copilot server ping failed, restarting");
+                throw;
+            }
+            catch (JsonException)
+            {
+                // 2026-05-20 — Copilot SDK 1.0.0-beta.x PingAsync protocol
+                // mismatch: the server returns the ping response's
+                // `timestamp` field as a JSON STRING but the SDK's
+                // deserializer demands System.Int64, so EVERY successful
+                // ping raises `JsonException("The JSON value could not be
+                // converted to System.Int64. Path: $.timestamp …")`. The
+                // round-trip completed — the SDK got a response back
+                // through the JSON-RPC transport — which means the server
+                // is alive and the connection is healthy. Treat parse
+                // failures as proof-of-life and skip the restart.
+                //
+                // Without this whitelist, every EnsureRunningAsync caller
+                // would unconditionally restart the (healthy) shared
+                // server; concurrent CopilotSession instances bound to
+                // the just-killed CopilotClient then hit
+                // ObjectDisposedException on their next SendAsync, burning
+                // one iter per workstream as a clustered "0 score" event.
+                // Observed 2026-05-20 on code-intelligence:CLEAN-CODE
+                // architecture.md iters 2/4/6/8/10 (every even iter
+                // failed; every odd iter succeeded because the prior even
+                // iter's restart left a freshly-started server).
+                return;
+            }
+            catch (Exception pingEx)
+            {
+                // 2026-05-20 — don't decide to restart here. A single ping
+                // blip (transient JSON-RPC pressure, brief pipe stall, GC
+                // pause on the SDK side) is not proof the server is dead.
+                // Fall through to the lock-acquired branch which now
+                // delay+retries before committing to DisposeServerInnerAsync;
+                // that centralizes the restart decision under startLock so
+                // concurrent callers can't independently tear down a healthy
+                // server. Log the first-strike type for diagnosis.
+                this.log.LogInformation(
+                    "Shared Copilot server ping failed once ({Ex}); will verify under lock.",
+                    pingEx.GetType().Name);
             }
         }
 
@@ -185,11 +238,82 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
                     await this.serverClient.PingAsync("health", ct);
                     return;
                 }
-                catch
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    // Server died — dispose and recreate. We're already
-                    // inside startLock, so call the lock-free inner.
-                    await this.DisposeServerInnerAsync();
+                    throw;
+                }
+                catch (JsonException)
+                {
+                    // 2026-05-20 — same SDK 1.0.0-beta.x PingAsync schema
+                    // mismatch as the fast path. The server replied; the
+                    // SDK just can't parse `timestamp`. Server is alive.
+                    return;
+                }
+                catch (Exception firstStrikeEx)
+                {
+                    // 2026-05-20 — disposal-cascade hysteresis. Pre-fix this
+                    // catch went straight to DisposeServerInnerAsync, which
+                    // killed the shared serverClient on a single back-to-back
+                    // ping pair (fast-path + this one, run essentially without
+                    // any time gap when the lock isn't contended). Every
+                    // in-flight CopilotSession across every concurrent
+                    // workstream — all bound to that disposed client — then
+                    // hit ObjectDisposedException on their next SendAsync,
+                    // burning one iter per workstream as a "0 score"
+                    // generator-inactive (transient → iterate) verdict
+                    // clustered around the same restart event.
+                    //
+                    // Fix: delay briefly and re-ping ONCE before declaring
+                    // the server dead. A real transient blip recovers inside
+                    // ~250ms; a genuinely dead server stays dead and the
+                    // second strike fires the dispose path with bounded
+                    // extra latency. We're inside startLock so concurrent
+                    // callers can't make independent restart decisions
+                    // during the delay window.
+                    try
+                    {
+                        await Task.Delay(PingRetryDelayMs, ct);
+                        var snapshot = this.serverClient;
+                        if (snapshot is not null)
+                        {
+                            await snapshot.PingAsync("health", ct);
+                            this.log.LogInformation(
+                                "Shared Copilot server ping recovered on retry after {Delay}ms; "
+                                + "suppressing restart (first strike was {Ex}).",
+                                PingRetryDelayMs, firstStrikeEx.GetType().Name);
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (JsonException)
+                    {
+                        // 2026-05-20 — SDK 1.0.0-beta.x ping-response
+                        // schema mismatch; round-trip succeeded so server
+                        // is alive (see fast-path comment above). The
+                        // first strike was something else (the catch
+                        // above caught a non-Json exception then we
+                        // landed here with a clean Json parse-failure),
+                        // which means the underlying transport recovered
+                        // within PingRetryDelayMs. Suppress restart.
+                        this.log.LogInformation(
+                            "Shared Copilot server ping recovered on retry after {Delay}ms "
+                            + "(retry hit known SDK timestamp-schema mismatch; server alive); "
+                            + "suppressing restart (first strike was {Ex}).",
+                            PingRetryDelayMs, firstStrikeEx.GetType().Name);
+                        return;
+                    }
+                    catch (Exception retryStrikeEx)
+                    {
+                        this.log.LogWarning(
+                            retryStrikeEx,
+                            "Shared Copilot server ping failed twice ({Delay}ms apart) — restarting. "
+                            + "First strike was {FirstEx}.",
+                            PingRetryDelayMs, firstStrikeEx.GetType().Name);
+                        await this.DisposeServerInnerAsync();
+                    }
                 }
             }
 
