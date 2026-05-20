@@ -374,6 +374,19 @@ public static class GeneratorFailureKinds
         {
             return Inactive;
         }
+        // 2026-05-20 — Copilot SDK JSON-RPC pipe drop surfaces as an
+        // IOException "The pipe is being closed" (or broken-pipe variants),
+        // often concurrent-dispatch collateral (a sibling invocation disposed
+        // the shared session). The channel died, not the work — classify as
+        // Inactive so the loop treats it as transient (verdict=iterate,
+        // auto-retry against a fresh pool entry) instead of falling through to
+        // Other → terminal stall.
+        if (error.Contains("pipe is being closed", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("pipe is broken", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
+        {
+            return Inactive;
+        }
         if (error.Contains(" exit=", StringComparison.OrdinalIgnoreCase))
         {
             return CliExit;
