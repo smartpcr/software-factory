@@ -55,8 +55,34 @@ public sealed class RealStoryGitOps : IStoryGitOps
         var (lsCode, lsOut, _) = await this.RunGitCaptureAsync(root, ct, "ls-remote", "--heads", "origin", branch);
         if (lsCode == 0 && !string.IsNullOrWhiteSpace(lsOut))
         {
-            await this.GitAsync(root, ct, "fetch", "origin", branch);
-            return;
+            // Capture (don't throw): ls-remote and this fetch are two separate
+            // round-trips, so the ref can vanish between them — an operator
+            // Restart deletes the remote branch, or a sibling PR merge
+            // auto-deletes it. Pre-fix, that fetch threw "couldn't find remote
+            // ref" and the exception bubbled to TickOneSpawnAsync, halting the
+            // ENTIRE spawn (ORCHESTRATOR HALTED) on a transient race. Now: if
+            // the fetch fails because the ref is gone, fall through to the
+            // push-create path below and re-create the branch from base.
+            var (fetchCode, _, fetchErr) = await this.RunGitCaptureAsync(root, ct, "fetch", "origin", branch);
+            if (fetchCode == 0)
+            {
+                return;
+            }
+
+            var refMissing = (fetchErr ?? string.Empty)
+                .Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase);
+            if (!refMissing)
+            {
+                throw new InvalidOperationException(
+                    $"git fetch origin {branch} failed (exit {fetchCode}) in '{root}'.\nstderr: {fetchErr}");
+            }
+
+            this.logger?.LogInformation(
+                "EnsureBranchAsync: ls-remote saw {Branch} but the fetch missed it "
+                + "(ref deleted mid-flight — Restart or sibling-merge auto-delete); "
+                + "re-creating from {Base}.",
+                branch, baseBranch);
+            // fall through to the push-from-base recreate path
         }
 
         // Phase 49 follow-up — push the new branch ref to origin WITHOUT
@@ -236,6 +262,21 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Return the head sha of the branch.
         var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
         return shaCode == 0 ? shaOut.Trim() : string.Empty;
+    }
+
+    public async Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        // Refresh both refs from origin — CommitFilesAsync / MergeUpstreamIntoBranchAsync
+        // already pushed the branch, so origin reflects the committed state.
+        await this.RunGitCaptureAsync(root, ct, "fetch", "origin", baseBranch, branch);
+        // `git diff --quiet A...B` exits 0 when there is NO diff from the
+        // merge-base of A,B to B, and 1 when there IS a diff. Any other code
+        // (e.g. 128 for a missing ref) is treated as "assume changes" so a
+        // transient failure never suppresses a legitimate PR.
+        var (code, _, _) = await this.RunGitCaptureAsync(
+            root, ct, "diff", "--quiet", $"origin/{baseBranch}...origin/{branch}");
+        return code != 0;
     }
 
     public async Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default)

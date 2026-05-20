@@ -162,6 +162,10 @@ swarm-control `--sc-*` palette P28).
 - `/prs` `<PrBoard/>`/`<PrCard/>`/`<PrDetailPanel/>` — Phase 4, comment list P24, build chip P27.
 - `/products`, `/settings`, `/crews` (`CrewsView.tsx` ~2,100 lines), `/work-items`, `/inbox`
   (`InboxView.tsx` P17), `/work-items/{id}/live` (`LiveExecutionView.tsx` P16).
+- Swarm stage numbering: `swarm/stageNumbering.ts` (`computeStageNumbers`) is the single source
+  used by **both** `SwarmMasterPanel` (phase board) and `SwarmDetailPanel` (DAG/right pane) so their
+  `{phase}.{stage}` labels match. qa-e2e rows are labelled `{implNum}-e2e` and **don't consume a
+  stage slot** (fixes the `1.1 → 1.1-e2e → 1.3` gap). Pairing helper: `swarm/qaE2eSelector.ts`.
 - `useTaskLiveStore` / `useTaskLive(workItemId)` *(P16.13)* — ref-counted attach to `task.{wid}`.
 - `useQueueStore` / `useQueueChannel` *(P17.9)*, `useSpawnStore` *(P28)*, `useCurrentUserStore` *(P9)*.
 
@@ -520,6 +524,14 @@ one branch + worktree + PR each; doc N+1 waits for doc N's PR merged AND verdict
 `StorySpawnRow.PlanDocPrsJson` discriminates new (`DrivePlanSequentialAsync`) vs legacy
 (`DrivePlanLegacyAsync`, `null`). `PlanDocStateHelpers.PlanDocOrder` is the canonical order.
 Multiple plan docs run with **distinct evaluators** (P47).
+
+**Dependencies (P46 + e2e gate):** `DecompositionDepsResolver.ResolveAll` projects per-stage +
+per-phase deps into title-space; **both** `ProduceDecompositionAsync` and `PlanReconciler` consume
+it (the reconciler re-derives `DepsJson` every tick, so any dep transform must live in the resolver
+or it'll fight the orchestrator). Operator gate `Forge:Stories:GateImplOnPriorStageE2e` (**default
+on**, `DecompositionDepsResolver.GateImplDepsOnPriorStageE2e`) rewrites an impl dep `D` → `"D — E2E"`
+when `D` has a qa-e2e companion, so a stage waits for the prior stage's impl **and** e2e (not just
+its impl PR). Off = legacy parallel behaviour. See `docs/forge/e2e.md` §2.1.
 
 **Plan layout v2 (P46):** `implementation-plan.md` uses H1=Phase / H2=Stage / H3=subsection +
 YAML front-matter; per-stage + per-phase `### Dependencies`; two-level deps (phase deps expand to a

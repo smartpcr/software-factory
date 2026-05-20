@@ -79,6 +79,40 @@ to run) is supported by extending `Deps` on the `S-e2e` workstream to include
 both impl workstreams. The decomposition path (§4) describes how this maps
 back to the plan.
 
+### 2.1 Gating impl on the prior stage's e2e (operator option, default on)
+
+> Follow-up (2026-05-20). By the model above, `S3 deps on S2` means S3 waits
+> for **S2's impl PR** — `S2-e2e` runs *in parallel* with S3 and only gates
+> *story completion*, not the next stage. Operators who want a stage to wait
+> until the prior stage's tests are **green** before building on it enable
+> the gate `Forge:Stories:GateImplOnPriorStageE2e` (**default `true`**).
+
+When on, the dependency resolver rewrites every IMPL-stage dep `D` →
+`"D — E2E"` whenever stage `D` mints a trailing qa-e2e companion (i.e. `D`
+declares `### Test Scenarios`). Because `D-e2e` already deps on `impl(D)`, the
+chain becomes `impl(S) → D-e2e → impl(D)` — S now waits for D's impl **and**
+e2e. Deps on a stage with no scenarios (no e2e companion) are left as the bare
+impl title. `### Cross-Stage Dependencies` (qa-e2e → upstream impl) are
+untouched. Acyclicity holds (the rewrite only routes an edge through the
+strict trailer of its impl).
+
+The rewrite is `DecompositionDepsResolver.GateImplDepsOnPriorStageE2e`, applied
+by **both** `CrewStoryArtifactStrategy.ProduceDecompositionAsync` and
+`PlanReconciler.ReconcileAsync` — both must apply it or the reconciler would
+re-derive un-gated `DepsJson` and fight the orchestrator. Setting the flag
+`false` restores the legacy parallel behaviour.
+
+The dependency the DAG + claim sweep read is the `WorkstreamDep` FK edge table,
+which is a **union** of those edges and each row's `DepsJson` (`GetSpawn`). So
+the gate applies to **existing** spawns too, not just new ones: `PlanReconciler`
+re-derives the gated `DepsJson` AND then rebuilds the FK edge table
+**authoritatively** via `StorySpawnOrchestrator.SyncWorkstreamDepsFromJsonAsync`
+(adds the e2e edge, drops the stale impl edge — no longer additive-only).
+`DriveImplementAsync` runs the same rebuild each implement tick. An existing
+spawn therefore fully re-gates on its next reconcile — including a manual
+`POST /api/stories/{id}/spawn/reconcile` — which re-blocks any downstream stage
+whose prior stage's e2e hasn't passed yet.
+
 ---
 
 ## 3. Updated lifecycle

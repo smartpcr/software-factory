@@ -851,7 +851,15 @@ public static class WorkstreamsEndpoints
 
             // Refresh DescriptionMd from the current story description
             // so restarted tasks pick up any updates the user made.
-            if (!string.IsNullOrEmpty(ws.StorySpawnId))
+            //
+            // qa-e2e rows are exempt: their DescriptionMd carries the
+            // per-stage `## Test Scenarios` block that the qa-e2e producer
+            // (CrewStoryArtifactStrategy.ReadQaE2eTestScenariosAsync) parses
+            // to know which scenarios to implement. Overwriting it with the
+            // story description strips that block and re-stalls the row with
+            // "zero acceptance test scenarios". Leave it intact.
+            if (!string.IsNullOrEmpty(ws.StorySpawnId)
+                && !string.Equals(ws.Category, Forge.Api.Services.Stories.WorkstreamCategories.QaE2e, StringComparison.Ordinal))
             {
                 var spawnForDesc = await db.StorySpawns.AsNoTracking()
                     .FirstOrDefaultAsync(s => s.Id == ws.StorySpawnId);

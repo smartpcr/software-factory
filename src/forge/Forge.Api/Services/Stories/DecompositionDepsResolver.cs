@@ -56,6 +56,81 @@ internal static class DecompositionDepsResolver
         IReadOnlyList<string>? CrossStageE2eDeps = null);
 
     /// <summary>
+    /// Suffix appended to a stage title to name its trailing qa-e2e
+    /// companion workstream. Mirrors the literal used by
+    /// <c>CrewStoryArtifactStrategy.BuildDecompositionFromPlan</c> and
+    /// <c>PlanReconciler</c> when minting qa-e2e rows; the title→id resolver
+    /// (<c>PersistDecompositionAsync</c>) uses this exact string to route a
+    /// rewritten dep onto the qa-e2e <see cref="WorkstreamRow"/>'s id.
+    /// </summary>
+    public const string QaE2eTitleSuffix = " — E2E";
+
+    /// <summary>
+    /// docs/forge/e2e.md — operator-gated dependency rewrite
+    /// (<c>Forge:Stories:GateImplOnPriorStageE2e</c>). For every IMPL-stage
+    /// dependency on an upstream stage that mints a trailing qa-e2e companion
+    /// (i.e. the upstream stage declares <c>### Test Scenarios</c>), rewrite
+    /// the dep title <c>D</c> → <c>"{D} — E2E"</c>. Because the qa-e2e row
+    /// already deps on its impl sibling, the dependent stage now waits for
+    /// the upstream stage's impl AND its e2e to be green — not just the
+    /// upstream impl PR.
+    ///
+    /// <para>Flag on (default): a stage cannot start until the prior stage it
+    /// depends on has passed its e2e. Off: the legacy parallel behaviour
+    /// where e2e trails and gates only story completion (Phase 58).</para>
+    ///
+    /// <para><see cref="ResolvedStageDeps.CrossStageE2eDeps"/> is left
+    /// untouched — those edges point a qa-e2e row at upstream IMPL stages by
+    /// design; rewriting them would make a qa-e2e depend on another qa-e2e.
+    /// Acyclicity is preserved: each rewritten edge routes through the qa-e2e
+    /// node (a strict trailer of its impl), so the stage-level DAG stays a
+    /// DAG. Both the orchestrator (<c>ProduceDecompositionAsync</c>) and the
+    /// <c>PlanReconciler</c> apply this post-pass so persisted
+    /// <c>DepsJson</c> stays in lockstep — otherwise the reconciler would
+    /// re-derive un-gated deps and fight the orchestrator.</para>
+    /// </summary>
+    public static IReadOnlyDictionary<string, ResolvedStageDeps> GateImplDepsOnPriorStageE2e(
+        PlanParser.CanonicalPlan plan,
+        IReadOnlyDictionary<string, ResolvedStageDeps> resolved)
+    {
+        // Titles of stages that mint a qa-e2e companion (≥1 test scenario).
+        var hasE2e = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in plan.AllStages())
+        {
+            if (s.TestScenarios.Count > 0)
+            {
+                hasE2e.Add(s.Name);
+            }
+        }
+
+        if (hasE2e.Count == 0)
+        {
+            return resolved; // no e2e companions exist — nothing to gate on.
+        }
+
+        var rewritten = new Dictionary<string, ResolvedStageDeps>(resolved.Count, StringComparer.Ordinal);
+        foreach (var kvp in resolved)
+        {
+            var rd = kvp.Value;
+            if (rd.Deps.Count == 0)
+            {
+                rewritten[kvp.Key] = rd;
+                continue;
+            }
+
+            var newDeps = new List<string>(rd.Deps.Count);
+            foreach (var d in rd.Deps)
+            {
+                newDeps.Add(hasE2e.Contains(d) ? d + QaE2eTitleSuffix : d);
+            }
+
+            rewritten[kvp.Key] = rd with { Deps = newDeps };
+        }
+
+        return rewritten;
+    }
+
+    /// <summary>
     /// Resolve and phase-expand the deps for every stage in the parsed plan.
     /// Result keyed by stage anchor.
     /// </summary>

@@ -310,6 +310,33 @@ public sealed class NoProgressException : Exception
 }
 
 /// <summary>
+/// Thrown by <c>StorySpawnOrchestrator.ApproveAndMergeAsync</c> when the PR's
+/// branch carries no diff vs its base — merging it would land nothing and
+/// falsely mark the stage "done with tests". Observed on
+/// <c>local:REFACTOR-INTEGRATION</c> 2026-05-20: qa-e2e PRs opened before the
+/// open-side empty-PR guard existed got auto-merged empty, marking stages
+/// complete with zero e2e artifacts. The merge caller catches this distinctly
+/// from a merge conflict (which routes to the resolver) and stalls the
+/// workstream with a clear reason instead.
+/// </summary>
+public sealed class EmptyPrMergeRefusedException : Exception
+{
+    public EmptyPrMergeRefusedException(string prId, string branch, string baseBranch)
+        : base($"Refused to merge PR {prId}: branch '{branch}' has no diff vs '{baseBranch}'.")
+    {
+        this.PrId = prId;
+        this.Branch = branch;
+        this.BaseBranch = baseBranch;
+    }
+
+    public string PrId { get; }
+
+    public string Branch { get; }
+
+    public string BaseBranch { get; }
+}
+
+/// <summary>
 /// Phase 47e — thrown when the workstream's worktree fails its build gate.
 /// Routed by the orchestrator to <c>Status="stalled"</c> (Phase 49 split —
 /// was <c>"blocked"</c> before) on the same path as

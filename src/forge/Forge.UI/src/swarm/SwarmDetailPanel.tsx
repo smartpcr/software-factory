@@ -10,6 +10,7 @@ import { isBuildEvent } from '@/prs/prBuildEvents';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
+import { computeStageNumbers } from './stageNumbering';
 import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
@@ -1929,21 +1930,13 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
     return () => ro.disconnect();
   }, []);
 
-  // Compute a `phaseNum.stageNum` label for every workstream so the
-  // cross-phase dep chips read like "1.2", "3.4" — the same numbering
-  // the operator sees in implementation-plan.md (Stage N.M). Phase index
-  // matches the order of `groups` (which mirrors the spawn's Sort order,
-  // which mirrors the plan's `# Phase 1`, `# Phase 2` order). Stage index
-  // is the row's position within its phase, also Sort-ordered.
-  const stageNumOf = useMemo(() => {
-    const m = new Map<string, string>();
-    groups.forEach((g, gi) => {
-      g.items.forEach((w, si) => {
-        m.set(w.id, `${gi + 1}.${si + 1}`);
-      });
-    });
-    return m;
-  }, [groups]);
+  // `phaseNum.stageNum` label for every workstream so the cross-phase dep
+  // chips read like "1.2", "3.4" — the same numbering the operator sees in
+  // implementation-plan.md (Stage N.M). Shared with the phase board
+  // (SwarmMasterPanel) via `computeStageNumbers`; qa-e2e rows are labelled
+  // `{implNum}-e2e` and do not consume a stage slot (docs/forge/e2e.md
+  // Stage 8.1 — fixes the `1.1 → 1.1-e2e → 1.3` gap).
+  const stageNumOf = useMemo(() => computeStageNumbers(ws), [ws]);
 
   // docs/forge/e2e.md Stage 8.2 — pre-compute the impl-sibling id for
   // every qa-e2e workstream so the arrow router can pick the
