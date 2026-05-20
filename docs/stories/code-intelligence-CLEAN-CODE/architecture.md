@@ -211,7 +211,7 @@ Metrics are grouped into six categories aligned with the story goals.
 | `coupling.efferent` | Efferent Coupling (Ce) | Class/Namespace | Outgoing dependencies count. | <= 15 |
 | `coupling.instability` | Instability (I) | Namespace | Ce / (Ca + Ce). Balanced is good. | 0.3 - 0.7 |
 | `coupling.abstractness` | Abstractness (A) | Namespace | Abstract types / total types. | 0.2 - 0.8 |
-| `coupling.distance` | Distance from Main Seq. | Namespace | |A + I - 1|. Lower is better. | <= 0.3 |
+| `coupling.distance` | Distance from Main Seq. | Namespace | abs(A + I - 1). Lower is better. | <= 0.3 |
 | `coupling.cross_repo_depth` | Cross-Repo Dep. Depth | System | Longest chain of repo-to-repo references. | <= 3 |
 
 #### Category: Cohesion
@@ -276,6 +276,23 @@ public record MetricContext
     public IGraphStore? GraphStore { get; init; }
     public Workspace? RoslynWorkspace { get; init; }
     public required MetricConfiguration Config { get; init; }
+}
+```
+
+`MetricConfiguration` maps to the `.cleancode.yaml` schema (section 7) and controls
+which metrics are computed and their thresholds:
+
+```csharp
+public record MetricConfiguration
+{
+    public required string PolicyId { get; init; }
+    public IReadOnlyList<string> ExcludePatterns { get; init; } = [];
+    public bool IncludeTests { get; init; } = false;
+    public IReadOnlyList<string> Languages { get; init; } = ["csharp"];
+    public IReadOnlyDictionary<string, MetricThreshold> ThresholdOverrides { get; init; }
+        = new Dictionary<string, MetricThreshold>();
+    public string BaselineBranch { get; init; } = "main";
+    public IReadOnlyList<string> ReportFormats { get; init; } = ["sarif"];
 }
 ```
 
@@ -426,6 +443,19 @@ public interface IReportRenderer
 
 Implementations: `SarifRenderer`, `DashboardExporter`, `MarkdownRenderer`.
 
+`RenderOptions` controls output formatting:
+
+```csharp
+public record RenderOptions
+{
+    public string? OutputPath { get; init; }
+    public bool IncludePassingMetrics { get; init; } = false;
+    public int MaxViolationsPerFile { get; init; } = 50;
+    public bool IncludeRemediationHints { get; init; } = true;
+    public string? DashboardSchemaVersion { get; init; }
+}
+```
+
 ### 4.8 Cross-Repo Query Interface (extends Ast.GraphDb)
 
 ```csharp
@@ -477,17 +507,20 @@ Command: ast-cli metrics --repo . --output report.sarif
 Actor: CI Pipeline / Evaluator Agent
 
 1. CI triggers on PR create/update.
-2. Evaluator agent invokes: ast-cli metrics --repo . --diff HEAD~1
+2. CI invokes: ast-cli metrics --repo . --diff HEAD~1
    (incremental mode: only re-analyzes changed files).
-3. MetricsCommand loads prior MetricSnapshot from baseline (main branch).
+3. MetricsCommand loads prior MetricSnapshot from baseline via git notes.
 4. DeltaCalculator computes per-metric diff (new value vs. baseline).
-5. EvaluatorContract receives delta-enriched snapshot + policy (from repo config).
-6. Evaluator prompt evaluates:
+5. MetricsCommand writes snapshot to disk (e.g., .metrics/current.json).
+6. CI invokes: ast-cli evaluate --snapshot .metrics/current.json --policy .cleancode.yaml
+   (standalone subprocess per section 10.2).
+7. EvaluatorContract loads snapshot + policy, calls LLM endpoint for judgment.
+8. Evaluator prompt evaluates:
    - Any metric crossing from pass to warn/fail -> flag.
    - Net regression > 5% in composite score -> block.
-7. EvaluationVerdict returned with Violations list.
-8. CI posts violations as PR comments (SARIF integration).
-9. If verdict.Outcome == Fail, CI marks check as failed.
+9. EvaluationVerdict returned with Violations list.
+10. CI posts violations as PR comments (SARIF integration).
+11. If verdict.Outcome == Fail, CI marks check as failed.
 ```
 
 ### 5.3 Scenario: Cross-Repo System Measurement
