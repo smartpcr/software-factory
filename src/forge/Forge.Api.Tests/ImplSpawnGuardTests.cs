@@ -204,6 +204,134 @@ public sealed class ImplSpawnGuardTests
     }
 
     [Fact]
+    public async Task Phase75_HardCeilingExceeded_LiveInvocation_OverridesPhase64RefusalAndFlagsForCleanup()
+    {
+        // 2026-05-19 — Phase 75: hard-ceiling override. For wsPoints=13:
+        // BudgetForPhase("impl") = max(180s, 13*60s) * 3 = 2340s = 39 min;
+        // guardSeconds = max(480s, 2340+120) = 2460s = 41 min; hard
+        // ceiling = 4 × 2460 = 9840s ≈ 164 min. A spawn-started 180 min
+        // ago is comfortably past the hard ceiling. Even with
+        // isInvocationActive=true (the same "dispatcher still alive"
+        // claim that Phase 64 used to refuse a recovery spawn), the
+        // guard must release for recovery and flag the result for the
+        // orchestrator's cleanup path (cancel wedged invocation + emit
+        // synthetic spawn-finished:HardCeilingTimeout before the new
+        // spawn-started fires).
+        //
+        // Reproduces the stuck state observed 2026-05-19 on
+        // code-intelligence:AGENT-MEMORY load-test-calibration: spawn
+        // at 18:49, last tool event at 18:51, then 5h+ silence with no
+        // spawn-finished while the dispatcher's active map still listed
+        // the invocation. The orchestrator skipped every tick because
+        // pre-Phase-75 the Phase 64 refusal had no time bound.
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-180));
+
+            Func<string, bool> liveInvocation = _ => true;
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: liveInvocation);
+
+            Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
+            Assert.True(r.WedgedSpawnHardCeilingExceeded,
+                "expected WedgedSpawnHardCeilingExceeded=true so the orchestrator runs the cancel+synthetic-finish cleanup before respawning");
+            Assert.Contains("hard ceiling", r.Reason);
+            Assert.Contains("wedged runner", r.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task Phase75_BelowHardCeiling_LiveInvocation_StillSkipsAsInFlight()
+    {
+        // Defensive: an elapsed time between guardSeconds and
+        // hardCeilingSeconds must still hit the existing Phase 64
+        // SkipInFlight refusal. The hard-ceiling override is the
+        // LAST-resort safety net; legitimate slow invocations (e.g. a
+        // long SDK shutdown after the wall-clock budget elapsed) should
+        // not trip it. For wsPoints=13 → guard ≈ 41 min, ceiling ≈ 164
+        // min; a 50-min-old spawn is past the guard but well under the
+        // ceiling — Phase 64 still wins.
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-50));
+
+            Func<string, bool> liveInvocation = _ => true;
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: liveInvocation);
+
+            Assert.Equal(ImplSpawnGuard.Decision.SkipInFlight, r.Outcome);
+            Assert.False(r.WedgedSpawnHardCeilingExceeded,
+                "hard-ceiling override must NOT fire when elapsed is below ceilingSeconds");
+        }
+    }
+
+    [Fact]
+    public async Task Phase75_HardCeilingExceeded_DeadInvocation_FlagsAreNotSet_Phase71RecoveryWinsFirst()
+    {
+        // When the dispatcher reports invocation NOT alive, Phase 71's
+        // fast-recovery branch runs BEFORE the hard-ceiling check (in
+        // the elapsed < guardSeconds clause). For a 180-min-elapsed
+        // spawn the elapsed-time clauses below it would also fire, but
+        // the Phase 71 branch returns Allow first with reason text
+        // about "NOT alive" — the result must NOT carry the
+        // WedgedSpawnHardCeilingExceeded flag because there's no wedged
+        // invocation to clean up.
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-180));
+
+            Func<string, bool> deadInvocation = _ => false;
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: deadInvocation);
+
+            Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
+            Assert.False(r.WedgedSpawnHardCeilingExceeded,
+                "no cleanup is required when the dispatcher already reports the invocation as dead");
+            Assert.Contains("NOT alive", r.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task Phase75_HardCeilingExceeded_NullIsActive_NoWedgedFlag()
+    {
+        // Back-compat: legacy callers that pass isInvocationActive=null
+        // fall through to the existing "Allow, overran guard" path even
+        // when elapsed exceeds the hard ceiling. The flag is only set
+        // when the dispatcher actively claims the invocation is alive
+        // — that's the false-positive the hard-ceiling overrides.
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddMinutes(-180));
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 13,
+                now: now, ct: default, isInvocationActive: null);
+
+            Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
+            Assert.False(r.WedgedSpawnHardCeilingExceeded);
+            Assert.Contains("overran", r.Reason);
+        }
+    }
+
+    [Fact]
     public async Task GuardWindowScalesWithBudget_LargeWsHasLongerWindow()
     {
         // For a 10-point workstream, BudgetForPhase("impl") = 10 * 60s * 2 =

@@ -115,11 +115,33 @@ internal static class ImplSpawnGuard
     /// <c>SloppyReassignmentReconciler</c>: set ExecutionStatus=pending-reassign,
     /// append the current pair to PriorPairsJson, skip this tick.
     /// </param>
+    /// <param name="WedgedSpawnHardCeilingExceeded">
+    /// 2026-05-19 — Phase 75: true when the in-flight branch released
+    /// because elapsed time has exceeded
+    /// <c>guardSeconds × <see cref="SyncConstants.InflightSpawnHardCeilingMultiplier"/></c>
+    /// AND the dispatcher's <c>isInvocationActive</c> delegate still
+    /// reports the invocation as live. The orchestrator must, BEFORE
+    /// proceeding with the new spawn:
+    /// <list type="number">
+    ///   <item>Call <c>IAgentRunner.CancelByTaskAsync(workstreamId)</c>
+    ///   to cancel the wedged invocation (if it's still tracked in the
+    ///   dispatcher's <c>active</c> map; cancellation is best-effort).</item>
+    ///   <item>Emit a synthetic
+    ///   <c>task.impl.spawn-finished {success:false,
+    ///   exceptionType:"HardCeilingTimeout"}</c> so the guard's NEXT
+    ///   tick sees a closed lifecycle and the failure backoff path
+    ///   takes over (rather than re-classifying the immediate retry as
+    ///   another in-flight spawn).</item>
+    /// </list>
+    /// Outcome is <see cref="Decision.Allow"/> in this case; the flag is
+    /// the cleanup signal, not the gate.
+    /// </param>
     public sealed record Result(
         Decision Outcome,
         string Reason,
         int ConsecutiveNoProgress = 0,
-        bool ShouldTriggerReassign = false);
+        bool ShouldTriggerReassign = false,
+        bool WedgedSpawnHardCeilingExceeded = false);
 
     /// <summary>
     /// Decide whether a fresh impl spawn is allowed for <paramref name="workstreamId"/>.
@@ -227,6 +249,38 @@ internal static class ImplSpawnGuard
             // few more minutes to finish (or its own wall-clock will
             // kill it shortly anyway), and we save the double-token
             // burn of a parallel agent on the same iter.
+            //
+            // 2026-05-19 — Phase 75: hard ceiling overrides the Phase 64
+            // refusal. The "isInvocationActive=true → refuse concurrent
+            // spawn" rule only holds if the dispatcher's active-flag is
+            // a trustworthy indicator that the invocation is making
+            // progress. When elapsed time has exceeded N× the guard
+            // window (≈ 4× max(8min, budget+slack)), something is
+            // structurally wedged in the dispatcher (inactivity watchdog
+            // didn't fire on unmatched SDK events, SDK SendAsync hung,
+            // consumer await foreach blocked) — the active-flag is now a
+            // false-positive that's pinning the workstream to silent
+            // forever. Force a recovery spawn and signal the orchestrator
+            // to cancel the wedged invocation + emit a synthetic
+            // spawn-finished:false before the new spawn-started lands.
+            // Without this branch the workstream sits status=active with
+            // no events for hours (observed 2026-05-19 on
+            // code-intelligence:AGENT-MEMORY load-test-calibration: 5h+
+            // dead silence after spawn-started, no spawn-finished, the
+            // orchestrator skipped every tick).
+            var hardCeilingSeconds = guardSeconds * SyncConstants.InflightSpawnHardCeilingMultiplier;
+            if (elapsed >= hardCeilingSeconds
+                && isInvocationActive is not null
+                && isInvocationActive(workstreamId))
+            {
+                return new Result(
+                    Decision.Allow,
+                    $"hard ceiling exceeded: in-flight {elapsed:0}s >= {hardCeilingSeconds:0}s "
+                    + $"({SyncConstants.InflightSpawnHardCeilingMultiplier}× guard window {guardSeconds:0}s); "
+                    + "dispatcher still reports invocation alive — forcing recovery (wedged runner suspected)",
+                    WedgedSpawnHardCeilingExceeded: true);
+            }
+
             if (isInvocationActive is not null && isInvocationActive(workstreamId))
             {
                 return new Result(

@@ -1220,6 +1220,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         PooledCopilotEntry? pooledEntry = null;
         var pooledLockAcquired = false;
 
+        // 2026-05-19 — Phase 75: tracks whether session.SendAsync threw a
+        // transport-level error (IOException / Win32Exception). When true,
+        // the finally below force-disposes the pool entry so the same
+        // gen-eval loop's NEXT iter creates a fresh client+session rather
+        // than inheriting the dead transport on a cached entry and burning
+        // another $300+ iter hitting the exact same JSON-RPC failure.
+        var transportFailedSendAsync = false;
+
         CopilotSession? session = null;
         IDisposable? subscription = null;
         CopilotClient? client = null;
@@ -1355,10 +1363,26 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
             subscription = session!.On(evt =>
             {
-                // Reset the inactivity watchdog before any per-event work.
-                // Any callback invocation — even an event we don't surface —
-                // is proof the transport is alive.
-                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
+                // 2026-05-19 — Phase 75: refresh the inactivity watchdog ONLY
+                // on observable-progress events (the per-case Interlocked
+                // updates below). Previously every callback unconditionally
+                // refreshed `lastEventTicks` at the top of this handler on
+                // the assumption "any callback proves the transport is
+                // alive". That assumption holds for transport health but
+                // misses operational health: the Copilot SDK occasionally
+                // emits event types this switch doesn't match (permission
+                // requests, lifecycle/heartbeat, future shapes) — those
+                // silently refreshed the watchdog without delivering any
+                // visible output to the consumer. Symptom (2026-05-19 on
+                // code-intelligence:AGENT-MEMORY load-test-calibration iter
+                // ~12): spawn-started at 18:49, last tool call at 18:51,
+                // then 5h+ dead silence with no spawn-finished — the
+                // watchdog never fired because the SDK was still
+                // delivering unmatched callbacks while the consumer queue
+                // stayed empty. Now: only matched cases that deliver
+                // progress refresh the watchdog; unmatched events fall
+                // through the default and the watchdog ticks normally
+                // toward inactivityWindow.
                 try
                 {
                     switch (evt)
@@ -1367,6 +1391,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             var chunk = delta.Data.DeltaContent;
                             if (!string.IsNullOrEmpty(chunk))
                             {
+                                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                                 contentBuilder.Append(chunk);
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: chunk));
                             }
@@ -1376,12 +1401,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             var content = msg.Data.Content;
                             if (!string.IsNullOrEmpty(content))
                             {
+                                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                                 contentBuilder.Append(content);
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: content));
                             }
                             break;
 
                         case ToolExecutionStartEvent tStart:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             // Phase 64 — stamp per-tool-call watchdog state so
                             // the inactivity timer below can distinguish a
                             // legitimate long tool call from a stuck one.
@@ -1407,6 +1434,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case ToolExecutionCompleteEvent tEnd:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             // Phase 64 — clear the per-tool watchdog stamp now
                             // that the tool returned.
                             Interlocked.Exchange(ref lastToolStartTicks, 0);
@@ -1446,6 +1474,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case AssistantUsageEvent usage:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             // SDK exposes usage as double? — cast to long.
                             inputTokens += (long)(usage.Data.InputTokens ?? 0);
                             outputTokens += (long)(usage.Data.OutputTokens ?? 0);
@@ -1460,6 +1489,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case SessionUsageInfoEvent sessUsage:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             // 2026-05-16 — Phase 72: snapshot of the live
                             // SDK session's full context size after the
                             // model processed this turn. Latest wins —
@@ -1475,10 +1505,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case SessionIdleEvent:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             done.TrySetResult();
                             break;
 
                         case SessionErrorEvent err:
+                            Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                             failReason = $"Copilot session error: {err.Data?.Message ?? "(no details)"}";
                             this.log.LogWarning("Copilot SDK SessionErrorEvent: {Msg}", err.Data?.Message);
                             done.TrySetResult();
@@ -1491,7 +1523,43 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 }
             });
 
-            await session.SendAsync(new MessageOptions { Prompt = prompt }, effectiveCt);
+            // 2026-05-19 — Phase 75: surface SendAsync transport failures
+            // as a typed Failed event rather than propagating IOException
+            // up to StorySpawnOrchestrator's outer catch. Before this fix
+            // (observed on code-intelligence:AGENT-MEMORY load-test-
+            // calibration), every transport drop produced
+            // `task.impl.spawn-finished {success:false,
+            // exceptionType:"System.IO.IOException"}` with a stack-trace
+            // payload; the orchestrator's Phase 51 failure backoff retried
+            // every 90s but each retry burned $300+ on a fresh iter that
+            // hit the same crash. Now the catch sets failReason so the
+            // existing `if (failReason is not null)` arm below yields a
+            // BuildFailedWithUsage event with a message that
+            // `GeneratorFailureKinds.Classify` maps to <c>Inactive</c>
+            // (transient → verdict=iterate, DeliverableLoop short-
+            // circuits the evaluator and the next iter starts cleanly
+            // against a freshly-disposed pool entry).
+            //
+            // Cancellation pass-through: when the budget elapsed,
+            // effectiveCt.IsCancellationRequested is true and the SDK
+            // throws OperationCanceledException, which the guard below
+            // explicitly excludes so the normal timed-out path runs.
+            try
+            {
+                await session.SendAsync(new MessageOptions { Prompt = prompt }, effectiveCt);
+            }
+            catch (Exception sendEx) when (!effectiveCt.IsCancellationRequested
+                && sendEx is not OperationCanceledException
+                && IsProcessLaunchError(sendEx))
+            {
+                var firstLine = sendEx.Message?.Split('\n', 2)[0]?.Trim() ?? sendEx.GetType().Name;
+                this.log.LogWarning(sendEx,
+                    "Copilot SDK SendAsync transport failure (chars={Chars}); surfacing as transient generator failure",
+                    contentBuilder.Length);
+                failReason = $"Copilot SDK transport died at SendAsync: {firstLine}";
+                transportFailedSendAsync = true;
+                done.TrySetResult();
+            }
 
             // Drain the channel while the session pumps events. Exit when the
             // SDK signals idle/error, cancellation fires, or the wall-clock
@@ -1609,6 +1677,47 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                         this.log.LogWarning(ex,
                             "CopilotSessionPool: SendLock release threw for ({Task}, {Agent}).",
                             taskId, agentId);
+                    }
+                }
+
+                // 2026-05-19 — Phase 75: when SendAsync threw a transport-
+                // level error, the cached pool entry's CopilotClient is
+                // bound to a dead JSON-RPC connection. Force-dispose the
+                // entry (after releasing SendLock so we don't dispose the
+                // semaphore while still holding it) so the NEXT iter
+                // within the same gen-eval loop allocates a fresh
+                // client+session via the pool factory. Without this, every
+                // subsequent iter in the loop's body would inherit the
+                // dead transport and immediately re-throw the same
+                // IOException at line ~1526, burning a full iter's budget
+                // each time. The outer gen-eval `finally` already disposes
+                // the pool on terminal verdict; this is the in-loop
+                // invalidation that path doesn't cover.
+                //
+                // Same treatment for the inactivity-watchdog and stuck-
+                // tool-watchdog paths: a transport that's been silent for
+                // 10+ minutes is presumed dead (Fix 1 means the watchdog
+                // only fires after no progress events at all — usage,
+                // tokens, tool boundaries — for the full window, which is
+                // a stronger signal of transport death than the old
+                // "any callback proves transport alive" assumption). The
+                // stuck-tool watchdog kills the session while a tool call
+                // is unresolved; the SDK state on the entry is invalid
+                // for reuse.
+                if (transportFailedSendAsync || wasInactive || wasStuckOnTool)
+                {
+                    try
+                    {
+                        var disposed = await this.copilotPool.DisposeForWorkItemForceAsync(taskId, CancellationToken.None);
+                        this.log.LogInformation(
+                            "CopilotSessionPool: force-disposed {Count} entry/entries for {Task} after watchdog/transport event (sendAsync={SendFail}, inactive={Inactive}, stuckTool={Stuck}).",
+                            disposed, taskId, transportFailedSendAsync, wasInactive, wasStuckOnTool);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.log.LogWarning(ex,
+                            "CopilotSessionPool: force-dispose threw for {Task}; next iter may inherit dead transport.",
+                            taskId);
                     }
                 }
             }
