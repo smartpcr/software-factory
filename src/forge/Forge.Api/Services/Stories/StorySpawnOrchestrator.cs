@@ -1714,7 +1714,7 @@ public sealed class StorySpawnOrchestrator
                     Type = "task",
                     State = "active",
                     Title = w.Title,
-                    DescriptionMd = w.Description ?? string.Empty,
+                    DescriptionMd = ComposeWorkItemDescriptionMd(w),
                     Points = Math.Max(1, spawn.StoryPoints),
                     Priority = "med",
                     CreatedAt = DateTimeOffset.UtcNow,
@@ -1743,6 +1743,43 @@ public sealed class StorySpawnOrchestrator
             }
         }
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — compose a decomposed workstream's backing
+    /// <c>WorkItemRow.DescriptionMd</c>. For qa-e2e rows the producer
+    /// (<c>CrewStoryArtifactStrategy.ReadQaE2eTestScenariosAsync</c>) recovers
+    /// the acceptance scenarios from a <c>## Test Scenarios</c> section, so the
+    /// scenarios held in <see cref="DecompositionWorkstream.AcceptanceCriteria"/>
+    /// must be folded in here. The decomposer's summary <c>Description</c> alone
+    /// carries no such section, which would make the producer read zero
+    /// scenarios and stall the workstream with "zero acceptance test scenarios".
+    /// Heading text mirrors <c>PlanReconciler.QaE2eStageDescription</c> so both
+    /// write paths converge on one parseable shape.
+    /// </summary>
+    private static string ComposeWorkItemDescriptionMd(DecompositionWorkstream w)
+    {
+        var summary = w.Description ?? string.Empty;
+        if (!string.Equals(w.Category, WorkstreamCategories.QaE2e, StringComparison.Ordinal)
+            || w.AcceptanceCriteria is not { Count: > 0 })
+        {
+            return summary;
+        }
+
+        var sb = new System.Text.StringBuilder(summary);
+        if (summary.Length > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("## Test Scenarios (from implementation-plan.md)");
+        foreach (var sc in w.AcceptanceCriteria)
+        {
+            sb.Append("- ").AppendLine(sc);
+        }
+
+        return sb.ToString();
     }
 
     // ── implement ────────────────────────────────────────────────────────────

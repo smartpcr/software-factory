@@ -1,5 +1,17 @@
 # Forge — Implementation Plan
 
+> **📂 This file is now an archive / source-of-record.** It grew too large to load as working
+> context, so it was split into two focused docs (2026-05-20):
+> - **[`forge_progress.md`](forge_progress.md)** — terse checkbox tracker (implementation steps +
+>   test status per phase). Use this to see *what's done*.
+> - **[`forge_context.md`](forge_context.md)** — architecture organized by subsystem (how each area
+>   is implemented, key files/types, gotchas). Use this to *gain context and know where to change things*.
+>
+> This file is retained for the full per-phase prose, every resolved-decision Q-number, and the
+> detailed test-scenario matrices. The two split docs cross-reference back here as *(PNN.x)*. When
+> updating status, prefer editing `forge_progress.md`; when an area's design changes, update
+> `forge_context.md`.
+
 > Promote `docs/examples/forge-board.html` from a single-file mockup into a working software-factory dashboard with bidirectional sync against Azure DevOps (ADO) and GitHub.
 
 ## Goals (from the user)
