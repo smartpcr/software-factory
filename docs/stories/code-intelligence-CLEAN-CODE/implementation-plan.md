@@ -14,6 +14,7 @@ storyId: "code-intelligence:CLEAN-CODE"
 - [ ] Create `src/ast/CleanCode.Metrics/CleanCode.Metrics.csproj` with .NET 8.0 target, win-x64 runtime identifier, and project references to `Ast.Core` and `CodeIntelligence`
 - [ ] Create `src/ast/CleanCode.Evaluator/CleanCode.Evaluator.csproj` with project reference to `CleanCode.Metrics`
 - [ ] Create `src/ast/CleanCode.Reports/CleanCode.Reports.csproj` with project reference to `CleanCode.Metrics` and `CleanCode.Evaluator`
+- [ ] Add `Sarif.Sdk` package to `Directory.Packages.props` under the centrally managed packages section and add `<PackageReference Include="Sarif.Sdk" />` to `CleanCode.Reports.csproj`
 - [ ] Add all three new projects to `Workflow.sln` under an `ast` solution folder
 - [ ] Implement core data model classes in `CleanCode.Metrics/Models/`: `MetricSnapshot`, `MetricValue`, `MetricThreshold`, `ScoreSummary`, `MetricDelta`, `HotspotEntry`, `SystemMetricSnapshot`
 - [ ] Implement enums: `MetricCategory` (Coupling, Cohesion, SOLID, Complexity, Architecture, CrossRepo), `MetricScope` (Method, Class, Namespace, Project, Repository, System), `VerdictOutcome` (Pass, Warn, Fail), `ViolationSeverity` (Critical, High, Medium, Low)
@@ -88,11 +89,13 @@ storyId: "code-intelligence:CLEAN-CODE"
 - [ ] Scenario: DIP high abstraction ratio -- Given a namespace where 8 of 10 dependencies target interfaces, When DipCalculator computes `solid.dip`, Then value is 0.8 (passes threshold of 0.7)
 - [ ] Scenario: ISP fat interface -- Given an interface with 15 members, When IspCalculator computes `solid.isp`, Then value is 15 and exceeds pass threshold of 7
 
-## Stage 2.3: Complexity and Architecture Calculators
+## Stage 2.3: Ast.Core Metadata Extension and Complexity Calculators
 
 ### Implementation Steps
-- [ ] Implement `CyclomaticComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CyclomaticComplexityCalculator.cs` using Roslyn syntax trees to count decision points per method
-- [ ] Implement `CognitiveComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CognitiveComplexityCalculator.cs` using Roslyn syntax trees following SonarSource cognitive complexity rules (nesting increments, structural increments)
+- [ ] Extend `HypergraphNode.Metadata` in `src/ast/Ast.Core/HypergraphModels.cs` to include method-level complexity tags (`CyclomaticComplexity`, `CognitiveComplexity`, `ParameterCount`) so downstream calculators can read pre-computed values from the hypergraph without requiring a Roslyn workspace
+- [ ] Update `RepositoryProcessor` in `src/ast/Ast.Core/RepositoryProcessor.cs` to populate the new complexity metadata tags during AST extraction by analyzing method bodies with Roslyn during the parse phase
+- [ ] Implement `CyclomaticComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CyclomaticComplexityCalculator.cs` that reads complexity from `HypergraphNode.Metadata` tags (preferred) or falls back to Roslyn syntax tree analysis when tags are absent
+- [ ] Implement `CognitiveComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CognitiveComplexityCalculator.cs` following SonarSource cognitive complexity rules (nesting increments, structural increments), reading from metadata tags or Roslyn fallback
 - [ ] Implement `WeightedMethodsCalculator` in `CleanCode.Metrics/Calculators/Complexity/WeightedMethodsCalculator.cs` summing per-method cyclomatic complexity at the class level
 - [ ] Implement `LayerAdherenceCalculator` in `CleanCode.Metrics/Calculators/Architecture/LayerAdherenceCalculator.cs` wrapping `LayerViolationDetector` to compute percentage of compliant interactions
 - [ ] Implement `BlastRadiusCalculator` in `CleanCode.Metrics/Calculators/Architecture/BlastRadiusCalculator.cs` using `HypergraphData` edges (and optionally `IGraphStore` Cypher queries) to count transitive dependents
@@ -102,6 +105,7 @@ storyId: "code-intelligence:CLEAN-CODE"
 - phase-metric-calculators/stage-coupling-and-cohesion-calculators
 
 ### Test Scenarios
+- [ ] Scenario: Metadata tags populated during parse -- Given a C# file with a method containing 2 if-statements, When RepositoryProcessor parses it into HypergraphData, Then the method node Metadata contains key `CyclomaticComplexity` with value 3
 - [ ] Scenario: Cyclomatic complexity of simple method -- Given a method with one if-statement and one for-loop, When CyclomaticComplexityCalculator computes `complexity.cyclomatic`, Then value is 3
 - [ ] Scenario: Layer adherence perfect -- Given a project with 100 inter-layer interactions and zero LayerViolations, When LayerAdherenceCalculator computes `arch.layer_adherence`, Then value is 1.0
 - [ ] Scenario: Blast radius calculation -- Given class A is depended upon by classes B, C where C is also depended upon by D, When BlastRadiusCalculator computes `arch.blast_radius` for A, Then value is 3 (B + C + D transitively)
@@ -211,10 +215,12 @@ storyId: "code-intelligence:CLEAN-CODE"
 ## Stage 6.1: Cross-Repo Query Service
 
 ### Implementation Steps
-- [ ] Implement `ICrossRepoQueryService` in `src/ast/Ast.GraphDb/CrossRepo/ICrossRepoQueryService.cs` with methods `GetDependencyDepthAsync`, `GetBlastRadiusAsync`, and `FindCrossRepoDuplicatesAsync`
+- [ ] Implement `ICrossRepoQueryService` in `src/ast/Ast.GraphDb/CrossRepo/ICrossRepoQueryService.cs` with methods `GetDependencyDepthAsync`, `GetBlastRadiusAsync`, `FindCrossRepoDuplicatesAsync`, and `GetKnowledgeDistributionAsync`
 - [ ] Implement `Neo4jCrossRepoQueryService` in `src/ast/Ast.GraphDb/CrossRepo/Neo4jCrossRepoQueryService.cs` with Cypher queries for dependency depth (longest path traversal) and blast radius (transitive dependent count)
+- [ ] Implement `KnowledgeDistributionCalculator` in `CleanCode.Metrics/Calculators/CrossRepo/KnowledgeDistributionCalculator.cs` that aggregates `git blame` output per critical component to count unique maintainers, producing `crossrepo.knowledge_dist` metric values
 - [ ] Implement duplication detection via Qdrant embedding similarity in `CrossRepoDuplicationDetector.cs` with configurable similarity threshold (default 0.9)
-- [ ] Implement graceful degradation: when Neo4j or Qdrant is unavailable, log warning and skip cross-repo metrics without failing the overall scan
+- [ ] Implement `MetricSnapshotPersistence` in `src/ast/Ast.GraphDb/CrossRepo/MetricSnapshotPersistence.cs` that stores `MetricSnapshot` as Neo4j graph nodes (`(:MetricSnapshot)-[:MEASURED]->(:Repository)`) for historical trending and cross-repo queries
+- [ ] Implement graceful degradation: when Neo4j or Qdrant is unavailable, log warning and skip cross-repo metrics and snapshot persistence without failing the overall scan
 
 ### Dependencies
 - _none -- start stage_
@@ -223,6 +229,8 @@ storyId: "code-intelligence:CLEAN-CODE"
 - [ ] Scenario: Dependency depth computed -- Given 3 repositories A->B->C indexed in Neo4j, When GetDependencyDepthAsync is called for repo A, Then depth is 2
 - [ ] Scenario: Graceful degradation without Neo4j -- Given Neo4j is unavailable, When cross-repo calculators execute, Then they return empty results with a warning logged (no exception thrown)
 - [ ] Scenario: Duplication detection -- Given two repos with a code block at cosine similarity 0.95, When FindCrossRepoDuplicatesAsync is called with threshold 0.9, Then one DuplicationMatch is returned
+- [ ] Scenario: Knowledge distribution metric -- Given 3 critical components with git blame showing 5 unique maintainers total, When GetKnowledgeDistributionAsync is called, Then `crossrepo.knowledge_dist` value is 5
+- [ ] Scenario: Snapshot persisted to Neo4j -- Given a valid MetricSnapshot, When MetricSnapshotPersistence.StoreAsync is called, Then a `:MetricSnapshot` node exists in Neo4j with a `:MEASURED` relationship to the repository node
 
 ## Stage 6.2: Hotspot Ranker and System Snapshot
 
