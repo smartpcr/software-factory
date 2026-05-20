@@ -57,8 +57,12 @@ areas at the system level. This story delivers:
 | Component | Assembly | Responsibility |
 |-----------|----------|----------------|
 | **CleanCode.Metrics** | `src/ast/CleanCode.Metrics` | Compute SOLID and coupling metrics from the hypergraph and AST data. Stateless calculators. |
-| **CleanCode.Evaluator** | `src/ast/CleanCode.Evaluator` | Evaluator prompt contract: accepts a `MetricSnapshot`, returns `EvaluationVerdict` with pass/warn/fail and remediation hints. |
+| **CleanCode.Metrics / MetricOrchestrator** | `src/ast/CleanCode.Metrics` | Coordinates all `IMetricCalculator` instances, collects results, invokes aggregation, and assembles the final `MetricSnapshot`. |
+| **CleanCode.Metrics / DeltaCalculator** | `src/ast/CleanCode.Metrics` | Compares two `MetricSnapshot` instances (baseline vs. current) and produces per-metric regression/improvement deltas for PR gates. |
+| **CleanCode.Metrics / HotspotRanker** | `src/ast/CleanCode.Metrics` | Ranks classes/namespaces by a weighted composite of violation severity, change frequency, blast radius, and coupling*complexity. |
+| **CleanCode.Evaluator** | `src/ast/CleanCode.Evaluator` | Evaluator prompt contract: accepts a `MetricSnapshot`, returns `EvaluationVerdict` with pass/warn/fail and remediation hints. Invoked as a CLI subprocess (not inside Forge agent loop). |
 | **CleanCode.Reports** | `src/ast/CleanCode.Reports` | Renders metric results into SARIF, JSON dashboard payloads, and Markdown summaries for CI gates. |
+| **CleanCode.Reports / DashboardExporter** | `src/ast/CleanCode.Reports` | Produces the JSON payload consumed by external dashboard systems (Grafana, custom UIs). This component owns the dashboard contract; the visualization tool is external and not part of this system. |
 
 ### 2.2 Existing Components (Extended)
 
@@ -87,6 +91,19 @@ Top-level aggregate capturing one measurement pass over a repository (or multi-r
 | `CommitSha` | `string?` | Git SHA at measurement time |
 | `Metrics` | `IReadOnlyList<MetricValue>` | All computed metric values |
 | `Summary` | `ScoreSummary` | Rolled-up pass/warn/fail |
+
+#### ScoreSummary
+
+Rolled-up quality gate result for the entire snapshot.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Outcome` | `VerdictOutcome` | Enum: `Pass`, `Warn`, `Fail` |
+| `PassCount` | `int` | Metrics within pass threshold |
+| `WarnCount` | `int` | Metrics in warning zone |
+| `FailCount` | `int` | Metrics exceeding fail threshold |
+| `CompositeScore` | `double` | Weighted 0.0-1.0 overall score |
+| `TopViolations` | `IReadOnlyList<Violation>` | Worst N violations for quick summary |
 
 #### MetricValue
 
@@ -133,6 +150,44 @@ Returned by the evaluator agent after inspecting a snapshot.
 | `MetricId` | `string` | The metric that triggered this |
 | `ActualValue` | `double` | Measured value |
 | `ThresholdValue` | `double` | Expected bound |
+
+#### SystemMetricSnapshot
+
+Aggregates multiple per-repository snapshots into a system-wide measurement (used in cross-repo scenarios).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Id` | `string` | GUID |
+| `Timestamp` | `DateTimeOffset` | When the system snapshot was assembled |
+| `RepositorySnapshots` | `IReadOnlyList<MetricSnapshot>` | Per-repo snapshots included |
+| `SystemMetrics` | `IReadOnlyList<MetricValue>` | Cross-repo metrics (depth, duplication, knowledge dist.) |
+| `Summary` | `ScoreSummary` | System-wide rolled-up score |
+
+#### MetricDelta
+
+Result of comparing a current snapshot to a baseline (used by `DeltaCalculator`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `MetricId` | `string` | Which metric changed |
+| `BaselineValue` | `double` | Value on baseline branch |
+| `CurrentValue` | `double` | Value on PR branch |
+| `Delta` | `double` | CurrentValue - BaselineValue |
+| `Regressed` | `bool` | True if delta crosses a threshold boundary |
+
+#### HotspotEntry
+
+Single entry in the ranked hotspot report (produced by `HotspotRanker`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Target` | `string` | Fully-qualified name of class/namespace |
+| `FilePath` | `string` | Primary source file |
+| `CompositeScore` | `double` | Weighted severity score (higher = worse) |
+| `ViolatedMetrics` | `IReadOnlyList<string>` | Metric IDs that failed |
+| `ChangeFrequency` | `int` | Commits touching this element in last 90 days |
+| `BlastRadius` | `int` | Number of dependent components |
+| `SuggestedRefactoring` | `string` | Pattern name (e.g., "Extract Interface", "Split Class") |
 
 ### 3.2 Metric Catalog
 
@@ -250,7 +305,72 @@ public enum AggregationStrategy
 }
 ```
 
-### 4.3 IEvaluatorContract
+### 4.3 IMetricOrchestrator
+
+Coordinates the full metrics pipeline: discovery of calculators, execution, aggregation, snapshot assembly.
+
+```csharp
+namespace CleanCode.Metrics;
+
+public interface IMetricOrchestrator
+{
+    Task<MetricSnapshot> RunAsync(
+        MetricContext context,
+        CancellationToken ct = default);
+
+    Task<MetricSnapshot> RunIncrementalAsync(
+        MetricContext context,
+        IReadOnlyList<string> changedFiles,
+        MetricSnapshot baseline,
+        CancellationToken ct = default);
+}
+```
+
+### 4.4 IDeltaCalculator
+
+Compares two snapshots and produces per-metric deltas for PR gate decisions.
+
+```csharp
+namespace CleanCode.Metrics;
+
+public interface IDeltaCalculator
+{
+    IReadOnlyList<MetricDelta> ComputeDeltas(
+        MetricSnapshot baseline,
+        MetricSnapshot current);
+
+    bool HasRegression(
+        IReadOnlyList<MetricDelta> deltas,
+        EvaluatorPolicy policy);
+}
+```
+
+### 4.5 IHotspotRanker
+
+Produces a prioritized list of refactoring targets.
+
+```csharp
+namespace CleanCode.Metrics;
+
+public interface IHotspotRanker
+{
+    Task<IReadOnlyList<HotspotEntry>> RankAsync(
+        MetricSnapshot snapshot,
+        HotspotOptions options,
+        CancellationToken ct = default);
+}
+
+public record HotspotOptions
+{
+    public int TopN { get; init; } = 20;
+    public double SeverityWeight { get; init; } = 0.4;
+    public double ChangeFrequencyWeight { get; init; } = 0.2;
+    public double BlastRadiusWeight { get; init; } = 0.2;
+    public double CouplingComplexityWeight { get; init; } = 0.2;
+}
+```
+
+### 4.6 IEvaluatorContract
 
 Contract between the metrics system and the evaluator agent prompt.
 
@@ -286,7 +406,7 @@ public record MetricEnforcement
 public enum EnforcementLevel { Blocking, Advisory, Informational }
 ```
 
-### 4.4 IReportRenderer
+### 4.7 IReportRenderer
 
 Renders evaluation results to various output formats.
 
@@ -304,9 +424,9 @@ public interface IReportRenderer
 }
 ```
 
-Implementations: `SarifRenderer`, `JsonDashboardRenderer`, `MarkdownRenderer`.
+Implementations: `SarifRenderer`, `DashboardExporter`, `MarkdownRenderer`.
 
-### 4.5 Cross-Repo Query Interface (extends Ast.GraphDb)
+### 4.8 Cross-Repo Query Interface (extends Ast.GraphDb)
 
 ```csharp
 namespace Ast.GraphDb;
@@ -385,8 +505,8 @@ Actor: Platform team (via scheduled job)
    b. cross_repo_duplication via vector similarity (Qdrant).
    c. knowledge_distribution via git blame aggregation.
 4. SystemMetricSnapshot assembled (aggregates all repo snapshots).
-5. JsonDashboardRenderer produces dashboard payload.
-6. Dashboard service ingests payload for visualization.
+5. DashboardExporter produces JSON payload to configured output path.
+6. External dashboard system reads payload for visualization (see section 10.3).
 ```
 
 ### 5.4 Scenario: Refactoring Prioritization
@@ -439,7 +559,7 @@ The new `CleanCode.Metrics` calculators consume outputs from:
 
 - SARIF output integrates with GitHub Advanced Security, Azure DevOps, and VS Code.
 - Exit code 0 (pass), 1 (fail), 2 (warn-only) for CI gate decisions.
-- Baseline snapshots stored in `refs/notes/metrics` or a dedicated branch.
+- Baseline snapshots stored in `refs/notes/metrics/<branch>` (see section 10.1).
 
 ---
 
@@ -471,7 +591,6 @@ scan:
   includeTests: false
   languages:
     - csharp
-    - powershell
 
 crossRepo:
   enabled: true
@@ -547,8 +666,42 @@ reporting:
 
 ---
 
-## 10. Open Considerations
+## 10. Architectural Decisions: Settled Boundaries
 
-- **Baseline storage**: Git notes vs. dedicated branch vs. external store -- depends on team workflow.
-- **Evaluator agent hosting**: Runs as part of Forge agent loop or standalone CLI invocation -- see e2e-scenarios.md for detail.
-- **PowerShell metrics**: Initial scope is C# only; PowerShell support deferred unless story explicitly requires it.
+### 10.1 Baseline Storage (fixes item 4)
+
+**Decision**: Baselines are stored in `refs/notes/metrics/<branch>` using git notes.
+
+| Aspect | Detail |
+|--------|--------|
+| Storage mechanism | `git notes add -f --ref=metrics/main` attaches snapshot JSON to the commit |
+| Retrieval | `git notes show --ref=metrics/main HEAD` retrieves the baseline for comparison |
+| CI integration | `ast-cli metrics --diff` reads the note from the `baselineBranch` configured in `.cleancode.yaml` |
+| Advantages | No extra branch clutter; travels with the repo; works offline |
+| Trade-off | Notes are not cloned by default; CI must use `git fetch origin refs/notes/*:refs/notes/*` |
+
+### 10.2 Evaluator Hosting (fixes item 5)
+
+**Decision**: The evaluator runs as a **standalone CLI subprocess**, not inside the Forge agent loop.
+
+| Aspect | Detail |
+|--------|--------|
+| Invocation | `ast-cli evaluate --snapshot <path>.json --policy .cleancode.yaml` |
+| Runtime | `CleanCode.Evaluator` assembly loaded by `Ast.Cli`; calls an LLM endpoint for nuanced judgment |
+| Why not Forge | Forge agent loops are long-running and PR-gate latency must be bounded (<60s). A subprocess starts fresh, evaluates, exits. |
+| Interface boundary | `IEvaluatorContract` (section 4.6) is the sole integration surface. Forge may invoke the same CLI command in its own workflows but does not host the evaluator internally. |
+
+### 10.3 Dashboard Boundary (fixes item 6)
+
+**Decision**: The dashboard visualization tool is **external** (Grafana, Power BI, or custom UI). This system produces a well-defined JSON payload via `DashboardExporter` but does NOT own or deploy a dashboard service.
+
+| Aspect | Detail |
+|--------|--------|
+| Producer | `CleanCode.Reports.DashboardExporter` implements `IReportRenderer` with `Format = "json-dashboard"` |
+| Contract | Output JSON schema is versioned in `.cleancode.yaml` under `reporting.dashboardSchemaVersion` |
+| Consumer | Any external system that reads the JSON (Grafana via JSON API plugin, custom React dashboard, etc.) |
+| Delivery | The scheduled cross-repo job (section 5.3) writes JSON to a configured output path; the external dashboard reads from there. No runtime coupling. |
+
+### 10.4 Language Scope
+
+**Decision**: Initial scope is **C# only**. PowerShell metric support is deferred to a follow-up story. The configuration schema's `languages` field accepts only `csharp` for this story.
