@@ -93,7 +93,7 @@ storyId: "code-intelligence:CLEAN-CODE"
 
 ### Implementation Steps
 - [ ] Extend `HypergraphNode.Metadata` in `src/ast/Ast.Core/HypergraphModels.cs` to include method-level complexity tags (`CyclomaticComplexity`, `CognitiveComplexity`, `ParameterCount`) so downstream calculators can read pre-computed values from the hypergraph without requiring a Roslyn workspace
-- [ ] Update `RepositoryProcessor` in `src/ast/Ast.Core/RepositoryProcessor.cs` to populate the new complexity metadata tags during AST extraction by analyzing method bodies with Roslyn during the parse phase
+- [ ] Update `CSharpHyperedgeExtractor` in `src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs` to populate the new complexity metadata tags on method nodes during C# AST extraction (Roslyn analysis happens at the extractor boundary; `RepositoryProcessor` in `Ast.Core` only merges returned nodes without language-specific logic)
 - [ ] Implement `CyclomaticComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CyclomaticComplexityCalculator.cs` that reads complexity from `HypergraphNode.Metadata` tags (preferred) or falls back to Roslyn syntax tree analysis when tags are absent
 - [ ] Implement `CognitiveComplexityCalculator` in `CleanCode.Metrics/Calculators/Complexity/CognitiveComplexityCalculator.cs` following SonarSource cognitive complexity rules (nesting increments, structural increments), reading from metadata tags or Roslyn fallback
 - [ ] Implement `WeightedMethodsCalculator` in `CleanCode.Metrics/Calculators/Complexity/WeightedMethodsCalculator.cs` summing per-method cyclomatic complexity at the class level
