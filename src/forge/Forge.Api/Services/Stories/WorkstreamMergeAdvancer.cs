@@ -82,6 +82,28 @@ public static class WorkstreamMergeAdvancer
             w.Status = "complete";
             advanced.Add(w.Id);
         }
+
+        // Phase 59 Stage B — workstream has reached its terminal
+        // state; prune any leftover .forge/logs/ files for it so
+        // the directory doesn't grow forever on long-lived
+        // worktrees that the orchestrator hasn't reaped yet.
+        // Best-effort; never blocks the merge advance.
+        foreach (var id in advanced)
+        {
+            try
+            {
+                var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(control, db, id, ct);
+                if (!string.IsNullOrEmpty(resolved.WorktreePath))
+                {
+                    GateLogPaths.PruneAll(resolved.WorktreePath);
+                }
+            }
+            catch
+            {
+                /* swallow — retention is best-effort */
+            }
+        }
+
         return advanced;
     }
 

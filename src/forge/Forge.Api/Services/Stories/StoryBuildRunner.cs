@@ -56,12 +56,28 @@ public static class StoryBuildRunner
     /// reported via <see cref="StoryBuildResult.Success"/>; only
     /// catastrophic process errors (e.g. the program not on PATH)
     /// propagate.
+    ///
+    /// <para>Phase 59 Stage B — when <paramref name="logFilePath"/> is
+    /// set, combined stdout+stderr is streamed line-by-line to that
+    /// file as the process runs (StreamWriter with line buffering, NOT
+    /// buffered into a single string) so a 200 MB log doesn't OOM the
+    /// host. Parsing (error/warning counts, first 8 sampled errors)
+    /// happens inline during the pump — no second pass over the data.
+    /// The resulting <see cref="StoryBuildResult.LogPath"/> /
+    /// <see cref="StoryBuildResult.LogRelPath"/> point the caller at
+    /// the persisted file so a SignalR transcript event can include a
+    /// <c>logUrl</c> the UI renders as a 📎 view-log chip
+    /// (<c>TranscriptLine.tsx</c>). Best-effort: a failed open / write
+    /// silently falls back to in-memory parsing only — the gate
+    /// outcome stays trustworthy even when log persistence fails.</para>
     /// </summary>
     public static async Task<StoryBuildResult> RunBuildAsync(
         string workspace,
         CancellationToken ct,
         TimeSpan? timeout = null,
-        string? buildCommand = null)
+        string? buildCommand = null,
+        string? logFilePath = null,
+        string? logRelPath = null)
     {
         if (string.IsNullOrEmpty(workspace) || !Directory.Exists(workspace))
         {
@@ -176,8 +192,69 @@ public static class StoryBuildRunner
         if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
         var effectiveCt = timeoutCts.Token;
 
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync(effectiveCt);
-        var stderrTask = proc.StandardError.ReadToEndAsync(effectiveCt);
+        // Phase 59 Stage B — open the log file lazily before draining
+        // the streams. Best-effort: if the directory can't be created
+        // or the file can't be opened, fall through to in-memory-only
+        // parsing (logFile stays null + LogPath unset in the result).
+        StreamWriter? logWriter = null;
+        string? effectiveLogPath = null;
+        if (!string.IsNullOrWhiteSpace(logFilePath))
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(logFilePath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                logWriter = new StreamWriter(
+                    new FileStream(logFilePath!, FileMode.Create, FileAccess.Write, FileShare.Read),
+                    System.Text.Encoding.UTF8);
+                logWriter.AutoFlush = false; // batch per-line flushes via the pump
+                effectiveLogPath = logFilePath;
+            }
+            catch
+            {
+                logWriter = null;
+                effectiveLogPath = null;
+            }
+        }
+
+        // Inline-parse stats that previously came out of Parse() —
+        // counts + first 8 sampled errors. Bounded memory regardless
+        // of output size.
+        var errorCount = 0;
+        var warningCount = 0;
+        var samples = new List<string>(ErrorSampleLimit);
+        // Tail ring for the no-parsed-errors fallback (last ~1200 chars).
+        var tail = new TailRing(1200);
+        var lockObj = new object();
+
+        async Task PumpAsync(StreamReader reader)
+        {
+            string? line;
+            while ((line = await reader.ReadLineAsync(effectiveCt).ConfigureAwait(false)) is not null)
+            {
+                lock (lockObj)
+                {
+                    if (ErrorLineRegex.IsMatch(line))
+                    {
+                        errorCount++;
+                        if (samples.Count < ErrorSampleLimit) samples.Add(line.Trim());
+                    }
+                    else if (WarningLineRegex.IsMatch(line))
+                    {
+                        warningCount++;
+                    }
+                    tail.Append(line);
+                    if (logWriter is not null)
+                    {
+                        try { logWriter.WriteLine(line); }
+                        catch { /* best-effort; subsequent writes also no-op naturally */ }
+                    }
+                }
+            }
+        }
+
+        var stdoutTask = PumpAsync(proc.StandardOutput);
+        var stderrTask = PumpAsync(proc.StandardError);
         var timedOut = false;
 
         try
@@ -190,42 +267,75 @@ public static class StoryBuildRunner
             try { proc.Kill(entireProcessTree: true); } catch { /* best-effort */ }
         }
 
-        string stdout = string.Empty;
-        string stderr = string.Empty;
-        try { stdout = await stdoutTask; } catch { /* swallow */ }
-        try { stderr = await stderrTask; } catch { /* swallow */ }
+        // Drain the pumps. Both swallow per-line read errors so the
+        // outer await only sees cancellation, which we treat as "done
+        // reading whatever was available".
+        try { await stdoutTask; } catch { /* swallow */ }
+        try { await stderrTask; } catch { /* swallow */ }
+
+        if (logWriter is not null)
+        {
+            try { await logWriter.FlushAsync(); } catch { /* best-effort */ }
+            try { logWriter.Dispose(); } catch { /* best-effort */ }
+        }
 
         sw.Stop();
 
         if (timedOut)
         {
+            // 2026-05-19 — pre-fix this said "`dotnet` build command
+            // timed out" regardless of what command actually ran;
+            // misleading when the gate was running `dotnet test`.
+            // Show the verbatim command + tail of stdout so the
+            // operator can see WHICH project / test the killed
+            // process was mid-run on instead of a single useless
+            // line of generic timeout text.
+            var commandLine = buildCommand ?? $"{program} {string.Join(' ', args)}";
+            var tailSnapshot = tail.Snapshot().Trim();
+            var sb = new System.Text.StringBuilder();
+            sb.Append('`').Append(commandLine).Append("` timed out after ")
+                .AppendFormat("{0:0.0}", budget.TotalMinutes).Append("min in '")
+                .Append(workspace).Append('\'');
+            if (errorCount > 0)
+            {
+                sb.Append(" (").Append(errorCount).Append(" error line(s) parsed before kill)");
+            }
+            if (!string.IsNullOrEmpty(tailSnapshot))
+            {
+                sb.Append("\n\nLast output before kill:\n").Append(tailSnapshot);
+            }
+            var timeoutSummary = sb.ToString();
+            if (timeoutSummary.Length > ErrorSummaryMaxChars)
+            {
+                timeoutSummary = timeoutSummary[..ErrorSummaryMaxChars] + "…(truncated; full log at the chip link)";
+            }
             return new StoryBuildResult(
                 Success: false,
                 ExitCode: -1,
-                ErrorCount: 0,
-                WarningCount: 0,
-                ErrorSummary: $"`{program}` build command timed out after {budget.TotalMinutes:0.0}min in '{workspace}'",
+                ErrorCount: errorCount,
+                WarningCount: warningCount,
+                ErrorSummary: timeoutSummary,
                 Duration: sw.Elapsed,
-                TimedOut: true);
+                TimedOut: true,
+                LogPath: effectiveLogPath,
+                LogRelPath: logRelPath);
         }
 
-        var combined = stdout + "\n" + stderr;
-        var (errorCount, warningCount, sampledErrors) = Parse(combined);
-        var summary = string.Join("\n", sampledErrors);
+        var summary = string.Join("\n", samples);
         if (summary.Length > ErrorSummaryMaxChars)
         {
             summary = summary[..ErrorSummaryMaxChars] + "…(truncated)";
         }
         if (string.IsNullOrEmpty(summary) && proc.ExitCode != 0)
         {
-            // Build failed but no parseable error lines — surface the tail
-            // of the combined stream so the operator has something to look
-            // at. The dotnet compiler routes errors to stdout, so the
-            // earlier stderr-only tail missed everything for `dotnet build`;
-            // cargo fmt --check writes its diff to stdout too. Combined
-            // tail is the safe universal default.
-            var combinedTail = combined.Length > 1200 ? combined[^1200..] : combined;
-            summary = "(no parsed error lines; raw output tail below)\n" + combinedTail.Trim();
+            // Build failed but no parseable error lines — surface the
+            // tail of the combined stream so the operator has
+            // something to look at. The dotnet compiler routes errors
+            // to stdout, so the earlier stderr-only tail missed
+            // everything for `dotnet build`; cargo fmt --check writes
+            // its diff to stdout too. Combined tail is the safe
+            // universal default.
+            summary = "(no parsed error lines; raw output tail below)\n" + tail.Snapshot().Trim();
         }
 
         return new StoryBuildResult(
@@ -235,7 +345,66 @@ public static class StoryBuildRunner
             WarningCount: warningCount,
             ErrorSummary: summary,
             Duration: sw.Elapsed,
-            TimedOut: false);
+            TimedOut: false,
+            LogPath: effectiveLogPath,
+            LogRelPath: logRelPath);
+    }
+
+    /// <summary>
+    /// Bounded ring buffer over the last N characters of output —
+    /// used for the "raw output tail" fallback when the build failed
+    /// but the regex parse found no error lines. Memory is capped at
+    /// <c>capacity</c> bytes regardless of total output size.
+    /// </summary>
+    private sealed class TailRing
+    {
+        private readonly char[] buf;
+        private int len;
+        private int start;
+
+        public TailRing(int capacity)
+        {
+            this.buf = new char[capacity];
+            this.len = 0;
+            this.start = 0;
+        }
+
+        public void Append(string line)
+        {
+            // Append the line + a newline; if total exceeds capacity,
+            // advance the start pointer so we keep the most recent
+            // capacity chars.
+            this.AppendRaw(line);
+            this.AppendRaw("\n");
+        }
+
+        private void AppendRaw(string s)
+        {
+            foreach (var ch in s)
+            {
+                if (this.len < this.buf.Length)
+                {
+                    this.buf[(this.start + this.len) % this.buf.Length] = ch;
+                    this.len++;
+                }
+                else
+                {
+                    this.buf[this.start] = ch;
+                    this.start = (this.start + 1) % this.buf.Length;
+                }
+            }
+        }
+
+        public string Snapshot()
+        {
+            if (this.len == 0) return string.Empty;
+            var result = new char[this.len];
+            for (var i = 0; i < this.len; i++)
+            {
+                result[i] = this.buf[(this.start + i) % this.buf.Length];
+            }
+            return new string(result);
+        }
     }
 
     /// <summary>
@@ -272,31 +441,6 @@ public static class StoryBuildRunner
         return result.ToArray();
     }
 
-    private static (int Errors, int Warnings, IReadOnlyList<string> Samples) Parse(string output)
-    {
-        if (string.IsNullOrEmpty(output))
-        {
-            return (0, 0, Array.Empty<string>());
-        }
-
-        var errors = 0;
-        var warnings = 0;
-        var samples = new List<string>(ErrorSampleLimit);
-        foreach (var raw in output.Split('\n'))
-        {
-            var line = raw.TrimEnd('\r');
-            if (ErrorLineRegex.IsMatch(line))
-            {
-                errors++;
-                if (samples.Count < ErrorSampleLimit) samples.Add(line.Trim());
-            }
-            else if (WarningLineRegex.IsMatch(line))
-            {
-                warnings++;
-            }
-        }
-        return (errors, warnings, samples);
-    }
 }
 
 /// <summary>Phase 47e — outcome of a single <see cref="StoryBuildRunner.RunBuildAsync"/> call.</summary>
@@ -307,4 +451,14 @@ public sealed record StoryBuildResult(
     int WarningCount,
     string ErrorSummary,
     TimeSpan Duration,
-    bool TimedOut);
+    bool TimedOut,
+    // Phase 59 Stage B — absolute filesystem path to the persisted
+    // log file (combined stdout+stderr, line-streamed). Null when the
+    // caller didn't request log persistence or when the file open
+    // failed (best-effort).
+    string? LogPath = null,
+    // Worktree-relative variant of LogPath suitable for the
+    // /api/workstreams/{id}/logs/{*relPath} endpoint URL. Caller
+    // computes this against its own root convention; the runner just
+    // round-trips whatever the caller passed in.
+    string? LogRelPath = null);

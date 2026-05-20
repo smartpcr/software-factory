@@ -1769,6 +1769,17 @@ public class RepoRow
     /// <summary>Test command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
     public int? TestTimeoutSec { get; set; }
 
+    /// <summary>
+    /// Phase 59 Stage A — per-repo override for the impacted-test
+    /// rewrite. <c>null</c> = inherit the global
+    /// <c>Forge:Test:ImpactedOnly</c> config value (defaults to true);
+    /// <c>false</c> = run the operator-supplied test command verbatim
+    /// (the legacy whole-suite behaviour); <c>true</c> = always narrow
+    /// to impacted test projects when the command starts with
+    /// <c>dotnet test</c> and carries no explicit project / filter.
+    /// </summary>
+    public bool? TestImpactedOnly { get; set; }
+
     // -- Phase 33 — persisted sync settings ----------------------------------
 
     /// <summary>Default assignee filter for WI sync (email or display name).</summary>

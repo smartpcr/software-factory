@@ -56,6 +56,10 @@ public sealed class PhaseMigrationRunner
         42, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
         30, 31, 32, 33, 34, 35, 36, 37,
         43, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55,
+        // Phase 59 — adds repos.TestImpactedOnly. Control-only,
+        // additive nullable column; runs anywhere in the chain. Slotted
+        // before 60 just to keep the numeric order monotonic post-55.
+        59,
         60, 63, 64, 65, 72,
         // docs/forge/e2e.md Stage 1.1 — Phase 79 adds `workstreams.Category`,
         // which the EF model on `WorkstreamRow` references. Phase 38's

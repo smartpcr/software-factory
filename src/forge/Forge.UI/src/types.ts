@@ -398,6 +398,8 @@ export interface Repo {
   buildTimeoutSec?: number | null;
   /** Phase 26 — test timeout in seconds. Null defaults to 600. */
   testTimeoutSec?: number | null;
+  /** Phase 59 — per-repo override for `Forge:Test:ImpactedOnly`. Null = inherit global. */
+  testImpactedOnly?: boolean | null;
   /** Phase 33 — default assignee filter for WI sync. */
   wiSyncAssignedTo?: string | null;
   /** Phase 33 — relative days back for WI sync date window. */

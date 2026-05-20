@@ -45,6 +45,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly IStoryGitOps git;
     private readonly AgentSlotService slots;
     private readonly CopilotSessionPool copilotPool;
+    // Phase 59 Stage C — pluggable impacted-test resolver chain
+    // (Roslyn → Heuristic). Nullable so existing test-doubles of
+    // this strategy that don't supply the chain still construct;
+    // when null the gate runs the legacy `ImpactedTestResolver.Resolve`
+    // static facade directly (pure heuristic, no Roslyn).
+    private readonly ImpactedTests.ImpactedTestResolverChain? impactedTestChain;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
     /// <summary>
@@ -118,6 +124,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         IStoryGitOps git,
         AgentSlotService slots,
         CopilotSessionPool copilotPool,
+        ImpactedTests.ImpactedTestResolverChain? impactedTestChain = null,
         ILogger<CrewStoryArtifactStrategy>? logger = null)
     {
         this.scopeFactory = scopeFactory;
@@ -128,6 +135,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.git = git;
         this.slots = slots;
         this.copilotPool = copilotPool;
+        this.impactedTestChain = impactedTestChain;
         this.logger = logger;
     }
 
@@ -795,7 +803,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? testCommand,
         string? agentId,
         string? crewId,
-        CancellationToken ct)
+        CancellationToken ct,
+        // Phase 59 Stage A — when set, the test gate runs the impacted-
+        // test resolver before invoking the test command, narrowing
+        // `dotnet test` to the test projects whose code (or whose
+        // ProjectReference graph) was touched by changes since
+        // testBaseRef. When testImpactedOnly is false OR testBaseRef is
+        // null/empty, the gate runs the original testCommand verbatim
+        // (the legacy whole-suite behaviour).
+        string? testBaseRef = null,
+        bool testImpactedOnly = false)
     {
         // ----- BUILD stage -----
         if (string.IsNullOrWhiteSpace(buildCommand))
@@ -811,11 +828,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         else
         {
+            // Phase 59 Stage B — pre-compute the log file path so
+            // StoryBuildRunner can stream stdout+stderr to disk while
+            // the process runs. logUrl flows into the SignalR event
+            // payload so TranscriptLine.tsx can render the 📎 chip.
+            var (buildLogPath, buildLogRel) = GateLogPaths.For(workspace, "build", iter);
+            var buildLogUrl = BuildLogUrl(workItemId, buildLogRel);
             StoryBuildResult? build = null;
             try
             {
                 build = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: buildCommand);
+                    workspace, ct, StoryBuildRunner.DefaultTimeout,
+                    buildCommand: buildCommand,
+                    logFilePath: buildLogPath,
+                    logRelPath: buildLogRel);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -850,6 +876,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         errorSummary = build.ErrorSummary,
                         buildCommand,
                         workspace,
+                        logUrl = buildLogUrl,
+                        logRelPath = build.LogRelPath,
                     }, agentId: agentId, crewId: crewId, ct: ct);
                     return new GateFailure("build", buildCommand, build);
                 }
@@ -863,7 +891,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     warningCount = build.WarningCount,
                     buildCommand,
                     workspace,
+                    logUrl = buildLogUrl,
+                    logRelPath = build.LogRelPath,
                 }, agentId: agentId, crewId: crewId, ct: ct);
+                // Phase 59.9 — prune older build logs to retention cap.
+                // Best-effort; never blocks the gate.
+                try { GateLogPaths.PruneToRetention(workspace); } catch { /* swallow */ }
             }
         }
 
@@ -875,11 +908,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 var qc = qualityCommands[i];
                 if (string.IsNullOrWhiteSpace(qc)) continue;
 
+                var (qualityLogPath, qualityLogRel) = GateLogPaths.For(workspace, $"quality-{i}", iter);
+                var qualityLogUrl = BuildLogUrl(workItemId, qualityLogRel);
                 StoryBuildResult? q = null;
                 try
                 {
                     q = await StoryBuildRunner.RunBuildAsync(
-                        workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: qc);
+                        workspace, ct, StoryBuildRunner.DefaultTimeout,
+                        buildCommand: qc,
+                        logFilePath: qualityLogPath,
+                        logRelPath: qualityLogRel);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -917,6 +955,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         timedOut = q.TimedOut,
                         errorSummary = q.ErrorSummary,
                         workspace,
+                        logUrl = qualityLogUrl,
+                        logRelPath = q.LogRelPath,
                     }, agentId: agentId, crewId: crewId, ct: ct);
                     return new GateFailure("quality", qc, q);
                 }
@@ -931,6 +971,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     durationSec = q.Duration.TotalSeconds,
                     warningCount = q.WarningCount,
                     workspace,
+                    logUrl = qualityLogUrl,
+                    logRelPath = q.LogRelPath,
                 }, agentId: agentId, crewId: crewId, ct: ct);
             }
         }
@@ -949,11 +991,103 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         else
         {
+            // Phase 59 Stage A — when impacted-test selection is enabled
+            // and we have a base ref to diff against, narrow `dotnet
+            // test` to the test projects whose code (or transitive
+            // ProjectReference graph) was touched. Resolver is pure: a
+            // no-op when the command isn't `dotnet test`, when it
+            // already names an explicit project / --filter (operator
+            // override wins), or when no test projects exist in the
+            // workspace. Skipped (empty impacted set) short-circuits
+            // with a task.test-gate.skipped event so the wall-clock
+            // stays flat on doc-only Stages.
+            //
+            // Stage C — the resolver is now an
+            // ImpactedTestResolverChain (Roslyn → Heuristic). The
+            // chain's Mode field tells operators which provider
+            // answered (stamped on the gate-event payload as
+            // `impactedMode`). When the strategy was constructed
+            // without a chain (legacy test-double path), fall back
+            // to the static heuristic facade so behaviour matches
+            // pre-Stage-C.
+            var effectiveTestCommand = testCommand;
+            IReadOnlyList<string> impactedProjects = Array.Empty<string>();
+            var wholeSuiteFallback = false;
+            var impactedRewritten = false;
+            var allTestProjectCount = 0;
+            var impactedMode = "heuristic";
+            if (testImpactedOnly && !string.IsNullOrWhiteSpace(testBaseRef))
+            {
+                try
+                {
+                    var changedFiles = await ImpactedTestResolver.DiscoverChangedFilesAsync(
+                        workspace, testBaseRef!, ct);
+                    ImpactedTestResolverResult resolution;
+                    if (this.impactedTestChain is not null)
+                    {
+                        resolution = await this.impactedTestChain.ResolveAsync(
+                            workspace, changedFiles, testCommand, ct);
+                    }
+                    else
+                    {
+                        resolution = ImpactedTestResolver.Resolve(
+                            workspace, changedFiles, testCommand, impactedOnly: true);
+                    }
+                    effectiveTestCommand = resolution.Command;
+                    impactedProjects = resolution.ImpactedProjects;
+                    wholeSuiteFallback = resolution.WholeSuiteFallback;
+                    impactedRewritten = resolution.Rewritten;
+                    allTestProjectCount = resolution.AllTestProjectCount;
+                    impactedMode = resolution.Mode;
+
+                    if (resolution.Skipped)
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                        {
+                            stage = stagePrefix,
+                            gateStage = "test",
+                            iter,
+                            reason = "no impacted test projects",
+                            testCommand,
+                            workspace,
+                            impactedOnly = true,
+                            allTestProjectCount,
+                            impactedMode,
+                        }, agentId: agentId, crewId: crewId, ct: ct);
+                        return null;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Resolver should never throw under normal
+                    // conditions (it swallows git failures + IO
+                    // errors), but defend against the surprise so a
+                    // bug here doesn't take down the gate chain.
+                    this.logger?.LogWarning(ex,
+                        "{Prefix} impacted-test resolver threw for {Workspace}; falling back to whole-suite command.",
+                        stagePrefix, workspace);
+                    effectiveTestCommand = testCommand;
+                    impactedProjects = Array.Empty<string>();
+                    wholeSuiteFallback = false;
+                    impactedRewritten = false;
+                    allTestProjectCount = 0;
+                    impactedMode = "heuristic";
+                }
+            }
+
+            // Phase 59 Stage B — per-attempt log path for the test
+            // gate. Shared between RunBuildAsync (writer) and the
+            // task.test-gate.{passed,failed} payload (reader's URL).
+            var (testLogPath, testLogRel) = GateLogPaths.For(workspace, "test", iter);
+            var testLogUrl = BuildLogUrl(workItemId, testLogRel);
             StoryBuildResult? t = null;
             try
             {
                 t = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout, buildCommand: testCommand);
+                    workspace, ct, StoryBuildRunner.DefaultTimeout,
+                    buildCommand: effectiveTestCommand,
+                    logFilePath: testLogPath,
+                    logRelPath: testLogRel);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -987,9 +1121,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         timedOut = t.TimedOut,
                         errorSummary = t.ErrorSummary,
                         testCommand,
+                        effectiveTestCommand,
+                        impactedRewritten,
+                        impactedProjects,
+                        wholeSuiteFallback,
+                        allTestProjectCount,
+                        impactedMode,
                         workspace,
+                        logUrl = testLogUrl,
+                        logRelPath = t.LogRelPath,
                     }, agentId: agentId, crewId: crewId, ct: ct);
-                    return new GateFailure("test", testCommand, t);
+                    return new GateFailure("test", effectiveTestCommand, t);
                 }
 
                 await this.taskChannel.EmitAsync(workItemId, "task.test-gate.passed", new
@@ -1000,8 +1142,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     durationSec = t.Duration.TotalSeconds,
                     warningCount = t.WarningCount,
                     testCommand,
+                    effectiveTestCommand,
+                    impactedRewritten,
+                    impactedProjects,
+                    wholeSuiteFallback,
+                    allTestProjectCount,
+                    impactedMode,
                     workspace,
+                    logUrl = testLogUrl,
+                    logRelPath = t.LogRelPath,
                 }, agentId: agentId, crewId: crewId, ct: ct);
+                // Phase 59.9 — prune older test logs after a green
+                // gate. Quality and build prune in their own
+                // branches; doing it here keeps the .forge/logs
+                // directory bounded per workstream lifecycle.
+                try { GateLogPaths.PruneToRetention(workspace); } catch { /* swallow */ }
             }
         }
 
@@ -1022,11 +1177,46 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? testCommand,
         string? agentId,
         string? crewId,
-        CancellationToken ct) =>
+        CancellationToken ct,
+        string? testBaseRef = null,
+        bool testImpactedOnly = false) =>
         this.RunGateChainAsync(
             workItemId, workspace, iter, "per-iter",
             buildCommand, qualityCommands, testCommand,
-            agentId, crewId, ct);
+            agentId, crewId, ct,
+            testBaseRef: testBaseRef,
+            testImpactedOnly: testImpactedOnly);
+
+    /// <summary>
+    /// Phase 59 Stage B — build the URL that <c>TranscriptLine.tsx</c>
+    /// renders as a 📎 view-log chip. Returns null when the runner
+    /// didn't produce a log (the caller emits a payload WITHOUT the
+    /// <c>logUrl</c> field so the UI skips chip rendering). The
+    /// matching endpoint is
+    /// <c>GET /api/workstreams/{wsId}/logs/{*relPath}</c>.
+    /// </summary>
+    internal static string? BuildLogUrl(string workItemId, string? logRelPath)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(logRelPath))
+        {
+            return null;
+        }
+        return $"/api/workstreams/{Uri.EscapeDataString(workItemId)}/logs/{logRelPath}";
+    }
+
+    /// <summary>
+    /// Phase 59 Stage A — resolve the effective impacted-test setting
+    /// for a repo. Per-repo override wins; null falls through to the
+    /// global <c>Forge:Test:ImpactedOnly</c> config key (default true).
+    /// </summary>
+    internal static bool ResolveImpactedTestOnly(RepoRow? repo, IConfiguration config)
+    {
+        if (repo?.TestImpactedOnly is bool overrideValue)
+        {
+            return overrideValue;
+        }
+        return config.GetValue<bool?>("Forge:Test:ImpactedOnly") ?? true;
+    }
 
     /// <summary>
     /// Phase 56 — format a <see cref="GateFailure"/> into the multi-line
@@ -2979,6 +3169,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     FilesModified: snap.Modified,
                     FilesDeleted: snap.Deleted);
             },
+            // Phase 59 Stage A — narrow `dotnet test` to projects
+            // impacted by the engineer's diff vs. baseBranch. The
+            // legacy whole-suite behaviour (which timed out at 8 min
+            // on stage-1.1-base-classes-and-port-allocation 2026-05-19)
+            // returns when the operator sets
+            // repo.TestImpactedOnly=false OR when the global
+            // Forge:Test:ImpactedOnly config key is set false.
+            testBaseRef: baseBranch,
+            testImpactedOnly: ResolveImpactedTestOnly(repo, this.config),
             ct: ct);
 
         // Phase 45 follow-up -- collect only files the agent actually changed
@@ -4325,6 +4524,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // aggregation. See CrewStoryArtifactStrategy producer call
         // sites (plan-doc + engineer) for typical wiring.
         Func<int, long, CancellationToken, Task<IterCommitInfo?>>? onIterationCommit = null,
+        // Phase 59 Stage A — base ref for the impacted-test resolver.
+        // When set together with testImpactedOnly=true, the per-iter
+        // AND post-pass test gates narrow `dotnet test` to projects
+        // touched by changes since this ref. Engineer impl crews pass
+        // the workstream's base branch (e.g. main); plan-doc / qa
+        // crews leave it null since their test commands either skip or
+        // already carry an explicit filter.
+        string? testBaseRef = null,
+        bool testImpactedOnly = false,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -5247,7 +5455,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         testCommand,
                         genAgentId,
                         crew.Id,
-                        iterCt);
+                        iterCt,
+                        testBaseRef: testBaseRef,
+                        testImpactedOnly: testImpactedOnly);
 
                     if (perIterFailure is not null)
                     {
@@ -5821,7 +6031,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         testCommand,
                         agentId: genAgentId,
                         crewId: crew.Id,
-                        ct: validCt);
+                        ct: validCt,
+                        testBaseRef: testBaseRef,
+                        testImpactedOnly: testImpactedOnly);
 
                     if (failure is null)
                     {

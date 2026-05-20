@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
-import type { BuildValidationRun, ValidateStep } from '@/api/forgeApi';
+import type { BuildValidationRun, ImpactedTestPreview, ValidateStep } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SyncFrequencyChips } from '@/products/SyncFrequencyChips';
@@ -28,6 +28,11 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [testCommand, setTestCommand] = useState(repo.testCommand ?? '');
   const [buildTimeoutSec, setBuildTimeoutSec] = useState<number | ''>(repo.buildTimeoutSec ?? '');
   const [testTimeoutSec, setTestTimeoutSec] = useState<number | ''>(repo.testTimeoutSec ?? '');
+  // Phase 59 Stage A — tri-state override: null inherits the global
+  // Forge:Test:ImpactedOnly default (true); 'true' / 'false' override.
+  const [testImpactedOnly, setTestImpactedOnly] = useState<boolean | null>(repo.testImpactedOnly ?? null);
+  const [impactedPreview, setImpactedPreview] = useState<ImpactedTestPreview | null>(null);
+  const [previewingImpacted, setPreviewingImpacted] = useState(false);
   // Phase 34 — per-repo sync cadence overrides. Stored as seconds; 0 clears
   // the override and the row inherits the global default (2 hr).
   const [wiIntervalSec, setWiIntervalSec] = useState<number>(repo.workItemSyncIntervalSeconds ?? 0);
@@ -57,6 +62,9 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setTestCommand(repo.testCommand ?? '');
     setBuildTimeoutSec(repo.buildTimeoutSec ?? '');
     setTestTimeoutSec(repo.testTimeoutSec ?? '');
+    setTestImpactedOnly(repo.testImpactedOnly ?? null);
+    setImpactedPreview(null);
+    setPreviewingImpacted(false);
     setWiIntervalSec(repo.workItemSyncIntervalSeconds ?? 0);
     setPrIntervalSec(repo.prSyncIntervalSeconds ?? 0);
     setBuildIntervalSec(repo.buildSyncIntervalSeconds ?? 0);
@@ -110,6 +118,9 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       const tTimeout = typeof testTimeoutSec === 'number' ? testTimeoutSec : 0;
       if (bTimeout !== (repo.buildTimeoutSec ?? 0)) patch.buildTimeoutSec = bTimeout;
       if (tTimeout !== (repo.testTimeoutSec ?? 0)) patch.testTimeoutSec = tTimeout;
+      // Phase 59 — only send the field when it changed from the saved
+      // value so a no-op save doesn't churn the row.
+      if (testImpactedOnly !== (repo.testImpactedOnly ?? null)) patch.testImpactedOnly = testImpactedOnly;
 
       // Phase 34 — per-repo sync cadence overrides. Send 0 to clear; the server
       // treats <= 0 as "fall back to global default".
@@ -309,6 +320,51 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                   </FieldGroup>
                 </div>
 
+                {/* Phase 59 Stage A — Impacted-test selection */}
+                <SectionLabel>Impacted-test selection</SectionLabel>
+                <FieldGroup label="Mode" hint="Narrows `dotnet test` to projects whose code (or transitive ProjectReference graph) was touched since the workstream's base branch. Commands with --filter or an explicit .csproj / .sln are honoured verbatim.">
+                  <select
+                    value={testImpactedOnly === null ? 'inherit' : testImpactedOnly ? 'on' : 'off'}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setTestImpactedOnly(v === 'inherit' ? null : v === 'on');
+                      setImpactedPreview(null);
+                    }}
+                    disabled={busy}
+                    style={{ ...inputStyle, ...monoStyle }}
+                    data-testid="repo-test-impacted-only"
+                  >
+                    <option value="inherit">Inherit global (Forge:Test:ImpactedOnly — default ON)</option>
+                    <option value="on">On — always narrow to impacted projects</option>
+                    <option value="off">Off — run the test command verbatim (whole-suite legacy)</option>
+                  </select>
+                </FieldGroup>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    title="Dry-run the resolver against HEAD of the local clone. Shows which test projects would run for the current diff vs. defaultBranch."
+                    disabled={busy || previewingImpacted}
+                    onClick={async () => {
+                      setPreviewingImpacted(true);
+                      setImpactedPreview(null);
+                      try {
+                        const p = await forgeApi.previewImpactedTests(repo.id);
+                        setImpactedPreview(p);
+                      } catch (e) {
+                        toast(e instanceof Error ? e.message : 'Preview failed', 'danger');
+                      } finally {
+                        setPreviewingImpacted(false);
+                      }
+                    }}
+                    style={{ fontSize: 12 }}
+                    data-testid="repo-test-impacted-preview"
+                  >
+                    {previewingImpacted ? '⏳ Previewing…' : '🔬 Preview impacted'}
+                  </button>
+                  {impactedPreview && <ImpactedTestPreviewLine preview={impactedPreview} />}
+                </div>
+
                 {/* Detect / Validate actions */}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
                   <button type="button" className="btn btn-secondary" title="Scan repo for build system markers and auto-fill empty command fields" disabled={busy || detecting || validating} onClick={async () => {
@@ -469,6 +525,47 @@ function ValidationHistory({ runs, expandedRunId, onToggle }: {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Phase 59 Stage A — impacted-test preview readout
+// ═══════════════════════════════════════════════════════════════════════
+
+function ImpactedTestPreviewLine({ preview }: { preview: ImpactedTestPreview }) {
+  // Three rendering modes that match the resolver's three terminal
+  // states: rewritten (narrowed), wholeSuiteFallback (didn't narrow,
+  // would run whole suite), skipped (nothing to test). Each gets a
+  // one-line summary the operator can scan; clicking expands the
+  // matched-project list when there is one.
+  let badge: { label: string; color: string };
+  if (preview.skipped) {
+    badge = { label: 'SKIP', color: 'var(--text-tertiary)' };
+  } else if (preview.wholeSuiteFallback) {
+    badge = { label: 'WHOLE', color: 'var(--warning, rgb(245,158,11))' };
+  } else if (preview.rewritten) {
+    badge = { label: 'NARROW', color: 'var(--success, rgb(34,197,94))' };
+  } else {
+    badge = { label: 'NO-OP', color: 'var(--text-tertiary)' };
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-secondary)' }}>
+      <div>
+        <span style={{
+          display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontWeight: 700,
+          fontSize: 10, color: 'var(--bg-base)', background: badge.color, marginRight: 6,
+        }}>{badge.label}</span>
+        {preview.changedFileCount}f changed · {preview.impactedProjects.length} of {preview.allTestProjectCount} test projects
+      </div>
+      <div style={{ opacity: 0.7 }}>
+        {preview.reason}
+      </div>
+      {preview.impactedProjects.length > 0 && preview.impactedProjects.length <= 8 && (
+        <div style={{ opacity: 0.7, paddingLeft: 12 }}>
+          {preview.impactedProjects.join(', ')}
+        </div>
+      )}
     </div>
   );
 }

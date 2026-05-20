@@ -300,7 +300,10 @@ public sealed record Repo(
     int? WorkItemSyncIntervalSeconds = null,
     int? PrSyncIntervalSeconds = null,
     int? BuildSyncIntervalSeconds = null,
-    string? LastUpstreamChangedDate = null);
+    string? LastUpstreamChangedDate = null,
+    // Phase 59 — per-repo override for impacted-test selection.
+    // null = inherit Forge:Test:ImpactedOnly (defaults to true).
+    bool? TestImpactedOnly = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -514,7 +517,13 @@ public sealed record UpdateRepoRequest(
     // Phase 34 — per-repo sync cadence override.
     int? WorkItemSyncIntervalSeconds = null,
     int? PrSyncIntervalSeconds = null,
-    int? BuildSyncIntervalSeconds = null);
+    int? BuildSyncIntervalSeconds = null,
+    // Phase 59 Stage A — per-repo override for impacted-test selection.
+    // null = inherit global Forge:Test:ImpactedOnly (defaults to true);
+    // false = run repo.TestCommand verbatim (legacy whole-suite);
+    // true = always narrow `dotnet test` to impacted projects when
+    // the command carries no explicit project / --filter.
+    bool? TestImpactedOnly = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

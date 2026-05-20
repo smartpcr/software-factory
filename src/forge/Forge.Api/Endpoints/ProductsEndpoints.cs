@@ -64,6 +64,12 @@ public static class ProductsEndpoints
         repos.MapDelete("/{id}/validation-runs", ClearValidationRuns).WithName("ClearValidationRuns");
         repos.MapDelete("/{id}/sync-work-items/runs", ClearSyncRuns).WithName("ClearSyncRuns");
 
+        // Phase 59 Stage A — dry-run the impacted-test resolver against
+        // the repo's clone root + default branch so the operator can
+        // sanity-check the matched test-project list before saving the
+        // checkbox.
+        repos.MapGet("/{id}/test-impacted-preview", PreviewImpactedTests).WithName("PreviewImpactedTests");
+
         return app;
     }
 
@@ -128,6 +134,13 @@ public static class ProductsEndpoints
             row.BuildTimeoutSec = req.BuildTimeoutSec > 0 ? req.BuildTimeoutSec : null;
         if (req.TestTimeoutSec is not null)
             row.TestTimeoutSec = req.TestTimeoutSec > 0 ? req.TestTimeoutSec : null;
+        // Phase 59 Stage A — per-repo override for impacted-test
+        // selection. Tri-state: null clears the override (inherit
+        // global Forge:Test:ImpactedOnly); true / false pin the
+        // behaviour for this repo. The request DTO's bool? naturally
+        // round-trips JSON null vs. true vs. false.
+        if (req.TestImpactedOnly is { } testImpactedOnly)
+            row.TestImpactedOnly = testImpactedOnly;
 
         // Phase 33 — persisted sync settings.
         if (req.WiSyncAssignedTo is not null)
@@ -269,6 +282,55 @@ public static class ProductsEndpoints
                 row.BuildTimeoutSec,
                 row.TestTimeoutSec,
             },
+        });
+    }
+
+    /// <summary>
+    /// Phase 59 Stage A — GET /api/repos/{id}/test-impacted-preview.
+    /// Dry-runs the impacted-test resolver against the repo's clone
+    /// root + default branch so the operator can sanity-check the
+    /// matched test-project set before saving the
+    /// <c>TestImpactedOnly</c> checkbox. Read-only: never writes the
+    /// row, never invokes the test command. The actual gate path
+    /// re-runs the resolver inside the workstream's worktree at gate
+    /// time — this preview is "what would happen if I ran the gate
+    /// against HEAD right now?".
+    /// </summary>
+    private static async Task<IResult> PreviewImpactedTests(
+        string id, ControlDbContext control, CancellationToken ct)
+    {
+        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+        if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
+            return Results.Problem(
+                title: "Repo has no local clone",
+                detail: "Clone the repo first; the resolver needs a worktree to enumerate csproj files and diff against the base branch.",
+                statusCode: 422);
+
+        var testCommand = string.IsNullOrWhiteSpace(row.TestCommand) ? "dotnet test" : row.TestCommand;
+        var baseRef = string.IsNullOrWhiteSpace(row.DefaultBranch) ? "main" : row.DefaultBranch;
+        var changedFiles = await Services.Stories.ImpactedTestResolver.DiscoverChangedFilesAsync(
+            row.CloneRoot, baseRef, ct);
+        var resolution = Services.Stories.ImpactedTestResolver.Resolve(
+            workspace: row.CloneRoot,
+            changedFiles: changedFiles,
+            originalCommand: testCommand,
+            impactedOnly: true);
+
+        return Results.Ok(new
+        {
+            repoId = row.Id,
+            cloneRoot = row.CloneRoot,
+            baseRef,
+            testCommand,
+            changedFileCount = changedFiles.Count,
+            resolution.Rewritten,
+            resolution.Skipped,
+            resolution.WholeSuiteFallback,
+            resolution.Command,
+            resolution.ImpactedProjects,
+            resolution.AllTestProjectCount,
+            resolution.Reason,
         });
     }
 
@@ -853,7 +915,8 @@ public static class ProductsEndpoints
             r.WiSyncAssignedTo, r.WiSyncDateFromDays, r.WiSyncFromDate, r.WiSyncToDate,
             r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds,
             r.WorkItemSyncIntervalSeconds, r.PrSyncIntervalSeconds, r.BuildSyncIntervalSeconds,
-            r.LastUpstreamChangedDate);
+            r.LastUpstreamChangedDate,
+            r.TestImpactedOnly);
     }
 
     private static string Slugify(string name)

@@ -67,6 +67,31 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     }
 };
 
+// Phase 59 Stage C — register the MSBuild instance for Roslyn's
+// MSBuildWorkspace BEFORE any code that might touch it. Must run
+// before `WebApplication.CreateBuilder` because the ASP.NET host
+// loads assemblies that have static Roslyn references (analyzers,
+// source generators) and MSBuildLocator throws if it sees Roslyn
+// types already loaded with a different MSBuild than the one we
+// register. Defensive try/catch — a missing SDK shouldn't crash
+// boot; the RoslynImpactedTestProvider's CanHandleAsync will
+// simply return false and the chain falls through to the
+// heuristic.
+try
+{
+    if (!Microsoft.Build.Locator.MSBuildLocator.IsRegistered)
+    {
+        Microsoft.Build.Locator.MSBuildLocator.RegisterDefaults();
+    }
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine(
+        $"[Forge] MSBuildLocator.RegisterDefaults failed: {ex.Message}. " +
+        "RoslynImpactedTestProvider will be disabled; impacted-test " +
+        "selection falls back to the heuristic for C# workspaces.");
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://localhost:5180");
@@ -408,6 +433,26 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>(
 //   IStoryArtifactStrategy → CrewStoryArtifactStrategy (real LLM via IAgentRunner)
 //   IStoryGitOps           → RealStoryGitOps (real git CLI against repo.CloneRoot)
 //   IStoryProviderOps      → ProviderStoryProviderOps (real provider.CreatePullRequest / Merge)
+// Phase 59 Stage C + S2 — impacted-test resolver chain. Order matters:
+// Roslyn first (precise, call-graph based for C# workspaces),
+// LSP second (precise, references-based for Rust / Go / Python / TS
+// via rust-analyzer / gopls / pylsp / typescript-language-server),
+// Heuristic last (filename + dir + content scan, universal fallback
+// for any workspace + the safety net when an LSP server isn't on
+// PATH). The chain is a singleton so per-workspace caches (Roslyn's
+// Solution, LSP's server processes) survive across gate runs.
+builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain>(sp =>
+    new Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain(
+        new Forge.Api.Services.Stories.ImpactedTests.IImpactedTestProvider[]
+        {
+            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>(),
+            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>(),
+            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>(),
+        }));
+
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.CrewStoryArtifactStrategy>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.RealStoryGitOps>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.ProviderStoryProviderOps>();

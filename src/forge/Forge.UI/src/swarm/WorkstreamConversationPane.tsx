@@ -10,6 +10,7 @@ import {
   buildPageWindow,
   groupByIteration,
   TranscriptLine,
+  hasLogAttachment,
   SummaryView,
   countActiveBuildFailures,
   availableTabs,
@@ -51,6 +52,11 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const hasOlderEvents = transcript.length < transcriptTotalCount;
 
   const [filter, setFilter] = useState<FilterKey>('summary');
+  // Phase 59 Stage B — "Has logs" overlay toggle. Applies on top of
+  // whichever tab is active, hiding events without a `logUrl` payload
+  // field. Local-only state — operators flip it ad-hoc when triaging
+  // a long transcript for the failing gate's log file.
+  const [logsOnly, setLogsOnly] = useState(false);
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -202,8 +208,12 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const evaluatorCrewId = snapshot?.evaluatorCrewId ?? null;
 
   const filtered = useMemo(
-    () => filterEvents(transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId),
-    [transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId],
+    () => {
+      const base = filterEvents(transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId);
+      if (!logsOnly) return base;
+      return base.filter(hasLogAttachment);
+    },
+    [transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId, logsOnly],
   );
   const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
 
@@ -451,6 +461,27 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
           );
         })}
         <span style={{ flex: 1 }} />
+        {/* Phase 59 Stage B — "Has logs" overlay toggle. Hides any event
+            whose payload doesn't carry a logUrl (i.e. anything that isn't
+            a gate event with persisted stdout/stderr). Useful when
+            triaging a failing run across a long transcript — flip on,
+            see only events with a 📎 view-log chip. */}
+        <button
+          type="button"
+          className={`doc-conv-resume-btn${logsOnly ? ' active' : ''}`}
+          title="Show only events with a persisted log file (📎 view-log)."
+          aria-pressed={logsOnly}
+          onClick={() => setLogsOnly((v) => !v)}
+          data-testid="transcript-logs-only-toggle"
+          style={{
+            margin: '0 6px 0 2px',
+            padding: '4px 10px',
+            borderColor: logsOnly ? 'var(--info, rgb(56,189,248))' : undefined,
+            color: logsOnly ? 'var(--info, rgb(56,189,248))' : undefined,
+          }}
+        >
+          {logsOnly ? '📎 Has logs ✓' : '📎 Has logs'}
+        </button>
         <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming || cancelling || restarting || retrying}
           title={isComplete ? 'Completed.' : isLive ? 'Running.' : !canResume ? 'No iterations yet.' : 'Resume loop.'}
           onClick={() => void handleResume()} style={{ margin: '0 2px', padding: '4px 10px' }}>

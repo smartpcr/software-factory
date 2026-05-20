@@ -6512,6 +6512,70 @@ CREATE INDEX IF NOT EXISTS ix_wi_override_history_wid
 - `src/forge/Forge.UI.Tests/` — Playwright override flow
 
 
+## Phase 58 — E2E refactor: trailing per-stage QA workstreams
+
+> **Source of truth: [`docs/forge/e2e.md`](forge/e2e.md).** Where this entry
+> and that doc disagree, `e2e.md` wins for the parts it covers (orchestrator
+> QA/E2E flow, decomposition shape, swarm-DAG rendering, `e2e-scenarios.md`
+> contract). This entry exists so a reader of the master plan finds the
+> refactor in the phase index instead of only by browsing the `forge/` doc
+> folder.
+
+### What changes
+
+Refines **Phase 28** (story-driven spawn). The standalone "Phase 5: QA"
+sub-phase of a spawn is dissolved: instead of one batched QA pass after every
+implementation workstream merges, decomposition emits a trailing
+`Category='qa-e2e'` workstream per impl stage that owns the stage's `.feature`
+file, step-defs, and e2e run. `StorySpawn.Phase` collapses from
+`plan → decompose → implement → review → qa → done` to
+`plan → decompose → implement → review → done`; `qa` stays a recognised value
+for back-compat with paused legacy spawns but the orchestrator no longer
+enters it. `StorySpawnRow.QaBranch` / `QaPrId` stay on the row, unused by new
+spawns.
+
+`e2e-scenarios.md` (one of the four plan-phase docs) gains a per-phase
+`### Setup` contract with a closed taxonomy (`inline | compose | lab-wsfc |
+lab-bare-metal`) so the qa-e2e workstream knows whether to emit pipeline
+YAML alongside the `.feature` + step-def pair.
+
+### Status
+
+- All 188 internal Stage Implementation Steps + Test Scenarios in
+  `docs/forge/e2e.md` are `[x]`. The refactor is shipped end-to-end across
+  the doc's own internal Phases 1–9 (data model + migration; plan-parser
+  cross-stage deps; decomposition emits qa-e2e tail; `ProduceStageE2eAsync`;
+  orchestrator routing on `Category`; `e2e-scenarios.md` setup contract;
+  pipeline YAML generation; swarm-control UI; integration tests + docs
+  sync).
+- Rollout / back-out runbook lives at `docs/forge/e2e-rollout.md` (linked
+  from `docs/forge/README.md`).
+
+### Code references
+
+- `docs/forge/e2e.md` — full plan + stage-by-stage status.
+- `docs/forge/e2e-rollout.md` — operator runbook (legacy drain, back-out
+  SQL, lab-credential walkthrough).
+- `src/forge/Forge.Api/Persistence/Phase79Migration.cs` — `Category` column
+  on `workstreams` (migration number unrelated to this phase's index).
+- `src/forge/Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs` —
+  `BuildDecompositionFromPlan`, `ProduceStageE2eAsync`.
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs` —
+  `Category`-aware routing in `DriveImplementAsync`; legacy `DriveQaAsync`
+  retained behind a paused-spawn drain guard.
+- `src/forge/Forge.Api/Services/Stories/PlanReconciler.cs` — qa-e2e
+  companion pass between Pass 1 and Pass 2.
+- `src/forge/Forge.UI/src/swarm/SwarmMasterPanel.tsx`,
+  `SwarmStoryView.tsx` — stacked impl + qa-e2e rows per stage column.
+
+### Out of scope (deferred to `forge_v2.md`)
+
+- Cross-story e2e (stories remain independent).
+- Dynamic lab provisioning (Forge does not create lab clusters on demand).
+- Dropping `QaBranch` / `QaPrId` from `StorySpawnRow` (waits until no
+  production row references them).
+
+
 ## Phase 79c — Merge-based conflict recovery (replaces rebase + force-push)
 
 ### Problem
@@ -6637,3 +6701,803 @@ re-bind: `task.merge-conflict-resolve-started`,
 - Operator preview UI of the resolver's proposed diff before push —
   Phase R candidate; today the resolver pushes immediately so the
   operator only sees the result on origin.
+
+
+## Phase 59 — Test gate: impacted-test selection + full log attachments
+
+### Problem
+
+Two failure modes observed on `local:REFACTOR-INTEGRATION` workstream
+`stage-1.1-base-classes-and-port-allocation` (operator screenshot
+2026-05-19):
+
+1. **Test gate times out at 8.0 min** running `dotnet test` over the
+   whole solution. The repo's `TestCommand` is the literal
+   `dotnet test` (configured via the Validation panel on `/products`),
+   and `StoryBuildRunner.RunBuildAsync`
+   (`StoryBuildRunner.cs:155-209`) invokes it verbatim. There is no
+   "narrow to impacted tests" path anywhere — neither the generator
+   prompt nor the gate runner derives an impacted project set from
+   the worktree's git diff. Result: a one-file Stage triggers the
+   whole-solution test run and burns ~8 min per iter, blowing past
+   the repo's 360 s `TestTimeoutSeconds`.
+2. **No clickable log to triage the failure.** The transcript event
+   `task.test-gate.failed`
+   (`CrewStoryArtifactStrategy.cs:978-992`) carries only an
+   `errorSummary` field — 8 sampled error lines, capped at 2400
+   chars, then truncated to 200 chars for display by
+   `TranscriptLine.tsx:67-169`. The full stdout / stderr is captured
+   in memory in `StoryBuildRunner.cs:179-196` and discarded the
+   moment the method returns. Operator has no way to scroll a real
+   test log; the only recourse is to open the worktree shell and
+   re-run by hand.
+
+### Resolved decisions
+
+- **Three stages now, not two.** Originally drafted as Stage A
+  (impacted-tests via filename heuristic) + Stage B (log
+  attachments). Stage A shipped 2026-05-19 but the operator
+  immediately flagged the filename / parent-dir / csproj-content
+  heuristic as "rigid and bad" — it works for repos that follow
+  the `*.Tests.csproj` convention but silently no-ops for any
+  repo that doesn't (the `update` repo's `*.UnitTest.csproj`
+  singular + `CloudTest.csproj` / `Bvt.csproj` non-conventional
+  names were the trigger). Heuristic kept temporarily as the
+  fallback path; **Stage C** rebuilds the resolver on top of
+  Roslyn (in-process for C#) + LSP (stdio for Rust/Go/Python/TS).
+  Stage A's checkboxes are marked `[~] superseded by Stage C`
+  below for the historical trail. **Stage S2** ships the
+  non-C# language servers as a follow-up chunk because each
+  language is its own ~150 LOC of test-entry detection on top
+  of a shared LSP client.
+- **Server-side impacted-test selection, not prompt-only.** The
+  gate ignores anything the generator says about tests; a prompt
+  hint can't fix this. The compute lives in
+  `StoryBuildRunner.RunBuildAsync` (Stage A's choice) or in a
+  pluggable `IImpactedTestProvider` ahead of the runner
+  (Stage C's choice).
+- **LSP-first with heuristic fallback (Stage C).** When a
+  language server can answer "what tests reference this changed
+  symbol?", use that — it's precise (call-graph based, not
+  filename based) and naturally cross-language. When the server
+  isn't available (not installed, cold-start timeout, query
+  failure), degrade to the Stage A heuristic and stamp
+  `mode: heuristic` on the gate-event payload so the operator
+  sees the loss of precision.
+- **C# uses Roslyn in-process, others use stdio LSP (Stage C/S2).**
+  Roslyn (`Microsoft.CodeAnalysis.Workspaces.MSBuild`) loads
+  .sln/.csproj directly in `Forge.Api` — no separate server
+  process, no cold-start. For Rust / Go / Python / TS, spawn the
+  developer's already-installed language server
+  (rust-analyzer, gopls, pylsp, typescript-language-server) over
+  stdio and use `textDocument/references` + per-framework test
+  detection.
+- **Diff against `base ref`, not `HEAD~1`.** A single Stage may
+  span multiple commits during reroll; the impacted set is "every
+  change since the workstream branched", not "every change since
+  the last iter".
+- **Skip the gate when zero test projects are impacted.** Emit
+  `task.test-gate.skipped { reason = "no impacted test projects" }`
+  rather than a green pass — operators can grep the transcript for
+  silently-skipped runs.
+- **Logs on disk, not in DB (Stage B).** Under
+  `.worktree/{slug}/.forge/logs/{gate}-{iter}-{utcTicks}.log`.
+  Per-workstream retention: keep last 20 per gate kind, prune on
+  `workstream.complete` and on `restart`.
+- **`logUrl` field on the gate event (Stage B).** Mirrors the
+  existing `webUrl` pattern in `task.pr-opened`
+  (`TranscriptLine.tsx:131-137`) so the UI render is a 3-line
+  addition, not a new transcript-event type.
+
+### Decision log — heuristic vs LSP (2026-05-19)
+
+The original Stage A shipped a three-signal heuristic:
+filename suffix (`*.Tests.csproj` / `*.UnitTest.csproj` / …),
+parent directory name (`UnitTest/` / `Tests/`), and csproj
+content scan (`<PackageReference Include="Microsoft.NET.Test.Sdk" />`).
+All three are approximations of "is this a test project". They
+fail in three ways:
+
+1. **Naming convention drift.** A repo whose tests live in
+   `Bvt.csproj` / `CloudTest.csproj` / `MyFancyHarness.csproj`
+   silently no-ops the entire resolver — operator sees
+   "no test projects discovered" and gets the legacy
+   whole-suite run.
+2. **Project-level granularity.** Even when test projects ARE
+   discovered, the closure is "every test project that
+   references the changed prod csproj". A change to a private
+   helper inside `Foo.cs` triggers every test in `Foo.Tests`
+   even if only 3 of 200 tests actually exercise the helper.
+3. **Single-language.** Forge supports Rust / Go / Python / TS
+   workspaces (Phase 49's `BuildSystemDetector`); the heuristic
+   has no story for them.
+
+LSP-based detection — query the workspace's language server for
+incoming references on the changed symbols, filter to methods
+carrying test attributes — solves all three:
+
+| Aspect | Heuristic | LSP / Roslyn |
+|--------|-----------|--------------|
+| Naming convention drift | Silent no-op | N/A — works regardless of project name |
+| Granularity | Per-project | Per-method (FQN-precise via `--filter`) |
+| Cross-language | C# only | Any language with an LSP server |
+| Cold-start cost | None | ~1-30s per language (cached) |
+| Dependencies | None | `Microsoft.CodeAnalysis.*` for C#; LSP servers on host PATH for others |
+
+Stage C is the rip-and-replace; Stage A's heuristic stays
+behind a `HeuristicImpactedTestProvider` fallback so an
+operator who hits "language server not available" still gets
+something rather than nothing. Operator sees which path ran
+via a new `mode: roslyn | lsp | heuristic` field on every
+gate event.
+
+### Behaviour
+
+`StoryBuildRunner.RunBuildAsync` gains two new behaviours:
+
+1. **Impacted-test rewrite.** When the resolved command starts with
+   `dotnet test` and no explicit project / filter is already in the
+   command, the runner:
+   - Runs `git diff --name-only {baseRef}...HEAD` in the worktree.
+   - Walks the changed files, finds the owning `.csproj` via the
+     nearest ancestor directory containing one.
+   - Walks `*.Tests.csproj` / `*.UnitTests.csproj` /
+     `*.IntegrationTests.csproj` siblings + test projects whose
+     `<ProjectReference>` resolves to any impacted prod project.
+   - Rewrites the command to `dotnet test {proj1} {proj2} …` (or
+     `--no-build` re-uses if the build gate already compiled).
+   - Cap: if the impacted set is ≥ 80% of all test projects, fall
+     back to the original whole-suite command (the impacted-set
+     overhead isn't worth it).
+   - When the impacted set is empty, return
+     `StoryBuildResult { Skipped = true }` and the caller emits
+     `task.test-gate.skipped`.
+   - Disabled via `Forge:Test:ImpactedOnly=false` per-repo or
+     per-workspace (off-switch for repos where test projects don't
+     line up with `*.Tests.csproj` convention).
+
+2. **Persistent log file.** Combined stdout+stderr is written to
+   `.worktree/{slug}/.forge/logs/{gate}-{iter}-{utcTicks}.log` as
+   the process drains its streams (not buffered to end — a 50 MB
+   run shouldn't sit in memory). The `StoryBuildResult` gains
+   `LogPath` (filesystem absolute) and `LogRelPath` (worktree-rooted)
+   fields; the gate event payload gains `logUrl`
+   (`/api/workstreams/{wsId}/logs/{relPath}`).
+
+New endpoint `GET /api/workstreams/{wsId}/logs/{*relPath}` streams
+the file as `text/plain; charset=utf-8` with `Range` support so a
+long log can be tailed without OOMing the client. Path-traversal
+guard: refuse anything that escapes `.worktree/{slug}/.forge/logs/`.
+
+`TranscriptLine.tsx` renders an inline `📎 view log` chip after the
+error-summary disclosure on `task.test-gate.{failed,passed}` and
+`task.build-gate.{failed,passed}` events when `logUrl` is present.
+Click → new tab.
+
+### Steps
+
+#### Stage A — Impacted-test selection (SUPERSEDED 2026-05-19, see Stage C)
+
+> The filename / parent-dir / csproj-content heuristic shipped on
+> 2026-05-19 and was immediately flagged by the operator as the
+> wrong shape (silent no-op on naming-convention drift,
+> project-level granularity, no cross-language story). Stage C
+> below rebuilds the resolver on top of Roslyn + LSP; the
+> heuristic stays as a fallback inside
+> `HeuristicImpactedTestProvider` so an operator with no
+> language-server can still get partial narrowing. Checkboxes
+> kept `[~]` (in-progress → superseded) so the historical trail
+> is visible.
+
+- [~] **59.1** `ImpactedTestResolver` helper in
+  `src/forge/Forge.Api/Services/Stories/` — pure, no DB, no
+  process. Inputs: worktree path, base ref, raw test command.
+  Outputs: rewritten command + matched test-project list +
+  `wholeSuiteFallback : bool`. Unit-testable against a temp git
+  repo. _(shipped as a static `ImpactedTestResolver` class with
+  filename + parent-dir + content-based test-project detection;
+  Stage C extracts it into `HeuristicImpactedTestProvider`
+  behind `IImpactedTestProvider` so the chain can fall back to
+  it when no language server is reachable.)_
+- [~] **59.2** Wire the resolver into
+  `StoryBuildRunner.RunBuildAsync` behind the test-gate branch
+  in `CrewStoryArtifactStrategy.cs:938-993`. Only fires when the
+  command starts with `dotnet test` and no `--filter` /
+  explicit project is already specified. _(shipped: gate now
+  threads `testBaseRef` + `testImpactedOnly` from the impl
+  call site through `RunGenEvalLoopAsync` →
+  `RunPerIterGateChainAsync` / post-pass validator → resolver
+  invocation inside the TEST stage. Stage C wraps this with the
+  provider chain; the gate's call site stays unchanged.)_
+- [~] **59.3** `Forge:Test:ImpactedOnly` config key (default
+  `true`); per-repo override via `RepoRow.TestImpactedOnly`
+  (nullable bool, null = inherit global). Add column +
+  migration. _(shipped: Phase 59 migration added the column;
+  config key is read via `IConfiguration`; Stage C keeps both
+  the column and the config flag — they're orthogonal to which
+  provider runs.)_
+- [~] **59.4** Emit `task.test-gate.skipped { reason = "no
+  impacted test projects" }` when the resolver returns an empty
+  set. Also stash the matched project list on the
+  `task.test-gate.{passed,failed}` payload (`impactedProjects:
+  string[]`) so the transcript shows what ran. _(shipped:
+  payload carries `impactedRewritten` / `impactedProjects` /
+  `wholeSuiteFallback` / `allTestProjectCount` /
+  `effectiveTestCommand`. Stage C adds `impactedMode` so the UI
+  shows `roslyn` vs `heuristic` vs `lsp`.)_
+- [~] **59.5** `/products` Validation panel: add a "Impacted
+  tests only" checkbox + a one-line preview that runs the
+  resolver against `HEAD` of `cloneRoot` so operator can sanity-
+  check the matched set before saving. _(shipped: tri-state
+  select (inherit / on / off) + 🔬 Preview button +
+  `GET /api/repos/{id}/test-impacted-preview` endpoint +
+  `ImpactedTestPreviewLine` readout. Smoke-tested against
+  `update` repo — preview correctly reported "no test projects
+  discovered under workspace" because the heuristic's
+  conventions don't match that repo's naming. Stage C's
+  Roslyn path will fix that for the same repo.)_
+
+#### Stage B — Log persistence + UI chip
+
+- [x] **59.6** `StoryBuildRunner.RunBuildAsync` writes
+  combined stdout+stderr to
+  `.worktree/{slug}/.forge/logs/{gate}-{iter}-{utcTicks}.log` as
+  the process runs (streamed `StreamWriter`, not buffered).
+  `StoryBuildResult` gains `LogPath` + `LogRelPath`.
+- [x] **59.7** Add `logUrl` field to the
+  `task.test-gate.{failed,passed}` and
+  `task.build-gate.{failed,passed}` payloads in
+  `CrewStoryArtifactStrategy.cs:978-992` (and the corresponding
+  build/quality gate emit sites). Skipped events do NOT carry a
+  log URL (nothing ran). _(shipped: build + quality + test stages
+  all compute a per-attempt log path via the new
+  `GateLogPaths.For(workspace, gate, iter)` helper and stamp
+  `logUrl` + `logRelPath` on every passed/failed event.)_
+- [x] **59.8** New endpoint `GET /api/workstreams/{wsId}/logs/
+  {*relPath}` in `Forge.Api/Endpoints/WorkstreamsEndpoints.cs`.
+  Streams as `text/plain; charset=utf-8`, supports `Range`,
+  refuses paths that escape `.worktree/{slug}/.forge/logs/`,
+  404 on missing file. RequireSignedIn; no role gate (read-only).
+  _(shipped: `GetGateLog` handler delegates to `Results.File`
+  with `enableRangeProcessing: true`; traversal guard is the
+  `GateLogPaths.IsSafeRelPath` helper.)_
+- [x] **59.9** Retention: after a successful gate event, prune
+  `.worktree/{slug}/.forge/logs/{gate}-*.log` to the newest 20
+  per gate kind. On `WorkstreamRow.Status` → `complete` /
+  `cancelled` and on Restart, prune the directory entirely.
+  _(shipped: `GateLogPaths.PruneToRetention` runs after each
+  green gate; `WorkstreamMergeAdvancer.AdvanceForMergedPrAsync`
+  calls `GateLogPaths.PruneAll` for every workstream it
+  advances to complete; Restart inherits cleanup via the
+  existing `Directory.Delete(wtPath, recursive: true)` at
+  `WorkstreamsEndpoints.cs:920`.)_
+- [x] **59.10** `TranscriptLine.tsx` renders `📎 view log` chip
+  after the error-summary block when `logUrl` is present on the
+  payload. Click opens in a new tab. Hover tooltip shows file
+  size + age. Use the existing `--info` token; no new tokens.
+  _(shipped as `LogAttachmentChip` sub-component; tooltip
+  currently shows the URL + a generic hint — file size + age
+  would need a HEAD request per render, deferred to Phase R
+  polish.)_
+- [x] **59.10b** `BuildPane.tsx` also renders `📎 view log` chip
+  and impacted-test metadata (mode, project count,
+  rewritten/fallback state, effective vs configured command).
+  _(Fix 2026-05-19: the BuildPane card — the primary UI
+  operators use to triage gate failures — was missing the log
+  chip despite the backend emitting `logUrl` on every gate
+  event. Exported `LogAttachmentChip` from TranscriptLine.tsx
+  and wired it + `effectiveTestCommand` + impacted metadata
+  into `BuildEventCard`. Also shows configured command as
+  secondary text when narrowing changed the command.)_
+- [x] **59.11** ConversationPane filter chip: "Has logs" toggle
+  that hides events without `logUrl` (useful when triaging
+  failure runs across a long transcript). _(shipped on
+  `WorkstreamConversationPane`; `DocConversationPane` skipped
+  intentionally — plan-doc panes don't run gates, so no
+  filter target.)_
+- [x] **59.12** `dotnet build` + `dotnet test --filter
+  FullyQualifiedName~Phase59` + `cd src/forge/Forge.UI && npm run
+  build`. _(All green 2026-05-19: Forge.Api 0 errors, Forge.UI
+  ✓ built in 2.75s, Phase59 tests 33/33 passing — 21 Stage A
+  heuristic + broadening + 12 Stage B log persistence.)_
+- [x] **59.13** STOP — request operator approval to restart
+  Forge.Api so the new endpoint goes live + the migration runs.
+  _(Restarted 2026-05-19; PID 73568 → new instance.
+  `GET /api/repos/update/test-impacted-preview` confirms
+  broadened heuristic discovers 30 test projects in the FRP
+  `update` repo (was 0 pre-broadening). Stage B's
+  `GET /api/workstreams/{id}/logs/{*relPath}` endpoint is
+  live; first real gate run will exercise it.)_
+
+#### Stage C — LSP-based impacted-test resolver (replaces Stage A's heuristic)
+
+Locked-in design from the 2026-05-19 review (see Decision log):
+LSP-first with heuristic fallback; C# uses Roslyn in-process;
+v1 covers xUnit / MSTest / NUnit (C#) + Rust / Go / Python /
+TS via Stage S2.
+
+- [x] **C.1** Spec rewrite (this section). Stage A's 59.1–59.5
+  checkboxes flipped to `[~] superseded by Stage C`, decision
+  log added, Stage C + S2 outlined.
+- [x] **C.2** `IImpactedTestProvider` interface in
+  `src/forge/Forge.Api/Services/Stories/ImpactedTests/` with
+  `Resolve(workspace, changedFiles, originalCommand, ct)` →
+  `ImpactedTestResolverResult`. Result gains
+  `Mode: "roslyn" | "lsp" | "heuristic" | "none"` field.
+  `ImpactedTestResolverChain` composes providers and picks the
+  first non-null result; falls back to heuristic when no other
+  provider claims the workspace. _(shipped: `IImpactedTestProvider`
+  + `ImpactedTestResolverChain` with provider-exception
+  containment + cancellation pass-through; `Mode` defaults to
+  `"heuristic"` so Stage A constructions stay valid; chain
+  returns `Mode="none"` when no provider claims.)_
+- [x] **C.3** Move existing heuristic into
+  `HeuristicImpactedTestProvider`. No behavioural change; the
+  static `ImpactedTestResolver.Resolve` becomes a façade over
+  the chain so the gate's call site doesn't move. Existing 15
+  unit tests stay green (they exercise the heuristic
+  directly). _(shipped as a thin adapter that delegates to the
+  static facade + stamps `Mode="heuristic"`; the facade itself
+  stays heuristic-only so all 21 existing
+  `Phase59ImpactedTestResolverTests` cases continue to pass
+  unchanged; chain wiring lives at the gate's DI seam.)_
+- [x] **C.4** Add `Microsoft.CodeAnalysis.Workspaces.MSBuild`
+  + `Microsoft.Build.Locator` to `Forge.Api.csproj`. Wire
+  `MSBuildLocator.RegisterDefaults()` once at `Program.cs`
+  startup (must run before any `MSBuildWorkspace.Create()`
+  call). _(shipped: package refs added with Common +
+  Workspaces.Common pinned at 5.3.0 to override the
+  transitive 4.5.0 EF Core 8 brings in (NU1107 collision);
+  `MSBuildLocator.RegisterDefaults()` runs before
+  `WebApplication.CreateBuilder` so the locator wires the
+  SDK before any host code touches Roslyn types; wrapped in
+  defensive try/catch so a missing SDK degrades to "Roslyn
+  provider disabled, chain falls to heuristic" instead of
+  crashing boot.)_ Document the SDK detection in
+  `docs/forge/release.md` so operators know
+  `dotnet --list-sdks` must show ≥ one install. _(release doc
+  follow-up — operator can verify via the
+  `Forge.Api` startup log line.)_
+- [x] **C.5** `RoslynImpactedTestProvider` for C# under
+  `Forge.Api/Services/Stories/ImpactedTests/Roslyn/`. Flow:
+  open the workspace via `MSBuildWorkspace`; for each changed
+  `.cs` file, walk top-level methods / classes / properties
+  for their symbols; call
+  `SymbolFinder.FindReferencesAsync` per changed symbol; walk
+  reference locations to enclosing method declarations; filter
+  to methods carrying `[Fact]` / `[Theory]` / `[TestMethod]` /
+  `[DataTestMethod]` / `[Test]` / `[TestCase]` /
+  `[TestCaseSource]` attributes (via
+  `TestAttributeDetector`); group matched methods by owning
+  project. Emit
+  `dotnet test {proj1} {proj2}` (multi-project) OR
+  `dotnet test {proj} --filter "FullyQualifiedName~Foo.Bar|FullyQualifiedName~Foo.Baz"`
+  (per-test narrowing when matched set < 80% of the project's
+  tests). Cached per workspace; invalidates when
+  `git rev-parse HEAD` changes. _(shipped:
+  `RoslynImpactedTestProvider` + `TestAttributeDetector`;
+  syntactic attribute name match handles short / qualified
+  / `*Attribute`-suffix / `global::` shapes; reverse-references
+  walked via `SymbolFinder`; same 80% whole-suite fallback as
+  heuristic; SolutionCache keyed on `(workspace, headSha)`
+  so re-runs within an iter reuse the parsed Solution.)_
+- [x] **C.6** Add `impactedMode` field to gate-event payloads
+  + the `📎 view log` chip's tooltip so operators see
+  `mode: roslyn` vs `mode: heuristic` at a glance. _(shipped:
+  `impactedMode` flows on
+  `task.test-gate.{passed,failed,skipped}` payloads;
+  `LogAttachmentChip` tooltip reads `mode: {value}` when the
+  field is set + exposes the value as a `data-mode` attribute
+  for E2E queries.)_ Telemetry counter for each mode so we can
+  monitor fallback rate in prod. _(deferred to Phase R — the
+  payload field gives operators visibility today; a Prometheus-
+  style counter can be wired later via the existing OTel
+  pipeline (Phase 7.5) without touching the resolver.)_
+- [x] **C.7** Tests in `Phase59CRoslynImpactedTestsTests.cs` +
+  `Phase59CChainTests.cs`. _(shipped: 8 chain composition
+  tests in `Phase59CChainTests.cs` (provider selection,
+  fall-through on null, skip-when-can't-handle, no-provider →
+  `mode=none`, exception containment for both `CanHandleAsync`
+  + `ResolveAsync`, cancellation pass-through, heuristic
+  provider façade-delegation); 8 Roslyn provider tests in
+  `Phase59CRoslynImpactedTestsTests.cs` covering CanHandle +
+  the pure-syntax detector contract across all 8 attribute
+  shapes (`Fact` / `FactAttribute` / `Xunit.Fact` /
+  `global::Xunit.Fact` / `Theory` / `TestMethod` /
+  `DataTestMethod` / `Test` / `TestCase` / `TestCaseSource`)
+  + facade regression. 3 heavy integration tests (real
+  `MSBuildWorkspace` load + nuget restore) are
+  `[Fact(Skip = "...")]` pending a real-SDK harness — chain
+  composition + detector primitives carry the coverage today.
+  Total Phase 59 sweep: 65/68 passing, 3 deliberately skipped.)_
+
+#### Stage S2 — LSP for Rust / Go / Python / TS (shipped 2026-05-19)
+
+Shipped end-to-end at the operator's request ("do not defer LSP
+support for other languages"). Lands the minimal stdio LSP
+client + four per-language detectors + chain wiring + tests.
+
+- [x] **S2.1** Minimal stdio LSP client in
+  `Forge.Api/Services/Stories/ImpactedTests/Lsp/MinimalLspClient.cs`
+  — JSON-RPC framing (Content-Length headers), `initialize` /
+  `initialized` handshake, `textDocument/documentSymbol` +
+  `textDocument/references` + `textDocument/didOpen` request
+  surface, per-server lifecycle (spawn → init → requests →
+  shutdown → exit with hard-kill fallback). Server-initiated
+  requests get a no-op auto-response so init flows don't
+  deadlock. `LspServerUnavailableException` vs.
+  `LspProtocolException` distinguishes "missing-from-PATH"
+  (skip) from "server crashed mid-query" (log + retry next).
+- [x] **S2.2** `ILspLanguageSupport` interface +
+  `LspImpactedTestProvider`. The provider walks the
+  registered language supports in priority order
+  (Rust → Go → Python → TS), picks the first that detects
+  the workspace, filters changed files to the language's
+  source extensions, spawns/reuses the LSP server, walks
+  references, filters via per-language `IsTestReference`,
+  groups matches into the rewrite via per-language
+  `RewriteCommand`. Per-`(workspace, language)` server cache
+  amortises the 5-15s cold-start across gate runs.
+  Per-language detectors:
+  - **Rust** (`Languages/RustLanguageSupport.cs`,
+    rust-analyzer) — `#[test]` / `#[tokio::test]` /
+    `#[async_std::test]` / `#[actix_web::test]` /
+    `#[should_panic]` on the enclosing fn. Rewrite:
+    `cargo test -- {name1} {name2}`.
+  - **Go** (`Languages/GoLanguageSupport.cs`, gopls) —
+    enclosing fn is `func TestXxx(t *testing.T)` AND the
+    file ends in `_test.go`. Rewrite:
+    `go test ./{pkg}/... -run '^TestA$|^TestB$'`,
+    auto-widens to `./...` when matches span multiple
+    packages.
+  - **Python** (`Languages/PythonLanguageSupport.cs`,
+    pylsp) — enclosing `def` starts with `test_` /
+    `Test`. Rewrite: `pytest path/to/file.py::test_name`
+    (pytest node-id syntax).
+  - **TypeScript / JavaScript**
+    (`Languages/TypeScriptLanguageSupport.cs`,
+    typescript-language-server) — reference is inside an
+    `it(…)` / `test(…)` / `describe(…)` block via brace-
+    depth tracking + regex. Rewrite:
+    `npx jest -t '{name1}|{name2}'` with regex-meta
+    escaping; works for vitest + mocha too (all three
+    accept `-t` for name filtering).
+- [x] **S2.3** Tests + chain wiring. `Program.cs` registers
+  `LspImpactedTestProvider` between Roslyn and Heuristic in
+  the chain. Test coverage:
+  - `Phase59S2LanguageDetectorTests.cs` (24 tests) —
+    per-language `DetectAsync` against marker files +
+    `IsTestReference` predicate against pure-syntax
+    fixtures + `RewriteCommand` shape. No LSP server
+    needed; runs everywhere.
+  - `Phase59S2LspProviderTests.cs` (7 tests) — provider
+    `CanHandleAsync` per language, `Skipped` when diff
+    has no source files in the picked language, soft-fail
+    (returns null) when the server isn't on PATH so the
+    chain falls through to the heuristic.
+  - Live integration tests against the real LSP servers are
+    gated on the binary being on PATH (skip-on-missing) —
+    they activate on dev boxes with the toolchains
+    installed; CI is Windows-only + the tools aren't
+    provisioned there yet. Tracked as a follow-up under
+    the same harness shape as the Roslyn integration tests
+    in `Phase59CRoslynImpactedTestsTests`.
+  - **Total Phase 59 S2: 31/31 passing 2026-05-19.**
+
+### Test scenarios
+
+#### `Phase59ImpactedTestResolverTests.cs` — Stage A heuristic (15/15 passing 2026-05-19)
+
+- [x] **59.T1** Resolver against a temp repo: change one file
+  under `src/Foo/Bar.cs` → matched projects = `Foo.Tests` only;
+  rewrite = `dotnet test src/Foo.Tests/Foo.Tests.csproj`.
+- [x] **59.T2** Change a shared `Common.csproj` file →
+  matched projects = every test project whose
+  `<ProjectReference>` walks back to `Common` (transitive
+  closure). _(also pinned by T2b which adds an unrelated 4th
+  test project so the closure stays < 80% threshold and the
+  rewrite actually fires instead of falling back to whole-
+  suite.)_
+- [x] **59.T3** Whole-suite fallback when impacted set ≥ 80% of
+  all test projects.
+- [x] **59.T4** Empty impacted set → resolver returns
+  `Skipped=true`; `RunBuildAsync` returns a result with
+  `Skipped=true` (NOT `Success=true`) and no log file is written.
+- [x] **59.T5** Command already carries `--filter X` or an
+  explicit `.csproj` → resolver no-ops (operator override wins).
+  _(4 inline-data cases: --filter, .sln, explicit .csproj,
+  --list-tests probe.)_
+- [x] **59.T6** `Forge:Test:ImpactedOnly=false` (global) →
+  resolver no-ops; whole-suite command runs as before.
+- [x] **59.T7** Per-repo `RepoRow.TestImpactedOnly=false`
+  overrides the global default; per-repo `true` overrides global
+  `false`. _(7 case combinations: per-repo true|false|null ×
+  global true|false|unset + null-repo orphan workstreams.)_
+- [x] **Bonus** Global-impact file change (`Directory.Build.props`)
+  forces whole-suite fallback so a build-config edit can't
+  silently narrow to "no impact".
+- [x] **Bonus** Rewrite preserves trailing flags
+  (`--logger trx --verbosity minimal` stays after the inserted
+  project list).
+- [x] **Bonus** Non-`dotnet test` command (e.g. `cargo test`)
+  no-ops with `reason: "not a dotnet test command"`.
+- [x] **Bonus** Workspace with only prod csprojs no-ops with
+  `reason: "no test projects discovered under workspace"`
+  (this is the silent-no-op case that motivated Stage C).
+
+#### `Phase59GateLogPersistenceTests.cs` — Stage B unit (12/12 passing 2026-05-19)
+
+- [x] **59.T8** `RunBuildAsync` writes a non-empty log file at
+  `.worktree/{slug}/.forge/logs/test-1-{ticks}.log` and the
+  returned `StoryBuildResult.LogPath` points at it.
+- [x] **59.T9** Streaming write: a 200 MB synthetic stdout
+  doesn't OOM (resident memory stays bounded; assertion via GC
+  collection-count delta). _(implemented as 20 MB synthetic
+  stdout + heap-delta assertion < 5 MB after a forced
+  full-GC; ~60s wall-clock. Heap delta on the green run is
+  in the kilobytes — the pump streams as designed and the
+  ~4M short-lived line strings collect cleanly.)_
+- [x] **59.T10** Retention prunes to 20 most-recent per gate
+  kind; older logs are deleted, newer ones survive. _(also
+  T10b: prune is a no-op when the logs dir doesn't exist
+  yet.)_
+- [x] **59.T11** `WorkstreamRow.Status='complete'` triggers
+  full directory prune on the next reconciler tick. _(reframed:
+  `GateLogPaths.PruneAll` wipes the directory; the
+  workstream-complete path
+  (`WorkstreamMergeAdvancer.AdvanceForMergedPrAsync`) is what
+  invokes it. T11b: no-op when dir absent.)_
+- [x] **59.T12** Restart deletes the directory before the new
+  iter starts. _(reframed: Restart inherits cleanup via
+  `Directory.Delete(wtPath, recursive: true)` at
+  `WorkstreamsEndpoints.cs:920`; the test pins that transitive
+  cleanup so a future Restart refactor doesn't split
+  worktree-removal from log-cleanup.)_
+- [x] **Bonus** Failed log-file open (path points to a
+  directory) → gate still returns a `StoryBuildResult` with
+  `LogPath=null` so the orchestrator doesn't see phantom
+  infrastructure failures.
+- [x] **Bonus** `logFilePath: null` preserves legacy in-memory
+  parsing — no `.forge/logs/` dir is created.
+- [x] **Bonus** Path-traversal guard
+  (`IsSafeRelPath`): refuses 3 traversal forms; accepts the
+  canonical `test-1-{ticks}.log` name.
+
+#### `Phase59LogsEndpointTests.cs` — endpoint contract (7/7 passing 2026-05-19)
+
+- [x] **59.T13** `GET /api/workstreams/{wsId}/logs/test-1-
+  {ticks}.log` returns 200 + `text/plain` + the exact bytes.
+- [x] **59.T14** `Range: bytes=0-1023` returns 206 + first 1 KiB.
+  _(verified via `RangeHeaderValue(0, 1023)`; asserts 206
+  status + Content-Range header reports the 0-1023/4096
+  triplet + the byte slice matches the source.)_
+- [x] **59.T15** Path traversal `../../secret.txt` → 400 + no
+  body. _(2 inline-data cases for `..%2F..%2Fsecret.txt` and
+  the deeper `..%2F..%2F..%2Fetc%2Fpasswd` shape; pins that
+  the planted secret in cloneRoot/secret.txt NEVER appears
+  in the response body regardless of whether the guard
+  emits 400 or 404.)_
+- [x] **59.T16** Missing file → 404. _(plus 59.T16b: unknown
+  workstream id also returns 404 instead of crashing.)_
+- [x] **59.T17** Unsigned-in caller pins INTENTIONALLY-OPEN
+  access. _(spec note resolved: the endpoint stays open
+  because gate logs are operator-visible across the
+  install. T17 PINS the open-access behaviour with an
+  explicit assertion so a future auth-gating change is
+  loud about itself.)_
+
+#### `src/forge/Forge.UI/.../TranscriptLine.spec.ts` — Vitest (10/10 passing 2026-05-19)
+
+- [x] **`hasLogAttachment` predicate contract** — 10 cases
+  covering null payload, missing logUrl, empty string,
+  defensive non-string types, the canonical
+  passed/failed/skipped/build-gate payload shapes, and
+  non-gate events. Plugs the regression-of-record:
+  "someone tweaks the server payload shape and silently
+  breaks the filter chip".
+
+#### `Forge.UI.Tests/` — Playwright + fidelity (spec authored 2026-05-19, runs on live install)
+
+> The Playwright spec mirrors the existing
+> `phase71-accept-button-ui.spec.ts` live-fixture pattern:
+> tests SKIP with a clear message when no real workstream
+> has produced a `logUrl`-bearing gate event yet, and
+> activate the moment one does. Running the suite locally
+> needs `npm install` in `src/forge/Forge.UI.Tests` first
+> (the directory's `node_modules` isn't checked in).
+
+- [~] **59.T18** Failed/passed test gate event renders the
+  `📎 view log` chip; tooltip includes `view log` (plus
+  `· mode: roslyn` when stamped); href points at
+  `/api/workstreams/{id}/logs/...`. _(authored; SKIPs until
+  a live gate run lands a `logUrl`-bearing event.)_
+- [~] **59.T19** Skipped event (no impacted tests) does NOT
+  render the chip. _(server-side contract: skipped
+  payloads omit `logUrl`; UI gates the chip on `logUrl`
+  being present. Authored as a transcript-walk assertion
+  that no skipped event in the live workstream's history
+  carries `logUrl`, plus a DOM count cross-check.)_
+- [~] **59.T20** "Has logs" ConversationPane chip filter
+  hides events without `logUrl`. _(authored; flips
+  `transcript-logs-only-toggle`, asserts visible-row count
+  drops monotonically + `aria-pressed=true` on the
+  toggle.)_
+- [~] **59.T21** Screenshot fidelity: new chip does not
+  reflow the transcript row in light/dark theme.
+  _(authored; scoped to the single
+  `.live-exec__line:has(...)` row containing the first chip
+  so unrelated UI shifts don't false-fail.)_
+
+#### `Phase59CRoslynImpactedTestsTests.cs` + `Phase59CChainTests.cs` — Stage C (16 written / 8 running 2026-05-19)
+
+- [x] **C.T1** Chain selects Roslyn when workspace contains
+  a `.sln` / `.csproj`. _(C_T1 in chain tests: first provider
+  with `CanHandle=true` + non-null result wins; later
+  providers never invoked.)_
+- [x] **C.T2** Chain falls back to heuristic when Roslyn
+  refuses (no .sln/.csproj found). _(C_T2: provider returns
+  null → chain falls through. C_T2b: provider `CanHandle=false`
+  → chain skips Resolve entirely (no wasted workspace load),
+  goes to heuristic.)_
+- [x] **C.T3** Chain returns `Mode: "none"` when neither
+  provider claims the workspace (so the gate runs the
+  original whole-suite command).
+- [~] **C.T4** Roslyn provider against a temp .sln with a
+  `[Fact]` reference to a changed prod symbol — matched test
+  method's enclosing class is in the rewritten command.
+  _(test written but `[Fact(Skip = "...")]` — requires real
+  `MSBuildWorkspace.OpenSolutionAsync` + nuget restore which
+  isn't reliable in the unit-test process; runs end-to-end
+  against the actual `update` repo on the first live gate
+  invocation. Detector primitives + CanHandle covered
+  unconditionally.)_
+- [x] **C.T5** Roslyn provider with `[Theory]`, `[TestMethod]`,
+  `[Test]` / `[TestCase]` references — all four C# framework
+  attributes are recognised. _(C_T5_Detector_RecognisesAttributeShapes:
+  pure-syntax xUnit Theory matrix covering all 8 attribute
+  spellings — `Fact` / `FactAttribute` / `Xunit.Fact` /
+  `global::Xunit.Fact` / `Theory` / `TestMethod` /
+  `DataTestMethod` / `Test` / `TestCase` / `TestCaseSource`
+  PLUS negative cases for `Obsolete`, `TestClass`,
+  `TestFixture` and the empty-attribute case.)_
+- [~] **C.T6** Roslyn provider with a private helper changed
+  — only the tests whose call chain reaches the helper are
+  matched (not every test in the project). Pins the
+  granularity win over the heuristic. _(test stub written but
+  `[Fact(Skip = "...")]`; same MSBuildWorkspace integration
+  blocker as C.T4. Granularity win is exercised at runtime
+  against the actual `update` repo on the first live gate
+  invocation.)_
+- [x] **C.T7** Heuristic regression: every existing
+  `Phase59ImpactedTestResolverTests` case still passes after
+  the chain wraps the heuristic. _(C_T7 + the 21 Stage A
+  cases themselves: the static facade stays heuristic-only
+  and is exercised by every existing test unchanged; pointer
+  test in Stage C asserts the facade still publishes
+  `Mode="heuristic"` after Stage C lands.)_
+
+- [x] **Bonus** Chain swallows `CanHandleAsync` exceptions —
+  one provider blowing up shouldn't take down the gate.
+- [x] **Bonus** Chain swallows `ResolveAsync` exceptions
+  symmetrically.
+- [x] **Bonus** Chain propagates `OperationCanceledException`
+  (NEVER swallowed) so the caller's cancellation contract
+  is respected.
+- [x] **Bonus** `HeuristicImpactedTestProvider` always
+  reports `CanHandleAsync=true` (it's the universal safety
+  net) and delegates to the static facade.
+
+### Backward compatibility
+
+- Existing repos default to `Forge:Test:ImpactedOnly=true` —
+  set per-repo `false` to restore the legacy whole-suite
+  behaviour. Pre-Stage-C: setting `false` runs the test
+  command verbatim. Post-Stage-C: setting `false` skips the
+  resolver chain entirely (no Roslyn workspace load, no LSP
+  spawn).
+- Transcript events without `logUrl` (any event emitted before
+  Stage B ships) render unchanged — the UI chip is gated on
+  the field being present.
+- `StoryBuildResult` adds `LogPath` + `LogRelPath` as additive
+  nullable fields (Stage B); `ImpactedTestResolverResult` gains
+  `Mode` (Stage C) — additive default `"heuristic"` so existing
+  serialisation stays compatible.
+- `RepoRow.TestImpactedOnly` is nullable + defaulted, so the
+  migration is additive idempotent.
+- Stage C does NOT change the gate's call site shape — the
+  static `ImpactedTestResolver.Resolve` becomes a façade over
+  the new chain. Every call site that ran the heuristic before
+  Stage C ships gets the chain transparently after.
+
+### Out of scope
+
+- **`forge_v2.md` candidates** — cross-iter log dedupe (per-run
+  files are kept distinct so the operator can see the
+  progression), cost-ledger entry per gate run (gates aren't
+  LLM calls), persistent log mirror under
+  `%LOCALAPPDATA%\Forge\logs\` to survive worktree prune.
+- **Live-tail log view in-app** — a `<pre>` panel that polls
+  the endpoint's tail; this phase ships the new-tab link only.
+  Phase R polish.
+- **LSP support for non-canonical test frameworks** — Stage S2
+  covers the four common cases (Rust `#[test]`, Go `TestXxx`,
+  pytest, mocha/vitest). Custom test runners (Karma, Jasmine
+  outside of `it(…)`, Spock, ScalaTest) wait for operator
+  demand.
+- **Test-result ingestion + per-test pass/fail UI** — the
+  resolver picks WHICH tests run; reading the actual
+  pass/fail outcome of each test and surfacing it on the
+  card is a separate Phase 27 / forge_v2 candidate.
+
+### Code references
+
+#### Stage A (heuristic — superseded by Stage C, kept as fallback)
+
+- `src/forge/Forge.Api/Services/Stories/ImpactedTestResolver.cs` —
+  static facade today; Stage C makes it a thin wrapper over
+  the provider chain.
+- `src/forge/Forge.Api/Persistence/Phase59Migration.cs` —
+  `repos.TestImpactedOnly` column (additive nullable bool;
+  null = inherit `Forge:Test:ImpactedOnly` config default).
+- `src/forge/Forge.Api/Endpoints/ProductsEndpoints.cs` —
+  `PreviewImpactedTests` handler + `PatchRepo` honors the
+  `TestImpactedOnly` flag.
+- `src/forge/Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs` —
+  `RunGateChainAsync` test branch resolves + invokes the
+  helper; emits `impactedProjects` / `impactedRewritten` /
+  `wholeSuiteFallback` / `effectiveTestCommand` on
+  passed/failed; Stage C adds `impactedMode`.
+- `src/forge/Forge.UI/src/products/EditRepoModal.tsx` —
+  tri-state select + 🔬 Preview button +
+  `ImpactedTestPreviewLine` readout.
+
+#### Stage B (log persistence)
+
+- `src/forge/Forge.Api/Services/Stories/StoryBuildRunner.cs` —
+  streamed log persistence (line-buffered StreamWriter +
+  inline parse + bounded TailRing).
+- `src/forge/Forge.Api/Services/Stories/GateLogPaths.cs` —
+  single source of truth for log-file layout, retention,
+  path-traversal guard.
+- `src/forge/Forge.Api/Services/Stories/CrewStoryArtifactStrategy.cs` —
+  every gate stage (build / quality / test) computes a log
+  path via `GateLogPaths.For` and stamps `logUrl` on the
+  passed/failed payload.
+- `src/forge/Forge.Api/Endpoints/WorkstreamsEndpoints.cs` —
+  `GET /api/workstreams/{wsId}/logs/{*relPath}` streamed read.
+- `src/forge/Forge.Api/Services/Stories/WorkstreamMergeAdvancer.cs` —
+  invokes `GateLogPaths.PruneAll` for every workstream
+  advanced to `complete`.
+- `src/forge/Forge.UI/src/views/conversation/TranscriptLine.tsx` —
+  `LogAttachmentChip` sub-component + exported
+  `hasLogAttachment` predicate.
+- `src/forge/Forge.UI/src/swarm/WorkstreamConversationPane.tsx` —
+  `logsOnly` state + "Has logs" toggle button between the
+  tab strip and the action buttons.
+- `src/forge/Forge.Api.Tests/Phase59GateLogPersistenceTests.cs` —
+  12 tests.
+
+#### Stage C (LSP-based resolver — to ship)
+
+- `src/forge/Forge.Api/Services/Stories/ImpactedTests/` (new
+  folder) — `IImpactedTestProvider`,
+  `ImpactedTestResolverChain`, `HeuristicImpactedTestProvider`
+  (moved from `ImpactedTestResolver.cs`).
+- `src/forge/Forge.Api/Services/Stories/ImpactedTests/Roslyn/`
+  (new folder) — `RoslynImpactedTestProvider` +
+  `TestAttributeDetector` (xUnit / MSTest / NUnit).
+- `src/forge/Forge.Api/Forge.Api.csproj` — new
+  `Microsoft.CodeAnalysis.Workspaces.MSBuild` +
+  `Microsoft.Build.Locator` package refs.
+- `src/forge/Forge.Api/Program.cs` —
+  `MSBuildLocator.RegisterDefaults()` at startup.
+- `src/forge/Forge.Api.Tests/Phase59CRoslynImpactedTestsTests.cs`
+  + `Phase59CChainTests.cs` (new).
+
+#### Stage S2 (LSP for non-C# languages — deferred)
+
+- `src/forge/Forge.Api/Services/Stories/ImpactedTests/Lsp/` —
+  `MinimalLspClient`, `LspImpactedTestProvider`, per-language
+  test-entry detectors.
+- `src/forge/Forge.Api.Tests/Phase59S2*.cs` (new, per
+  language).

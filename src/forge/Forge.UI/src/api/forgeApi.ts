@@ -487,6 +487,22 @@ export interface ValidateBuildResult {
   steps: ValidateStep[];
 }
 
+/** Phase 59 Stage A — dry-run of the impacted-test resolver against HEAD of cloneRoot. */
+export interface ImpactedTestPreview {
+  repoId: string;
+  cloneRoot: string;
+  baseRef: string;
+  testCommand: string;
+  changedFileCount: number;
+  rewritten: boolean;
+  skipped: boolean;
+  wholeSuiteFallback: boolean;
+  command: string;
+  impactedProjects: string[];
+  allTestProjectCount: number;
+  reason: string;
+}
+
 /** Phase 29 — persistent build validation run record. */
 export interface BuildValidationRun {
   id: string;
@@ -1804,6 +1820,9 @@ export const forgeApi = {
     testCommand?: string;
     buildTimeoutSec?: number;
     testTimeoutSec?: number;
+    // Phase 59 — per-repo override for impacted-test selection.
+    // null = inherit global Forge:Test:ImpactedOnly (defaults to true).
+    testImpactedOnly?: boolean | null;
     // Phase 33 — persisted sync settings.
     wiSyncAssignedTo?: string;
     wiSyncDateFromDays?: number | null;
@@ -1832,6 +1851,13 @@ export const forgeApi = {
         method: 'POST',
         headers: { 'X-Forge-User': writerHeader() },
       },
+    );
+  },
+
+  /** Phase 59 Stage A — GET /api/repos/{id}/test-impacted-preview — dry-run resolver. */
+  async previewImpactedTests(id: string): Promise<ImpactedTestPreview> {
+    return fetchJson<ImpactedTestPreview>(
+      `/api/repos/${encodeURIComponent(id)}/test-impacted-preview`,
     );
   },
 

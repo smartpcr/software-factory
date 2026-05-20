@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { isBuildEvent } from '@/views/conversation/filters';
+import { LogAttachmentChip } from '@/views/conversation/TranscriptLine';
 
 interface Props {
   /**
@@ -109,10 +110,20 @@ function BuildEventCard({ event }: EventCardProps) {
   const p = (event.payload as Record<string, unknown> | null) ?? {};
   const classification = classify(event, p);
 
-  const cmd = (p.buildCommand as string)
-    ?? (p.testCommand as string)
+  // Phase 59 — prefer effectiveTestCommand (the narrowed command after
+  // impacted-test selection) over the configured testCommand when
+  // available. The effective command is what actually ran; the original
+  // is the repo-configured fallback. For build/quality gates the
+  // existing buildCommand / qualityCommand fields are already the
+  // effective ones.
+  const effectiveCmd = (p.effectiveTestCommand as string) ?? null;
+  const configuredCmd = (p.testCommand as string) ?? null;
+  const cmd = effectiveCmd
+    ?? (p.buildCommand as string)
+    ?? configuredCmd
     ?? (p.qualityCommand as string)
     ?? extractAgentCommand(p);
+  const showConfiguredFallback = effectiveCmd && configuredCmd && effectiveCmd !== configuredCmd;
   const stage = (p.stage as string) ?? null;
   const exitCode = typeof p.exitCode === 'number' ? (p.exitCode as number) : null;
   const errorCount = typeof p.errorCount === 'number' ? (p.errorCount as number) : null;
@@ -120,6 +131,14 @@ function BuildEventCard({ event }: EventCardProps) {
   const duration = typeof p.durationSec === 'number' ? (p.durationSec as number) : null;
   const errorSummary = (p.errorSummary as string) ?? null;
   const reason = (p.reason as string) ?? null;
+
+  // Phase 59 — impacted-test metadata from the resolver chain
+  const impactedRewritten = p.impactedRewritten === true;
+  const wholeSuiteFallback = p.wholeSuiteFallback === true;
+  const impactedMode = typeof p.impactedMode === 'string' ? (p.impactedMode as string) : '';
+  const impactedProjects = Array.isArray(p.impactedProjects) ? (p.impactedProjects as string[]) : [];
+  const allTestProjectCount = typeof p.allTestProjectCount === 'number' ? (p.allTestProjectCount as number) : 0;
+  const isTestGate = event.kind.startsWith('task.test-gate.');
 
   // Friendly label for the kind. Shortens the full event kind to what
   // operators actually scan for: BUILD, BUILD (quality), TEST, etc.
@@ -249,6 +268,63 @@ function BuildEventCard({ event }: EventCardProps) {
           </pre>
         </details>
       )}
+
+      {/* Phase 59 — impacted-test metadata for test gate events */}
+      {isTestGate && impactedMode && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 10,
+            color: 'var(--sc-text-dim, #9ca3af)',
+            paddingLeft: 2,
+            marginTop: 2,
+          }}
+        >
+          <span
+            style={{
+              padding: '1px 5px',
+              border: '1px solid var(--sc-hairline, rgba(255, 255, 255, 0.12))',
+              borderRadius: 2,
+            }}
+            title={`Impacted-test provider: ${impactedMode}`}
+          >
+            mode: {impactedMode}
+          </span>
+          {impactedRewritten && (
+            <span title={`Narrowed to ${impactedProjects.length} of ${allTestProjectCount} test projects`}>
+              impacted: {impactedProjects.length} / {allTestProjectCount} projects
+            </span>
+          )}
+          {wholeSuiteFallback && (
+            <span title="Impacted set ≥ 80% of all test projects — whole-suite fallback">
+              whole-suite fallback
+            </span>
+          )}
+          {!impactedRewritten && !wholeSuiteFallback && (
+            <span>not rewritten</span>
+          )}
+        </div>
+      )}
+
+      {/* Phase 59 — configured vs effective command when narrowing changed the command */}
+      {showConfiguredFallback && (
+        <div
+          style={{
+            fontSize: 10,
+            color: 'var(--sc-text-dim, #9ca3af)',
+            paddingLeft: 2,
+            marginTop: 2,
+          }}
+          title={`Configured: ${configuredCmd}`}
+        >
+          configured: <code style={{ fontSize: 10 }}>{truncate(configuredCmd!, 100)}</code>
+        </div>
+      )}
+
+      {/* Phase 59 Stage B — full gate log link */}
+      <LogAttachmentChip evt={event} />
     </div>
   );
 }

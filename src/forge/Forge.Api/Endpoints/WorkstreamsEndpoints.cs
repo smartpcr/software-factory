@@ -47,8 +47,61 @@ public static class WorkstreamsEndpoints
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
         grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
         grp.MapGet("/{id}/iter-kpis", GetIterKpis).WithName("GetWorkstreamIterKpis");
+        // Phase 59 Stage B — gate-log streaming. Reads a per-attempt
+        // log file under {worktree}/.forge/logs/ and streams it as
+        // text/plain with Range support. Path-traversal guard
+        // refuses anything that resolves outside the logs directory.
+        grp.MapGet("/{id}/logs/{*relPath}", GetGateLog).WithName("GetWorkstreamGateLog");
 
         return app;
+    }
+
+    /// <summary>
+    /// Phase 59 Stage B — stream a per-attempt gate log file. Maps
+    /// workstream id → on-disk worktree via
+    /// <see cref="WorktreePathResolver"/>, then resolves
+    /// <c>{worktree}/.forge/logs/{relPath}</c>. Returns
+    /// <c>text/plain; charset=utf-8</c> with Range support so a 50 MB
+    /// log doesn't OOM the browser. Refuses path traversal
+    /// (<c>../../secret</c>) with 400.
+    /// </summary>
+    private static async Task<IResult> GetGateLog(
+        HttpContext ctx,
+        string id,
+        string relPath,
+        ControlDbContext control,
+        ProductDbContext db,
+        CancellationToken ct)
+    {
+        var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(control, db, id, ct);
+        if (string.IsNullOrEmpty(resolved.WorktreePath))
+        {
+            return Results.Problem(
+                title: $"Workstream {id} has no on-disk worktree",
+                detail: "Either the workstream id is unknown, the repo has no cloneRoot, or the worktree was pruned post-merge.",
+                statusCode: 404);
+        }
+
+        if (!GateLogPaths.IsSafeRelPath(resolved.WorktreePath!, relPath, out var absolute))
+        {
+            return Results.Problem(
+                title: "Invalid log path",
+                detail: "Path resolved outside .forge/logs — refused as a traversal attempt.",
+                statusCode: 400);
+        }
+
+        if (!File.Exists(absolute))
+        {
+            return Results.Problem(title: "Gate log not found", statusCode: 404);
+        }
+
+        // Defer to SendFileAsync via Results.File so ASP.NET handles
+        // Range / If-Modified-Since / etc. natively without us
+        // re-implementing HTTP semantics.
+        return Results.File(
+            absolute,
+            contentType: "text/plain; charset=utf-8",
+            enableRangeProcessing: true);
     }
 
     // GET /api/workstreams/{id}/iter-kpis — Insight I.3

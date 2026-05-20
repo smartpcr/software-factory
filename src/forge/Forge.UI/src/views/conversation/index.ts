@@ -9,7 +9,7 @@ export {
   countActiveBuildFailures,
   availableTabs,
 } from './filters';
-export { TranscriptLine, renderPayload } from './TranscriptLine';
+export { TranscriptLine, renderPayload, hasLogAttachment } from './TranscriptLine';
 export { SummaryView } from './SummaryView';
 export { PairSide, formatModelLabel } from './PairSide';
 export { IterSparkline } from './IterSparkline';
