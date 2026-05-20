@@ -66,6 +66,14 @@ public class ControlDbContext : DbContext
     /// </summary>
     public DbSet<ProductRuntimeRow> ProductRuntime => this.Set<ProductRuntimeRow>();
 
+    /// <summary>
+    /// Phase 80 — control-side repo index/mirror. The full repo row moves to
+    /// the per-product DB (Stage 80.B); this thin row enforces the Q2/Q5
+    /// global uniqueness invariants, resolves <c>repoId → product</c> routing,
+    /// and feeds sync-due enumeration. See <see cref="RepoRegistryRow"/>.
+    /// </summary>
+    public DbSet<RepoRegistryRow> RepoRegistry => this.Set<RepoRegistryRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

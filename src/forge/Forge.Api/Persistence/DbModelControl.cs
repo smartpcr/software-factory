@@ -122,5 +122,26 @@ public static class DbModelControl
         mb.Entity<ProductRuntimeRow>().ToTable("product_runtime").HasKey(x => x.ProductId);
         mb.Entity<ProductRuntimeRow>().HasIndex(x => x.LastPendingAt)
             .HasDatabaseName("IX_product_runtime_lastpending");
+
+        // Phase 80 — control-side repo registry (mirror of the per-product
+        // repos row). The partial UNIQUE indexes enforce the Q2/Q5 GLOBAL
+        // guarantees that SQLite can't enforce across per-product {slug}.db
+        // files; the `WHERE DeletedAt IS NULL` filter lets a soft-deleted
+        // repo's URL / clone root be reused by a re-add. Index names are
+        // pinned via HasDatabaseName so the Phase80Migration raw-SQL
+        // `CREATE UNIQUE INDEX IF NOT EXISTS` matches by name and doesn't
+        // create a duplicate on a fresh DB (where EnsureCreated lays down the
+        // model index first, then the migration's IF-NOT-EXISTS no-ops).
+        mb.Entity<RepoRegistryRow>().ToTable("repo_registry").HasKey(x => x.Id);
+        mb.Entity<RepoRegistryRow>().HasIndex(x => x.ProductId)
+            .HasDatabaseName("IX_repo_registry_ProductId");
+        mb.Entity<RepoRegistryRow>().HasIndex(x => x.RemoteUrl)
+            .IsUnique()
+            .HasFilter("DeletedAt IS NULL")
+            .HasDatabaseName("IX_repo_registry_RemoteUrl");
+        mb.Entity<RepoRegistryRow>().HasIndex(x => x.CloneRoot)
+            .IsUnique()
+            .HasFilter("DeletedAt IS NULL")
+            .HasDatabaseName("IX_repo_registry_CloneRoot");
     }
 }

@@ -46,6 +46,14 @@ public class ProductStoryRow
 
     public string ProductId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Phase 80 — repo this story belongs to (a product owns many repos; a
+    /// story lives under exactly one). Nullable during the 80.A schema window;
+    /// the 80.F backfill stamps legacy null rows to the product's
+    /// <see cref="ProductRow.DefaultRepoId"/> and create paths make it required.
+    /// </summary>
+    public string? RepoId { get; set; }
+
     public string Name { get; set; } = string.Empty;
 
     public string Status { get; set; } = "planning";
@@ -558,6 +566,15 @@ public class ProductRow
     /// flagged <c>role='current'</c> (Q15.7).
     /// </summary>
     public string? ActiveIterationId { get; set; }
+
+    /// <summary>
+    /// Phase 80 — the product's default repo. Seeds the topbar repo switcher's
+    /// initial selection and is the backfill target for legacy rows whose
+    /// <c>RepoId</c> is null (stories / work items / workstreams / PRs / cards /
+    /// spawns). Nullable: a product with no repos yet has no default. Set to the
+    /// lowest-<c>Sort</c> repo on first repo attach (80.B/80.C).
+    /// </summary>
+    public string? DefaultRepoId { get; set; }
 }
 
 /// <summary>
@@ -1821,6 +1838,87 @@ public class RepoRow
     /// real "everything changed before this point is already in our cache" boundary.
     /// </summary>
     public string? LastUpstreamChangedDate { get; set; }
+}
+
+/// <summary>
+/// Phase 80 — control-side index / mirror of a repo. The full
+/// <see cref="RepoRow"/> config moves to the per-product <c>{slug}.db</c>
+/// (Stage 80.B); this thin row stays in the control DB so Forge can:
+/// <list type="number">
+///   <item>enforce the Q2/Q5 <b>global</b> uniqueness invariants
+///         (<see cref="RemoteUrl"/> / <see cref="CloneRoot"/>) that SQLite
+///         cannot enforce across separate <c>{slug}.db</c> files;</item>
+///   <item>resolve <c>repoId → product</c> for request routing
+///         (<c>X-Forge-Repo-Id</c>) without opening a product DB
+///         (<see cref="ProductSlug"/> is denormalized for exactly this);</item>
+///   <item>let the sync workers enumerate <i>due</i> repos in one control-side
+///         query — which is why the mutable sync-due cursor
+///         (<see cref="LastSyncStatus"/> etc.) and the per-repo cadence
+///         overrides live here, not on the per-product row.</item>
+/// </list>
+///
+/// <para>Maintained in lockstep with the per-product <c>repos</c> row on
+/// create / update / delete (write product first, then upsert this mirror —
+/// Stage 80.C). In Stage 80.A the table is created but left empty; nothing
+/// reads or writes it yet.</para>
+/// </summary>
+public class RepoRegistryRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public int Sort { get; set; }
+
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>Denormalized product slug so a repo id resolves a <c>{slug}.db</c> without a Products join.</summary>
+    public string ProductSlug { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>Q5 — globally unique across all products (partial unique index over active rows).</summary>
+    public string RemoteUrl { get; set; } = string.Empty;
+
+    /// <summary>Q2 — globally unique across all products (partial unique index over active rows).</summary>
+    public string CloneRoot { get; set; } = string.Empty;
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Soft-delete tombstone (ISO-8601). Non-null rows are excluded from the
+    /// unique indexes so a re-add can reuse the same remote URL / clone root.
+    /// </summary>
+    public string? DeletedAt { get; set; }
+
+    // -- sync-due cursor (authoritative; mirrors the per-product repos row) --
+
+    /// <summary>ISO-8601 start time of the last successful sync run (mirror of <see cref="RepoRow.LastSyncAt"/>).</summary>
+    public string? LastSyncAt { get; set; }
+
+    /// <summary>Opaque per-provider page cursor for mid-run resume.</summary>
+    public string? LastSyncCursor { get; set; }
+
+    /// <summary>One of: idle, running, failed.</summary>
+    public string LastSyncStatus { get; set; } = "idle";
+
+    /// <summary>Last sync error message (surfaced in the UI).</summary>
+    public string? LastSyncError { get; set; }
+
+    /// <summary>Wall-clock guard for the 19-minute stale-run cancellation rule.</summary>
+    public string? IsRunningSince { get; set; }
+
+    /// <summary>ISO-8601 upstream-changedate delta cursor.</summary>
+    public string? LastUpstreamChangedDate { get; set; }
+
+    // -- per-repo sync cadence overrides (read at enumeration time) ----------
+
+    /// <summary>Per-repo work-item sync interval (s). Null = inherit the global default.</summary>
+    public int? WorkItemSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo PR sync interval (s). Null = inherit the global default.</summary>
+    public int? PrSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo build sync interval (s). Null = inherit the global default.</summary>
+    public int? BuildSyncIntervalSeconds { get; set; }
 }
 
 /// <summary>

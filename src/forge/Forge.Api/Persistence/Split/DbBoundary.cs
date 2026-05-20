@@ -121,6 +121,10 @@ public static class DbBoundary
         // product so background workers can skip products with no pending
         // work without opening the per-product DB.
         new DbTableSpec("product_runtime", DbKind.Control, PartitionStrategy.Global, null),
+        // Phase 80 — control-side repo index/mirror (global uniqueness +
+        // repoId→product routing + sync-due enumeration). Stays control even
+        // after the full `repos` row moves to the per-product DB (Stage 80.B).
+        new DbTableSpec("repo_registry", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("repos", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_product_roles", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_settings", DbKind.Control, PartitionStrategy.Global, null),
