@@ -3099,6 +3099,31 @@ public sealed class StorySpawnOrchestrator
         string.Equals(w.Category, WorkstreamCategories.QaE2e, StringComparison.Ordinal);
 
     /// <summary>
+    /// True for recoverable agent-transport failures — the Copilot SDK pipe /
+    /// JSON-RPC channel dropped mid-call ("The pipe is being closed", broken
+    /// pipe, transport death), commonly concurrent-dispatch collateral. The
+    /// work itself isn't broken, so these should be retried (via the impl
+    /// path's spawn-guard backoff) rather than terminal-stalled. Walks the
+    /// inner-exception chain so a wrapped transport error is still caught.
+    /// </summary>
+    private static bool IsTransientTransportError(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            var m = e.Message ?? string.Empty;
+            if (m.Contains("pipe is being closed", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("pipe is broken", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("broken pipe", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("transport silent", StringComparison.OrdinalIgnoreCase)
+                || m.Contains("transport died", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// docs/forge/e2e.md Stage 5.1 — per-workstream driver for
     /// <see cref="WorkstreamCategories.QaE2e"/> rows. Delegates artifact
     /// production to <see cref="IStoryArtifactStrategy.ProduceStageE2eAsync"/>
@@ -3152,6 +3177,22 @@ public sealed class StorySpawnOrchestrator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Transient agent-transport failures (Copilot SDK pipe drop /
+            // JSON-RPC channel death — often concurrent-dispatch collateral)
+            // are recoverable: the channel died, not the work. Don't terminal-
+            // stall. Rethrow so DriveImplementAsync's per-workstream failure
+            // path emits spawn-finished(success=false); ImplSpawnGuard then
+            // applies its backoff window and the next tick retries. A genuinely
+            // persistent failure still escalates via the guard's consecutive-
+            // failure / no-progress thresholds, so this can't spin forever.
+            if (IsTransientTransportError(ex))
+            {
+                this.logger?.LogWarning(ex,
+                    "qa-e2e producer hit a transient transport error for {WsId}; "
+                    + "rethrowing for backoff+retry instead of stalling.", w.Id);
+                throw;
+            }
+
             this.logger?.LogWarning(ex,
                 "qa-e2e producer threw for workstream {WsId}; marking stalled.", w.Id);
             var stalledRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
