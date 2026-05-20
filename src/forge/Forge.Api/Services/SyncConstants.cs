@@ -156,6 +156,32 @@ public static class SyncConstants
     /// </summary>
     public const int InflightSpawnGuardBudgetSlackSeconds = 120;
 
+    /// <summary>
+    /// 2026-05-19 — Phase 75: hard-ceiling multiplier over
+    /// <see cref="InflightSpawnGuardMinSeconds"/> (or budget+slack,
+    /// whichever wins) at which <see cref="Stories.ImplSpawnGuard"/>
+    /// OVERRIDES the Phase 64 <c>isInvocationActive=true → SkipInFlight</c>
+    /// refusal and forces a recovery spawn. Above this ceiling, the
+    /// dispatcher's "invocation still alive" claim is no longer
+    /// trustworthy: the most likely cause is a structurally wedged
+    /// runner (inactivity watchdog asleep on unmatched SDK events, the
+    /// consumer await foreach blocked on the queue, the SDK SendAsync
+    /// awaiting indefinitely against a non-responsive copilot.exe).
+    /// Observed 2026-05-19 on code-intelligence:AGENT-MEMORY load-test-
+    /// calibration: spawn-started at 18:49, last tool event at 18:51,
+    /// then 5h+ silence with no spawn-finished while the dispatcher's
+    /// active map still reported the invocation as live. The orchestrator
+    /// dispatched no recovery spawn for the whole 5h window.
+    /// <para>
+    /// 4× the guard window (≈ 4× max(8min, budget+slack)) chosen as the
+    /// belt-and-suspenders ceiling: long enough that legitimately-slow
+    /// invocations (a 30-min budget completing at 31min wall-clock during
+    /// SDK shutdown drain) won't trip it, short enough that a wedged
+    /// runner can't sit silent for half a day.
+    /// </para>
+    /// </summary>
+    public const int InflightSpawnHardCeilingMultiplier = 4;
+
     // ─── 2026-05-07 — failure backoff ────────────────────────────────────
     // When `DriveOneWorkstreamImplAsync` throws, we emit a
     // `task.impl.spawn-finished` transcript event with `success=false` so

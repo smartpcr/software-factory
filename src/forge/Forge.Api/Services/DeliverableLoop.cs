@@ -336,6 +336,19 @@ public static class GeneratorFailureKinds
         {
             return Inactive;
         }
+        // 2026-05-19 — Phase 75: dispatcher's SendAsync transport-failure
+        // catch (AgentRunnerDispatcher.cs ~line 1526) emits the literal
+        // "transport died at SendAsync" prefix. Classify as Inactive so
+        // DeliverableLoop's failure short-circuit treats it as transient
+        // (verdict=iterate, auto-retry next iter against a fresh pool
+        // entry that the same dispatcher's `finally` block force-disposed
+        // after the failure landed). Without this pattern, the message
+        // would fall through to `Other` and the loop's transient/non-
+        // transient split would route it to `stalled` instead.
+        if (error.Contains("transport died at SendAsync", StringComparison.OrdinalIgnoreCase))
+        {
+            return Inactive;
+        }
         if (error.Contains(" exit=", StringComparison.OrdinalIgnoreCase))
         {
             return CliExit;

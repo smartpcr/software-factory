@@ -66,6 +66,12 @@ public sealed class Phase58GeneratorCapTests
     [InlineData("Anthropic 529: overloaded", GeneratorFailureKinds.ProviderError)]
     [InlineData("something we don't recognise", GeneratorFailureKinds.Other)]
     [InlineData("", GeneratorFailureKinds.Other)]
+    // 2026-05-19 — Phase 75: SendAsync transport-failure catch in
+    // AgentRunnerDispatcher emits this prefix verbatim. Classifies as
+    // Inactive so DeliverableLoop treats it as transient and auto-
+    // retries the next iter against a fresh pool entry.
+    [InlineData("Copilot SDK transport died at SendAsync: Communication error with Copilot CLI: The JSON-RPC connection with the remote party was lost before the request could complete.", GeneratorFailureKinds.Inactive)]
+    [InlineData("Copilot SDK transport died at SendAsync: IOException", GeneratorFailureKinds.Inactive)]
     public void GeneratorFailureKinds_Classify_Recognizes_Dispatcher_Errors(string error, string expected)
     {
         Assert.Equal(expected, GeneratorFailureKinds.Classify(error));

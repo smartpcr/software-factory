@@ -2059,6 +2059,64 @@ public sealed class StorySpawnOrchestrator
                 continue;
             }
 
+            // 2026-05-19 — Phase 75: hard-ceiling cleanup. The guard
+            // released the workstream for recovery despite
+            // isInvocationActive=true because elapsed wall-clock exceeded
+            // N× the guard window — the dispatcher's "still alive" claim
+            // is unreliable at this point (wedged runner suspected). Two
+            // pre-spawn actions are required before the normal
+            // spawn-started fires:
+            //   1. Cancel the wedged invocation via the dispatcher's
+            //      CancelByTaskAsync, which trips the linked CTS so
+            //      effectiveCt fires inside RunCopilotSdk and the SDK
+            //      SendAsync (or watchdog poll) finally completes; the
+            //      WrapEvents finally then cleans up the active map.
+            //      Best-effort: if the active map no longer has this
+            //      taskId we simply no-op.
+            //   2. Emit a synthetic
+            //      `task.impl.spawn-finished {success:false,
+            //      exceptionType:"HardCeilingTimeout"}` so the guard's
+            //      NEXT tick sees a closed lifecycle. Without this
+            //      synthetic close, the immediate next tick would treat
+            //      THIS tick's spawn-started as another in-flight spawn
+            //      (or, worse, two simultaneously-recorded spawn-starteds
+            //      would confuse the CountConsecutiveNoProgressSuccesses
+            //      logic). The synthetic finish closes the original
+            //      orphan lifecycle.
+            if (guardDecision.WedgedSpawnHardCeilingExceeded)
+            {
+                this.logger?.LogWarning(
+                    "Workstream {WsId} hard-ceiling exceeded: {Reason} — cancelling wedged invocation + emitting synthetic spawn-finished before recovery spawn",
+                    w.Id, guardDecision.Reason);
+
+                if (agentRunnerForGuard is not null)
+                {
+                    try
+                    {
+                        var cancelled = await agentRunnerForGuard.CancelByTaskAsync(w.Id, ct);
+                        this.logger?.LogInformation(
+                            "Workstream {WsId} hard-ceiling cancel: dispatcher cancelled {Count} invocation(s).",
+                            w.Id, cancelled);
+                    }
+                    catch (Exception cancelEx)
+                    {
+                        this.logger?.LogWarning(cancelEx,
+                            "Workstream {WsId} hard-ceiling cancel failed; proceeding with synthetic spawn-finished anyway.",
+                            w.Id);
+                    }
+                }
+
+                await this.EmitSpawnEventAsync(w.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = w.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = "HardCeilingTimeout",
+                    message = guardDecision.Reason,
+                    hardCeilingMultiplier = SyncConstants.InflightSpawnHardCeilingMultiplier,
+                }, ct);
+            }
+
             // Engineer crew claim — assign agents LATE (Phase 49 follow-up).
             // The legacy code populated AgentsJson here at claim time,
             // but the operator observed all workstreams ending up with the
