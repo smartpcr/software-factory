@@ -2592,11 +2592,38 @@ public sealed class StorySpawnOrchestrator
                 passClass == PassGateClassification.OperatorAccepted ? "operator-accept" : "natural-pass");
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
-        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy")
+        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy" or "stalled-questions")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
             // instead of re-spawning the gen↔eval loop.
             //
+            // Phase 59 fix — `stalled-questions` is a soft park: the
+            // workstream is waiting for operator answers, NOT failed. If
+            // questions are still unanswered, return without stalling
+            // (ImplSpawnGuard suppresses no-progress counting). If all
+            // questions are answered, fall through to re-enter the
+            // gen↔eval loop at iter N+1.
+            if (string.Equals(lastDel.Verdict, "stalled-questions", StringComparison.Ordinal))
+            {
+                var hasUnanswered = await db2.DeliverableQuestions.AsNoTracking()
+                    .AnyAsync(q => q.WorkItemId == w.Id && q.AnsweredAt == null, ct);
+                if (hasUnanswered)
+                {
+                    this.logger?.LogInformation(
+                        "DriveOneWorkstreamImpl: ws={WsId} verdict=stalled-questions iter={Iter} — "
+                        + "unanswered questions remain; soft-parking without stalling.",
+                        w.Id, lastDel.Iter);
+                    return;
+                }
+                // All answered — fall through to produce next iteration.
+                this.logger?.LogInformation(
+                    "DriveOneWorkstreamImpl: ws={WsId} verdict=stalled-questions iter={Iter} — "
+                    + "all questions answered; resuming gen-eval.",
+                    w.Id, lastDel.Iter);
+                files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
+                goto AfterProduce;
+            }
+
             // Phase 51 — `stalled-budget` is the one verdict in this set
             // that is NOT a dead end: the operator can raise the crew's
             // MaxTaskBudgetUsd and the row should resume automatically.

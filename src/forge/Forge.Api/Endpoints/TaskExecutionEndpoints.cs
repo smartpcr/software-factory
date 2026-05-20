@@ -440,9 +440,11 @@ public static class TaskExecutionEndpoints
             // and PriorPairsJson are retained so the next attempt
             // still excludes already-tried pairs.
             const string BogusSloppyPrefix = "Sloppy-3-attempts:";
+            const string StalledQuestionsVerdictPrefix = "Evaluator terminal verdict 'stalled-questions'";
             if (string.Equals(ws.Status, "stalled", StringComparison.Ordinal)
                 && !string.IsNullOrEmpty(ws.StallReason)
-                && ws.StallReason.StartsWith(BogusSloppyPrefix, StringComparison.Ordinal))
+                && (ws.StallReason.StartsWith(BogusSloppyPrefix, StringComparison.Ordinal)
+                    || ws.StallReason.StartsWith(StalledQuestionsVerdictPrefix, StringComparison.Ordinal)))
             {
                 ws.Status = "active";
                 ws.StallReason = null;
@@ -457,7 +459,8 @@ public static class TaskExecutionEndpoints
                     // already advanced it to Queued/Live/Completed,
                     // leave it alone so we don't stomp valid state.
                     if (string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.Failed, StringComparison.Ordinal)
-                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.PendingReassign, StringComparison.Ordinal))
+                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.PendingReassign, StringComparison.Ordinal)
+                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
                     {
                         wiForReset.ExecutionStatus = ExecutionStatuses.Queued;
                     }
