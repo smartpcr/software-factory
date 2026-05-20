@@ -11,7 +11,7 @@
 
 ### Setup
 - **Type**: inline
-- **Local**: `dotnet build Workflow.sln && dotnet test src/ast/CleanCode.Metrics/CleanCode.Metrics.csproj` (unit tests embedded in project for Phase 1 model validation only)
+- **Local**: `dotnet build Workflow.sln` (Phase 1 delivers project scaffolding and data models; build success is the acceptance gate; unit tests are introduced in Phase 2 when `CleanCode.Metrics.UnitTests` is created)
 - **CI runner**: `windows-latest`
 - **Secrets**: none
 - **Pre-test bootstrap**: `dotnet restore Workflow.sln`
