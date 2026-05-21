@@ -3862,24 +3862,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // on the merged dict) so the operator's appsettings/baseclass
         // contract stays canonical.
         var mergedFiles = new Dictionary<string, string>(files, StringComparer.Ordinal);
-        var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
-        var templates = isGo
-            ? GoE2eBaseRenderer.RenderAll(
-                spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase)
-            : E2eBaseRenderer.RenderAll(
-                spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase);
-        foreach (var (path, body) in templates)
-        {
-            mergedFiles[path] = body;
-        }
 
-        // Fix #4 — fold in a directory-scoped `.gitignore` under the e2e test
-        // tree so a developer's local build never re-introduces the
-        // build-artifact leak. Additive (never touches the repo-root
-        // `.gitignore`); the ReadAllFiles filter + commit-time scrub remain
-        // the primary guard.
-        mergedFiles[isGo ? GoE2eBaseRenderer.GitignorePathFor() : E2eBaseRenderer.GitignorePathFor()] =
-            isGo ? GoE2eBaseRenderer.RenderGitignore() : E2eBaseRenderer.RenderGitignore();
+        // .NET only — fold in the deterministic Reqnroll base class + per-phase
+        // appsettings template + a directory-scoped `.gitignore` (bin/obj) so a
+        // developer's local build never re-introduces the build-artifact leak
+        // (fix #4; additive, never touches the repo-root `.gitignore`).
+        //
+        // The Go (godog) path has NO deterministic templates to merge: the
+        // agent emits the `.feature` + `*_test.go` (with an inline env helper)
+        // INSIDE the owning Go module, whose path is repo-relative and can't be
+        // hardcoded to a repo-root location (monorepos put `go.mod` under e.g.
+        // `services/X/`). The ReadAllFiles filter + commit-time scrub remain the
+        // build-artifact guard for Go, which doesn't leave output in the tree.
+        if (!isGo)
+        {
+            var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
+            foreach (var (path, body) in E2eBaseRenderer.RenderAll(
+                spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase))
+            {
+                mergedFiles[path] = body;
+            }
+            mergedFiles[E2eBaseRenderer.GitignorePathFor()] = E2eBaseRenderer.RenderGitignore();
+        }
 
         return mergedFiles;
     }
@@ -3988,11 +3992,122 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         if (repo is not null && !string.IsNullOrWhiteSpace(repo.CloneRoot) && Directory.Exists(repo.CloneRoot))
         {
+            // (a) root-level project markers (fast path).
             var eco = BuildSystemDetector.Detect(repo.CloneRoot).Ecosystem;
             if (!string.IsNullOrEmpty(eco) && eco != "unknown") return eco;
+
+            // (b) BuildSystemDetector only scans the repo ROOT, but many repos
+            // are monorepos whose module marker lives in a sub-tree (observed
+            // on smartpcr/code-intelligence: a Go repo whose only `go.mod` is at
+            // `services/agent-memory/go.mod`, so root detection returned
+            // `unknown` and the qa-e2e harness defaulted to C#). Scan a bounded
+            // depth for marker files, then fall back to the predominant source
+            // language, so a Go monorepo is correctly recognised as `go`.
+            var deep = DetectEcosystemDeep(repo.CloneRoot);
+            if (deep is not null) return deep;
         }
 
         return "dotnet";
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — bounded recursive ecosystem sniff for
+    /// repos whose build marker isn't at the root (monorepos). Walks at most
+    /// <c>MaxDepth</c> directories (skipping VCS / vendor / build-output dirs)
+    /// and counts ecosystem marker files; if none are found, falls back to the
+    /// most common source-file extension ("everything is written in Go" ⇒
+    /// <c>go</c>). Returns null when the tree yields no signal.
+    /// </summary>
+    private static string? DetectEcosystemDeep(string root)
+    {
+        try
+        {
+            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".git", ".worktree", ".forge", "node_modules", "vendor",
+                "bin", "obj", "target", ".vs", ".idea", "dist", ".venv", "venv",
+            };
+            var markerCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            var srcExtCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            var queue = new Queue<(string Dir, int Depth)>();
+            queue.Enqueue((root, 0));
+            var filesSeen = 0;
+            const int MaxDepth = 4;
+            const int MaxFiles = 8000;
+
+            while (queue.Count > 0 && filesSeen < MaxFiles)
+            {
+                var (dir, depth) = queue.Dequeue();
+                IEnumerable<string> entries;
+                try { entries = Directory.EnumerateFileSystemEntries(dir); }
+                catch { continue; }
+
+                foreach (var entry in entries)
+                {
+                    if (Directory.Exists(entry))
+                    {
+                        if (depth + 1 <= MaxDepth && !skip.Contains(Path.GetFileName(entry)))
+                        {
+                            queue.Enqueue((entry, depth + 1));
+                        }
+                        continue;
+                    }
+
+                    if (++filesSeen > MaxFiles) break;
+                    switch (Path.GetFileName(entry).ToLowerInvariant())
+                    {
+                        case "go.mod": Bump(markerCounts, "go"); break;
+                        case "cargo.toml": Bump(markerCounts, "rust"); break;
+                        case "pom.xml":
+                        case "build.gradle":
+                        case "build.gradle.kts": Bump(markerCounts, "maven"); break;
+                        case "pyproject.toml":
+                        case "requirements.txt": Bump(markerCounts, "python"); break;
+                        case "package.json": Bump(markerCounts, "node"); break;
+                    }
+                    switch (Path.GetExtension(entry).ToLowerInvariant())
+                    {
+                        case ".sln":
+                        case ".csproj": Bump(markerCounts, "dotnet"); break;
+                        case ".go": Bump(srcExtCounts, "go"); break;
+                        case ".cs": Bump(srcExtCounts, "dotnet"); break;
+                        case ".rs": Bump(srcExtCounts, "rust"); break;
+                        case ".py": Bump(srcExtCounts, "python"); break;
+                        case ".ts":
+                        case ".tsx":
+                        case ".js": Bump(srcExtCounts, "node"); break;
+                    }
+                }
+            }
+
+            // Combine the two signals into one score per ecosystem. A marker
+            // file (go.mod, *.csproj, …) is strong, but source-file
+            // predominance must break ties — a stray `requirements.txt` in a Go
+            // repo (go.mod==1, requirements.txt==1) must NOT outweigh 181 `.go`
+            // files vs 2 `.py`. Score = markers*1000 + sourceFiles.
+            var ecosystems = new HashSet<string>(markerCounts.Keys, StringComparer.Ordinal);
+            ecosystems.UnionWith(srcExtCounts.Keys);
+            string? best = null;
+            var bestScore = -1;
+            foreach (var eco in ecosystems)
+            {
+                var score = (markerCounts.TryGetValue(eco, out var m) ? m : 0) * 1000
+                          + (srcExtCounts.TryGetValue(eco, out var s) ? s : 0);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = eco;
+                }
+            }
+            if (best is not null) return best;
+        }
+        catch
+        {
+            // best-effort sniff — any IO failure falls through to the caller's default.
+        }
+        return null;
+
+        static void Bump(Dictionary<string, int> d, string k) => d[k] = d.TryGetValue(k, out var v) ? v + 1 : 1;
     }
 
     /// <summary>
@@ -4096,13 +4211,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Produce the **godog** (Cucumber-for-Go) qa-e2e artifacts for the
                 impl workstream above. This is a **Go** repository — do NOT
                 scaffold a C#/.NET project (no `.csproj`, no Reqnroll, no
-                `dotnet`):
+                `dotnet`, no `appsettings.json`).
+
+                FIRST locate the Go module that owns the code under test: find
+                the nearest `go.mod` above the files in the impl diff. Call its
+                directory `<MOD>` (it is the repo root for a single-module repo,
+                or a sub-path like `services/agent-memory` for a monorepo). ALL
+                files below go **inside that module** so `go test` compiles —
+                never at the repo root when the repo root has no `go.mod`.
+
                   1. ONE Gherkin `.feature` file at
-                     `test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}.feature`
+                     `<MOD>/test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}.feature`
                      covering every acceptance scenario. Tag with
                      `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
                   2. ONE godog step-definition file at
-                     `test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}_test.go`, in
+                     `<MOD>/test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}_test.go`,
                      `package e2e`. Its FIRST line MUST be the build tag
                      `//go:build e2e` so the suite only runs under
                      `go test -tags e2e`. Implement every Given/When/Then step,
@@ -4113,14 +4236,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                      `godog.TestSuite` with `ScenarioInitializer:` set to that
                      initializer and `Options: &godog.Options{Format: "pretty", Paths: []string{"{{goPhase}}_{{goStage}}.feature"}, TestingT: t}`.
                      Use these UNIQUE per-stage function names so sibling stages
-                     sharing the `e2e` package don't collide. Read required
-                     env-vars via the shared `RequireEnv(t, name)` helper in
-                     `e2ebase.go` (same package — no import needed). Add
-                     `github.com/cucumber/godog` to the module
-                     (`go get github.com/cucumber/godog` then `go mod tidy`) and
-                     commit the updated `go.mod` / `go.sum`.
+                     sharing the `e2e` package don't collide. For any required
+                     env-var, define a small package-local helper
+                     `func requireEnv(t *testing.T, name string) string` that
+                     calls `t.Skip` when the var is unset (one copy per package).
+                     Add `github.com/cucumber/godog` to the module
+                     (`go get github.com/cucumber/godog` then `go mod tidy` IN
+                     `<MOD>`) and commit the updated `go.mod` / `go.sum`.
                   3. When setup type is `compose` or `lab-*`, ALSO write
-                     `test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `<MOD>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
                      `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
                      the right runner pool / secrets per docs/forge/e2e.md §8.
 

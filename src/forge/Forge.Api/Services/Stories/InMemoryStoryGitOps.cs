@@ -94,9 +94,9 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
 
     public Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
-        var branchTree = this.trees.TryGetValue(Key(repo, branch), out var b)
+        var branchTree = this.TryGetTreeForRead(repo, branch, out var b)
             ? b : new Dictionary<string, string>(StringComparer.Ordinal);
-        var baseTree = this.trees.TryGetValue(Key(repo, baseBranch), out var bb)
+        var baseTree = this.TryGetTreeForRead(repo, baseBranch, out var bb)
             ? bb : new Dictionary<string, string>(StringComparer.Ordinal);
         // Changed when any path added/modified on the branch, or a base path
         // dropped from it. The fake doesn't model .gitignore, so a normal
@@ -108,12 +108,15 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     }
 
     public Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default) =>
-        Task.FromResult(this.trees.TryGetValue(Key(repo, branch), out var t) && t.ContainsKey(filePath));
+        Task.FromResult(this.ReadCandidates(repo, branch).Any(t => t.ContainsKey(filePath)));
 
     public Task<string?> ReadFileAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default)
     {
-        if (!this.trees.TryGetValue(Key(repo, branch), out var t)) return Task.FromResult<string?>(null);
-        return Task.FromResult(t.TryGetValue(filePath, out var content) ? content : null);
+        foreach (var t in this.ReadCandidates(repo, branch))
+        {
+            if (t.TryGetValue(filePath, out var content)) return Task.FromResult<string?>(content);
+        }
+        return Task.FromResult<string?>(null);
     }
 
     /// <summary>
@@ -191,9 +194,8 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
 
     public Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
-        var srcKey = Key(repo, branch);
         var dstKey = Key(repo, baseBranch);
-        if (!this.trees.TryGetValue(srcKey, out var src)) return Task.CompletedTask;
+        if (!this.TryGetTreeForRead(repo, branch, out var src)) return Task.CompletedTask;
         if (!this.trees.TryGetValue(dstKey, out var dst))
         {
             dst = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -287,9 +289,8 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     public Task<bool> MergeUpstreamIntoBranchAsync(
         RepoRow? repo, string branch, string upstreamBranch, bool force = true, CancellationToken ct = default)
     {
-        var srcKey = Key(repo, upstreamBranch);
         var dstKey = Key(repo, branch);
-        if (!this.trees.TryGetValue(srcKey, out var src)) return Task.FromResult(true);
+        if (!this.TryGetTreeForRead(repo, upstreamBranch, out var src)) return Task.FromResult(true);
         if (!this.trees.TryGetValue(dstKey, out var dst))
         {
             dst = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -302,6 +303,59 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
 
     private static string Key(RepoRow? repo, string branch) =>
         $"{repo?.Id ?? "_default"}@{branch}";
+
+    /// <summary>
+    /// Phase 80.F — resolve a tree for a READ when the caller's repo binding
+    /// doesn't match the writer's. Tests merge/probe with <c>repo:null</c>
+    /// (the <c>_default</c> key) while the orchestrator now binds a real repo
+    /// and writes/probes under that repo's id (and vice-versa). Resolution:
+    /// <list type="number">
+    ///   <item>exact <see cref="Key"/>(repo, branch);</item>
+    ///   <item>a repo-specific probe falls back to the default-key tree (a
+    ///         default registration is visible to a repo-specific probe —
+    ///         mirrors the <see cref="WorktreeExistsAsync"/> bridge);</item>
+    ///   <item>a default (null) probe falls back to the SOLE repo-specific
+    ///         tree for that branch, so a null-keyed read sees a repo-written
+    ///         branch. Skipped when more than one repo owns the branch, so
+    ///         true multi-repo isolation (Phase80MultiRepoTests) is
+    ///         unaffected.</item>
+    /// </list>
+    /// </summary>
+    private IEnumerable<Dictionary<string, string>> ReadCandidates(RepoRow? repo, string branch)
+    {
+        if (this.trees.TryGetValue(Key(repo, branch), out var exact)) yield return exact;
+        if (repo is not null && this.trees.TryGetValue(Key(null, branch), out var def)) yield return def;
+        if (repo is null)
+        {
+            var defaultKey = Key(null, branch);
+            var suffix = "@" + branch;
+            var repoTrees = this.trees
+                .Where(kv => kv.Key != defaultKey && kv.Key.EndsWith(suffix, StringComparison.Ordinal))
+                .Select(kv => kv.Value)
+                .ToList();
+            if (repoTrees.Count == 1) yield return repoTrees[0];
+        }
+    }
+
+    /// <summary>
+    /// Resolve a single tree for a READ that needs one tree (merge source,
+    /// branch-vs-base diff). Prefers the first NON-EMPTY candidate so an
+    /// empty exact-key tree (e.g. an <c>EnsureBranch</c>-created
+    /// <c>atlas-platform@main</c>) doesn't shadow a populated default-key
+    /// tree (the merged <c>_default@main</c>); falls back to the first
+    /// existing candidate when every candidate is empty.
+    /// </summary>
+    private bool TryGetTreeForRead(RepoRow? repo, string branch, out Dictionary<string, string> tree)
+    {
+        Dictionary<string, string>? first = null;
+        foreach (var t in this.ReadCandidates(repo, branch))
+        {
+            first ??= t;
+            if (t.Count > 0) { tree = t; return true; }
+        }
+        tree = first!;
+        return first is not null;
+    }
 
     private static string ShaOf(Dictionary<string, string> tree, string? salt = null)
     {
