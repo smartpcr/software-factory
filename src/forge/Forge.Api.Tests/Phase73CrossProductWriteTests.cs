@@ -135,9 +135,6 @@ public class Phase73CrossProductWriteTests : IDisposable
             ctl.Products.AddRange(
                 new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" },
                 new ProductRow { Id = "raft", Slug = "raft", Name = "Raft" });
-            ctl.Repos.AddRange(
-                new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
-                new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
             await ctl.SaveChangesAsync();
         }
 
@@ -153,6 +150,10 @@ public class Phase73CrossProductWriteTests : IDisposable
                 if (trimmed.Length > 0) await prod.Database.ExecuteSqlRawAsync(trimmed);
             }
 
+            // Phase 80.B — repos live on the product DB now.
+            prod.Repos.AddRange(
+                new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
+                new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
             prod.Workstreams.AddRange(
                 new WorkstreamRow { Id = "ws-atlas-1", Name = "a1", Branch = "ws/a1", Epic = "E", Status = "active", RepoId = "r-atlas-1" },
                 new WorkstreamRow { Id = "ws-atlas-2", Name = "a2", Branch = "ws/a2", Epic = "E", Status = "active", RepoId = "r-atlas-1" },

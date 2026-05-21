@@ -23,21 +23,12 @@ public static class DbModelControl
         // Phase 6.10 — audit log. EF maps AuditRow → "forge_actions" table.
         mb.Entity<AuditRow>().ToTable("forge_actions").HasKey(x => x.Id);
 
-        // Phase 8 — products / repos with Q5 invariants enforced at the DB layer.
+        // Phase 8 — products. (Phase 80.B: the full `repos` table moved to the
+        // per-product DB; see DbModelProduct. The control DB keeps only the
+        // `repo_registry` index, configured below, which carries the Q2/Q5
+        // GLOBAL uniqueness that SQLite can't enforce across {slug}.db files.)
         mb.Entity<ProductRow>().ToTable("products").HasKey(x => x.Id);
         mb.Entity<ProductRow>().HasIndex(x => x.Slug).IsUnique();
-
-        mb.Entity<RepoRow>().ToTable("repos").HasKey(x => x.Id);
-        // Q5: same remote URL cannot live under two products.
-        mb.Entity<RepoRow>().HasIndex(x => x.RemoteUrl).IsUnique();
-        // Q2: same clone root cannot host two repos (worktrees would race).
-        mb.Entity<RepoRow>().HasIndex(x => x.CloneRoot).IsUnique();
-        // FK on product_id; cascade delete when a product goes away.
-        mb.Entity<RepoRow>()
-            .HasOne<ProductRow>()
-            .WithMany()
-            .HasForeignKey(x => x.ProductId)
-            .OnDelete(DeleteBehavior.Cascade);
 
         // Phase 9.6 — identified users.
         mb.Entity<UserRow>().ToTable("users").HasKey(x => x.Id);

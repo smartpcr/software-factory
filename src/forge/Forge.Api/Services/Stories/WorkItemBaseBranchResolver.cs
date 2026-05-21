@@ -90,7 +90,7 @@ public static class WorkItemBaseBranchResolver
         var repoId = wi?.RepoId ?? ws?.RepoId;
         if (!string.IsNullOrEmpty(repoId))
         {
-            var repo = await control.Repos.AsNoTracking()
+            var repo = await db.Repos.AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (!string.IsNullOrEmpty(repo?.DefaultBranch))
             {

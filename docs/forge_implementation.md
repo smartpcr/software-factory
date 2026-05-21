@@ -7679,48 +7679,82 @@ Each stage is independently compilable + testable; ship as separate PRs.
   compile breaks: `AgentRuntimeTests`/`AgentSalaryAndLedgerTests` constructed
   `CopilotServerManager` with the old 2-arg ctor — added the `IAuthService`
   arg.)*
-- **Deferred to 80.B:** the empty product-side `repos` **table** (created where the
-  DbSet moves + data lands; a dormant unmapped table now adds risk, no benefit).
+- **Done in 80.B:** the product-side `repos` table (now created by the EF model on
+  fresh DBs + `RepoMoveToProductService`'s DDL on existing `{slug}.db`).
 
-#### 80.B — Move `RepoRow` DbSet control → product (DI + model)
-- [ ] 80.B.1 Move `Repos` DbSet: `ControlDbContext` → `ProductDbContext`; move
-  `EntityRepoRow` config `DbModelControl` → `DbModelProduct`.
-- [ ] 80.B.2 `Phase82Migration.cs` (next free slot — `Phase80`/`Phase81` were
-  used by 80.A) creates the product-side `repos` table, moves the data, backfills,
-  and drops control `repos` (idempotent, backup-first, verified).
-- [ ] 80.B.3 `ForgeSeed`: seed the default repo into the product DB + upsert registry
-  + set `Product.DefaultRepoId` (seed currently writes `control.Repos`).
-- [ ] 80.B.4 `PhaseMigrationCatalog` reclassification + parity tests.
+#### 80.B — Move `RepoRow` DbSet control → product ✅ **DONE (combined with 80.D + the 80.C write-path, per operator choice)**
+> Shipped as one PR. The data move is a **boot service** (`RepoMoveToProductService` +
+> `RepoRegistrySync`), **not** a `Phase82Migration` — the move spans control + every
+> `{slug}.db` (ATTACH + column-explicit copy), so a standalone service mirrors
+> `SplitApplyService` rather than the per-context migration runner. **3 bugs found &
+> fixed in test:** (1) move ran before `EnsureCreated` and created `forge_seed_state`,
+> making `EnsureCreated` skip all control tables — moved it to after `EnsureCreated`,
+> before the product-schema script; (2) `WorkItemSyncJob` enumeration missed a
+> `ProductId` filter (single-file multi-product double-enumerated); (3) move stamped its
+> done-marker even when it no-op'd pre-split, so reboot-after-split skipped the move and
+> the product script collided — stamp only after a real move.
+- [x] 80.B.1 `Repos` DbSet `ControlDbContext` → `ProductDbContext`; `RepoRow` config
+  `DbModelControl` → `DbModelProduct` (per-product unique idx `IX_repos_RemoteUrl`/
+  `CloneRoot`, `IX_repos_ProductId`, names pinned to the move DDL).
+- [x] 80.B.2 **`RepoMoveToProductService`** (split-mode-only, marker
+  `phase80b-repos-physical-moved`): per-product `CREATE TABLE repos` + ATTACH-control +
+  **column-explicit** copy (fixes the dead `Phase76Migration`'s `INSERT … SELECT *` bug —
+  its DDL pre-dated `TestImpactedOnly`), verify, drop control `repos`, VACUUM. Plus
+  **`RepoRegistrySync`** (both modes, idempotent, every boot): builds `repo_registry`
+  from product repos, sets `Product.DefaultRepoId`, backfills null `RepoId` on
+  product_stories/work_items/workstreams/prs/cards/story_spawns. Wired into `Program.cs`
+  boot. *(No `Phase82Migration`; product `repos` table comes from the EF model + the
+  service DDL.)*
+- [x] 80.B.3 `ForgeSeed.EnsureDefaultProductAndRepoAsync` seeds the default repo into the
+  **product** DB + sets `Product.DefaultRepoId`; `RepoRegistrySync` mirrors it to the registry.
+- [x] 80.B.4 **`repos` kept classified Control in `DbBoundary`** (NOT reclassified).
+  *Why:* `Phase8/23/26/29/33/34/59` create/ALTER `repos` via the control context and the
+  catalog maps them control; flipping to Product would force a migration-body connection
+  rewrite + risk `Phase8` recreating control `repos` each boot. The EF-model move + the
+  move service get repos into the product DBs regardless. `PhaseMigrationCatalog` parity
+  tests green; `repos` reads everywhere route via `product.Repos` / `RepoLookup` / registry.
 
-#### 80.C — Repo CRUD write-path: product-first, registry upsert
-- [ ] 80.C.1 `ProductsEndpoints.cs` repo create/update/delete: write product `repos`
-  first, then `RepoRegistry` upsert (Id/ProductId/Slug/Kind/RemoteUrl/CloneRoot/
-  DisplayName/Sort + cadence). Uniqueness check hits the registry (returns 409
-  `repo.remote_url_taken` / `repo.clone_root_taken`).
-- [ ] 80.C.2 `Phase80Reconciler` (boot): registry rows with no product `repos` →
-  quarantine; product `repos` with no registry row → re-mirror. (Mirror
-  `Phase73Reconciler`.)
-- [ ] 80.C.3 Tests: create/update/delete keeps registry in lockstep; cross-product
-  dup remoteUrl rejected; reconciler heals a torn write.
+#### 80.C — Repo CRUD write-path: product-first, registry upsert (write-path landed with 80.B)
+- [x] 80.C.1 `ProductsEndpoints.cs` repo CRUD: `AttachRepo` writes `factory.CreateFor(slug).Repos`
+  first then adds the `RepoRegistry` mirror; `PatchRepo` updates `db.Repos` + syncs the
+  registry's mirrored fields (DisplayName/CloneRoot/cadence); `DeleteRepo` removes the
+  product row + the registry row (frees the uniqueness slot). Global uniqueness (Id /
+  RemoteUrl / CloneRoot) checks hit `control.RepoRegistry`.
+- [~] 80.C.2 No dedicated `Phase80Reconciler`: **`RepoRegistrySync`** re-mirrors the
+  registry from product repos on **every boot** (idempotent), which covers the
+  product-written-but-registry-missing case. A torn-write *quarantine* path (registry
+  orphan with no product row) is **deferred** — low risk given boot reconcile.
+- [~] 80.C.3 Tests: covered indirectly by the boot path + `Phase80SchemaTests` registry
+  round-trips; dedicated CRUD-lockstep + dup-reject tests **deferred** to a follow-up.
 
-#### 80.D — Replace `control.Repos` reads (the bulk of the churn)
-Route each call site to the right source: **config reads → per-product
-`product.Repos`**; **routing / cross-product enumeration / sync-due →
-`control.RepoRegistry`**.
-- [ ] 80.D.1 `ProductScope.ResolveAsync` (`ProductScope.cs:64-74`) — read repo ids from
-  `RepoRegistry` (control) instead of `control.Repos`.
-- [ ] 80.D.2 Sync jobs enumerate due repos from `RepoRegistry`:
-  `WorkItemSyncJob.cs:105-114` (the Repos⋈Products join → registry-only),
-  `:175`, `:564`; `PrSyncJob`, `BuildSyncJob`. Cursor writes target the registry.
-- [ ] 80.D.3 Per-work-item config lookups → `product.Repos`:
-  `CrewQueueWorker.cs:1031,1134` (worktree clone root), `:3300-3322`
-  (same-product repo set), `StorySpawnOrchestrator.cs:251-253`,
-  `StoriesEndpoints.cs:1221`, `WorkItemsEndpoints.cs:135,477`, `PrsEndpoints.cs:725`,
-  `ProductsEndpoints.cs:660,715,799`, `PrCoordsResolver` callers.
-- [ ] 80.D.4 Grep gate: `rg "control\.Repos|\.Repos\b"` returns only registry-side
-  uses; product-config uses go through `product.Repos`.
-- [ ] 80.D.5 Tests: sync enumeration finds due repos without opening a product DB;
-  worktree resolution still finds the clone root from the product `repos` row.
+#### 80.D — Replace `control.Repos` reads (the bulk of the churn) ✅ **DONE**
+Routed each call site: **config reads → per-product `product.Repos`**; **routing /
+cross-product / global-uniqueness → `control.RepoRegistry`**; **scope-less by-id →
+`RepoLookup`** (registry → owning product's DB).
+- [x] 80.D.1 `ProductScope.ResolveAsync` reads repo ids from `RepoRegistry`.
+- [x] 80.D.2 Sync jobs: `WorkItemSyncJob`/`PrSyncJob`/`BuildSyncJob` resolve repo config
+  from `product.Repos`. **Enumeration fans out over product DBs** (cursor stays on the
+  product repo row); registry-based single-query enumeration is a **deferred optimization**
+  (a boot-only registry cursor would mis-schedule). `WorkItemSyncJob` enumeration filters
+  by `ProductId` so single-file multi-product doesn't double-enumerate.
+- [x] 80.D.3 Per-entity config lookups → `product.Repos` (`CrewQueueWorker`,
+  `StorySpawnOrchestrator`, `WorktreePathResolver`, `WorkItemBaseBranchResolver`,
+  `PlanReconciler`, `ProviderStoryProviderOps`, `CrewStoryArtifactStrategy`,
+  `SloppyReassignmentReconciler`, `BuildValidationWorker`, + endpoints). `AdoConfigResolver`
+  + the detached accept `Task.Run` use `RepoLookup` (no ambient product scope). Cross-product
+  aggregates (`Cost`/`Performance`/`State`/`Admin`) read `RepoRegistry`.
+- [x] 80.D.4 Grep gate: zero `control.Repos` in `src/forge/Forge.Api` (compiles clean).
+- [x] 80.D.5 Tests: full non-integration suite **1799 pass / 1 fail / 14 skip** — zero
+  regressions from the move. (The 1 fail `Phase59GateLogPersistenceTests.T9` + an
+  end-of-run `ProviderE2ETests` host crash are full-suite **memory exhaustion** — T9 alone
+  ~700 MB — and both **pass in isolation 16/16**, so pre-existing/environmental, not this
+  change. Run the heavy suite in filtered batches, not all at once.) Also caught a
+  runtime-only miss class: **`control.Set<RepoRow>()`** (8 sites — `ProductScope`,
+  `PrsEndpoints`, `AutoMergeWatcher`, `PrMergeUtilities`×2, `PrSyncJob`×2,
+  `Ado`/`GitHubPrCommentSyncClient`) compiles but throws at runtime; the `.Repos` grep
+  can't see it → fixed to `db.Repos` / `RepoLookup`. Test files migrated
+  (`control.Repos`→`db.Repos`/product context; split-test seeds relocated;
+  `SplitContextsTests` boundary assertions flipped).
 
 #### 80.E — `X-Forge-Repo-Id` scope (header + middleware + helper)
 - [ ] 80.E.1 `RepoScope` helper (mirror `ProductScope`): `Read(ctx)`, `ResolveAsync`,

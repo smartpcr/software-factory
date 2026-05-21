@@ -145,7 +145,7 @@ public static class PrsEndpoints
         RepoRow? repo = null;
         if (!string.IsNullOrEmpty(row.RepoId))
         {
-            repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
+            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
         }
         var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
         var ctx = user.ForProvider(provider.Kind) with
@@ -721,8 +721,8 @@ public static class PrsEndpoints
         log.LogInformation("PR sync requested: repoId={RepoId} provider={Provider} createdBy={CreatedBy} status={Status}",
             req.RepoId, req.Provider, req.CreatedBy, req.Status);
 
-        // Resolve repo config from DB.
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId, ct);
+        // Resolve repo config from the product DB (Phase 80.B).
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId, ct);
         if (repo is null)
         {
             log.LogWarning("PR sync: repo '{RepoId}' not found in DB", req.RepoId);

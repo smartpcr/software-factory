@@ -88,9 +88,9 @@ public class Phase28E2eRefactorTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        if (!control.Repos.Any(r => r.Id == RepoId))
+        if (!db.Repos.Any(r => r.Id == RepoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,

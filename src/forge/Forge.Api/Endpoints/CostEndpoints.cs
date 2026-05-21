@@ -94,7 +94,10 @@ public static class CostEndpoints
             .Where(w => !string.IsNullOrEmpty(w.RepoId))
             .GroupBy(w => w.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().RepoId!, StringComparer.OrdinalIgnoreCase);
-        var repoRows = await control.Repos.AsNoTracking()
+        // Phase 80.B — repo→product mapping comes from the control registry
+        // (the full repo row now lives per-product; the registry is the
+        // cross-product index).
+        var repoRows = await control.RepoRegistry.AsNoTracking()
             .Select(r => new { r.Id, r.ProductId })
             .ToListAsync(ct);
         var repoProduct = repoRows

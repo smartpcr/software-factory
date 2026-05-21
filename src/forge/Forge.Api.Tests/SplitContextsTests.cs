@@ -56,7 +56,6 @@ public class SplitContextsTests : IDisposable
 
         // Spot-check: every Control table from DbBoundary appears.
         Assert.Contains("products", entityTypes);
-        Assert.Contains("repos", entityTypes);
         Assert.Contains("users", entityTypes);
         Assert.Contains("crews", entityTypes);
         Assert.Contains("agents", entityTypes);
@@ -65,6 +64,8 @@ public class SplitContextsTests : IDisposable
         Assert.Contains("forge_actions", entityTypes);
 
         // Critically: product tables are NOT in the control model.
+        // Phase 80.B — repos moved out of the control model into the product DB.
+        Assert.DoesNotContain("repos", entityTypes);
         Assert.DoesNotContain("workstreams", entityTypes);
         Assert.DoesNotContain("work_items", entityTypes);
         Assert.DoesNotContain("cards", entityTypes);
@@ -85,6 +86,7 @@ public class SplitContextsTests : IDisposable
             .ToHashSet();
 
         // Spot-check: every Product table from DbBoundary appears.
+        Assert.Contains("repos", entityTypes); // Phase 80.B — repos moved here.
         Assert.Contains("workstreams", entityTypes);
         Assert.Contains("work_items", entityTypes);
         Assert.Contains("cards", entityTypes);
@@ -101,7 +103,6 @@ public class SplitContextsTests : IDisposable
         // ControlDbContext. Verify they are NOT present in the
         // ProductDbContext model.
         Assert.DoesNotContain("products", entityTypes);
-        Assert.DoesNotContain("repos", entityTypes);
         Assert.DoesNotContain("users", entityTypes);
         Assert.DoesNotContain("crews", entityTypes);
         Assert.DoesNotContain("agents", entityTypes);
@@ -122,7 +123,6 @@ public class SplitContextsTests : IDisposable
         {
             await legacyCtl.Database.EnsureCreatedAsync();
             legacyCtl.Products.Add(new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" });
-            legacyCtl.Repos.Add(new RepoRow { Id = "r1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
             await legacyCtl.SaveChangesAsync();
         }
         using (var legacy = BuildLegacy())
@@ -133,6 +133,8 @@ public class SplitContextsTests : IDisposable
                 var trimmed = stmt.Trim();
                 if (trimmed.Length > 0) await legacy.Database.ExecuteSqlRawAsync(trimmed);
             }
+            // Phase 80.B — repos live on the product DB now.
+            legacy.Repos.Add(new RepoRow { Id = "r1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
             legacy.Workstreams.Add(new WorkstreamRow { Id = "ws1", Name = "ws1", Branch = "ws/1", Epic = "EPIC", Status = "active", RepoId = "r1" });
             await legacy.SaveChangesAsync();
         }
@@ -141,12 +143,13 @@ public class SplitContextsTests : IDisposable
         {
             var product = await control.Products.AsNoTracking().FirstAsync();
             Assert.Equal("atlas", product.Id);
-            var repo = await control.Repos.AsNoTracking().FirstAsync();
-            Assert.Equal("r1", repo.Id);
         }
 
         using (var product = BuildProductAt(this.paths.ControlDbPath()))
         {
+            // Phase 80.B — repos live on the product DB now.
+            var repo = await product.Repos.AsNoTracking().FirstAsync();
+            Assert.Equal("r1", repo.Id);
             var ws = await product.Workstreams.AsNoTracking().FirstAsync();
             Assert.Equal("ws1", ws.Id);
             Assert.Equal("r1", ws.RepoId);

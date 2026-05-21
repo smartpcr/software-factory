@@ -64,7 +64,7 @@ public static class SprintEndpoints
         if (req is null || string.IsNullOrWhiteSpace(req.RepoId))
             return Results.Problem(title: "repoId is required", statusCode: 400);
 
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 404);
         if (repo.ProductId != id) return Results.Problem(title: $"Repo {req.RepoId} is not in product {id}", statusCode: 400);
 
@@ -109,7 +109,7 @@ public static class SprintEndpoints
         var bindingRows = await db.RepoIterationBindings.AsNoTracking()
             .Where(b => iterIds.Contains(b.ProductIterationId))
             .ToListAsync();
-        var repoNames = await control.Repos.AsNoTracking()
+        var repoNames = await db.Repos.AsNoTracking()
             .Where(r => r.ProductId == id)
             .ToDictionaryAsync(r => r.Id, r => r.DisplayName);
         var byIter = bindingRows.GroupBy(b => b.ProductIterationId)
@@ -216,7 +216,7 @@ public static class SprintEndpoints
         if (req is null || string.IsNullOrWhiteSpace(req.RepoId) || req.ProviderNodeIds is null)
             return Results.Problem(title: "repoId and providerNodeIds are required", statusCode: 400);
 
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 404);
         if (repo.ProductId != productId)
             return Results.Problem(title: $"Repo {req.RepoId} is not in product {productId}", statusCode: 400);
@@ -362,7 +362,7 @@ public static class SprintEndpoints
             .Where(p => p.ProductId == id)
             .OrderBy(p => p.Prefix)
             .ToListAsync();
-        var repoNames = await control.Repos.AsNoTracking()
+        var repoNames = await db.Repos.AsNoTracking()
             .Where(r => r.ProductId == id)
             .ToDictionaryAsync(r => r.Id, r => r.DisplayName);
         var list = rows.Select(p => SprintMappers.MapSavedPrefix(p,
@@ -387,7 +387,7 @@ public static class SprintEndpoints
         if (kind != "iterations" && kind != "areas")
             return Results.Problem(title: "kind must be 'iterations' or 'areas'", statusCode: 400);
 
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == req.RepoId);
         if (repo is null || repo.ProductId != id)
             return Results.Problem(title: "Repo does not belong to product", statusCode: 400);
 
@@ -445,7 +445,7 @@ public static class SprintEndpoints
 
         var row = await db.ProductSavedPrefixes.FirstOrDefaultAsync(p => p.Id == prefixId && p.ProductId == id);
         if (row is null) return Results.NotFound();
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == row.RepoId);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == row.RepoId);
         if (repo is null) return Results.Problem(title: "Repo no longer exists", statusCode: 410);
 
         // Discovery → import every node that matches the prefix. Emits the
@@ -530,7 +530,7 @@ public static class SprintEndpoints
         if (role != "current" && role != "next" && role != "reference")
             return Results.Problem(title: "role must be 'current' | 'next' | 'reference'", statusCode: 400);
 
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var auth = RequireRole.CheckForProduct(ctx, control, repo.ProductId, RequireRole.ProductOwner, "tech-lead");
@@ -581,7 +581,7 @@ public static class SprintEndpoints
         ProductDbContext db,
         IHubContext<ForgeHub> hub)
     {
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var auth = RequireRole.CheckForProduct(ctx, control, repo.ProductId, RequireRole.ProductOwner, "tech-lead");

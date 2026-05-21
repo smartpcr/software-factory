@@ -100,7 +100,7 @@ public sealed class PlanReconciler
         // phase hasn't started). Treat that as "no plan" — nothing to do.
         var repo = spawn.RepoId is null
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
 
         // Read from the worktree on disk, NOT via `git show origin/{branch}`.
         // The architect agent writes to the worktree and `CommitPathInWorktreeAsync`

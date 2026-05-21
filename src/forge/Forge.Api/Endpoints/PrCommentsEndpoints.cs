@@ -366,7 +366,7 @@ public static class PrCommentsEndpoints
             {
                 try
                 {
-                    var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == prRow.RepoId);
+                    var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == prRow.RepoId);
                     if (repo is not null && !string.IsNullOrEmpty(repo.GhOwner) && !string.IsNullOrEmpty(repo.GhRepo))
                     {
                         var ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");

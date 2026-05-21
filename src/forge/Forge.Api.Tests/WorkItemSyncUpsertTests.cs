@@ -249,7 +249,7 @@ public class WorkItemSyncUpsertTests
         using var scope = factory.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         return repo ?? throw new InvalidOperationException($"seed repo '{id}' not found");
     }
 

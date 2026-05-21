@@ -1285,19 +1285,13 @@ public static class TaskExecutionEndpoints
         // Resolve worktree path with the same convention CrewQueueWorker uses:
         // {repo.CloneRoot}/.worktree/ws-{sanitizedId}.
         //
-        // Phase 73 follow-up — RepoRow lives on ControlDbContext (post-G
-        // boundary). The pre-split path used `db.Set<RepoRow>()` which
-        // worked while ProductDbContext.OnModelCreating still mapped
-        // every entity into a single forge.db schema. Post-Phase-73
-        // ProductDbContext's model no longer includes RepoRow, so
-        // `db.Set<RepoRow>()` throws `Cannot create a DbSet for 'RepoRow'
-        // because this type is not included in the model for the
-        // context.` Reading from `control.Repos` is correct in both
-        // pre- and post-split topologies.
+        // Phase 80.B — RepoRow moved to ProductDbContext ({slug}.db). This
+        // handler is scoped to the work item's product, so its repo lives in
+        // the same product DB; read it from `db.Repos`.
         string? cloneRoot = null;
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
-            var repo = await control.Repos.AsNoTracking()
+            var repo = await db.Repos.AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.CloneRoot)) cloneRoot = repo.CloneRoot;
         }

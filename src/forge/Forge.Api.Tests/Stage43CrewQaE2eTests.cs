@@ -165,7 +165,7 @@ public class Stage43CrewQaE2eTests
                 Slug = "stage43",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,
@@ -269,7 +269,7 @@ public class Stage43CrewQaE2eTests
                 Slug = "stage43-int",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,
@@ -374,9 +374,9 @@ public class Stage43CrewQaE2eTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
 
             // Pre-seed e2e-scenarios.md on main.
             await git.EnsureBranchAsync(repo, baseBranch, baseBranch, default);

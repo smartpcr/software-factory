@@ -250,7 +250,7 @@ public sealed class StorySpawnOrchestrator
 
         var repo = spawn.RepoId is null
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
 
         // Phase-specific drivers. Review/QA also re-run the implement pass
         // so blocked-then-unblocked downstream workstreams get picked up

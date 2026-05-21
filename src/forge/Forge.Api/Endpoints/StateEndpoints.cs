@@ -563,7 +563,7 @@ public static class StateEndpoints
         CancellationToken ct)
     {
         var warnings = new List<string>();
-        var repos = await control.Repos.AsNoTracking()
+        var repos = await db.Repos.AsNoTracking()
             .Where(r => r.ProductId == productId)
             .ToListAsync(ct);
         if (repos.Count == 0)

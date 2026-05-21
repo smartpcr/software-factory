@@ -58,6 +58,15 @@ public class ProductDbContext : DbContext
 
     public DbSet<IdempotencyRow> Idempotency => this.Set<IdempotencyRow>();
 
+    /// <summary>
+    /// Phase 80.B — the full repo row now lives in the per-product DB
+    /// ({slug}.db), keyed to its owning product. The control DB keeps only the
+    /// thin <c>RepoRegistry</c> index (routing + global uniqueness + sync-due).
+    /// Resolve a repo's product DB via <c>RepoLookup</c> when you only have a
+    /// repoId.
+    /// </summary>
+    public DbSet<RepoRow> Repos => this.Set<RepoRow>();
+
     // Work-item surface.
     public DbSet<WorkItemRow> WorkItems => this.Set<WorkItemRow>();
 

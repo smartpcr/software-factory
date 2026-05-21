@@ -174,7 +174,7 @@ public class Stage63SetupReaderCacheTests
                 Id = productId, Name = "Stage 6.3", Slug = "stage63",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId, ProductId = productId,
                 DisplayName = "Stage 6.3 repo", Kind = "local",
@@ -219,9 +219,9 @@ public class Stage63SetupReaderCacheTests
             """;
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
             await git.EnsureBranchAsync(repo, "main", "main", default);
             await git.CommitFilesAsync(repo, "main", "stage63-seed",
                 new Dictionary<string, string>
@@ -316,7 +316,7 @@ public class Stage63SetupReaderCacheTests
                 Id = productId, Name = "Stage 6.3 two-phase", Slug = "stage63-twophase",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId, ProductId = productId,
                 DisplayName = "Stage 6.3 two-phase repo", Kind = "local",
@@ -376,9 +376,9 @@ public class Stage63SetupReaderCacheTests
             """;
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
             await git.EnsureBranchAsync(repo, "main", "main", default);
             await git.CommitFilesAsync(repo, "main", "stage63-twophase-seed",
                 new Dictionary<string, string>

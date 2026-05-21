@@ -91,27 +91,46 @@ public class WorkItemSyncJob : BackgroundService
         //      nested DI scopes inside SyncRepoAsync bind to that
         //      product's DB.
         List<RepoSyncCandidate> repos;
-        using (var scope = this.scopes.CreateScope())
+        var now = DateTimeOffset.UtcNow;
+        var staleThreshold = now.AddMinutes(-SyncConstants.RunningTimeoutMinutes).ToString("o");
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var now = DateTimeOffset.UtcNow;
-            var staleThreshold = now.AddMinutes(-SyncConstants.RunningTimeoutMinutes).ToString("o");
-
-            // Phase 34 — pull the candidate set without the parallelism cap so the
-            // per-repo interval filter below doesn't starve a repo that sits
-            // behind a few not-yet-due repos in the order-by ranking. Join to
-            // products so we have the slug for the AsyncLocal slug push.
-            var candidates = await (
-                from r in control.Repos
-                join p in control.Products on r.ProductId equals p.Id
-                where r.LastSyncStatus == "idle"
-                   || r.LastSyncStatus == "failed"
-                   || (r.LastSyncStatus == "running" && r.IsRunningSince != null
-                       && string.Compare(r.IsRunningSince, staleThreshold) < 0)
-                orderby r.LastSyncAt ?? string.Empty
-                select new RepoSyncCandidate(r, p.Slug)
-            ).ToListAsync(ct);
+            // Phase 80.B — repos now live in per-product DBs and the sync
+            // cursor lives on the product repo row. Enumerate due repos by
+            // walking each product's DB (push the AsyncLocal slug so the
+            // nested DI scope binds to that product's {slug}.db). Single-query
+            // enumeration from the control repo_registry is a deferred
+            // optimization — a registry cursor refreshed only at boot would
+            // mis-schedule syncs.
+            var candidates = new List<RepoSyncCandidate>();
+            List<(string Id, string Slug)> products;
+            using (var scope = this.scopes.CreateScope())
+            {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                products = (await control.Products.AsNoTracking()
+                        .Select(p => new { p.Id, p.Slug })
+                        .ToListAsync(ct))
+                    .Where(p => !string.IsNullOrEmpty(p.Slug))
+                    .Select(p => (p.Id, p.Slug))
+                    .ToList();
+            }
+            foreach (var (productId, slug) in products)
+            {
+                using var pscope = this.scopes.CreateScope();
+                using var _ = ProductDbContextFactory.PushAsyncLocalSlug(slug);
+                var pdb = pscope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                // Filter by ProductId too: pre-split (single forge.db) the
+                // fallback context sees every product's repos, so without this
+                // each product's pass would re-enumerate the same rows.
+                var due = await pdb.Repos.AsNoTracking()
+                    .Where(r => r.ProductId == productId
+                       && (r.LastSyncStatus == "idle"
+                       || r.LastSyncStatus == "failed"
+                       || (r.LastSyncStatus == "running" && r.IsRunningSince != null
+                           && string.Compare(r.IsRunningSince, staleThreshold) < 0)))
+                    .OrderBy(r => r.LastSyncAt ?? string.Empty)
+                    .ToListAsync(ct);
+                foreach (var r in due) candidates.Add(new RepoSyncCandidate(r, slug));
+            }
 
             repos = candidates
                 .Where(c => IsDueForSync(c.Repo, now))
@@ -124,7 +143,7 @@ public class WorkItemSyncJob : BackgroundService
         var placeholders = repos.Where(c => IsSeedPlaceholder(c.Repo)).ToList();
         foreach (var ph in placeholders)
         {
-            await this.MarkPlaceholderAsync(ph.Repo.Id, ct);
+            await this.MarkPlaceholderAsync(ph.Repo.Id, ph.Slug, ct);
         }
         repos = repos.Where(c => !IsSeedPlaceholder(c.Repo)).ToList();
 
@@ -172,7 +191,10 @@ public class WorkItemSyncJob : BackgroundService
         using var scope = this.scopes.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        // Phase 80.B — the repo now lives in the product DB; this scope's
+        // ProductDbContext is bound to the right {slug}.db via the AsyncLocal
+        // slug the caller pushed before invoking SyncRepoAsync.
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return;
 
         // Mark as running.
@@ -554,14 +576,17 @@ public class WorkItemSyncJob : BackgroundService
     /// next tick (the query also matches "failed", but the friendly error
     /// message tells the operator what to do).
     /// </summary>
-    private async Task MarkPlaceholderAsync(string repoId, CancellationToken ct)
+    private async Task MarkPlaceholderAsync(string repoId, string slug, CancellationToken ct)
     {
         try
         {
             using var scope = this.scopes.CreateScope();
+            // Phase 80.B — push the product slug so ProductDbContext binds to
+            // the repo's own {slug}.db (the repo no longer lives in control).
+            using var _ = ProductDbContextFactory.PushAsyncLocalSlug(slug);
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
+            var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
             if (repo is null) return;
             repo.LastSyncStatus = "idle";
             repo.LastSyncError = "Demo placeholder — click Edit to point at your real ADO project, or attach a new repo.";

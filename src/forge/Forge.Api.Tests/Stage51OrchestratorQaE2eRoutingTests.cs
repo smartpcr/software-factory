@@ -60,9 +60,9 @@ public class Stage51OrchestratorQaE2eRoutingTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        if (!control.Repos.Any(r => r.Id == RepoId))
+        if (!db.Repos.Any(r => r.Id == RepoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,

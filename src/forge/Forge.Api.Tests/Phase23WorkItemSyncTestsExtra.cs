@@ -565,7 +565,7 @@ public class AgentReadyAuditExtraTests
 
         // Pre-seed a work item with no assignee.
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "ar-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "AR", RemoteUrl = "https://x", DefaultBranch = "main",
@@ -649,7 +649,7 @@ public class WorkItemSyncJobExtraTests
         var product = await control.Products.FirstAsync();
 
         var freshRunning = DateTimeOffset.UtcNow.AddMinutes(-5).ToString("o");
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "running-fresh", ProductId = product.Id, Kind = "ado",
             DisplayName = "Fresh", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -660,7 +660,7 @@ public class WorkItemSyncJobExtraTests
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.RunTickAsync(default);
 
-        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-fresh");
+        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-fresh");
         // Skipped — IsRunningSince is unchanged and status still 'running'.
         Assert.Equal("running", refreshed.LastSyncStatus);
         Assert.Equal(freshRunning, refreshed.IsRunningSince);
@@ -677,7 +677,7 @@ public class WorkItemSyncJobExtraTests
         var product = await control.Products.FirstAsync();
 
         var staleRunning = DateTimeOffset.UtcNow.AddMinutes(-30).ToString("o");
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "running-stale", ProductId = product.Id, Kind = "ado",
             DisplayName = "Stale", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -692,7 +692,7 @@ public class WorkItemSyncJobExtraTests
         // the sync ran cleanly) or 'failed' (if the configured ADO upstream
         // wasn't reachable). Either way it's NOT still 'running' with the
         // original timestamp.
-        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-stale");
+        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "running-stale");
         Assert.NotEqual(staleRunning, refreshed.IsRunningSince ?? string.Empty);
     }
 
@@ -707,7 +707,7 @@ public class WorkItemSyncJobExtraTests
         var product = await control.Products.FirstAsync();
 
         var priorSyncAt = DateTimeOffset.UtcNow.AddDays(-1).ToString("o");
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             // Unknown provider kind → resolver returns null → terminal error.
             Id = "fail-repo", ProductId = product.Id, Kind = "no-such-provider",
@@ -719,7 +719,7 @@ public class WorkItemSyncJobExtraTests
         var job = scope.ServiceProvider.GetRequiredService<WorkItemSyncJob>();
         await job.SyncRepoAsync("fail-repo", kind: null, ct: default);
 
-        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "fail-repo");
+        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "fail-repo");
         Assert.Equal("failed", refreshed.LastSyncStatus);
         Assert.NotNull(refreshed.LastSyncError);
         Assert.Equal(priorSyncAt, refreshed.LastSyncAt); // untouched
@@ -734,7 +734,7 @@ public class WorkItemSyncJobExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "run-repo", ProductId = product.Id, Kind = "no-provider",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -824,7 +824,7 @@ public class Phase23EndpointExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "ar-empty", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -836,7 +836,7 @@ public class Phase23EndpointExtraTests
             new { areaPaths = Array.Empty<string>() }, JsonOpts);
         Assert.True(resp.IsSuccessStatusCode);
 
-        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "ar-empty");
+        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "ar-empty");
         // Either null or "[]" is acceptable per spec; impl normalises to null.
         Assert.True(string.IsNullOrEmpty(refreshed.AreaPathsJson) || refreshed.AreaPathsJson == "[]",
             $"Expected null/[]/empty for cleared AreaPathsJson, got: {refreshed.AreaPathsJson}");
@@ -853,7 +853,7 @@ public class Phase23EndpointExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "kind-full", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -869,7 +869,7 @@ public class Phase23EndpointExtraTests
         // {error}; what we care about is the side-effect on LastSyncAt.
         _ = resp; // status is provider-shape-dependent in tests.
 
-        var refreshed = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == "kind-full");
+        var refreshed = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == "kind-full");
         Assert.True(string.IsNullOrEmpty(refreshed.LastSyncAt),
             $"Expected LastSyncAt cleared by kind=full, got: {refreshed.LastSyncAt}");
     }
@@ -898,7 +898,7 @@ public class Phase23EndpointExtraTests
             Id = "rl-svc", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
         };
-        control.Repos.Add(repo);
+        db.Repos.Add(repo);
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         // Force the throttle window by manually inserting a recent sync
@@ -938,7 +938,7 @@ public class Phase23EndpointExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "rl-po", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -971,7 +971,7 @@ public class Phase23EndpointExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "limit-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",
@@ -1005,7 +1005,7 @@ public class Phase23EndpointExtraTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var product = await control.Products.FirstAsync();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "clamp-repo", ProductId = product.Id, Kind = "ado",
             DisplayName = "X", RemoteUrl = "x", DefaultBranch = "main", CloneRoot = "/tmp",

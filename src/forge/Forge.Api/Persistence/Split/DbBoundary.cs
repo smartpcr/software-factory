@@ -125,6 +125,14 @@ public static class DbBoundary
         // repoId→product routing + sync-due enumeration). Stays control even
         // after the full `repos` row moves to the per-product DB (Stage 80.B).
         new DbTableSpec("repo_registry", DbKind.Control, PartitionStrategy.Global, null),
+        // Phase 80.B — `repos` now physically lives in each per-product DB
+        // (the RepoRow EF entity moved to ProductDbContext, and
+        // RepoMoveToProductService relocates the rows at boot). It stays
+        // classified Control here because the historical Phase8/23/26/29/33/34/59
+        // migrations create/ALTER it via the control context and the catalog
+        // maps them as control; reclassifying would force a migration-body
+        // connection rewrite. The splitter therefore leaves repos in the source
+        // file and the move service carries it to {slug}.db — same end state.
         new DbTableSpec("repos", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_product_roles", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("user_settings", DbKind.Control, PartitionStrategy.Global, null),

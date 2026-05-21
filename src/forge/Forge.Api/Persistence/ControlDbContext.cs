@@ -31,7 +31,11 @@ public class ControlDbContext : DbContext
 
     public DbSet<ProductRow> Products => this.Set<ProductRow>();
 
-    public DbSet<RepoRow> Repos => this.Set<RepoRow>();
+    // Phase 80.B — the full RepoRow moved to ProductDbContext ({slug}.db).
+    // The control DB now holds only the thin RepoRegistry index (below).
+    // Callers that need a repo's full config resolve it via RepoLookup
+    // (repo_registry → owning product's DB); routing / global-uniqueness /
+    // sync-due enumeration read RepoRegistry directly.
 
     public DbSet<UserRow> Users => this.Set<UserRow>();
 

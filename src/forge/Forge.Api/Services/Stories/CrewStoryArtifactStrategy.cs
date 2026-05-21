@@ -560,7 +560,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         using var scope = this.scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        return await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        return await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
     }
 
     /// <summary>
@@ -2442,7 +2442,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             using var lookup = this.scopeFactory.CreateScope();
             var control = lookup.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = lookup.ServiceProvider.GetRequiredService<ProductDbContext>();
-            repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         }
 
         string? planMd = null;

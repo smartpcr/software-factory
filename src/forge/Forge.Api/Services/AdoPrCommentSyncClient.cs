@@ -318,9 +318,11 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         if (!string.IsNullOrEmpty(pr.RepoId))
         {
             using var scope = this.scopeFactory.CreateScope();
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var repoRow = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+            // Phase 80.B — this scope has no active product slug, so route the
+            // repo lookup through RepoLookup (registry → owning product's DB)
+            // rather than an unscoped context (RepoRow moved to the product DB).
+            var repoLookup = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.RepoLookup>();
+            var repoRow = await repoLookup.GetByIdAsync(pr.RepoId, ct);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.AdoProject))
             {
                 var orgUrl = !string.IsNullOrEmpty(repoRow.AdoOrg)

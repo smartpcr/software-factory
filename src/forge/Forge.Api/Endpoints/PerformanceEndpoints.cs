@@ -78,7 +78,8 @@ public static class PerformanceEndpoints
         var wiRepo = workItems
             .Where(w => !string.IsNullOrEmpty(w.RepoId))
             .ToDictionary(w => w.Id, w => w.RepoId!, StringComparer.OrdinalIgnoreCase);
-        var repos = await control.Repos.AsNoTracking()
+        // Phase 80.B — cross-product repo→product mapping via the registry.
+        var repos = await control.RepoRegistry.AsNoTracking()
             .Select(r => new { r.Id, r.ProductId })
             .ToListAsync(ct);
         var repoProduct = repos

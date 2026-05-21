@@ -605,7 +605,7 @@ public static class StoriesEndpoints
             // path. For locally-authored stories ProductStoryRow doesn't
             // bind a specific repo, so we scan every repo whose product
             // matches. Limited to repos with a non-null CloneRoot.
-            var candidateRepos = await control.Repos.AsNoTracking()
+            var candidateRepos = await db.Repos.AsNoTracking()
                 .Where(r => r.CloneRoot != null && r.CloneRoot != string.Empty)
                 .ToListAsync(ct);
 
@@ -1218,7 +1218,7 @@ public static class StoriesEndpoints
         // CascadeDeleteWorkstreamAsync above. ────────────────────────────
         var repo = string.IsNullOrEmpty(spawn.RepoId)
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
 
         // Track branches we've already cleaned to avoid duplicate work
         // (PR branch may equal plan branch on partial failures, etc.).
@@ -1989,7 +1989,7 @@ public static class StoriesEndpoints
         var oldBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
             : null;
 
         // (a) Ensure the new base branch exists, branched from main, and is
@@ -2956,7 +2956,13 @@ public static class StoriesEndpoints
 
                 RepoRow? repo = null;
                 if (!string.IsNullOrEmpty(capturedRepoId))
-                    repo = await scopeControl.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == capturedRepoId);
+                {
+                    // Phase 80.B — detached Task.Run has no request/AsyncLocal
+                    // product scope, so route via RepoLookup (registry → owning
+                    // product's DB) rather than the control-fallback context.
+                    var scopeRepoLookup = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.RepoLookup>();
+                    repo = await scopeRepoLookup.GetByIdAsync(capturedRepoId);
+                }
 
                 // Push the plan branch — stages any uncommitted changes
                 // from a cancelled agent and pushes all local-only
@@ -3826,7 +3832,7 @@ public static class StoriesEndpoints
         // Each source returns a distinct `source` field so the UI banner shows the
         // operator whether they're looking at WIP / shipped / pre-merge content.
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
             : null;
         var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
             ? repo.CloneRoot

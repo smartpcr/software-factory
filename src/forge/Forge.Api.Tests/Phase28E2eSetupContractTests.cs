@@ -75,9 +75,9 @@ public class Phase28E2eSetupContractTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        if (!control.Repos.Any(r => r.Id == RepoId))
+        if (!db.Repos.Any(r => r.Id == RepoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,
@@ -251,9 +251,9 @@ public class Phase28E2eSetupContractTests
         ForgeWebApplicationFactory f, string storyId, string body)
     {
         using var scope = f.Services.CreateScope();
-        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-        var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
+        var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
         await git.EnsureBranchAsync(repo, "main", "main");
         await git.CommitFilesAsync(repo, "main", "e2e-setup-seed",
             new Dictionary<string, string>
@@ -274,9 +274,9 @@ public class Phase28E2eSetupContractTests
         ForgeWebApplicationFactory f, string branch, string path)
     {
         using var scope = f.Services.CreateScope();
-        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-        var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
+        var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
         return await git.FileExistsAsync(repo, branch, path);
     }
 
@@ -284,9 +284,9 @@ public class Phase28E2eSetupContractTests
         ForgeWebApplicationFactory f, string branch, string path)
     {
         using var scope = f.Services.CreateScope();
-        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-        var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
+        var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
         return await git.ReadFileAsync(repo, branch, path);
     }
 

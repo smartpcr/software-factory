@@ -46,7 +46,7 @@ public static class WorktreePathResolver
 
         var repo = string.IsNullOrEmpty(ws.RepoId)
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
 
         return await ResolveForWorkstreamAsync(control, db, ws, repo, ct);
     }
@@ -131,7 +131,7 @@ public static class WorktreePathResolver
         if (spawn is null) return WorktreePathResult.Empty;
 
         if (string.IsNullOrEmpty(spawn.RepoId)) return WorktreePathResult.Empty;
-        var repo = await control.Repos.AsNoTracking()
+        var repo = await db.Repos.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot))
         {
@@ -196,7 +196,7 @@ public static class WorktreePathResolver
         if (ws is null) return null;
 
         if (string.IsNullOrEmpty(ws.RepoId)) return null;
-        var repo = await control.Repos.AsNoTracking()
+        var repo = await db.Repos.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return null;
 

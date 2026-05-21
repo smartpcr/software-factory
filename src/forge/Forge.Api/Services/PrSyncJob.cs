@@ -161,7 +161,7 @@ public sealed class PrSyncJob : BackgroundService
                 .ToArray();
             var intervals = repoIds.Length == 0
                 ? new Dictionary<string, int?>()
-                : await control.Repos
+                : await db.Repos
                     .AsNoTracking()
                     .Where(r => repoIds.Contains(r.Id))
                     .ToDictionaryAsync(r => r.Id, r => r.PrSyncIntervalSeconds, ct);
@@ -758,7 +758,7 @@ public sealed class PrSyncJob : BackgroundService
     private async Task<string?> ResolveWorktreeRootAsync(ControlDbContext control, ProductDbContext db, PrSyncCandidate candidate, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(candidate.RepoId) || string.IsNullOrEmpty(candidate.WorkItemId)) return null;
-        var repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return null;
         return Path.Combine(repo.CloneRoot, ".worktree", $"ws-{candidate.WorkItemId}");
     }
@@ -794,7 +794,7 @@ public sealed class PrSyncJob : BackgroundService
 
         try
         {
-            var repo = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
+            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == candidate.RepoId, ct);
             if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
 
             var worktreePath = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{candidate.WorkItemId}");

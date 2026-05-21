@@ -216,9 +216,6 @@ public class SplitResumeServiceTests : IDisposable
             ctl.Products.AddRange(
                 new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" },
                 new ProductRow { Id = "raft", Slug = "raft", Name = "Raft" });
-            ctl.Repos.AddRange(
-                new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
-                new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
             await ctl.SaveChangesAsync();
         }
 
@@ -226,6 +223,18 @@ public class SplitResumeServiceTests : IDisposable
             .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
             .Options;
         await using var prod = new ProductDbContext(prodOpt);
+
+        // Phase 80.B — repos live on the product DB now. Guarded separately:
+        // resume re-enters after the split moved product tables out, but repos
+        // (control-classified) stays in place, so a blind re-add would trip the
+        // unique RemoteUrl index.
+        if (!await prod.Repos.AnyAsync())
+        {
+            prod.Repos.AddRange(
+                new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
+                new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
+            await prod.SaveChangesAsync();
+        }
 
         var existing = await prod.Workstreams.AnyAsync();
         if (existing) return;

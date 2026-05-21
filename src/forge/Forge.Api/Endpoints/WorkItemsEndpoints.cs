@@ -132,7 +132,7 @@ public static class WorkItemsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return Results.Problem(title: $"Repo {repoId} not found", statusCode: 404);
 
         var filters = new WorkItemSyncFilters(
@@ -477,7 +477,8 @@ public static class WorkItemsEndpoints
         if (!string.IsNullOrWhiteSpace(req.RepoId))
         {
             // Refuse if the repo isn't attached to any product (FK would dangle).
-            var exists = await control.Repos.AsNoTracking().AnyAsync(r => r.Id == req.RepoId, ct);
+            // Phase 80.B — the control registry is the global repo index.
+            var exists = await control.RepoRegistry.AsNoTracking().AnyAsync(r => r.Id == req.RepoId && r.DeletedAt == null, ct);
             if (!exists) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 400);
             row.RepoId = req.RepoId;
         }
@@ -827,7 +828,7 @@ public static class WorkItemsEndpoints
         string? prProjectName = null;
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
-            var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
             (prRepoName, prProjectName) = PrCoordsResolver.Resolve(repo, repoKind);
         }

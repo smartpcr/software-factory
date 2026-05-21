@@ -66,8 +66,11 @@ public static class ProductScope
         }
 
         var productId = raw;
-        var repoIds = await db.Set<RepoRow>().AsNoTracking()
-            .Where(r => r.ProductId == productId)
+        // Phase 80.B — RepoRow moved to the product DB; repo ids for a product
+        // now come from the control `repo_registry` index. `raw` may be a
+        // product id OR slug (callers pass either), so match both.
+        var repoIds = await db.RepoRegistry.AsNoTracking()
+            .Where(r => r.DeletedAt == null && (r.ProductId == productId || r.ProductSlug == productId))
             .Select(r => r.Id)
             .ToListAsync(ct);
         return new ResolvedScope(productId, repoIds);

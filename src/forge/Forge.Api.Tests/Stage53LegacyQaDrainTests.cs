@@ -55,9 +55,9 @@ public class Stage53LegacyQaDrainTests
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
-        if (!control.Repos.Any(r => r.Id == RepoId))
+        if (!db.Repos.Any(r => r.Id == RepoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId, ProductId = ProductId,
                 DisplayName = "Stage 5.3 repo", Kind = "local",
