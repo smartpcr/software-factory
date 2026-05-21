@@ -31,6 +31,73 @@ using Xunit;
 // 23.10.1 — Migration (Phase23MigrationTests)
 // =========================================================================
 
+// =========================================================================
+// Phase 80 — POST /api/repos/{id}/clear-sync-error
+// =========================================================================
+
+public class Phase80ClearSyncErrorTests
+{
+    [Fact]
+    public async Task ClearSyncError_Resets_Status_On_Row_And_Registry()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+
+        const string repoId = ForgeSeed.DefaultRepoId; // atlas-platform (seeded on boot)
+        const string err = "ADO WIQL 400 for project 'One': VS402337 ... exceeds the size limit of 20000.";
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var row = await db.Repos.FirstAsync(r => r.Id == repoId);
+            row.LastSyncStatus = "failed";
+            row.LastSyncError = err;
+            var reg = await control.RepoRegistry.FirstAsync(r => r.Id == repoId);
+            reg.LastSyncStatus = "failed";
+            reg.LastSyncError = err;
+            await db.SaveChangesAsync();
+            await control.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsync($"/api/repos/{repoId}/clear-sync-error", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var row = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            Assert.Equal("idle", row.LastSyncStatus);
+            Assert.Null(row.LastSyncError);
+            var reg = await control.RepoRegistry.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            Assert.Equal("idle", reg.LastSyncStatus);
+            Assert.Null(reg.LastSyncError);
+        }
+    }
+
+    [Fact]
+    public async Task ClearSyncError_Conflicts_When_Running()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+
+        const string repoId = ForgeSeed.DefaultRepoId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var row = await db.Repos.FirstAsync(r => r.Id == repoId);
+            row.LastSyncStatus = "running";
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsync($"/api/repos/{repoId}/clear-sync-error", null);
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+    }
+}
+
 public class Phase23MigrationTests
 {
     [Fact]

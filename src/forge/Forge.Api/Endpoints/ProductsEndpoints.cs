@@ -55,6 +55,7 @@ public static class ProductsEndpoints
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items", GetSyncRunItems).WithName("GetSyncRunItems");
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items/{entityKind}/{entityId}/detail", GetSyncRunItemDetail).WithName("GetSyncRunItemDetail");
         repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
+        repos.MapPost("/{id}/clear-sync-error", ClearSyncError).WithName("ClearRepoSyncError");
 
         // Phase 26/29 — build pipeline detection, validation & history.
         repos.MapPost("/{id}/detect-build", DetectBuild).WithName("DetectBuild");
@@ -193,6 +194,49 @@ public static class ProductsEndpoints
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
+        return Results.Ok(repo);
+    }
+
+    // POST /api/repos/{id}/clear-sync-error — operator-acknowledge a failed
+    // sync. Resets LastSyncStatus → "idle" and clears LastSyncError on both
+    // the product-DB row and the control-registry mirror, without running a
+    // sync. The sync cursor (LastSyncCursor / LastUpstreamChangedDate) is
+    // preserved so the next sync resumes where it left off. Useful when the
+    // failure is known (e.g. a too-broad WIQL) and the operator wants to silence
+    // the red indicator until they fix the filters.
+    private static async Task<IResult> ClearSyncError(
+        HttpContext ctx,
+        string id,
+        ControlDbContext control,
+        ProductDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        // Only meaningful when not mid-run; if a sync is currently running, leave
+        // it alone (the run will set the terminal state itself).
+        if (string.Equals(row.LastSyncStatus, "running", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(title: "A sync is currently running for this repo; wait for it to finish.", statusCode: 409);
+        }
+
+        row.LastSyncStatus = "idle";
+        row.LastSyncError = null;
+
+        var reg = await control.RepoRegistry.FirstOrDefaultAsync(r => r.Id == id);
+        if (reg is not null)
+        {
+            reg.LastSyncStatus = "idle";
+            reg.LastSyncError = null;
+        }
+
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        var repo = MapRepo(row);
+        await hub.Clients.All.SendAsync("repo.changed", new { kind = "sync-error-cleared", repo });
         return Results.Ok(repo);
     }
 

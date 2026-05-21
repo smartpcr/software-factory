@@ -86,6 +86,27 @@ function defaultToDate(): string {
   return isoDate(new Date());
 }
 
+/** Phase 80 — detect ADO's "WIQL returned more than 20,000 items" failure so
+ *  the error banner can point the operator straight at the area-path / date
+ *  filters that narrow the query. */
+function isWiqlTooLarge(err: string | null | undefined): boolean {
+  if (!err) return false;
+  return /VS402337|size limit of 20000|exceeds the size limit/i.test(err);
+}
+
+function bannerBtnStyle(color: string): React.CSSProperties {
+  return {
+    fontSize: 11,
+    fontWeight: 600,
+    color,
+    background: 'transparent',
+    border: `1px solid ${color === 'var(--accent)' ? 'var(--accent)' : 'var(--border-strong)'}`,
+    borderRadius: 'var(--radius-sm)',
+    padding: '4px 10px',
+    cursor: 'pointer',
+  };
+}
+
 // ── Exported Panel ──────────────────────────────────────────────────────
 
 export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
@@ -282,6 +303,21 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     }
   }
 
+  // ── Clear sync error (acknowledge a failed sync) ────────────────────
+  const [clearing, setClearing] = useState(false);
+  async function clearSyncError() {
+    setClearing(true);
+    try {
+      const updated = await forgeApi.clearRepoSyncError(repo.id);
+      onRepoUpdated?.(updated);
+      toast('Sync error cleared', 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Failed to clear sync error', 'danger');
+    } finally {
+      setClearing(false);
+    }
+  }
+
   // ── Trigger sync ────────────────────────────────────────────────────
 
   async function triggerWiSync() {
@@ -451,7 +487,7 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
             alignItems: 'flex-start',
           }}>
             <span style={{ color: 'var(--danger)', fontWeight: 700, fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>⚠</span>
-            <div>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: 'var(--danger)', fontWeight: 600, marginBottom: 2 }}>Sync failed</div>
               <div style={{
                 color: 'var(--text-secondary)',
@@ -463,6 +499,34 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
                 overflow: 'auto',
               }}>
                 {repo.lastSyncError}
+              </div>
+              {/* Phase 80 — actionable hint for the ADO 20k-item WIQL overflow. */}
+              {isWiqlTooLarge(repo.lastSyncError) && (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 11.5, lineHeight: 1.5, marginTop: 8 }}>
+                  This query returns more than ADO's 20,000-work-item limit. Narrow it on the{' '}
+                  <b>Work Items</b> tab — set an <b>Area path</b> (most effective) and/or a shorter{' '}
+                  <b>date range</b> — then <b>Sync</b>.
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                {isWiqlTooLarge(repo.lastSyncError) && (
+                  <button
+                    type="button"
+                    onClick={() => setTab('workitems')}
+                    style={bannerBtnStyle('var(--accent)')}
+                  >
+                    Adjust filters
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void clearSyncError()}
+                  disabled={clearing}
+                  title="Reset the sync status to idle without running a sync. The next sync still runs normally."
+                  style={bannerBtnStyle('var(--text-secondary)')}
+                >
+                  {clearing ? 'Clearing…' : 'Clear error'}
+                </button>
               </div>
             </div>
           </div>

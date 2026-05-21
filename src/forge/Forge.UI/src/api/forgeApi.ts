@@ -1882,6 +1882,18 @@ export const forgeApi = {
     );
   },
 
+  /** Phase 80 — POST /api/repos/{id}/clear-sync-error — acknowledge a failed
+   *  sync (reset status → idle, clear error) without running a sync. */
+  async clearRepoSyncError(id: string): Promise<Repo> {
+    return fetchJson<Repo>(
+      `/api/repos/${encodeURIComponent(id)}/clear-sync-error`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
   /** Phase 59 Stage A — GET /api/repos/{id}/test-impacted-preview — dry-run resolver. */
   async previewImpactedTests(id: string): Promise<ImpactedTestPreview> {
     return fetchJson<ImpactedTestPreview>(
