@@ -304,7 +304,8 @@ public class AgentRuntimeTests
         var log = NullLogger<AgentRunnerDispatcher>.Instance;
         var copilotServer = new CopilotServerManager(
             Options.Create(new AgentRunnerOptions()),
-            NullLogger<CopilotServerManager>.Instance);
+            NullLogger<CopilotServerManager>.Instance,
+            Array.Empty<Forge.Api.Auth.IAuthService>());
         var copilotPool = new CopilotSessionPool(NullLogger<CopilotSessionPool>.Instance);
         return new AgentRunnerDispatcher(http, registry, opts, copilotServer, Array.Empty<Forge.Api.Auth.IAuthService>(), copilotPool, log);
     }

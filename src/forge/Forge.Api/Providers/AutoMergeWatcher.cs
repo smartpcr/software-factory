@@ -177,7 +177,7 @@ public class AutoMergeWatcher : BackgroundService
                 // Per-PR repo coords so AdoProvider doesn't fall back to the
                 // global Forge:Ado:Repository in multi-repo deployments.
                 var repo = !string.IsNullOrEmpty(row.RepoId)
-                    ? await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct)
+                    ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct)
                     : null;
                 var (repoName, projectName) = PrCoordsResolver.Resolve(repo, provider.Kind);
                 var callCtx = new ProviderCallContext(

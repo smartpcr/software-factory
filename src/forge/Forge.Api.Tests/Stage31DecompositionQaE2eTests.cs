@@ -319,7 +319,7 @@ public class Stage31DecompositionQaE2eTests
                 Slug = "stage31-reconcile",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId,
                 ProductId = productId,
@@ -396,9 +396,9 @@ public class Stage31DecompositionQaE2eTests
 
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
             await git.EnsureBranchAsync(repo, planBranch, "main", default);
             await git.CommitFilesAsync(
                 repo, planBranch, "test-plan",

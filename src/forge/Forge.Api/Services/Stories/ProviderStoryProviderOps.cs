@@ -342,7 +342,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         ControlDbContext control, ProductDbContext db, PrRow pr, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(pr.RepoId)) return ProviderCallContext.Anonymous;
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
         if (repo is null) return ProviderCallContext.Anonymous;
         var (repoName, projectName) = PrCoordsResolver.Resolve(repo, repo.Kind?.ToLowerInvariant());
         return new ProviderCallContext(

@@ -50,12 +50,21 @@ export function relativeTime(iso: string | null | undefined, nowMs?: number): st
   return `${d}d ago`;
 }
 
+/** Phase 80 — detect ADO's "WIQL returned more than 20,000 items" failure. */
+export function isWiqlTooLarge(err: string | null | undefined): boolean {
+  if (!err) return false;
+  return /VS402337|size limit of 20000|exceeds the size limit/i.test(err);
+}
+
 interface Props {
   repo: Repo;
   onSyncNow?: (repoId: string) => void | Promise<void>;
+  /** Phase 80 — called after a repo mutation (e.g. clear-sync-error) so the
+   *  caller can refresh the repo list. */
+  onRepoUpdated?: (updated: Repo) => void;
 }
 
-export function RepoSyncStatusStrip({ repo, onSyncNow }: Props) {
+export function RepoSyncStatusStrip({ repo, onSyncNow, onRepoUpdated }: Props) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const status = repo.lastSyncStatus ?? 'idle';
   const color = statusDotColor(status);
@@ -107,6 +116,7 @@ export function RepoSyncStatusStrip({ repo, onSyncNow }: Props) {
           repo={repo}
           onClose={() => setDrawerOpen(false)}
           onSyncNow={onSyncNow}
+          onRepoUpdated={onRepoUpdated}
         />
       )}
     </>
@@ -117,13 +127,34 @@ function RepoSyncDrawer({
   repo,
   onClose,
   onSyncNow,
+  onRepoUpdated,
 }: {
   repo: Repo;
   onClose: () => void;
   onSyncNow?: (repoId: string) => void | Promise<void>;
+  onRepoUpdated?: (updated: Repo) => void;
 }) {
   const [runs, setRuns] = useState<WorkItemSyncRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  // Local copy so the banner reflects a cleared error immediately, even before
+  // the parent re-fetches the repo list.
+  const [status, setStatus] = useState(repo.lastSyncStatus ?? 'idle');
+  const [lastError, setLastError] = useState<string | null | undefined>(repo.lastSyncError);
+
+  async function clearSyncError() {
+    setClearing(true);
+    try {
+      const updated = await forgeApi.clearRepoSyncError(repo.id);
+      setStatus(updated.lastSyncStatus ?? 'idle');
+      setLastError(updated.lastSyncError);
+      onRepoUpdated?.(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClearing(false);
+    }
+  }
 
   useEffect(() => {
     const ac = new AbortController();
@@ -194,13 +225,20 @@ function RepoSyncDrawer({
         <button type="button" onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16 }}>×</button>
       </header>
 
-      {repo.lastSyncStatus === 'failed' && repo.lastSyncError && (
+      {status === 'failed' && lastError && (
         <div style={{ padding: 12, background: 'color-mix(in srgb, rgb(220, 38, 38) 8%, transparent)', borderBottom: '1px solid var(--border)', fontSize: 11.5 }}>
-          <strong style={{ color: 'rgb(220, 38, 38)' }}>Last error:</strong> {repo.lastSyncError}
+          <strong style={{ color: 'rgb(220, 38, 38)' }}>Last error:</strong> {lastError}
+          {isWiqlTooLarge(lastError) && (
+            <div style={{ color: 'var(--text-secondary)', marginTop: 8, lineHeight: 1.5 }}>
+              This query returns more than ADO's 20,000-work-item limit. Open <strong>Sync</strong> on
+              the repo to narrow it — set an <strong>Area path</strong> (most effective) and/or a shorter
+              <strong> date range</strong> — then sync again.
+            </div>
+          )}
         </div>
       )}
 
-      <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+      <div style={{ padding: 8, borderBottom: '1px solid var(--border)', display: 'flex', gap: 8 }}>
         <button
           type="button"
           className="btn btn-secondary"
@@ -209,6 +247,18 @@ function RepoSyncDrawer({
         >
           Sync now
         </button>
+        {status === 'failed' && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void clearSyncError()}
+            disabled={clearing}
+            title="Reset the sync status to idle without running a sync. The next scheduled sync still runs normally."
+            data-testid="clear-sync-error-button"
+          >
+            {clearing ? 'Clearing…' : 'Clear error'}
+          </button>
+        )}
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>

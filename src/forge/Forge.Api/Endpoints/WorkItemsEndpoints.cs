@@ -132,7 +132,7 @@ public static class WorkItemsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
         if (repo is null) return Results.Problem(title: $"Repo {repoId} not found", statusCode: 404);
 
         var filters = new WorkItemSyncFilters(
@@ -311,11 +311,43 @@ public static class WorkItemsEndpoints
             return Results.Problem(title: $"Work item {req.Id} already exists", statusCode: 409);
         }
 
+        // Phase 80 — a product now owns one or more repos and every work item is
+        // associated with one. Resolve the repo from the request → the active
+        // repo (X-Forge-Repo-Id) → the scoped product's default repo, so a
+        // created item picks up a repo by default instead of landing repo-less.
+        var repoId = string.IsNullOrWhiteSpace(req.RepoId) ? null : req.RepoId!.Trim();
+        if (string.IsNullOrEmpty(repoId)) repoId = RepoScope.ActiveRepoId(ctx);
+        if (string.IsNullOrEmpty(repoId))
+        {
+            var scopedProductRaw = ProductScope.Read(ctx);
+            ProductRow? prod;
+            if (!string.IsNullOrEmpty(scopedProductRaw)
+                && !string.Equals(scopedProductRaw, ProductScope.AllScope, StringComparison.OrdinalIgnoreCase))
+            {
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == scopedProductRaw || p.Slug == scopedProductRaw, ct);
+            }
+            else
+            {
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == ForgeSeed.DefaultProductId, ct)
+                    ?? await control.Products.AsNoTracking().FirstOrDefaultAsync(ct);
+            }
+            repoId = prod?.DefaultRepoId;
+        }
+        if (!string.IsNullOrEmpty(repoId))
+        {
+            // Validate the resolved repo is a live registry entry (FK would dangle otherwise).
+            var exists = await control.RepoRegistry.AsNoTracking()
+                .AnyAsync(r => r.Id == repoId && r.DeletedAt == null, ct);
+            if (!exists) return Results.Problem(title: $"Repo {repoId} not found", statusCode: 400);
+        }
+
         var now = DateTimeOffset.UtcNow;
         var row = new WorkItemRow
         {
             Id = req.Id,
-            RepoId = req.RepoId,
+            RepoId = string.IsNullOrEmpty(repoId) ? null : repoId,
             Provider = string.IsNullOrWhiteSpace(req.Provider) ? "local" : req.Provider!,
             ProviderRef = req.ProviderRef,
             Track = req.Track,
@@ -477,7 +509,8 @@ public static class WorkItemsEndpoints
         if (!string.IsNullOrWhiteSpace(req.RepoId))
         {
             // Refuse if the repo isn't attached to any product (FK would dangle).
-            var exists = await control.Repos.AsNoTracking().AnyAsync(r => r.Id == req.RepoId, ct);
+            // Phase 80.B — the control registry is the global repo index.
+            var exists = await control.RepoRegistry.AsNoTracking().AnyAsync(r => r.Id == req.RepoId && r.DeletedAt == null, ct);
             if (!exists) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 400);
             row.RepoId = req.RepoId;
         }
@@ -827,7 +860,7 @@ public static class WorkItemsEndpoints
         string? prProjectName = null;
         if (!string.IsNullOrEmpty(wi.RepoId))
         {
-            var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
             (prRepoName, prProjectName) = PrCoordsResolver.Resolve(repo, repoKind);
         }

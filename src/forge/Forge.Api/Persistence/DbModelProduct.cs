@@ -27,6 +27,20 @@ public static class DbModelProduct
 {
     public static void Configure(ModelBuilder mb)
     {
+        // Phase 80.B — repos moved here from the control DB. Within ONE
+        // product the remote URL + clone root are still unique (per-product
+        // indexes); the GLOBAL (cross-product) Q2/Q5 uniqueness moved to the
+        // control `repo_registry`. The cross-context FK to products is dropped
+        // (enforced at the app layer). Index names match the move service's
+        // raw DDL so EnsureCreated (fresh DBs) + the migration don't double-create.
+        mb.Entity<RepoRow>().ToTable("repos").HasKey(x => x.Id);
+        mb.Entity<RepoRow>().HasIndex(x => x.RemoteUrl).IsUnique()
+            .HasDatabaseName("IX_repos_RemoteUrl");
+        mb.Entity<RepoRow>().HasIndex(x => x.CloneRoot).IsUnique()
+            .HasDatabaseName("IX_repos_CloneRoot");
+        mb.Entity<RepoRow>().HasIndex(x => x.ProductId)
+            .HasDatabaseName("IX_repos_ProductId");
+
         // Phase 1 — prototype data tables.
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
         mb.Entity<ProductStoryRow>().ToTable("product_stories").HasKey(x => x.Id);

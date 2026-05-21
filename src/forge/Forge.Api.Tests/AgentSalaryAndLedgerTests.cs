@@ -276,7 +276,8 @@ public class AgentSalaryAndLedgerTests
             Options.Create(new AgentRunnerOptions()),
             new CopilotServerManager(
                 Options.Create(new AgentRunnerOptions()),
-                NullLogger<CopilotServerManager>.Instance),
+                NullLogger<CopilotServerManager>.Instance,
+                Array.Empty<Forge.Api.Auth.IAuthService>()),
             Array.Empty<Forge.Api.Auth.IAuthService>(),
             new CopilotSessionPool(NullLogger<CopilotSessionPool>.Instance),
             NullLogger<AgentRunnerDispatcher>.Instance);

@@ -63,7 +63,7 @@ public class Phase59LogsEndpointTests
         var product = await control.Products.FirstAsync();
 
         var repoId = $"repo-{wsId}";
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = repoId,
             ProductId = product.Id,

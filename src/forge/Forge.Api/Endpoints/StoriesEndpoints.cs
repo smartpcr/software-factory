@@ -251,8 +251,10 @@ public static class StoriesEndpoints
             storyAttachmentsJson = ps.AttachmentsJson;
             defaultBaseBranchFromStory = string.IsNullOrEmpty(ps.BaseBranch) ? null : ps.BaseBranch;
             defaultAutoMergeFromStory = ps.AutoMerge;
-            // ProductStoryRow is product-scoped, not repo-scoped; caller must
-            // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
+            // Phase 80.F — the story owns its repo; the spawn inherits it
+            // (no per-spawn repo pick). A SpawnRequest.RepoId, if still sent,
+            // is honoured below for backward-compat but the UI no longer sends it.
+            defaultRepoId = ps.RepoId;
         }
         else
         {
@@ -276,7 +278,43 @@ public static class StoriesEndpoints
             defaultRepoId = wi.RepoId;
         }
 
-        var repoId = req?.RepoId ?? defaultRepoId;
+        var repoId = req?.RepoId ?? defaultRepoId ?? RepoScope.ActiveRepoId(ctx);
+        // Phase 80.F — a spawn must bind to a repo. ProductStories always carry
+        // one (enforced at create). A WorkItem may predate repo binding (e.g.
+        // synced from ADO before Phase 80, or seeded without a repo): fall back
+        // to the scoped product's default repo — the same value RepoRegistrySync
+        // backfills — so the spawn still binds deterministically instead of
+        // 400ing on a legacy row.
+        if (string.IsNullOrEmpty(repoId))
+        {
+            var scopedProductRaw = ProductScope.Read(ctx);
+            ProductRow? prod;
+            if (!string.IsNullOrEmpty(scopedProductRaw)
+                && !string.Equals(scopedProductRaw, ProductScope.AllScope, StringComparison.OrdinalIgnoreCase))
+            {
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == scopedProductRaw || p.Slug == scopedProductRaw);
+            }
+            else
+            {
+                // Unscoped / single-product (tests): prefer the default product,
+                // else the only product present.
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == ForgeSeed.DefaultProductId)
+                    ?? await control.Products.AsNoTracking().FirstOrDefaultAsync();
+            }
+            repoId = prod?.DefaultRepoId;
+        }
+        // Refuse rather than create a repo-less spawn the orchestrator can't
+        // clone, branch, or open PRs against.
+        if (string.IsNullOrEmpty(repoId))
+        {
+            return Results.Problem(
+                title: "repo.required",
+                detail: $"Story '{storyId}' has no repo bound and its product has no default repo; "
+                    + "attach a repo to the product (or bind one to the story) before spawning.",
+                statusCode: 400);
+        }
         var now = DateTimeOffset.UtcNow;
         var safeStoryId = StoryPaths.Safe(storyId);
 
@@ -605,7 +643,7 @@ public static class StoriesEndpoints
             // path. For locally-authored stories ProductStoryRow doesn't
             // bind a specific repo, so we scan every repo whose product
             // matches. Limited to repos with a non-null CloneRoot.
-            var candidateRepos = await control.Repos.AsNoTracking()
+            var candidateRepos = await db.Repos.AsNoTracking()
                 .Where(r => r.CloneRoot != null && r.CloneRoot != string.Empty)
                 .ToListAsync(ct);
 
@@ -1218,7 +1256,7 @@ public static class StoriesEndpoints
         // CascadeDeleteWorkstreamAsync above. ────────────────────────────
         var repo = string.IsNullOrEmpty(spawn.RepoId)
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ctx.RequestAborted);
 
         // Track branches we've already cleaned to avoid duplicate work
         // (PR branch may equal plan branch on partial failures, etc.).
@@ -1989,7 +2027,7 @@ public static class StoriesEndpoints
         var oldBase = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
 
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
             : null;
 
         // (a) Ensure the new base branch exists, branched from main, and is
@@ -2683,6 +2721,17 @@ public static class StoriesEndpoints
                 // Best-effort — the scheduler tick will retry.
             }
         }
+        catch (Forge.Api.Services.Stories.PlanDocInFlightException)
+        {
+            // 2026-05-20 — the resume lost the per-doc production lock to an
+            // already in-flight run (typically the SpawnDependencyScheduler
+            // tick driving the same doc, or a not-yet-drained cancelled run).
+            // Transient + expected: the winning run produces the doc, so this
+            // is a no-op, NOT a failure. Do NOT record a spawn LastError —
+            // that would paint a false "ORCHESTRATOR HALTED" banner over a
+            // healthy in-flight run. The finally below still clears the
+            // resume-pending marker; the scheduler owns production from here.
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             using var scope = scopeFactory.CreateScope();
@@ -2945,7 +2994,13 @@ public static class StoriesEndpoints
 
                 RepoRow? repo = null;
                 if (!string.IsNullOrEmpty(capturedRepoId))
-                    repo = await scopeControl.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == capturedRepoId);
+                {
+                    // Phase 80.B — detached Task.Run has no request/AsyncLocal
+                    // product scope, so route via RepoLookup (registry → owning
+                    // product's DB) rather than the control-fallback context.
+                    var scopeRepoLookup = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.RepoLookup>();
+                    repo = await scopeRepoLookup.GetByIdAsync(capturedRepoId);
+                }
 
                 // Push the plan branch — stages any uncommitted changes
                 // from a cancelled agent and pushes all local-only
@@ -3815,7 +3870,7 @@ public static class StoriesEndpoints
         // Each source returns a distinct `source` field so the UI banner shows the
         // operator whether they're looking at WIP / shipped / pre-merge content.
         var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
             : null;
         var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
             ? repo.CloneRoot

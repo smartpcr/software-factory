@@ -937,7 +937,7 @@ public class Phase16ExecutionTests
             control.CrewMembers.Add(new CrewMemberRow { CrewId = "wt-real-crew", AgentId = "wt-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // Repo pointing at the real git dir
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = "real-repo", DisplayName = "Real Repo", Kind = "local",
                 RemoteUrl = "file://localhost/test",
@@ -1099,7 +1099,7 @@ public class Phase16ExecutionTests
             });
             control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-gen", AgentId = "e2e-gen-agent", AddedAt = DateTimeOffset.UtcNow });
             control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-eval", AgentId = "e2e-eval-agent", AddedAt = DateTimeOffset.UtcNow });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = "e2e-beads", DisplayName = "E2E Beads", Kind = "local",
                 RemoteUrl = "file://localhost/e2e-beads",
@@ -1300,7 +1300,7 @@ public class Phase16ExecutionTests
             control.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-eval", AgentId = "gh-eval-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // Repo row with GitHub kind
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = "gh-beads", DisplayName = "Beads", Kind = "github",
                 RemoteUrl = $"https://github.com/{ghFullRepo}",
@@ -1580,7 +1580,7 @@ public class Phase16ExecutionTests
             control.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-eval", AgentId = "eval-agent", AddedAt = DateTimeOffset.UtcNow });
 
             // ── Seed: repo + workstream for worktree context ──────────
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = "e2e-repo", DisplayName = "E2E Repo", Kind = "github",
                 RemoteUrl = "https://github.com/test/e2e",
@@ -1940,7 +1940,7 @@ public class Phase16ExecutionTests
                 AddedAt = DateTimeOffset.UtcNow,
             });
 
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = "push-repo", DisplayName = "Push Repo", Kind = "local",
                 RemoteUrl = bareDir,

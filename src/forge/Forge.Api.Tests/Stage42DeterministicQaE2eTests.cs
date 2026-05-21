@@ -288,7 +288,7 @@ public class Stage42DeterministicQaE2eTests
                 Slug = "stage42",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = RepoId,
                 ProductId = ProductId,
@@ -332,9 +332,9 @@ public class Stage42DeterministicQaE2eTests
         // reads the lab-bare-metal setup type via IStoryGitOps.
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == RepoId);
             await git.EnsureBranchAsync(repo, baseBranch, baseBranch, default);
             await git.CommitFilesAsync(repo, baseBranch, "stage42-seed",
                 new Dictionary<string, string> { [e2ePath] = setupMd },

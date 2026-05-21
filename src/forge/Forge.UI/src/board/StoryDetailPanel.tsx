@@ -9,10 +9,19 @@ interface Props {
   storyId: string;
 }
 
-type EditableField = 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge';
+type EditableField = 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge' | 'repoId';
 
 export function StoryDetailPanel({ storyId }: Props) {
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const productRepos = useMemo(
+    () => (activeProductId ? reposByProduct[activeProductId] ?? [] : []),
+    [activeProductId, reposByProduct],
+  );
+  useEffect(() => {
+    if (activeProductId && !reposByProduct[activeProductId]) void loadReposFor(activeProductId);
+  }, [activeProductId, reposByProduct, loadReposFor]);
   const cards = useBoardStore((s) => s.cards);
   const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const setSelected = useBoardStore((s) => s.setSelected);
@@ -44,7 +53,7 @@ export function StoryDetailPanel({ storyId }: Props) {
   const totalPts = useMemo(() => storyCards.reduce((s, c) => s + c.pts, 0), [storyCards]);
   const doneCards = useMemo(() => storyCards.filter((c) => c.col === 'done'), [storyCards]);
 
-  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge'>>) {
+  async function persist(field: EditableField, patch: Partial<Pick<ProductStory, 'name' | 'description' | 'points' | 'status' | 'baseBranch' | 'autoMerge' | 'repoId'>>) {
     if (!story) return;
     setSavingField(field);
     try {
@@ -59,6 +68,8 @@ export function StoryDetailPanel({ storyId }: Props) {
         baseBranch: patch.baseBranch,
         // Phase 46 — only send autoMerge when this edit changes it.
         autoMerge: patch.autoMerge,
+        // Phase 80 — only send repoId when re-binding the story's repo.
+        repoId: patch.repoId,
       });
       setStory(result.story);
       // Phase 45 — surface auto-create-branch + spawn-retarget result.
@@ -66,11 +77,11 @@ export function StoryDetailPanel({ storyId }: Props) {
         const newBase = patch.baseBranch ?? result.story.baseBranch;
         if (result.branchWarnings && result.branchWarnings.length > 0) {
           useToastStore.getState().show(
-            `Base branch '${newBase}' could not be created in some repos: ${result.branchWarnings.join('; ')}`,
+            `Base branch '${newBase}' could not be created in the story's repo: ${result.branchWarnings.join('; ')}`,
             'danger',
           );
         } else if (newBase && newBase !== 'main') {
-          useToastStore.getState().show(`Base branch '${newBase}' created in product repos`, 'success');
+          useToastStore.getState().show(`Base branch '${newBase}' created in the story's repo`, 'success');
         }
         // Spawn retarget summary (only present when a spawn existed).
         const retargeted = result.retargetedPrs?.length ?? 0;
@@ -198,11 +209,38 @@ export function StoryDetailPanel({ storyId }: Props) {
             </div>
           </div>
           <div className="detail-meta" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginTop: 12 }}>
+            {productRepos.length > 0 && (
+              <div className="detail-meta-cell">
+                <div className="detail-meta-label">
+                  Repo
+                  <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                    The story is under this repo. Locked once spawned.
+                  </span>
+                </div>
+                <div className="detail-meta-val" style={{ position: 'relative' }}>
+                  <select
+                    value={story?.repoId ?? ''}
+                    disabled={!story || savingField === 'repoId'}
+                    onChange={(e) => {
+                      const next = e.target.value || null;
+                      if (!story || next === (story.repoId ?? null)) return;
+                      void persist('repoId', { repoId: next });
+                    }}
+                    style={inlineInputStyle}
+                  >
+                    {productRepos.map((r) => (
+                      <option key={r.id} value={r.id}>{r.displayName || r.id}</option>
+                    ))}
+                  </select>
+                  {savingField === 'repoId' && <span style={savingStyle}>saving…</span>}
+                </div>
+              </div>
+            )}
             <div className="detail-meta-cell">
               <div className="detail-meta-label">
                 Base branch
                 <span style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-                  Default for spawns. Non-default values are created from <code>main</code> immediately in every repo.
+                  Default for spawns. Non-default values are created from <code>main</code> immediately in the story's repo.
                 </span>
               </div>
               <div className="detail-meta-val">

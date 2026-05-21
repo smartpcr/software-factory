@@ -69,6 +69,10 @@ public sealed class PhaseMigrationRunner
         79,
         38, 39, 40, 41, 44, 48,
         77, 78,
+        // Phase 80 (Stage 80.A) — additive, no dependency on the 38-ordering
+        // constraints above. 80 (Control: repo_registry + products.DefaultRepoId)
+        // then 81 (Product: product_stories.RepoId, fans out per {slug}.db).
+        80, 81,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

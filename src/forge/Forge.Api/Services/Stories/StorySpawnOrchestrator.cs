@@ -250,7 +250,7 @@ public sealed class StorySpawnOrchestrator
 
         var repo = spawn.RepoId is null
             ? null
-            : await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+            : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
 
         // Phase-specific drivers. Review/QA also re-run the implement pass
         // so blocked-then-unblocked downstream workstreams get picked up
@@ -475,6 +475,21 @@ public sealed class StorySpawnOrchestrator
                 {
                     return await this.RunPlanDocAsync(control, db, hub, spawn, story, repo, baseBranch,
                         docKey, entry.Branch!, forceResume, ct);
+                }
+                catch (PlanDocInFlightException ifEx)
+                {
+                    // 2026-05-20 — another in-flight drive owns this doc
+                    // (operator Restart racing the SpawnDependencyScheduler
+                    // tick → Phase 74 skipped-concurrent). Not a failure: the
+                    // winning run produces the artifact. Return false so the
+                    // next tick retries, and deliberately do NOT
+                    // PersistLastError — surfacing this transient race as
+                    // "ORCHESTRATOR HALTED" is exactly the regression we're
+                    // fixing.
+                    this.logger?.LogInformation(
+                        "Plan doc '{Doc}' skipped (in-flight) for spawn {SpawnId}: {Msg}. Retrying next tick.",
+                        docKey, spawn.Id, ifEx.Message);
+                    return false;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

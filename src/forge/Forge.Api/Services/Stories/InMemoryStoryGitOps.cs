@@ -153,7 +153,21 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     {
         var key = Key(repo, branch);
         if (this.removedBranches.ContainsKey(key)) return Task.FromResult(false);
-        return Task.FromResult(this.trees.ContainsKey(key));
+        if (this.trees.ContainsKey(key)) return Task.FromResult(true);
+
+        // Phase 80.F — tests register worktrees with repo:null (the "_default"
+        // key) but a spawn now binds a real repo, so the orchestrator probes
+        // under that repo's id. Fall back to the default key so a default-repo
+        // registration is visible to a repo-specific probe — and a default-key
+        // removal still reads as wiped. (A repo-specific registration above
+        // already takes precedence, so true per-repo modelling is unaffected.)
+        if (repo is not null)
+        {
+            var defaultKey = Key(null, branch);
+            if (this.removedBranches.ContainsKey(defaultKey)) return Task.FromResult(false);
+            return Task.FromResult(this.trees.ContainsKey(defaultKey));
+        }
+        return Task.FromResult(false);
     }
 
     /// <summary>

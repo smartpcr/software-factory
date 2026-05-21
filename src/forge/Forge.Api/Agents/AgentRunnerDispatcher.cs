@@ -1162,6 +1162,16 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         int turnCount = 0;
         var maxTurns = context.MaxTurns ?? this.options.Value.MaxTurns;
 
+        // 2026-05-20 — runaway-output ceiling. Accumulated assistant chars
+        // are capped so a degenerate / repeating generation can't grow the
+        // turn (and the replayed conversation behind it) past the point
+        // where the SDK's JSON-RPC layer can serialise it. wasOversizedOutput
+        // routes the same way as the inactivity / stuck-tool watchdogs:
+        // failReason → BuildFailedWithUsage, plus a pooled-session
+        // force-dispose so the next iter starts from a clean session.
+        var maxOutputChars = this.options.Value.MaxOutputChars;
+        var wasOversizedOutput = false;
+
         // 2026-05-16 — provider-native session id captured after
         // CreateSessionAsync. Surfaces on the final Finished event so
         // AgentMemoryStore can persist it (operators can see whether
@@ -1215,6 +1225,27 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         string? lastToolName = null;
         var wasStuckOnTool = false;
 
+        // 2026-05-20 — runaway-output guard shared by both assistant-content
+        // cases in the event subscription below. Trips at most once: sets the
+        // flag + failReason and signals completion so the consumer loop drains
+        // and the terminal `failReason` / force-dispose arms run. A single
+        // length compare on the hot streaming path, so effectively free.
+        void EnforceOutputCeiling()
+        {
+            if (maxOutputChars > 0 && !wasOversizedOutput && contentBuilder.Length > maxOutputChars)
+            {
+                wasOversizedOutput = true;
+                failReason =
+                    $"Generator runaway output: accumulated {contentBuilder.Length:N0} chars exceeded the "
+                    + $"{maxOutputChars:N0}-char ceiling (Forge:Agents:MaxOutputChars); aborting the turn before "
+                    + "it overflows the JSON transport limit.";
+                this.log.LogWarning(
+                    "Copilot SDK output ceiling tripped: {Chars} > {Max} chars — killing runaway generation.",
+                    contentBuilder.Length, maxOutputChars);
+                done.TrySetResult();
+            }
+        }
+
         // Phase 55 / Phase E -- when the caller attached an
         // AgentMemoryHandle, route through CopilotSessionPool so iter
         // N+1 reuses iter N's live session and the in-session
@@ -1267,85 +1298,160 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 };
             }
 
-            if (isPooledPath)
+            // 2026-05-20 — Phase 75c: wrap session acquire in a catch so a
+            // FINAL-attempt failure (pool factory exhausted retries OR
+            // non-pooled retry-once exhausted) surfaces as `failReason`
+            // rather than propagating an unhandled exception that halts
+            // the orchestrator. The existing `if (failReason is not null)`
+            // arm at the end of this method yields the Failed event via
+            // BuildFailedWithUsage, which DeliverableLoop short-circuits
+            // with verdict=iterate (transient, auto-retry next iter). The
+            // pool entry is force-disposed in the finally below so the
+            // next iter creates a fresh session against the recovered
+            // serverClient. Without this wrapper the
+            // `InvalidOperationException("Failed to create Copilot
+            // session after N attempts")` (or any non-retried
+            // exception) escapes RunCopilotSdk and propagates up to
+            // StorySpawnOrchestrator's catch, which logs
+            // "Plan doc '...' production failed" and halts the
+            // entire plan-doc pipeline (observed 2026-05-20 on
+            // code-intelligence:CLEAN-CODE architecture.md).
+            Exception? acquireError = null;
+            try
             {
-                pooledEntry = await this.copilotPool.AcquireAsync(
-                    taskId,
-                    agentId,
-                    async (factoryCt) =>
-                    {
-                        // Same retry-once pattern as the non-pooled path
-                        // below. The factory runs at most once per pool
-                        // key per process lifetime.
-                        CopilotClient? c = null;
-                        for (var attempt = 0; attempt < 2; attempt++)
-                        {
-                            try
-                            {
-                                // 2026-05-13 -- defensive worktree-existence
-                                // pre-check. The shared copilot.exe server
-                                // validates cwd inside `session.create` and
-                                // returns "Directory does not exist or cannot
-                                // be accessed: <path>" when the worktree
-                                // got wiped between EnsureWorktreeAsync's
-                                // success and this CreateSessionAsync call
-                                // (observed on local:UPDATE-HISTORY-IN-CL ->
-                                // architecture.md iter 3 at 5:22 PM after a
-                                // Forge.Api restart cycle). Throwing here
-                                // with a sentinel message routes the error
-                                // into the existing IsProcessLaunchError
-                                // retry-once arm and surfaces a clearer
-                                // diagnostic if the second attempt also
-                                // fails.
-                                EnsureWorkingDirectoryAccessible(sessionConfig);
-                                c = new CopilotClient(clientOptions);
-                                var s = await c.CreateSessionAsync(sessionConfig, factoryCt);
-                                return (c, s);
-                            }
-                            catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
-                            {
-                                this.log.LogWarning(ex,
-                                    "Copilot SDK connection failed (pool factory attempt 1), retrying after delay");
-                                try { if (c is not null) await c.DisposeAsync(); } catch { }
-                                c = null;
-                                await Task.Delay(2000, factoryCt);
-                            }
-                        }
-                        throw new InvalidOperationException(
-                            "Failed to create Copilot session after retry; pool factory exhausted attempts.");
-                    },
-                    effectiveCt);
-                client = pooledEntry.Client;
-                session = pooledEntry.Session;
-
-                await pooledEntry.SendLock.WaitAsync(effectiveCt);
-                pooledLockAcquired = true;
-            }
-            else
-            {
-                // Retry once on connection/launch failures. With the shared server
-                // this mainly covers transient connection errors or server restarts.
-                for (var attempt = 0; attempt < 2; attempt++)
+                if (isPooledPath)
                 {
-                    try
+                    pooledEntry = await this.copilotPool.AcquireAsync(
+                        taskId,
+                        agentId,
+                        async (factoryCt) =>
+                        {
+                            // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires
+                            // sessions to be created on the SAME CopilotClient
+                            // instance that authenticated the shared server.
+                            // Constructing a new CopilotClient(clientOptions)
+                            // against the server's CliUrl produces a fresh
+                            // (unauthenticated) client and CreateSessionAsync
+                            // throws AUTHENTICATION_FAILED. Delegate to the
+                            // CopilotServerManager so the session is created
+                            // on the shared, already-authenticated client.
+                            //
+                            // 2026-05-20 — Phase 75c: bump the retry count to
+                            // 3 (was 2) because the shared serverClient can
+                            // be in the middle of a dispose-and-restart cycle
+                            // when our snapshot reaches CreateSessionAsync.
+                            // Sequence: copilot.exe dies → caller A's
+                            // EnsureRunningAsync ping fails → restart path
+                            // takes startLock → meanwhile caller B's
+                            // snapshot of `serverClient` is the disposing
+                            // instance → ObjectDisposedException ("JsonRpc"
+                            // or "SemaphoreSlim"). The first retry hits the
+                            // same window because the restart is still
+                            // in-flight. By attempt 3 EnsureRunningAsync has
+                            // re-completed and snapshot reads the new
+                            // client.
+                            const int maxAttempts = 3;
+                            Exception? lastError = null;
+                            for (var attempt = 0; attempt < maxAttempts; attempt++)
+                            {
+                                try
+                                {
+                                    // 2026-05-13 — defensive worktree-existence
+                                    // pre-check. The shared copilot.exe server
+                                    // validates cwd inside `session.create` and
+                                    // returns "Directory does not exist or cannot
+                                    // be accessed: <path>" when the worktree
+                                    // got wiped between EnsureWorktreeAsync's
+                                    // success and this CreateSessionAsync call.
+                                    EnsureWorkingDirectoryAccessible(sessionConfig);
+                                    var s = await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
+                                        ?? throw new InvalidOperationException(
+                                            "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                                    // The pool entry retains a CopilotClient
+                                    // reference for diagnostics and parity with
+                                    // legacy code paths; in the shared-server
+                                    // model it points at the shared client but
+                                    // disposal of the pool entry must NOT
+                                    // dispose it (PooledCopilotEntry.DisposeAsync
+                                    // unconditionally disposes its Client, so
+                                    // pass null to keep the shared client alive).
+                                    return ((CopilotClient?)null!, s);
+                                }
+                                catch (Exception ex) when (attempt < maxAttempts - 1 && IsProcessLaunchError(ex))
+                                {
+                                    lastError = ex;
+                                    this.log.LogWarning(ex,
+                                        "Copilot SDK connection failed (pool factory attempt {Attempt}/{Max}), retrying after delay",
+                                        attempt + 1, maxAttempts);
+                                    // Linear back-off: 2s, 4s. The second
+                                    // retry gives the in-flight server
+                                    // restart time to finish + reassign
+                                    // serverClient before we snapshot again.
+                                    await Task.Delay(2000 * (attempt + 1), factoryCt);
+                                }
+                            }
+                            throw new InvalidOperationException(
+                                $"Failed to create Copilot session after {maxAttempts} attempts; pool factory exhausted retries.",
+                                lastError);
+                        },
+                        effectiveCt);
+                    client = pooledEntry.Client;
+                    session = pooledEntry.Session;
+
+                    await pooledEntry.SendLock.WaitAsync(effectiveCt);
+                    pooledLockAcquired = true;
+                }
+                else
+                {
+                    // 2026-05-20 — Phase 75b: same shared-client requirement
+                    // for non-pooled callers. Delegate to the manager so the
+                    // shared server's already-authenticated CopilotClient
+                    // owns the session. Phase 75c — 3 attempts for the same
+                    // dispose-and-restart race reason as the pooled path.
+                    const int maxAttempts = 3;
+                    Exception? lastError = null;
+                    for (var attempt = 0; attempt < maxAttempts; attempt++)
                     {
-                        // 2026-05-13 -- worktree-existence pre-check; see
-                        // companion comment in the pooled branch above.
-                        EnsureWorkingDirectoryAccessible(sessionConfig);
-                        client = new CopilotClient(clientOptions);
-                        session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
-                        break;
+                        try
+                        {
+                            EnsureWorkingDirectoryAccessible(sessionConfig);
+                            session = await this.copilotServer.CreateSessionAsync(sessionConfig, effectiveCt)
+                                ?? throw new InvalidOperationException(
+                                    "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                            client = null;  // shared; do NOT dispose in finally
+                            break;
+                        }
+                        catch (Exception ex) when (attempt < maxAttempts - 1 && IsProcessLaunchError(ex))
+                        {
+                            lastError = ex;
+                            this.log.LogWarning(ex,
+                                "Copilot SDK connection failed (attempt {Attempt}/{Max}), retrying after delay",
+                                attempt + 1, maxAttempts);
+                            session = null;
+                            await Task.Delay(2000 * (attempt + 1), effectiveCt);
+                        }
                     }
-                    catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                    if (session is null)
                     {
-                        this.log.LogWarning(ex,
-                            "Copilot SDK connection failed (attempt 1), retrying after delay");
-                        try { if (client is not null) await client.DisposeAsync(); } catch { }
-                        client = null;
-                        session = null;
-                        await Task.Delay(2000, effectiveCt);
+                        throw new InvalidOperationException(
+                            $"Failed to create Copilot session after {maxAttempts} attempts; non-pooled path exhausted retries.",
+                            lastError);
                     }
                 }
+            }
+            catch (Exception acquireEx) when (!effectiveCt.IsCancellationRequested
+                && acquireEx is not OperationCanceledException)
+            {
+                this.log.LogWarning(acquireEx,
+                    "Copilot SDK session acquire failed for ({Task}, {Agent}); surfacing as transient transport failure",
+                    taskId, agentId);
+                var firstLine = acquireEx.Message?.Split('\n', 2)[0]?.Trim() ?? acquireEx.GetType().Name;
+                failReason = $"Copilot SDK session acquire failed: {firstLine}";
+                acquireError = acquireEx;
+                // Mark for pool force-dispose so the next iter's acquire
+                // creates a fresh entry against the recovered shared client.
+                transportFailedSendAsync = true;
+                done.TrySetResult();
             }
 
             // 2026-05-16 — Phase 72: capture provider-native session id
@@ -1366,8 +1472,20 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 }
             }
 
-            subscription = session!.On(evt =>
+            // 2026-05-20 — Phase 75c: gate all post-acquire wiring on
+            // session != null. If the acquire-try catch above set
+            // failReason (session creation exhausted retries / threw an
+            // unrecognised exception), we skip subscription / SendAsync /
+            // watchdog / main loop entirely. `done` is already set so the
+            // queue completer task finishes immediately, the while loop
+            // exits in its first iteration, the finally runs, and the
+            // post-finally `failReason is not null` arm yields the
+            // BuildFailedWithUsage event. DeliverableLoop short-circuits
+            // with verdict=iterate and the next iter starts fresh.
+            if (session is not null)
             {
+                subscription = session.On(evt =>
+                {
                 // 2026-05-19 — Phase 75: refresh the inactivity watchdog ONLY
                 // on observable-progress events (the per-case Interlocked
                 // updates below). Previously every callback unconditionally
@@ -1399,6 +1517,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                 Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                                 contentBuilder.Append(chunk);
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: chunk));
+                                EnforceOutputCeiling();
                             }
                             break;
 
@@ -1409,6 +1528,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                 Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                                 contentBuilder.Append(content);
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: content));
+                                EnforceOutputCeiling();
                             }
                             break;
 
@@ -1555,13 +1675,29 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             }
             catch (Exception sendEx) when (!effectiveCt.IsCancellationRequested
                 && sendEx is not OperationCanceledException
-                && IsProcessLaunchError(sendEx))
+                && (IsProcessLaunchError(sendEx) || IsOversizedPayloadError(sendEx)))
             {
                 var firstLine = sendEx.Message?.Split('\n', 2)[0]?.Trim() ?? sendEx.GetType().Name;
+                var oversized = IsOversizedPayloadError(sendEx);
                 this.log.LogWarning(sendEx,
-                    "Copilot SDK SendAsync transport failure (chars={Chars}); surfacing as transient generator failure",
-                    contentBuilder.Length);
-                failReason = $"Copilot SDK transport died at SendAsync: {firstLine}";
+                    "Copilot SDK SendAsync failed (oversized={Oversized}, chars={Chars}); surfacing as transient generator failure",
+                    oversized, contentBuilder.Length);
+                // 2026-05-20 — an oversized-payload InvalidOperationException
+                // ("The JSON value of length N is too large and not
+                // supported.") means the conversation/context the SDK tried
+                // to (de)serialise blew past System.Text.Json's ~167 MB
+                // single-value cap. Pre-fix this was NOT an IsProcessLaunchError
+                // so it escaped RunCopilotSdk (the outer try has only a
+                // finally) and halted the whole plan-doc pipeline at
+                // StorySpawnOrchestrator's catch (observed 2026-05-20 on
+                // code-intelligence:CLEAN-CODE architecture.md). Route it like
+                // a transport death: failReason → BuildFailedWithUsage →
+                // DeliverableLoop verdict=iterate, plus the force-dispose
+                // below so the next iter starts from a fresh, un-bloated
+                // session instead of replaying the same oversized history.
+                failReason = oversized
+                    ? $"Copilot SDK payload exceeded the JSON transport limit at SendAsync: {firstLine}"
+                    : $"Copilot SDK transport died at SendAsync: {firstLine}";
                 transportFailedSendAsync = true;
                 done.TrySetResult();
             }
@@ -1664,6 +1800,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                     yield return ev;
                 }
             }
+            } // end of `if (session is not null)` — Phase 75c session-acquire-failure gate
         }
         finally
         {
@@ -1709,14 +1846,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 // stuck-tool watchdog kills the session while a tool call
                 // is unresolved; the SDK state on the entry is invalid
                 // for reuse.
-                if (transportFailedSendAsync || wasInactive || wasStuckOnTool)
+                if (transportFailedSendAsync || wasInactive || wasStuckOnTool || wasOversizedOutput)
                 {
                     try
                     {
                         var disposed = await this.copilotPool.DisposeForWorkItemForceAsync(taskId, CancellationToken.None);
                         this.log.LogInformation(
-                            "CopilotSessionPool: force-disposed {Count} entry/entries for {Task} after watchdog/transport event (sendAsync={SendFail}, inactive={Inactive}, stuckTool={Stuck}).",
-                            disposed, taskId, transportFailedSendAsync, wasInactive, wasStuckOnTool);
+                            "CopilotSessionPool: force-disposed {Count} entry/entries for {Task} after watchdog/transport event (sendAsync={SendFail}, inactive={Inactive}, stuckTool={Stuck}, oversized={Oversized}).",
+                            disposed, taskId, transportFailedSendAsync, wasInactive, wasStuckOnTool, wasOversizedOutput);
                     }
                     catch (Exception ex)
                     {
@@ -1991,6 +2128,20 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         // IOException from pipe/socket setup during child process spawn.
         if (inner is IOException) return true;
 
+        // 2026-05-20 — Phase 75c: ObjectDisposedException on the SDK's
+        // internal SemaphoreSlim. Triggered when the shared
+        // CopilotServerManager.serverClient was DisposeAsync()'d (server
+        // ping failed → DisposeServerInner → fresh client) while a caller
+        // still held a CopilotSession bound to the old client. The
+        // session's next SendAsync hits the disposed Json-RPC write
+        // semaphore. Treat as a transient transport failure — the
+        // existing Phase 75 force-dispose pool path will recreate a
+        // session on the new serverClient for the next iter. Without
+        // this routing the exception escapes RunCopilotSdk and halts
+        // the orchestrator (observed 2026-05-20 on
+        // code-intelligence:CLEAN-CODE plan-doc 'architecture').
+        if (inner is ObjectDisposedException) return true;
+
         // Message-based fallback: the .NET runtime wraps some launch failures
         // with this specific phrasing.
         var msg = ex.Message;
@@ -2011,6 +2162,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         if (msg.Contains("cannot be accessed", StringComparison.OrdinalIgnoreCase)
             && msg.Contains("session.create", StringComparison.OrdinalIgnoreCase)) return true;
 
+        return false;
+    }
+
+    /// <summary>
+    /// 2026-05-20 — recognises System.Text.Json's single-value size-cap
+    /// rejection: <c>InvalidOperationException("The JSON value of length N
+    /// is too large and not supported.")</c>, thrown when a JSON string
+    /// token exceeds <c>JsonConstants.MaxUnescapedTokenSize</c> (≈167 MB).
+    /// The Copilot SDK's JSON-RPC layer raises it (de)serialising an
+    /// oversized prompt / replayed conversation / tool payload. Unlike a
+    /// transport error it carries no socket/process signal, so
+    /// <see cref="IsProcessLaunchError"/> misses it and the throw escapes
+    /// <see cref="RunCopilotSdk"/> to halt the orchestrator. Matching the
+    /// message lets the SendAsync catch route it to a soft generator
+    /// failure instead. Walks the inner-exception chain because the SDK
+    /// wraps transport faults.
+    /// </summary>
+    private static bool IsOversizedPayloadError(Exception ex)
+    {
+        for (var inner = ex; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is InvalidOperationException
+                && inner.Message.Contains("is too large and not supported", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
         return false;
     }
 

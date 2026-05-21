@@ -276,7 +276,7 @@ public static class WorkstreamsEndpoints
         // empty, run git clone first (silent / Q6). On hard failure we abort
         // the workstream creation rather than leaving a dangling row.
         var repoId = string.IsNullOrWhiteSpace(req.RepoId) ? ForgeSeed.DefaultRepoId : req.RepoId;
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId);
         if (repo is not null)
         {
             var clone = await cloneSvc.EnsureClonedAsync(repo);
@@ -585,7 +585,7 @@ public static class WorkstreamsEndpoints
         // ── 7. Worktree mount + local branch ─────────────────────────────
         if (!string.IsNullOrEmpty(row.Branch))
         {
-            var repoRow = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
+            var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == row.RepoId, ct);
             var cloneRoot = repoRow?.CloneRoot;
             if (!string.IsNullOrEmpty(cloneRoot))
             {
@@ -893,7 +893,7 @@ public static class WorkstreamsEndpoints
         // ── 7. Nuke git branch — worktree, local ref, AND remote ────────
         if (!string.IsNullOrEmpty(ws.Branch))
         {
-            var repoRow = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId);
+            var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.CloneRoot)
                 && System.IO.Directory.Exists(repoRow.CloneRoot))
             {

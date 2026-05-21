@@ -139,6 +139,10 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(78, PhaseMigrationKind.Control,
             ControlTables: new[] { "agents" },
             ProductTables: Array.Empty<string>()),
+        // Phase 80 (Stage 80.A) — control-side repo registry + products.DefaultRepoId.
+        new PhaseMigrationSpec(80, PhaseMigrationKind.Control,
+            ControlTables: new[] { "products", "repo_registry" },
+            ProductTables: Array.Empty<string>()),
 
         // ── Product-only ─────────────────────────────────────────────────
         // 79 lives in the Product bucket below alongside the other
@@ -246,6 +250,11 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(79, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "workstreams" }),
+        // Phase 80 (Stage 80.A) — product_stories.RepoId. Product-kind so the
+        // runner fans it out to every {slug}.db (a Mixed split would skip them).
+        new PhaseMigrationSpec(81, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "product_stories" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

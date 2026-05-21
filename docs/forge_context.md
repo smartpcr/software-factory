@@ -27,6 +27,27 @@ plan, implement, review, and QA work end-to-end.
 > approval — it hosts long-running agent loops + queue work. `dotnet build` to compile-check
 > is fine; Vite/HMR for front-end is fine.
 
+## Running & restarting — `scripts\run-forge-ui.ps1`
+
+The single launcher for both tiers. **Always use it** to start/stop/rebuild rather than `dotnet run`
+or ad-hoc `taskkill`: it finds processes by name **and** by listening port (`:5180` API / `:5181` UI),
+cleans stale PowerShell jobs, and launches `Forge.Api.exe` detached (no stdio-forwarding wrapper holding
+the caller's console).
+
+| Command | Effect |
+|---|---|
+| `.\scripts\run-forge-ui.ps1` | Stop, then start **both** API (`:5180`) + UI (`:5181`) — incremental build |
+| `.\scripts\run-forge-ui.ps1 -Rebuild` | **Clean rebuild of both**: `dotnet build` (API) + `npm ci && npm run build` (UI), then start |
+| `.\scripts\run-forge-ui.ps1 -ServerOnly` / `-ServerOnly -Rebuild` | Just the API — leaves a running Vite UI untouched |
+| `.\scripts\run-forge-ui.ps1 -UIOnly` / `-UIOnly -Rebuild` | Just the Vite UI |
+| `.\scripts\run-forge-ui.ps1 -Stop` (add `-ServerOnly` / `-UIOnly` to scope) | Stop |
+| `.\scripts\run-forge-ui.ps1 -Status` | Show what's running on each port |
+
+- **Pick up backend (`.cs`) edits:** `-ServerOnly -Rebuild` — still needs **per-restart approval** (rule above).
+- **Front-end edits:** no restart — Vite HMR reloads them.
+- **Compile-check only:** plain `dotnet build` is fine without restarting; the `Forge.Api.exe` copy-lock
+  error (`MSB3027`/`MSB3021`) while the server is running is expected and harmless.
+
 ## Where to make a change (quick index)
 
 | I want to… | Go to area |
@@ -59,6 +80,11 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
 - **Repo ↔ provider exclusivity (Q4).** A repo is exactly one provider; sprint/iteration follows
   that provider (ADO iteration paths, GitHub milestones). **No local Forge sprint.**
 - **Product ↔ repo is strictly 1:N (Q5).** `repos.product_id` NOT NULL, `UNIQUE(remoteUrl)`.
+  **(Phase 80, in progress — `forge_implementation.md` §"Phase 80")** the repo *row* now lives in the
+  **per-product DB** (`{slug}.db`), and the **domain is repo-scoped**: a story, its spawn, its
+  workstreams, its work items, its PRs, and its live-exec all bind to one repo (`RepoId` required).
+  Global uniqueness of `remoteUrl`/`cloneRoot` and `repoId→product` routing are preserved by a thin
+  control-side **`repo_registry`** index. See §1 (boundary) and §5 (products/repos) below.
 - **Auto-clone silently (Q6).** Empty `cloneRoot` → `git clone` on first use.
 - **Auth: WAM first, device-code disabled (Q7); GitHub OAuth app not GitHub App (Q8).**
 - **Crews are flat + global (Q9), multi-org from day one (Q10), any PO can promote/demote but
@@ -72,9 +98,39 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
 
 ## 1. Persistence & migrations
 
-**Stack:** `Microsoft.Data.Sqlite` + EF Core. DB file `forge.db` next to the binary, override
-`Forge:Db:Path`. Entities in `Forge.Api/Persistence/Entities.cs`; `ForgeDbContext` registers
-them. Seeding in `ForgeSeed` (idempotent on boot; reads `agents/allocation.json`).
+**Stack:** `Microsoft.Data.Sqlite` + EF Core. **DB location is configured in
+`Forge.Api/appsettings.json` under `Forge:Db` — NOT next to the binary.** Prefer
+`Forge:Db:Folder` (default `E:\forge`): the **control DB** resolves to `{folder}\forge.db` and
+**per-product split DBs** to `{folder}\{slug}.db`. `Forge:Db:Path` is **legacy** — when set it
+wins and the control DB lives at that exact path (used by the test factory's per-test temp DB;
+Docker sets `Forge__Db__Path=/data/forge.db`). `IForgeDbPaths`/`ForgeDbPaths` (singleton,
+`Persistence/ForgeDbPaths.cs`) is the **only** path resolver — never inline a `forge.db` fallback.
+The folder is the canonical "Forge state root" (`storyworkspaces/`, `attachments/` hang off it).
+Entities in `Forge.Api/Persistence/Entities.cs`; `ForgeDbContext` registers them. Seeding in
+`ForgeSeed` (idempotent on boot; reads `agents/allocation.json`).
+
+**Per-product DB split (Phases A–G, `docs/forge/split-db.md`):** gated by `Forge:Db:SplitEnabled`
+(+ `Forge:Db:MaxConcurrentProductDbs`, default 8). `ControlDbContext` binds the control DB
+(cross-product entities — products, **`repo_registry`** (Phase 80; was the full `repos` table),
+users, crews, agents, agent_usage, audit, idempotency); per-product entities route through
+`IProductDbContextFactory` → `{slug}.db`. Product slugs are validated/sanitized
+(`ForgeDbPaths.TryValidateSlug`, `[a-z0-9-]` + reserved-name guard) so they can't escape the folder
+or shadow `forge.db`. Phase F runs the auto-split-on-first-boot migration; until then everything
+stays in the control DB.
+
+> **⚠ Phase 80 boundary change (in progress, `forge_implementation.md` §"Phase 80"):** the full
+> **`repos`** row (config: clone fields, ADO/GitHub coords, build-gate commands, area paths, sync
+> filters, `AgentReadyDefaultTeam`) **moves out of the control DB into each `{slug}.db`** so a repo's
+> identity and its product live in the same file. The control DB keeps only a thin **`repo_registry`**
+> index: `(repoId PK, productId, productSlug, kind, remoteUrl UNIQUE, cloneRoot UNIQUE, displayName,
+> deletedAt)` **plus the mutable sync-due cursor** (`lastSyncStatus/lastSyncAt/isRunningSince/
+> lastUpstreamChangedDate/lastSyncCursor` + per-repo cadence overrides). The registry is the source of
+> truth for **global uniqueness** (Q2/Q5 — SQLite can't enforce `UNIQUE` across `{slug}.db` files) and
+> for **`repoId→product` routing** (so `X-Forge-Repo-Id` alone resolves a product DB) and for **cheap
+> sync enumeration** (workers scan one control query for due repos, not every product DB). It's
+> maintained in lockstep on repo create/update/delete (**write product `repos` first, then upsert the
+> registry mirror**, eventual-consistency repair like Phase E). Same denormalization philosophy as
+> `agent_usage` (`ProductId/RepoId` snapshots) and the `product_runtime` watermark.
 
 **Migrations** are hand-written idempotent `PhaseNNMigration.cs` classes (each guards with
 `pragma_table_info` / `CREATE ... IF NOT EXISTS`), chained in `Program.cs` after
@@ -87,7 +143,8 @@ them. Seeding in `ForgeSeed` (idempotent on boot; reads `agents/allocation.json`
 > number is a filename, not the phase.
 
 **Key tables** (by subsystem): `epics/cards/columns/prs/events` (board), `work_items` +
-`work_item_links` (WIT), `products/repos`, `forge_user_settings`, `crews` + `crew_members` +
+`work_item_links` (WIT), `products` (control) + `repo_registry` (control, Phase 80) + `repos`
+(per-product `{slug}.db`, Phase 80), `forge_user_settings`, `crews` + `crew_members` +
 `crew_history`, `agents`, `agent_usage` (cost ledger), `models.json` (file, not table),
 `domain_experts`, `deliverables` + `agent_level_history` + `agent_monthly_review` (scoring),
 `task_queue` + `task_queue_history`, `task_transcript_event`, `agent_assignments`,
@@ -168,6 +225,11 @@ swarm-control `--sc-*` palette P28).
   stage slot** (fixes the `1.1 → 1.1-e2e → 1.3` gap). Pairing helper: `swarm/qaE2eSelector.ts`.
 - `useTaskLiveStore` / `useTaskLive(workItemId)` *(P16.13)* — ref-counted attach to `task.{wid}`.
 - `useQueueStore` / `useQueueChannel` *(P17.9)*, `useSpawnStore` *(P28)*, `useCurrentUserStore` *(P9)*.
+- **Repo scope (Phase 80, in progress):** TopBar adds a cascading **repo switcher** beside the product
+  switcher; `useReposStore.activeRepoId` (+ `localStorage forge.activeRepoId`) drives the
+  `X-Forge-Repo-Id` header `forgeApi.ts` sends on every request. Board / `/workstreams` (incl. swarm) /
+  `/prs` / Live-Exec / Spawn all filter to the active repo; an "all repos" selection clears the header
+  for cross-repo views. See §5 "Repo scoping".
 
 **`useForgeHub.ts`** holds a process-lifetime SignalR connection (a StrictMode workaround) and
 dispatches events into stores. This becomes `useForgeStream.ts` (EventSource) under R.8.
@@ -197,16 +259,32 @@ independent singletons; `/api/me` aggregates current user.
 
 ## 5. Products, repos & sprints
 
-**Products/repos (Phase 8):** `Product { id, name, slug, ownerUserId }` and
-`Repo { id, productId, kind:'ado'|'github', remoteUrl, displayName, defaultBranch, cloneRoot,
+**Products/repos (Phase 8):** `Product { id, name, slug, ownerUserId, defaultRepoId? (Phase 80) }`
+and `Repo { id, productId, kind:'ado'|'github', remoteUrl, displayName, defaultBranch, cloneRoot,
 adoOrg?, adoProject?, ghOwner?, ghRepo? }`. `ProductsEndpoints.cs` (repos endpoints live here too,
-not a separate file). TopBar product switcher scopes every view (`localStorage forge.activeProductId`
-+ `X-Forge-Product-Id` header). Auto-clone via `IRepoCloneService` streams `forge.repo.clone.*`
-SignalR. The `Repo` row also carries the sync-scope and build-gate config (see below).
+not a separate file). Auto-clone via `IRepoCloneService` streams `forge.repo.clone.*` SignalR. The
+`Repo` row also carries the sync-scope and build-gate config (see below).
 
 **Repo carries three independent shapes** *(P23.3)*: git fields (`remoteUrl/cloneRoot/defaultBranch`
 for worktrees), ADO work-item-sync scope (`adoOrg/adoProject/AreaPathsJson`), and build-gate config
 (`InitCommand/RestoreCommand/BuildCommand/TestCommand` + timeouts, P26). Any set may be empty.
+
+**Repo scoping (Phase 80, in progress — `forge_implementation.md` §"Phase 80").** A product owns
+**many** repos and every work item / story / spawn / workstream / PR / live-exec binds to exactly one
+(`RepoId` required, FK conceptually to the per-product `repos` row). Two layers of scope now stack:
+- **DB routing** stays product-keyed — `{slug}.db` is the file, selected by `X-Forge-Product-Id`
+  (header) or resolved from `X-Forge-Repo-Id` via the control `repo_registry`.
+- **Domain filtering** is repo-keyed — a new **`X-Forge-Repo-Id`** header + `RepoScope` helper +
+  `RepoScopeMiddleware` stash the active repo on `HttpContext.Items`; repo-scoped endpoints filter
+  `WHERE RepoId = …`. Absent / `all` = every repo in the product (cross-repo views).
+- **UI:** TopBar gains a **cascading repo switcher** beside the product switcher
+  (`localStorage forge.activeProductId` + `forge.activeRepoId`); `useReposStore.activeRepoId` drives
+  the `X-Forge-Repo-Id` header in `forgeApi.ts`. Board / Workstreams / PRs / Live-Exec / Spawn all
+  read the active repo. `Product.defaultRepoId` seeds the initial selection and is the backfill
+  target for legacy null-`RepoId` rows.
+- The full `repos` row lives in `{slug}.db`; `control.repo_registry` is the routing + uniqueness +
+  sync-due mirror (see §1 boundary note). **Code that read `control.Repos` now reads the per-product
+  `repos` set (config) or `repo_registry` (routing/sync enumeration).**
 
 **Sprints / area paths (Phase 15):** product-scoped registries `product_iterations`,
 `product_area_paths`, `repo_iteration_bindings`, `product_saved_prefixes`. Read-only mirror of the
@@ -291,6 +369,12 @@ three-level ladders tagged by `Track`: dev `epic → feature → task|bug`, desi
 Four normalized states `proposed|active|resolved|closed`. `WorkItemsEndpoints.cs` (GET/POST/PATCH/
 DELETE/move/parent/sync); `/work-items` view has board/timeline/tree/list modes. Cards still serve
 the active-sprint slice side-by-side (cards-as-projection deferred to Phase R).
+
+> **Repo binding (Phase 80, in progress).** `WorkItemRow.RepoId` becomes **required** (was nullable);
+> create/sync must set it (defaulting to `Product.defaultRepoId`), endpoints filter by the active
+> `X-Forge-Repo-Id`, and a backfill stamps legacy null rows to the product's default repo. The
+> worktree path (`{repo.cloneRoot}\.worktree\ws-{wi}`) and PR coordinates (`PrCoordsResolver`)
+> already key off `wi.RepoId`; the change is making it non-null + filtered, not re-plumbing it.
 
 **Two assignee fields — they never auto-sync** *(P22, critical):*
 - **`AssignedTo`** (`AssignedToJson`) — **WIT semantic**: who *owns* it in the tracker. Set by
@@ -501,6 +585,15 @@ Combined gate logs persist to `.worktree/{slug}/.forge/logs/` and stream via
 Replaces ad-hoc "spawn workstream". The operator selects a **story** (ADO feature/PBI) and Forge
 runs the full lifecycle across Architect/Engineer/Review/QA crews.
 
+> **Story is under a repo (Phase 80, in progress).** Today `ProductStoryRow` is product-scoped and
+> the *spawn* picks the repo (`StorySpawnRow.RepoId`, set from `SpawnRequest.RepoId`); Phase 80 pushes
+> the repo binding **up to the story**: `ProductStoryRow` gains a required `RepoId`, the story index
+> and spawn UI filter by the active `X-Forge-Repo-Id`, and `StorySpawnRow.RepoId` is inherited from
+> the story (no longer operator-chosen at spawn time). `StorySpawnRow.RepoId` and the orchestrator's
+> `repo` lookup become non-null; the base-branch propagation that today loops "every repo of the
+> product" narrows to the story's repo. All plan-doc / workstream / qa-e2e branches + worktrees +
+> PRs already key off that one repo's `cloneRoot` — Phase 80 makes the binding required, not new.
+
 **`StorySpawnOrchestrator`** is the state machine: `DriveAsync(storyId)` is a pure function over
 `(spawn, story, repo, state)`; every step idempotent (re-tick = no-op). Driven by the
 `SpawnDependencyScheduler` background tick (fans out per spawn via `Task.WhenAll`) and inline after
@@ -587,6 +680,12 @@ contexts, a silo auditor, and a false-parallel planner. None of `30.1–30.17` e
 
 ## Known not-started / partial (read before assuming something exists)
 
+- **Phase 80 (repos → product DB + repo registry + repo-scoped domain + topbar repo switcher)** —
+  **in progress, driven by `forge_implementation.md` §"Phase 80".** Until it lands: the full `repos`
+  row still lives in the **control DB** (`ControlDbContext.Repos`), there is **no `repo_registry`**, no
+  `X-Forge-Repo-Id` header / `RepoScopeMiddleware`, no topbar repo switcher, `ProductStoryRow` has no
+  `RepoId`, `Product` has no `defaultRepoId`, and `WorkItemRow.RepoId` / `StorySpawnRow.RepoId` remain
+  nullable. Code still reads `control.Repos`. Don't assume any Phase 80 surface exists yet.
 - **Phase 30 (ACP)** — entirely `[ ]`.
 - **Phase 57 (operator cap-override)** — entirely `[ ]`; `Phase57Migration` + `work_item_override_history`
   table do **not** exist yet.

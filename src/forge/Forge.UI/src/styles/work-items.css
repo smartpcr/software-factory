@@ -578,6 +578,22 @@
   white-space: nowrap;
   max-width: 110px;
 }
+/* Phase 80 — repo association chip on the board card. */
+.wit-board-card-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.wit-board-card-repo > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
 .wit-board-card-tags {
   display: inline-flex;
   gap: 4px;
@@ -738,6 +754,22 @@
   font-weight: 700;
   color: var(--text-primary);
   border: 1px solid var(--border);
+}
+/* Phase 80 — repo association chip on the tree row. */
+.wit-tree-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.wit-tree-repo > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
 }
 
 .wit-tree-children {

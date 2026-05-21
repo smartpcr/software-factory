@@ -52,6 +52,26 @@ public static class ProductScope
     /// </remarks>
     public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, ControlDbContext db, CancellationToken ct = default)
     {
+        // Phase 80.E — an explicit repo scope (X-Forge-Repo-Id) is NARROWER than
+        // product scope and wins: scope to that one repo + its owning product.
+        // A repo id alone therefore both filters the lists AND identifies the
+        // product (the per-request product DB is bound by RepoScopeMiddleware).
+        var repoRaw = RepoScope.Read(ctx);
+        if (!string.IsNullOrWhiteSpace(repoRaw)
+            && !string.Equals(repoRaw, RepoScope.AllScope, StringComparison.OrdinalIgnoreCase))
+        {
+            var ownerProductId = await db.RepoRegistry.AsNoTracking()
+                .Where(r => r.Id == repoRaw && r.DeletedAt == null)
+                .Select(r => r.ProductId)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrEmpty(ownerProductId))
+            {
+                return new ResolvedScope(ownerProductId, new[] { repoRaw });
+            }
+            // Unknown repo id — fall through to product scope (the diagnostic
+            // header from RepoScopeMiddleware already flags it as unknown).
+        }
+
         var raw = Read(ctx);
         if (string.Equals(raw, AllScope, StringComparison.OrdinalIgnoreCase))
         {
@@ -66,8 +86,11 @@ public static class ProductScope
         }
 
         var productId = raw;
-        var repoIds = await db.Set<RepoRow>().AsNoTracking()
-            .Where(r => r.ProductId == productId)
+        // Phase 80.B — RepoRow moved to the product DB; repo ids for a product
+        // now come from the control `repo_registry` index. `raw` may be a
+        // product id OR slug (callers pass either), so match both.
+        var repoIds = await db.RepoRegistry.AsNoTracking()
+            .Where(r => r.DeletedAt == null && (r.ProductId == productId || r.ProductSlug == productId))
             .Select(r => r.Id)
             .ToListAsync(ct);
         return new ResolvedScope(productId, repoIds);

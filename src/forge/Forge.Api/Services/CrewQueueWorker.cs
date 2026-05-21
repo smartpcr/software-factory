@@ -1028,7 +1028,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var workstreamId = "";
             if (!string.IsNullOrEmpty(wi?.RepoId))
             {
-                var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
 
                 // Find the workstream whose CardsJson references this work item.
                 var workstreams = await db.Workstreams.AsNoTracking().ToListAsync(ct);
@@ -1131,7 +1131,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wiRepo = null;
                 if (!string.IsNullOrEmpty(wi?.RepoId))
                 {
-                    wiRepo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                    wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
                     if (!string.IsNullOrEmpty(wiRepo?.DefaultBranch))
                         baseBranch = wiRepo.DefaultBranch;
                     if (!string.IsNullOrEmpty(wiRepo?.CloneRoot) && Directory.Exists(wiRepo.CloneRoot))
@@ -3294,10 +3294,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             if (string.IsNullOrEmpty(wi.RepoId)) return;
 
-            var wiRepo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            var wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (wiRepo is null || string.IsNullOrEmpty(wiRepo.ProductId)) return;
 
-            var sameProductRepoIds = await control.Repos.AsNoTracking()
+            var sameProductRepoIds = await db.Repos.AsNoTracking()
                 .Where(r => r.ProductId == wiRepo.ProductId)
                 .Select(r => r.Id)
                 .ToListAsync(ct);

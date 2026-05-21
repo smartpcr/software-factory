@@ -326,6 +326,7 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
                     try { await forgeApi.syncRepoWorkItems(repoId); }
                     catch { /* surfaced inside the drawer */ }
                   }}
+                  onRepoUpdated={(updated) => { void loadReposFor(updated.productId); }}
                 />
                 {(r.initCommand || r.restoreCommand || r.buildCommand || r.testCommand) ? (
                   <span

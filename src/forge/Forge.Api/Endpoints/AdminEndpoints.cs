@@ -125,7 +125,10 @@ public static class AdminEndpoints
             var workstreams = await db.Workstreams.AsNoTracking()
                 .Where(w => !string.IsNullOrEmpty(w.RepoId))
                 .ToListAsync(ct);
-            var repos = await control.Repos.AsNoTracking()
+            // Phase 80.B — repos live in the per-product DB; this handler is
+            // scoped to the active product (it reads db.Workstreams above), so
+            // read the full repo rows from the same product context.
+            var repos = await db.Repos.AsNoTracking()
                 .Where(r => !string.IsNullOrEmpty(r.CloneRoot))
                 .ToListAsync(ct);
             var byRepo = workstreams.GroupBy(w => w.RepoId!, StringComparer.Ordinal);

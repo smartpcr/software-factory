@@ -132,7 +132,7 @@ public sealed class BuildSyncJob : BackgroundService
                 .ToArray();
             var intervals = repoIds.Length == 0
                 ? new Dictionary<string, int?>()
-                : await control.Repos
+                : await db.Repos
                     .AsNoTracking()
                     .Where(r => repoIds.Contains(r.Id))
                     .ToDictionaryAsync(r => r.Id, r => r.BuildSyncIntervalSeconds, ct);
@@ -214,7 +214,7 @@ public sealed class BuildSyncJob : BackgroundService
         {
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == c.RepoId, ct);
+            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == c.RepoId, ct);
         }
         if (repo is null)
         {

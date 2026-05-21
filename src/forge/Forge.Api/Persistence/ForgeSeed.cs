@@ -337,13 +337,18 @@ public static class ForgeSeed
                 Description = "Default product. Backfilled from the prototype's single-repo seed.",
                 OwnerUserId = null,
                 CreatedAt = DateTimeOffset.UtcNow,
+                // Phase 80.B — point the product at its default repo (seeded below).
+                DefaultRepoId = DefaultRepoId,
             });
             changed = true;
         }
 
-        if (!await control.Repos.AnyAsync(r => r.Id == DefaultRepoId))
+        // Phase 80.B — the repo row now lives in the per-product DB. The
+        // control-side repo_registry mirror + DefaultRepoId are reconciled by
+        // RepoRegistrySync on boot (runs right after this seed).
+        if (!await db.Repos.AnyAsync(r => r.Id == DefaultRepoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = DefaultRepoId,
                 Sort = 0,
@@ -356,7 +361,7 @@ public static class ForgeSeed
                 AdoOrg = "atlas",
                 AdoProject = "atlas-platform",
             });
-            changed = true;
+            await db.SaveChangesAsync();
         }
 
         if (changed) await control.SaveChangesAsync();

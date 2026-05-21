@@ -169,15 +169,17 @@ public class SplitApplyServiceTests : IDisposable
         ctl.Products.AddRange(
             new ProductRow { Id = "atlas", Slug = "atlas", Name = "Atlas" },
             new ProductRow { Id = "raft", Slug = "raft", Name = "Raft" });
-        ctl.Repos.AddRange(
-            new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
-            new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
         await ctl.SaveChangesAsync();
 
         var prodOpt = new DbContextOptionsBuilder<ProductDbContext>()
             .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
             .Options;
         await using var prod = new ProductDbContext(prodOpt);
+
+        // Phase 80.B — repos live on the product DB now.
+        prod.Repos.AddRange(
+            new RepoRow { Id = "r-atlas-1", ProductId = "atlas", Kind = "github", RemoteUrl = "https://x/a1", DisplayName = "a1", DefaultBranch = "main", CloneRoot = "C:\\a1" },
+            new RepoRow { Id = "r-raft-1", ProductId = "raft", Kind = "github", RemoteUrl = "https://x/r1", DisplayName = "r1", DefaultBranch = "main", CloneRoot = "C:\\r1" });
 
         // 3 workstreams in atlas, 1 in raft.
         prod.Workstreams.AddRange(

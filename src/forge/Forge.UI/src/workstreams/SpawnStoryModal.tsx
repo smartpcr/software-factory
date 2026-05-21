@@ -43,7 +43,6 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [selected, setSelected] = useState<ProductStory | null>(null);
-  const [repoId, setRepoId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -62,7 +61,6 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
     setSearch('');
     setStatusFilter('');
     setSelected(null);
-    setRepoId(null);
     setErr(null);
     setFiles([]);
     setUploadIds([]);
@@ -108,8 +106,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
 
   function pickStory(s: ProductStory) {
     setSelected(s);
-    // Auto-select repo when there's exactly one in this product.
-    setRepoId(repos.length === 1 ? repos[0].id : null);
+    // Phase 80.F — the spawn inherits the story's bound repo; no operator pick.
     // Phase 46 — inherit autoMerge from the story default.
     setAutoMerge(s.autoMerge ?? false);
     // Phase 45 — inherit baseBranch from the story default.
@@ -132,7 +129,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
       const trimmedBase = baseBranch.trim();
       await forgeApi.spawnStory(
         selected.id,
-        repoId ?? null,
+        // Phase 80.F — spawn inherits the story's bound repo server-side.
+        selected.repoId ?? null,
         ids.length > 0 ? ids : undefined,
         trimmedBase.length > 0 ? trimmedBase : undefined,
         autoMerge,
@@ -168,7 +166,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         {step === 'select' && (
           <div style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4 }}>
-              Step 1 of 2 — pick a story below to continue. The next step lets you confirm scope + repo and click <b>Spawn</b>.
+              Step 1 of 2 — pick a story below to continue. The next step lets you confirm scope and click <b>Spawn</b>; the spawn uses the story's bound repo.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 8 }}>
               <input
@@ -249,13 +247,15 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                 {selected.description || <em style={{ color: 'var(--text-tertiary)' }}>(no description — the architect will get an empty prompt)</em>}
               </span>
             </Field>
-            <Field label="Repo">
-              <select value={repoId ?? ''} onChange={(e) => setRepoId(e.target.value || null)}>
-                <option value="">— pick a repo —</option>
-                {repos.map((r: Repo) => (
-                  <option key={r.id} value={r.id}>{r.displayName ?? r.id}</option>
-                ))}
-              </select>
+            <Field label="Repo (bound to the story)">
+              {(() => {
+                const bound = repos.find((r: Repo) => r.id === selected.repoId);
+                return bound
+                  ? (bound.displayName ?? bound.id)
+                  : (selected.repoId
+                      ? <span style={{ fontFamily: 'var(--font-mono)' }}>{selected.repoId}</span>
+                      : <em style={{ color: 'var(--text-tertiary)' }}>(no repo bound — the story predates repo binding)</em>);
+              })()}
             </Field>
             <Field label="Base branch (optional, default: main)">
               <input
@@ -323,7 +323,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
               <button
                 className="btn btn-primary"
                 onClick={() => void spawn()}
-                disabled={busy || !selected || !repoId}
+                disabled={busy || !selected}
               >
                 {busy ? 'Spawning…' : 'Spawn'}
               </button>

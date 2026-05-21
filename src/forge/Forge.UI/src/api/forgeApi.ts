@@ -395,16 +395,46 @@ export function setActiveProductId(id: string | null): void {
   else window.localStorage.setItem(ACTIVE_PRODUCT_KEY, id);
 }
 
+/** Phase 80.G — active repo the UI is scoped to (TopBar repo switcher).
+ *  Sent as `X-Forge-Repo-Id`; the server narrows product-scoped reads to
+ *  this repo and binds new stories/spawns to it. Null/empty → product-wide. */
+const ACTIVE_REPO_KEY = 'forge.activeRepoId';
+
+export function getActiveRepoId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(ACTIVE_REPO_KEY);
+}
+
+export function setActiveRepoId(id: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (id === null) window.localStorage.removeItem(ACTIVE_REPO_KEY);
+  else window.localStorage.setItem(ACTIVE_REPO_KEY, id);
+}
+
+/** Phase 80.G — pure builder for the scope headers attached to every request.
+ *  Emits `X-Forge-Product-Id` / `X-Forge-Repo-Id` only when each id is set
+ *  (empty/null is omitted so the server treats it as product-wide / all-repos).
+ *  Exported so the header logic can be unit-tested without a DOM. */
+export function buildScopeHeaders(
+  productId: string | null,
+  repoId: string | null,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (productId) headers['X-Forge-Product-Id'] = productId;
+  if (repoId) headers['X-Forge-Repo-Id'] = repoId;
+  return headers;
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers: extraHeaders, ...rest } = init ?? {};
-  // Phase 8.9 — automatically scope every read to the active product when set.
-  const productId = getActiveProductId();
+  // Phase 8.9 / 80.G — automatically scope every read to the active product
+  // and (when selected) the active repo.
   const res = await fetch(`${baseUrl}${path}`, {
     ...rest,
     headers: {
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+      ...buildScopeHeaders(getActiveProductId(), getActiveRepoId()),
       ...(extraHeaders ?? {}),
     },
   });
@@ -658,7 +688,7 @@ export const forgeApi = {
    *  when a non-default base branch is set. The client normalises both shapes. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean },
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean; repoId?: string | null },
   ): Promise<{ story: ProductStory; branchWarnings?: string[] }> {
     const resp = await fetchJson<ProductStory | { story: ProductStory; branchWarnings: string[] }>(
       `/api/products/${encodeURIComponent(productId)}/stories`,
@@ -674,15 +704,15 @@ export const forgeApi = {
   },
 
   /** PATCH /api/products/{productId}/stories/{storyId} — edit a story's name / desc / points / status / base branch.
-   *  Phase 45: changing baseBranch to a non-"main" value triggers an immediate
-   *  `git branch` creation in every repo of the product AND, when a spawn
+   *  Phase 45 / 80.F: changing baseBranch to a non-"main" value triggers an immediate
+   *  `git branch` creation in the story's bound repo AND, when a spawn
    *  exists for this story, the full rebase + replay-merged-PRs + retarget-open-PRs
    *  flow. The optional fields below are populated only when a base-branch
    *  change actually occurred and a spawn was present. */
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean },
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean; repoId?: string | null },
   ): Promise<{
     story: ProductStory;
     branchWarnings?: string[];
@@ -925,13 +955,12 @@ export const forgeApi = {
   async mergePr(id: string, opts?: { force?: boolean }): Promise<{ pr: Pr; queued: boolean; detail?: string }> {
     const qs = opts?.force ? '?force=true' : '';
     const url = `${baseUrl}/api/prs/${encodeURIComponent(id)}/merge${qs}`;
-    const productId = getActiveProductId();
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'X-Forge-User': writerHeader(),
-        ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+        ...buildScopeHeaders(getActiveProductId(), getActiveRepoId()),
       },
     });
     if (!res.ok) {
@@ -1240,12 +1269,11 @@ export const forgeApi = {
   async uploadStoryAttachments(files: File[]): Promise<{ uploadId: string; files: StoryAttachment[] }> {
     const form = new FormData();
     for (const f of files) form.append('files', f);
-    const productId = getActiveProductId();
     const res = await fetch(`${baseUrl}/api/stories/attachments/upload`, {
       method: 'POST',
       body: form,
       headers: {
-        ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
+        ...buildScopeHeaders(getActiveProductId(), getActiveRepoId()),
         'X-Forge-User': writerHeader(),
       },
     });
@@ -1847,6 +1875,18 @@ export const forgeApi = {
   async cloneRepo(id: string): Promise<{ outcome: 'cloned' | 'skipped'; message?: string }> {
     return fetchJson<{ outcome: 'cloned' | 'skipped'; message?: string }>(
       `/api/repos/${encodeURIComponent(id)}/clone`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** Phase 80 — POST /api/repos/{id}/clear-sync-error — acknowledge a failed
+   *  sync (reset status → idle, clear error) without running a sync. */
+  async clearRepoSyncError(id: string): Promise<Repo> {
+    return fetchJson<Repo>(
+      `/api/repos/${encodeURIComponent(id)}/clear-sync-error`,
       {
         method: 'POST',
         headers: { 'X-Forge-User': writerHeader() },

@@ -54,9 +54,9 @@ public static class PrMergeUtilities
     {
         if (string.IsNullOrEmpty(pr.Branch) || string.IsNullOrEmpty(pr.Base)) return false;
         var repo = !string.IsNullOrEmpty(pr.RepoId)
-            ? await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct)
             : null;
-        repo ??= await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(ct);
+        repo ??= await db.Repos.AsNoTracking().FirstOrDefaultAsync(ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return false;
         return await git.MergeUpstreamIntoBranchAsync(repo, pr.Branch, pr.Base, force, ct);
     }

@@ -421,9 +421,10 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         if (!string.IsNullOrEmpty(pr.RepoId))
         {
             using var scope = this.scopeFactory.CreateScope();
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-            var repoRow = await control.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
+            // Phase 80.B — unscoped scope: route through RepoLookup (registry →
+            // owning product's DB) since RepoRow moved to the product DB.
+            var repoLookup = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.RepoLookup>();
+            var repoRow = await repoLookup.GetByIdAsync(pr.RepoId, ct);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.GhOwner) && !string.IsNullOrEmpty(repoRow.GhRepo))
             {
                 return (repoRow.GhOwner!, repoRow.GhRepo!);

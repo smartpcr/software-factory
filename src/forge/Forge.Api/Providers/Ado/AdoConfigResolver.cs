@@ -58,7 +58,11 @@ public class AdoConfigResolver : IAdoConfigResolver
 
         if (!string.IsNullOrWhiteSpace(repoId))
         {
-            var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+            // Phase 80.B — repoId may belong to any product and this scope has
+            // no active product slug, so route via RepoLookup (registry →
+            // owning product's DB) rather than the unscoped product context.
+            var repoLookup = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.RepoLookup>();
+            var repo = await repoLookup.GetByIdAsync(repoId, ct);
             if (repo is not null && !string.IsNullOrWhiteSpace(repo.AdoOrg) && !string.IsNullOrWhiteSpace(repo.AdoProject))
             {
                 var orgUrl = ResolveOrgUrl(repo.AdoOrg!);

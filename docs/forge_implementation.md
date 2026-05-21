@@ -7513,3 +7513,425 @@ client + four per-language detectors + chain wiring + tests.
   test-entry detectors.
 - `src/forge/Forge.Api.Tests/Phase59S2*.cs` (new, per
   language).
+
+## Phase 80 — Repo-scoped domain (repos → per-product DB + control repo registry + repo-scoped stories/PRs/live-exec + topbar repo switcher)
+
+> **This is the live driver for the refactor.** It supersedes the
+> `docs/forge/split-db.md` boundary decision "repos stay in the control DB to
+> avoid cross-DB joins". Status lands in `forge_progress.md` only when every
+> stage below is `[x]`. Next free migration slot on disk is **`Phase80Migration`**
+> (76–79 taken); a second slot `Phase81Migration` is reserved for the backfill so
+> the move and the backfill stay separately re-runnable.
+
+### Problem
+
+The split-DB refactor (Phases A–G) deliberately kept the full `repos` row in the
+**control DB** (`ControlDbContext.Repos`, `ControlDbContext.cs:34`) so that
+product-scoped queries could `JOIN` Repo→Product without crossing a SQLite file
+boundary, and so the sync jobs could enumerate due repos in one query
+(`WorkItemSyncJob.cs:105-114` joins `control.Repos` to `control.Products`). Two
+operator requirements break that:
+
+1. **A repo's identity should live with its product.** A product's repo is owned
+   by exactly that product (Q5, 1:N); splitting the product's data into `{slug}.db`
+   but leaving its repos in `forge.db` means the most product-defining rows sit in
+   the shared control DB. The operator wants `repos` in the per-product DB.
+2. **The domain must be repo-scoped, not just product-scoped.** A product has
+   **many** repos. A story (and therefore its spawn, workstreams, work items, PRs,
+   and live-exec) must belong to **one** repo. Today only the *spawn* carries a
+   repo (`StorySpawnRow.RepoId`, nullable, operator-chosen at spawn time,
+   `StoriesEndpoints.cs:279`); `ProductStoryRow` has **no** `RepoId`; `WorkItemRow.RepoId`
+   is nullable; and the UI scopes only to a product (`X-Forge-Product-Id` +
+   `TopBar` product switcher) — there is no repo switcher and no `X-Forge-Repo-Id`.
+
+The good news from the audit: the domain is already ~80% repo-aware. `WorkItemRow`,
+`PrRow`, `WorkstreamRow`, `CardRow`, `StorySpawnRow` already carry a (mostly
+nullable) `RepoId`; `BuildRow`, `WorkItemSyncRunRow`, `BuildValidationRunRow`,
+`RepoIterationBindingRow` already **require** it; worktree paths and
+`PrCoordsResolver` already key off `wi.RepoId`. This phase is therefore mostly
+(a) **relocating** the `repos` table + adding a thin control index, and
+(b) **tightening** `RepoId` to required + adding repo scoping to the read/UI layer
+— not re-plumbing the execution path.
+
+### Resolved decisions
+
+- **Boundary (operator):** full `repos` row → per-product `{slug}.db`. Control keeps a
+  thin **`repo_registry`** index (chosen over "pure per-product, relax uniqueness").
+- **Registry contents:** routing + global uniqueness + sync-due cursor. Source of
+  truth for `UNIQUE(remoteUrl)` / `UNIQUE(cloneRoot)` (Q2/Q5 — SQLite can't enforce
+  `UNIQUE` across `{slug}.db` files) and for `repoId→product` resolution. The
+  per-product `repos` row is the source of truth for config.
+- **Sync cursor lives in the registry** (control), not the product `repos` row —
+  the sync jobs enumerate from control and must not open every `{slug}.db` to find
+  due repos. Per-repo cadence overrides live there too (read at enumeration time).
+- **Routing:** DB selection stays **product-keyed** (`{slug}.db`). `X-Forge-Repo-Id`
+  is a domain *filter*; when sent without `X-Forge-Product-Id` the middleware
+  resolves the product via `repo_registry`.
+- **UI scope:** **topbar global repo switcher** (chosen over per-view filter). One
+  active repo at a time; an explicit "All repos" option clears the header for
+  cross-repo views.
+- **Repo binding strictness:** **required + backfill** (chosen over keep-nullable).
+  `ProductStoryRow` gains a required `RepoId`; `Product` gains `DefaultRepoId`;
+  `WorkItemRow`/`StorySpawnRow`/workstream/PR `RepoId` become non-null going
+  forward; legacy null rows backfill to the product's `DefaultRepoId`.
+- **Story owns the repo:** the repo binds at the **story** level; the spawn inherits
+  `RepoId` from its story (operator no longer picks a repo at spawn time — they pick
+  it when creating the story / it's set from the active repo).
+- **Write-path consistency:** repo create/update/delete writes **product `repos`
+  first, then upserts the `repo_registry` mirror** (same eventual-consistency +
+  boot-repair pattern as split-db Phase E; reuse `Phase73Reconciler` shape).
+
+### Boundary — what moves where
+
+**Control DB (`forge.db`) — new `repo_registry` table** (replaces `repos`):
+
+| Column | Notes |
+|---|---|
+| `Id` (PK) | same RepoId string used everywhere today |
+| `ProductId`, `ProductSlug` | routing; `ProductSlug` denormalized so a repo-id resolves a `{slug}.db` without a Products join |
+| `Kind` | `ado` \| `github` |
+| `RemoteUrl` | **`UNIQUE`** — Q5 global guarantee |
+| `CloneRoot` | **`UNIQUE`** — Q2 global guarantee |
+| `DisplayName` | cheap label for the cross-product repo switcher |
+| `Sort` | switcher ordering |
+| `DeletedAt` | soft-delete tombstone (keeps uniqueness slots releasable) |
+| `LastSyncStatus`, `LastSyncAt`, `IsRunningSince`, `LastUpstreamChangedDate`, `LastSyncCursor` | **mutable sync-due cursor** (moved from `repos`) — read by `WorkItemSyncJob`/`PrSyncJob`/`BuildSyncJob` enumeration |
+| `WorkItemSyncIntervalSeconds`, `PrSyncIntervalSeconds`, `BuildSyncIntervalSeconds` | per-repo cadence overrides (read at enumeration) |
+
+**Per-product DB (`{slug}.db`) — `repos` table** (the full `RepoRow`, moved):
+all of today's `RepoRow` config columns — `ProductId`, `Kind`, `RemoteUrl`,
+`DisplayName`, `DefaultBranch`, `CloneRoot`, `AdoOrg/AdoProject/GhOwner/GhRepo`,
+`AreaPathsJson`, `AgentReadyDefaultTeam`, `InitialSyncWindowDays`, build-gate
+(`Init/Restore/Build/TestCommand` + timeouts), `TestImpactedOnly`, persisted sync
+filters (`WiSync*`, `PrSync*`, `BuildPipelineIdsJson`). The cursor columns may stay
+on the row as a local cache but the **registry copy is authoritative** for
+enumeration. `EntityRepoRow` registration moves from `DbModelControl` →
+`DbModelProduct`; `RepoRow` DbSet moves `ControlDbContext.Repos` →
+`ProductDbContext.Repos`; new `RepoRegistryRow` + `ControlDbContext.RepoRegistry`.
+
+**`Product` gains `DefaultRepoId TEXT NULL`** (control DB; the backfill anchor and
+the topbar switcher's initial selection).
+
+**`ProductStoryRow` gains `RepoId TEXT`** (per-product DB; required going forward).
+
+### Schema migrations
+
+> **As built (80.A):** split into **two single-kind** migrations rather than one
+> Mixed, because `PhaseMigrationRunner` skips fan-out for `Mixed` and a product
+> column added after the split must reach every existing `{slug}.db`.
+> `Phase80`/`Phase81` are consumed by 80.A; the data-move migration is therefore
+> `Phase82Migration` (80.B).
+
+**`Phase80Migration.cs` (Control) — DONE (80.A):**
+1. `CREATE TABLE IF NOT EXISTS repo_registry (...)`; partial-unique indexes on
+   `RemoteUrl` and `CloneRoot` (`WHERE DeletedAt IS NULL`).
+2. `ALTER TABLE products ADD COLUMN DefaultRepoId TEXT NULL` (idempotent).
+
+**`Phase81Migration.cs` (Product, fans out per `{slug}.db`) — DONE (80.A):**
+1. `ALTER TABLE product_stories ADD COLUMN RepoId TEXT NULL` (idempotent).
+
+> The product-side **`repos` table** creation (DDL = `Phase8Migration.cs:42-60` +
+> the additive repo columns from Phases 23/26/29/33/34/59) is **deferred to
+> `Phase82Migration` in 80.B**, alongside the data move.
+
+**`Phase82Migration.cs` (data move + backfill — 80.B, idempotent via a
+`forge_seed_state` marker `phase80-repos-moved`):**
+0. Create the product-side `repos` table (deferred from 80.A).
+1. **Move** each control `repos` row into its product's `repos` table
+   (partition by `ProductId → slug`, keep the same `Id`). Reuse the
+   `SplitApplyService` `ATTACH DATABASE` + `INSERT … SELECT` machinery
+   (`SplitApplyService.cs`).
+2. **Build `repo_registry`** from the moved rows (Id, ProductId, ProductSlug, Kind,
+   RemoteUrl, CloneRoot, DisplayName, Sort, + cursor columns copied across).
+3. **Stamp `products.DefaultRepoId`** = lowest-`Sort` repo per product.
+4. **Backfill** `RepoId` on `product_stories`, `work_items`, `workstreams`, `prs`,
+   `cards`, `story_spawns` where null → the product's `DefaultRepoId`.
+5. **Verify** row counts (registry count == moved repos count; no null `RepoId` left
+   on the backfilled tables for products that have ≥1 repo) then **drop the control
+   `repos` table**. Back up `forge.db` first (mirror `SplitApplyService` backup).
+6. Update `PhaseMigrationCatalog.cs`: reclassify the `repos` table from **Control**
+   → **Product** (registry/`DefaultRepoId` are already catalogued Control from 80.A);
+   add the `Phase82` spec; wire it into `PhaseMigrationRunner`.
+
+### Stages
+
+Each stage is independently compilable + testable; ship as separate PRs.
+
+#### 80.A — Registry + product `repos` schema, no behavior change ✅ **DONE**
+- [x] 80.A.1 Add `RepoRegistryRow` entity + `ProductRow.DefaultRepoId`;
+  `ProductStoryRow.RepoId` (all nullable this stage). *(`Entities.cs`)*
+- [x] 80.A.2 Schema migrations, registered in `PhaseMigrationCatalog` +
+  `PhaseMigrationRunner.ExecutionOrder` + `DbBoundary`. **Split into two
+  single-kind migrations** (not one Mixed): `Phase80Migration` (**Control**:
+  `repo_registry` table + partial-unique indexes + `products.DefaultRepoId`)
+  and `Phase81Migration` (**Product**: `product_stories.RepoId`). *Why two:* the
+  runner deliberately **skips fan-out for `Mixed`** migrations, so a Mixed
+  Phase 80 would never add `product_stories.RepoId` to existing `{slug}.db`
+  files; a Product-kind migration fans out to each. Pinned index names so EF
+  `EnsureCreated` + the raw-SQL `IF NOT EXISTS` don't double-create on fresh DBs.
+- [x] 80.A.3 `ControlDbContext.RepoRegistry` DbSet + `DbModelControl` config
+  (partial unique indexes `WHERE DeletedAt IS NULL`). `repos` **still in control**,
+  registry empty — no move yet.
+- [x] 80.A.4 `Phase80SchemaTests` (9): table/columns created; partial-unique
+  rejects active dup remoteUrl/cloneRoot; soft-deleted row frees the slot;
+  idempotent re-run; EF round-trips. **37/37 green** with the migration-catalog/
+  runner invariants + split-service tests. *(Also fixed two pre-existing test
+  compile breaks: `AgentRuntimeTests`/`AgentSalaryAndLedgerTests` constructed
+  `CopilotServerManager` with the old 2-arg ctor — added the `IAuthService`
+  arg.)*
+- **Done in 80.B:** the product-side `repos` table (now created by the EF model on
+  fresh DBs + `RepoMoveToProductService`'s DDL on existing `{slug}.db`).
+
+#### 80.B — Move `RepoRow` DbSet control → product ✅ **DONE (combined with 80.D + the 80.C write-path, per operator choice)**
+> Shipped as one PR. The data move is a **boot service** (`RepoMoveToProductService` +
+> `RepoRegistrySync`), **not** a `Phase82Migration` — the move spans control + every
+> `{slug}.db` (ATTACH + column-explicit copy), so a standalone service mirrors
+> `SplitApplyService` rather than the per-context migration runner. **3 bugs found &
+> fixed in test:** (1) move ran before `EnsureCreated` and created `forge_seed_state`,
+> making `EnsureCreated` skip all control tables — moved it to after `EnsureCreated`,
+> before the product-schema script; (2) `WorkItemSyncJob` enumeration missed a
+> `ProductId` filter (single-file multi-product double-enumerated); (3) move stamped its
+> done-marker even when it no-op'd pre-split, so reboot-after-split skipped the move and
+> the product script collided — stamp only after a real move.
+- [x] 80.B.1 `Repos` DbSet `ControlDbContext` → `ProductDbContext`; `RepoRow` config
+  `DbModelControl` → `DbModelProduct` (per-product unique idx `IX_repos_RemoteUrl`/
+  `CloneRoot`, `IX_repos_ProductId`, names pinned to the move DDL).
+- [x] 80.B.2 **`RepoMoveToProductService`** (split-mode-only, marker
+  `phase80b-repos-physical-moved`): per-product `CREATE TABLE repos` + ATTACH-control +
+  **column-explicit** copy (fixes the dead `Phase76Migration`'s `INSERT … SELECT *` bug —
+  its DDL pre-dated `TestImpactedOnly`), verify, drop control `repos`, VACUUM. Plus
+  **`RepoRegistrySync`** (both modes, idempotent, every boot): builds `repo_registry`
+  from product repos, sets `Product.DefaultRepoId`, backfills null `RepoId` on
+  product_stories/work_items/workstreams/prs/cards/story_spawns. Wired into `Program.cs`
+  boot. *(No `Phase82Migration`; product `repos` table comes from the EF model + the
+  service DDL.)*
+- [x] 80.B.3 `ForgeSeed.EnsureDefaultProductAndRepoAsync` seeds the default repo into the
+  **product** DB + sets `Product.DefaultRepoId`; `RepoRegistrySync` mirrors it to the registry.
+- [x] 80.B.4 **`repos` kept classified Control in `DbBoundary`** (NOT reclassified).
+  *Why:* `Phase8/23/26/29/33/34/59` create/ALTER `repos` via the control context and the
+  catalog maps them control; flipping to Product would force a migration-body connection
+  rewrite + risk `Phase8` recreating control `repos` each boot. The EF-model move + the
+  move service get repos into the product DBs regardless. `PhaseMigrationCatalog` parity
+  tests green; `repos` reads everywhere route via `product.Repos` / `RepoLookup` / registry.
+
+#### 80.C — Repo CRUD write-path: product-first, registry upsert (write-path landed with 80.B)
+- [x] 80.C.1 `ProductsEndpoints.cs` repo CRUD: `AttachRepo` writes `factory.CreateFor(slug).Repos`
+  first then adds the `RepoRegistry` mirror; `PatchRepo` updates `db.Repos` + syncs the
+  registry's mirrored fields (DisplayName/CloneRoot/cadence); `DeleteRepo` removes the
+  product row + the registry row (frees the uniqueness slot). Global uniqueness (Id /
+  RemoteUrl / CloneRoot) checks hit `control.RepoRegistry`.
+- [x] 80.C.2 No dedicated `Phase80Reconciler`: **`RepoRegistrySync`** re-mirrors the
+  registry from product repos on every boot AND now **quarantines** (soft-deletes,
+  `DeletedAt`) registry rows whose repo no longer exists in any product DB — gated on a
+  clean full scan so a transient product-DB read failure can't tombstone live repos.
+  Also fixed the **move's completion gate**: it now verifies *rows present* in product
+  DBs (not rows inserted this run), so a re-run completes idempotently — `DROP control
+  repos` + marker stamp now land cleanly (verified on the live `E:\forge` DBs:
+  `Moved 0 ... control 'repos' dropped`, all 4 products' repos resolve).
+- [~] 80.C.3 Tests: covered indirectly by the boot path + `Phase80SchemaTests` registry
+  round-trips; dedicated CRUD-lockstep + dup-reject tests **deferred** to a follow-up.
+
+#### 80.D — Replace `control.Repos` reads (the bulk of the churn) ✅ **DONE**
+Routed each call site: **config reads → per-product `product.Repos`**; **routing /
+cross-product / global-uniqueness → `control.RepoRegistry`**; **scope-less by-id →
+`RepoLookup`** (registry → owning product's DB).
+- [x] 80.D.1 `ProductScope.ResolveAsync` reads repo ids from `RepoRegistry`.
+- [x] 80.D.2 Sync jobs: `WorkItemSyncJob`/`PrSyncJob`/`BuildSyncJob` resolve repo config
+  from `product.Repos`. **Enumeration fans out over product DBs** (cursor stays on the
+  product repo row); registry-based single-query enumeration is a **deferred optimization**
+  (a boot-only registry cursor would mis-schedule). `WorkItemSyncJob` enumeration filters
+  by `ProductId` so single-file multi-product doesn't double-enumerate.
+- [x] 80.D.3 Per-entity config lookups → `product.Repos` (`CrewQueueWorker`,
+  `StorySpawnOrchestrator`, `WorktreePathResolver`, `WorkItemBaseBranchResolver`,
+  `PlanReconciler`, `ProviderStoryProviderOps`, `CrewStoryArtifactStrategy`,
+  `SloppyReassignmentReconciler`, `BuildValidationWorker`, + endpoints). `AdoConfigResolver`
+  + the detached accept `Task.Run` use `RepoLookup` (no ambient product scope). Cross-product
+  aggregates (`Cost`/`Performance`/`State`/`Admin`) read `RepoRegistry`.
+- [x] 80.D.4 Grep gate: zero `control.Repos` in `src/forge/Forge.Api` (compiles clean).
+- [x] 80.D.5 Tests: full non-integration suite **1799 pass / 1 fail / 14 skip** — zero
+  regressions from the move. (The 1 fail `Phase59GateLogPersistenceTests.T9` + an
+  end-of-run `ProviderE2ETests` host crash are full-suite **memory exhaustion** — T9 alone
+  ~700 MB — and both **pass in isolation 16/16**, so pre-existing/environmental, not this
+  change. Run the heavy suite in filtered batches, not all at once.) Also caught a
+  runtime-only miss class: **`control.Set<RepoRow>()`** (8 sites — `ProductScope`,
+  `PrsEndpoints`, `AutoMergeWatcher`, `PrMergeUtilities`×2, `PrSyncJob`×2,
+  `Ado`/`GitHubPrCommentSyncClient`) compiles but throws at runtime; the `.Repos` grep
+  can't see it → fixed to `db.Repos` / `RepoLookup`. Test files migrated
+  (`control.Repos`→`db.Repos`/product context; split-test seeds relocated;
+  `SplitContextsTests` boundary assertions flipped).
+
+#### 80.E — `X-Forge-Repo-Id` scope (header + middleware + helper) ✅ **DONE**
+- [x] 80.E.1 `RepoScope` helper (`Read`/`AllScope`/`RepoIdItemKey`/`ActiveRepoId`) +
+  `RepoScopeMiddleware` (registered right after `ProductScopeMiddleware`): validates
+  `X-Forge-Repo-Id` against `RepoRegistry`, stashes the resolved repo id on
+  `HttpContext.Items`, and — when no product slug was stashed (repo-id sent alone) —
+  resolves + stashes the repo's `ProductSlug` so the per-request `ProductDbContext`
+  binds to that repo's `{slug}.db`. Echoes `X-Forge-Repo-Resolved`
+  (`{repoId}`/`all`/`(none)`/`(unknown:…)`).
+- [x] 80.E.2 **Minimal-churn:** `ProductScope.ResolveAsync` now honours the active
+  repo — when `X-Forge-Repo-Id` is set + valid it returns `ResolvedScope(ownerProductId,
+  [repoId])`, so the existing `if (!scope.IsAll) filter by scope.RepoIds` in **all 8**
+  consumers (`Cards`/`Prs`/`State`/`Stories`/`Timeline`/`WorkItems`/`Workstreams` + swarm
+  index) auto-narrows to the active repo with **zero per-endpoint edits**. Absent/`all`
+  = unchanged product scope.
+- [x] 80.E.3 `Phase80RepoScopeTests` — product scope = both repos; repo scope = one;
+  repo-id-alone routes + filters; unknown repo flagged in header; `all` disables the
+  filter. 32/32 with `ProductScopeMiddlewareEnforcement`/`Workstreams`/`WorkItems`
+  regression checks. Verified live (`X-Forge-Repo-Id: code-intelligence` → 200 + header).
+
+#### 80.F — Required repo binding + story-owns-repo ✅ **DONE**
+- [x] 80.F.1 `RepoId` bound on create: `ProductStoryRow` (story create resolves
+  `req.RepoId` → active repo (`X-Forge-Repo-Id`) → `Product.DefaultRepoId`, stamps
+  `row.RepoId`; `StateEndpoints.cs:161-196`). Spawn **inherits** `RepoId` from its
+  story (`StoriesEndpoints.cs`: `defaultRepoId = ps.RepoId`), `SpawnRow.RepoId` set.
+- [x] 80.F.2 Base-branch propagation narrowed to the story's repo:
+  `EnsureBranchInProductReposAsync` gained a `repoId` param and filters
+  `r.ProductId == productId && r.Id == repoId` (`StateEndpoints.cs:580-593`),
+  called with `row.RepoId!` on both create + PATCH paths.
+- [x] 80.F.3 Iteration-binding fallback documented against `Product.DefaultRepoId`
+  (`Entities.cs` `ActiveIterationId` / `Q15.7`).
+- [x] 80.F.4 Validation: create/spawn without a resolvable repo → 400 `repo.required`
+  (StateEndpoints + StoriesEndpoints).
+- [x] 80.F.5 Tests green: `Phase80StoryRepoTests` (bind-default / explicit / no-repo→400
+  + spawn inherits), `Phase28StorySpawnTests` (seed binds default repo), and the
+  Phase80 schema/repo-scope + StateEndpoints + Phase50DeleteSpawn batch (70/70).
+  Regression batches green: PR/split/scope/work-item-sync (173/173),
+  repo-move/registry/reboot (33/33).
+
+#### 80.G — UI: topbar repo switcher + repo-scoped views ✅ **DONE**
+- [x] 80.G.1 `useProductsStore.activeRepoId` (+ `localStorage forge.activeRepoId`
+  via `getActiveRepoId`/`setActiveRepoId`); `setActive` (product switch) clears it
+  to all-repos, `deleteProduct` clears it for the active product, and `loadReposFor`
+  drops a stale selection no longer in the product's repo list. `setActiveRepo`
+  persists + reloads (parity with the product switch).
+- [x] 80.G.2 `forgeApi.ts` sends `X-Forge-Repo-Id` at all 3 header sites via a pure,
+  testable `buildScopeHeaders(productId, repoId)`; omitted on "All repos".
+- [x] 80.G.3 `TopBar.tsx` cascading repo `<select>` beside the product switcher,
+  with an "All repos" sentinel; loads the active product's repos on product change.
+- [x] 80.G.4 `SpawnStoryModal.tsx` drops the operator repo picker — the spawn
+  inherits the story's bound repo (shown read-only). `NewStoryModal` binds via the
+  active-repo header (no picker). Story DTO now carries `repoId` (`ProductStory`
+  contract + `MapStory` + UI type); base-branch copy narrowed to "the story's repo".
+- [x] 80.G.5 Board / `/workstreams` / `/prs` / Live-Exec are repo-scoped through the
+  global `X-Forge-Repo-Id` header (every product-scoped read already routes through
+  the patched header sites) + reload-on-switch; no per-view change required. The
+  3 bespoke `fetch` callers hit control-side / id-addressed endpoints (no scoping).
+- [x] 80.G.6 Vitest: `scopeHeaders.spec.ts` (5 cases) + `useProductsStore.spec.ts`
+  (4 cases — clears on product switch, persists on repo switch, drops/keeps stale
+  repo on repo-load). UI suite green: 116/116, `tsc --noEmit` clean.
+
+#### 80.H — Tests, factory, cleanup ✅ **DONE**
+- [x] 80.H.1 `MultiProductForgeWebApplicationFactory.SeedReposAsync(slug, ids…)`
+  multi-**repo** fixture: seeds N repos into a product's `{slug}.db` + reconciles
+  the control registry. Two latent factory bugs fixed so per-product routing is
+  real post-split: (a) invalidate the process-wide `SplitMarkerCache` after
+  `ApplyAsync` (it was probed `false` at boot); (b) run `RepoMoveToProductService`
+  after the split (the splitter classifies `repos` Control + leaves it in forge.db;
+  the move relocates it — the live boot does this, the factory now does too).
+  `Phase80MultiRepoTests.MultiRepo_LandInProductDb_…` asserts repos land in
+  `{slug}.db`, the registry mirrors (scoped to the product), `DefaultRepoId` =
+  lowest-sort, and a sibling product's DB stays empty.
+- [x] 80.H.2 Tripwires: `Boundary_ControlHasRegistryOnly_ProductHasRepos` (control
+  model maps no `RepoRow`/`repos` table, has `repo_registry` with unique RemoteUrl
+  + CloneRoot indexes; product model owns `repos`). `Backfill_LeavesZeroNullRepoId…`
+  proves the reconcile backfills a repo-less work item to the default repo.
+- [x] 80.H.3 Deterministic suite green (`Category!=Integration`, run in batches given
+  the full-scale OOM on `T9_StreamingWrite` which passes in isolation): ~1,638 pass /
+  0 fail across Phase 1x–9x + Stage + non-Phase + DB-machinery batches. Two 80.F
+  ripple-regressions fixed at root cause: (a) spawn of a repo-less **work item** now
+  falls back to the scoped product's `DefaultRepoId` instead of 400ing
+  (`StoriesEndpoints.Spawn` — handles legacy ADO-synced items, mirrors create);
+  (b) `InMemoryStoryGitOps.WorktreeExistsAsync` falls back to the `_default` key so a
+  worktree registered with `repo:null` is visible to a repo-specific probe (tests
+  set up worktrees null-repo; a spawn now binds a real repo). Integration tests
+  (real Claude/Copilot) still require auth and are excluded per CI convention.
+- [x] 80.H.4 Deleted dead, never-wired `Phase76Migration.cs` (superseded by
+  `RepoMoveToProductService`). Updated `docs/forge/split-db.md` boundary (headline +
+  table + a Phase 80 amendment: `repos` → product DB, control keeps `repo_registry`).
+  Control `repos` table already dropped on the live split env during the 80.B move;
+  the boundary tripwire enforces it stays gone.
+
+### Header / endpoint contract
+
+- **`X-Forge-Repo-Id: {repoId}`** — domain scope. Stacks under `X-Forge-Product-Id`.
+  Resolution precedence in `ProductDbContextFactory.CreateForCurrentRequest`
+  unchanged (slug still selects the DB); repo-id only **filters**. If `X-Forge-Repo-Id`
+  is sent and `X-Forge-Product-Id` is absent, `RepoScopeMiddleware` resolves the
+  product slug from `repo_registry` and stashes it.
+- **`X-Forge-Repo-Id: all`** / absent → no repo filter (all repos in the product).
+- Response header **`X-Forge-Repo-Resolved`**: `{repoId}` / `all` / `(none)` /
+  `(unknown:{raw})` — mirrors `X-Forge-Scope-Resolved`.
+- Repo CRUD 409s: `repo.remote_url_taken`, `repo.clone_root_taken` (now checked
+  against `repo_registry`, not a per-product `UNIQUE`).
+
+### Test scenarios
+
+- `Phase80MigrationTests` — registry + columns created; unique indexes; partial
+  index ignores soft-deleted rows.
+- `Phase81DataMoveTests` — repos move into the right `{slug}.db`; registry mirrors;
+  `DefaultRepoId` = lowest Sort; backfill stamps null `RepoId`; control `repos`
+  dropped; row counts verified; idempotent re-run is a no-op (marker honored).
+- `RepoRegistryWritePathTests` — create/update/delete keeps product+registry in
+  lockstep; cross-product dup remoteUrl/cloneRoot → 409; reconciler heals a torn
+  write (product written, registry missing → re-mirror; registry orphan → quarantine).
+- `RepoScopeMiddlewareTests` — repo-id alone resolves the product DB; filter narrows;
+  `all` is cross-repo; unknown repo-id → `(unknown:…)` + endpoint 404.
+- `SyncEnumerationFromRegistryTests` — `WorkItemSyncJob.RunOnceAsync` finds due
+  repos from the registry without opening a product DB (assert via a counting
+  `IProductDbContextFactory` spy).
+- `StoryUnderRepoTests` — story create requires/defaults a repo; spawn inherits it;
+  two repos in one product run isolated stories; base-branch propagation hits only
+  the story's repo.
+- `RepoScopedListTests` — work-items / workstreams / prs / cards lists filter by the
+  active repo and union under `all`.
+
+### Backward compatibility & rollback
+
+- `Phase81Migration` backs up `forge.db` to `forge.db.pre-phase80.{ts}.bak` before
+  the drop; abort-on-mismatch keeps the source intact. Rollback = restore the bak,
+  revert the binary.
+- Single-repo products are unaffected functionally: `DefaultRepoId` auto-selects, the
+  topbar repo switcher shows one entry, and absent `X-Forge-Repo-Id` behaves like
+  "all" = that one repo. The `ProductScopeMiddleware` single-product auto-bind
+  (`ProductScopeMiddleware.cs:103-124`) gets a sibling single-repo auto-bind.
+- Direct API callers that omit `X-Forge-Repo-Id` keep working (no repo filter).
+
+### Out of scope (Phase 80)
+
+- Moving a repo between products (the registry's `ProductId` is fixed at create;
+  re-homing is a destructive admin op — `forge_v2`).
+- Cross-repo stories (a story is one repo; multi-repo stories are not modeled).
+- Boot-time auto-run of `Phase81` data move — like `SplitApplyService` it stays an
+  explicit, backup-guarded migration step (runs once on boot behind the
+  `phase80-repos-moved` marker, not re-evaluated every boot).
+- Re-homing per-product DBs / changing the `{slug}.db` routing key (still product).
+
+### Code references (current state — what each stage touches)
+
+- `src/forge/Forge.Api/Persistence/Entities.cs` — `RepoRow` (1686-1824),
+  `ProductRow` (538-561, add `DefaultRepoId`), `ProductStoryRow` (43-88, add
+  `RepoId`); new `RepoRegistryRow`.
+- `src/forge/Forge.Api/Persistence/ControlDbContext.cs:34` (`Repos` DbSet — moves
+  out) + new `RepoRegistry` DbSet; `ProductDbContext.cs` (gains `Repos`).
+- `src/forge/Forge.Api/Persistence/DbModelControl.cs` / `DbModelProduct.cs` — move
+  the `RepoRow` model config; add `RepoRegistryRow` + unique indexes.
+- `src/forge/Forge.Api/Persistence/ProductScope.cs:64-74` (repo-ids from registry);
+  new `RepoScope.cs` + `RepoScopeMiddleware.cs` (mirror `ProductScopeMiddleware.cs`).
+- `src/forge/Forge.Api/Persistence/PhaseMigrationCatalog.cs` (reclassify `repos`;
+  add `repo_registry`/`Phase80`/`Phase81`); `PhaseMigrationRunner.cs`;
+  `SplitApplyService.cs` (reuse ATTACH + INSERT…SELECT for the move).
+- `src/forge/Forge.Api/Services/WorkItemSyncJob.cs:105-114,175,564` (enumerate from
+  registry); `PrSyncJob.cs`, `BuildSyncJob.cs` (same).
+- `src/forge/Forge.Api/Services/CrewQueueWorker.cs:1031,1134,3300-3322` (worktree +
+  same-product repo set → `product.Repos`).
+- `src/forge/Forge.Api/Services/Stories/StorySpawnOrchestrator.cs:251-253` (non-null
+  repo); `src/forge/Forge.Api/Endpoints/StoriesEndpoints.cs:70-77,237-279,1221`
+  (story-owns-repo, base-branch narrowing).
+- `src/forge/Forge.Api/Endpoints/WorkItemsEndpoints.cs:135,477` ,
+  `PrsEndpoints.cs:725`, `ProductsEndpoints.cs:660,715,799` (repo CRUD + reads).
+- `src/forge/Forge.Api/Persistence/ForgeSeed.cs` (seed repo into product DB +
+  registry + `DefaultRepoId`).
+- `src/forge/Forge.UI/src/components/TopBar.tsx:159-165` (repo switcher),
+  `src/forge/Forge.UI/src/api/forgeApi.ts:407,934,1248` (`X-Forge-Repo-Id` header),
+  `src/forge/Forge.UI/src/views/SpawnStoryModal.tsx` (drop per-spawn repo pick),
+  `useReposStore` / `useProductsStore` (active-repo state).

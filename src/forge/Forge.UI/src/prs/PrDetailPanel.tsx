@@ -6,6 +6,8 @@ import { renderMarkdown } from '@/markdown';
 import { PrCommentsList } from './PrCommentsList';
 import { PrBuildsList } from './PrBuildsList';
 import { PrApprovalBadge } from './PrApprovalBadge';
+import { RepoIcon } from '@/products/RepoIcon';
+import { useRepoLookup } from '@/workitems/useRepoLookup';
 import { deriveVerdict } from './prVerdict';
 import { automationCategory, classifyBuildEvent, isBuildEvent } from './prBuildEvents';
 import type { PrComment } from '@/types';
@@ -31,6 +33,7 @@ function formatPrDateTime(iso: string | null | undefined): string {
 export function PrDetailPanel() {
   const selectedId = usePrsStore((s) => s.selectedId);
   const pr = usePrsStore((s) => s.prs.find((p) => p.id === s.selectedId)) ?? null;
+  const repoOf = useRepoLookup();
   const setSelected = usePrsStore((s) => s.setSelected);
   const toggleAutoMerge = usePrsStore((s) => s.toggleAutoMerge);
 
@@ -182,6 +185,22 @@ export function PrDetailPanel() {
             </div>
             <h2 className="detail-title">{pr.title}</h2>
             <div className="detail-status-row">
+              {(() => {
+                const repo = repoOf(pr.repoId);
+                if (!repo && !pr.repoId) return null;
+                return (
+                  <span className="detail-status-pill">
+                    <span className="label">Repo</span>
+                    <span
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : pr.repoId ?? ''}
+                    >
+                      {repo && <RepoIcon kind={repo.kind} size={11} />}
+                      <span>{repo?.displayName ?? pr.repoId}</span>
+                    </span>
+                  </span>
+                );
+              })()}
               <span className="detail-status-pill">
                 <span className="label">Branch</span>
                 <span className="mono">{pr.branch}</span>

@@ -72,6 +72,20 @@ public sealed class Phase58GeneratorCapTests
     // retries the next iter against a fresh pool entry.
     [InlineData("Copilot SDK transport died at SendAsync: Communication error with Copilot CLI: The JSON-RPC connection with the remote party was lost before the request could complete.", GeneratorFailureKinds.Inactive)]
     [InlineData("Copilot SDK transport died at SendAsync: IOException", GeneratorFailureKinds.Inactive)]
+    // 2026-05-20 — session-acquire counterpart to the SendAsync fix
+    // above. AgentRunnerDispatcher.cs ~line 1444 emits "Copilot SDK
+    // session acquire failed: …" when CreateSessionAsync throws on
+    // the non-pooled path (Copilot CLI crash, JSON-RPC drop, server
+    // restart race). Must classify as Inactive so DeliverableLoop
+    // verdict=iterate and the next iter retries against a freshly-
+    // recovered shared client instead of stalling the workstream.
+    // Observed on code-intelligence:AGENT-MEMORY load-test-calibration:
+    // ws went STALLED at iter 20 of 50 on a single dropped JSON-RPC
+    // connection even though the dispatcher had already disposed the
+    // bad pool entry.
+    [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: The JSON-RPC connection was lost.", GeneratorFailureKinds.Inactive)]
+    [InlineData("Copilot SDK session acquire failed: Failed to create Copilot session after 3 attempts; non-pooled path exhausted retries.", GeneratorFailureKinds.Inactive)]
+    [InlineData("Copilot SDK session acquire failed: Failed to create Copilot session after 3 attempts; pool factory exhausted retries.", GeneratorFailureKinds.Inactive)]
     public void GeneratorFailureKinds_Classify_Recognizes_Dispatcher_Errors(string error, string expected)
     {
         Assert.Equal(expected, GeneratorFailureKinds.Classify(error));

@@ -131,4 +131,28 @@ public sealed class AgentRunnerOptions
     /// </para>
     /// </summary>
     public int MaxTurns { get; set; } = 60;
+
+    /// <summary>
+    /// 2026-05-20 — hard ceiling on accumulated assistant output characters
+    /// per Copilot-SDK invocation. When the running total of streamed
+    /// assistant content crosses this value the dispatcher kills the turn
+    /// with a <c>generator-runaway-output</c> failure instead of letting a
+    /// degenerate / repeating generation grow without bound.
+    /// <para>
+    /// Default 8,000,000 chars (~8 MB ≈ ~2 M tokens). That is two orders of
+    /// magnitude above any legitimate plan doc / code diff this repo
+    /// produces (a real <c>architecture.md</c> is ~190 KB) yet far below
+    /// System.Text.Json's hard cap for a single value
+    /// (<c>MaxUnescapedTokenSize = 166,666,666</c>). Without it, a runaway
+    /// architect loop bloated its replayed conversation until the SDK's
+    /// JSON-RPC (de)serialisation threw
+    /// <c>"The JSON value of length 185861791 is too large and not
+    /// supported."</c> and halted the entire plan-doc pipeline (observed
+    /// 2026-05-20 on code-intelligence:CLEAN-CODE architecture.md, 43
+    /// iterations / $4,911 with exponential per-iter cost growth).
+    /// </para>
+    /// <para>Set to 0 to disable the ceiling. Bind via
+    /// <c>Forge:Agents:MaxOutputChars</c>.</para>
+    /// </summary>
+    public int MaxOutputChars { get; set; } = 8_000_000;
 }

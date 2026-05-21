@@ -93,7 +93,7 @@ public class Phase15SprintTests
         using var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        var existing = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var existing = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (existing is not null) return existing;
         var repo = new RepoRow
         {
@@ -107,7 +107,7 @@ public class Phase15SprintTests
             AdoOrg = "contoso",
             AdoProject = "Atlas",
         };
-        control.Repos.Add(repo);
+        db.Repos.Add(repo);
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
         return repo;
     }
@@ -203,7 +203,7 @@ public class Phase15SprintTests
         using var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        control.Repos.Add(new RepoRow
+        db.Repos.Add(new RepoRow
         {
             Id = "atlas-portal-test", ProductId = "atlas", Kind = "github",
             RemoteUrl = "https://github.com/atlas-corp/portal", DisplayName = "portal",

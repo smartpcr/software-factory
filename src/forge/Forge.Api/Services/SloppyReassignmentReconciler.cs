@@ -527,7 +527,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
     {
         if (string.IsNullOrEmpty(wi.RepoId)) return;
 
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
         if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
 
         // Resolve the worktree path via the same resolver the rest of

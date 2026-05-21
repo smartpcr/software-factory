@@ -361,6 +361,22 @@
   white-space: nowrap;
   max-width: 50%;
 }
+/* Phase 80 — repo association chip on the PR card. */
+.pr-card-info-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 0;
+  max-width: 45%;
+}
+.pr-card-info-repo > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pr-card-comment-chip {
   font-size: 10px;
   color: var(--text-secondary);

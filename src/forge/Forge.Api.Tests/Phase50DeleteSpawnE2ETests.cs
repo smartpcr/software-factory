@@ -526,9 +526,9 @@ public sealed class Phase50DeleteSpawnE2ETests : IAsyncLifetime
             });
         }
 
-        if (!await control.Repos.AnyAsync(r => r.Id == repoId))
+        if (!await db.Repos.AnyAsync(r => r.Id == repoId))
         {
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId,
                 ProductId = "test-product",

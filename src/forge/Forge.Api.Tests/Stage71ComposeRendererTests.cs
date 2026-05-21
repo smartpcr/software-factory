@@ -178,7 +178,7 @@ public class Stage71ComposeRendererTests
                 Id = productId, Name = "Stage 7.1", Slug = "stage71",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId, ProductId = productId,
                 DisplayName = "Stage 7.1 repo", Kind = "local",
@@ -225,9 +225,9 @@ public class Stage71ComposeRendererTests
             """;
         using (var scope = f.Services.CreateScope())
         {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
-            var repo = await control.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
+            var repo = await db.Repos.AsNoTracking().FirstAsync(r => r.Id == repoId);
             await git.EnsureBranchAsync(repo, "main", "main", default);
             await git.CommitFilesAsync(repo, "main", "stage71-seed",
                 new Dictionary<string, string>

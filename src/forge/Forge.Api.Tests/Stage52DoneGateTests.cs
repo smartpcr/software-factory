@@ -188,7 +188,7 @@ public class Stage52DoneGateTests
                 Slug = "stage52",
                 CreatedAt = DateTimeOffset.UtcNow,
             });
-            control.Repos.Add(new RepoRow
+            db.Repos.Add(new RepoRow
             {
                 Id = repoId,
                 ProductId = productId,

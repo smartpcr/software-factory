@@ -242,6 +242,11 @@ builder.Services.AddCors(options =>
     // work via the right ProductDbContext. Scoped so tests can swap
     // ControlDbContext + factory independently.
     builder.Services.AddScoped<Forge.Api.Persistence.ProductFanout>();
+
+    // Phase 80.B — resolves repo rows now that the full repo lives in the
+    // per-product DB. Routes repo_registry → owning product's DB. Scoped so it
+    // shares the request's ControlDbContext + product factory cache.
+    builder.Services.AddScoped<Forge.Api.Persistence.RepoLookup>();
 }
 
 // Prevent a single BackgroundService failure from tearing down the host.
@@ -536,13 +541,35 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
     // Phase G — create BOTH schemas in the same forge.db file (Phase D
     // interim mode). ControlDbContext owns global tables (forge_actions,
-    // products, repos, users, crews, agents, etc.); ProductDbContext owns
-    // per-product tables (workstreams, work_items, deliverables, builds, etc.).
+    // products, users, crews, agents, etc.); ProductDbContext owns
+    // per-product tables (repos, workstreams, work_items, deliverables, builds, etc.).
     // EnsureCreated() is a no-op when ANY table exists in the file, so on a
     // mixed forge.db both EnsureCreated calls turn into no-ops and we rely
     // on the Phase migrations below to add any missing schema. On a fresh
     // boot we run both create scripts explicitly to lay down the union.
     await control.Database.EnsureCreatedAsync();
+    // Phase 80.B — relocate `repos` from the control DB into each per-product
+    // DB. Runs AFTER EnsureCreated (so the control tables, incl. `products`,
+    // exist — creating any table before EnsureCreated would make it treat the
+    // DB as already-initialised and skip the schema) but BEFORE the product
+    // schema script below: in a split DB, forge.db still holds the control
+    // `repos` table (with data), and since `repos` is now a ProductDbContext
+    // entity the script would otherwise `CREATE TABLE repos` on a file that
+    // already has it and crash. The move drops the control copy first. Uses its
+    // own SqliteConnection (no EF), split-mode-only, marker-gated/idempotent.
+    {
+        var movePaths = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>();
+        var moveLog = scope.ServiceProvider.GetService<ILoggerFactory>()?
+            .CreateLogger<Forge.Api.Persistence.RepoMoveToProductService>();
+        var move = new Forge.Api.Persistence.RepoMoveToProductService(movePaths, moveLog);
+        var moveResult = await move.ApplyAsync();
+        if (moveResult.Errors.Count > 0)
+        {
+            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("RepoMove")
+                .LogError("Phase 80.B repos move reported {Count} error(s) (control `repos` left intact): {Errors}",
+                    moveResult.Errors.Count, string.Join("; ", moveResult.Errors));
+        }
+    }
     {
         // Check if any product-side table exists (e.g. workstreams). If not,
         // execute the product-side CREATE script. This works on fresh DBs
@@ -620,6 +647,15 @@ using (var scope = app.Services.CreateScope())
     if (Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") == "1")
     {
         await ForgeSeed.EnsureDefaultProductAndRepoAsync(control, db);
+    }
+    // Phase 80.B — reconcile the control repo_registry from the per-product
+    // repos rows (both split + single-file modes), set Product.DefaultRepoId,
+    // and backfill null RepoId on product tables. Idempotent; runs after the
+    // physical move + any default-repo seed so it sees every repo.
+    {
+        var regFactory = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.IProductDbContextFactory>();
+        var regLog = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("RepoRegistrySync");
+        await Forge.Api.Persistence.RepoRegistrySync.ReconcileAsync(control, regFactory, regLog);
     }
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -788,6 +824,11 @@ app.UseMiddleware<ForgeSecretMiddleware>();
 // secret middleware (so the resolved user is available) and BEFORE the
 // audit middleware (so the per-product write context is set up).
 app.UseMiddleware<Forge.Api.Persistence.ProductScopeMiddleware>();
+// Phase 80.E — resolve the active repo (X-Forge-Repo-Id). Runs right after the
+// product-scope middleware so it can supplement the product slug (a repo id
+// alone resolves + binds its owning product DB) and stash the active repo id
+// for per-endpoint repo filtering.
+app.UseMiddleware<Forge.Api.Persistence.RepoScopeMiddleware>();
 // Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
 // Phase 6.10 — audit every write to forge_actions.
 // Order matters: idempotency wraps audit so replays are NOT re-audited.

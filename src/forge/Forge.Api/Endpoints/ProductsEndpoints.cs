@@ -55,6 +55,7 @@ public static class ProductsEndpoints
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items", GetSyncRunItems).WithName("GetSyncRunItems");
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items/{entityKind}/{entityId}/detail", GetSyncRunItemDetail).WithName("GetSyncRunItemDetail");
         repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
+        repos.MapPost("/{id}/clear-sync-error", ClearSyncError).WithName("ClearRepoSyncError");
 
         // Phase 26/29 — build pipeline detection, validation & history.
         repos.MapPost("/{id}/detect-build", DetectBuild).WithName("DetectBuild");
@@ -85,7 +86,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (req.DisplayName is not null) row.DisplayName = req.DisplayName.Trim();
@@ -96,8 +97,9 @@ public static class ProductsEndpoints
             {
                 return Results.Problem(title: "cloneRoot must be an absolute path", statusCode: 400);
             }
-            // Q2 — same clone root cannot host two repos.
-            if (await control.Repos.AnyAsync(r => r.CloneRoot == clean && r.Id != id))
+            // Q2 — same clone root cannot host two repos (GLOBAL — checked
+            // against the control registry, the cross-product repo index).
+            if (await control.RepoRegistry.AnyAsync(r => r.CloneRoot == clean && r.Id != id && r.DeletedAt == null))
             {
                 return Results.Problem(title: "Clone root already in use", statusCode: 409);
             }
@@ -177,9 +179,64 @@ public static class ProductsEndpoints
             BuildSystemDetector.MergeInto(row, detected);
         }
 
+        // Phase 80.B — keep the control registry mirror in lock-step with the
+        // fields it carries (display name, clone root, cadence overrides).
+        var reg = await control.RepoRegistry.FirstOrDefaultAsync(r => r.Id == id);
+        if (reg is not null)
+        {
+            reg.DisplayName = row.DisplayName;
+            reg.CloneRoot = row.CloneRoot;
+            reg.WorkItemSyncIntervalSeconds = row.WorkItemSyncIntervalSeconds;
+            reg.PrSyncIntervalSeconds = row.PrSyncIntervalSeconds;
+            reg.BuildSyncIntervalSeconds = row.BuildSyncIntervalSeconds;
+        }
+
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
+        return Results.Ok(repo);
+    }
+
+    // POST /api/repos/{id}/clear-sync-error — operator-acknowledge a failed
+    // sync. Resets LastSyncStatus → "idle" and clears LastSyncError on both
+    // the product-DB row and the control-registry mirror, without running a
+    // sync. The sync cursor (LastSyncCursor / LastUpstreamChangedDate) is
+    // preserved so the next sync resumes where it left off. Useful when the
+    // failure is known (e.g. a too-broad WIQL) and the operator wants to silence
+    // the red indicator until they fix the filters.
+    private static async Task<IResult> ClearSyncError(
+        HttpContext ctx,
+        string id,
+        ControlDbContext control,
+        ProductDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        // Only meaningful when not mid-run; if a sync is currently running, leave
+        // it alone (the run will set the terminal state itself).
+        if (string.Equals(row.LastSyncStatus, "running", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(title: "A sync is currently running for this repo; wait for it to finish.", statusCode: 409);
+        }
+
+        row.LastSyncStatus = "idle";
+        row.LastSyncError = null;
+
+        var reg = await control.RepoRegistry.FirstOrDefaultAsync(r => r.Id == id);
+        if (reg is not null)
+        {
+            reg.LastSyncStatus = "idle";
+            reg.LastSyncError = null;
+        }
+
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        var repo = MapRepo(row);
+        await hub.Clients.All.SendAsync("repo.changed", new { kind = "sync-error-cleared", repo });
         return Results.Ok(repo);
     }
 
@@ -203,7 +260,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (Directory.Exists(row.CloneRoot))
@@ -258,7 +315,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(title: "Repo has no local clone", detail: "Set a cloneRoot and clone the repo first.", statusCode: 422);
@@ -297,9 +354,9 @@ public static class ProductsEndpoints
     /// against HEAD right now?".
     /// </summary>
     private static async Task<IResult> PreviewImpactedTests(
-        string id, ControlDbContext control, CancellationToken ct)
+        string id, ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup, CancellationToken ct)
     {
-        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await repoLookup.GetByIdAsync(id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(
@@ -345,7 +402,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(title: "Repo has no local clone", statusCode: 422);
@@ -398,7 +455,7 @@ public static class ProductsEndpoints
     private static async Task<IResult> GetValidationRuns(
         HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
     {
-        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // StartedAt is stored as ISO-8601 string, so lexicographic sort = chronological.
@@ -630,7 +687,7 @@ public static class ProductsEndpoints
         var row = await control.Products.FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
-        var repoCount = await control.Repos.CountAsync(r => r.ProductId == id);
+        var repoCount = await control.RepoRegistry.CountAsync(r => r.ProductId == id && r.DeletedAt == null);
         if (repoCount > 0 && force != true)
         {
             return Results.Json(
@@ -653,11 +710,12 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/repos ---------------------------------------
 
-    private static async Task<IResult> ListReposForProduct(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> ListReposForProduct(string id, ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup)
     {
         var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
-        var rows = await control.Repos.AsNoTracking().Where(r => r.ProductId == id).OrderBy(r => r.Sort).ToListAsync();
+        // Phase 80.B — repos live in the product's own DB; RepoLookup routes there.
+        var rows = await repoLookup.ListByProductAsync(id);
         return Results.Ok(rows.Select(MapRepo).ToList());
     }
 
@@ -667,6 +725,7 @@ public static class ProductsEndpoints
         [FromBody] CreateRepoRequest req,
         ControlDbContext control,
         ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         IHubContext<ForgeHub> hub,
         IRepoCloneService cloneSvc,
         ILoggerFactory loggerFactory)
@@ -680,7 +739,7 @@ public static class ProductsEndpoints
         var validation = RepoValidation.Validate(req);
         if (validation is not null) return validation;
 
-        if (await control.Repos.AnyAsync(r => r.Id == req.Id))
+        if (await control.RepoRegistry.AnyAsync(r => r.Id == req.Id && r.DeletedAt == null))
         {
             return Results.Problem(title: $"Repo id {req.Id} already exists", statusCode: 409);
         }
@@ -688,8 +747,8 @@ public static class ProductsEndpoints
         // Q5 — same remote URL cannot live under two products. The DB index
         // would reject this anyway, but a hand-shaped 409 with the existing
         // productId lets the UI offer "open existing product" as recovery.
-        var existingByRemote = await control.Repos.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.RemoteUrl == req.RemoteUrl);
+        var existingByRemote = await control.RepoRegistry.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.RemoteUrl == req.RemoteUrl && r.DeletedAt == null);
         if (existingByRemote is not null)
         {
             return Results.Json(
@@ -704,7 +763,7 @@ public static class ProductsEndpoints
         }
 
         // Q2 — same clone root cannot host two repos.
-        if (await control.Repos.AnyAsync(r => r.CloneRoot == req.CloneRoot))
+        if (await control.RepoRegistry.AnyAsync(r => r.CloneRoot == req.CloneRoot && r.DeletedAt == null))
         {
             return Results.Problem(
                 title: "Clone root already in use",
@@ -712,7 +771,7 @@ public static class ProductsEndpoints
                 statusCode: 409);
         }
 
-        var maxSort = await control.Repos.Where(r => r.ProductId == id).Select(r => (int?)r.Sort).MaxAsync() ?? -1;
+        var maxSort = await control.RepoRegistry.Where(r => r.ProductId == id && r.DeletedAt == null).Select(r => (int?)r.Sort).MaxAsync() ?? -1;
         var row = new RepoRow
         {
             Id = req.Id,
@@ -728,8 +787,23 @@ public static class ProductsEndpoints
             GhOwner = req.GhOwner,
             GhRepo = req.GhRepo,
         };
-        control.Repos.Add(row);
-        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        // Phase 80.B — the repo row lives in the owning product's DB; the
+        // control registry holds the routing + global-uniqueness mirror.
+        var repoDb = factory.CreateFor(product.Slug);
+        repoDb.Repos.Add(row);
+        await repoDb.SaveChangesAsync();
+        control.RepoRegistry.Add(new RepoRegistryRow
+        {
+            Id = row.Id,
+            Sort = row.Sort,
+            ProductId = row.ProductId,
+            ProductSlug = product.Slug,
+            Kind = row.Kind,
+            RemoteUrl = row.RemoteUrl,
+            CloneRoot = row.CloneRoot,
+            DisplayName = row.DisplayName,
+        });
+        await control.SaveChangesAsync();
 
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "attached", repo });
@@ -766,7 +840,7 @@ public static class ProductsEndpoints
             detected = BuildSystemDetector.Detect(row.CloneRoot);
             if (BuildSystemDetector.MergeInto(row, detected))
             {
-                await control.SaveChangesAsync(); await db.SaveChangesAsync();
+                await repoDb.SaveChangesAsync();
                 repo = MapRepo(row);
                 await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo });
             }
@@ -796,7 +870,7 @@ public static class ProductsEndpoints
         var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
-        var repoIds = await control.Repos.Where(r => r.ProductId == id).Select(r => r.Id).ToListAsync();
+        var repoIds = await control.RepoRegistry.Where(r => r.ProductId == id && r.DeletedAt == null).Select(r => r.Id).ToListAsync();
         var activeWs = repoIds.Count == 0
             ? 0
             : await db.Workstreams.CountAsync(w => repoIds.Contains(w.RepoId!) && w.Status != "merging" && !w.Planned);
@@ -819,17 +893,30 @@ public static class ProductsEndpoints
 
     // ----- /api/repos ------------------------------------------------------
 
-    private static async Task<IResult> ListAllRepos(ControlDbContext control, ProductDbContext db, string? productId)
+    private static async Task<IResult> ListAllRepos(ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup, string? productId)
     {
-        var q = control.Repos.AsNoTracking().AsQueryable();
-        if (!string.IsNullOrWhiteSpace(productId)) q = q.Where(r => r.ProductId == productId);
-        var rows = await q.OrderBy(r => r.Sort).ToListAsync();
+        // Phase 80.B — repos live per-product. Route to one product or union
+        // across all products (this is the cross-product repo list).
+        List<RepoRow> rows;
+        if (!string.IsNullOrWhiteSpace(productId))
+        {
+            rows = await repoLookup.ListByProductAsync(productId);
+        }
+        else
+        {
+            rows = new List<RepoRow>();
+            var productIds = await control.Products.AsNoTracking().Select(p => p.Id).ToListAsync();
+            foreach (var pid in productIds)
+            {
+                rows.AddRange(await repoLookup.ListByProductAsync(pid));
+            }
+        }
         return Results.Ok(rows.Select(MapRepo).ToList());
     }
 
-    private static async Task<IResult> GetRepo(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> GetRepo(string id, ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup)
     {
-        var row = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        var row = await repoLookup.GetByIdAsync(id);
         return row is null
             ? Results.Problem(title: $"Repo {id} not found", statusCode: 404)
             : Results.Ok(MapRepo(row));
@@ -846,7 +933,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await control.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var liveWs = await db.Workstreams.CountAsync(w => w.RepoId == id);
@@ -877,7 +964,11 @@ public static class ProductsEndpoints
             }
         }
 
-        control.Repos.Remove(row);
+        db.Repos.Remove(row);
+        // Phase 80.B — drop the control registry mirror so its remote-url /
+        // clone-root uniqueness slot frees up for re-attach.
+        var reg = await control.RepoRegistry.FirstOrDefaultAsync(r => r.Id == id);
+        if (reg is not null) control.RepoRegistry.Remove(reg);
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "detached", id });
@@ -967,7 +1058,7 @@ public static class ProductsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var repo = await control.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var ignoreThrottle = req?.IgnoreThrottle ?? false;
@@ -1048,7 +1139,7 @@ public static class ProductsEndpoints
         [FromQuery] string? target,
         CancellationToken ct)
     {
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // Sync history is a "recent runs" view — not an export. Cap at 50
@@ -1262,7 +1353,7 @@ public static class ProductsEndpoints
         ProductDbContext db,
         CancellationToken ct)
     {
-        var repo = await control.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         return Results.Ok(new
