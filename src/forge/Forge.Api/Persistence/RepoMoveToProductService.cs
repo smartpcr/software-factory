@@ -89,11 +89,19 @@ public sealed class RepoMoveToProductService
             while (await r.ReadAsync(ct)) products.Add((r.GetString(0), r.GetString(1).ToLowerInvariant()));
         }
 
-        int controlCount;
+        int controlCount, movableCount;
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "SELECT COUNT(*) FROM repos;";
             controlCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+        }
+        // Repos whose ProductId maps to a known product — these MUST land in a
+        // {slug}.db. (controlCount − movableCount = true orphans pointing at a
+        // deleted product, which can't be moved.)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT COUNT(*) FROM repos WHERE ProductId IN (SELECT Id FROM products);";
+            movableCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
         }
 
         // Source column list (control.repos), used to build the explicit
@@ -101,7 +109,8 @@ public sealed class RepoMoveToProductService
         var sourceCols = await ColumnsAsync(conn, "repos", ct);
 
         var errors = new List<string>();
-        var totalMoved = 0;
+        var totalMoved = 0;   // rows INSERTed this run (telemetry only)
+        var totalPresent = 0; // rows now PRESENT across product DBs (idempotent gate)
 
         foreach (var (productId, slug) in products)
         {
@@ -119,6 +128,30 @@ public sealed class RepoMoveToProductService
             }.ToString());
             await prodConn.OpenAsync(ct);
 
+            // A {slug}.db may carry a STALE `repos` table from an earlier era:
+            // the Phase 8 shape (12 columns, missing the additive
+            // AgentReadyDefaultTeam / build-gate / sync-filter columns) AND a
+            // cross-DB `FOREIGN KEY → products(Id)` that can't resolve (products
+            // is control-only) — so a CREATE-IF-NOT-EXISTS leaves it and the
+            // copy fails on the dead FK / missing columns. `repos` has never
+            // held real data in a product DB before this move, so drop any
+            // EMPTY pre-existing table and recreate with the current FK-free
+            // full schema. (Guarded on row-count to never discard real rows.)
+            if (await TableExistsAsync(prodConn, "repos", ct))
+            {
+                int existingRows;
+                await using (var cnt = prodConn.CreateCommand())
+                {
+                    cnt.CommandText = "SELECT COUNT(*) FROM repos;";
+                    existingRows = Convert.ToInt32(await cnt.ExecuteScalarAsync(ct));
+                }
+                if (existingRows == 0)
+                {
+                    await using var drop = prodConn.CreateCommand();
+                    drop.CommandText = "DROP TABLE repos;";
+                    await drop.ExecuteNonQueryAsync(ct);
+                }
+            }
             await using (var createCmd = prodConn.CreateCommand())
             {
                 createCmd.CommandText = ReposCreateTableSql + ReposIndexSql;
@@ -149,8 +182,20 @@ public sealed class RepoMoveToProductService
                 insertCmd.Parameters.Add(p);
                 var moved = await insertCmd.ExecuteNonQueryAsync(ct);
                 totalMoved += moved;
+
+                // Count rows now PRESENT for this product (not just inserted) so
+                // a re-run — where INSERT OR IGNORE inserts 0 because the rows
+                // already landed on a prior boot — still verifies as complete.
+                await using var present = prodConn.CreateCommand();
+                present.CommandText = "SELECT COUNT(*) FROM repos WHERE ProductId = $pid;";
+                var pp = present.CreateParameter();
+                pp.ParameterName = "$pid";
+                pp.Value = productId;
+                present.Parameters.Add(pp);
+                totalPresent += Convert.ToInt32(await present.ExecuteScalarAsync(ct));
+
                 this.logger?.LogInformation(
-                    "[Phase80b] Product '{Slug}': copied {Moved} repo row(s) to {Path}.", slug, moved, slugPath);
+                    "[Phase80b] Product '{Slug}': +{Moved} inserted, repos present in {Path}.", slug, moved, slugPath);
             }
             catch (SqliteException ex)
             {
@@ -170,12 +215,23 @@ public sealed class RepoMoveToProductService
             return new Result(false, false, products.Count, totalMoved, errors);
         }
 
-        var orphanCount = controlCount - totalMoved;
+        // Every movable repo must now be present in its product DB.
+        var notLanded = movableCount - totalPresent;
+        if (notLanded > 0)
+        {
+            errors.Add(
+                $"Verification: {notLanded} movable repo row(s) did not land in a product DB "
+                + $"(movable={movableCount}, present={totalPresent}). Source table preserved.");
+            return new Result(false, false, products.Count, totalMoved, errors);
+        }
+        // True orphans (repos pointing at a deleted product) can't be moved;
+        // preserve the source table so they aren't lost. Operator triage.
+        var orphanCount = controlCount - movableCount;
         if (orphanCount > 0)
         {
             errors.Add(
                 $"Verification: {orphanCount} control repo row(s) belong to no known product "
-                + $"(controlCount={controlCount}, moved={totalMoved}). Source table preserved; investigate "
+                + "(source table preserved); investigate "
                 + "SELECT Id, ProductId FROM repos WHERE ProductId NOT IN (SELECT Id FROM products).");
             return new Result(false, false, products.Count, totalMoved, errors);
         }

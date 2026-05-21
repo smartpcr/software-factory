@@ -562,8 +562,9 @@ public class ProductRow
     /// <summary>
     /// Phase 15.6 — product-level override for the active iteration. When
     /// non-null, the Plan &amp; Design sprint pill reads from this; null
-    /// means fall back to the primary repo's <c>RepoIterationBindingRow</c>
-    /// flagged <c>role='current'</c> (Q15.7).
+    /// means fall back to the default repo's (<see cref="DefaultRepoId"/>,
+    /// Phase 80.F — was "the primary repo") <c>RepoIterationBindingRow</c>
+    /// flagged <c>role='current'</c> (Q15.7). (Fallback resolver not yet built.)
     /// </summary>
     public string? ActiveIterationId { get; set; }
 

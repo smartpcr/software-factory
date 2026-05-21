@@ -31,7 +31,9 @@ public sealed record ProductStory(
     /// <summary>Phase 45 — default base branch carried into every spawn produced from this story. Defaults to "main".</summary>
     string BaseBranch = "main",
     /// <summary>Phase 46 — when true and BaseBranch != "main", agents auto-merge PRs against the base branch.</summary>
-    bool AutoMerge = false);
+    bool AutoMerge = false,
+    /// <summary>Phase 80.F — the repo this story binds to; every spawn produced from it inherits this repo.</summary>
+    string? RepoId = null);
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).

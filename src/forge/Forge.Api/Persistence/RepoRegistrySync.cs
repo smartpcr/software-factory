@@ -46,9 +46,17 @@ public static class RepoRegistrySync
             .OrderBy(p => p.Slug)
             .ToListAsync(ct);
 
+        // 80.C.2 — quarantine support: track every repo id actually present in
+        // a product DB this pass. Registry rows not in this set are stale (a
+        // torn delete left the mirror behind) and get soft-deleted below — but
+        // ONLY when every product DB was read cleanly (a failed/skipped product
+        // would otherwise look like its repos vanished).
+        var seenRepoIds = new HashSet<string>(StringComparer.Ordinal);
+        var fullScan = true;
+
         foreach (var product in products)
         {
-            if (string.IsNullOrEmpty(product.Slug)) continue;
+            if (string.IsNullOrEmpty(product.Slug)) { fullScan = false; continue; }
             try
             {
                 var db = factory.CreateFor(product.Slug);
@@ -60,6 +68,7 @@ public static class RepoRegistrySync
 
                 // 1. Upsert registry rows for this product.
                 var ids = repos.Select(r => r.Id).ToList();
+                seenRepoIds.UnionWith(ids);
                 var existing = await control.RepoRegistry
                     .Where(r => ids.Contains(r.Id))
                     .ToDictionaryAsync(r => r.Id, ct);
@@ -105,7 +114,27 @@ public static class RepoRegistrySync
             }
             catch (Exception ex)
             {
+                fullScan = false;
                 log?.LogWarning(ex, "[Phase80b] Registry reconcile failed for product '{Slug}'.", product.Slug);
+            }
+        }
+
+        // 80.C.2 — soft-delete (quarantine) registry rows whose repo no longer
+        // exists in any product DB. Only runs after a clean full scan so a
+        // transient product-DB read failure can't wrongly tombstone live repos.
+        if (fullScan)
+        {
+            var stale = await control.RepoRegistry
+                .Where(r => r.DeletedAt == null && !seenRepoIds.Contains(r.Id))
+                .ToListAsync(ct);
+            if (stale.Count > 0)
+            {
+                var nowIso = DateTimeOffset.UtcNow.ToString("o");
+                foreach (var r in stale) r.DeletedAt = nowIso;
+                await control.SaveChangesAsync(ct);
+                log?.LogInformation(
+                    "[Phase80b] Quarantined {Count} stale repo_registry row(s) with no product repo: {Ids}",
+                    stale.Count, string.Join(", ", stale.Select(s => s.Id)));
             }
         }
     }

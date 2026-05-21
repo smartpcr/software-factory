@@ -824,6 +824,11 @@ app.UseMiddleware<ForgeSecretMiddleware>();
 // secret middleware (so the resolved user is available) and BEFORE the
 // audit middleware (so the per-product write context is set up).
 app.UseMiddleware<Forge.Api.Persistence.ProductScopeMiddleware>();
+// Phase 80.E — resolve the active repo (X-Forge-Repo-Id). Runs right after the
+// product-scope middleware so it can supplement the product slug (a repo id
+// alone resolves + binds its owning product DB) and stash the active repo id
+// for per-endpoint repo filtering.
+app.UseMiddleware<Forge.Api.Persistence.RepoScopeMiddleware>();
 // Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
 // Phase 6.10 — audit every write to forge_actions.
 // Order matters: idempotency wraps audit so replays are NOT re-audited.

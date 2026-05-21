@@ -251,8 +251,10 @@ public static class StoriesEndpoints
             storyAttachmentsJson = ps.AttachmentsJson;
             defaultBaseBranchFromStory = string.IsNullOrEmpty(ps.BaseBranch) ? null : ps.BaseBranch;
             defaultAutoMergeFromStory = ps.AutoMerge;
-            // ProductStoryRow is product-scoped, not repo-scoped; caller must
-            // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
+            // Phase 80.F — the story owns its repo; the spawn inherits it
+            // (no per-spawn repo pick). A SpawnRequest.RepoId, if still sent,
+            // is honoured below for backward-compat but the UI no longer sends it.
+            defaultRepoId = ps.RepoId;
         }
         else
         {
@@ -277,6 +279,16 @@ public static class StoriesEndpoints
         }
 
         var repoId = req?.RepoId ?? defaultRepoId;
+        // Phase 80.F — a spawn must bind to a repo (inherited from the story /
+        // work item). Refuse rather than create a repo-less spawn the
+        // orchestrator can't clone, branch, or open PRs against.
+        if (string.IsNullOrEmpty(repoId))
+        {
+            return Results.Problem(
+                title: "repo.required",
+                detail: $"Story '{storyId}' has no repo bound; bind a repo to the story before spawning.",
+                statusCode: 400);
+        }
         var now = DateTimeOffset.UtcNow;
         var safeStoryId = StoryPaths.Safe(storyId);
 

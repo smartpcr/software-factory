@@ -158,10 +158,31 @@ public static class StateEndpoints
                     statusCode: 400);
             }
 
+            // Phase 80.F — a story binds to exactly ONE repo. Resolve from the
+            // explicit request → the active repo (X-Forge-Repo-Id) → the
+            // product's default repo. Reject when none is resolvable or the
+            // chosen repo isn't in this product.
+            var repoId = (req.RepoId ?? RepoScope.ActiveRepoId(ctx))?.Trim();
+            if (string.IsNullOrEmpty(repoId))
+            {
+                repoId = await control.Products.AsNoTracking()
+                    .Where(p => p.Id == productId)
+                    .Select(p => p.DefaultRepoId)
+                    .FirstOrDefaultAsync(ctx.RequestAborted);
+            }
+            if (string.IsNullOrEmpty(repoId))
+            {
+                return Results.Problem(
+                    title: "repo.required",
+                    detail: "This product has no repo to bind the story to. Attach a repo (or pass repoId).",
+                    statusCode: 400);
+            }
+
             var row = new ProductStoryRow
             {
                 Id = id,
                 ProductId = productId,
+                RepoId = repoId,
                 Name = req.Name.Trim(),
                 Status = req.Status ?? "planning",
                 Sort = maxSort + 1,
@@ -197,7 +218,7 @@ public static class StateEndpoints
             {
                 branchWarnings.AddRange(
                     await EnsureBranchInProductReposAsync(
-                        control, db, productId, row.BaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+                        control, db, productId, row.RepoId!, row.BaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
             }
 
             var story = MapStory(row);
@@ -431,7 +452,7 @@ public static class StateEndpoints
             {
                 branchWarnings.AddRange(
                     await EnsureBranchInProductReposAsync(
-                        control, db, productId, newBaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
+                        control, db, productId, row.RepoId ?? string.Empty, newBaseBranch, git, loggerFactory.CreateLogger("forge.story.basebranch"), ctx.RequestAborted));
             }
             if (newBaseBranch is not null)
             {
@@ -521,7 +542,9 @@ public static class StateEndpoints
         /// <summary>Phase 45 — default base branch for spawns produced from this story. Empty / missing = "main".</summary>
         string? BaseBranch = null,
         /// <summary>Phase 46 — auto-merge PRs against the base branch. Only effective when BaseBranch != "main".</summary>
-        bool? AutoMerge = null);
+        bool? AutoMerge = null,
+        /// <summary>Phase 80.F — repo this story binds to. Optional in the request; resolved server-side from the active repo (X-Forge-Repo-Id) or the product's DefaultRepoId when omitted.</summary>
+        string? RepoId = null);
 
     public sealed record PatchStoryRequest(
         string? Name = null,
@@ -543,20 +566,23 @@ public static class StateEndpoints
             ? null
             : System.Text.Json.JsonSerializer.Deserialize<object[]>(r.AttachmentsJson),
         string.IsNullOrEmpty(r.BaseBranch) ? "main" : r.BaseBranch,
-        r.AutoMerge);
+        r.AutoMerge,
+        r.RepoId);
 
     /// <summary>
-    /// Phase 45 — create <paramref name="baseBranch"/> branched from
-    /// <c>main</c> in every repo of the given product. Idempotent — repos
-    /// where the branch already exists are no-op'd. Returns a list of
-    /// per-repo warning strings for repos where creation failed (e.g.
-    /// missing clone, no auth) so the caller can surface them without
-    /// failing the whole request.
+    /// Phase 45 / 80.F — create <paramref name="baseBranch"/> branched from
+    /// <c>main</c> in the <b>story's repo</b> (<paramref name="repoId"/>).
+    /// Idempotent — a repo where the branch already exists is no-op'd. Returns
+    /// per-repo warning strings for creation failures (e.g. missing clone, no
+    /// auth) so the caller can surface them without failing the whole request.
+    /// (Pre-80.F this looped every repo in the product; a story now binds to one
+    /// repo, so only that repo's working tree gets the branch.)
     /// </summary>
     private static async Task<List<string>> EnsureBranchInProductReposAsync(
         ControlDbContext control,
         ProductDbContext db,
         string productId,
+        string repoId,
         string baseBranch,
         Forge.Api.Services.Stories.IStoryGitOps git,
         ILogger logger,
@@ -564,11 +590,11 @@ public static class StateEndpoints
     {
         var warnings = new List<string>();
         var repos = await db.Repos.AsNoTracking()
-            .Where(r => r.ProductId == productId)
+            .Where(r => r.ProductId == productId && r.Id == repoId)
             .ToListAsync(ct);
         if (repos.Count == 0)
         {
-            warnings.Add($"No repos attached to product '{productId}'; branch '{baseBranch}' was recorded but not created in any working tree.");
+            warnings.Add($"Repo '{repoId}' not found in product '{productId}'; branch '{baseBranch}' was recorded but not created in any working tree.");
             return warnings;
         }
         foreach (var repo in repos)

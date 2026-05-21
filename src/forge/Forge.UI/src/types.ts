@@ -72,6 +72,9 @@ export interface ProductStory {
    *  Honoured for any base, including "main"; the operator arms it
    *  deliberately. */
   autoMerge?: boolean;
+  /** Phase 80.F — the repo this story binds to. Every spawn produced from it
+   *  inherits this repo; the spawn UI shows it read-only. */
+  repoId?: string | null;
 }
 
 export interface Card {

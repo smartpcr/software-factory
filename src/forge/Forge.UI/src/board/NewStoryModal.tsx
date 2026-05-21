@@ -80,11 +80,11 @@ export function NewStoryModal({ open, onClose }: Props) {
       useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
       if (result.branchWarnings && result.branchWarnings.length > 0) {
         useToastStore.getState().show(
-          `Base branch '${trimmedBase}' could not be created in some repos: ${result.branchWarnings.join('; ')}`,
+          `Base branch '${trimmedBase}' could not be created in the story's repo: ${result.branchWarnings.join('; ')}`,
           'danger',
         );
       } else if (trimmedBase.length > 0 && trimmedBase !== 'main') {
-        useToastStore.getState().show(`Base branch '${trimmedBase}' created in product repos`, 'success');
+        useToastStore.getState().show(`Base branch '${trimmedBase}' created in the story's repo`, 'success');
       }
       onClose();
     } catch (e) {
@@ -182,7 +182,7 @@ export function NewStoryModal({ open, onClose }: Props) {
             <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
               Default base branch for spawns produced from this story.
               Non-default values are created from <code>main</code> immediately
-              in every repo of the product.
+              in the story's bound repo.
             </span>
           </label>
 

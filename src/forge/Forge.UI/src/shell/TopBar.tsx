@@ -26,6 +26,11 @@ export function TopBar({ section, current }: TopBarProps) {
   const activeProductId = useProductsStore((s) => s.activeProductId);
   const loadProducts = useProductsStore((s) => s.load);
   const setActive = useProductsStore((s) => s.setActive);
+  // Phase 80.G — repo switcher beside the product switcher.
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const activeRepoId = useProductsStore((s) => s.activeRepoId);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const setActiveRepo = useProductsStore((s) => s.setActiveRepo);
   const me = useCurrentUser();
   const loadMe = useCurrentUserStore((s) => s.load);
   const operatorAvatarUrl = useOperatorAvatarUrl();
@@ -36,6 +41,9 @@ export function TopBar({ section, current }: TopBarProps) {
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
   useEffect(() => { void loadMe(); }, [loadMe]);
+  // Phase 80.G — keep the active product's repo list fresh for the switcher.
+  useEffect(() => { if (activeProductId) void loadReposFor(activeProductId); }, [activeProductId, loadReposFor]);
+  const repos = activeProductId ? (reposByProduct[activeProductId] ?? []) : [];
 
   // Phase 11.9 / 14.11 — TopBar spend + payroll chips (PO only). Refresh
   // every 60 s so the operator sees both tick up live without hammering
@@ -178,6 +186,31 @@ export function TopBar({ section, current }: TopBarProps) {
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
+              {repos.length > 0 && (
+                <>
+                  <span className="sep">/</span>
+                  <select
+                    className="topbar-repo-switch current"
+                    id="bc-repo"
+                    value={activeRepoId ?? ''}
+                    onChange={(e) => setActiveRepo(e.target.value || null)}
+                    title="Active repo — board, workstreams, PRs and live-exec are scoped to this; new stories bind to it"
+                    style={{
+                      background: 'transparent',
+                      color: 'inherit',
+                      border: 'none',
+                      font: 'inherit',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    <option value="">All repos</option>
+                    {repos.map((r) => (
+                      <option key={r.id} value={r.id}>{r.displayName || r.id}</option>
+                    ))}
+                  </select>
+                </>
+              )}
             </span>
           ) : (
             <span className="current" id="bc-current">{current}</span>

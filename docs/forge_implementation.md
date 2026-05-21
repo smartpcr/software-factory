@@ -7720,10 +7720,14 @@ Each stage is independently compilable + testable; ship as separate PRs.
   registry's mirrored fields (DisplayName/CloneRoot/cadence); `DeleteRepo` removes the
   product row + the registry row (frees the uniqueness slot). Global uniqueness (Id /
   RemoteUrl / CloneRoot) checks hit `control.RepoRegistry`.
-- [~] 80.C.2 No dedicated `Phase80Reconciler`: **`RepoRegistrySync`** re-mirrors the
-  registry from product repos on **every boot** (idempotent), which covers the
-  product-written-but-registry-missing case. A torn-write *quarantine* path (registry
-  orphan with no product row) is **deferred** — low risk given boot reconcile.
+- [x] 80.C.2 No dedicated `Phase80Reconciler`: **`RepoRegistrySync`** re-mirrors the
+  registry from product repos on every boot AND now **quarantines** (soft-deletes,
+  `DeletedAt`) registry rows whose repo no longer exists in any product DB — gated on a
+  clean full scan so a transient product-DB read failure can't tombstone live repos.
+  Also fixed the **move's completion gate**: it now verifies *rows present* in product
+  DBs (not rows inserted this run), so a re-run completes idempotently — `DROP control
+  repos` + marker stamp now land cleanly (verified on the live `E:\forge` DBs:
+  `Moved 0 ... control 'repos' dropped`, all 4 products' repos resolve).
 - [~] 80.C.3 Tests: covered indirectly by the boot path + `Phase80SchemaTests` registry
   round-trips; dedicated CRUD-lockstep + dup-reject tests **deferred** to a follow-up.
 
@@ -7756,45 +7760,65 @@ cross-product / global-uniqueness → `control.RepoRegistry`**; **scope-less by-
   (`control.Repos`→`db.Repos`/product context; split-test seeds relocated;
   `SplitContextsTests` boundary assertions flipped).
 
-#### 80.E — `X-Forge-Repo-Id` scope (header + middleware + helper)
-- [ ] 80.E.1 `RepoScope` helper (mirror `ProductScope`): `Read(ctx)`, `ResolveAsync`,
-  `AllScope`. New `RepoScopeMiddleware` after `ProductScopeMiddleware`: read
-  `X-Forge-Repo-Id`; if no product slug yet, resolve product via `RepoRegistry`
-  and stash the slug too; stash resolved `RepoId` on `HttpContext.Items`. Echo
-  `X-Forge-Repo-Resolved` (mirror `X-Forge-Scope-Resolved`,
-  `ProductScopeMiddleware.cs:58`).
-- [ ] 80.E.2 Repo-scoped endpoints filter `WHERE RepoId = scope.RepoId` when set;
-  absent / `all` = no repo filter: `/work-items`, `/workstreams` (+ swarm index),
-  `/prs`, board (`/cards`), `/stories`, live-exec list.
-- [ ] 80.E.3 Tests: header routes a repo-id alone to the right product DB; filter
-  narrows lists; `all` returns cross-repo.
+#### 80.E — `X-Forge-Repo-Id` scope (header + middleware + helper) ✅ **DONE**
+- [x] 80.E.1 `RepoScope` helper (`Read`/`AllScope`/`RepoIdItemKey`/`ActiveRepoId`) +
+  `RepoScopeMiddleware` (registered right after `ProductScopeMiddleware`): validates
+  `X-Forge-Repo-Id` against `RepoRegistry`, stashes the resolved repo id on
+  `HttpContext.Items`, and — when no product slug was stashed (repo-id sent alone) —
+  resolves + stashes the repo's `ProductSlug` so the per-request `ProductDbContext`
+  binds to that repo's `{slug}.db`. Echoes `X-Forge-Repo-Resolved`
+  (`{repoId}`/`all`/`(none)`/`(unknown:…)`).
+- [x] 80.E.2 **Minimal-churn:** `ProductScope.ResolveAsync` now honours the active
+  repo — when `X-Forge-Repo-Id` is set + valid it returns `ResolvedScope(ownerProductId,
+  [repoId])`, so the existing `if (!scope.IsAll) filter by scope.RepoIds` in **all 8**
+  consumers (`Cards`/`Prs`/`State`/`Stories`/`Timeline`/`WorkItems`/`Workstreams` + swarm
+  index) auto-narrows to the active repo with **zero per-endpoint edits**. Absent/`all`
+  = unchanged product scope.
+- [x] 80.E.3 `Phase80RepoScopeTests` — product scope = both repos; repo scope = one;
+  repo-id-alone routes + filters; unknown repo flagged in header; `all` disables the
+  filter. 32/32 with `ProductScopeMiddlewareEnforcement`/`Workstreams`/`WorkItems`
+  regression checks. Verified live (`X-Forge-Repo-Id: code-intelligence` → 200 + header).
 
-#### 80.F — Required repo binding + story-owns-repo
-- [ ] 80.F.1 Make `RepoId` required on create paths: `ProductStoryRow` (story create
-  takes `RepoId`, defaults to active repo / `Product.DefaultRepoId`), `WorkItemRow`,
-  `StorySpawnRow`. Spawn **inherits** `RepoId` from its story (drop
-  `SpawnRequest.RepoId` operator pick, `StoriesEndpoints.cs:237-279`).
-- [ ] 80.F.2 `StorySpawnOrchestrator` `repo` lookup (`:251-253`) becomes non-null;
-  base-branch propagation that loops "every repo of the product"
-  (`StoriesEndpoints.cs:70-77`) narrows to the story's repo.
-- [ ] 80.F.3 Iteration-binding "primary repo" fallback (`Entities.cs` ProductRow
-  `ActiveIterationId` comment / `Q15.7`) resolves via `Product.DefaultRepoId`.
-- [ ] 80.F.4 Validation: create without a resolvable repo → 400 `repo.required`.
-- [ ] 80.F.5 Tests: story → spawn → workstream → PR all carry the same `RepoId`;
-  two repos in one product run isolated stories concurrently.
+#### 80.F — Required repo binding + story-owns-repo ✅ **DONE**
+- [x] 80.F.1 `RepoId` bound on create: `ProductStoryRow` (story create resolves
+  `req.RepoId` → active repo (`X-Forge-Repo-Id`) → `Product.DefaultRepoId`, stamps
+  `row.RepoId`; `StateEndpoints.cs:161-196`). Spawn **inherits** `RepoId` from its
+  story (`StoriesEndpoints.cs`: `defaultRepoId = ps.RepoId`), `SpawnRow.RepoId` set.
+- [x] 80.F.2 Base-branch propagation narrowed to the story's repo:
+  `EnsureBranchInProductReposAsync` gained a `repoId` param and filters
+  `r.ProductId == productId && r.Id == repoId` (`StateEndpoints.cs:580-593`),
+  called with `row.RepoId!` on both create + PATCH paths.
+- [x] 80.F.3 Iteration-binding fallback documented against `Product.DefaultRepoId`
+  (`Entities.cs` `ActiveIterationId` / `Q15.7`).
+- [x] 80.F.4 Validation: create/spawn without a resolvable repo → 400 `repo.required`
+  (StateEndpoints + StoriesEndpoints).
+- [x] 80.F.5 Tests green: `Phase80StoryRepoTests` (bind-default / explicit / no-repo→400
+  + spawn inherits), `Phase28StorySpawnTests` (seed binds default repo), and the
+  Phase80 schema/repo-scope + StateEndpoints + Phase50DeleteSpawn batch (70/70).
+  Regression batches green: PR/split/scope/work-item-sync (173/173),
+  repo-move/registry/reboot (33/33).
 
-#### 80.G — UI: topbar repo switcher + repo-scoped views
-- [ ] 80.G.1 `useReposStore.activeRepoId` (+ `localStorage forge.activeRepoId`);
-  reset when `activeProductId` changes (pick `product.defaultRepoId`).
-- [ ] 80.G.2 `forgeApi.ts` sends `X-Forge-Repo-Id` (the 3 header sites:
-  `forgeApi.ts:407,934,1248`) when an active repo is set; omit on "All repos".
-- [ ] 80.G.3 `TopBar.tsx` cascading repo `<select>` beside the product switcher
-  (`TopBar.tsx:159-165`), with an "All repos" sentinel.
-- [ ] 80.G.4 Story-create + `SpawnStoryModal.tsx` use the active repo (drop the
-  per-spawn repo picker; show the repo as read-only context).
-- [ ] 80.G.5 Board / `/workstreams` (swarm) / `/prs` / Live-Exec read the active repo;
-  empty-state copy when a repo has no rows.
-- [ ] 80.G.6 Vitest: header-injection logic; store reset on product change.
+#### 80.G — UI: topbar repo switcher + repo-scoped views ✅ **DONE**
+- [x] 80.G.1 `useProductsStore.activeRepoId` (+ `localStorage forge.activeRepoId`
+  via `getActiveRepoId`/`setActiveRepoId`); `setActive` (product switch) clears it
+  to all-repos, `deleteProduct` clears it for the active product, and `loadReposFor`
+  drops a stale selection no longer in the product's repo list. `setActiveRepo`
+  persists + reloads (parity with the product switch).
+- [x] 80.G.2 `forgeApi.ts` sends `X-Forge-Repo-Id` at all 3 header sites via a pure,
+  testable `buildScopeHeaders(productId, repoId)`; omitted on "All repos".
+- [x] 80.G.3 `TopBar.tsx` cascading repo `<select>` beside the product switcher,
+  with an "All repos" sentinel; loads the active product's repos on product change.
+- [x] 80.G.4 `SpawnStoryModal.tsx` drops the operator repo picker — the spawn
+  inherits the story's bound repo (shown read-only). `NewStoryModal` binds via the
+  active-repo header (no picker). Story DTO now carries `repoId` (`ProductStory`
+  contract + `MapStory` + UI type); base-branch copy narrowed to "the story's repo".
+- [x] 80.G.5 Board / `/workstreams` / `/prs` / Live-Exec are repo-scoped through the
+  global `X-Forge-Repo-Id` header (every product-scoped read already routes through
+  the patched header sites) + reload-on-switch; no per-view change required. The
+  3 bespoke `fetch` callers hit control-side / id-addressed endpoints (no scoping).
+- [x] 80.G.6 Vitest: `scopeHeaders.spec.ts` (5 cases) + `useProductsStore.spec.ts`
+  (4 cases — clears on product switch, persists on repo switch, drops/keeps stale
+  repo on repo-load). UI suite green: 116/116, `tsc --noEmit` clean.
 
 #### 80.H — Tests, factory, cleanup
 - [ ] 80.H.1 `MultiProductForgeWebApplicationFactory` (+ a multi-**repo** variant):

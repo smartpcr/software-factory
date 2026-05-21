@@ -77,6 +77,9 @@ public class Phase28StorySpawnTests
             State = "active",
             Title = title,
             Priority = "med",
+            // Phase 80.F — a spawn now requires a bound repo; bind the seeded
+            // default repo so SpawnAsync(repoId: null) inherits it.
+            RepoId = ForgeSeed.DefaultRepoId,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -1204,7 +1207,21 @@ public class Phase28StorySpawnTests
                 var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 if (!await control.Products.AnyAsync(p => p.Id == productId))
                 {
-                    control.Products.Add(new ProductRow { Id = productId, Name = "AM main product", Sort = 99 });
+                    // Phase 80.F — a story requires a bound repo; seed one and point
+                    // the product's DefaultRepoId at it so story-create resolves it.
+                    const string repoId = "p-am-main-repo";
+                    control.Products.Add(new ProductRow { Id = productId, Name = "AM main product", Sort = 99, DefaultRepoId = repoId });
+                    db.Repos.Add(new RepoRow
+                    {
+                        Id = repoId,
+                        Sort = 0,
+                        ProductId = productId,
+                        Kind = "ado",
+                        RemoteUrl = $"https://dev.azure.com/{productId}/{repoId}/_git/{repoId}",
+                        DisplayName = repoId,
+                        DefaultBranch = "main",
+                        CloneRoot = $@"C:\forge\{productId}\{repoId}",
+                    });
                     await control.SaveChangesAsync(); await db.SaveChangesAsync();
                 }
             }
@@ -1214,9 +1231,17 @@ public class Phase28StorySpawnTests
                 $"/api/products/{productId}/stories",
                 new { name = "story-am", baseBranch = "feature/x", autoMerge = true },
                 JsonOpts);
-            Assert.True(createResp.IsSuccessStatusCode, await createResp.Content.ReadAsStringAsync());
-            var created = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync());
-            var storyId = created.RootElement.GetProperty("story").GetProperty("id").GetString()!;
+            var createBody = await createResp.Content.ReadAsStringAsync();
+            Assert.True(createResp.IsSuccessStatusCode, createBody);
+            var created = JsonDocument.Parse(createBody);
+            // The create response is either the bare story or { story, branchWarnings }
+            // (the latter only when a base-branch could not be materialised). Phase 80.F
+            // binds a real repo, so the bare-story shape is now the common case.
+            var storyEl = created.RootElement.TryGetProperty("story", out var wrapped)
+                ? wrapped
+                : created.RootElement;
+            Assert.True(storyEl.TryGetProperty("id", out var idEl), $"no id in create body: {createBody}");
+            var storyId = idEl.GetString()!;
 
             using (var scope = f.Services.CreateScope())
             {
