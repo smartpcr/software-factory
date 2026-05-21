@@ -57,6 +57,33 @@ public sealed class AgentRunnerOptions
     /// <summary>Max retries on 429 / 503 / 529.</summary>
     public int MaxRetries { get; set; } = 3;
 
+    /// <summary>
+    /// Max output tokens (<c>max_tokens</c>) for the Claude · SDK direct
+    /// <c>/v1/messages</c> path.
+    /// <para>
+    /// Phase (2026-05-20 fix) — raised from a hard-coded <c>4096</c>. That
+    /// ceiling silently truncated any single assistant turn that emitted
+    /// more than ~4K tokens of output, which includes a <c>create</c>
+    /// tool-call whose <c>file_text</c> argument carries a non-trivial
+    /// source file. Observed on local:REFACTOR-INTEGRATION
+    /// stage-4.2-migrate-cachecontrollerintegrationtests: the engineer
+    /// deleted the 957-line legacy test then could not recreate it —
+    /// every <c>create</c> arrived with <c>{"path":…}</c> and NO
+    /// <c>file_text</c> because the tool_use JSON was cut off mid-content,
+    /// so the file stayed deleted (net diff: one deletion, score 0).
+    /// </para>
+    /// <para>
+    /// 32000 is safe for every model in the registry (all are Claude 4.x,
+    /// which support ≥32K output). Bind via
+    /// <c>Forge:Agents:ClaudeMaxOutputTokens</c>. NOTE: this only governs
+    /// the Claude · SDK path; the Copilot · SDK path's output cap lives in
+    /// the copilot server and is not settable from <c>SessionConfig</c> —
+    /// there the engineer prompt's in-place-edit / chunked-write guidance
+    /// is the corresponding mitigation.
+    /// </para>
+    /// </summary>
+    public int ClaudeMaxOutputTokens { get; set; } = 32000;
+
     /// <summary>Phase 11.5b — backend used when an <see cref="AgentContext"/> doesn't override it.</summary>
     public AgentBackend DefaultBackend { get; set; } = AgentBackend.Copilot;
 

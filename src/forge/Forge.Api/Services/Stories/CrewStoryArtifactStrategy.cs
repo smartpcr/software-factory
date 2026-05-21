@@ -2801,6 +2801,42 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               - The build gate applies to ALL workstreams, not just test
                 stages: every iter's diff must compile.
 
+            ## Migrating / refactoring an existing file -- EDIT IN PLACE
+            When the task is to migrate, port, refactor, or rewrite a file
+            that ALREADY EXISTS (most "Migrate ..."/"Refactor ..." stages),
+            you MUST transform it in place with targeted `str_replace` edits.
+            **NEVER delete-then-recreate an existing file.** The
+            delete-first pattern is the single biggest cause of lost work
+            here: if the recreate step then fails or gets cut off, the file
+            is gone and the whole iteration is a destructive no-op (observed
+            on `migrate-cachecontrollerintegrationtests`: the 957-line test
+            was deleted, the recreate failed repeatedly, and the iteration
+            ended having only deleted the file).
+              - Keep the original file on disk. Change the class declaration,
+                swap fields, replace inline setup, etc. via successive
+                `str_replace` calls. Each edit is small and lands reliably.
+              - Do NOT `Remove-Item`/`rm`/`git rm` the file first "to start
+                clean". Edit it where it sits.
+
+            ## Writing a LARGE file -- you cannot emit it in one call
+            A single tool call cannot carry an entire large file as one
+            argument: the model's per-turn output is capped, so a `create`
+            (or a shell here-string) whose content exceeds the cap is
+            **truncated** -- the content argument is dropped and the write
+            fails with no error you can fix by retrying the same way.
+            If you genuinely must create a NEW large file (no original to
+            edit):
+              1. `create` it with a FIRST CHUNK only (e.g. the header +
+                 first ~150-200 lines), then
+              2. APPEND the remaining sections with successive `str_replace`
+                 / insert edits, ~150-200 lines per call, until complete.
+              Verify with a final read that the file is whole before `DONE`.
+            If a `create`/write tool call ever returns an error or you find
+            the file missing/empty after writing, STOP retrying the
+            identical call -- switch to the chunked approach above (or, for
+            a migration, restore the original via `git checkout -- <path>`
+            and edit it in place).
+
             ## You MUST verify your work compiles before claiming DONE
             Before replying `DONE`, run `dotnet build --nologo --verbosity minimal`
             from the worktree root and confirm exit 0. If the build fails,
