@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests;
 
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
@@ -66,6 +67,63 @@ public class AgentsFoundationTests
         using var client = factory.CreateClient();
         var resp = await client.GetAsync("/api/models/no-such-model");
         Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateAgent_AddsAgent_AssignedToCrew_AndDerivesRole()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+
+        var resp = await client.PostAsJsonAsync("/api/agents", new { name = "Mercury", crewId = "crew-eng", level = 2 });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var id = doc.RootElement.GetProperty("id").GetString()!;
+        Assert.False(string.IsNullOrEmpty(id));
+        Assert.Equal("Mercury", doc.RootElement.GetProperty("name").GetString());
+        Assert.Equal("crew-eng", doc.RootElement.GetProperty("crewId").GetString());
+        Assert.Equal("eng", doc.RootElement.GetProperty("role").GetString());  // derived from crew
+
+        // The agent appears in the roster.
+        var list = await client.GetAsync("/api/agents");
+        var listDoc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+        Assert.Contains(listDoc.RootElement.EnumerateArray(), e => e.GetProperty("id").GetString() == id);
+
+        // It actually JOINS the crew (dispatch + roster key off crew_members).
+        using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        Assert.True(await control.CrewMembers.AnyAsync(m => m.AgentId == id && m.CrewId == "crew-eng"));
+    }
+
+    [Fact]
+    public async Task CreateAgent_UnknownCrew_Returns_400()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+
+        var resp = await client.PostAsJsonAsync("/api/agents", new { name = "Nobody", crewId = "crew-does-not-exist" });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteAgent_Removes_Agent_And_Crew_Membership()
+    {
+        using var factory = new ForgeWebApplicationFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+
+        var created = await client.PostAsJsonAsync("/api/agents", new { name = "Disposable", crewId = "crew-eng" });
+        var id = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+
+        var del = await client.DeleteAsync($"/api/agents/{id}");
+        Assert.Equal(HttpStatusCode.NoContent, del.StatusCode);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/agents/{id}")).StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        Assert.False(await control.CrewMembers.AnyAsync(m => m.AgentId == id));
     }
 
     [Fact]

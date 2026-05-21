@@ -27,8 +27,10 @@ public static class AgentsEndpoints
     {
         var grp = app.MapGroup("/api/agents").WithTags("Agents");
         grp.MapGet("/", ListAgents).WithName("ListAgents");
+        grp.MapPost("/", CreateAgent).WithName("CreateAgent");
         grp.MapGet("/{agentId}", GetAgent).WithName("GetAgent");
         grp.MapPatch("/{agentId}", PatchAgent).WithName("PatchAgent");
+        grp.MapDelete("/{agentId}", DeleteAgent).WithName("DeleteAgent");
         grp.MapPost("/{agentId}/invocations", StartInvocation).WithName("StartAgentInvocation");
         grp.MapGet("/{agentId}/invocations", ListInvocations).WithName("ListAgentInvocations");
         grp.MapPost("/{agentId}/invocations/{invocationId}/cancel", CancelInvocation).WithName("CancelAgentInvocation");
@@ -79,6 +81,177 @@ public static class AgentsEndpoints
     }
 
     /// <summary>Phase 13b/e — edit name / role / soulPath + per-agent runtime overrides.</summary>
+    /// <summary>Phase 80 — create a brand-new agent and assign it to a crew.
+    /// Name + crew are required; the agent inherits the crew's backend / model
+    /// defaults unless per-agent overrides are supplied. Role is derived from
+    /// the crew when not given.</summary>
+    public sealed record CreateAgentRequest(
+        string Name,
+        string CrewId,
+        string? Id = null,
+        string? Role = null,
+        int? Level = null,
+        string? Backend = null,
+        string? InvokeMode = null,
+        string? GeneratorModel = null,
+        string? EvaluatorModel = null,
+        string? Avatar = null);
+
+    private static async Task<IResult> CreateAgent(
+        HttpContext ctx,
+        [FromBody] CreateAgentRequest req,
+        ControlDbContext control,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.Name))
+            return Results.Problem(title: "name is required", statusCode: 400);
+        if (string.IsNullOrWhiteSpace(req.CrewId))
+            return Results.Problem(title: "crewId is required", statusCode: 400);
+
+        var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CrewId, ct);
+        if (crew is null)
+            return Results.Problem(title: $"Crew {req.CrewId} not found", statusCode: 400);
+
+        // Role: explicit → derived from the crew id (crew-eng → eng, …) → "eng".
+        var role = !string.IsNullOrWhiteSpace(req.Role)
+            ? req.Role!.Trim()
+            : RoleFromCrewId(req.CrewId);
+
+        // Per-agent overrides (optional). Empty/unknown backend or mode is rejected.
+        string? backend = null;
+        if (!string.IsNullOrWhiteSpace(req.Backend))
+        {
+            backend = NormaliseBackend(req.Backend);
+            if (backend is null) return Results.Problem(title: $"Unknown backend '{req.Backend}'", statusCode: 400);
+        }
+        string? invokeMode = null;
+        if (!string.IsNullOrWhiteSpace(req.InvokeMode))
+        {
+            invokeMode = NormaliseMode(req.InvokeMode);
+            if (invokeMode is null) return Results.Problem(title: $"Unknown invoke mode '{req.InvokeMode}'", statusCode: 400);
+        }
+        var generatorModel = string.IsNullOrWhiteSpace(req.GeneratorModel) ? null : req.GeneratorModel.Trim();
+        var evaluatorModel = string.IsNullOrWhiteSpace(req.EvaluatorModel) ? null : req.EvaluatorModel.Trim();
+        if (!string.IsNullOrEmpty(generatorModel) && generatorModel == evaluatorModel)
+        {
+            return Results.Problem(
+                type: "agent.pair_models_must_differ",
+                title: "Generator and evaluator model overrides must differ",
+                statusCode: 400);
+        }
+
+        string? avatar = null;
+        if (!string.IsNullOrWhiteSpace(req.Avatar))
+        {
+            var av = req.Avatar.Trim();
+            if (av.Contains("..") || av.Contains('/') || av.Contains('\\'))
+                return Results.Problem(title: "Invalid avatar filename", statusCode: 400);
+            avatar = av;
+        }
+
+        // Id: explicit (validated unique) or generated with a role-appropriate
+        // prefix so the UI's role colouring (id starts with A/E/R/Q) works.
+        var id = req.Id?.Trim();
+        if (!string.IsNullOrEmpty(id))
+        {
+            if (await control.Agents.AnyAsync(a => a.Id == id, ct))
+                return Results.Problem(title: $"Agent {id} already exists", statusCode: 409);
+        }
+        else
+        {
+            var prefix = role.ToLowerInvariant() switch
+            {
+                "arch" or "architecture" => "A",
+                "rev" or "review" => "R",
+                "qa" => "Q",
+                _ => "E",
+            };
+            do { id = $"{prefix}{Guid.NewGuid():N}".Substring(0, 7); }
+            while (await control.Agents.AnyAsync(a => a.Id == id, ct));
+        }
+
+        var maxSort = await control.Agents.AnyAsync(ct)
+            ? await control.Agents.MaxAsync(a => a.Sort, ct)
+            : 0;
+        var level = Math.Max(1, req.Level ?? 1);
+
+        var row = new AgentRow
+        {
+            Id = id!,
+            Sort = maxSort + 1,
+            Name = req.Name.Trim(),
+            Role = role,
+            CrewId = req.CrewId,
+            CapabilitiesJson = "[]",
+            State = "idle",
+            Backend = backend,
+            InvokeMode = invokeMode,
+            GeneratorModel = generatorModel,
+            EvaluatorModel = evaluatorModel,
+            Level = level,
+            LevelUpdatedAt = DateTimeOffset.UtcNow,
+            Avatar = avatar,
+        };
+        control.Agents.Add(row);
+
+        // Join the crew for real: dispatch + the crew roster key off crew_members
+        // (CrewMemberRow), not AgentRow.CrewId. Without this the agent would be an
+        // orphan — invisible in the crew and never dispatched.
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        control.CrewMembers.Add(new CrewMemberRow
+        {
+            CrewId = req.CrewId,
+            AgentId = row.Id,
+            Role = "coder",
+            AddedAt = DateTimeOffset.UtcNow,
+            AddedBy = caller,
+        });
+
+        await control.SaveChangesAsync(ct);
+        return Results.Created($"/api/agents/{row.Id}", MapAgent(row));
+    }
+
+    /// <summary>Phase 80 — delete an agent and detach it from any crews.
+    /// Refuses when the agent is a crew lead (would orphan the crew).</summary>
+    private static async Task<IResult> DeleteAgent(
+        HttpContext ctx,
+        string agentId,
+        ControlDbContext control,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
+
+        if (await control.Crews.AnyAsync(c => c.Lead == agentId, ct))
+        {
+            return Results.Problem(
+                title: "agent.is_crew_lead",
+                detail: "This agent leads a crew. Reassign the crew lead before deleting the agent.",
+                statusCode: 409);
+        }
+
+        var memberships = await control.CrewMembers.Where(m => m.AgentId == agentId).ToListAsync(ct);
+        control.CrewMembers.RemoveRange(memberships);
+        control.Agents.Remove(row);
+        await control.SaveChangesAsync(ct);
+        return Results.NoContent();
+    }
+
+    private static string RoleFromCrewId(string crewId) => crewId switch
+    {
+        "crew-arch" => "arch",
+        "crew-eng" => "eng",
+        "crew-rev" => "rev",
+        "crew-qa" => "qa",
+        _ => "eng",
+    };
+
     private static async Task<IResult> PatchAgent(
         HttpContext ctx,
         string agentId,

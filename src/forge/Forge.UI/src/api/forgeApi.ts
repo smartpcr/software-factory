@@ -2173,6 +2173,34 @@ export const forgeApi = {
    * PATCH /api/agents/{id} — Phase 13b/e agent edit. Empty-string clears
    * an override field (reverts to crew inheritance); null leaves it alone.
    */
+  /** Phase 80 — POST /api/agents — create a new agent assigned to a crew. */
+  async createAgent(req: {
+    name: string;
+    crewId: string;
+    id?: string;
+    role?: string;
+    level?: number;
+    backend?: string;
+    invokeMode?: string;
+    generatorModel?: string;
+    evaluatorModel?: string;
+    avatar?: string;
+  }): Promise<AgentDetail> {
+    return fetchJson<AgentDetail>('/api/agents', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Phase 80 — DELETE /api/agents/{id} — remove an agent + its crew memberships. */
+  async deleteAgent(agentId: string): Promise<void> {
+    await fetchJson<void>(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   async patchAgent(agentId: string, patch: {
     name?: string;
     role?: string;

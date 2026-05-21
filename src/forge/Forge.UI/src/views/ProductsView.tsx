@@ -345,7 +345,7 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
 
               {/* Row 2: Action buttons — icon + label both clickable */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingLeft: 26 }}>
-                <button type="button" className="icon-btn" onClick={() => setExpandedRepoId(expandedRepoId === r.id ? null : r.id)} title={`${expandedRepoId === r.id ? 'Hide' : 'Show'} build & sync history for ${r.displayName}`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: expandedRepoId === r.id ? 'var(--accent)' : 'var(--text-tertiary)' }}>
+                <button type="button" className="icon-btn" onClick={() => setExpandedRepoId(expandedRepoId === r.id ? null : r.id)} title={`${expandedRepoId === r.id ? 'Hide' : 'Show'} build & sync history for ${r.displayName}`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: expandedRepoId === r.id ? 'var(--accent)' : 'var(--text-primary)' }}>
                   <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" /><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
                   <span style={{ fontSize: 9 }}>History</span>
                 </button>
@@ -359,14 +359,14 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
 
                 <span style={{ width: 1, height: 12, background: 'var(--border-subtle)', margin: '0 2px' }} />
 
-                <button type="button" className="icon-btn" onClick={() => onEditRepo(r)} title={`Edit ${r.displayName} (path, branch, pipeline)`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-tertiary)' }}>
+                <button type="button" className="icon-btn" onClick={() => onEditRepo(r)} title={`Edit ${r.displayName} (path, branch, pipeline)`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-primary)' }}>
                   <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M8 1.5 L10.5 4 L4 10.5 L1.5 10.5 L1.5 8 Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></svg>
                   <span style={{ fontSize: 9 }}>Edit</span>
                 </button>
 
                 <span style={{ width: 1, height: 12, background: 'var(--border-subtle)', margin: '0 2px' }} />
 
-                <button type="button" className="icon-btn" onClick={() => void detachRepo(r)} title={`Detach ${r.displayName} from this product`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-tertiary)' }}>
+                <button type="button" className="icon-btn" onClick={() => void detachRepo(r)} title={`Detach ${r.displayName} from this product`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-primary)' }}>
                   <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 3 L 9 9 M 9 3 L 3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
                   <span style={{ fontSize: 9 }}>Detach</span>
                 </button>
