@@ -1658,6 +1658,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         {
                             await RunGitAsync(worktreePath, "add", "-A");
                             await RunGitAsync(worktreePath, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+                            await ScrubBuildArtifactsFromIndexAsync(worktreePath);
                             var commitMsg = $"forge[{agentId}] iter {iter}: {workItemId}";
                             var (commitCode, _, commitErr) = await RunGitAsync(
                                 worktreePath,
@@ -2064,6 +2065,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             "Auto-committing uncommitted changes: wi={Wi}", workItemId);
                         await RunGitAsync(pushCwd, "add", "-A");
                         await RunGitAsync(pushCwd, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+                        await ScrubBuildArtifactsFromIndexAsync(pushCwd);
                         await RunGitAsync(pushCwd, "commit", "-m",
                             $"chore: auto-commit for {workItemId}", "--allow-empty");
                     }
@@ -2194,6 +2196,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                                     "Auto-committing post-build/test changes: wi={Wi}", workItemId);
                                 await RunGitAsync(pushCwd, "add", "-A");
                                 await RunGitAsync(pushCwd, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+                                await ScrubBuildArtifactsFromIndexAsync(pushCwd);
                                 await RunGitAsync(pushCwd, "commit", "-m",
                                     $"chore: post-build auto-commit for {workItemId}", "--allow-empty");
                             }
@@ -3682,6 +3685,35 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     public sealed record ClaimSkip(string CrewId, string Reason, string? Detail);
 
     // ── Git helpers for worktree management ──────────────────────────────
+
+    /// <summary>
+    /// Removes build-output directories (obj/, bin/Debug, node_modules/,
+    /// target/, __pycache__/) from the staged index before a delivery commit
+    /// so a blanket <c>git add -A</c> never lands generated binaries in the
+    /// PR. The impl-path twin of
+    /// <c>RealStoryGitOps.ScrubBuildArtifactsFromIndexAsync</c>; shares the
+    /// pathspec set in <see cref="Stories.BuildArtifactPaths.IndexScrubPathspecs"/>.
+    /// Best-effort — failures are swallowed.
+    /// </summary>
+    private static async Task ScrubBuildArtifactsFromIndexAsync(string cwd)
+    {
+        try
+        {
+            var specs = Stories.BuildArtifactPaths.IndexScrubPathspecs();
+            var args = new string[5 + specs.Count];
+            args[0] = "rm";
+            args[1] = "-r";
+            args[2] = "--cached";
+            args[3] = "--ignore-unmatch";
+            args[4] = "--";
+            for (var i = 0; i < specs.Count; i++)
+            {
+                args[5 + i] = specs[i];
+            }
+            await RunGitAsync(cwd, args);
+        }
+        catch { /* best-effort */ }
+    }
 
     private static async Task<(int code, string stdout, string stderr)> RunGitAsync(
         string cwd, params string[] args)

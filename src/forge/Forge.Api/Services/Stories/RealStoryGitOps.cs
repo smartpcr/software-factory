@@ -234,6 +234,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         await this.GitAsync(wtPath, ct, "add", "-A");
         await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
+        await this.ScrubBuildArtifactsFromIndexAsync(wtPath, ct);
 
         // Delete .forge/ from disk so a subsequent `git add -A` (e.g., in
         // MergeUpstreamIntoBranchAsync) doesn't re-stage the files.
@@ -1482,50 +1483,13 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     /// <summary>
     /// True for paths under directories whose contents are by convention
-    /// generated/cached (Rust <c>target/</c>, Node <c>node_modules/</c>,
-    /// .NET <c>obj/</c>, Python <c>__pycache__/</c>, etc.). Used as a
-    /// fallback when the workstream hasn't authored a <c>.gitignore</c>
-    /// yet (typical for from-scratch repos). Conservative — only matches
-    /// directories whose entire purpose is throwaway output, never a
-    /// directory that might legitimately hold source.
+    /// generated/cached. Delegates to <see cref="BuildArtifactPaths.IsBuildArtifact"/>
+    /// (the single source of truth shared with
+    /// <c>CrewStoryArtifactStrategy.ReadAllFiles</c> and the index scrub) so
+    /// the filter list can't drift between the producer and the committer.
     /// </summary>
-    private static bool IsBuildArtifactPath(string repoRelativePath)
-    {
-        if (string.IsNullOrEmpty(repoRelativePath)) return false;
-        // Anchor on path-segment boundaries so e.g. `src/target_resolver.rs`
-        // is NOT matched by the `target/` rule. The path is normalised to
-        // forward slashes by callers.
-        var p = repoRelativePath.Replace('\\', '/');
-        ReadOnlySpan<string> dirs =
-        [
-            "target/",            // Rust
-            "node_modules/",      // Node
-            "__pycache__/",       // Python bytecode
-            ".pytest_cache/",     // Pytest
-            ".mypy_cache/",       // mypy
-            ".ruff_cache/",       // ruff
-            ".tox/",              // tox
-            ".venv/",             // Python virtualenv
-            "venv/",              // Python virtualenv (alt)
-            "obj/",               // .NET intermediate
-            ".gradle/",           // Gradle cache
-            ".idea/",             // JetBrains
-            ".vs/",               // Visual Studio cache
-            ".cache/",            // generic
-            "dist/",              // common JS bundler output
-            ".next/",             // Next.js
-            ".nuxt/",             // Nuxt
-            ".turbo/",            // Turborepo
-            ".parcel-cache/",     // Parcel
-            ".forge/",            // Forge iteration scratch (iter-notes, notes/)
-        ];
-        foreach (var dir in dirs)
-        {
-            if (p.StartsWith(dir, StringComparison.Ordinal)) return true;
-            if (p.Contains("/" + dir, StringComparison.Ordinal)) return true;
-        }
-        return false;
-    }
+    private static bool IsBuildArtifactPath(string repoRelativePath) =>
+        BuildArtifactPaths.IsBuildArtifact(repoRelativePath);
 
     // ── Phase 79 — agent-driven merge-conflict resolver ──────────────────
     //
@@ -1831,6 +1795,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
         {
             await this.RunGitCaptureAsync(wtPath, ct,
                 "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
+        }
+        catch { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// Scrubs build-output directories (<c>obj/</c>, <c>bin/Debug/</c>,
+    /// <c>node_modules/</c>, <c>target/</c>, …) from the git index — at any
+    /// depth — so a blanket <c>git add -A</c> never lands generated binaries
+    /// in a PR. Uses <c>--ignore-unmatch</c> so it's a safe no-op when the
+    /// tree is already clean. Best-effort: failures are swallowed. See
+    /// <see cref="BuildArtifactPaths.IndexScrubPathspecs"/> for the
+    /// (conservative, never-legitimately-tracked) path set.
+    /// </summary>
+    public async Task ScrubBuildArtifactsFromIndexAsync(string wtPath, CancellationToken ct)
+    {
+        try
+        {
+            var args = new List<string> { "rm", "-r", "--cached", "--ignore-unmatch", "--" };
+            args.AddRange(BuildArtifactPaths.IndexScrubPathspecs());
+            await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
         }
         catch { /* best-effort */ }
     }
