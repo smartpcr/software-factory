@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { Pr, Agent } from '@/types';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { usePrsStore } from '@/state/usePrsStore';
+import { RepoIcon } from '@/products/RepoIcon';
+import { useRepoLookup } from '@/workitems/useRepoLookup';
 import { PrApprovalBadge } from './PrApprovalBadge';
 import type { ApprovalVerdict } from './prVerdict';
 
@@ -95,6 +97,8 @@ function roleFor(id: string | null | undefined): string {
 // Verbatim port of the prototype's renderPRCard (lines 3970-4089).
 // Phase 25 — redesigned for richer visuals with sparse ADO/GitHub data.
 export function PrCard({ pr, onOpen }: Props) {
+  const repoOf = useRepoLookup();
+  const repo = repoOf(pr.repoId);
   const total = pr.additions + pr.deletions || 1;
   const addPct = (pr.additions / total) * 100;
   const delPct = (pr.deletions / total) * 100;
@@ -152,6 +156,15 @@ export function PrCard({ pr, onOpen }: Props) {
             <HumanOrAgentChip author={pr.author} />
             {pr.author.name}
           </span>
+          {(repo || pr.repoId) && (
+            <span
+              className="pr-card-info-repo"
+              title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : pr.repoId ?? ''}
+            >
+              {repo && <RepoIcon kind={repo.kind} size={11} />}
+              <span>{repo?.displayName ?? pr.repoId}</span>
+            </span>
+          )}
           {pr.workItemId && (
             <span className="pr-card-info-branch" title={`Linked: ${pr.workItemId}`}>
               {pr.workItemId}

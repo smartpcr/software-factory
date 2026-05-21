@@ -68,6 +68,8 @@ public class Phase28OrchestratorTests
         {
             Id = id, Provider = "ado", Track = "dev", Type = "feature", State = "active",
             Title = title, Priority = "med",
+            // Phase 80.F — a spawn requires a bound repo; bind the seeded default.
+            RepoId = ForgeSeed.DefaultRepoId,
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
         });
         await control.SaveChangesAsync(); await db.SaveChangesAsync();

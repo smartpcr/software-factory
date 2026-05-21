@@ -97,4 +97,80 @@ public class Phase80StoryRepoTests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         Assert.Contains("repo.required", await resp.Content.ReadAsStringAsync());
     }
+
+    [Fact]
+    public async Task StoryPatch_RebindsRepo_BeforeSpawn()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var client = Writer(f);
+
+        // Seed a second repo into atlas + its control registry mirror.
+        const string repo2 = "atlas-extra";
+        using (var scope = f.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            db.Repos.Add(new RepoRow
+            {
+                Id = repo2, Sort = 1, ProductId = Atlas, Kind = "ado",
+                RemoteUrl = "https://dev.azure.com/atlas/extra/_git/extra",
+                DisplayName = "atlas-extra", DefaultBranch = "main",
+                CloneRoot = @"C:\forge\atlas\atlas-extra",
+            });
+            control.RepoRegistry.Add(new RepoRegistryRow
+            {
+                Id = repo2, Sort = 1, ProductId = Atlas, ProductSlug = "atlas", Kind = "ado",
+                RemoteUrl = "https://dev.azure.com/atlas/extra/_git/extra",
+                DisplayName = "atlas-extra", CloneRoot = @"C:\forge\atlas\atlas-extra",
+            });
+            await db.SaveChangesAsync();
+            await control.SaveChangesAsync();
+        }
+
+        var create = await client.PostAsJsonAsync($"/api/products/{Atlas}/stories", new { name = "Rebind me" });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        string storyId;
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var st = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Name == "Rebind me");
+            Assert.Equal(AtlasRepo, st.RepoId);   // bound to the default repo at create
+            storyId = st.Id;
+        }
+
+        var patch = await client.PatchAsync(
+            $"/api/products/{Atlas}/stories/{storyId}",
+            JsonContent.Create(new { repoId = repo2 }));
+        Assert.True(patch.IsSuccessStatusCode, await patch.Content.ReadAsStringAsync());
+
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var st = await db.ProductStories.AsNoTracking().FirstAsync(s => s.Id == storyId);
+            Assert.Equal(repo2, st.RepoId);
+        }
+    }
+
+    [Fact]
+    public async Task StoryPatch_InvalidRepo_Returns400()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var client = Writer(f);
+
+        var create = await client.PostAsJsonAsync($"/api/products/{Atlas}/stories", new { name = "Bad rebind" });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        string storyId;
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            storyId = (await db.ProductStories.AsNoTracking().FirstAsync(s => s.Name == "Bad rebind")).Id;
+        }
+
+        var patch = await client.PatchAsync(
+            $"/api/products/{Atlas}/stories/{storyId}",
+            JsonContent.Create(new { repoId = "does-not-exist" }));
+        Assert.Equal(HttpStatusCode.BadRequest, patch.StatusCode);
+    }
 }

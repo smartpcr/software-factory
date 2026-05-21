@@ -27,6 +27,8 @@ Checkbox states: `[ ]` not started · `[~]` in progress / partial · `[x]` done 
 | 53,54,56,57b | Sequential plan docs, prompt-growth metric, gate-failure recovery, auto-merge race fix | shipped |
 | 57 | Operator cap-override | **not started** (`57.1–57.16` all `[ ]`) |
 | 58,79c,59 | E2E refactor, merge-based conflict recovery, test-gate impacted selection | shipped (59 Playwright `[~]`) |
+| 73 | Per-product SQLite split (control `forge.db` + `{slug}.db`) | shipped |
+| 80 | Repos → product DB + repo-scoped stories (registry index, topbar repo switcher) | shipped (80.A–80.H) |
 | R | Post-impl refactor (incl. R.8 IForgeBus) | **deferred** (all `[ ]`) |
 
 ---
@@ -434,3 +436,16 @@ Shipped (prose spec). `IStoryGitOps` merge API (`MergeBaseIntoBranchAndDetectCon
 **Stage S2 — LSP for Rust/Go/Python/TS:** S2.1–S2.3 `[x]` (`MinimalLspClient`; `LspImpactedTestProvider`+`ILspLanguageSupport`; per-language detectors; tests 31/31; live-server integration tests skip-on-missing-PATH).
 
 Tests: heuristic 15/15, log persistence 12/12, endpoint 7/7, vitest 10/10, Stage C 16 written/8 running (8 skipped pending real-SDK harness), S2 31/31. Playwright **59.T18–T21 `[~]`** (authored; SKIP until a live gate run emits a `logUrl` event).
+
+## Phase 80 — Repos move to product DB + repo-scoped stories
+Shipped. **Decision:** when the DB is split per-product, the full `repos` table lives in each `{slug}.db` (not the control DB); control keeps only a thin `repo_registry` index (routing + global uniqueness + sync-due). A product owns many repos, and a story (and its spawn/workstreams/PRs/live-exec) binds to exactly one repo. Spec in [`forge_implementation.md`](forge_implementation.md) Phase 80; boundary amendment in [`docs/forge/split-db.md`](forge/split-db.md).
+
+- [x] 80.A Schema — `RepoRegistryRow` (control) + `RepoRow` moved to `ProductDbContext`; `ProductRow.DefaultRepoId`; `ProductStoryRow.RepoId`; partial-unique RemoteUrl/CloneRoot on the registry (filtered `DeletedAt IS NULL`).
+- [x] 80.B+D Data move — `RepoMoveToProductService` (ATTACH + explicit-column copy control→`{slug}.db`, drops control `repos`, marker-gated/idempotent) + `RepoRegistrySync` (builds registry, sets `DefaultRepoId`, backfills null `RepoId` on product tables, quarantines orphan registry rows). Verified on the live 4-product split env.
+- [x] 80.C `RepoLookup` (registry→owning-product-DB routing) + ~75 `control.Repos` readers migrated; 8 hidden `control.Set<RepoRow>()` runtime sites fixed.
+- [x] 80.E `X-Forge-Repo-Id` scope — `RepoScope` helper + `RepoScopeMiddleware` (validates vs registry, resolves product when repo-id sent alone, echoes `X-Forge-Repo-Resolved`); `ProductScope.ResolveAsync` narrows the 8 board/workstreams/PRs/live-exec endpoints to the active repo.
+- [x] 80.F Required repo binding — story-create resolves repo (req → active → `DefaultRepoId`) or 400 `repo.required`; spawn inherits the story's repo; work-item spawn falls back to the product's `DefaultRepoId`; base-branch materialization narrowed to the story's repo.
+- [x] 80.G UI — topbar repo switcher (`useProductsStore.activeRepoId` + `localStorage`, resets on product switch), `X-Forge-Repo-Id` on all requests (`buildScopeHeaders`), `SpawnStoryModal` drops the operator repo pick (inherits + shows read-only), `story.repoId` on the DTO. Vitest 9 new, UI suite 116/116.
+- [x] 80.H Tests/cleanup — `MultiProductForgeWebApplicationFactory.SeedReposAsync` multi-repo fixture (+ 2 factory bugs fixed: SplitMarkerCache invalidation + post-split repo move); `Phase80MultiRepoTests` + boundary/backfill tripwires; deleted dead `Phase76Migration.cs`; `split-db.md` boundary updated.
+
+Tests: deterministic suite green (`Category!=Integration`, run in batches given `T9_StreamingWrite` full-scale OOM that passes in isolation) — ~1,638 pass / 0 fail. Phase 80 suites: `Phase80SchemaTests`, `Phase80RepoScopeTests`, `Phase80StoryRepoTests`, `Phase80MultiRepoTests`, repo-move/registry/reboot 33/33. Integration tests (real Claude/Copilot) need auth, excluded per CI convention.

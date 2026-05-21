@@ -11,9 +11,10 @@ using Microsoft.Data.Sqlite;
 
 /// <summary>
 /// Phase 80.B — physically relocate the <c>repos</c> table from the control
-/// DB (<c>forge.db</c>) into each per-product <c>{slug}.db</c>. Supersedes the
-/// never-wired <c>Phase76Migration</c> (whose <c>INSERT … SELECT *</c> was
-/// column-order-fragile and whose DDL pre-dated <c>repos.TestImpactedOnly</c>).
+/// DB (<c>forge.db</c>) into each per-product <c>{slug}.db</c>. Supersedes an
+/// earlier never-wired migration attempt (deleted in 80.H) whose
+/// <c>INSERT … SELECT *</c> was column-order-fragile and whose DDL pre-dated
+/// <c>repos.TestImpactedOnly</c>.
 ///
 /// <para><b>Split-mode only.</b> Gated on the Phase 73 split marker — if the
 /// DB hasn't been split, <c>repos</c> already lives in the single

@@ -278,15 +278,41 @@ public static class StoriesEndpoints
             defaultRepoId = wi.RepoId;
         }
 
-        var repoId = req?.RepoId ?? defaultRepoId;
-        // Phase 80.F — a spawn must bind to a repo (inherited from the story /
-        // work item). Refuse rather than create a repo-less spawn the
-        // orchestrator can't clone, branch, or open PRs against.
+        var repoId = req?.RepoId ?? defaultRepoId ?? RepoScope.ActiveRepoId(ctx);
+        // Phase 80.F — a spawn must bind to a repo. ProductStories always carry
+        // one (enforced at create). A WorkItem may predate repo binding (e.g.
+        // synced from ADO before Phase 80, or seeded without a repo): fall back
+        // to the scoped product's default repo — the same value RepoRegistrySync
+        // backfills — so the spawn still binds deterministically instead of
+        // 400ing on a legacy row.
+        if (string.IsNullOrEmpty(repoId))
+        {
+            var scopedProductRaw = ProductScope.Read(ctx);
+            ProductRow? prod;
+            if (!string.IsNullOrEmpty(scopedProductRaw)
+                && !string.Equals(scopedProductRaw, ProductScope.AllScope, StringComparison.OrdinalIgnoreCase))
+            {
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == scopedProductRaw || p.Slug == scopedProductRaw);
+            }
+            else
+            {
+                // Unscoped / single-product (tests): prefer the default product,
+                // else the only product present.
+                prod = await control.Products.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == ForgeSeed.DefaultProductId)
+                    ?? await control.Products.AsNoTracking().FirstOrDefaultAsync();
+            }
+            repoId = prod?.DefaultRepoId;
+        }
+        // Refuse rather than create a repo-less spawn the orchestrator can't
+        // clone, branch, or open PRs against.
         if (string.IsNullOrEmpty(repoId))
         {
             return Results.Problem(
                 title: "repo.required",
-                detail: $"Story '{storyId}' has no repo bound; bind a repo to the story before spawning.",
+                detail: $"Story '{storyId}' has no repo bound and its product has no default repo; "
+                    + "attach a repo to the product (or bind one to the story) before spawning.",
                 statusCode: 400);
         }
         var now = DateTimeOffset.UtcNow;

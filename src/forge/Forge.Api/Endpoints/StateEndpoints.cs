@@ -392,6 +392,40 @@ public static class StateEndpoints
                 }
             }
 
+            // Phase 80 — re-bind the story to a different repo. A story is
+            // "under" exactly one repo; allow changing it before the story is
+            // spawned (after spawn the repo is captured on the spawn row and
+            // its branches/PRs, so a mid-flight move is out of scope). Keep the
+            // parallel WorkItemRow (same id) in sync so both views agree.
+            if (req.RepoId is { } repoIdInput)
+            {
+                var trimmedRepo = repoIdInput.Trim();
+                if (trimmedRepo.Length == 0)
+                {
+                    row.RepoId = null;
+                }
+                else
+                {
+                    var repoExists = await control.RepoRegistry.AsNoTracking()
+                        .AnyAsync(r => r.Id == trimmedRepo && r.DeletedAt == null);
+                    if (!repoExists)
+                        return Results.Problem(title: $"Repo {trimmedRepo} not found", statusCode: 400);
+                    var alreadySpawned = await db.StorySpawns.AnyAsync(s => s.StoryId == storyId);
+                    if (alreadySpawned && !string.Equals(row.RepoId, trimmedRepo, StringComparison.Ordinal))
+                        return Results.Problem(
+                            title: "repo.locked",
+                            detail: "This story has already been spawned; its repo can't be changed.",
+                            statusCode: 409);
+                    row.RepoId = trimmedRepo;
+                }
+                var parentWiForRepo = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+                if (parentWiForRepo is not null && parentWiForRepo.RepoId != row.RepoId)
+                {
+                    parentWiForRepo.RepoId = row.RepoId;
+                    parentWiForRepo.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+            }
+
             // Phase 43 — append newly uploaded attachments.
             if (req.UploadIds is { Count: > 0 })
             {
@@ -557,7 +591,9 @@ public static class StateEndpoints
         /// <summary>Phase 45 — change the story's default base branch. When the new value is non-"main" the server creates the branch in every repo of the product immediately.</summary>
         string? BaseBranch = null,
         /// <summary>Phase 46 — toggle auto-merge. Only effective when BaseBranch != "main".</summary>
-        bool? AutoMerge = null);
+        bool? AutoMerge = null,
+        /// <summary>Phase 80 — re-bind the story to a different repo (must be a live registry entry). Ignored once the story has been spawned.</summary>
+        string? RepoId = null);
 
     private static ProductStory MapStory(ProductStoryRow r) => new(
         r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"),

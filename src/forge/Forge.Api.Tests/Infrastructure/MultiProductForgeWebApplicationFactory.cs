@@ -119,7 +119,22 @@ public sealed class MultiProductForgeWebApplicationFactory : ForgeWebApplication
         {
             var apply = scope.ServiceProvider.GetRequiredService<SplitApplyService>();
             await apply.ApplyAsync(CancellationToken.None);
+
+            // Phase 80.B — the splitter classifies `repos` as a Control table
+            // (DbBoundary) and leaves it in forge.db; a dedicated, marker-gated
+            // move relocates it into each {slug}.db. The live boot runs this
+            // right after the split, so the factory must too — otherwise no
+            // {slug}.db has a `repos` table.
+            var movePaths = scope.ServiceProvider.GetRequiredService<IForgeDbPaths>();
+            await new RepoMoveToProductService(movePaths).ApplyAsync(CancellationToken.None);
         }
+
+        // The process-wide SplitMarkerCache was probed (and cached `false`)
+        // during boot — before the split ran. ProductDbContextFactory.CreateFor
+        // gates per-product routing on that marker, so without this reset every
+        // post-split CreateFor would fall back to forge.db and all products
+        // would share one DB. Invalidate so the now-stamped marker is observed.
+        SplitMarkerCache.ResetForTesting();
 
         return f;
     }
@@ -135,5 +150,51 @@ public sealed class MultiProductForgeWebApplicationFactory : ForgeWebApplication
         var factory = scope.ServiceProvider.GetRequiredService<IProductDbContextFactory>();
         db = factory.CreateFor(productSlug);
         return scope;
+    }
+
+    /// <summary>
+    /// Phase 80.H — the multi-<b>repo</b> fixture. Seeds <paramref name="repoIds"/>
+    /// into the given product's <c>{slug}.db</c> (where <c>repos</c> lives post-split)
+    /// and reconciles the control-side <see cref="RepoRegistryRow"/> index so the
+    /// repos are indexed, <see cref="ProductRow.DefaultRepoId"/> is set to the
+    /// lowest-sort repo, and product-table <c>RepoId</c> nulls are backfilled.
+    /// Exercises the true multi-repo shape: one product owning several repos in
+    /// its own DB. Returns the seeded repo ids in sort order.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> SeedReposAsync(string productSlug, params string[] repoIds)
+    {
+        if (repoIds is null || repoIds.Length == 0)
+        {
+            throw new ArgumentException("At least one repo id is required.", nameof(repoIds));
+        }
+
+        using var scope = this.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var factory = scope.ServiceProvider.GetRequiredService<IProductDbContextFactory>();
+
+        var product = await control.Products.AsNoTracking().FirstAsync(p => p.Slug == productSlug);
+        var db = factory.CreateFor(productSlug);
+
+        var sort = 0;
+        foreach (var id in repoIds)
+        {
+            if (await db.Repos.AnyAsync(r => r.Id == id)) { sort++; continue; }
+            db.Repos.Add(new RepoRow
+            {
+                Id = id,
+                Sort = sort++,
+                ProductId = product.Id,
+                Kind = "ado",
+                RemoteUrl = $"https://dev.azure.com/{productSlug}/{id}/_git/{id}",
+                DisplayName = id,
+                DefaultBranch = "main",
+                CloneRoot = $@"C:\forge\{productSlug}\{id}",
+            });
+        }
+        await db.SaveChangesAsync();
+
+        // Index the new repos into the control registry + set DefaultRepoId.
+        await RepoRegistrySync.ReconcileAsync(control, factory);
+        return repoIds.ToList();
     }
 }

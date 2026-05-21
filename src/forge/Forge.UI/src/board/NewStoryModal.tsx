@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { useProductsStore } from '@/state/useProductsStore';
@@ -27,8 +27,17 @@ export function NewStoryModal({ open, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  // Phase 80 — repo this story binds to (a story is "under" exactly one repo).
+  const [repoId, setRepoId] = useState<string>('');
   const nameRef = useRef<HTMLInputElement | null>(null);
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const activeRepoId = useProductsStore((s) => s.activeRepoId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const repos = useMemo(
+    () => (activeProductId ? reposByProduct[activeProductId] ?? [] : []),
+    [activeProductId, reposByProduct],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -40,9 +49,24 @@ export function NewStoryModal({ open, onClose }: Props) {
     setBusy(false);
     setErr(null);
     setFiles([]);
+    setRepoId('');
     const t = window.requestAnimationFrame(() => nameRef.current?.focus());
     return () => window.cancelAnimationFrame(t);
   }, [open]);
+
+  // Ensure the active product's repos are loaded for the picker.
+  useEffect(() => {
+    if (activeProductId && !reposByProduct[activeProductId]) void loadReposFor(activeProductId);
+  }, [activeProductId, reposByProduct, loadReposFor]);
+
+  // Default the repo: active repo (topbar) → sole repo → first repo.
+  useEffect(() => {
+    if (!open || repos.length === 0 || repoId) return;
+    const preferred = activeRepoId && repos.some((r) => r.id === activeRepoId)
+      ? activeRepoId
+      : repos[0].id;
+    setRepoId(preferred);
+  }, [open, repos, repoId, activeRepoId]);
 
   useEffect(() => {
     if (!open) return;
@@ -76,6 +100,8 @@ export function NewStoryModal({ open, onClose }: Props) {
         baseBranch: trimmedBase.length > 0 ? trimmedBase : undefined,
         // Phase 46 — auto-merge applies for any base including main.
         autoMerge,
+        // Phase 80 — bind to the picked repo (defaults to active / sole repo).
+        repoId: repoId || undefined,
       });
       useToastStore.getState().show(`Story "${result.story.name}" created`, 'success');
       if (result.branchWarnings && result.branchWarnings.length > 0) {
@@ -155,6 +181,25 @@ export function NewStoryModal({ open, onClose }: Props) {
               Used as the architect agent's user prompt.
             </span>
           </label>
+
+          {repos.length > 0 && (
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={labelStyle}>{repos.length === 1 ? 'Repo' : 'Repo (pick one)'}</span>
+              <select
+                value={repoId}
+                onChange={(e) => setRepoId(e.target.value)}
+                disabled={busy}
+                style={inputStyle}
+              >
+                {repos.map((r) => (
+                  <option key={r.id} value={r.id}>{r.displayName || r.id}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                The story (and every spawn produced from it) is scoped to this repo.
+              </span>
+            </label>
+          )}
 
           <label style={{ display: 'grid', gap: 5, maxWidth: 140 }}>
             <span style={labelStyle}>Points</span>

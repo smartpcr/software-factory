@@ -55,12 +55,21 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
   const setSelected = useBoardStore((s) => s.setSelected);
 
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const activeRepoId = useProductsStore((s) => s.activeRepoId);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const productRepos = useMemo(
+    () => (activeProductId ? reposByProduct[activeProductId] ?? [] : []),
+    [activeProductId, reposByProduct],
+  );
   const productKinds = useMemo(() => {
-    const repos = activeProductId ? reposByProduct[activeProductId] ?? [] : [];
-    const kinds = new Set(repos.map((r) => r.kind));
+    const kinds = new Set(productRepos.map((r) => r.kind));
     return { ado: kinds.has('ado'), github: kinds.has('github') };
-  }, [activeProductId, reposByProduct]);
+  }, [productRepos]);
+  // Phase 80 — make sure the active product's repos are loaded for the picker.
+  useEffect(() => {
+    if (activeProductId && !reposByProduct[activeProductId]) void loadReposFor(activeProductId);
+  }, [activeProductId, reposByProduct, loadReposFor]);
 
   // Product-scoped stories for the story/epic dropdown. Falls back to the
   // global epics from /api/state when no product stories are loaded.
@@ -104,6 +113,17 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
   const [crewId, setCrewId] = useState<string>('');
   const [newStoryName, setNewStoryName] = useState('');
   const [creatingStory, setCreatingStory] = useState(false);
+  // Phase 80 — repo the new work item / story binds to. Defaults to the active
+  // repo (topbar switcher) when set, else the product's sole repo, else the
+  // first repo. The operator can change it via the picker.
+  const [repoId, setRepoId] = useState<string>('');
+  useEffect(() => {
+    if (!open || productRepos.length === 0 || repoId) return;
+    const preferred = activeRepoId && productRepos.some((r) => r.id === activeRepoId)
+      ? activeRepoId
+      : productRepos[0].id;
+    setRepoId(preferred);
+  }, [open, productRepos, repoId, activeRepoId]);
   // Load crews lazily once the modal opens with a task kind set, so simple-
   // create flows don't pay the round-trip.  When the active product has no
   // crews (e.g. "local" repos that share the canonical atlas crews), fall
@@ -175,6 +195,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       setCrewId('');
       setNewStoryName('');
       setCreatingStory(false);
+      setRepoId(fromWorkItem.repoId ?? '');
       return;
     }
     setTaskKind('none');
@@ -194,6 +215,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
     setCrewId('');
     setNewStoryName('');
     setCreatingStory(false);
+    setRepoId('');
   }, [open, initial, fromWorkItem, epics]);
 
   function togglePlanSubkind(k: 'phase' | 'stage' | 'step') {
@@ -249,10 +271,8 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       const witTags = taskKind === 'plan'
         ? [...tagArr, ...planSubkinds.map((k) => `kind:${k}`), 'task:plan']
         : [...tagArr, 'task:coding'];
-      // Bind to the active product's first repo so the work item
-      // is associated with the correct project, not the default "atlas".
-      const activeRepos = activeProductId ? reposByProduct[activeProductId] ?? [] : [];
-      const repoId = activeRepos.length > 0 ? activeRepos[0].id : undefined;
+      // Phase 80 — bind to the operator-picked repo (defaults to the active /
+      // sole repo) so the work item is associated with the correct project.
       await forgeApi.createWorkItem({
         id: witId,
         track: taskKind === 'plan' ? 'design' : 'dev',
@@ -264,7 +284,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
         points: pts,
         priority,
         tags: witTags,
-        repoId,
+        repoId: repoId || undefined,
       });
     } else {
       // From-WI flow: keep the existing row but apply any operator edits
@@ -448,7 +468,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
                     onClick={async () => {
                       if (!activeProductId) return;
                       try {
-                        const result = await forgeApi.createProductStory(activeProductId, { name: newStoryName.trim() });
+                        const result = await forgeApi.createProductStory(activeProductId, { name: newStoryName.trim(), repoId: repoId || undefined });
                         setProductStories((prev) => [...prev, { id: result.story.id, name: result.story.name }]);
                         setEpic(result.story.id);
                       } catch {
@@ -489,6 +509,15 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
                 </div>
               )}
             </Field>
+            {isTask && productRepos.length > 0 && (
+              <Field label={productRepos.length === 1 ? 'Repo' : 'Repo (pick one)'}>
+                <select value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+                  {productRepos.map((r) => (
+                    <option key={r.id} value={r.id}>{r.displayName || r.id}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
             {!isTask && (
               <Field label="Column">
                 <select value={col} onChange={(e) => setCol(e.target.value as ColumnId)}>

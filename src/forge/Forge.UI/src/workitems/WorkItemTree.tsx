@@ -6,7 +6,7 @@ import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
-import { SAMPLE_REPOS } from './sampleWorkItems';
+import { useRepoLookup } from './useRepoLookup';
 
 interface Props {
   items: WorkItem[];
@@ -45,7 +45,8 @@ function TreeNode({ node, depth }: { node: Node; depth: number }) {
   const [open, setOpen] = useState(depth < 2);
   const focus = useWitStore((s) => s.focus);
   const focusedId = useWitStore((s) => s.focusedId);
-  const repo = SAMPLE_REPOS.find((r) => r.id === node.item.repoId);
+  const repoOf = useRepoLookup();
+  const repo = repoOf(node.item.repoId);
   const focused = focusedId === node.item.id;
 
   return (
@@ -86,7 +87,14 @@ function TreeNode({ node, depth }: { node: Node; depth: number }) {
             {node.item.assignedTo.initials}
           </span>
         )}
-        {repo && <RepoIcon kind={repo.kind} size={12} title={repo.displayName} />}
+        {repo ? (
+          <span className="wit-tree-repo" title={`${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})`}>
+            <RepoIcon kind={repo.kind} size={12} />
+            <span>{repo.displayName}</span>
+          </span>
+        ) : node.item.repoId ? (
+          <span className="wit-tree-repo muted" title={node.item.repoId}>{node.item.repoId}</span>
+        ) : null}
       </div>
       {open && node.children.length > 0 && (
         <div className="wit-tree-children">

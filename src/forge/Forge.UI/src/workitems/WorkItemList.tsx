@@ -6,7 +6,8 @@ import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
-import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
+import { SAMPLE_ITERATIONS } from './sampleWorkItems';
+import { useRepoLookup } from './useRepoLookup';
 
 interface Props {
   items: WorkItem[];
@@ -27,6 +28,7 @@ export function WorkItemList({ items }: Props) {
   const selection = useWitStore((s) => s.selection);
   const toggleSelect = useWitStore((s) => s.toggleSelect);
   const selectMany = useWitStore((s) => s.selectMany);
+  const repoOf = useRepoLookup();
 
   const sorted = useMemo(() => {
     const copy = [...items];
@@ -82,7 +84,7 @@ export function WorkItemList({ items }: Props) {
         </thead>
         <tbody>
           {sorted.map((item, idx) => {
-            const repo = SAMPLE_REPOS.find((r) => r.id === item.repoId);
+            const repo = repoOf(item.repoId);
             const it = SAMPLE_ITERATIONS.find((s) => s.ref === item.iterationRef);
             const selected = selection.has(item.id);
             const focused = focusedId === item.id;
@@ -119,11 +121,15 @@ export function WorkItemList({ items }: Props) {
                 <td className="wit-list-num">{item.points || '—'}</td>
                 <td><span className={`wit-list-pri pri-${item.priority}`}>{item.priority}</span></td>
                 <td className="wit-list-repo">
-                  {repo && (
-                    <span className="wit-list-repo-cell" title={repo.displayName}>
+                  {repo ? (
+                    <span className="wit-list-repo-cell" title={`${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})`}>
                       <RepoIcon kind={repo.kind} size={12} />
-                      <span>{repo.kind === 'ado' ? 'ADO' : 'GH'}</span>
+                      <span>{repo.displayName}</span>
                     </span>
+                  ) : item.repoId ? (
+                    <span className="wit-list-repo-cell muted" title={item.repoId}>{item.repoId}</span>
+                  ) : (
+                    <span className="muted">—</span>
                   )}
                 </td>
               </tr>

@@ -7820,16 +7820,36 @@ cross-product / global-uniqueness → `control.RepoRegistry`**; **scope-less by-
   (4 cases — clears on product switch, persists on repo switch, drops/keeps stale
   repo on repo-load). UI suite green: 116/116, `tsc --noEmit` clean.
 
-#### 80.H — Tests, factory, cleanup
-- [ ] 80.H.1 `MultiProductForgeWebApplicationFactory` (+ a multi-**repo** variant):
-  seed a product with 2 repos, physicalise per-product DBs, assert repos land in
-  `{slug}.db` and the registry in control.
-- [ ] 80.H.2 Tripwire: no test opens `control.Repos` (table gone); registry-only
-  uniqueness; backfill leaves zero null `RepoId` for products with ≥1 repo.
-- [ ] 80.H.3 Full suite green: `dotnet test src/forge/Forge.Api.Tests` (stop the
-  server first — copy lock — then restart with operator approval).
-- [ ] 80.H.4 Delete dead `control.Repos` references; update
-  `docs/forge/split-db.md` boundary table (repos → product).
+#### 80.H — Tests, factory, cleanup ✅ **DONE**
+- [x] 80.H.1 `MultiProductForgeWebApplicationFactory.SeedReposAsync(slug, ids…)`
+  multi-**repo** fixture: seeds N repos into a product's `{slug}.db` + reconciles
+  the control registry. Two latent factory bugs fixed so per-product routing is
+  real post-split: (a) invalidate the process-wide `SplitMarkerCache` after
+  `ApplyAsync` (it was probed `false` at boot); (b) run `RepoMoveToProductService`
+  after the split (the splitter classifies `repos` Control + leaves it in forge.db;
+  the move relocates it — the live boot does this, the factory now does too).
+  `Phase80MultiRepoTests.MultiRepo_LandInProductDb_…` asserts repos land in
+  `{slug}.db`, the registry mirrors (scoped to the product), `DefaultRepoId` =
+  lowest-sort, and a sibling product's DB stays empty.
+- [x] 80.H.2 Tripwires: `Boundary_ControlHasRegistryOnly_ProductHasRepos` (control
+  model maps no `RepoRow`/`repos` table, has `repo_registry` with unique RemoteUrl
+  + CloneRoot indexes; product model owns `repos`). `Backfill_LeavesZeroNullRepoId…`
+  proves the reconcile backfills a repo-less work item to the default repo.
+- [x] 80.H.3 Deterministic suite green (`Category!=Integration`, run in batches given
+  the full-scale OOM on `T9_StreamingWrite` which passes in isolation): ~1,638 pass /
+  0 fail across Phase 1x–9x + Stage + non-Phase + DB-machinery batches. Two 80.F
+  ripple-regressions fixed at root cause: (a) spawn of a repo-less **work item** now
+  falls back to the scoped product's `DefaultRepoId` instead of 400ing
+  (`StoriesEndpoints.Spawn` — handles legacy ADO-synced items, mirrors create);
+  (b) `InMemoryStoryGitOps.WorktreeExistsAsync` falls back to the `_default` key so a
+  worktree registered with `repo:null` is visible to a repo-specific probe (tests
+  set up worktrees null-repo; a spawn now binds a real repo). Integration tests
+  (real Claude/Copilot) still require auth and are excluded per CI convention.
+- [x] 80.H.4 Deleted dead, never-wired `Phase76Migration.cs` (superseded by
+  `RepoMoveToProductService`). Updated `docs/forge/split-db.md` boundary (headline +
+  table + a Phase 80 amendment: `repos` → product DB, control keeps `repo_registry`).
+  Control `repos` table already dropped on the live split env during the 80.B move;
+  the boundary tripwire enforces it stays gone.
 
 ### Header / endpoint contract
 

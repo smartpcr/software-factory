@@ -4,12 +4,15 @@ import { useBoardStore, filterCards } from '@/state/useBoardStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { RepoIcon } from '@/products/RepoIcon';
+import { useRepoLookup } from '@/workitems/useRepoLookup';
 import { EditStoryModal } from './EditStoryModal';
 
 // Story list view for Plan & Design. Shows each product-scoped story
 // as an expandable row with its associated cards underneath.
 export function StoryList() {
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const repoOf = useRepoLookup();
 
   // Fetch product-scoped stories.
   const [stories, setStories] = useState<ProductStory[]>([]);
@@ -152,6 +155,18 @@ export function StoryList() {
                   </span>
                   <span style={countBadge}>{groupCards.length}</span>
                 </button>
+                {story && (() => {
+                  const repo = repoOf(story.repoId);
+                  if (!repo && !story.repoId) return null;
+                  return (
+                    <span style={repoChipStyle} title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : story.repoId ?? ''}>
+                      {repo && <RepoIcon kind={repo.kind} size={11} />}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
+                        {repo?.displayName ?? story.repoId}
+                      </span>
+                    </span>
+                  );
+                })()}
               </div>
               <span style={{ width: 80, textAlign: 'center', fontSize: 11 }}>
                 {story?.status ?? '—'}
@@ -394,6 +409,17 @@ const countBadge: React.CSSProperties = {
   borderRadius: 'var(--radius-sm)',
   padding: '1px 5px',
   flexShrink: 0,
+};
+
+const repoChipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  flexShrink: 0,
+  fontSize: 10,
+  fontFamily: 'var(--font-mono)',
+  fontWeight: 500,
+  color: 'var(--text-secondary)',
 };
 
 const tagStyle: React.CSSProperties = {

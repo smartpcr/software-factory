@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import type { ProductStory } from '@/types';
 
 interface Props {
@@ -18,9 +19,17 @@ export function EditStoryModal({ open, story, onClose, onSaved }: Props) {
   const [description, setDescription] = useState('');
   const [points, setPoints] = useState<string>('0');
   const [status, setStatus] = useState('planning');
+  const [repoId, setRepoId] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
+
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const repos = useMemo(
+    () => (story ? reposByProduct[story.productId] ?? [] : []),
+    [story, reposByProduct],
+  );
 
   useEffect(() => {
     if (!open || !story) return;
@@ -28,11 +37,13 @@ export function EditStoryModal({ open, story, onClose, onSaved }: Props) {
     setDescription(story.description ?? '');
     setPoints(String(story.points ?? 0));
     setStatus(story.status ?? 'planning');
+    setRepoId(story.repoId ?? '');
     setBusy(false);
     setErr(null);
+    if (!reposByProduct[story.productId]) void loadReposFor(story.productId);
     const t = window.requestAnimationFrame(() => nameRef.current?.focus());
     return () => window.cancelAnimationFrame(t);
-  }, [open, story]);
+  }, [open, story, reposByProduct, loadReposFor]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,6 +66,8 @@ export function EditStoryModal({ open, story, onClose, onSaved }: Props) {
         description: description.trim(),
         points: ptsNum,
         status: status.trim() || 'planning',
+        // Phase 80 — only send repoId when the operator changed the binding.
+        repoId: repoId !== (story.repoId ?? '') ? (repoId || null) : undefined,
       });
       useToastStore.getState().show(`Story "${result.story.name}" updated`, 'success');
       onSaved?.(result.story);
@@ -149,6 +162,25 @@ export function EditStoryModal({ open, story, onClose, onSaved }: Props) {
               />
             </label>
           </div>
+
+          {repos.length > 0 && (
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={labelStyle}>Repo</span>
+              <select
+                value={repoId}
+                onChange={(e) => setRepoId(e.target.value)}
+                disabled={busy}
+                style={inputStyle}
+              >
+                {repos.map((r) => (
+                  <option key={r.id} value={r.id}>{r.displayName || r.id}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                The repo this story is under. Can't be changed once the story is spawned.
+              </span>
+            </label>
+          )}
 
           {err && (
             <div role="alert" style={errStyle}>

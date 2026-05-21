@@ -17,7 +17,7 @@ import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
-import { SAMPLE_REPOS } from './sampleWorkItems';
+import { useRepoLookup } from './useRepoLookup';
 
 interface Props {
   items: WorkItem[];
@@ -173,7 +173,8 @@ function BoardCard({ item, dragging }: { item: WorkItem; dragging?: boolean }) {
   const selection = useWitStore((s) => s.selection);
   const toggleSelect = useWitStore((s) => s.toggleSelect);
 
-  const repo = SAMPLE_REPOS.find((r) => r.id === item.repoId);
+  const repoOf = useRepoLookup();
+  const repo = repoOf(item.repoId);
   const selected = selection.has(item.id);
   const focused = focusedId === item.id;
 
@@ -208,12 +209,20 @@ function BoardCard({ item, dragging }: { item: WorkItem; dragging?: boolean }) {
         <span className="wit-board-card-id" title={item.id}>{item.id}</span>
         <StatePill state={item.state} />
         <ExecBadge status={item.executionStatus} trialCount={item.trialCount} size={item.executionStatus === 'idle' ? 'sm' : 'md'} />
-        {repo && <RepoIcon kind={repo.kind} size={12} title={repo.displayName} />}
         <span className="wit-board-card-spacer" />
         {item.points > 0 && <span className="wit-board-card-pts">{item.points}</span>}
       </div>
       <h4 className="wit-board-card-title">{item.title}</h4>
       <div className="wit-board-card-foot">
+        {(repo || item.repoId) && (
+          <span
+            className="wit-board-card-repo"
+            title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : item.repoId ?? ''}
+          >
+            {repo && <RepoIcon kind={repo.kind} size={11} />}
+            <span>{repo?.displayName ?? item.repoId}</span>
+          </span>
+        )}
         {item.assignedTo && (
           <span className="wit-board-card-assignee">
             <span className="wit-board-card-avatar">{item.assignedTo.initials}</span>

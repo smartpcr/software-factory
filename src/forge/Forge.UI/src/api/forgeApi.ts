@@ -688,7 +688,7 @@ export const forgeApi = {
    *  when a non-default base branch is set. The client normalises both shapes. */
   async createProductStory(
     productId: string,
-    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean },
+    req: { name: string; id?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; baseBranch?: string; autoMerge?: boolean; repoId?: string | null },
   ): Promise<{ story: ProductStory; branchWarnings?: string[] }> {
     const resp = await fetchJson<ProductStory | { story: ProductStory; branchWarnings: string[] }>(
       `/api/products/${encodeURIComponent(productId)}/stories`,
@@ -712,7 +712,7 @@ export const forgeApi = {
   async updateProductStory(
     productId: string,
     storyId: string,
-    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean },
+    body: { name?: string; status?: string; description?: string; points?: number; uploadIds?: string[]; removeFileNames?: string[]; baseBranch?: string; autoMerge?: boolean; repoId?: string | null },
   ): Promise<{
     story: ProductStory;
     branchWarnings?: string[];

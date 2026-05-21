@@ -4,7 +4,7 @@
 
 **Phases A–G shipped.** Per-product `{slug}.db` files created via the admin endpoint. Tests clean (1336 pass / 0 fail / 84 skipped, see Test caveats below). Per-product UI routing verified against the running server.
 
-**Headline:** `ProductDbContext` is product-only. `ControlDbContext` owns 15 control entities (Products, Repos, Users, UserSettings, UserProductRoles, Crews, CrewMembers, CrewHistory, DomainExperts, Agents, AgentHistory, AgentLevelHistory, AgentUsage, AgentClaims, Audit/forge_actions). The `ProductDbContextFactory` routes per-request to `{slug}.db` when the file exists, falls back to the control DB when it doesn't (Phase D interim).
+**Headline:** `ProductDbContext` is product-only. `ControlDbContext` owns the control entities (Products, Users, UserSettings, UserProductRoles, Crews, CrewMembers, CrewHistory, DomainExperts, Agents, AgentHistory, AgentLevelHistory, AgentUsage, AgentClaims, Audit/forge_actions). The `ProductDbContextFactory` routes per-request to `{slug}.db` when the file exists, falls back to the control DB when it doesn't (Phase D interim). **Phase 80 update:** `repos` moved out of control into each `{slug}.db`; control now keeps only the thin `repo_registry` index (see the Phase 80 amendment under "Boundary").
 
 ## Operator runbook
 
@@ -49,6 +49,19 @@ This is a multi-day refactor that touches almost every file under `src/forge/For
 
 ## Boundary — what lives where
 
+> **Phase 80 amendment (2026-05) — `repos` moved to the product DB.** The
+> original boundary kept `repos` in the control DB to avoid cross-DB joins.
+> Phase 80 reversed this: a product owns many repos and each repo's work
+> (stories, work items, PRs, spawns, live-exec) is repo-scoped, so the full
+> `RepoRow` now lives in each `{slug}.db`. The control DB keeps only a thin
+> `repo_registry` index (`RepoRegistryRow`) for routing (repo-id → owning
+> product), global uniqueness (partial-unique `RemoteUrl` / `CloneRoot` filtered
+> on `DeletedAt IS NULL`), and sync-due enumeration. `ProductRow.DefaultRepoId`
+> records each product's primary repo. See Phase 80.A–80.H in
+> `docs/forge_implementation.md`; the move is performed by
+> `RepoMoveToProductService` + indexed by `RepoRegistrySync`, and the
+> `Split.DbBoundary` classifies `repos` as a Product table.
+>
 > Adjusted after rubber-duck pass. `agent_assignments` and `agent_pair_assignments`
 > moved to product DB (they are work-item history). `agent_usage` stays control
 > with denormalized `ProductId` + `RepoId` snapshots so analytics work without
@@ -59,7 +72,7 @@ This is a multi-day refactor that touches almost every file under `src/forge/For
 | Table | Reason |
 |---|---|
 | `products` | the registry — dispatcher consults this |
-| `repos` | every product-scoped query joins on Repo→Product; keeping repos here avoids cross-DB joins. RepoId stays as a string column on product-DB rows. **Mutable sync-cursor state stays here too** but writes that span repo cursor + product rows accept eventual consistency with a boot-time repair (see Phase E). |
+| ~~`repos`~~ → `repo_registry` | **Phase 80: the full `repos` table moved to each `{slug}.db`.** Control keeps only the thin `repo_registry` index (id, owning product id/slug, kind, RemoteUrl, CloneRoot, DisplayName, DeletedAt, denormalized sync cursor/cadence) for routing + global uniqueness + sync-due enumeration. The product DB is the source of truth for `RepoRow`. |
 | `users`, `user_settings`, `user_product_roles` | global identity + per-(user,product) role |
 | `crews`, `crew_members`, `crew_history` | global (Phase 10.6 — crews are not scoped to products) |
 | `agents`, `agent_history`, `agent_level_history` | global (Phase 11) |

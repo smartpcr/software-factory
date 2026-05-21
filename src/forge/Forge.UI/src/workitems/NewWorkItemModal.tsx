@@ -31,6 +31,7 @@ export function NewWorkItemModal({ open, onClose }: Props) {
   const titleRef = useRef<HTMLInputElement | null>(null);
 
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const activeRepoId = useProductsStore((s) => s.activeRepoId);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
   const loadReposFor = useProductsStore((s) => s.loadReposFor);
 
@@ -64,12 +65,16 @@ export function NewWorkItemModal({ open, onClose }: Props) {
     [activeProductId, reposByProduct],
   );
 
-  // Auto-select first repo when repos load.
+  // Auto-select a repo when repos load: prefer the topbar's active repo (the
+  // scope the operator is working in), else the first repo in the product.
   useEffect(() => {
     if (open && repos.length > 0 && !repoId) {
-      setRepoId(repos[0].id);
+      const preferred = activeRepoId && repos.some((r) => r.id === activeRepoId)
+        ? activeRepoId
+        : repos[0].id;
+      setRepoId(preferred);
     }
-  }, [open, repos, repoId]);
+  }, [open, repos, repoId, activeRepoId]);
 
   // Auto-select current iteration.
   useEffect(() => {
