@@ -288,6 +288,24 @@ public sealed class SplitApplyService
                             $"total={pre.TotalRows} classified={pre.ClassifiedRows} orphans={pre.OrphanRows}. " +
                             $"Refusing to drop source. Restore from {backupPath}.");
                     }
+
+                    // Phase 80 hardening — orphan rows (unroutable by their partition
+                    // key, e.g. a null/unknown RepoId) are NOT copied to any product DB.
+                    // The old logic treated them as "expected not to move" and then
+                    // DROPped the source, silently destroying them (this is how local's
+                    // story_spawns were lost). Refuse to drop when a partitioned table
+                    // has orphans: the rows stay safe in forge.db and the operator
+                    // resolves them (e.g. backfill RepoId) before re-running the split.
+                    // NoPartitionKey tables legitimately report all rows as "orphan"
+                    // (they're routed to the default product), so they're exempt.
+                    if (pre.OrphanRows > 0
+                        && !string.Equals(pre.Strategy, "nopartitionkey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add(
+                            $"{pre.TableName}: {pre.OrphanRows} orphan row(s) can't be routed by '{pre.Strategy}' " +
+                            $"(null/unknown partition key, e.g. RepoId). Refusing to drop the source to avoid data " +
+                            $"loss — these rows stay in forge.db. Backfill the partition key, then re-run the split.");
+                    }
                 }
             }
 
@@ -567,6 +585,17 @@ public sealed class SplitApplyService
                             $"Resume row-count mismatch for {pre.TableName} (strategy={pre.Strategy}): "
                             + $"expected-attached={expectedAttached} actual-attached={attachedTotal} "
                             + $"total={pre.TotalRows} classified={pre.ClassifiedRows} orphans={pre.OrphanRows}.");
+                    }
+
+                    // Phase 80 hardening — refuse to drop a partitioned table with
+                    // orphan rows (unroutable partition key) to avoid silent data loss.
+                    if (pre.OrphanRows > 0
+                        && !string.Equals(pre.Strategy, "nopartitionkey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add(
+                            $"{pre.TableName}: {pre.OrphanRows} orphan row(s) can't be routed by '{pre.Strategy}' "
+                            + "(null/unknown partition key). Refusing to drop the source to avoid data loss — "
+                            + "backfill the key, then re-run the split.");
                     }
                 }
             }
