@@ -2844,6 +2844,34 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             The Forge build gate will reject and block the workstream
             otherwise.
 
+            ## Running tests -- ONLY the tests for what you changed
+            Verify with the tests that cover **your** change, and ONLY
+            those. For a test-class migration/refactor, that means the
+            class you edited:
+              `dotnet test <yourTestProject>.csproj --filter "FullyQualifiedName~<YourTestClass>"`
+            (e.g. `--filter "FullyQualifiedName~CacheControllerIntegrationTests"`).
+
+            **DO NOT run the whole project's test suite, and DO NOT try to
+            fix tests you did not touch.** Concretely:
+              - NEVER run an un-filtered `dotnet test <project>.csproj` over
+                a large suite. Besides being out of scope, a 100s-of-tests
+                run streams no output for >10 min and Forge kills the
+                iteration as `generator-inactive` -- so you lose ALL your
+                work for that iter. A filtered run finishes in seconds.
+              - Pre-existing failures in OTHER test classes are NOT your
+                responsibility and are NOT a reason your migration fails.
+                If the full suite is red for reasons unrelated to your
+                file, that is a separate problem -- record it as an
+                **Open Question** at the end of your output and move on.
+              - Do NOT edit shared framework / production code to chase
+                sibling-test failures. If your migration genuinely needs a
+                framework capability that doesn't exist yet, raise it as an
+                Open Question rather than editing shared infrastructure
+                (which breaks other tests and balloons the change).
+              - Forge's own test gate is already scoped to the tests
+                impacted by your diff; you do not need to prove the whole
+                suite is green.
+
             ## Don't run git yourself
             DO NOT run `git add`, `git commit`, `git push`, `git stash`,
             `git reset`, or any other git command that mutates state.
