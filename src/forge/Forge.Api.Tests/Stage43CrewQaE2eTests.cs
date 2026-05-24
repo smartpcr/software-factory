@@ -53,7 +53,8 @@ public class Stage43CrewQaE2eTests
         string? implDiff = null,
         E2eSetupType setupType = E2eSetupType.Inline,
         string? setupBlock = null,
-        string? attachmentSection = null) =>
+        string? attachmentSection = null,
+        string ecosystem = "dotnet") =>
         new(
             StoryId: StoryId,
             StoryTitle: "Stage 4.3 fixture",
@@ -67,7 +68,8 @@ public class Stage43CrewQaE2eTests
                 ?? "# Impl workstream `ws-foo` branch `ws/foo` vs `main` — 2 files changed:\n  src/Foo.cs\n  src/Bar.cs",
             SetupType: setupType,
             SetupBlockMarkdown: setupBlock ?? string.Empty,
-            AttachmentPromptSection: attachmentSection ?? string.Empty);
+            AttachmentPromptSection: attachmentSection ?? string.Empty,
+            Ecosystem: ecosystem);
 
     // ── 1. [unit] Prompt contains ## Implementation diff with the diff body ──
 
@@ -141,6 +143,48 @@ public class Stage43CrewQaE2eTests
         Assert.Contains("## Setup", bareInline);
         Assert.Contains("Type:_ inline", bareInline);
         Assert.Contains("no `### Setup` block", bareInline);
+    }
+
+    // ── 2b. [unit] Generator task is ecosystem-driven, not C#-defaulted ──
+
+    [Theory]
+    [InlineData("go", "go test -tags e2e ./...", "godog")]
+    [InlineData("rust", "cargo test --features e2e", "cucumber")]
+    [InlineData("python", "pytest -m e2e", "pytest-bdd")]
+    [InlineData("node", "npm run test:e2e", "vitest")]
+    [InlineData("maven", "mvn test -Dgroups=e2e", "Cucumber-JVM")]
+    [InlineData("dotnet", "dotnet test --filter Category=e2e", "Reqnroll")]
+    public void BuildQaE2ePrompt_EmitsEcosystemHarness_AndGateCommand(
+        string ecosystem, string gateCommand, string toolNeedle)
+    {
+        var inputs = SampleInputs(ecosystem: ecosystem);
+        var gen = CrewStoryArtifactStrategy.BuildQaE2ePrompt(inputs, evaluator: false);
+
+        // The generator task names the ecosystem's idiomatic harness …
+        Assert.Contains(toolNeedle, gen);
+        // … and the post-pass gate command the agent must make runnable …
+        Assert.Contains(gateCommand, gen);
+        // … which is the SAME command ProduceStageE2eAsync runs as the gate.
+        Assert.Equal(gateCommand, CrewStoryArtifactStrategy.E2eTestCommandForEcosystem(ecosystem));
+    }
+
+    [Fact]
+    public void BuildQaE2ePrompt_NonDotnet_DoesNotScaffoldDotnetProject()
+    {
+        // The historical bug: a Go/Rust/Python/Node repo's qa-e2e workstream
+        // scaffolded a full .NET project (`tests/Steps/.../*Steps.cs`,
+        // `dotnet test`). The non-.NET harness blocks must NOT instruct the
+        // agent to write Reqnroll step files or run `dotnet test`.
+        foreach (var eco in new[] { "go", "rust", "python", "node", "maven" })
+        {
+            var gen = CrewStoryArtifactStrategy.BuildQaE2ePrompt(SampleInputs(ecosystem: eco), evaluator: false);
+            Assert.DoesNotContain("Steps.cs", gen);
+            Assert.DoesNotContain("dotnet test", gen);
+            // Each non-.NET block explicitly tells the agent NOT to scaffold .NET.
+            // Collapse whitespace first — the phrase wraps across prompt lines.
+            var normalized = System.Text.RegularExpressions.Regex.Replace(gen, @"\s+", " ");
+            Assert.Contains("do NOT scaffold a C#/.NET project", normalized);
+        }
     }
 
     // ── 3. [unit] Empty test scenarios → InvalidOperationException ───────

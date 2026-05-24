@@ -79,20 +79,7 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
     public async Task<bool> CanHandleAsync(string workspace, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(workspace) || !Directory.Exists(workspace)) return false;
-        foreach (var lang in this.languages)
-        {
-            try
-            {
-                if (await lang.DetectAsync(workspace, ct).ConfigureAwait(false)) return true;
-            }
-            catch
-            {
-                // Language detector blew up — skip it; the next
-                // language might still claim.
-                continue;
-            }
-        }
-        return false;
+        return await this.PickLanguageAsync(workspace, ct).ConfigureAwait(false) is not null;
     }
 
     public async Task<ImpactedTestResolverResult?> ResolveAsync(
@@ -210,6 +197,25 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
 
     private async Task<ILspLanguageSupport?> PickLanguageAsync(string workspace, CancellationToken ct)
     {
+        // Prefer the shared WorkspaceEcosystemDetector — the SAME detector
+        // the qa-e2e generator uses — so the two subsystems can never
+        // disagree about a repo's language. It's monorepo-aware + scored, so
+        // a Go repo with a stray Cargo.toml is correctly picked as `go`
+        // rather than whichever language happens to sit first in priority
+        // order (the previous DetectAsync loop returned the first marker hit).
+        var ecosystem = WorkspaceEcosystemDetector.Detect(workspace);
+        var mapped = WorkspaceEcosystemDetector.ToLspLanguageId(ecosystem);
+        if (mapped is not null)
+        {
+            var match = this.languages.FirstOrDefault(
+                l => string.Equals(l.LanguageId, mapped, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+        }
+
+        // Fall back to the per-language marker probe — covers tsconfig-only
+        // TypeScript repos (the ecosystem detector keys node off package.json),
+        // custom language sets injected by tests, and anything the detector
+        // reports as `unknown`.
         foreach (var lang in this.languages)
         {
             try

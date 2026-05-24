@@ -232,9 +232,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await File.WriteAllTextAsync(full, content, ct);
         }
 
-        await this.GitAsync(wtPath, ct, "add", "-A");
-        await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
-        await this.ScrubBuildArtifactsFromIndexAsync(wtPath, ct);
+        await this.StageAllAndScrubAsync(wtPath, ct);
 
         // Delete .forge/ from disk so a subsequent `git add -A` (e.g., in
         // MergeUpstreamIntoBranchAsync) doesn't re-stage the files.
@@ -248,10 +246,27 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Detect "nothing to commit" — git returns non-zero for an empty
         // commit unless --allow-empty is passed; we don't want empty
         // history rows.
-        var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "status", "--porcelain");
-        if (statusCode == 0 && string.IsNullOrWhiteSpace(statusOut))
+        //
+        // IMPORTANT: check the STAGED index, NOT `git status --porcelain`.
+        // Porcelain also reports untracked working-tree entries (e.g. a
+        // leftover `__pycache__/` dir that `git add -A` skipped or that the
+        // scrub steps above just removed from the index). Those make
+        // porcelain non-empty even when nothing is staged, so the old
+        // porcelain check fell through to `git commit`, which exits 1
+        // ("nothing added to commit but untracked files present") and threw.
+        // That permanently stranded any idempotent re-commit: observed on
+        // code-intelligence:CLEAN-CODE qa-e2e `1.2-e2e`, where the files were
+        // already committed+pushed on the first run, so every re-tick
+        // re-wrote identical content, staged nothing, and the commit
+        // hard-failed BEFORE the orchestrator could reach OpenPrAsync — a
+        // passing deliverable that never produced a PR, looping every tick.
+        // `git diff --cached --quiet` exits 0 iff the index == HEAD (nothing
+        // staged), so we skip the commit and still push + return HEAD so the
+        // PR step proceeds against the already-committed branch tip.
+        var (stagedCode, _, _) = await this.RunGitCaptureAsync(wtPath, ct, "diff", "--cached", "--quiet");
+        if (stagedCode == 0)
         {
-            this.logger?.LogInformation("CommitFilesAsync: no changes to commit on branch {Branch}", branch);
+            this.logger?.LogInformation("CommitFilesAsync: no staged changes to commit on branch {Branch}", branch);
         }
         else
         {
@@ -1131,12 +1146,21 @@ public sealed class RealStoryGitOps : IStoryGitOps
         try
         {
             // Stage + commit any uncommitted changes so they're included
-            // in the push (e.g. a generator interrupted mid-write).
-            await this.RunGitCaptureAsync(wtPath, ct, "add", "-A");
-            await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
-            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
-                wtPath, ct, "status", "--porcelain");
-            if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
+            // in the push (e.g. a generator interrupted mid-write). Route
+            // through StageAllAndScrubAsync so build artifacts (__pycache__,
+            // node_modules, target, …) are scrubbed here too — the old path
+            // scrubbed only .forge/ and so re-committed artifacts that
+            // CommitFilesAsync had already removed (the flip-flop leak).
+            await this.StageAllAndScrubAsync(wtPath, ct);
+            // Commit only when something is actually STAGED. `git status
+            // --porcelain` also reports untracked / scrubbed working-tree
+            // entries (e.g. a leftover __pycache__/ the scrub just un-staged),
+            // which would make `git commit` fail with "nothing added to
+            // commit" — so gate on the staged index instead (mirrors
+            // CommitFilesAsync).
+            var (stagedCode, _, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "diff", "--cached", "--quiet");
+            if (stagedCode != 0)
             {
                 await this.RunGitCaptureAsync(wtPath, ct,
                     "-c", "user.email=forge-architect@local",
@@ -1817,6 +1841,31 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
         }
         catch { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// The ONE blanket-staging chokepoint: <c>git add -A</c> followed by
+    /// BOTH index scrubs (<see cref="ScrubForgeScratchFromIndexAsync"/> +
+    /// <see cref="ScrubBuildArtifactsFromIndexAsync"/>). Every commit path
+    /// that stages the whole worktree must go through here so a generated
+    /// artifact (a Python sidecar's <c>__pycache__/*.pyc</c>, a `node_modules/`,
+    /// a Rust `target/`, …) can never reach a commit.
+    ///
+    /// <para>This closes the leak that produced the add→remove "flip-flop"
+    /// seen on code-intelligence:CLEAN-CODE qa-e2e: <see cref="CommitFilesAsync"/>
+    /// scrubbed build artifacts, but the separate <c>git add -A</c> in
+    /// <see cref="PushBranchAsync"/> scrubbed only <c>.forge/</c>, so it
+    /// re-staged + committed the monorepo's untracked
+    /// <c>services/agent-memory/cmd/reranker-sidecar/__pycache__/</c> bytecode.
+    /// Routing both sites through this helper keeps the scrub set in lockstep
+    /// and prevents the same drift from reappearing in any future
+    /// stage-all path.</para>
+    /// </summary>
+    private async Task StageAllAndScrubAsync(string wtPath, CancellationToken ct)
+    {
+        await this.GitAsync(wtPath, ct, "add", "-A");
+        await this.ScrubForgeScratchFromIndexAsync(wtPath, ct);
+        await this.ScrubBuildArtifactsFromIndexAsync(wtPath, ct);
     }
 
     /// <summary>
