@@ -702,6 +702,41 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// 2026-05-22 — resolve the repo's init command (e.g. <c>init.cmd</c>),
+    /// run FIRST in each gate stage's single shell session so the PATH /
+    /// CDP_* env it sets is visible to restore + build + test (see
+    /// <see cref="StoryBuildRunner.RunBuildAsync"/>'s session block).
+    /// Repo-override only — there is no ecosystem default for init, so a
+    /// repo that doesn't configure one keeps today's bare-build behaviour.
+    /// </summary>
+    private static string? ResolveInitCommand(RepoRow? repo) =>
+        string.IsNullOrWhiteSpace(repo?.InitCommand) ? null : repo!.InitCommand;
+
+    /// <summary>
+    /// 2026-05-22 — resolve the repo's restore command (e.g. <c>restore</c>,
+    /// which on the <c>update</c> repo is a <c>.dev</c> script reachable
+    /// only after init.cmd puts <c>.dev</c> on PATH). Run AFTER init and
+    /// BEFORE build/test in the same session. Repo-override only.
+    /// </summary>
+    private static string? ResolveRestoreCommand(RepoRow? repo) =>
+        string.IsNullOrWhiteSpace(repo?.RestoreCommand) ? null : repo!.RestoreCommand;
+
+    /// <summary>
+    /// 2026-05-22 — compose the ordered shell-session prologue
+    /// (init → restore) the gate prepends to each build/test command so
+    /// they run in one cmd.exe session. Empty when the repo configures
+    /// neither, which makes <see cref="StoryBuildRunner.RunBuildAsync"/>
+    /// keep its direct-exec path.
+    /// </summary>
+    private static IReadOnlyList<string> BuildSessionSetup(string? initCommand, string? restoreCommand)
+    {
+        var list = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(initCommand)) list.Add(initCommand!);
+        if (!string.IsNullOrWhiteSpace(restoreCommand)) list.Add(restoreCommand!);
+        return list;
+    }
+
+    /// <summary>
     /// Phase 49 follow-up -- resolve the quality-gate commands (run AFTER
     /// the build succeeds at the post-pass trip point) for this
     /// workstream. Mirrors the upstream-CI shape: a Cargo workspace's
@@ -813,8 +848,27 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // null/empty, the gate runs the original testCommand verbatim
         // (the legacy whole-suite behaviour).
         string? testBaseRef = null,
-        bool testImpactedOnly = false)
+        bool testImpactedOnly = false,
+        // 2026-05-21 — per-repo gate wall-clock budgets. buildTimeout
+        // governs the build + quality stages (repo.BuildTimeoutSec),
+        // testTimeout governs the test stage (repo.TestTimeoutSec).
+        // Null on either falls back to StoryBuildRunner.DefaultTimeout
+        // (8 min). Before this the gate hardcoded DefaultTimeout for
+        // every stage and silently ignored the operator's Edit-Repo
+        // timeout fields, so a long integration suite was killed at 8
+        // min regardless of the configured TestTimeoutSec.
+        TimeSpan? buildTimeout = null,
+        TimeSpan? testTimeout = null,
+        // 2026-05-22 — repo setup commands (init.cmd, restore) that must
+        // run in the SAME shell session as each stage's build/test command
+        // (RepoRow.InitCommand / RestoreCommand). Null/empty = direct exec.
+        string? initCommand = null,
+        string? restoreCommand = null)
     {
+        // init → restore prologue, prepended to each gate stage's command
+        // so they share one cmd.exe session (empty = direct exec).
+        var sessionSetup = BuildSessionSetup(initCommand, restoreCommand);
+
         // ----- BUILD stage -----
         if (string.IsNullOrWhiteSpace(buildCommand))
         {
@@ -839,10 +893,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             try
             {
                 build = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout,
+                    workspace, ct, buildTimeout ?? StoryBuildRunner.DefaultTimeout,
                     buildCommand: buildCommand,
                     logFilePath: buildLogPath,
-                    logRelPath: buildLogRel);
+                    logRelPath: buildLogRel,
+                    sessionSetupCommands: sessionSetup);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -915,10 +970,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 try
                 {
                     q = await StoryBuildRunner.RunBuildAsync(
-                        workspace, ct, StoryBuildRunner.DefaultTimeout,
+                        workspace, ct, buildTimeout ?? StoryBuildRunner.DefaultTimeout,
                         buildCommand: qc,
                         logFilePath: qualityLogPath,
-                        logRelPath: qualityLogRel);
+                        logRelPath: qualityLogRel,
+                        sessionSetupCommands: sessionSetup);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -1076,6 +1132,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
             }
 
+            // 2026-05-21 — exclude known chronic-flaky tests from the
+            // gate via the Forge:Test:ExcludeFilter config key (a vstest
+            // --filter sub-expression, e.g.
+            // `FullyQualifiedName!~CloudVsrDiscovery&FullyQualifiedName!~PostUpdateOperation`).
+            // Applied AFTER impacted resolution so it composes with the
+            // resolver's project / method narrowing (the Roslyn provider
+            // can already emit a `--filter`, so we AND-merge rather than
+            // clobber). No-op when the key is unset or the command isn't
+            // `dotnet test`. Lets a suite with a chronic 5-minute flake
+            // (which otherwise burns the whole gate budget → exit -1)
+            // run to a real pass/fail instead of a timeout kill.
+            var excludeFilter = this.config.GetValue<string?>("Forge:Test:ExcludeFilter");
+            if (!string.IsNullOrWhiteSpace(excludeFilter))
+            {
+                effectiveTestCommand = ApplyTestExcludeFilter(effectiveTestCommand, excludeFilter!);
+            }
+
             // Phase 59 Stage B — per-attempt log path for the test
             // gate. Shared between RunBuildAsync (writer) and the
             // task.test-gate.{passed,failed} payload (reader's URL).
@@ -1085,10 +1158,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             try
             {
                 t = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, StoryBuildRunner.DefaultTimeout,
+                    workspace, ct, testTimeout ?? StoryBuildRunner.DefaultTimeout,
                     buildCommand: effectiveTestCommand,
                     logFilePath: testLogPath,
-                    logRelPath: testLogRel);
+                    logRelPath: testLogRel,
+                    sessionSetupCommands: sessionSetup);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1180,13 +1254,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? crewId,
         CancellationToken ct,
         string? testBaseRef = null,
-        bool testImpactedOnly = false) =>
+        bool testImpactedOnly = false,
+        TimeSpan? buildTimeout = null,
+        TimeSpan? testTimeout = null,
+        string? initCommand = null,
+        string? restoreCommand = null) =>
         this.RunGateChainAsync(
             workItemId, workspace, iter, "per-iter",
             buildCommand, qualityCommands, testCommand,
             agentId, crewId, ct,
             testBaseRef: testBaseRef,
-            testImpactedOnly: testImpactedOnly);
+            testImpactedOnly: testImpactedOnly,
+            buildTimeout: buildTimeout,
+            testTimeout: testTimeout,
+            initCommand: initCommand,
+            restoreCommand: restoreCommand);
 
     /// <summary>
     /// Phase 59 Stage B — build the URL that <c>TranscriptLine.tsx</c>
@@ -1217,6 +1299,57 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             return overrideValue;
         }
         return config.GetValue<bool?>("Forge:Test:ImpactedOnly") ?? true;
+    }
+
+    /// <summary>
+    /// 2026-05-21 — convert a nullable per-repo timeout (seconds) into a
+    /// <see cref="TimeSpan"/>. Returns null for null / non-positive values
+    /// so the gate falls back to <see cref="StoryBuildRunner.DefaultTimeout"/>.
+    /// </summary>
+    private static TimeSpan? TimeoutFromSeconds(int? seconds) =>
+        seconds is int s && s > 0 ? TimeSpan.FromSeconds(s) : null;
+
+    /// <summary>
+    /// 2026-05-21 — merge a vstest <c>--filter</c> exclusion expression
+    /// (<paramref name="excludeFilter"/>, e.g.
+    /// <c>FullyQualifiedName!~CloudVsrDiscovery&amp;FullyQualifiedName!~PostUpdateOperation</c>)
+    /// into a resolved <c>dotnet test</c> command.
+    /// <list type="bullet">
+    ///   <item>No-op when the command is empty, the exclusion is empty, or
+    ///         the command isn't a <c>dotnet test</c> invocation (cargo / go /
+    ///         npm / pytest use different filter flags).</item>
+    ///   <item>When the command already carries a <c>--filter</c> (operator
+    ///         override or the Roslyn provider's method-level narrowing), the
+    ///         existing expression is AND-merged: <c>--filter "(EXISTING)&amp;(EXCLUDE)"</c>.</item>
+    ///   <item>Otherwise the exclusion is appended as a fresh <c>--filter "EXCLUDE"</c>.</item>
+    /// </list>
+    /// </summary>
+    internal static string ApplyTestExcludeFilter(string testCommand, string? excludeFilter)
+    {
+        if (string.IsNullOrWhiteSpace(testCommand) || string.IsNullOrWhiteSpace(excludeFilter))
+        {
+            return testCommand;
+        }
+        // vstest --filter syntax only applies to `dotnet test`.
+        if (!System.Text.RegularExpressions.Regex.IsMatch(
+                testCommand, @"\bdotnet\s+test\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            return testCommand;
+        }
+
+        var exclude = excludeFilter!.Trim();
+        // Find an existing --filter <value> (quoted expression or bare token).
+        var m = System.Text.RegularExpressions.Regex.Match(
+            testCommand,
+            "--filter\\s+(?:\"(?<q>[^\"]*)\"|(?<u>\\S+))");
+        if (m.Success)
+        {
+            var existing = m.Groups["q"].Success ? m.Groups["q"].Value : m.Groups["u"].Value;
+            var merged = $"--filter \"({existing})&({exclude})\"";
+            return testCommand[..m.Index] + merged + testCommand[(m.Index + m.Length)..];
+        }
+        return $"{testCommand} --filter \"{exclude}\"";
     }
 
     /// <summary>
@@ -3321,6 +3454,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // Forge:Test:ImpactedOnly config key is set false.
             testBaseRef: baseBranch,
             testImpactedOnly: ResolveImpactedTestOnly(repo, this.config),
+            // 2026-05-21 — honour the repo's Edit-Repo gate timeouts
+            // (BuildTimeoutSec / TestTimeoutSec) instead of the hardcoded
+            // 8-min default. A long integration suite was being killed at
+            // 8 min (exit -1) even after the operator raised TestTimeoutSec.
+            buildTimeout: TimeoutFromSeconds(repo?.BuildTimeoutSec),
+            testTimeout: TimeoutFromSeconds(repo?.TestTimeoutSec),
+            // 2026-05-22 — run init.cmd + restore in the same shell session
+            // as build/test so the repo's env (PATH/.dev, CDP_* vars) is in
+            // scope. Null for repos that configure neither (direct exec).
+            initCommand: ResolveInitCommand(repo),
+            restoreCommand: ResolveRestoreCommand(repo),
             ct: ct);
 
         // Phase 45 follow-up -- collect only files the agent actually changed
@@ -3897,6 +4041,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             qualityCommands: null,
             testCommand: "dotnet test --filter Category=e2e",
             onIterationCommit: null,
+            // 2026-05-21 — honour the repo's Edit-Repo gate timeouts here
+            // too. The qa-e2e post-pass test gate is the sole gate on this
+            // path; without forwarding the operator's TestTimeoutSec a long
+            // e2e suite is killed at the hardcoded 8-min default (exit -1),
+            // the same bug the impl path hit on
+            // stage-4.2-migrate-cachecontrollerintegrationtests (2026-05-21).
+            buildTimeout: TimeoutFromSeconds(repo?.BuildTimeoutSec),
+            testTimeout: TimeoutFromSeconds(repo?.TestTimeoutSec),
+            // 2026-05-22 — run init.cmd + restore in the same shell session
+            // as build/test so the repo's env (PATH/.dev, CDP_* vars) is in
+            // scope. Null for repos that configure neither (direct exec).
+            initCommand: ResolveInitCommand(repo),
+            restoreCommand: ResolveRestoreCommand(repo),
             ct: ct);
 
         var files = ReadAllFiles(workspace);
@@ -4687,6 +4844,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // already carry an explicit filter.
         string? testBaseRef = null,
         bool testImpactedOnly = false,
+        // 2026-05-21 — per-repo gate wall-clock budgets, forwarded to
+        // both the per-iter and post-pass gate chains. Null falls back
+        // to StoryBuildRunner.DefaultTimeout (8 min). Resolved by the
+        // caller from repo.BuildTimeoutSec / repo.TestTimeoutSec.
+        TimeSpan? buildTimeout = null,
+        TimeSpan? testTimeout = null,
+        // 2026-05-22 — repo init/restore commands threaded into both the
+        // per-iter and post-pass gate chains so they run in the same shell
+        // session as build/test. Resolved by the caller from
+        // repo.InitCommand / repo.RestoreCommand.
+        string? initCommand = null,
+        string? restoreCommand = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -5611,7 +5780,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         crew.Id,
                         iterCt,
                         testBaseRef: testBaseRef,
-                        testImpactedOnly: testImpactedOnly);
+                        testImpactedOnly: testImpactedOnly,
+                        buildTimeout: buildTimeout,
+                        testTimeout: testTimeout,
+                        initCommand: initCommand,
+                        restoreCommand: restoreCommand);
 
                     if (perIterFailure is not null)
                     {
@@ -6187,7 +6360,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         crewId: crew.Id,
                         ct: validCt,
                         testBaseRef: testBaseRef,
-                        testImpactedOnly: testImpactedOnly);
+                        testImpactedOnly: testImpactedOnly,
+                        buildTimeout: buildTimeout,
+                        testTimeout: testTimeout,
+                        initCommand: initCommand,
+                        restoreCommand: restoreCommand);
 
                     if (failure is null)
                     {

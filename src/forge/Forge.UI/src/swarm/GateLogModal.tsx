@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { buildScopeHeaders, getActiveProductId, getActiveRepoId } from '../api/forgeApi';
 
 interface Props {
   open: boolean;
@@ -29,7 +30,17 @@ export function GateLogModal({ open, logUrl, title, onClose }: Props) {
     setContent(null);
 
     const ctrl = new AbortController();
-    fetch(logUrl, { signal: ctrl.signal })
+    // 2026-05-21 — the gate-log endpoint (GET /api/workstreams/{id}/logs/{*relPath})
+    // resolves the workstream through a product-scoped ProductDbContext, so it
+    // needs the same X-Forge-Product-Id / X-Forge-Repo-Id headers the typed
+    // forgeApi client sends. A bare fetch() omitted them, so the server bound
+    // the default product DB, the workstream row was absent, and every log
+    // request 404'd ("Failed to load log: 404 Not Found") even though the
+    // file was on disk.
+    fetch(logUrl, {
+      signal: ctrl.signal,
+      headers: buildScopeHeaders(getActiveProductId(), getActiveRepoId()),
+    })
       .then(async (res) => {
         if (!res.ok) {
           setError(`${res.status} ${res.statusText}`);

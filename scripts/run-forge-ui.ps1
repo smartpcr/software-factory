@@ -47,9 +47,19 @@ function Get-ServerProcesses {
     $procs = @()
     Get-Process -Name "Forge.Api" -ErrorAction SilentlyContinue |
         ForEach-Object { $procs += $_ }
-    Get-Process -Name "dotnet" -ErrorAction SilentlyContinue |
+    # `dotnet run` fallback: match the Forge.Api host by command line. Use ONE
+    # bulk CIM query + in-memory filter instead of touching $_.CommandLine on
+    # every dotnet process — the latter triggers a per-process lookup and
+    # crawls when hundreds of stray dotnet build-server nodes are alive
+    # (observed 2026-05-21: ~700 leaked nodes made -Stop hang for minutes).
+    Get-CimInstance Win32_Process -Filter "Name='dotnet.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*Forge.Api*" } |
-        ForEach-Object { if ($procs.Id -notcontains $_.Id) { $procs += $_ } }
+        ForEach-Object {
+            if ($procs.Id -notcontains $_.ProcessId) {
+                $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+                if ($p) { $procs += $p }
+            }
+        }
     $portProcs = Get-NetTCPConnection -LocalPort $ApiPort -State Listen -ErrorAction SilentlyContinue
     foreach ($conn in $portProcs) {
         $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
@@ -230,6 +240,29 @@ if ($targetServer) {
     #     ProductFanout.ForEachProductAsync before the guard can safely
     #     trip on real runtime call sites. Tracked as a follow-up.
     $env:Forge__Db__SplitEnabled = 'true'
+
+    # 2026-05-21 — promote `Forge:Test:ExcludeFilter` from appsettings.json
+    # to an env var for the same reason as Forge__Db__SplitEnabled above:
+    # the content root is $RepoRoot (no appsettings.json there), so the key
+    # defined only in src/forge/Forge.Api/appsettings.json never loads and
+    # the story test-gate silently runs the whole suite (chronic flakes like
+    # CloudVsrDiscovery then burn the wall-clock budget → 15-min timeout kill
+    # on stage-4.2-migrate-cachecontrollerintegrationtests, 2026-05-21).
+    # Reading the value here keeps appsettings.json the single source of
+    # truth (no duplicated literal) while making it actually take effect.
+    $appsettingsPath = Join-Path $RepoRoot 'src\forge\Forge.Api\appsettings.json'
+    if (Test-Path $appsettingsPath) {
+        try {
+            $appsettings = Get-Content $appsettingsPath -Raw | ConvertFrom-Json
+            $excludeFilter = $appsettings.Forge.Test.ExcludeFilter
+            if (-not [string]::IsNullOrWhiteSpace($excludeFilter)) {
+                $env:Forge__Test__ExcludeFilter = $excludeFilter
+                Write-Host "  Forge__Test__ExcludeFilter = $excludeFilter" -ForegroundColor Gray
+            }
+        } catch {
+            Write-Host "  ⚠ Could not read Forge:Test:ExcludeFilter from appsettings.json: $_" -ForegroundColor Yellow
+        }
+    }
 
     Start-Process -FilePath $serverExe `
         -ArgumentList "--environment","Development" `
