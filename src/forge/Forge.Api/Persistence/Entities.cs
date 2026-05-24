@@ -1697,7 +1697,67 @@ public class TaskTranscriptEventRow
 }
 
 /// <summary>
-/// Phase 8 — repo row. <see cref="Kind"/> is fixed at "ado" or "github" (Q4: never both).
+/// Phase 82 — per-iteration prompt audit row. Append-only mirror of the
+/// generator/evaluator <c>task.prompt</c> emits in <see cref="Services.Stories.CrewStoryArtifactStrategy"/>.
+///
+/// <para><b>Why a dedicated table?</b> <see cref="TaskTranscriptEventRow"/>
+/// is bounded (10 000 rows/work-item via <see cref="Realtime.TaskChannel"/>)
+/// AND pruned to the last 10 iters (open) / 1 iter (closed) by
+/// <see cref="Services.TranscriptRetentionJanitor"/>. A 65-iter qa-e2e
+/// loses 55 iters' prompts before the operator can audit them. This table
+/// lives outside the transcript retention machinery so the full prompt
+/// audit trail survives indefinitely (cleared only on workstream
+/// delete / restart / <c>ClearTranscript</c>).</para>
+///
+/// <para><b>Append-only via <see cref="Attempt"/>.</b> A retry / replay
+/// for the same (WorkItemId, Iter, Role) inserts a new row with
+/// <c>Attempt = MAX(Attempt) + 1</c> rather than overwriting — the
+/// audit needs to see the differences between attempts, not just the
+/// last one. Endpoint default returns the latest attempt; older
+/// attempts are reachable via <c>?attempt=N</c>.</para>
+/// </summary>
+public class IterationPromptRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Workstream id or synthetic plan-doc id (matches <see cref="DeliverableRow.WorkItemId"/>).</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>Iteration number (1-based, matches <c>Deliverables.Iter</c>).</summary>
+    public int Iter { get; set; }
+
+    /// <summary>One of: <c>generator</c> | <c>evaluator</c>.</summary>
+    public string Role { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 1-based replay counter for the same (WorkItemId, Iter, Role).
+    /// <see cref="Services.IterationPromptStore.SaveAsync"/> reads
+    /// <c>COALESCE(MAX(Attempt), 0) + 1</c> inside a transaction.
+    /// </summary>
+    public int Attempt { get; set; } = 1;
+
+    public string AgentId { get; set; } = string.Empty;
+
+    public string CrewId { get; set; } = string.Empty;
+
+    /// <summary>Originating crew's soul.md (system prompt). Nullable — some backends ship empty system prompts.</summary>
+    public string? SystemPrompt { get; set; }
+
+    /// <summary>
+    /// The full composed user prompt the agent saw: decision pins, prior
+    /// iter notes, gate / evaluator feedback, plus the brief (which
+    /// embeds the impl-plan instructions for the current stage).
+    /// </summary>
+    public string UserPrompt { get; set; } = string.Empty;
+
+    public string? Model { get; set; }
+
+    public string? Backend { get; set; }
+
+    public string? InvokeMode { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
 /// <see cref="RemoteUrl"/> is unique across ALL products (Q5: a remote belongs to exactly one product).
 /// <see cref="CloneRoot"/> is unique across ALL products (Q2: two products can't share a worktree root).
 /// </summary>

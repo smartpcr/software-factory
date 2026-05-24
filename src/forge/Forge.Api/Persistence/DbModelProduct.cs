@@ -149,6 +149,19 @@ public static class DbModelProduct
         mb.Entity<TaskTranscriptEventRow>().HasIndex(x => new { x.WorkItemId, x.At });
         mb.Entity<TaskTranscriptEventRow>().HasIndex(x => x.WorkItemId);
 
+        // Phase 82 — iteration_prompt: append-only audit of per-iteration
+        // generator + evaluator prompts. Lives outside transcript retention
+        // so the audit trail survives indefinitely; pruned only on
+        // explicit workstream delete / restart / ClearTranscript.
+        mb.Entity<IterationPromptRow>().ToTable("iteration_prompt").HasKey(x => x.Id);
+        mb.Entity<IterationPromptRow>()
+            .HasIndex(x => new { x.WorkItemId, x.Iter, x.Role, x.Attempt })
+            .IsUnique()
+            .HasDatabaseName("IX_iteration_prompt_wi_iter_role_attempt");
+        mb.Entity<IterationPromptRow>()
+            .HasIndex(x => new { x.WorkItemId, x.Iter })
+            .HasDatabaseName("IX_iteration_prompt_wi_iter");
+
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);
         mb.Entity<TaskQueueRow>().HasIndex(x => new { x.TargetKind, x.TargetId, x.State, x.PriorityRank, x.EnqueuedAt });

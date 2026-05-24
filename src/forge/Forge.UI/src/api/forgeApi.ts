@@ -639,6 +639,26 @@ export interface PerformanceScorecardsResponse {
   filterOptions: PerformanceFilterOptions;
 }
 
+// Phase 82.1 — persisted iteration prompt audit row. Field order
+// mirrors `IterationPromptDto` in `Forge.Api/Contracts/ForgeContracts.cs`
+// (the System.Text.Json default emits property names in the record's
+// declaration order). UserPrompt is the FULL composed prompt the agent
+// saw (pins + prior notes + gate + evaluator chain + brief); these
+// payloads can be multi-100KB. SystemPrompt may be null when the
+// backend doesn't use one.
+export interface IterationPromptDto {
+  role: 'generator' | 'evaluator' | string;
+  agentId: string;
+  crewId: string;
+  attempt: number;
+  systemPrompt: string | null;
+  userPrompt: string;
+  model: string | null;
+  backend: string | null;
+  invokeMode: string | null;
+  createdAt: string;
+}
+
 export const forgeApi = {
   async getState(): Promise<ForgeState> {
     if (useLocalSeed()) {
@@ -2694,7 +2714,28 @@ export const forgeApi = {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript/${encodeURIComponent(String(eventId))}`);
   },
 
-  async clearWorkItemTranscript(workItemId: string): Promise<{ deleted: number }> {
+  /**
+   * Phase 82.1 — GET /api/work-items/{id}/iteration-prompts.
+   * Lists every persisted iteration_prompt pair (generator + evaluator)
+   * for one work item. Payload is FULL untruncated — unlike the
+   * /transcript stream which caps systemPrompt + userPrompt at 320
+   * bytes, this endpoint returns the raw bytes the agent saw. Sorted
+   * ascending by iter. Backs the in-tab pager on the Prompt tab.
+   */
+  async getWorkItemIterationPrompts(workItemId: string): Promise<{
+    workItemId: string;
+    iters: {
+      iter: number;
+      generator: IterationPromptDto | null;
+      evaluator: IterationPromptDto | null;
+      generatorAttempts: number;
+      evaluatorAttempts: number;
+    }[];
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/iteration-prompts`);
+  },
+
+  async clearWorkItemTranscript(workItemId: string): Promise<{ deleted: number; deletedDeliverables?: number; deletedPrompts?: number }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript`, {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },

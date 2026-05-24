@@ -1564,6 +1564,124 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                       + "Only after you've read the prior diff should you start editing."
                       + iterSummaryAddendum;
 
+                // Phase 82.2 — prepend operator decision pins + prior-iter notes
+                // when present. Without this block, audit goal #2 (prior-iter
+                // context) and goal #4 (global rules / pins) succeed only on
+                // plan-doc + qa-e2e prompts; impl-path generators re-discover
+                // the codebase every iter and silently drop operator pins.
+                //
+                // Decision pins ALWAYS go first when present — they override
+                // every other piece of guidance (eval feedback, brief).
+                // Prior-iter notes follow because the agent session has no
+                // memory across runner.StartAsync calls; .forge/iter-notes.md
+                // is the only continuity. Order matches CrewStoryArtifactStrategy.
+                //
+                // Persist failures here MUST NOT abort the iteration — log
+                // a warning, emit telemetry, and fall back to the plain
+                // iterPrompt so the agent still gets a usable brief.
+                try
+                {
+                    var pinsBlock = await Forge.Api.Services.Stories.CrewStoryArtifactStrategy
+                        .BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt);
+                    var notesBlock = string.IsNullOrEmpty(worktreePath)
+                        ? string.Empty
+                        : await Forge.Api.Services.Stories.CrewStoryArtifactStrategy
+                            .BuildPriorIterNotesPromptBlockAsync(worktreePath, iterCt);
+
+                    if (!string.IsNullOrEmpty(pinsBlock) || !string.IsNullOrEmpty(notesBlock))
+                    {
+                        var sb = new System.Text.StringBuilder();
+                        if (!string.IsNullOrEmpty(pinsBlock))
+                        {
+                            sb.AppendLine(pinsBlock);
+                            sb.AppendLine("────────────────────────────────────────────────────────────");
+                            sb.AppendLine();
+                        }
+                        if (!string.IsNullOrEmpty(notesBlock))
+                        {
+                            sb.AppendLine(notesBlock);
+                            sb.AppendLine();
+                            sb.AppendLine("────────────────────────────────────────────────────────────");
+                            sb.AppendLine();
+                        }
+                        sb.Append(iterPrompt);
+                        iterPrompt = sb.ToString();
+                    }
+                }
+                catch (Exception enrichEx)
+                {
+                    this.logger.LogWarning(enrichEx,
+                        "Phase 82.2 — failed to enrich iterPrompt with pins/notes for {WorkItemId} iter {Iter}; falling back to plain prompt",
+                        workItemId, iter);
+                }
+
+                // Phase 82.1 — emit the *actual* per-iter prompt (the one the
+                // model sees, with evalNotes + diff-first preamble + iter-
+                // summary addendum) so the live UI's per-iter Prompt tab and
+                // the durable iteration_prompt audit row both reflect what
+                // really ran. The pre-loop "task.prompt" emit at the top of
+                // RunAgentAsync captures only iter-1's base brief without
+                // evalNotes; it stays for backward compat (older tabs that
+                // look at the worktreePath/branch fields).
+                await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+                {
+                    agentId,
+                    crewId,
+                    systemPrompt = string.IsNullOrEmpty(soulMd) ? null : soulMd,
+                    userPrompt = iterPrompt,
+                    model,
+                    backend = backendStr,
+                    invokeMode = invokeModeStr,
+                    role = "generator",
+                    iter,
+                }, crewId: crewId, ct: iterCt);
+
+                // Phase 82.1 — durable per-iter prompt audit. Mirrors the
+                // task.prompt emit above so the audit survives transcript
+                // retention pruning (last-10 open / last-1 closed) and
+                // TaskChannel's 10 000-row cap. CrewQueueWorker is a
+                // singleton; IterationPromptStore is scoped on
+                // ProductDbContext so each save runs in a fresh DI scope.
+                // Persistence failures MUST NOT abort the iteration — log
+                // + emit telemetry, never throw.
+                try
+                {
+                    using var promptScope = this.scopeFactory.CreateScope();
+                    var promptStore = promptScope.ServiceProvider
+                        .GetRequiredService<Forge.Api.Services.IterationPromptStore>();
+                    await promptStore.SaveAsync(
+                        workItemId: workItemId,
+                        iter: iter,
+                        role: "generator",
+                        agentId: agentId,
+                        crewId: crewId,
+                        systemPrompt: string.IsNullOrEmpty(soulMd) ? null : soulMd,
+                        userPrompt: iterPrompt,
+                        model: model,
+                        backend: backendStr,
+                        invokeMode: invokeModeStr,
+                        ct: iterCt);
+                }
+                catch (Exception persistEx)
+                {
+                    this.logger.LogWarning(persistEx,
+                        "Phase 82.1 — failed to persist generator prompt for {WorkItemId} iter {Iter}",
+                        workItemId, iter);
+                    try
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                        {
+                            role = "generator",
+                            iter,
+                            error = persistEx.Message,
+                        }, crewId: crewId, ct: iterCt);
+                    }
+                    catch
+                    {
+                        // best-effort — transcript channel itself may be down
+                    }
+                }
+
                 var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
                 var output = new System.Text.StringBuilder();
                 decimal cost = 0m;
@@ -1906,6 +2024,48 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     role = "evaluator",
                     iter,
                 }, crewId: evaluatorCrewId!, ct: iterCt);
+
+                // Phase 82.1 — durable per-iter evaluator prompt audit.
+                // Mirrors the generator-side save above. Same scoped-DI +
+                // try/catch pattern: persistence failures log + emit
+                // task.prompt.persist-failed but never abort the iteration.
+                try
+                {
+                    using var promptScope = this.scopeFactory.CreateScope();
+                    var promptStore = promptScope.ServiceProvider
+                        .GetRequiredService<Forge.Api.Services.IterationPromptStore>();
+                    await promptStore.SaveAsync(
+                        workItemId: workItemId,
+                        iter: iter,
+                        role: "evaluator",
+                        agentId: evaluatorAgentId!,
+                        crewId: evaluatorCrewId!,
+                        systemPrompt: string.IsNullOrEmpty(evalSoulForScoring) ? null : evalSoulForScoring,
+                        userPrompt: evalPrompt,
+                        model: evalModel,
+                        backend: evalBackendStr,
+                        invokeMode: "sdk",
+                        ct: iterCt);
+                }
+                catch (Exception persistEx)
+                {
+                    this.logger.LogWarning(persistEx,
+                        "Phase 82.1 — failed to persist evaluator prompt for {WorkItemId} iter {Iter}",
+                        workItemId, iter);
+                    try
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                        {
+                            role = "evaluator",
+                            iter,
+                            error = persistEx.Message,
+                        }, crewId: evaluatorCrewId!, ct: iterCt);
+                    }
+                    catch
+                    {
+                        // best-effort — transcript channel itself may be down
+                    }
+                }
 
                 var evalOutput = new System.Text.StringBuilder();
                 decimal evalCost = 0m;

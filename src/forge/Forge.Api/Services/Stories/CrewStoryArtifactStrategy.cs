@@ -583,11 +583,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <para>Returns empty string when no pins apply -- caller checks for
     /// non-empty before inserting the block + separator.</para>
     /// </summary>
-    private async Task<string> BuildDecisionPinsBlockAsync(string workItemId, CancellationToken ct)
+    /// <para>Phase 82.2 — promoted to <c>internal static</c> + parameterised
+    /// on <see cref="IServiceScopeFactory"/> so <see cref="CrewQueueWorker"/>
+    /// (which doesn't inherit from this strategy) can reuse the exact same
+    /// rendering for impl-path workstreams. Without it, audit goal #4
+    /// (global rules / pins) is honoured only on plan-doc + qa-e2e prompts;
+    /// impl-path prompts silently drop the operator's pinned decisions.</para>
+    /// </summary>
+    internal static async Task<string> BuildDecisionPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
 
-        using var scope = this.scopeFactory.CreateScope();
+        using var scope = scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
@@ -5123,7 +5130,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // generator turn. Cheap query -- one row read + JSON parse.
             // Filtered to pins scoped to this work item (workItemId match)
             // OR globally-scoped pins (workItemId == null).
-            var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
+            var decisionPinsBlock = await BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt);
 
             // Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the
             // agent's own working notes from the prior iteration. Each
@@ -5363,6 +5370,51 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 role = "generator",
                 iter,
             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+            // Phase 82 -- durable per-iter prompt audit trail. Mirrors the
+            // task.prompt emit above so the audit survives the transcript
+            // retention janitor (last-10-iters open / last-1 closed) and
+            // TaskChannel's 10 000-row cap. Per-iter scope (mirrors the
+            // AgentMemoryStore pattern below) -- the strategy is a
+            // singleton, IterationPromptStore is scoped on ProductDbContext.
+            // Failures must NOT abort the iteration: log + emit telemetry,
+            // never throw.
+            try
+            {
+                using var promptScope = this.scopeFactory.CreateScope();
+                var promptStore = promptScope.ServiceProvider.GetRequiredService<IterationPromptStore>();
+                await promptStore.SaveAsync(
+                    workItemId: workItemId,
+                    iter: iter,
+                    role: "generator",
+                    agentId: genAgentId,
+                    crewId: crew.Id,
+                    systemPrompt: string.IsNullOrEmpty(genContext.SoulMd) ? null : genContext.SoulMd,
+                    userPrompt: iterPrompt,
+                    model: genContext.Model,
+                    backend: genBackendStr,
+                    invokeMode: genInvokeStr,
+                    ct: iterCt);
+            }
+            catch (Exception persistEx)
+            {
+                this.logger?.LogWarning(persistEx,
+                    "Phase 82 -- failed to persist generator prompt for {WorkItemId} iter {Iter}",
+                    workItemId, iter);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                    {
+                        role = "generator",
+                        iter,
+                        error = persistEx.Message,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                }
+                catch
+                {
+                    // best-effort -- transcript channel itself may be down
+                }
+            }
 
             // Phase 55 / Phase C+D -- load the prior iteration's
             // memory handle (session id for CLI, conversation turns
@@ -6098,6 +6150,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 role = "evaluator",
                 iter,
             }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+            // Phase 82 -- durable per-iter prompt audit trail for the
+            // evaluator role. Mirrors the generator-side save above.
+            try
+            {
+                using var promptScope = this.scopeFactory.CreateScope();
+                var promptStore = promptScope.ServiceProvider.GetRequiredService<IterationPromptStore>();
+                await promptStore.SaveAsync(
+                    workItemId: workItemId,
+                    iter: iter,
+                    role: "evaluator",
+                    agentId: evalAgentId,
+                    crewId: evalCrewId,
+                    systemPrompt: string.IsNullOrEmpty(evalContext.SoulMd) ? null : evalContext.SoulMd,
+                    userPrompt: iterEvaluatorPrompt,
+                    model: evalContext.Model,
+                    backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                    invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                    ct: iterCt);
+            }
+            catch (Exception persistEx)
+            {
+                this.logger?.LogWarning(persistEx,
+                    "Phase 82 -- failed to persist evaluator prompt for {WorkItemId} iter {Iter}",
+                    workItemId, iter);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                    {
+                        role = "evaluator",
+                        iter,
+                        error = persistEx.Message,
+                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                }
+                catch
+                {
+                    // best-effort
+                }
+            }
 
             // Phase 55 / Phase C+D -- mirror the generator-side
             // memory wiring for the evaluator role. The evaluator's
@@ -7270,7 +7361,44 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Resolves the worktree-local git exclude file (<c>info/exclude</c>
+    /// Phase 82.2 -- wraps the raw prior-iter-notes content from
+    /// <see cref="ReadPriorIterNotesAsync"/> in the canonical boxed
+    /// banner block. Returns empty when the workspace has no notes yet.
+    ///
+    /// <para>Extracted from <c>BuildIterPromptAsync</c> so
+    /// <see cref="CrewQueueWorker"/> (which doesn't inherit from this
+    /// strategy) can reuse the exact same formatting on impl-path
+    /// prompts. Without it, audit goal #2 (prior-iter context) is
+    /// honoured only on plan-doc + qa-e2e generator prompts; impl-path
+    /// generators re-discover the codebase every iter.</para>
+    ///
+    /// <para>Caller is responsible for appending a separator
+    /// (────...) + blank line after the block when concatenating with
+    /// downstream prompt sections.</para>
+    /// </summary>
+    internal static async Task<string> BuildPriorIterNotesPromptBlockAsync(string workspace, CancellationToken ct)
+    {
+        var raw = await ReadPriorIterNotesAsync(workspace, ct);
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var sb = new StringBuilder();
+        sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+        sb.AppendLine("║  NOTES FROM PRIOR ITERATIONS (your own working state)    ║");
+        sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+        sb.AppendLine();
+        sb.AppendLine("You wrote these notes across the prior iterations of this");
+        sb.AppendLine("workstream, newest first. The agent sessions that produced");
+        sb.AppendLine("them are gone -- this archive is your only memory of what");
+        sb.AppendLine("you already learned, decided, or tried. Forge appends a new");
+        sb.AppendLine("entry every iter; you do NOT need to copy prior entries");
+        sb.AppendLine("forward yourself.");
+        sb.AppendLine();
+        sb.AppendLine(raw);
+        sb.AppendLine();
+        sb.AppendLine("Overwrite `.forge/iter-notes.md` with THIS iter's reflection");
+        sb.AppendLine("only -- Forge will archive it and prepend the cumulative");
+        sb.AppendLine("history to your next prompt.");
+        return sb.ToString().TrimEnd();
+    }
     /// under whatever git dir the worktree maps to -- `git worktree add`
     /// sub-dirs point at <c>{cloneRoot}/.git/worktrees/{name}/</c>, the
     /// main checkout at <c>{cloneRoot}/.git/</c>) and appends the pattern
