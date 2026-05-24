@@ -220,6 +220,17 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
 
+        // Phase 81 — preflight: fail loudly when any input path is excluded
+        // by the repo's .gitignore (e.g. OneBranch "/*\n!/src/" allowlists
+        // silently exclude docs/**). Without this, `git add -A` would succeed
+        // and `git status --porcelain` would return empty, turning the commit
+        // into a no-op that ships an unchanged branch under an "empty" PR.
+        // See <see cref="GitIgnoredPathException"/> for the full failure mode.
+        if (files.Count > 0)
+        {
+            await this.AssertPathsNotIgnoredAsync(wtPath, branch, files.Keys, ct);
+        }
+
         // Materialize the file map under the worktree.
         foreach (var (relPath, content) in files)
         {
@@ -1105,6 +1116,14 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     repoRelativePath, branch);
                 return string.Empty;
             }
+
+            // Phase 81 — preflight: fail loudly when the path is excluded by
+            // .gitignore (e.g. OneBranch allowlists). Without this, `git add`
+            // silently succeeds, `git status --porcelain` returns empty, and
+            // the per-iter commit returns "" — turning every iteration into a
+            // no-op commit that pushes nothing.
+            await this.AssertPathsNotIgnoredAsync(wtPath, branch, new[] { repoRelativePath }, ct);
+
             await this.GitAsync(wtPath, ct, "add", "--", repoRelativePath);
 
             // No-op when the path's content is identical to the branch tip.
@@ -2116,20 +2135,15 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
 
         // Step 3: directory exists on disk but isn't a registered worktree
-        // (orphaned from a prior aborted run). Force-remove via git first
-        // so internal refs are cleaned, then nuke the directory.
+        // (orphaned from a prior aborted run, or pinned by an orphaned
+        // testhost/editor holding the worktree as its working directory).
+        // Force-remove via git first so internal refs are cleaned, then
+        // robustly delete the directory.
         if (Directory.Exists(wtPath))
         {
             this.logger?.LogInformation("Removing orphaned worktree directory at {Path}", wtPath);
             await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", wtPath);
-            if (Directory.Exists(wtPath))
-            {
-                try { Directory.Delete(wtPath, recursive: true); }
-                catch (IOException ex)
-                {
-                    this.logger?.LogWarning(ex, "Could not delete orphaned worktree dir {Path}", wtPath);
-                }
-            }
+            await this.ForceDeleteWorktreeDirAsync(wtPath, ct);
             await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
         }
 
@@ -2161,6 +2175,128 @@ public sealed class RealStoryGitOps : IStoryGitOps
                 await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
             }
         }
+    }
+
+    /// <summary>
+    /// 2026-05-21 — robustly delete an orphaned worktree directory. Clears
+    /// read-only attributes (git pack files + build outputs are frequently
+    /// read-only) and retries a few times to ride out TRANSIENT locks (the
+    /// 1 Hz <see cref="Forge.Api.Services.WorktreeChangeFeed"/> <c>git status</c>
+    /// poll, a just-killed testhost releasing its working directory). If the
+    /// directory still exists after the retries it is PINNED by a live
+    /// process — almost always an orphaned <c>testhost</c>/<c>dotnet</c> from a
+    /// timed-out test gate that kept the worktree as its CWD (observed
+    /// 2026-05-21 on <c>stage-4.2-migrate-cachecontrollerintegrationtests</c>),
+    /// or an editor holding <c>.vs</c>. Throw a CLEAR, actionable error rather
+    /// than swallowing it and letting the caller fall through to the opaque
+    /// <c>git worktree add: '&lt;path&gt;' already exists</c> (exit 128) loop.
+    /// </summary>
+    private async Task ForceDeleteWorktreeDirAsync(string wtPath, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= 6; attempt++)
+        {
+            if (!Directory.Exists(wtPath)) return;
+            try
+            {
+                ClearReadOnlyRecursive(wtPath);
+                Directory.Delete(wtPath, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == 6)
+                {
+                    throw new InvalidOperationException(
+                        $"Worktree directory '{wtPath}' could not be removed after {attempt} attempts — it is locked by "
+                        + "another process. The usual cause is an orphaned `testhost`/`dotnet` process from a timed-out "
+                        + "test gate that kept this directory as its working directory, or an editor (e.g. Visual Studio) "
+                        + "holding it open. Kill stray testhost/dotnet processes whose CWD is this path (and close any "
+                        + $"editor pointed at it), then Restart the workstream. Underlying error: {ex.Message}", ex);
+                }
+                this.logger?.LogWarning(
+                    "Worktree dir {Path} still locked (attempt {Attempt}/6): {Err} — retrying.", wtPath, attempt, ex.Message);
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clear the read-only flag across a directory tree so
+    /// <see cref="Directory.Delete(string,bool)"/> can remove git pack files
+    /// and build outputs that are marked read-only. Best-effort per file —
+    /// enumeration may race with the locking process, which is fine (the
+    /// caller retries).
+    /// </summary>
+    private static void ClearReadOnlyRecursive(string root)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var attrs = File.GetAttributes(file);
+                    if (attrs.HasFlag(FileAttributes.ReadOnly))
+                    {
+                        File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+                    }
+                }
+                catch { /* best-effort per file */ }
+            }
+        }
+        catch { /* best-effort — directory may be mutating under us */ }
+    }
+
+    /// <summary>
+    /// Phase 81 preflight — throw <see cref="GitIgnoredPathException"/> when any
+    /// of <paramref name="paths"/> is excluded by the worktree's <c>.gitignore</c>.
+    /// Uses <c>git check-ignore -v --</c>, which exits 0 (and lists the matching
+    /// rule per ignored path) when at least one path is ignored, 1 when none
+    /// are, and 128 on a tooling error. A tooling error is logged and treated as
+    /// non-blocking — the guard must never wedge an otherwise-valid commit.
+    /// </summary>
+    private async Task AssertPathsNotIgnoredAsync(
+        string wtPath, string branch, IEnumerable<string> paths, CancellationToken ct)
+    {
+        var pathList = paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToArray();
+        if (pathList.Length == 0) return;
+
+        var args = new List<string> { "check-ignore", "-v", "--" };
+        args.AddRange(pathList);
+        var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
+
+        // Exit 1 = nothing ignored (the happy path); proceed.
+        if (code == 1) return;
+
+        // Exit != 0 and != 1 means git itself failed (bad invocation, corrupt
+        // index, etc.). Don't block the commit on a tooling failure — log and
+        // let the normal add/commit flow proceed.
+        if (code != 0)
+        {
+            this.logger?.LogWarning(
+                "git check-ignore preflight returned exit {Code} in '{Path}' (branch {Branch}); skipping ignore guard.\nstdout: {StdOut}\nstderr: {StdErr}",
+                code, wtPath, branch, stdout, stderr);
+            return;
+        }
+
+        // Exit 0 = one or more paths are ignored. Each `-v` line is
+        // `<source>:<linenum>:<pattern>\t<pathname>`; the pathname is the
+        // final tab-delimited field.
+        var ignored = stdout
+            .Split('\n')
+            .Select(line => line.TrimEnd('\r'))
+            .Where(line => line.Length > 0)
+            .Select(line =>
+            {
+                var tab = line.LastIndexOf('\t');
+                return tab >= 0 ? line[(tab + 1)..] : line;
+            })
+            .Distinct()
+            .ToArray();
+
+        throw new GitIgnoredPathException(branch, ignored, stdout);
     }
 
     /// <summary>

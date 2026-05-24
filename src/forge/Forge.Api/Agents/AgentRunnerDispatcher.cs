@@ -383,7 +383,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var body = new
         {
             model = modelInfo.Id,
-            max_tokens = 4096,
+            // 2026-05-20 — was hard-coded 4096, which truncated any turn
+            // that emitted a large tool-call argument (e.g. a `create`
+            // whose `file_text` is a full source file), dropping the
+            // content and failing the write. Configurable; default 32000
+            // (safe for all registry models). See AgentRunnerOptions.
+            max_tokens = this.options.Value.ClaudeMaxOutputTokens,
             stream = true,
             // Phase 11.5 — prompt-cache the soul.md system block (5-min TTL).
             system = new[]

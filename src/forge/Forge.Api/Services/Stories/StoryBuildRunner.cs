@@ -77,7 +77,11 @@ public static class StoryBuildRunner
         TimeSpan? timeout = null,
         string? buildCommand = null,
         string? logFilePath = null,
-        string? logRelPath = null)
+        string? logRelPath = null,
+        // 2026-05-22 — when non-empty, these setup commands (e.g.
+        // init.cmd, restore) run, in order, in the SAME cmd.exe session
+        // that runs the build/test command. See the session block below.
+        IReadOnlyList<string>? sessionSetupCommands = null)
     {
         if (string.IsNullOrEmpty(workspace) || !Directory.Exists(workspace))
         {
@@ -119,6 +123,29 @@ public static class StoryBuildRunner
             }
         }
 
+        // 2026-05-22 — "same session" gate execution (RepoRow.InitCommand
+        // / RestoreCommand). init.cmd sets PATH (incl. the .dev dir that
+        // puts `restore` on PATH) and CDP_* env vars that restore.cmd and
+        // the build itself depend on; those mutations only survive WITHIN
+        // one shell process, so firing init / restore / build as three
+        // separate Process.Start calls loses the environment between them
+        // (the gate was running a bare `dotnet build` with the wrong
+        // dotnet + no restore). When the caller supplies setup commands we
+        // generate a single .cmd that `call`s each setup step then runs
+        // the build/test command verbatim, and execute the whole thing in
+        // ONE cmd.exe session. Null/empty keeps the direct-exec path
+        // (cargo / npm / go / non-Windows ecosystems, which have no init).
+        string? sessionScriptPath = null;
+        if (sessionSetupCommands is { Count: > 0 } && OperatingSystem.IsWindows())
+        {
+            var finalCommandLine = string.IsNullOrWhiteSpace(buildCommand)
+                ? "dotnet build --nologo --verbosity minimal"
+                : buildCommand!;
+            sessionScriptPath = WriteSessionScript(workspace, sessionSetupCommands, finalCommandLine);
+            program = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+            args = new[] { "/c", sessionScriptPath };
+        }
+
         var sw = Stopwatch.StartNew();
         var psi = new ProcessStartInfo(program)
         {
@@ -144,6 +171,17 @@ public static class StoryBuildRunner
         {
             psi.ArgumentList.Add(a);
         }
+
+        // 2026-05-21 — disable MSBuild node reuse + the persistent build
+        // server so each gate build/test invocation doesn't leave long-lived
+        // MSBuild worker nodes behind. ~700 leaked `dotnet` processes
+        // accumulated after a day of gate runs on the `update` repo, which
+        // burned memory and made the launcher's process scan crawl. Disabling
+        // node reuse also lets the timeout process-tree kill land on testhost
+        // cleanly (no persistent server parent to re-home it), which reduces
+        // the orphaned-testhost worktree locks this gate has hit.
+        psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 
         // Phase 49 — convert process-start failures (program not on
         // PATH, .NET SDK missing for a `dotnet build`, cargo absent
@@ -281,6 +319,14 @@ public static class StoryBuildRunner
 
         sw.Stop();
 
+        // Best-effort cleanup of the one-shot session script (temp dir).
+        // Runs before both the timeout and normal returns below; cmd.exe
+        // has exited (or been tree-killed) so the file is no longer held.
+        if (sessionScriptPath is not null)
+        {
+            try { File.Delete(sessionScriptPath); } catch { /* best-effort temp cleanup */ }
+        }
+
         if (timedOut)
         {
             // 2026-05-19 — pre-fix this said "`dotnet` build command
@@ -405,6 +451,50 @@ public static class StoryBuildRunner
             }
             return new string(result);
         }
+    }
+
+    /// <summary>
+    /// 2026-05-22 — write a one-shot batch script that runs the supplied
+    /// setup commands (e.g. <c>init.cmd</c>, <c>restore</c>) and then the
+    /// final build/test command in a SINGLE cmd.exe session, so PATH / env
+    /// mutations from the setup steps survive into the build (see the
+    /// session block in <see cref="RunBuildAsync"/>). Each setup step is
+    /// invoked with <c>call</c> (so a <c>.cmd</c> returns control here with
+    /// its env intact) and aborts the chain on a non-zero exit. Written to
+    /// the OS temp dir (no worktree pollution); the caller runs it with
+    /// <c>WorkingDirectory = workspace</c>, so a relative <c>call init.cmd</c>
+    /// resolves against the worktree root and the build's exit code (the
+    /// last line) becomes the script's exit code.
+    /// </summary>
+    private static string WriteSessionScript(string workspace, IReadOnlyList<string> setupCommands, string finalCommand)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"forge-gate-{Guid.NewGuid():N}.cmd");
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("@echo off");
+        // Re-enable cwd search for bare command names. When the host
+        // process tree has NoDefaultCurrentDirectoryInExePath set (some
+        // shells / sandboxes set it), cmd will NOT find `init.cmd` in the
+        // current directory by bare name — `'init.cmd' is not recognized`
+        // even with the right cwd. Clearing it for this session restores
+        // the normal "search cwd first" behaviour so `call init.cmd`
+        // resolves the worktree's script regardless of the parent env.
+        sb.AppendLine("set \"NoDefaultCurrentDirectoryInExePath=\"");
+        // Pin cwd to the worktree explicitly: a relative setup command
+        // (`call init.cmd`) resolves against cwd, and we can't depend on
+        // the spawning shell inheriting it (the runner sets
+        // ProcessStartInfo.WorkingDirectory, but `cd /d` makes the script
+        // self-contained regardless of how it's launched).
+        sb.AppendLine($"cd /d \"{workspace}\"");
+        foreach (var cmd in setupCommands)
+        {
+            if (string.IsNullOrWhiteSpace(cmd)) continue;
+            sb.AppendLine($"call {cmd}");
+            sb.AppendLine("if errorlevel 1 exit /b %errorlevel%");
+        }
+        sb.AppendLine(finalCommand);
+        sb.AppendLine("exit /b %errorlevel%");
+        File.WriteAllText(path, sb.ToString());
+        return path;
     }
 
     /// <summary>

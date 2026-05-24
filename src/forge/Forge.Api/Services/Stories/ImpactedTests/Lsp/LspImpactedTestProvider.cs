@@ -56,6 +56,41 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
     private bool disposed;
 
     /// <summary>
+    /// Source-code extensions that belong to OTHER providers /
+    /// languages. When the diff carries a file with one of these
+    /// extensions that is NOT in the picked language's
+    /// <see cref="ILspLanguageSupport.SourceFileExtensions"/>, this
+    /// provider must NOT terminate the chain with a
+    /// <see cref="ImpactedTestResolverResult.Skipped"/> result — it can
+    /// only speak for its own language. It returns <c>null</c> instead
+    /// so the chain falls through to a provider that CAN handle the
+    /// foreign source (Roslyn / the C# heuristic for <c>.cs</c>, etc.).
+    ///
+    /// <para><b>Operator bug 2026-05-20</b>: a C#-only diff (the
+    /// <c>UpdateService</c> integration-test migration) reached this
+    /// provider after Roslyn's <c>MSBuildWorkspace</c> load failed and
+    /// the chain fell through. The repo also carried a
+    /// <c>tsconfig.json</c>, so the TypeScript support claimed the
+    /// workspace, found zero <c>.ts</c> files in the all-<c>.cs</c>
+    /// diff, and returned <c>Skipped</c> — silently skipping the test
+    /// gate on a PR that was <i>entirely</i> test changes. Deferring on
+    /// foreign source code lets the heuristic catch the changed test
+    /// projects so the gate actually runs.</para>
+    /// </summary>
+    private static readonly IReadOnlyCollection<string> KnownSourceCodeExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // C# / .NET — handled downstream by Roslyn + the heuristic.
+        ".cs", ".fs", ".vb",
+        // The LSP-supported languages themselves.
+        ".rs", ".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts",
+        // Other common compiled / managed languages a future provider
+        // (or the same provider for a different detected language) owns.
+        ".java", ".kt", ".kts", ".scala", ".rb", ".php",
+        ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh",
+        ".swift", ".m", ".mm",
+    };
+
+    /// <summary>
     /// Default-wired with the four S2 language supports in priority
     /// order (Rust, Go, Python, TypeScript). Tests construct with a
     /// custom set when they want to pin a specific support.
@@ -93,6 +128,13 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
         var language = await this.PickLanguageAsync(workspace, ct).ConfigureAwait(false);
         if (language is null) return null;
 
+        // Does the diff carry source code in a language this provider
+        // does NOT own? If so, a Skipped result here would wrongly
+        // terminate the chain and skip tests another provider could
+        // find — defer (null) instead. We can only speak for our own
+        // language's files.
+        var diffHasForeignSourceCode = DiffHasForeignSourceCode(changedFiles, language);
+
         // Filter the changed-files list to the language's source
         // extensions. A diff that touched only non-source files
         // (READMEs, configs) yields Skipped.
@@ -104,6 +146,12 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
             .ToList();
         if (sourceFiles.Count == 0)
         {
+            // No files of THIS language in the diff. If the diff carries
+            // source code in another language, defer so a provider that
+            // can handle it gets a turn — never skip the gate on a diff
+            // we didn't actually examine. Only a purely docs / config
+            // diff (no foreign source) is a safe Skipped here.
+            if (diffHasForeignSourceCode) return null;
             return new ImpactedTestResolverResult(
                 Command: originalCommand,
                 Rewritten: false,
@@ -165,6 +213,12 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
 
         if (matched.Count == 0)
         {
+            // We examined this language's changed files but found no
+            // impacted tests. If the diff ALSO carries foreign source
+            // code we never examined, defer rather than terminate the
+            // chain with a skip — the heuristic / Roslyn may still find
+            // impacted tests for the files we don't own.
+            if (diffHasForeignSourceCode) return null;
             return new ImpactedTestResolverResult(
                 Command: originalCommand,
                 Rewritten: false,
@@ -191,6 +245,31 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
             Skipped: false,
             Reason: $"matched {matched.Count} {language.LanguageId} test(s) via LSP",
             Mode: "lsp");
+    }
+
+    // ── Foreign-source detection ────────────────────────────────────────
+
+    /// <summary>
+    /// True when <paramref name="changedFiles"/> contains at least one
+    /// recognised source-code file whose extension is NOT one of
+    /// <paramref name="language"/>'s own
+    /// <see cref="ILspLanguageSupport.SourceFileExtensions"/>. Used to
+    /// decide whether a would-be Skipped result must be downgraded to a
+    /// chain-deferring <c>null</c> (see <see cref="KnownSourceCodeExtensions"/>).
+    /// Docs / config-only diffs return false so they still skip cleanly.
+    /// </summary>
+    private static bool DiffHasForeignSourceCode(IReadOnlyList<string> changedFiles, ILspLanguageSupport language)
+    {
+        foreach (var f in changedFiles)
+        {
+            if (string.IsNullOrWhiteSpace(f)) continue;
+            var ext = Path.GetExtension(f);
+            if (string.IsNullOrEmpty(ext)) continue;
+            // A file in this language's own extensions isn't "foreign".
+            if (language.SourceFileExtensions.Any(e => string.Equals(e, ext, StringComparison.OrdinalIgnoreCase))) continue;
+            if (KnownSourceCodeExtensions.Contains(ext)) return true;
+        }
+        return false;
     }
 
     // ── Language selection ──────────────────────────────────────────────
