@@ -214,19 +214,21 @@ public sealed class PromotionRunner : IPromotionRunner
     /// of deliverables (generator OR evaluator). Matches the original
     /// <c>BuildTrailingWindowAsync</c> semantics: order by <c>CreatedAt</c>,
     /// keep the latest row per <c>WorkItemId</c> (= final iter), cap at
-    /// <see cref="ScoringConstants.RollingWindow"/>.
+    /// <see cref="ScoringConstants.MaxPromotionWindow"/> so any tier's
+    /// data needs can be satisfied from the returned buffer. The policy
+    /// evaluator slices this further per tier.
     /// </summary>
     private static IReadOnlyList<DeliverableRow> BuildTrailingWindowFrom(IReadOnlyList<DeliverableRow> raw)
     {
         // Group by WorkItemId across the agent's entire history (rows are
         // already in memory from LoadDeliverablesByAgentAsync, so no SQL
         // bound is needed). Take the latest row per work item, then sort
-        // newest-first and cap at the rolling window.
+        // newest-first and cap at the max tier window.
         return raw
             .GroupBy(d => d.WorkItemId)
             .Select(g => g.OrderByDescending(x => x.CreatedAt).First())
             .OrderByDescending(d => d.CreatedAt)
-            .Take(ScoringConstants.RollingWindow)
+            .Take(ScoringConstants.MaxPromotionWindow)
             .ToList();
     }
 
@@ -244,7 +246,7 @@ public sealed class PromotionRunner : IPromotionRunner
                 .Where(d => d.GeneratorAgentId == agentId || d.EvaluatorAgentId == agentId)
                 .ToListAsync(ct))
             .OrderByDescending(d => d.CreatedAt)
-            .Take(ScoringConstants.RollingWindow * 5)
+            .Take(ScoringConstants.MaxPromotionWindow * 5)
             .ToList();
 
         // For each work item, keep only the row with the highest Iter.
@@ -252,7 +254,7 @@ public sealed class PromotionRunner : IPromotionRunner
             .GroupBy(d => d.WorkItemId)
             .Select(g => g.OrderByDescending(x => x.CreatedAt).First())
             .OrderByDescending(d => d.CreatedAt)
-            .Take(ScoringConstants.RollingWindow)
+            .Take(ScoringConstants.MaxPromotionWindow)
             .ToList();
 
         return byWorkItem;

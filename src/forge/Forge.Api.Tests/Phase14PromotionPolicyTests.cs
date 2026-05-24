@@ -35,12 +35,74 @@ public class Phase14PromotionPolicyTests
         return rows;
     }
 
-    [Fact]
-    public void InsufficientData_When_Window_Below_RollingWindow()
+    [Theory]
+    [InlineData(0, 2)]  // easy tier (window 3) — 2 rows is below
+    [InlineData(2, 2)]  // easy tier boundary
+    [InlineData(3, 4)]  // standard tier (window 5) — 4 rows is below
+    [InlineData(6, 4)]  // standard tier boundary
+    [InlineData(7, 9)]  // hard tier (window 10) — 9 rows is below
+    [InlineData(9, 9)]  // hard tier boundary
+    public void InsufficientData_When_Window_Below_TierWindow(int level, int rowCount)
     {
-        var d = PromotionPolicy.Evaluate(2, lastPromotionAt: null, Window(ScoringConstants.RollingWindow - 1, 95), Now);
+        var d = PromotionPolicy.Evaluate(level, lastPromotionAt: null, Window(rowCount, 95), Now);
         Assert.Equal(PromotionPolicy.ReasonInsufficientData, d.Reason);
-        Assert.Equal(2, d.NewLevel); // unchanged
+        Assert.Equal(level, d.NewLevel); // unchanged
+    }
+
+    [Fact]
+    public void EasyTier_Promotes_With_3_Rows_At_88()
+    {
+        // L0 → easy tier (window 3, avg ≥ 88, cooldown 7d).
+        var d = PromotionPolicy.Evaluate(0, lastPromotionAt: null, Window(3, 88), Now);
+        Assert.Equal(PromotionPolicy.ReasonPromote, d.Reason);
+        Assert.Equal(1, d.NewLevel);
+        Assert.Equal(88m, d.RollingAvg);
+    }
+
+    [Fact]
+    public void EasyTier_Holds_Below_88()
+    {
+        // L1 → easy tier; 87 is below the 88 threshold.
+        var d = PromotionPolicy.Evaluate(1, lastPromotionAt: null, Window(3, 87), Now);
+        Assert.Equal(PromotionPolicy.ReasonNoop, d.Reason);
+        Assert.Equal(1, d.NewLevel);
+    }
+
+    [Fact]
+    public void EasyTier_7Day_Cooldown_Applies()
+    {
+        // L0 → easy tier 7-day cooldown. 6 days ago = blocked, 7 days = ok.
+        var blocked = PromotionPolicy.Evaluate(0, Now.AddDays(-6), Window(3, 95), Now);
+        Assert.Equal(PromotionPolicy.ReasonNoop, blocked.Reason);
+
+        var ok = PromotionPolicy.Evaluate(0, Now.AddDays(-7), Window(3, 95), Now);
+        Assert.Equal(PromotionPolicy.ReasonPromote, ok.Reason);
+    }
+
+    [Fact]
+    public void HardTier_Requires_10_Rows_At_94()
+    {
+        // L7 → hard tier (window 10, avg ≥ 94, cooldown 60d).
+        var win9 = PromotionPolicy.Evaluate(7, lastPromotionAt: null, Window(9, 95), Now);
+        Assert.Equal(PromotionPolicy.ReasonInsufficientData, win9.Reason);
+
+        var avg93 = PromotionPolicy.Evaluate(7, lastPromotionAt: null, Window(10, 93), Now);
+        Assert.Equal(PromotionPolicy.ReasonNoop, avg93.Reason); // 93 < 94
+
+        var promote = PromotionPolicy.Evaluate(7, lastPromotionAt: null, Window(10, 94), Now);
+        Assert.Equal(PromotionPolicy.ReasonPromote, promote.Reason);
+        Assert.Equal(8, promote.NewLevel);
+    }
+
+    [Fact]
+    public void HardTier_60Day_Cooldown_Applies()
+    {
+        // L8 → hard tier 60-day cooldown. 30 days ago = blocked, 60 days = ok.
+        var blocked = PromotionPolicy.Evaluate(8, Now.AddDays(-30), Window(10, 95), Now);
+        Assert.Equal(PromotionPolicy.ReasonNoop, blocked.Reason);
+
+        var ok = PromotionPolicy.Evaluate(8, Now.AddDays(-60), Window(10, 95), Now);
+        Assert.Equal(PromotionPolicy.ReasonPromote, ok.Reason);
     }
 
     [Fact]

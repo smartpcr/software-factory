@@ -14,24 +14,29 @@ using Forge.Api.Persistence;
 /// policy itself is timezone-free and DB-free so the rules are unit-testable
 /// against arbitrary instants.
 /// <para>
-/// Inputs: <paramref name="trailingWindow"/> is the agent's last
-/// <see cref="ScoringConstants.RollingWindow"/> deliverables, where each
-/// row represents the **final** iteration of one work item (the runner is
-/// expected to filter <c>iter &gt; 1</c> intermediates to the max-iter row
-/// per work item before calling). If fewer than the window size are
-/// available the result is <c>insufficient-data</c>.
+/// Inputs: <paramref name="trailingWindow"/> is the agent's trailing
+/// deliverables, where each row represents the **final** iteration of one
+/// work item (the runner is expected to filter <c>iter &gt; 1</c>
+/// intermediates to the max-iter row per work item before calling). The
+/// window's minimum size is the agent's tier's window (see
+/// <see cref="ScoringConstants.PromotionTierFor(int)"/>) — if fewer than
+/// that are available the result is <c>insufficient-data</c>.
 /// </para>
 /// <para>
-/// Promotion rule (locked by spec §4):
+/// Phase 14.8 — tiered promotion. The window, avg threshold, and cooldown
+/// vary by current level (easy at L0-L2, standard at L3-L6, hard at L7+).
+/// Demotion uses the same tier window for the data-sufficiency gate but a
+/// uniform avg cutoff (<see cref="ScoringConstants.DemoteAvgMax"/>) and no
+/// cooldown.
+/// </para>
+/// <para>
+/// Promotion rule:
 /// <list type="bullet">
-///   <item>rolling avg ≥ <see cref="ScoringConstants.PromoteAvgMin"/></item>
+///   <item>rolling avg ≥ <c>tier.PromoteAvgMin</c></item>
 ///   <item>zero <c>reject</c> verdicts in the window</item>
-///   <item>last promotion ≥ <see cref="ScoringConstants.PromotionCooldownDays"/> days ago</item>
+///   <item>last promotion ≥ <c>tier.CooldownDays</c> days ago</item>
 ///   <item>current level &lt; <see cref="ScoringConstants.MaxLevel"/></item>
 /// </list>
-/// Demotion: rolling avg &lt; <see cref="ScoringConstants.DemoteAvgMax"/>
-/// AND current level &gt; <see cref="ScoringConstants.MinLevel"/>.
-/// Demotion has no cooldown (spec doesn't specify one).
 /// </para>
 /// </summary>
 public static class PromotionPolicy
@@ -62,14 +67,16 @@ public static class PromotionPolicy
     {
         ArgumentNullException.ThrowIfNull(trailingWindow);
 
-        if (trailingWindow.Count < ScoringConstants.RollingWindow)
+        var tier = ScoringConstants.PromotionTierFor(currentLevel);
+
+        if (trailingWindow.Count < tier.Window)
         {
             return new Decision(currentLevel, currentLevel, 0m,
                 ReasonInsufficientData, trailingWindow.Count, HasRejectInWindow: false);
         }
 
         // Average score across the trailing window. Use a wide accumulator
-        // so a 100×20 window doesn't risk overflow on the int->decimal sum.
+        // so a 100×N window doesn't risk overflow on the int->decimal sum.
         long sum = 0;
         var hasReject = false;
         for (var i = 0; i < trailingWindow.Count; i++)
@@ -82,14 +89,14 @@ public static class PromotionPolicy
         }
         var avg = (decimal)sum / trailingWindow.Count;
 
-        // Promotion path.
+        // Promotion path — tier-driven thresholds.
         var daysSincePromotion = lastPromotionAt is null
             ? int.MaxValue
             : (int)Math.Floor((utcNow - lastPromotionAt.Value).TotalDays);
 
-        var canPromote = avg >= ScoringConstants.PromoteAvgMin
+        var canPromote = avg >= tier.PromoteAvgMin
                          && !hasReject
-                         && daysSincePromotion >= ScoringConstants.PromotionCooldownDays
+                         && daysSincePromotion >= tier.CooldownDays
                          && currentLevel < ScoringConstants.MaxLevel;
         if (canPromote)
         {
@@ -97,7 +104,7 @@ public static class PromotionPolicy
                 ReasonPromote, trailingWindow.Count, hasReject);
         }
 
-        // Demotion path.
+        // Demotion path — uniform avg cutoff.
         var canDemote = avg < ScoringConstants.DemoteAvgMax
                         && currentLevel > ScoringConstants.MinLevel;
         if (canDemote)

@@ -240,7 +240,8 @@ public static class PerformanceEndpoints
                     .FirstOrDefault()
                 : null;
 
-            var policyWindow = agentFinals.Take(ScoringConstants.RollingWindow).ToList();
+            var tier = ScoringConstants.PromotionTierFor(agent.Level);
+            var policyWindow = agentFinals.Take(tier.Window).ToList();
             var decision = PromotionPolicy.Evaluate(agent.Level, lastPromoAt, policyWindow, nowUtc);
 
             var verdict = decision.Reason switch
@@ -248,16 +249,16 @@ public static class PerformanceEndpoints
                 PromotionPolicy.ReasonPromote => "promote",
                 PromotionPolicy.ReasonDemote => "demote",
                 PromotionPolicy.ReasonInsufficientData => "watch",
-                _ => decision.RollingAvg >= 88m ? "hold" : "watch",
+                _ => decision.RollingAvg >= (tier.PromoteAvgMin - 4m) ? "hold" : "watch",
             };
             var demotionRisk = decision.RollingAvg > 0 && decision.RollingAvg < ScoringConstants.DemoteAvgMax;
 
             // Promotion ETA — rough estimate: how many more deliverables
-            // to reach the window size, or null if already eligible
+            // to reach the tier window size, or null if already eligible
             int? promotionEta = null;
             if (verdict == "promote") promotionEta = 0;
-            else if (policyWindow.Count < ScoringConstants.RollingWindow)
-                promotionEta = ScoringConstants.RollingWindow - policyWindow.Count;
+            else if (policyWindow.Count < tier.Window)
+                promotionEta = tier.Window - policyWindow.Count;
 
             var lastPromotedAt = promoHistory.TryGetValue(agent.Id, out var ph)
                 ? ph.Where(h => h.Reason == PromotionPolicy.ReasonPromote)
@@ -266,18 +267,18 @@ public static class PerformanceEndpoints
                      .FirstOrDefault()
                 : null;
 
-            var cooldownEnd = lastPromoAt?.AddDays(ScoringConstants.PromotionCooldownDays);
+            var cooldownEnd = lastPromoAt?.AddDays(tier.CooldownDays);
             var nextEligibleAt = cooldownEnd.HasValue && cooldownEnd.Value > nowUtc
                 ? cooldownEnd.Value.ToString("yyyy-MM-dd")
                 : "now";
 
             var verdictNote = verdict switch
             {
-                "promote" => $"Avg {decision.RollingAvg:F1} ≥ {ScoringConstants.PromoteAvgMin}, 0 rejects, cooldown clear.",
+                "promote" => $"Avg {decision.RollingAvg:F1} ≥ {tier.PromoteAvgMin} ({tier.Name} tier), 0 rejects, cooldown clear.",
                 "demote" => $"Avg {decision.RollingAvg:F1} < {ScoringConstants.DemoteAvgMax}. Immediate demotion.",
-                "hold" => $"Avg {decision.RollingAvg:F1} — close to promo threshold ({ScoringConstants.PromoteAvgMin}). Hold for next window.",
-                "watch" => policyWindow.Count < ScoringConstants.RollingWindow
-                    ? $"Only {policyWindow.Count}/{ScoringConstants.RollingWindow} deliverables. Needs more data."
+                "hold" => $"Avg {decision.RollingAvg:F1} — close to {tier.Name}-tier promo threshold ({tier.PromoteAvgMin}). Hold for next window.",
+                "watch" => policyWindow.Count < tier.Window
+                    ? $"Only {policyWindow.Count}/{tier.Window} deliverables ({tier.Name} tier). Needs more data."
                     : $"Avg {decision.RollingAvg:F1}. Stable — no action.",
                 _ => "",
             };
@@ -310,6 +311,13 @@ public static class PerformanceEndpoints
                 verdictNote,
                 lastPromotedAt,
                 nextEligibleAt,
+                tier = new
+                {
+                    name = tier.Name,
+                    window = tier.Window,
+                    promoteAvgMin = (double)tier.PromoteAvgMin,
+                    cooldownDays = tier.CooldownDays,
+                },
                 monthlyAvg,
                 monthlyMonths,
                 repos = agentFinals
@@ -328,23 +336,23 @@ public static class PerformanceEndpoints
 
             // Build promotion decision card for agents with meaningful data
             if (verdict == "promote" || verdict == "demote"
-                || (verdict == "hold" && policyWindow.Count >= ScoringConstants.RollingWindow))
+                || (verdict == "hold" && policyWindow.Count >= tier.Window))
             {
                 var toLevel = verdict == "promote" ? agent.Level + 1
                     : verdict == "demote" ? agent.Level - 1
                     : agent.Level;
 
                 var cooldownDays = lastPromoAt.HasValue
-                    ? Math.Max(0, ScoringConstants.PromotionCooldownDays - (int)(nowUtc - lastPromoAt.Value).TotalDays)
+                    ? Math.Max(0, tier.CooldownDays - (int)(nowUtc - lastPromoAt.Value).TotalDays)
                     : 0;
 
                 var rationale = new List<string>();
                 var risks = new List<string>();
                 if (verdict == "promote")
                 {
-                    rationale.Add($"Rolling avg {decision.RollingAvg:F1} ≥ {ScoringConstants.PromoteAvgMin}");
-                    rationale.Add($"0 rejects in trailing {ScoringConstants.RollingWindow}");
-                    rationale.Add($"Cooldown clear ({ScoringConstants.PromotionCooldownDays}d policy)");
+                    rationale.Add($"Rolling avg {decision.RollingAvg:F1} ≥ {tier.PromoteAvgMin} ({tier.Name} tier)");
+                    rationale.Add($"0 rejects in trailing {tier.Window}");
+                    rationale.Add($"Cooldown clear ({tier.CooldownDays}d {tier.Name}-tier policy)");
                     if (toLevel >= ScoringConstants.LeadMinLevel)
                         risks.Add($"L{toLevel} is lead-eligible — verify crew capacity");
                 }
@@ -426,7 +434,7 @@ public static class PerformanceEndpoints
                     return d.CreatedAt.UtcDateTime.Year == prev.Year
                         && d.CreatedAt.UtcDateTime.Month == prev.Month;
                 }).ToList(),
-            _ => rows.Take(ScoringConstants.RollingWindow).ToList(), // trailing20
+            _ => rows.Take(ScoringConstants.MaxPromotionWindow).ToList(), // trailing-N (matches largest tier window)
         };
     }
 

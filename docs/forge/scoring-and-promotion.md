@@ -100,14 +100,26 @@ Every agent has a `level` field, integer `0..10`:
 | 7–8 | Staff / Principal | opus |
 | 9–10 | Distinguished / Fellow | opus + judge slot |
 
-Promotion rule (default):
+Promotion rule (tiered — easier early, harder after L7):
 
-- Window: trailing **5 deliverables** as generator (or evaluator).
-- Threshold: **rolling-avg score ≥ 92** AND **no `reject` in the window**.
+| Current level | Window | Avg ≥ | Cooldown | Tier      |
+|--------------:|-------:|------:|---------:|-----------|
+| 0, 1, 2       | 3      | 88    | 7 days   | easy      |
+| 3, 4, 5, 6    | **5 deliverables** | **92** | 30 days | standard (default) |
+| 7, 8, 9       | 10     | 94    | 60 days  | hard      |
+
+- The tier is selected by the agent's **current** level (i.e. it sets the
+  bar to clear in order to promote OUT of that rung).
+- Window is "trailing **5 deliverables** as generator (or evaluator)" for
+  the standard tier; trainees promote on a smaller window, staff+ on a
+  larger one.
+- Threshold: **rolling-avg score ≥ tier.PromoteAvgMin** AND **no `reject`
+  in the window**.
 - When the threshold is hit, level increases by `+1` and the window
-  resets. Cooldown: at least 30 calendar days between promotions.
-- Demotion: rolling avg `< 75` for 20 deliverables → `level − 1`. Floor
-  at 0.
+  resets. Cooldown: at least `tier.CooldownDays` calendar days between
+  promotions (7 / 30 / 60).
+- Demotion: rolling avg `< 75` over the tier's window → `level − 1`.
+  Floor at 0. Demotion has no cooldown.
 
 The promotion job runs nightly at 02:00 per timezone, writes
 `agent-promoted` / `agent-demoted` rows, and emits SignalR

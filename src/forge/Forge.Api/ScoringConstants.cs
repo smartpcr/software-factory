@@ -104,10 +104,56 @@ public static class ScoringConstants
     }
 
     // ── Promotion job ───────────────────────────────────────────────────
-    public const int RollingWindow         = 5;      // last N deliverables
-    public const decimal PromoteAvgMin     = 92m;    // rolling avg ≥ 92 → promote
+
+    /// <summary>
+    /// Phase 14.8 — tiered promotion difficulty. Each tier specifies the
+    /// rolling window, the rolling-average score required to promote, and
+    /// the cooldown between promotions. Tier is selected by the **current**
+    /// level of the agent (i.e. the tier you must satisfy to promote OUT of
+    /// your current rung). See <see cref="PromotionTierFor(int)"/>.
+    /// </summary>
+    public sealed record PromotionTier(int Window, decimal PromoteAvgMin, int CooldownDays, string Name);
+
+    /// <summary>
+    /// Phase 14.8 — tier lookup. Lower levels promote on a small window
+    /// with a forgiving average and short cooldown ("easy start") so new
+    /// agents build momentum; mid levels follow the spec default; high
+    /// levels (L7+) require sustained excellence over a larger window
+    /// with a higher avg and longer cooldown ("harder after L7"). The
+    /// spec at <c>docs/forge/scoring-and-promotion.md</c> §4 mirrors this
+    /// table and <see cref="Forge.Api.Tests.Phase14SpecConsistencyTests"/>
+    /// pins it.
+    /// </summary>
+    public static PromotionTier PromotionTierFor(int currentLevel) => currentLevel switch
+    {
+        <= 2 => new PromotionTier(Window: 3,  PromoteAvgMin: 88m, CooldownDays: 7,  Name: "easy"),
+        <= 6 => new PromotionTier(Window: 5,  PromoteAvgMin: 92m, CooldownDays: 30, Name: "standard"),
+        _    => new PromotionTier(Window: 10, PromoteAvgMin: 94m, CooldownDays: 60, Name: "hard"),
+    };
+
+    /// <summary>
+    /// Largest tier window across <see cref="PromotionTierFor(int)"/>. Used
+    /// by callers (PromotionRunner / PerformanceEndpoints) to load enough
+    /// rows up-front so any tier's window can be satisfied from the same
+    /// in-memory buffer.
+    /// </summary>
+    public const int MaxPromotionWindow = 10;
+
+    /// <summary>
+    /// Canonical "standard" tier window. Retained as a top-level constant
+    /// because much of the codebase (Phase 14 scorecards, the agent
+    /// preamble, the original spec) was written before tiers existed.
+    /// New code should prefer <see cref="PromotionTierFor(int)"/>.
+    /// </summary>
+    public const int RollingWindow         = 5;      // standard tier window
+
+    /// <summary>Canonical "standard" tier promote threshold.</summary>
+    public const decimal PromoteAvgMin     = 92m;    // standard tier rolling-avg ≥ 92 → promote
+
     public const decimal DemoteAvgMax      = 75m;    // rolling avg < 75 → demote
-    public const int PromotionCooldownDays = 30;     // min days between promotions
+
+    /// <summary>Canonical "standard" tier cooldown (days).</summary>
+    public const int PromotionCooldownDays = 30;     // standard tier cooldown
 
     // ── Lead floor (Q14.5) ──────────────────────────────────────────────
     public const int LeadMinLevel = 7;

@@ -154,16 +154,47 @@ public class Phase14SpecConsistencyTests
     {
         var spec = ReadSpec();
 
-        // §4: trailing 5 deliverables, ≥ 92 to promote, < 75 to demote, 30-day cooldown.
+        // §4: standard-tier window 5, avg ≥ 92, demote < 75, 30-day cooldown.
         Assert.Matches(new Regex(@"trailing\s+\**\s*5\s+deliverables", RegexOptions.IgnoreCase), spec);
-        Assert.Matches(new Regex(@"rolling-avg\s+score\s+≥\s*92", RegexOptions.IgnoreCase), spec);
+        Assert.Matches(new Regex(@"rolling-avg\s+score\s+≥\s*tier\.PromoteAvgMin", RegexOptions.IgnoreCase), spec);
         Assert.Matches(new Regex(@"rolling\s+avg\s+`?<\s*75`?", RegexOptions.IgnoreCase), spec);
-        Assert.Matches(new Regex(@"30\s+calendar\s+days", RegexOptions.IgnoreCase), spec);
+        Assert.Matches(new Regex(@"30\s+days", RegexOptions.IgnoreCase), spec);
 
         Assert.Equal(5, ScoringConstants.RollingWindow);
         Assert.Equal(92m, ScoringConstants.PromoteAvgMin);
         Assert.Equal(75m, ScoringConstants.DemoteAvgMax);
         Assert.Equal(30, ScoringConstants.PromotionCooldownDays);
+    }
+
+    [Fact]
+    public void Promotion_Tier_Table_Matches_Spec()
+    {
+        var spec = ReadSpec();
+
+        // §4 tier table — easy (L0-2: window 3, avg 88, 7d), standard (L3-6: 5, 92, 30d), hard (L7-9: 10, 94, 60d).
+        Assert.Matches(new Regex(@"0,\s*1,\s*2\s*\|\s*3\s*\|\s*88\s*\|\s*7\s*days", RegexOptions.IgnoreCase), spec);
+        Assert.Matches(new Regex(@"7,\s*8,\s*9\s*\|\s*10\s*\|\s*94\s*\|\s*60\s*days", RegexOptions.IgnoreCase), spec);
+
+        // Code tiers must match the spec table exactly.
+        var easy = ScoringConstants.PromotionTierFor(0);
+        Assert.Equal(3, easy.Window);
+        Assert.Equal(88m, easy.PromoteAvgMin);
+        Assert.Equal(7, easy.CooldownDays);
+
+        var standard = ScoringConstants.PromotionTierFor(3);
+        Assert.Equal(5, standard.Window);
+        Assert.Equal(92m, standard.PromoteAvgMin);
+        Assert.Equal(30, standard.CooldownDays);
+
+        var hard = ScoringConstants.PromotionTierFor(7);
+        Assert.Equal(10, hard.Window);
+        Assert.Equal(94m, hard.PromoteAvgMin);
+        Assert.Equal(60, hard.CooldownDays);
+
+        // Boundaries: L2 still easy, L6 still standard, L9 still hard.
+        Assert.Equal("easy",     ScoringConstants.PromotionTierFor(2).Name);
+        Assert.Equal("standard", ScoringConstants.PromotionTierFor(6).Name);
+        Assert.Equal("hard",     ScoringConstants.PromotionTierFor(9).Name);
     }
 
     [Fact]

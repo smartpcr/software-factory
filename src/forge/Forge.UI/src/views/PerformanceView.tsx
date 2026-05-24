@@ -39,7 +39,7 @@ const LEVEL_TITLES: Record<number, string> = {
 };
 
 const WINDOW_LABELS: Record<ReviewWindow, string> = {
-  trailing20: 'Iteration · 5',
+  trailing20: 'Trailing window',
   mtd:        'This month',
   lastMonth:  'Last month',
 };
@@ -638,7 +638,7 @@ function ScorecardDrawer({ agent }: { agent: AgentScorecard }) {
       </div>
 
       <div className="detail-trend">
-        <div className="trend-label">trailing-20 score · oldest → today</div>
+        <div className="trend-label">trailing window · oldest → today</div>
         <BigSpark values={agent.scoreSpark} />
         {agent.scoreSpark.length > 0 && (
           <div className="legend">
