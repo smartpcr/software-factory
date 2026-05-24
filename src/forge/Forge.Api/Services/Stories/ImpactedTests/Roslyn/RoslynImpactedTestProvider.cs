@@ -113,13 +113,11 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
                 Mode: "roslyn");
         }
 
-        // Load (or fetch cached) Solution. Pass the changed files so the
-        // no-solution path can anchor on the project(s) that actually own
-        // them (see GetOrLoadSolutionAsync).
+        // Load (or fetch cached) Solution.
         CachedSolution? cached;
         try
         {
-            cached = await GetOrLoadSolutionAsync(workspace, changedFiles, ct).ConfigureAwait(false);
+            cached = await GetOrLoadSolutionAsync(workspace, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -296,52 +294,17 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
 
     // ── Solution loading + caching ───────────────────────────────────────
 
-    /// <summary>Cap on how many owning projects the no-solution path will load.</summary>
-    private const int MaxOwningProjects = 10;
-
-    private static async Task<CachedSolution?> GetOrLoadSolutionAsync(
-        string workspace, IReadOnlyList<string> changedFiles, CancellationToken ct)
+    private static async Task<CachedSolution?> GetOrLoadSolutionAsync(string workspace, CancellationToken ct)
     {
         var headSha = await ComputeHeadShaAsync(workspace, ct).ConfigureAwait(false);
-
-        // Prefer a solution file: it loads the full project graph in one
-        // shot, which gives FindReferences the best chance of seeing
-        // every test project that depends on a changed production symbol.
-        var slnPath = FindSolutionPath(workspace);
-
-        // 2026-05-21 — no .sln (e.g. the FRP `update` repo: 590 csprojs,
-        // ZERO solution files). The old code loaded "the first .csproj
-        // found", which is an arbitrary project that almost never
-        // contains the changed file, so GetDocumentIdsWithFilePath
-        // returned nothing (→ Skipped) or the load threw (→ chain fell to
-        // the project-level heuristic, which is why a one-class migration
-        // got graded against the whole 600-test IntegrationTest project).
-        // Instead, anchor on the project(s) that actually OWN the changed
-        // files so the changed-file → symbol → test-method walk has real
-        // documents. Each OpenProjectAsync accumulates into the same
-        // MSBuildWorkspace.CurrentSolution.
-        var owningCsprojs = slnPath is null
-            ? FindOwningCsprojs(workspace, changedFiles)
-            : Array.Empty<string>();
-
-        // Cache key includes the entry we'll load: the sln, or the sorted
-        // owning set. Keying the no-sln path on the owning set prevents a
-        // later iter that touches a different project from reusing a
-        // solution that never loaded that project.
-        var entryKey = slnPath ?? string.Join(";", owningCsprojs);
-        var cacheKey = workspace + "|" + headSha + "|" + entryKey;
+        var cacheKey = workspace + "|" + headSha;
         if (SolutionCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
 
-        if (slnPath is null && owningCsprojs.Count == 0)
-        {
-            // No solution and the changed files sit under no csproj.
-            // Returning null lets the chain fall through to the heuristic
-            // rather than loading an arbitrary unrelated project.
-            return null;
-        }
+        var entryPath = FindEntryPath(workspace);
+        if (entryPath is null) return null;
 
         // MSBuildWorkspace expects the locator to be registered;
         // Program.cs does this at startup. If registration failed
@@ -351,17 +314,14 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         Solution solution;
         try
         {
-            if (slnPath is not null)
+            if (entryPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
             {
-                solution = await mb.OpenSolutionAsync(slnPath, cancellationToken: ct).ConfigureAwait(false);
+                solution = await mb.OpenSolutionAsync(entryPath, cancellationToken: ct).ConfigureAwait(false);
             }
             else
             {
-                foreach (var csproj in owningCsprojs)
-                {
-                    await mb.OpenProjectAsync(csproj, cancellationToken: ct).ConfigureAwait(false);
-                }
-                solution = mb.CurrentSolution;
+                var proj = await mb.OpenProjectAsync(entryPath, cancellationToken: ct).ConfigureAwait(false);
+                solution = proj.Solution;
             }
         }
         catch
@@ -375,74 +335,16 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         return entry;
     }
 
-    private static string? FindSolutionPath(string workspace)
+    private static string? FindEntryPath(string workspace)
     {
-        // Prefer a .sln at the workspace root, then any .sln. No .csproj
-        // fallback here — the no-solution path is handled by owning-project
-        // discovery in GetOrLoadSolutionAsync.
+        // Prefer a .sln at the workspace root, then any .sln, then
+        // the first .csproj. The first match wins — we don't try
+        // to merge multiple solutions.
         var rootSln = Directory.EnumerateFiles(workspace, "*.sln", SearchOption.TopDirectoryOnly).FirstOrDefault();
         if (rootSln is not null) return rootSln;
-        return Directory.EnumerateFiles(workspace, "*.sln", SearchOption.AllDirectories).FirstOrDefault();
-    }
-
-    /// <summary>
-    /// Map each changed <c>.cs</c> file to the nearest ancestor csproj
-    /// (its owning project). De-duplicated. Caps at
-    /// <see cref="MaxOwningProjects"/> distinct projects — beyond that the
-    /// diff is too broad to narrow usefully, so we return empty and let
-    /// the caller fall through to the heuristic.
-    /// </summary>
-    internal static IReadOnlyList<string> FindOwningCsprojs(string workspace, IReadOnlyList<string> changedFiles)
-    {
-        var result = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var workspaceFull = Path.GetFullPath(workspace);
-        foreach (var raw in changedFiles)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) continue;
-            if (!raw.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) continue;
-            var norm = raw.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
-            string full;
-            try
-            {
-                full = Path.IsPathRooted(norm)
-                    ? Path.GetFullPath(norm)
-                    : Path.GetFullPath(Path.Combine(workspaceFull, norm));
-            }
-            catch
-            {
-                continue;
-            }
-            var csproj = NearestCsproj(full, workspaceFull);
-            if (csproj is not null && seen.Add(csproj))
-            {
-                result.Add(csproj);
-                if (result.Count > MaxOwningProjects) return Array.Empty<string>();
-            }
-        }
-        return result;
-    }
-
-    /// <summary>
-    /// Walk up from <paramref name="filePath"/> to the nearest ancestor
-    /// directory (bounded by <paramref name="stopAt"/>, the worktree root)
-    /// that contains a <c>.csproj</c>; returns the first such csproj.
-    /// </summary>
-    internal static string? NearestCsproj(string filePath, string stopAt)
-    {
-        var dir = Path.GetDirectoryName(filePath);
-        while (!string.IsNullOrEmpty(dir))
-        {
-            string? first;
-            try { first = Directory.EnumerateFiles(dir, "*.csproj", SearchOption.TopDirectoryOnly).FirstOrDefault(); }
-            catch { first = null; }
-            if (first is not null) return first;
-            if (string.Equals(Path.GetFullPath(dir), stopAt, StringComparison.OrdinalIgnoreCase)) break;
-            var parent = Path.GetDirectoryName(dir);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, dir, StringComparison.OrdinalIgnoreCase)) break;
-            dir = parent;
-        }
-        return null;
+        var anySln = Directory.EnumerateFiles(workspace, "*.sln", SearchOption.AllDirectories).FirstOrDefault();
+        if (anySln is not null) return anySln;
+        return Directory.EnumerateFiles(workspace, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
     }
 
     private static async Task<string> ComputeHeadShaAsync(string workspace, CancellationToken ct)

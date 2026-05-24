@@ -34,21 +34,13 @@ public sealed class AgentRunnerOptions
     /// invocation with <c>generator-inactive</c> on the assumption
     /// that the JSON-RPC transport died (process crash, socket close,
     /// restart).
-    /// <para>Default 20 min — raised from 10 (which itself replaced the
-    /// original 5). A single silent tool call on the FRP <c>update</c>
-    /// repo (a cold <c>dotnet build</c> of a 590-project tree, or a
-    /// scoped <c>dotnet test</c> that still spins up an in-proc service
-    /// host) routinely sits quiet past 10 min, and the 10 min threshold
-    /// was killing healthy agents mid-work as <c>generator-inactive</c>
-    /// (observed 2026-05-21 on local:REFACTOR-INTEGRATION
-    /// stage-4.2 iter-5: the agent's own validation run went silent
-    /// 03:25→03:35 and the iteration was discarded). Kept BELOW the
-    /// wall-clock budget so a truly dead transport is still reaped well
-    /// inside the per-iter cap; a stuck SINGLE tool call is bounded
-    /// separately by <see cref="PerTurnTimeout"/>. Bind via
-    /// <c>Forge:Agents:InactivityTimeout</c>.</para>
+    /// <para>Default 10 min — raised from the original hard-coded 5 min.
+    /// A <c>dotnet build</c> of a non-trivial .NET solution can sit silent
+    /// for 4–6 min, and the 5 min threshold was killing healthy agents
+    /// mid-build (observed 2026-05-14 on local:UPDATE-HISTORY-IN-CL
+    /// stage iter-2 retries). Bind via <c>Forge:Agents:InactivityTimeout</c>.</para>
     /// </summary>
-    public TimeSpan InactivityTimeout { get; set; } = TimeSpan.FromMinutes(20);
+    public TimeSpan InactivityTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// Phase 64 — per-tool-call wall-clock cap. The dispatcher tracks
