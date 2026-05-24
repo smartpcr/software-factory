@@ -3611,7 +3611,27 @@ public sealed class StorySpawnOrchestrator
             if (allComments.Count == 0)
             {
                 var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
-                var comments = await this.strategy.ProduceReviewCommentsAsync(spawn, w, prId, round: 0, ct);
+                IReadOnlyList<ReviewComment> comments;
+                try
+                {
+                    comments = await this.strategy.ProduceReviewCommentsAsync(spawn, w, prId, round: 0, ct);
+                }
+                catch (Exception revEx) when (revEx is not OperationCanceledException)
+                {
+                    // A reviewer-agent failure (Max turns reached, parse error,
+                    // non-transient transport drop) is a WORKSTREAM-level
+                    // failure. Stall just THIS row instead of letting it bubble
+                    // to TickOneSpawnAsync and halt the whole spawn via
+                    // spawn.LastError ("ORCHESTRATOR HALTED"). Mirrors the
+                    // per-workstream merge-failure catches below. Transient
+                    // transport errors rethrow for backoff+retry (the agent
+                    // channel died, not the work) — same policy as the qa-e2e
+                    // and impl paths.
+                    if (IsTransientTransportError(revEx)) throw;
+                    await this.StallWorkstreamForReviewFailureAsync(control, db, hub, spawn, w, prId, revEx, ct);
+                    changed = true;
+                    continue;
+                }
                 if (comments.Count == 0)
                 {
                     // No findings — straight to approve and merge. Phase 49
@@ -3951,6 +3971,64 @@ public sealed class StorySpawnOrchestrator
     }
 
     /// <summary>
+    /// Route a failure of the reviewer-agent invocation
+    /// (<see cref="IStoryArtifactStrategy.ProduceReviewCommentsAsync"/>) to a
+    /// workstream-scoped <c>stalled</c> transition, instead of letting it
+    /// escape <see cref="DriveReviewAsync"/> and trip the outer
+    /// <see cref="TickOneSpawnAsync"/> catch — which sets
+    /// <see cref="StorySpawnRow.LastError"/>, surfaces as "ORCHESTRATOR HALTED",
+    /// and freezes EVERY workstream in the spawn.
+    ///
+    /// <para>Triggered by: the reviewer agent hitting its turn cap
+    /// (<c>Max turns (N) reached</c>), a parse/transport failure that isn't
+    /// transient, etc. A reviewer that can't converge on ONE workstream is a
+    /// workstream-level failure — the operator Restarts just that row.
+    /// Mirrors <see cref="StallWorkstreamForMergeFailureAsync"/> (Phase 49's
+    /// per-workstream merge-failure isolation), closing the same hole for the
+    /// Step-1 reviewer pass that was previously left unguarded: observed on
+    /// code-intelligence:CLEAN-CODE, where a Review agent hit Max turns (60) on
+    /// the policy-publish workstream and halted the entire spawn.</para>
+    /// </summary>
+    private async Task StallWorkstreamForReviewFailureAsync(
+        ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn, WorkstreamRow w, string prId, Exception ex, CancellationToken ct)
+    {
+        this.logger?.LogWarning(ex,
+            "DriveReviewAsync: ProduceReviewCommentsAsync failed for ws {WsId} PR {PrId}. "
+            + "Marking stalled; spawn continues with remaining workstreams.",
+            w.Id, prId);
+
+        if (w.Status is not "cancelled" and not "paused" and not "complete")
+        {
+            w.Status = WorkstreamStatuses.Stalled;
+            w.StallReason =
+                $"Review failed for PR {prId}: {FlattenMessage(ex)}. "
+                + "The reviewer agent did not converge (e.g. hit its turn cap). "
+                + "Restart the workstream to re-run the review.";
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception saveEx)
+            {
+                this.logger?.LogWarning(saveEx,
+                    "DriveReviewAsync: failed to persist stalled status for ws {WsId} after review failure; "
+                    + "next tick will re-enter and retry the transition.", w.Id);
+            }
+            await EmitChange(hub, "ws-stalled", spawn, ct);
+        }
+
+        await this.EmitSpawnEventAsync(w.Id, "task.review-failed", new
+        {
+            wsId = w.Id,
+            prId,
+            spawnId = spawn.Id,
+            message = FlattenMessage(ex),
+            exceptionType = ex.GetType().Name,
+        }, ct);
+    }
+
+    /// <summary>
     /// Phase 79 — true when <paramref name="ex"/> is the specific
     /// 405 / merge-conflict variety the agent resolver can act on
     /// (vs failing required status checks, branch protection, etc.).
@@ -3969,6 +4047,33 @@ public sealed class StorySpawnOrchestrator
         if (msg.Contains("merge conflicts", StringComparison.OrdinalIgnoreCase))
             return true;
         return false;
+    }
+
+    /// <summary>
+    /// True for a TRANSIENT, retryable merge failure where the upstream base
+    /// (or head) ref moved between the mergeability computation and the merge
+    /// call — GitHub's <c>405 "Base branch was modified. Review and try the
+    /// merge again."</c> (and the symmetric "Head branch was modified"). This
+    /// is NOT a real conflict and needs NO operator action: it's a benign race
+    /// when a sibling PR merges into the shared base (e.g. many qa-e2e PRs all
+    /// targeting <c>feature/clean-code</c>) just before this PR's merge PUT.
+    ///
+    /// <para>The fix-and-retry loop (<see cref="TryResolveConflictsAndRetryMergeAsync"/>)
+    /// handles it for free: <c>MergeBaseIntoBranchAndDetectConflictsAsync</c>
+    /// fetches the new base tip and merges it in — clean (no agent needed) when
+    /// there's no real conflict, agent-resolved when there is — then re-pushes
+    /// and re-attempts the PR merge against the current tip. Treating this as a
+    /// permanent operator-gated stall (the old behaviour) stranded mergeable
+    /// PRs on a 30-second race; observed on code-intelligence:CLEAN-CODE
+    /// <c>2.1-e2e</c> PR #64.</para>
+    /// </summary>
+    internal static bool IsRetryableMergeRace(Exception ex)
+    {
+        if (ex is null) return false;
+        var msg = ex.Message ?? string.Empty;
+        return msg.Contains("Base branch was modified", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Head branch was modified", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("try the merge again", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -4014,12 +4119,19 @@ public sealed class StorySpawnOrchestrator
         StorySpawnRow spawn, WorkstreamRow w, string prId, string reviewerAgentId,
         RepoRow? repo, string baseBranch, Exception originalMergeEx, CancellationToken ct)
     {
-        // 1. Only attempt resolution for genuine merge conflicts.
-        if (!IsMergeConflictError(originalMergeEx))
+        // 1. Attempt resolution for genuine merge conflicts AND for the
+        //    transient "base/head branch was modified" race (a sibling PR
+        //    merged into the shared base just before our merge PUT). Both are
+        //    fixed by the same loop below: re-merge the current base tip into
+        //    the ws branch (clean for a pure race, agent-resolved for a real
+        //    conflict) and re-attempt the PR merge. Everything else (failing
+        //    CI, branch protection, network) the agent can't fix → stall.
+        if (!IsMergeConflictError(originalMergeEx) && !IsRetryableMergeRace(originalMergeEx))
         {
             this.logger?.LogInformation(
                 "Phase 79c: merge failure on ws {WsId} PR {PrId} is NOT a merge conflict "
-                + "(message='{Msg}'); stalling immediately — agent can't fix this class of error.",
+                + "or retryable base-moved race (message='{Msg}'); stalling immediately — "
+                + "agent can't fix this class of error.",
                 w.Id, prId, FlattenMessage(originalMergeEx));
             await this.StallWorkstreamForMergeFailureAsync(control, db, hub, spawn, w, prId, originalMergeEx, ct);
             return;
@@ -4137,11 +4249,11 @@ public sealed class StorySpawnOrchestrator
             catch (Exception remergeEx) when (remergeEx is not OperationCanceledException)
             {
                 lastFailure = remergeEx;
-                // If the new failure is ALSO a merge conflict (e.g. another
-                // sibling PR landed during our resolver run), continue the
-                // outer loop for another attempt. Otherwise stall — different
-                // class of failure (CI, protection).
-                if (!IsMergeConflictError(remergeEx))
+                // If the new failure is ALSO a merge conflict OR the base
+                // moved again (another sibling PR landed during our resolver
+                // run), continue the outer loop for another attempt. Otherwise
+                // stall — different class of failure (CI, protection).
+                if (!IsMergeConflictError(remergeEx) && !IsRetryableMergeRace(remergeEx))
                 {
                     this.logger?.LogInformation(
                         "Phase 79c: merge retry on ws {WsId} hit a NON-conflict failure ({Msg}); stalling.",
