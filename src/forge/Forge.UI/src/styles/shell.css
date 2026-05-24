@@ -12,6 +12,7 @@
   transition: grid-template-columns 240ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .app.sidebar-collapsed { grid-template-columns: 56px 1fr; }
+.app.topbar-collapsed { grid-template-rows: 22px 1fr; }
 
 /* TOPBAR */
 .topbar {
@@ -33,6 +34,85 @@
   background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
   opacity: 0.4;
 }
+
+/* Collapsed-topbar variant — saves ~32px of vertical space. Shows only
+ * the brand + a hint of context + the expand chevron. Triggered by
+ * useChromeCollapseStore.topbar. */
+.topbar--collapsed {
+  height: 22px;
+  min-height: 22px;
+  padding: 0 12px;
+  gap: 10px;
+}
+.topbar--collapsed .brand {
+  height: 22px;
+  padding-right: 10px;
+  gap: 7px;
+}
+.topbar--collapsed .brand-name {
+  font-size: 11px;
+}
+.topbar-collapsed-ctx {
+  font-family: var(--font-display, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim, #8a99b3);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.topbar-spacer { flex: 1 1 auto; }
+
+/* Shared collapse-chevron button — used by topbar, spawn header, and
+ * conversation KPI strip. Borderless, slightly bigger; reads as a
+ * pill-shaped affordance via subtle background tint + accent color. */
+.chrome-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(86, 156, 214, 0.10);
+  color: var(--accent, #569cd6);
+  font-family: var(--font-display, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms, background 120ms, box-shadow 120ms;
+}
+.chrome-collapse-btn:hover {
+  color: var(--text, #e6edf6);
+  background: rgba(86, 156, 214, 0.22);
+  box-shadow: 0 0 8px rgba(86, 156, 214, 0.30);
+}
+.chrome-collapse-btn .chrome-collapse-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+/* Icon-only compact variant for tight UIs (e.g. inside the topbar
+ * where horizontal space matters). */
+.chrome-collapse-btn--icon {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+/* Absolutely-positioned variant — anchors the chevron to the top-right
+ * corner of a relatively-positioned chrome region (spawn header /
+ * conversation KPI band). Sits above neighboring content via z-index. */
+.chrome-collapse-btn--abs {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 5;
+}
+
 .brand {
   display: flex;
   align-items: center;

@@ -3,6 +3,7 @@ import { forgeApi } from '@/api/forgeApi';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import {
   type FilterKey,
   FILTERS,
@@ -50,6 +51,11 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const transcriptTotalCount = live?.transcriptTotalCount ?? 0;
   const loadingOlder = live?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
+  // Vertical-space saver: lets the operator collapse the KPI strip +
+  // context-usage bar (the tallest band in the conversation pane) so
+  // more transcript fits in the viewport. Persisted in localStorage.
+  const kpiCollapsed = useChromeCollapseStore((s) => s.conversationKpi);
+  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
 
   const [filter, setFilter] = useState<FilterKey>('summary');
   // Phase 59 Stage B — "Has logs" overlay toggle. Applies on top of
@@ -410,12 +416,48 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
       {/* Always render KPI strip — shows placeholder row when no
        * iterations exist yet, so the visual structure matches the
        * active-workstream layout from day one. */}
-      <IterKpiStrip
-        iters={iterKpis}
-        activeIter={activeIterNumber}
-        onSelectIter={handleSelectKpiIter}
-      />
-      <ContextUsageBar roles={memoryRoles} />
+      {kpiCollapsed ? (
+        <div className="conv-kpi-collapsed">
+          <span className="conv-kpi-collapsed-label">CONVERSATION KPI</span>
+          {activeIterNumber !== null && (
+            <span className="conv-kpi-collapsed-iter">iter {activeIterNumber}</span>
+          )}
+          {iterKpis.length > 0 && (() => {
+            const best = iterKpis.reduce((m, k) => (k.score ?? -1) > (m.score ?? -1) ? k : m, iterKpis[0]);
+            return best.score !== null && best.score !== undefined ? (
+              <span className="conv-kpi-collapsed-score">best {best.score}</span>
+            ) : null;
+          })()}
+          <div className="conv-kpi-collapsed-spacer" />
+          <button
+            type="button"
+            className="chrome-collapse-btn"
+            title="Expand conversation KPI strip"
+            aria-label="Expand conversation KPI strip"
+            onClick={() => toggleChrome('conversationKpi')}
+          >
+            ▾
+          </button>
+        </div>
+      ) : (
+        <div className="conv-kpi-band">
+          <IterKpiStrip
+            iters={iterKpis}
+            activeIter={activeIterNumber}
+            onSelectIter={handleSelectKpiIter}
+          />
+          <ContextUsageBar roles={memoryRoles} />
+          <button
+            type="button"
+            className="chrome-collapse-btn chrome-collapse-btn--abs"
+            title="Collapse conversation KPI strip"
+            aria-label="Collapse conversation KPI strip"
+            onClick={() => toggleChrome('conversationKpi')}
+          >
+            ▴
+          </button>
+        </div>
+      )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
           // Phase 49 follow-up — show a red "✗N" badge on the Build

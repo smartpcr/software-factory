@@ -36,9 +36,9 @@ public class Phase14PromotionPolicyTests
     }
 
     [Fact]
-    public void InsufficientData_When_Window_Below_20()
+    public void InsufficientData_When_Window_Below_RollingWindow()
     {
-        var d = PromotionPolicy.Evaluate(2, lastPromotionAt: null, Window(15, 95), Now);
+        var d = PromotionPolicy.Evaluate(2, lastPromotionAt: null, Window(ScoringConstants.RollingWindow - 1, 95), Now);
         Assert.Equal(PromotionPolicy.ReasonInsufficientData, d.Reason);
         Assert.Equal(2, d.NewLevel); // unchanged
     }

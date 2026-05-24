@@ -48,7 +48,7 @@ public static class PerformanceEndpoints
         return app;
     }
 
-    private static async Task<IResult> GetScorecards(string? window, ControlDbContext control, ProductDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetScorecards(string? window, ControlDbContext control, ProductDbContext db, ProductFanout fanout, IForgeDbPaths dbPaths, CancellationToken ct)
     {
         var windowKey = window ?? "trailing20";
         var nowUtc = DateTimeOffset.UtcNow;
@@ -58,26 +58,68 @@ public static class PerformanceEndpoints
         var crews = await control.Crews.AsNoTracking().ToListAsync(ct);
         var crewMap = crews.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
 
-        // ── Load all deliverables + compute final-iteration rows ───────
-        // Following PromotionRunner.BuildTrailingWindowAsync: group by
-        // WorkItemId, keep the row with the latest CreatedAt (= final iter).
-        var allDeliverables = (await db.Deliverables.AsNoTracking().ToListAsync(ct))
+        // ── Load all deliverables + work-item lookups across products ──
+        // Phase 73 split — when the split marker is present, deliverables
+        // and work items live in per-product DBs. The injected ProductDbContext
+        // points at a single product (the one referenced by the request's
+        // X-Forge-Product-Id header) or the empty control DB, so aggregate
+        // across products via ProductFanout. Without this, agents that
+        // worked across multiple products are under-counted and the
+        // promotion ladder reports `insufficient-data` for everyone.
+        var splitApplied = SplitMarkerCache.IsPhase73Applied(dbPaths);
+        var allDeliverables = new List<DeliverableRow>();
+        var wiRepo = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (splitApplied)
+        {
+            var sync = new object();
+            await fanout.ForEachProductAsync(
+                async (control2, productDb, slug, c) =>
+                {
+                    var rows = await productDb.Deliverables.AsNoTracking().ToListAsync(c);
+                    var wi = await productDb.WorkItems.AsNoTracking()
+                        .Select(w => new { w.Id, w.RepoId })
+                        .ToListAsync(c);
+                    lock (sync)
+                    {
+                        allDeliverables.AddRange(rows);
+                        foreach (var w in wi)
+                        {
+                            if (!string.IsNullOrEmpty(w.RepoId))
+                            {
+                                wiRepo[w.Id] = w.RepoId!;
+                            }
+                        }
+                    }
+                },
+                ct);
+        }
+        else
+        {
+            allDeliverables.AddRange(await db.Deliverables.AsNoTracking().ToListAsync(ct));
+            var wi = await db.WorkItems.AsNoTracking()
+                .Select(w => new { w.Id, w.RepoId })
+                .ToListAsync(ct);
+            foreach (var w in wi)
+            {
+                if (!string.IsNullOrEmpty(w.RepoId))
+                {
+                    wiRepo[w.Id] = w.RepoId!;
+                }
+            }
+        }
+
+        allDeliverables = allDeliverables
             .OrderByDescending(d => d.CreatedAt)
             .ToList();
 
+        // Following PromotionRunner.BuildTrailingWindowAsync: group by
+        // WorkItemId, keep the row with the latest CreatedAt (= final iter).
         var finalDeliverables = allDeliverables
             .GroupBy(d => d.WorkItemId)
             .Select(g => g.OrderByDescending(x => x.CreatedAt).First())
             .OrderByDescending(d => d.CreatedAt)
             .ToList();
 
-        // ── Work item → repo / product lookups for filtering ──────────
-        var workItems = await db.WorkItems.AsNoTracking()
-            .Select(w => new { w.Id, w.RepoId })
-            .ToListAsync(ct);
-        var wiRepo = workItems
-            .Where(w => !string.IsNullOrEmpty(w.RepoId))
-            .ToDictionary(w => w.Id, w => w.RepoId!, StringComparer.OrdinalIgnoreCase);
         // Phase 80.B — cross-product repo→product mapping via the registry.
         var repos = await control.RepoRegistry.AsNoTracking()
             .Select(r => new { r.Id, r.ProductId })

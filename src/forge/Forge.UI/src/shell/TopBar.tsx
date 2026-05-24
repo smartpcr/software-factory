@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useThemeStore } from '@/state/useThemeStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useCurrentUser, useCurrentUserStore, useHasRole } from '@/state/useCurrentUserStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
 import { forgeApi } from '@/api/forgeApi';
@@ -145,6 +146,45 @@ export function TopBar({ section, current }: TopBarProps) {
   function toggleMenu() {
     if (avatarRef.current) setMenuAnchor(avatarRef.current.getBoundingClientRect());
     setMenuOpen((o) => !o);
+  }
+
+  // Vertical real-estate save — operator can collapse the topbar to a
+  // thin strip (brand + chevron) so more of the swarm view fits in the
+  // viewport. Persisted via useChromeCollapseStore.
+  const collapsed = useChromeCollapseStore((s) => s.topbar);
+  const toggleCollapsed = useChromeCollapseStore((s) => s.toggle);
+  const activeProduct = useMemo(
+    () => products.find((p) => p.id === activeProductId) ?? null,
+    [products, activeProductId],
+  );
+
+  if (collapsed) {
+    return (
+      <header className="topbar topbar--collapsed">
+        <div className="brand">
+          <svg className="logomark" width="16" height="16" viewBox="0 0 20 20" fill="none">
+            <rect x="1" y="1" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5" />
+            <rect x="6.5" y="6.5" width="7" height="7" transform="rotate(45 10 10)" fill="currentColor" />
+          </svg>
+          <span className="brand-name">Forge</span>
+        </div>
+        {activeProduct && (
+          <span className="topbar-collapsed-ctx" title={activeProduct.name}>
+            {activeProduct.name}
+          </span>
+        )}
+        <div className="topbar-spacer" />
+        <button
+          type="button"
+          className="chrome-collapse-btn chrome-collapse-btn--icon"
+          title="Expand topbar"
+          aria-label="Expand topbar"
+          onClick={() => toggleCollapsed('topbar')}
+        >
+          <span className="chrome-collapse-glyph">▾</span>
+        </button>
+      </header>
+    );
   }
 
   return (
@@ -326,6 +366,16 @@ export function TopBar({ section, current }: TopBarProps) {
           <path d="M5.5 11.5 a 4.5 4.5 0 0 1 5 0 V 5.5 a 2.5 2.5 0 0 0 -5 0 Z M 6.5 13.5 a 1.5 1 0 0 0 3 0" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none" />
         </svg>
         <span className="badge-dot"></span>
+      </button>
+
+      <button
+        type="button"
+        className="chrome-collapse-btn chrome-collapse-btn--icon"
+        title="Collapse topbar to save vertical space"
+        aria-label="Collapse topbar"
+        onClick={() => toggleCollapsed('topbar')}
+      >
+        <span className="chrome-collapse-glyph">▴</span>
       </button>
 
       <div

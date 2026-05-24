@@ -6,6 +6,7 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardMap } from './KeyboardMap';
 import { ErrorBoundary } from './ErrorBoundary';
 import { useSidebarStore } from '@/state/useSidebarStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useProductFavicon } from '@/products/useProductFavicon';
 import { logView } from '@/telemetry';
@@ -25,6 +26,7 @@ const breadcrumbs: Record<string, { section: string; current: string }> = {
 
 export function AppShell() {
   const collapsed = useSidebarStore((s) => s.collapsed);
+  const topbarCollapsed = useChromeCollapseStore((s) => s.topbar);
   const { pathname } = useLocation();
   const crumbs = breadcrumbs[pathname] ?? { section: 'Forge', current: '' };
 
@@ -41,7 +43,7 @@ export function AppShell() {
   useEffect(() => { logView(pathname); }, [pathname]);
 
   return (
-    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}`} id="app">
+    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${topbarCollapsed ? ' topbar-collapsed' : ''}`} id="app">
       <TopBar section={crumbs.section} current={crumbs.current} />
       <SideBar />
       <main className="main">

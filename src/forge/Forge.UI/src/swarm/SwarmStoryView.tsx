@@ -4,6 +4,7 @@ import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySp
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import { SwarmNavBar } from './SwarmNavBar';
 import { type SwarmMode } from './SwarmPipelineStrip';
 import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
@@ -24,6 +25,11 @@ export function SwarmStoryView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tick = useSpawnStore((s) => s.ticks[storyId] ?? 0);
+  // Vertical-real-estate save: lets the operator collapse the whole
+  // story header band (slim title + phase + nav breadcrumb) down to a
+  // single thin strip. Persisted across reloads.
+  const spawnHeaderCollapsed = useChromeCollapseStore((s) => s.spawnHeader);
+  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
 
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
@@ -203,6 +209,26 @@ export function SwarmStoryView() {
   return (
     <div className="swarm-ctrl">
       <div className="shell">
+        {spawnHeaderCollapsed ? (
+          <div className="swarm-header-collapsed">
+            <div className="swarm-header-collapsed-eyebrow">SWARM // {detail.spawn.storyId}</div>
+            <div className="swarm-header-collapsed-title">{detail.spawn.storyTitle.toUpperCase()}</div>
+            <div className="swarm-header-collapsed-meta">
+              {detail.spawn.phase.toUpperCase()} · {detail.workstreams.length} ws
+            </div>
+            <div className="swarm-header-collapsed-spacer" />
+            <button
+              type="button"
+              className="chrome-collapse-btn"
+              title="Expand spawn header"
+              aria-label="Expand spawn header"
+              onClick={() => toggleChrome('spawnHeader')}
+            >
+              ▾
+            </button>
+          </div>
+        ) : (
+        <div className="swarm-header-expanded">
         {/* Simplified header — title + phase, no metrics */}
         <div className="swarm-header-slim">
           <div className="swarm-header-slim-left">
@@ -298,6 +324,15 @@ export function SwarmStoryView() {
               </div>
             );
           })()}
+          <button
+            type="button"
+            className="chrome-collapse-btn chrome-collapse-btn--abs"
+            title="Collapse spawn header"
+            aria-label="Collapse spawn header"
+            onClick={() => toggleChrome('spawnHeader')}
+          >
+            ▴
+          </button>
         </div>
         <SwarmNavBar
           crumbs={[
@@ -332,6 +367,8 @@ export function SwarmStoryView() {
           ]}
           onBack={() => navigate('/workstreams')}
         />
+        </div>
+        )}
         {(() => {
           // Phase 78 — surface workstream-level merge-conflict stalls as
           // a dedicated banner above the spawn-level banner. Without this,

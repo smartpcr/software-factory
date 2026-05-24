@@ -104,7 +104,7 @@ public static class ScoringConstants
     }
 
     // ── Promotion job ───────────────────────────────────────────────────
-    public const int RollingWindow         = 20;     // last N deliverables
+    public const int RollingWindow         = 5;      // last N deliverables
     public const decimal PromoteAvgMin     = 92m;    // rolling avg ≥ 92 → promote
     public const decimal DemoteAvgMax      = 75m;    // rolling avg < 75 → demote
     public const int PromotionCooldownDays = 30;     // min days between promotions

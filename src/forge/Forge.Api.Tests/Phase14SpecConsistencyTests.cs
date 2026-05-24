@@ -154,13 +154,13 @@ public class Phase14SpecConsistencyTests
     {
         var spec = ReadSpec();
 
-        // §4: trailing 20 deliverables, ≥ 92 to promote, < 75 to demote, 30-day cooldown.
-        Assert.Matches(new Regex(@"trailing\s+\**\s*20\s+deliverables", RegexOptions.IgnoreCase), spec);
+        // §4: trailing 5 deliverables, ≥ 92 to promote, < 75 to demote, 30-day cooldown.
+        Assert.Matches(new Regex(@"trailing\s+\**\s*5\s+deliverables", RegexOptions.IgnoreCase), spec);
         Assert.Matches(new Regex(@"rolling-avg\s+score\s+≥\s*92", RegexOptions.IgnoreCase), spec);
         Assert.Matches(new Regex(@"rolling\s+avg\s+`?<\s*75`?", RegexOptions.IgnoreCase), spec);
         Assert.Matches(new Regex(@"30\s+calendar\s+days", RegexOptions.IgnoreCase), spec);
 
-        Assert.Equal(20, ScoringConstants.RollingWindow);
+        Assert.Equal(5, ScoringConstants.RollingWindow);
         Assert.Equal(92m, ScoringConstants.PromoteAvgMin);
         Assert.Equal(75m, ScoringConstants.DemoteAvgMax);
         Assert.Equal(30, ScoringConstants.PromotionCooldownDays);

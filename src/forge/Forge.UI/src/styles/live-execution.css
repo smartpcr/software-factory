@@ -805,3 +805,45 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
+
+
+/* ─── Conversation KPI band (collapsible) ───────────────────────────
+ * Wraps IterKpiStrip + ContextUsageBar so the operator can collapse the
+ * tallest part of the conversation pane down to a single thin stub
+ * (current iter + best score) and reclaim vertical real estate for the
+ * transcript. Persisted via useChromeCollapseStore.
+ */
+.conv-kpi-band {
+  position: relative;
+}
+
+.conv-kpi-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border, #2a3346);
+  background: var(--bg-2, rgba(255, 255, 255, 0.02));
+  font-family: var(--sc-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  min-height: 26px;
+}
+.conv-kpi-collapsed-label {
+  font-family: var(--sc-font-display, ui-monospace, monospace);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--text-dim, #8a99b3);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.conv-kpi-collapsed-iter {
+  color: var(--text, #e6edf6);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.conv-kpi-collapsed-score {
+  color: var(--accent, #569cd6);
+  font-weight: 600;
+}
+.conv-kpi-collapsed-spacer { flex: 1 1 auto; }

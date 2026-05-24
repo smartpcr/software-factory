@@ -39,7 +39,7 @@ const LEVEL_TITLES: Record<number, string> = {
 };
 
 const WINDOW_LABELS: Record<ReviewWindow, string> = {
-  trailing20: 'Iteration · 20',
+  trailing20: 'Iteration · 5',
   mtd:        'This month',
   lastMonth:  'Last month',
 };
@@ -363,13 +363,28 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
-  // Bucket agents by level for evenly-spread horizontal placement.
+  // Bucket agents by level + sort within each rung by avgScore desc so the
+  // best performers anchor the left side and weakest/insufficient-data sit
+  // on the right. This is what makes KPI legible when most of the roster
+  // shares Level 0 (post-bootstrap, before any promotion has run).
   const byLevel = useMemo(() => {
     const m = new Map<number, AgentScorecard[]>();
     for (let lvl = 0; lvl <= 10; lvl++) m.set(lvl, []);
     for (const a of agents) m.get(a.level)!.push(a);
+    for (const list of m.values()) {
+      list.sort((x, y) => (y.avgScore || 0) - (x.avgScore || 0));
+    }
     return m;
   }, [agents]);
+
+  // Score → band (drives pin border-color via data-score-band).
+  const scoreBand = (avg: number, throughput: number) => {
+    if (throughput === 0) return 'none';
+    if (avg >= 92) return 'promote';
+    if (avg >= 85) return 'strong';
+    if (avg >= 75) return 'hold';
+    return 'risk';
+  };
 
   return (
     <div className="perf-ladder">
@@ -377,7 +392,7 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
         <div>
           <div className="perf-ladder-title">Promotion ladder</div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-            level 0–10 · trainee → fellow · pinned by current level, arrows show pending move
+            level 0–10 · trainee → fellow · pinned by current level, sorted by avg score · arrows show pending move
           </div>
         </div>
         <div className="perf-ladder-eyebrow">spec §4 · scoring-and-promotion.md</div>
@@ -400,27 +415,62 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
                   a.verdict === 'promote' ? <span className="arrow">▲</span> :
                   a.verdict === 'demote'  ? <span className="arrow down">▼</span> :
                   null;
+                const band = scoreBand(a.avgScore || 0, a.throughput || 0);
+                const bandColor =
+                  band === 'promote' ? 'var(--success)' :
+                  band === 'strong'  ? 'var(--accent)'  :
+                  band === 'hold'    ? 'var(--warning)' :
+                  band === 'risk'    ? 'var(--danger)'  :
+                  'var(--border)';
+                const showScore = (a.throughput || 0) > 0;
                 return (
                   <button
                     key={a.agentId}
                     className="perf-ladder-pin"
                     data-team={a.team}
                     data-verdict={a.verdict}
+                    data-score-band={band}
                     style={{ left: `${offsetPct}%`, transform: 'translate(-50%, -50%)' }}
                     onClick={() => onSelect(a.agentId)}
-                    title={`${a.name} · ${a.team} · avg ${a.avgScore.toFixed(1)}`}
+                    title={
+                      `${a.name} · ${a.team} · ${a.crew}\n` +
+                      `avg ${(a.avgScore || 0).toFixed(1)} · pass ${((a.passRate || 0) * 100).toFixed(0)}% · throughput ${a.throughput || 0}\n` +
+                      `verdict: ${a.verdict}${a.promotionEta != null ? ` · ETA ${a.promotionEta}` : ''}`
+                    }
                     aria-pressed={selectedId === a.agentId}
                   >
                     {avatarFor(a.agentId, a.name) ? (
                       <img
                         src={avatarFor(a.agentId, a.name)!}
                         alt=""
-                        style={{ width: 22, height: 22, borderRadius: '50%', objectFit: 'cover', border: '1.5px solid var(--border)' }}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          objectFit: 'cover',
+                          border: `1.5px solid ${bandColor}`,
+                          boxShadow: showScore ? `0 0 0 1px ${bandColor}33` : undefined,
+                        }}
                       />
                     ) : (
-                      <span className="id">{a.agentId}</span>
+                      <span className="id" style={{ borderColor: bandColor }}>{a.agentId}</span>
                     )}
                     <span style={{ color: selectedId === a.agentId ? 'var(--accent)' : 'inherit' }}>{a.name}</span>
+                    {showScore && (
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 10,
+                          padding: '1px 4px',
+                          borderRadius: 3,
+                          background: `${bandColor}22`,
+                          color: bandColor,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {(a.avgScore || 0).toFixed(0)}
+                      </span>
+                    )}
                     {arrowEl}
                   </button>
                 );
@@ -435,6 +485,13 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
         <span><span className="dot" style={{ background: 'var(--epic-021)' }} /> Review</span>
         <span><span className="dot" style={{ background: 'var(--epic-026)' }} /> Architect</span>
         <span><span className="dot" style={{ background: 'var(--epic-022)' }} /> QA</span>
+        <span style={{ marginLeft: 16, paddingLeft: 16, borderLeft: '1px solid var(--border)' }}>
+          <span className="dot" style={{ background: 'var(--success)' }} /> ≥92
+        </span>
+        <span><span className="dot" style={{ background: 'var(--accent)' }} /> 85–92</span>
+        <span><span className="dot" style={{ background: 'var(--warning)' }} /> 75–85</span>
+        <span><span className="dot" style={{ background: 'var(--danger)' }} /> &lt;75</span>
+        <span><span className="dot" style={{ background: 'var(--border)' }} /> no data</span>
         <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)' }}>
           ▲ promote · ▼ demote
         </span>

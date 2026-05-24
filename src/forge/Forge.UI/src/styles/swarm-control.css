@@ -402,6 +402,7 @@
   justify-content: space-between;
   padding: 12px 16px 8px;
   border-bottom: 1px solid var(--sc-border);
+  position: relative;
 }
 .swarm-ctrl .swarm-header-slim-left { display: flex; flex-direction: column; gap: 2px; }
 .swarm-ctrl .swarm-header-slim-eyebrow {
@@ -424,6 +425,56 @@
   font-size: 10px;
   color: var(--sc-text-dim);
   letter-spacing: 0.04em;
+}
+
+/* Collapsed spawn header — thin (~26px) single-line stub with the spawn
+ * id, story title, phase, and a chevron to re-expand. Replaces both the
+ * slim-header band AND the SwarmNavBar breadcrumb row. */
+.swarm-ctrl .swarm-header-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--sc-border);
+  background: var(--sc-bg-panel, rgba(255, 255, 255, 0.02));
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  min-height: 26px;
+}
+.swarm-header-collapsed-eyebrow {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.swarm-header-collapsed-title {
+  font-family: var(--sc-font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--sc-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 360px;
+}
+.swarm-header-collapsed-meta {
+  color: var(--sc-text-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.swarm-header-collapsed-spacer { flex: 1 1 auto; }
+
+/* Wrapper around the expanded spawn-header band (slim-header + nav-bar).
+ * Uses display:contents so the wrapper itself contributes nothing to the
+ * flow — it exists only as a parent for the collapse conditional. */
+.swarm-ctrl .swarm-header-expanded {
+  display: contents;
 }
 
 /* ─── PIPELINE ──────────────────────────────────────────────────────── */
@@ -1099,11 +1150,19 @@
   gap: 2px;
 }
 .swarm-ctrl .phase.phase--qae2e {
-  border-left: 3px dashed var(--sc-blue-d);
+  border-left: 1px dashed var(--sc-blue-d);
 }
 .swarm-ctrl .phase.phase--qae2e.done {
   border-left-style: solid;
-  border-left-color: var(--sc-blue);
+  border-left-color: var(--sc-blue-d);
+}
+/* Suppress the bright inner status rail on qa-e2e cards so the only
+ * left-edge signal is the muted blue dashed/solid border above. Without
+ * this override the inner ::before rail (2px wide, 8px glow, bright
+ * cyan/green/red) stacks on top of the blue marker and visually reads
+ * as a strong accent the operator's eye keeps catching. */
+.swarm-ctrl .phase.phase--qae2e::before {
+  display: none;
 }
 
 /* Themed tooltip — appears on hover for elements with [data-sc-tooltip].

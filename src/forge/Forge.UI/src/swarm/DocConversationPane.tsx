@@ -3,6 +3,7 @@ import { forgeApi } from '@/api/forgeApi';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type DeliverableShape } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import {
   type FilterKey,
   FILTERS,
@@ -61,6 +62,11 @@ interface AgentInfo {
  */
 export function DocConversationPane({ storyId, docId }: Props) {
   const key = useMemo(() => (docId.startsWith('doc:') ? docId.slice(4) : docId), [docId]);
+  // Persisted collapse toggle for the conversation KPI band (iter strip
+  // + memory roles). Shared key with WorkstreamConversationPane so the
+  // operator's preference applies regardless of pane variant.
+  const kpiCollapsed = useChromeCollapseStore((s) => s.conversationKpi);
+  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
 
   // Iterations + workItemId from the per-doc deliverables endpoint. Used as
   // the source for Summary mode AND to discover the workItemId so we can
@@ -444,12 +450,48 @@ export function DocConversationPane({ storyId, docId }: Props) {
 
   return (
     <div className="doc-conv doc-conv--quiet">
-      <IterKpiStrip
-          iters={iterKpis}
-          activeIter={activeIterNumber}
-          onSelectIter={handleSelectKpiIter}
-        />
-      <ContextUsageBar roles={memoryRoles} />
+      {kpiCollapsed ? (
+        <div className="conv-kpi-collapsed">
+          <span className="conv-kpi-collapsed-label">CONVERSATION KPI</span>
+          {activeIterNumber !== null && (
+            <span className="conv-kpi-collapsed-iter">iter {activeIterNumber}</span>
+          )}
+          {iterKpis.length > 0 && (() => {
+            const best = iterKpis.reduce((m, k) => (k.score ?? -1) > (m.score ?? -1) ? k : m, iterKpis[0]);
+            return best.score !== null && best.score !== undefined ? (
+              <span className="conv-kpi-collapsed-score">best {best.score}</span>
+            ) : null;
+          })()}
+          <div className="conv-kpi-collapsed-spacer" />
+          <button
+            type="button"
+            className="chrome-collapse-btn"
+            title="Expand conversation KPI strip"
+            aria-label="Expand conversation KPI strip"
+            onClick={() => toggleChrome('conversationKpi')}
+          >
+            ▾
+          </button>
+        </div>
+      ) : (
+        <div className="conv-kpi-band">
+          <IterKpiStrip
+            iters={iterKpis}
+            activeIter={activeIterNumber}
+            onSelectIter={handleSelectKpiIter}
+          />
+          <ContextUsageBar roles={memoryRoles} />
+          <button
+            type="button"
+            className="chrome-collapse-btn chrome-collapse-btn--abs"
+            title="Collapse conversation KPI strip"
+            aria-label="Collapse conversation KPI strip"
+            onClick={() => toggleChrome('conversationKpi')}
+          >
+            ▴
+          </button>
+        </div>
+      )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {filtersToRender.map((f) => {
           const buildFailCount = f.key === 'build' ? buildFailures : 0;

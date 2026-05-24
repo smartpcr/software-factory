@@ -102,7 +102,7 @@ Every agent has a `level` field, integer `0..10`:
 
 Promotion rule (default):
 
-- Window: trailing **20 deliverables** as generator (or evaluator).
+- Window: trailing **5 deliverables** as generator (or evaluator).
 - Threshold: **rolling-avg score ≥ 92** AND **no `reject` in the window**.
 - When the threshold is hit, level increases by `+1` and the window
   resets. Cooldown: at least 30 calendar days between promotions.
