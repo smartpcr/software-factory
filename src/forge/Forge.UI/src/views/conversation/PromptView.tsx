@@ -1,19 +1,29 @@
 // Insight I.4 (docs/forge/workstream-insights.md) — verbatim
-// system + user prompt for the active iter, per role. Sourced from
-// `task.prompt` events emitted by GeneratorDelegate / EvaluatorDelegate.
-// Operator-facing audit: "what context did the agent actually see"
-// for the iter whose chip is selected.
+// system + user prompt for the active iter, per role. Sourced PRIMARILY
+// from the durable Phase-82 `iteration_prompt` audit table via
+// `GET /api/work-items/{id}/iteration-prompts` (full untruncated
+// payload). Live `task.prompt` transcript events are still consumed
+// as a hot-path fallback so an in-flight iter renders before the next
+// persisted fetch completes.
 //
-// Truncation handling: the live transcript stream caps string fields
-// at 320 chars and appends a "[truncated N → 320 — GET …]" marker.
-// PromptView is exactly the surface that needs the FULL bytes, so
-// when the marker is present we hit
-// `GET /api/work-items/{wi}/transcript/{eventId}` per affected event
-// and replace the payload with the untruncated version before render.
+// Operator-facing audit: "what context did the agent actually see"
+// for the iter whose chip is selected. The view answers four
+// questions per iter:
+//   1) implementation-plan stage text   (the gate brief)
+//   2) prior 3 iter-notes context        (carry-forward block)
+//   3) prior evaluator feedback          (evalNotes chain)
+//   4) global rules / decision pins      (pins block)
+//
+// Iter selection: PromptView owns its own pager whose chips are the
+// iters that ACTUALLY have prompt rows (persisted ∪ live). The parent
+// pane hides its deliverable-iter pager when the Prompt sub-tab is
+// active so only one pager is visible at a time. Generator card sits
+// above evaluator card per `roleOrder` (0,1).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
-import { forgeApi } from '@/api/forgeApi';
+import { forgeApi, type IterationPromptDto } from '@/api/forgeApi';
+import { buildPageWindow } from './filters';
 
 interface PromptPayload {
   agentId?: string;
@@ -25,6 +35,7 @@ interface PromptPayload {
   invokeMode?: string;
   role?: string;
   iter?: number;
+  attempt?: number;
 }
 
 interface Props {
@@ -33,8 +44,8 @@ interface Props {
   events: TaskTranscriptEvent[];
   /** 1-based iter number to display. When null the latest iter wins. */
   activeIter: number | null;
-  /** Work-item id — needed to hit the per-event /transcript/{id}
-   *  endpoint when the live payload was truncated. */
+  /** Work-item id — needed to hit the persisted iteration-prompts
+   *  endpoint AND the per-event /transcript/{id} fallback. */
   workItemId: string;
 }
 
@@ -44,8 +55,58 @@ function isTruncated(s: string | null | undefined): boolean {
   return !!s && s.includes(TRUNCATION_MARKER);
 }
 
+// Cheap fingerprint that flips whenever a *new* persisted iter could
+// be available. We refetch on mount, on workItemId change, and when
+// the live transcript shows a NEW iter-numbered task.prompt event (a
+// signal CrewQueueWorker just persisted the corresponding row). We
+// deliberately don't refetch on every transcript append — most
+// appends are token deltas, not new prompts.
+function persistedFingerprint(events: TaskTranscriptEvent[]): string {
+  let maxIter = 0;
+  let promptCount = 0;
+  for (const e of events) {
+    if (e.kind !== 'task.prompt') continue;
+    promptCount++;
+    const it = (e.payload as PromptPayload | undefined)?.iter;
+    if (typeof it === 'number' && it > maxIter) maxIter = it;
+  }
+  return `${maxIter}:${promptCount}`;
+}
+
 export function PromptView({ events, activeIter, workItemId }: Props): JSX.Element {
-  // Pair payloads with the source event id so we can re-fetch per-event.
+  // ─── Persisted source (primary) ───────────────────────────────
+  const [persisted, setPersisted] = useState<{
+    iter: number;
+    generator: IterationPromptDto | null;
+    evaluator: IterationPromptDto | null;
+    generatorAttempts: number;
+    evaluatorAttempts: number;
+  }[]>([]);
+  const [persistedError, setPersistedError] = useState<string | null>(null);
+  const fingerprint = useMemo(() => persistedFingerprint(events), [events]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const resp = await forgeApi.getWorkItemIterationPrompts(workItemId);
+        if (!active) return;
+        setPersisted(resp.iters ?? []);
+        setPersistedError(null);
+      } catch (err) {
+        if (!active) return;
+        setPersistedError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { active = false; };
+  }, [workItemId, fingerprint]);
+
+  // ─── Live source (fallback for the currently-running iter) ────
+  // Pair payloads with the source event id so we can re-fetch per-event
+  // when the live store truncated them. Used only when persisted is
+  // missing the iter (e.g. the in-flight iter, which CrewQueueWorker
+  // persists right BEFORE runner.StartAsync — there's a small window
+  // where the live emit beats the SaveAsync to the wire).
   const promptEvents = useMemo(() => {
     const list: { id: number; payload: PromptPayload }[] = [];
     for (const e of events) {
@@ -55,33 +116,52 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
     return list;
   }, [events]);
 
-  // Determine the active iter — explicit selection wins, else latest.
-  const iter = useMemo(() => {
-    if (activeIter !== null && activeIter !== undefined) return activeIter;
-    let latest = 0;
-    for (const p of promptEvents) if ((p.payload.iter ?? 0) > latest) latest = p.payload.iter ?? 0;
-    return latest > 0 ? latest : null;
-  }, [activeIter, promptEvents]);
+  // ─── Iter selection ───────────────────────────────────────────
+  // Available iters = union of persisted + live, ascending. These ARE
+  // the chips the pager renders — they map 1:1 onto iters that have
+  // prompt rows (no empty slots).
+  const availableIters = useMemo(() => {
+    const set = new Set<number>();
+    for (const p of persisted) set.add(p.iter);
+    for (const p of promptEvents) {
+      const it = p.payload.iter;
+      if (typeof it === 'number' && it > 0) set.add(it);
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [persisted, promptEvents]);
 
-  const forIter = useMemo(
+  // Local pager state. Initial value uses the parent's `activeIter`
+  // when that maps onto an available prompt iter; otherwise the latest
+  // available iter (so the tab opens on real data, not an empty page).
+  // After mount, the operator drives navigation via the in-tab pager
+  // below — we deliberately don't re-sync with `activeIter` because
+  // the parent pane hides its own iter pager while the Prompt tab is
+  // active, so there's no conflicting cursor to track.
+  const [selectedIter, setSelectedIter] = useState<number | null>(null);
+
+  // Effective iter: explicit in-tab selection wins; else parent's
+  // `activeIter` when it's a valid prompt iter; else latest available.
+  const iter = useMemo(() => {
+    if (selectedIter !== null && availableIters.includes(selectedIter)) return selectedIter;
+    if (activeIter !== null && activeIter !== undefined && availableIters.includes(activeIter)) return activeIter;
+    return availableIters.length > 0 ? availableIters[availableIters.length - 1] : null;
+  }, [selectedIter, activeIter, availableIters]);
+
+  // ─── Resolve the rows to render for the active iter ───────────
+  const persistedForIter = useMemo(
+    () => persisted.find((p) => p.iter === iter) ?? null,
+    [persisted, iter],
+  );
+  const liveForIter = useMemo(
     () => promptEvents.filter((p) => p.payload.iter === iter),
     [promptEvents, iter],
   );
 
-  // Per-event "full payload" cache. Keyed by event id so a re-render
-  // on transcript append doesn't refetch; cleared implicitly when the
-  // operator picks a different iter (different event ids).
+  // Per-event "full payload" cache for the LIVE fallback path
+  // (preserves the prior cancel-race fix that's been hardened over
+  // operator-reported bugs — see refs block below).
   const [fullById, setFullById] = useState<Record<number, PromptPayload>>({});
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set());
-  // Once a per-event fetch fails (404 from the :long route constraint
-  // when the event id is a transient SignalR-synthesized one, network
-  // error, missing row after eviction, etc.) we record the id +
-  // error message and STOP auto-retrying. Without this guard the
-  // useEffect re-fires every time `loadingIds` flips, producing an
-  // infinite retry loop: the "↻ loading full prompt…" indicator
-  // never resolves and the manual "Load full" button only renders
-  // for one microtask between retries, so the operator can never
-  // actually click it.
   const [failedById, setFailedById] = useState<Record<number, string>>({});
 
   // Phase 56 follow-up (operator-reported 2026-05-13: "loading full prompt…
@@ -89,11 +169,10 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
   // state so the auto-fetch useEffect can read the latest values without
   // including them in its dependency array. Pre-fix the deps included
   // `loadingIds`/`failedById`/`fullById` and the effect's first action
-  // was `setLoadingIds(...)`. React then ran the cleanup (`cancelled =
-  // true`) BEFORE the fetch's `.then(...)` resolved, so the post-fetch
-  // setters bailed out — leaving `loadingIds` populated forever and the
-  // "Retry" button (which only renders when `failureReason` is set AND
-  // `isLoadingFull` is false) never appeared.
+  // was `setLoadingIds(...)`. React then ran the cleanup BEFORE the
+  // fetch's `.then(...)` resolved, so the post-fetch setters bailed
+  // out — leaving `loadingIds` populated forever and the "Retry"
+  // button never appearing.
   const fullByIdRef = useRef(fullById);
   const loadingIdsRef = useRef(loadingIds);
   const failedByIdRef = useRef(failedById);
@@ -102,14 +181,11 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
   useEffect(() => { failedByIdRef.current = failedById; }, [failedById]);
 
   useEffect(() => {
-    const needsFetch = forIter.filter((p) => {
-      // Phase 56 follow-up — negative ids are synthesised by the live store
-      // for SignalR events whose persistence step failed (or older server
-      // builds that didn't ship `id`). They are not addressable in the DB,
-      // so the per-event endpoint would always 404. Skip the auto-fetch
-      // and leave the "! truncated" hint visible; the operator can still
-      // manually click "Load full" after a transcript reload (which
-      // re-fetches via /transcript and gets real positive DB ids).
+    // Only auto-fetch when persisted source is missing for this iter —
+    // if persisted has it, we use that and ignore live truncation.
+    if (persistedForIter && (persistedForIter.generator || persistedForIter.evaluator)) return;
+
+    const needsFetch = liveForIter.filter((p) => {
       if (typeof p.id !== 'number' || p.id <= 0) return false;
       if (fullByIdRef.current[p.id]) return false;
       if (loadingIdsRef.current.has(p.id)) return false;
@@ -118,19 +194,6 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
     });
     if (needsFetch.length === 0) return;
 
-    // Phase 56 follow-up #2 — DO NOT cancel in-flight fetches. The original
-    // cancel guard (`let cancelled = false; ... if (cancelled) return;`)
-    // looked correct but the closure-captured flag fires from the cleanup
-    // EVERY time `forIter` changes, which happens on every SignalR push for
-    // this work item. Result: the fetch resolves but its `.then(...)` bails
-    // out before calling `setLoadingIds(prev => prev.delete(id))`, so the
-    // loading flag stays true forever and the operator never sees the
-    // resolved prompt or a Retry button. The dedupe filter above
-    // (`loadingIdsRef.current.has`) already prevents duplicate concurrent
-    // fetches; the per-event cache key (`fullById[id]`) makes idempotent
-    // result writes safe even if the work item changes mid-fetch (the
-    // stale id just sits in the cache, never referenced by the new
-    // workstream's forIter).
     setLoadingIds((prev) => {
       const next = new Set(prev);
       for (const p of needsFetch) next.add(p.id);
@@ -167,134 +230,281 @@ export function PromptView({ events, activeIter, workItemId }: Props): JSX.Eleme
         return next;
       });
     });
-    // Intentionally NOT depending on fullById/loadingIds/failedById — see
-    // the ref-mirror block above. Including them caused the original
-    // cancel-race bug. `forIter` (input data) and `workItemId` (which work
-    // item we're looking at) are the only legitimate inputs that should
-    // retrigger the auto-fetch. No cleanup function — fetches always
-    // settle so the loading indicator clears.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forIter, workItemId]);
+  }, [liveForIter, persistedForIter, workItemId]);
 
-  if (promptEvents.length === 0) {
+  // ─── Build the ordered (generator, evaluator) render list ─────
+  const rendered = useMemo<{ key: string; payload: PromptPayload; isLive: boolean; eventId?: number; attemptCount?: number }[]>(() => {
+    // Persisted wins per role; live fills in only when persisted is null.
+    const fromPersisted: { key: string; payload: PromptPayload; isLive: boolean; attemptCount?: number }[] = [];
+    if (persistedForIter?.generator) {
+      fromPersisted.push({
+        key: `p-gen-${iter}`,
+        payload: persistedDtoToPayload(persistedForIter.generator, iter ?? 0),
+        isLive: false,
+        attemptCount: persistedForIter.generatorAttempts,
+      });
+    }
+    if (persistedForIter?.evaluator) {
+      fromPersisted.push({
+        key: `p-eval-${iter}`,
+        payload: persistedDtoToPayload(persistedForIter.evaluator, iter ?? 0),
+        isLive: false,
+        attemptCount: persistedForIter.evaluatorAttempts,
+      });
+    }
+    // Roles already covered by persisted.
+    const rolesCovered = new Set(fromPersisted.map((p) => (p.payload.role ?? '').toLowerCase()));
+
+    const fromLive: { key: string; payload: PromptPayload; isLive: boolean; eventId: number }[] = [];
+    for (const p of liveForIter) {
+      const role = (p.payload.role ?? '').toLowerCase();
+      if (rolesCovered.has(role)) continue;
+      const full = fullById[p.id];
+      fromLive.push({
+        key: `l-${p.id}`,
+        payload: full ?? p.payload,
+        isLive: true,
+        eventId: p.id,
+      });
+    }
+    return [...fromPersisted, ...fromLive].sort(
+      (a, b) => roleOrder(a.payload.role) - roleOrder(b.payload.role),
+    );
+  }, [persistedForIter, liveForIter, fullById, iter]);
+
+  // ─── Render ────────────────────────────────────────────────────
+  const totalIters = availableIters.length;
+  const activeIndex = iter !== null ? availableIters.indexOf(iter) : -1;
+
+  if (totalIters === 0) {
     return (
       <div className="tab-placeholder">
         <div className="lbl">▌ NO PROMPTS YET</div>
         <div className="sub">
           Once the gen↔eval loop fires its first <code>task.prompt</code>
           event, this tab will show the verbatim system + user prompt
-          the agent saw — useful for auditing how the context grew
-          across iterations.
+          the agent saw. Persisted prompts (Phase 82.1) survive transcript
+          retention; the live SignalR stream is used as a hot-path
+          fallback for the currently-running iter.
         </div>
+        {persistedError && (
+          <div className="sub" style={{ color: 'var(--sc-red, #f87171)', marginTop: 8 }}>
+            persisted source unavailable: {persistedError}
+          </div>
+        )}
       </div>
     );
   }
-
-  if (forIter.length === 0) {
-    return (
-      <div className="tab-placeholder">
-        <em>No prompts recorded for iter {iter ?? '—'}.</em>
-      </div>
-    );
-  }
-
-  // Generator first, evaluator second. Prefer the untruncated full
-  // payload when we've fetched it; fall back to the truncated live
-  // copy (with a visible "Loading full prompt…" header) otherwise.
-  const ordered = [...forIter].sort(
-    (a, b) => roleOrder(a.payload.role) - roleOrder(b.payload.role),
-  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 8 }}>
-      <header style={{ fontSize: 11, color: 'var(--text-secondary, #8d94a3)', letterSpacing: '0.06em' }}>
-        Prompts for iter {iter}
-      </header>
-      {ordered.map((p) => {
-        const full = fullById[p.id];
-        const payload = full ?? p.payload;
-        const isLoadingFull = loadingIds.has(p.id);
-        const failureReason = failedById[p.id];
-        const wasTruncated = !full
-          && (isTruncated(p.payload.systemPrompt) || isTruncated(p.payload.userPrompt));
-        // Phase 56 follow-up — synthetic ids (negative) are not addressable
-        // in the DB. Hide the manual "Load full" button for these so we
-        // don't invite the operator into a guaranteed-404 retry loop. The
-        // "! truncated" hint stays visible (informational only); the next
-        // /transcript reload will replace the synthetic id with the real
-        // positive DB id and the button will re-appear automatically.
-        const isAddressable = typeof p.id === 'number' && p.id > 0;
-        const onLoadFull = async () => {
-          // Manual click — clear the prior failure marker so the
-          // auto-retry guard doesn't immediately short-circuit this
-          // attempt, then re-fetch directly (bypassing the useEffect
-          // path) so the button gives the operator immediate feedback.
-          setFailedById((prev) => {
-            if (prev[p.id] === undefined) return prev;
-            const next = { ...prev };
-            delete next[p.id];
-            return next;
-          });
-          setLoadingIds((prev) => {
-            const next = new Set(prev);
-            next.add(p.id);
-            return next;
-          });
-          try {
-            const r = await forgeApi.getWorkItemTranscriptEvent(workItemId, p.id);
-            if (r && r.payload) {
-              setFullById((prev) => ({ ...prev, [p.id]: r.payload as PromptPayload }));
-            } else {
-              setFailedById((prev) => ({ ...prev, [p.id]: 'empty payload' }));
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            setFailedById((prev) => ({ ...prev, [p.id]: msg }));
-            // eslint-disable-next-line no-console
-            console.warn('PromptView: failed to load full payload for event', p.id, err);
-          } finally {
-            setLoadingIds((prev) => {
-              const next = new Set(prev);
-              next.delete(p.id);
-              return next;
-            });
-          }
-        };
-        return (
+      {/* Prompt iteration pager — chips paginate iters with actual
+          prompt rows (persisted ∪ live). The parent pane hides its
+          deliverable-iter pager when this sub-tab is active so only
+          ONE pager is visible at a time. Source/state badge sits
+          right-aligned in the same row. */}
+      <nav
+        aria-label="Prompt iteration pager"
+        className="live-exec__iter-pager"
+        style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+      >
+        <button
+          type="button"
+          disabled={activeIndex <= 0}
+          onClick={() => setSelectedIter(availableIters[Math.max(0, activeIndex - 1)])}
+          title="Previous iter"
+        >◂</button>
+        {buildPageWindow(totalIters, activeIndex < 0 ? 0 : activeIndex).map((slot, i) => {
+          if (slot === 'ellipsis') return <span key={`e${i}`} className="live-exec__iter-pager-ellipsis">…</span>;
+          const slotIter = availableIters[slot];
+          const isActive = slotIter === iter;
+          return (
+            <button
+              key={slot}
+              type="button"
+              className={isActive ? 'active' : ''}
+              onClick={() => setSelectedIter(slotIter)}
+              title={`Iter ${slotIter}`}
+            >
+              {slotIter}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          disabled={activeIndex < 0 || activeIndex >= totalIters - 1}
+          onClick={() => setSelectedIter(availableIters[Math.min(totalIters - 1, activeIndex + 1)])}
+          title="Next iter"
+        >▸</button>
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--sc-font-display, monospace)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim, #8d94a3)' }}>
+          iter <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{iter ?? '—'}</strong> of <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{totalIters}</strong>
+          {persistedForIter && (
+            <span style={{ marginLeft: 8, color: 'var(--sc-green, #4ade80)' }}>● persisted</span>
+          )}
+          {!persistedForIter && liveForIter.length > 0 && (
+            <span style={{ marginLeft: 8, color: 'var(--sc-amber, #ffb347)' }}>◌ live only</span>
+          )}
+        </span>
+      </nav>
+
+      {/* Pre-Phase-82.1 hint: if the lowest available iter is > 1, then
+          earlier iters definitely ran (the WS didn't start at this iter)
+          but their prompts were never persisted (they pre-date the
+          iteration_prompt write path that shipped 2026-05-23). Phase 82.2
+          carry-forward enrichment still embeds those earlier iters'
+          notes + evaluator feedback INSIDE this iter's user prompt body
+          (look for the "NOTES FROM PRIOR ITERATIONS" / "EVALUATOR
+          FEEDBACK" banners). The hint prevents the recurring "why is
+          iter N-1 inside iter N" confusion. */}
+      {availableIters.length > 0 && availableIters[0] > 1 && (
+        <div
+          style={{
+            fontFamily: 'var(--sc-font-display, monospace)',
+            fontSize: 9,
+            letterSpacing: '0.12em',
+            color: 'var(--sc-amber, #ffb347)',
+            background: 'rgba(255, 179, 71, 0.06)',
+            border: '1px solid rgba(255, 179, 71, 0.25)',
+            padding: '6px 10px',
+            borderRadius: 2,
+          }}
+          title="Earlier iters ran before persistence shipped (Phase 82.1, 2026-05-23). Their prompts can't be recovered, but their working notes and evaluator feedback are embedded inside this iter's user prompt as carry-forward enrichment (Phase 82.2)."
+        >
+          ⚠ EARLIER ITERS NOT PERSISTED · iter 1
+          {availableIters[0] > 2 ? `–${availableIters[0] - 1}` : ''} ran before
+          Phase 82.1 (2026-05-23) · their notes + evaluator feedback are
+          embedded inside this prompt's carry-forward blocks (look for{' '}
+          <code style={{ color: 'var(--sc-text, #e9e6dc)' }}>
+            NOTES FROM PRIOR ITERATIONS
+          </code>{' '}
+          /{' '}
+          <code style={{ color: 'var(--sc-text, #e9e6dc)' }}>
+            EVALUATOR FEEDBACK
+          </code>
+          )
+        </div>
+      )}
+
+      {rendered.length === 0 ? (
+        <div className="tab-placeholder">
+          <div className="lbl">▌ NO PROMPTS PERSISTED FOR ITER {iter}</div>
+          <div className="sub">
+            This iteration appears in the deliverable history but no
+            <code> task.prompt</code> row was persisted. Common causes:
+            (a) the workstream ran before Phase 82.1 shipped and the
+            transcript window has since evicted the live events, or
+            (b) the iter crashed before <code>runner.StartAsync</code>.
+          </div>
+        </div>
+      ) : (
+        rendered.map((r) => (
           <PromptCard
-            key={p.id}
-            prompt={payload}
-            loadingFull={isLoadingFull}
-            stillTruncated={wasTruncated && !isLoadingFull}
-            failureReason={!isLoadingFull ? failureReason : undefined}
-            onLoadFull={wasTruncated && !isLoadingFull && isAddressable ? onLoadFull : undefined}
-            liveOnly={wasTruncated && !isLoadingFull && !isAddressable}
+            key={r.key}
+            prompt={r.payload}
+            isLive={r.isLive}
+            attemptCount={r.attemptCount}
+            loadingFull={r.isLive && r.eventId !== undefined && loadingIds.has(r.eventId)}
+            failureReason={r.isLive && r.eventId !== undefined && !loadingIds.has(r.eventId) ? failedById[r.eventId] : undefined}
+            stillTruncated={
+              r.isLive
+              && r.eventId !== undefined
+              && !loadingIds.has(r.eventId)
+              && !fullById[r.eventId]
+              && (isTruncated(r.payload.systemPrompt) || isTruncated(r.payload.userPrompt))
+            }
+            onRetryLoadFull={r.isLive && r.eventId !== undefined && r.eventId > 0
+              ? () => retryLoadFull(workItemId, r.eventId!, setFailedById, setLoadingIds, setFullById)
+              : undefined}
           />
-        );
-      })}
+        ))
+      )}
     </div>
   );
 }
 
+function persistedDtoToPayload(d: IterationPromptDto, iter: number): PromptPayload {
+  return {
+    role: d.role,
+    agentId: d.agentId,
+    crewId: d.crewId,
+    systemPrompt: d.systemPrompt,
+    userPrompt: d.userPrompt,
+    model: d.model ?? undefined,
+    backend: d.backend ?? undefined,
+    invokeMode: d.invokeMode ?? undefined,
+    attempt: d.attempt,
+    iter,
+  };
+}
+
+async function retryLoadFull(
+  workItemId: string,
+  eventId: number,
+  setFailedById: React.Dispatch<React.SetStateAction<Record<number, string>>>,
+  setLoadingIds: React.Dispatch<React.SetStateAction<Set<number>>>,
+  setFullById: React.Dispatch<React.SetStateAction<Record<number, PromptPayload>>>,
+): Promise<void> {
+  setFailedById((prev) => {
+    if (prev[eventId] === undefined) return prev;
+    const next = { ...prev };
+    delete next[eventId];
+    return next;
+  });
+  setLoadingIds((prev) => {
+    const next = new Set(prev);
+    next.add(eventId);
+    return next;
+  });
+  try {
+    const r = await forgeApi.getWorkItemTranscriptEvent(workItemId, eventId);
+    if (r && r.payload) {
+      setFullById((prev) => ({ ...prev, [eventId]: r.payload as PromptPayload }));
+    } else {
+      setFailedById((prev) => ({ ...prev, [eventId]: 'empty payload' }));
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setFailedById((prev) => ({ ...prev, [eventId]: msg }));
+  } finally {
+    setLoadingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(eventId);
+      return next;
+    });
+  }
+}
+
 function PromptCard({
   prompt,
+  isLive,
+  attemptCount,
   loadingFull,
-  stillTruncated,
   failureReason,
-  onLoadFull,
-  liveOnly,
+  stillTruncated,
+  onRetryLoadFull,
 }: {
   prompt: PromptPayload;
+  isLive: boolean;
+  attemptCount?: number;
   loadingFull?: boolean;
-  stillTruncated?: boolean;
   failureReason?: string;
-  onLoadFull?: () => void;
-  liveOnly?: boolean;
+  stillTruncated?: boolean;
+  onRetryLoadFull?: () => void;
 }) {
-  const [sysOpen, setSysOpen] = useState(false);
   const role = prompt.role ?? 'unknown';
+  // System prompt collapsed by default (it's usually the soul.md
+  // boilerplate). User prompt expanded by default — that's the
+  // composed brief + pins + prior notes + eval chain that the
+  // operator actually wants to audit.
+  const [sysOpen, setSysOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState(true);
   const sysLen = prompt.systemPrompt?.length ?? 0;
   const userLen = prompt.userPrompt?.length ?? 0;
+
+  const handleCopySys = useCallback(() => copyToClipboard(prompt.systemPrompt ?? ''), [prompt.systemPrompt]);
+  const handleCopyUser = useCallback(() => copyToClipboard(prompt.userPrompt ?? ''), [prompt.userPrompt]);
+
   return (
     <section
       style={{
@@ -314,11 +524,17 @@ function PromptCard({
           borderBottom: '1px solid var(--border, #2a2f3a)',
           fontSize: 11,
           letterSpacing: '0.04em',
+          flexWrap: 'wrap',
         }}
       >
         <span style={{ color: roleColor(role), fontWeight: 700, textTransform: 'uppercase' }}>
           {role}
         </span>
+        {prompt.attempt && prompt.attempt > 1 && (
+          <span style={{ color: 'var(--sc-amber, #ffb347)' }}>
+            attempt {prompt.attempt}{attemptCount && attemptCount > 1 ? ` / ${attemptCount}` : ''}
+          </span>
+        )}
         {prompt.model && (
           <span style={{ color: 'var(--text-secondary, #8d94a3)' }}>{prompt.model}</span>
         )}
@@ -327,6 +543,17 @@ function PromptCard({
             {prompt.backend ?? ''}{prompt.backend && prompt.invokeMode ? ' / ' : ''}{prompt.invokeMode ?? ''}
           </span>
         )}
+        <span
+          title={isLive
+            ? 'This prompt is sourced from the live SignalR transcript (not yet persisted, or persistence in-flight).'
+            : 'This prompt is sourced from the durable iteration_prompt audit table (Phase 82.1).'}
+          style={{
+            color: isLive ? 'var(--sc-amber, #ffb347)' : 'var(--sc-green, #4ade80)',
+            fontSize: 10,
+          }}
+        >
+          {isLive ? '◌ live' : '● persisted'}
+        </span>
         {loadingFull && (
           <span style={{ color: 'var(--sc-amber, #ffb347)' }}>↻ loading full prompt…</span>
         )}
@@ -338,35 +565,25 @@ function PromptCard({
             ⚠ load failed ({truncateMsg(failureReason)})
           </span>
         )}
-        {stillTruncated && (
+        {stillTruncated && onRetryLoadFull && (
           <>
             <span style={{ color: 'var(--sc-red, #f87171)' }}>! truncated</span>
-            {onLoadFull && (
-              <button
-                type="button"
-                onClick={onLoadFull}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--sc-cyan, #5eead4)',
-                  color: 'var(--sc-cyan, #5eead4)',
-                  padding: '0 6px',
-                  fontSize: 10,
-                  fontFamily: 'inherit',
-                  cursor: 'pointer',
-                  borderRadius: 2,
-                }}
-              >
-                {failureReason ? 'Retry' : 'Load full'}
-              </button>
-            )}
-            {liveOnly && (
-              <span
-                title="This event arrived via the live SignalR push and isn't addressable in the DB yet (or the persistence step failed). Reload the page to fetch the persisted row with its full payload."
-                style={{ color: 'var(--text-tertiary, #8d94a3)', fontSize: 10 }}
-              >
-                · live · reload page for full payload
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={onRetryLoadFull}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--sc-cyan, #5eead4)',
+                color: 'var(--sc-cyan, #5eead4)',
+                padding: '0 6px',
+                fontSize: 10,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+                borderRadius: 2,
+              }}
+            >
+              {failureReason ? 'Retry' : 'Load full'}
+            </button>
           </>
         )}
         {prompt.agentId && (
@@ -377,67 +594,135 @@ function PromptCard({
       </header>
 
       {prompt.systemPrompt && (
-        <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #2a2f3a)' }}>
-          <button
-            type="button"
-            onClick={() => setSysOpen((v) => !v)}
-            style={{
-              background: 'transparent',
-              border: 0,
-              color: 'var(--text-secondary, #8d94a3)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              fontSize: 11,
-              padding: 0,
-              letterSpacing: '0.04em',
-            }}
-            aria-expanded={sysOpen}
-          >
-            {sysOpen ? '▾' : '▸'} system prompt ({formatBytes(sysLen)})
-          </button>
-          {sysOpen && (
-            <pre
-              style={{
-                marginTop: 4,
-                marginBottom: 0,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                color: 'var(--text-primary, #e3e6eb)',
-                fontFamily: 'inherit',
-                fontSize: 11,
-                lineHeight: 1.5,
-                maxHeight: 320,
-                overflow: 'auto',
-              }}
-            >
-              {prompt.systemPrompt}
-            </pre>
-          )}
-        </div>
+        <CollapsibleSection
+          open={sysOpen}
+          onToggle={() => setSysOpen((v) => !v)}
+          label={`system prompt (${formatBytes(sysLen)})`}
+          onCopy={handleCopySys}
+          bytes={sysLen}
+          body={prompt.systemPrompt}
+        />
       )}
 
-      <div style={{ padding: '6px 10px' }}>
-        <div style={{ fontSize: 11, color: 'var(--text-secondary, #8d94a3)', letterSpacing: '0.04em', marginBottom: 4 }}>
-          user prompt ({formatBytes(userLen)})
-        </div>
+      <CollapsibleSection
+        open={userOpen}
+        onToggle={() => setUserOpen((v) => !v)}
+        label={`user prompt (${formatBytes(userLen)})`}
+        onCopy={handleCopyUser}
+        bytes={userLen}
+        body={prompt.userPrompt ?? ''}
+      />
+    </section>
+  );
+}
+
+function CollapsibleSection({
+  open, onToggle, label, onCopy, bytes, body,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  label: string;
+  onCopy: () => void | Promise<void>;
+  bytes: number;
+  body: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+  const handleCopy = useCallback(async () => {
+    await onCopy();
+    setCopied(true);
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopied(false), 1400);
+  }, [onCopy]);
+  return (
+    <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border, #2a2f3a)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          style={{
+            background: 'transparent',
+            border: 0,
+            color: 'var(--text-secondary, #8d94a3)',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            fontSize: 11,
+            padding: 0,
+            letterSpacing: '0.04em',
+          }}
+          aria-expanded={open}
+        >
+          {open ? '▾' : '▸'} {label}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleCopy()}
+          disabled={bytes === 0}
+          title={bytes === 0 ? 'Nothing to copy' : `Copy ${formatBytes(bytes)} to clipboard`}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--border, #2a2f3a)',
+            color: copied ? 'var(--sc-green, #4ade80)' : 'var(--text-secondary, #8d94a3)',
+            cursor: bytes === 0 ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            fontSize: 10,
+            padding: '0 6px',
+            borderRadius: 2,
+            letterSpacing: '0.04em',
+          }}
+        >
+          {copied ? '✓ copied' : '⧉ copy'}
+        </button>
+      </div>
+      {open && (
         <pre
           style={{
+            marginTop: 4,
+            marginBottom: 0,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             color: 'var(--text-primary, #e3e6eb)',
             fontFamily: 'inherit',
             fontSize: 11,
             lineHeight: 1.5,
-            margin: 0,
             maxHeight: 600,
             overflow: 'auto',
+            userSelect: 'text',
           }}
         >
-          {prompt.userPrompt ?? ''}
+          {body}
         </pre>
-      </div>
-    </section>
+      )}
+    </div>
   );
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Best-effort fallback for environments without the async clipboard API.
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      // give up silently — copy is convenience, not correctness
+    }
+  }
 }
 
 function roleOrder(role: string | undefined): number {
@@ -461,8 +746,6 @@ function formatBytes(n: number): string {
 }
 
 function truncateMsg(msg: string): string {
-  // Keep the inline header short — the full message is exposed via
-  // the `title` attribute so the operator can hover for the details.
   const trimmed = msg.replace(/\s+/g, ' ').trim();
   return trimmed.length > 60 ? `${trimmed.slice(0, 57)}…` : trimmed;
 }

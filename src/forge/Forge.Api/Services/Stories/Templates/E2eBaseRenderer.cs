@@ -53,6 +53,29 @@ public static class E2eBaseRenderer
         $"tests/Steps/{StoryPaths.Safe(storyId)}/E2eBase.cs";
 
     /// <summary>
+    /// docs/forge/e2e.md Stage 7.3 — directory-scoped <c>.gitignore</c> path
+    /// for the .NET e2e test tree. NOT folded into <see cref="RenderAll"/>
+    /// (which is byte-pinned by the deterministic-strategy file-count tests);
+    /// the producer adds it via <see cref="RenderGitignore"/>.
+    /// </summary>
+    public static string GitignorePathFor() => "tests/.gitignore";
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 7.3 — directory-scoped <c>.gitignore</c> that
+    /// keeps .NET build output (<c>bin/</c>, <c>obj/</c>) out of the PR when
+    /// the qa-e2e build/test gate compiles the scaffolded test project.
+    /// Additive — sits under <c>tests/</c> and never clobbers the repo-root
+    /// <c>.gitignore</c>.
+    /// </summary>
+    public static string RenderGitignore() =>
+        """
+        # Forge — generated. .NET build output that must not be committed.
+        bin/
+        obj/
+
+        """;
+
+    /// <summary>
     /// docs/forge/e2e.md Stage 7.3 — env-var names the qa-e2e suite for
     /// a given setup type expects. Exposed so test assertions, the LLM
     /// prompt section, and the appsettings renderer all agree on the

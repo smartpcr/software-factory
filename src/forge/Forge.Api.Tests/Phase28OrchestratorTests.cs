@@ -338,13 +338,16 @@ public class Phase28OrchestratorTests
             await c.PatchAsync("/api/stories/WI-70003/spawn/phase",
                 JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
             await c.PostAsync("/api/stories/WI-70003/spawn/decompose/approve", null);
-            var enter = await c.PatchAsync("/api/stories/WI-70003/spawn/phase",
-                JsonContent.Create(new { targetPhase = "implement" }, options: JsonOpts));
-            Assert.Equal(HttpStatusCode.OK, enter.StatusCode);
+
+            // The decompose drive auto-approves AND auto-advances to 'implement'
+            // ("no human gates" — StorySpawnOrchestrator.DriveDecomposeAsync), so
+            // a manual PATCH to 'implement' would 422 (the spawn already moved
+            // past it). Drive the auto-advancing lifecycle with ticks instead.
+            for (var i = 0; i < 6; i++) await TickAsync(f);
 
             // 28.5.3–28.5.6 — orchestrator assigned engineers + opened ws PRs.
-            // The orchestrator's tight inner loop means by the time PATCH returns,
-            // workstreams may already have advanced through review → merging.
+            // The orchestrator's tight inner loop means workstreams may already
+            // have advanced through review → merging.
             // We verify the dep edge is honored by checking both workstreams
             // ended up with engineer assignments + PR ids in the right order.
             var ws = await ReadWorkstreamsAsync(f, s.Id);
@@ -394,15 +397,17 @@ public class Phase28OrchestratorTests
                 JsonContent.Create(new { targetPhase = "review" }, options: JsonOpts));
 
             // The orchestrator's review pass posts a comment and the engineer
-            // immediately resolves it. A second tick should approve & merge.
-            await TickAsync(f); // round 0 → comments posted + resolved
-            await TickAsync(f); // round 1 → all resolved → approve + merge
+            // resolves it, then approves + merges. Under auto-advance ("no
+            // human gates") this spans several ticks, so drive until the
+            // workstream lands in a post-review state rather than asserting a
+            // single tick count (mirrors the tick-driven Done_Transitions test).
+            for (var i = 0; i < 8; i++) await TickAsync(f);
 
             using var scope2 = f.Services.CreateScope();
             var control = scope2.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
             var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == first.Id);
-            Assert.Equal("merging", reload.Status);
+            Assert.Contains(reload.Status, new[] { "merging", "complete" });
 
             // PR is merged in our local cache.
             var prsList = JsonSerializer.Deserialize<List<string>>(reload.PrsJson)!;

@@ -877,16 +877,33 @@ public static class WorkstreamsEndpoints
 
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
-        // ── 6. Clear the cached workspace ───────────────────────────────
+        // ── 6. Clear the cached workspace(s) ────────────────────────────
+        // Reap EVERY per-workstream scratch dir, not just impl-{id}. A
+        // qa-e2e workstream's scratch is `qa-e2e-{id}`; leaving it behind on
+        // restart meant a re-run wrote its new files on top of the prior
+        // run's output. When the language changed (the Go-detection fix), the
+        // pre-fix C#/Reqnroll project lingered in the scratch and ReadAllFiles
+        // + `git add -A` committed BOTH Go and C# (observed on
+        // code-intelligence:CLEAN-CODE 1.1-e2e / 1.2-e2e). Match the same
+        // prefixes the spawn-purge sweep uses.
         var stateDir = paths.Folder;
         var spawnSlug = ws.StorySpawnId ?? "";
         foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') })
         {
-            var wsDir = System.IO.Path.Combine(stateDir, "storyworkspaces", slug, $"impl-{id}");
-            if (System.IO.Directory.Exists(wsDir))
+            if (string.IsNullOrEmpty(slug)) continue;
+            var spawnRoot = System.IO.Path.Combine(stateDir, "storyworkspaces", slug);
+            if (!System.IO.Directory.Exists(spawnRoot)) continue;
+            foreach (var dir in System.IO.Directory.EnumerateDirectories(spawnRoot))
             {
-                try { System.IO.Directory.Delete(wsDir, recursive: true); }
-                catch { /* best effort */ }
+                var name = System.IO.Path.GetFileName(dir);
+                if (name == $"impl-{id}"
+                    || name == $"qa-e2e-{id}"
+                    || name.StartsWith($"review-{id}-", StringComparison.Ordinal)
+                    || name.StartsWith($"fix-{id}-", StringComparison.Ordinal))
+                {
+                    try { System.IO.Directory.Delete(dir, recursive: true); }
+                    catch { /* best effort */ }
+                }
             }
         }
 

@@ -119,6 +119,42 @@ public class SplitApplyServiceTests : IDisposable
         Assert.True(File.Exists(result.BackupPath));
     }
 
+    // Phase 80 hardening — a row whose partition key can't be routed (here a
+    // workstream pointing at a non-existent repo) must NOT be silently dropped.
+    // The split refuses and preserves the source so the operator can recover it.
+    [Fact]
+    public async Task ApplyAsync_WithOrphanRow_Refuses_And_Preserves_Source()
+    {
+        await this.SeedSchemaAsync();
+        await this.SeedDataAsync();
+
+        var prodOpt = new DbContextOptionsBuilder<ProductDbContext>()
+            .UseSqlite($"Data Source={this.paths.ControlDbPath()}")
+            .Options;
+        await using (var prod = new ProductDbContext(prodOpt))
+        {
+            // RepoId points at a repo that doesn't exist → unroutable by ViaRepoId.
+            prod.Workstreams.Add(new WorkstreamRow
+            {
+                Id = "ws-orphan", Name = "orphan", Branch = "ws/orphan", Epic = "E",
+                Status = "active", RepoId = "r-ghost",
+            });
+            await prod.SaveChangesAsync();
+        }
+
+        var result = await this.applier.ApplyAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains(result.Errors, e => e.Contains("orphan", StringComparison.OrdinalIgnoreCase));
+
+        // Source table not dropped — the orphan row survives in forge.db.
+        await using var conn = new SqliteConnection($"Data Source={this.paths.ControlDbPath()}");
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM workstreams WHERE Id = 'ws-orphan';";
+        Assert.Equal(1L, Convert.ToInt64(await cmd.ExecuteScalarAsync()));
+    }
+
     [Fact]
     public async Task SplitApplyResult_SuccessImpliesNoErrors()
     {

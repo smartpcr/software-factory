@@ -4,6 +4,8 @@ import { useSidebarStore } from '@/state/useSidebarStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
+import { AddRepoModal } from '@/products/AddRepoModal';
+import { NewAgentModal } from '@/agents/NewAgentModal';
 import { UserMenu } from '@/shell/UserMenu';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
@@ -18,12 +20,17 @@ export function SideBar() {
   const toggle = useSidebarStore((s) => s.toggle);
   const products = useProductsStore((s) => s.products);
   const activeProductId = useProductsStore((s) => s.activeProductId);
+  const activeRepoId = useProductsStore((s) => s.activeRepoId);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
   const loadProducts = useProductsStore((s) => s.load);
   const loadRepos = useProductsStore((s) => s.loadReposFor);
   const me = useCurrentUser();
   const operatorAvatarUrl = useOperatorAvatarUrl();
   const sidebarAvatarUrl = operatorAvatarUrl || me.avatarUrl;
+  // Phase 80 — attach-repo popup launched from the Repositories "+".
+  const [attachRepoOpen, setAttachRepoOpen] = useState(false);
+  // Phase 80 — new-agent popup launched from the Agents "+".
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
   const allWorkstreams = useWorkstreamsStore((s) => s.workstreams);
   const loadWorkstreams = useWorkstreamsStore((s) => s.load);
   // Hydrate the workstreams store at sidebar mount and whenever the active
@@ -237,7 +244,7 @@ export function SideBar() {
         </div>
 
         <div className="nav-section">
-          <div className="nav-section-title"><span>Agents</span><button className="add-btn" title="New agent">+</button></div>
+          <div className="nav-section-title"><span>Agents</span><button type="button" className="add-btn" title="Create a new agent" onClick={() => setNewAgentOpen(true)}>+</button></div>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/crews">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
               <circle cx="5" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
@@ -291,20 +298,38 @@ export function SideBar() {
         <div className="nav-section">
           <div className="nav-section-title">
             <span>Repositories{activeProduct ? ` · ${activeProduct.name}` : ''}</span>
-            <NavLink to="/products" className="add-btn" title="Connect repo">+</NavLink>
+            <button
+              type="button"
+              className="add-btn"
+              title={activeProduct ? `Attach a repo to ${activeProduct.name}` : 'Attach a repo'}
+              disabled={!activeProduct}
+              onClick={() => setAttachRepoOpen(true)}
+            >+</button>
           </div>
           {activeProductRepos.length === 0 ? (
             <div className="repo-row" style={{ color: 'var(--text-tertiary)', cursor: 'default' }}>
               <span className="name" style={{ fontStyle: 'italic' }}>No repos yet</span>
             </div>
           ) : (
-            activeProductRepos.map((r, i) => (
-              <div key={r.id} className={`repo-row${i === 0 ? ' active' : ''}`} title={r.remoteUrl}>
-                <span className="dot"></span>
-                <span className="name">{r.displayName}</span>
-                <span className="src">{r.kind === 'ado' ? 'ADO' : 'GH'}</span>
-              </div>
-            ))
+            activeProductRepos.map((r) => {
+              // Phase 80 — read-only indicator: highlight the repo the views are
+              // currently scoped to (set via the TopBar repo switcher). When the
+              // scope is "All repos" (activeRepoId == null), nothing is highlighted.
+              const isScoped = activeRepoId != null && r.id === activeRepoId;
+              return (
+                <div
+                  key={r.id}
+                  className={`repo-row${isScoped ? ' active' : ''}`}
+                  title={isScoped
+                    ? `${r.displayName} — current scope (switch via the repo dropdown in the top bar)\n${r.remoteUrl}`
+                    : r.remoteUrl}
+                >
+                  <span className="dot"></span>
+                  <span className="name">{r.displayName}</span>
+                  <span className="src">{r.kind === 'ado' ? 'ADO' : 'GH'}</span>
+                </div>
+              );
+            })
           )}
         </div>
 
@@ -365,6 +390,16 @@ export function SideBar() {
         </div>
       </div>
       <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} anchor={menuAnchor} />
+      <AddRepoModal
+        open={attachRepoOpen}
+        productId={activeProduct?.id ?? ''}
+        onClose={() => setAttachRepoOpen(false)}
+        onAttached={() => {
+          if (activeProduct) void loadRepos(activeProduct.id);
+          setAttachRepoOpen(false);
+        }}
+      />
+      <NewAgentModal open={newAgentOpen} onClose={() => setNewAgentOpen(false)} />
     </aside>
   );
 }

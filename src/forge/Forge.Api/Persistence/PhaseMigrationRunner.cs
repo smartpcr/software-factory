@@ -73,6 +73,9 @@ public sealed class PhaseMigrationRunner
         // constraints above. 80 (Control: repo_registry + products.DefaultRepoId)
         // then 81 (Product: product_stories.RepoId, fans out per {slug}.db).
         80, 81,
+        // Phase 82 — iteration_prompt table for the per-iter prompt audit
+        // trail (gen + eval). Product-only, fans out per {slug}.db.
+        82,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

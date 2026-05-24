@@ -583,11 +583,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <para>Returns empty string when no pins apply -- caller checks for
     /// non-empty before inserting the block + separator.</para>
     /// </summary>
-    private async Task<string> BuildDecisionPinsBlockAsync(string workItemId, CancellationToken ct)
+    /// <para>Phase 82.2 — promoted to <c>internal static</c> + parameterised
+    /// on <see cref="IServiceScopeFactory"/> so <see cref="CrewQueueWorker"/>
+    /// (which doesn't inherit from this strategy) can reuse the exact same
+    /// rendering for impl-path workstreams. Without it, audit goal #4
+    /// (global rules / pins) is honoured only on plan-doc + qa-e2e prompts;
+    /// impl-path prompts silently drop the operator's pinned decisions.</para>
+    /// </summary>
+    internal static async Task<string> BuildDecisionPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
 
-        using var scope = this.scopeFactory.CreateScope();
+        using var scope = scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
 
@@ -3970,6 +3977,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var generatorPrompt = BuildQaE2ePrompt(inputs, evaluator: false);
         var evaluatorPrompt = BuildQaE2ePrompt(inputs, evaluator: true);
 
+        // docs/forge/e2e.md Stage 4.3 — the post-pass test gate runs the
+        // ecosystem's native e2e command (godog `go test -tags e2e` for Go,
+        // `cargo test --features e2e` for Rust, `pytest -m e2e` for Python,
+        // `npm run test:e2e` for Node, `mvn test -Dgroups=e2e` for Maven,
+        // Reqnroll `dotnet test` for .NET). The matching generator prompt
+        // (BuildQaE2eGeneratorTask) instructs the agent to make the suite
+        // runnable under exactly this command, so gate + prompt stay in sync.
+        var e2eTestCommand = E2eTestCommandForEcosystem(inputs.Ecosystem);
+
         var workspace = this.PrepareWorkspace(spawn.Id, $"qa-e2e-{Slug(workstream.Id)}");
 
         // Phase 43 (extended) — operator-uploaded attachments may name
@@ -4002,8 +4018,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorAgentOverride: assignedEval,
             // qa-e2e produces the feature + step-def + (optional) pipeline
             // YAML stubs as side-effects in the workspace. The strategy
-            // then reads the workspace via ReadAllFiles. The
-            // post-pass gate runs `dotnet test --filter Category=e2e`
+            // then reads the workspace via ReadAllFiles. The post-pass gate
+            // runs the ecosystem's e2e test command (see e2eTestCommand)
             // against the repo so a broken test re-enters the loop with
             // the failure as evaluator feedback. Skipping the per-iter
             // build/quality gates (the qa-e2e workspace is a scratch dir,
@@ -4011,7 +4027,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // test gate as the sole post-pass check.
             buildCommand: null,
             qualityCommands: null,
-            testCommand: "dotnet test --filter Category=e2e",
+            testCommand: e2eTestCommand,
             onIterationCommit: null,
             // 2026-05-21 — honour the repo's Edit-Repo gate timeouts here
             // too. The qa-e2e post-pass test gate is the sole gate on this
@@ -4047,11 +4063,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // on the merged dict) so the operator's appsettings/baseclass
         // contract stays canonical.
         var mergedFiles = new Dictionary<string, string>(files, StringComparer.Ordinal);
-        var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
-        foreach (var (path, body) in E2eBaseRenderer.RenderAll(
-            spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase))
+
+        // .NET/Reqnroll harness only — fold in the deterministic Reqnroll base
+        // class + per-phase appsettings template + a directory-scoped
+        // `.gitignore` (bin/obj) so a developer's local build never
+        // re-introduces the build-artifact leak (fix #4; additive, never
+        // touches the repo-root `.gitignore`).
+        //
+        // Every NON-.NET harness (go/rust/python/node/maven) has NO
+        // deterministic templates to merge: the agent emits its artifacts
+        // (`.feature` + step defs / specs) INSIDE the owning module/crate/
+        // package, whose path is repo-relative and can't be hardcoded to a
+        // repo-root location (monorepos put `go.mod` / `Cargo.toml` /
+        // `package.json` under e.g. `services/X/`). Folding the C# base class
+        // into those outputs is exactly the cross-language scaffolding bug this
+        // dispatch fixes. The ReadAllFiles filter + commit-time scrub remain the
+        // build-artifact guard for those ecosystems.
+        var ecoLower = (inputs.Ecosystem ?? string.Empty).ToLowerInvariant();
+        var usesDotnetHarness = ecoLower is not ("go" or "rust" or "python" or "node" or "maven");
+        if (usesDotnetHarness)
         {
-            mergedFiles[path] = body;
+            var includeBase = this.e2eBaseEmittedForSpawn.TryAdd(spawn.Id, 0);
+            foreach (var (path, body) in E2eBaseRenderer.RenderAll(
+                spawn.StoryId, inputs.PhaseSlug, inputs.SetupType, includeBaseClass: includeBase))
+            {
+                mergedFiles[path] = body;
+            }
+            mergedFiles[E2eBaseRenderer.GitignorePathFor()] = E2eBaseRenderer.RenderGitignore();
         }
 
         return mergedFiles;
@@ -4076,7 +4114,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string ImplDiff,
         E2eSetupType SetupType,
         string SetupBlockMarkdown,
-        string AttachmentPromptSection);
+        string AttachmentPromptSection,
+        // docs/forge/e2e.md Stage 4.3 — the target repo's detected ecosystem
+        // (`go` | `dotnet` | …, from BuildSystemDetector). Drives which test
+        // harness the generator emits: `go` → godog (Gherkin `.feature` +
+        // `*_test.go` step defs + `go test`); everything else → Reqnroll /
+        // .NET (the historical default). Defaults to `dotnet` so existing
+        // callers / unit fixtures keep the prior behaviour.
+        string Ecosystem = "dotnet");
 
     /// <summary>
     /// docs/forge/e2e.md Stage 4.3 — gather everything the QA-crew
@@ -4107,6 +4152,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
+        // docs/forge/e2e.md Stage 4.3 — detect the target repo's ecosystem so
+        // the prompt emits the matching e2e harness (godog for Go, Reqnroll
+        // for .NET, …) instead of always scaffolding a C# project.
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var ecosystem = ResolveRepoEcosystem(repo);
+
         return new QaE2ePromptInputs(
             StoryId: spawn.StoryId,
             StoryTitle: spawn.StoryTitle ?? string.Empty,
@@ -4119,8 +4170,52 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ImplDiff: implDiff,
             SetupType: setupType,
             SetupBlockMarkdown: setupBlock,
-            AttachmentPromptSection: attachmentPromptSection);
+            AttachmentPromptSection: attachmentPromptSection,
+            Ecosystem: ecosystem);
     }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — resolve the target repo's ecosystem for
+    /// qa-e2e harness selection. Precedence: (1) the operator's
+    /// <see cref="RepoRow.TestCommand"/> override (its leading tool names the
+    /// stack), (2) a <see cref="BuildSystemDetector.Detect"/> scan of the
+    /// clone root, (3) <c>dotnet</c> as the back-compat default so an
+    /// unrecognised repo keeps the historical Reqnroll behaviour rather than
+    /// stalling. Returns a lowercase ecosystem token (<c>go</c>, <c>dotnet</c>,
+    /// <c>rust</c>, <c>node</c>, <c>python</c>, <c>maven</c>).
+    /// </summary>
+    internal static string ResolveRepoEcosystem(RepoRow? repo)
+    {
+        if (repo is not null && !string.IsNullOrWhiteSpace(repo.TestCommand))
+        {
+            var tc = repo.TestCommand.ToLowerInvariant();
+            if (tc.Contains("go test")) return "go";
+            if (tc.Contains("dotnet")) return "dotnet";
+            if (tc.Contains("cargo")) return "rust";
+            if (tc.Contains("pytest")) return "python";
+            if (tc.Contains("npm") || tc.Contains("yarn") || tc.Contains("pnpm")) return "node";
+            if (tc.Contains("mvn") || tc.Contains("gradle")) return "maven";
+        }
+
+        if (repo is not null && !string.IsNullOrWhiteSpace(repo.CloneRoot))
+        {
+            // docs/forge/e2e.md Stage 4.3 — delegate to the shared
+            // WorkspaceEcosystemDetector (root fast-path + bounded monorepo
+            // deep scan). This is the SAME detector the impacted-test LSP
+            // chain uses to pick a language server, so the two subsystems
+            // can never disagree about a repo's language. The deep scan is
+            // why a Go repo whose only `go.mod` is at
+            // `services/agent-memory/go.mod` is recognised as `go` instead
+            // of defaulting to C#.
+            var eco = WorkspaceEcosystemDetector.Detect(repo.CloneRoot);
+            if (eco != WorkspaceEcosystemDetector.Unknown) return eco;
+        }
+
+        // Back-compat default so an unrecognised repo keeps the historical
+        // Reqnroll behaviour rather than stalling.
+        return "dotnet";
+    }
+
 
     /// <summary>
     /// docs/forge/e2e.md Stage 4.3 — pure prompt assembler. Takes the
@@ -4159,29 +4254,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 must also be present and reference the declared secret /
                 runner-pool names.
                 """
-            : $$"""
-                ## Your task
-
-                Produce the qa-e2e artifacts for the impl workstream above:
-                  1. ONE Gherkin `.feature` file at `tests/Features/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.feature`
-                     covering every acceptance scenario. Tag with
-                     `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
-                  2. ONE Reqnroll step-definition file at
-                     `tests/Steps/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}Steps.cs`
-                     that implements every binding. `[Binding]` class,
-                     namespace `Forge.Tests.Stories.{{inputs.StoryId.Replace('-', '_')}}.{{inputs.PhaseSlug.Replace('-', '_')}}`.
-                  3. When setup type is `compose` or `lab-*`, ALSO write
-                     `tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
-                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
-                     the right runner pool / secrets per docs/forge/e2e.md §8.
-
-                Reply `DONE` when complete. Forge will run
-                `dotnet test --filter Category=e2e` against your output;
-                a non-zero exit re-enters this loop with the failure
-                summary as evaluator feedback, so make sure every Given /
-                When / Then binding compiles AND the scenarios actually
-                exercise the impl diff above.
-                """;
+            : BuildQaE2eGeneratorTask(inputs, setupTypeWire);
 
         // The order is deliberate: context-first (story / workstream /
         // scenarios / setup / diff) then task. The test scenarios at the
@@ -4220,6 +4293,313 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine(task);
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — the generator "## Your task" block,
+    /// dispatched on the target repo's ecosystem (resolved by the shared
+    /// <see cref="WorkspaceEcosystemDetector"/>). Each ecosystem gets its
+    /// own idiomatic acceptance harness instead of the old hardwired
+    /// "Go ⇒ godog, EVERYTHING ELSE ⇒ C#/Reqnroll" fork — that fork still
+    /// scaffolded a full .NET project (and committed its <c>bin/</c>/<c>obj/</c>)
+    /// for Rust / Python / Node / Java repos (the generalisation of
+    /// smartpcr/code-intelligence#51, which fixed only the Go case). The
+    /// post-pass gate command (<see cref="E2eTestCommandForEcosystem"/>) and
+    /// the prompt are derived from the same ecosystem token so the suite the
+    /// agent writes is always runnable under exactly the command Forge runs.
+    /// </summary>
+    internal static string BuildQaE2eGeneratorTask(QaE2ePromptInputs inputs, string setupTypeWire)
+    {
+        var gateCommand = E2eTestCommandForEcosystem(inputs.Ecosystem);
+        return (inputs.Ecosystem ?? string.Empty).ToLowerInvariant() switch
+        {
+            "go" => BuildGoQaE2eTask(inputs, setupTypeWire, gateCommand),
+            "rust" => BuildRustQaE2eTask(inputs, setupTypeWire, gateCommand),
+            "python" => BuildPythonQaE2eTask(inputs, setupTypeWire, gateCommand),
+            "node" => BuildNodeQaE2eTask(inputs, setupTypeWire, gateCommand),
+            "maven" => BuildMavenQaE2eTask(inputs, setupTypeWire, gateCommand),
+            _ => BuildDotnetQaE2eTask(inputs, setupTypeWire, gateCommand),
+        };
+    }
+
+    /// <summary>
+    /// docs/forge/e2e.md Stage 4.3 — the post-pass e2e gate command per
+    /// ecosystem. The matching <see cref="BuildQaE2eGeneratorTask"/> block
+    /// instructs the agent to make its suite runnable under exactly this
+    /// command (build tag / feature flag / marker / npm script), so the gate
+    /// and the generated tests stay in lockstep. Unknown / .NET falls back to
+    /// the historical Reqnroll command.
+    /// </summary>
+    internal static string E2eTestCommandForEcosystem(string? ecosystem) =>
+        (ecosystem ?? string.Empty).ToLowerInvariant() switch
+        {
+            "go" => "go test -tags e2e ./...",
+            "rust" => "cargo test --features e2e",
+            "python" => "pytest -m e2e",
+            "node" => "npm run test:e2e",
+            "maven" => "mvn test -Dgroups=e2e",
+            _ => "dotnet test --filter Category=e2e",
+        };
+
+    private static string BuildGoQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        var storySafe = StoryPaths.Safe(inputs.StoryId);
+        var goPhase = inputs.PhaseSlug.Replace('-', '_');
+        var goStage = inputs.StageSlug.Replace('-', '_');
+        return $$"""
+            ## Your task
+
+            Produce the **godog** (Cucumber-for-Go) qa-e2e artifacts for the
+            impl workstream above. This is a **Go** repository — do NOT
+            scaffold a C#/.NET project (no `.csproj`, no Reqnroll, no
+            `dotnet`, no `appsettings.json`).
+
+            FIRST locate the Go module that owns the code under test: find
+            the nearest `go.mod` above the files in the impl diff. Call its
+            directory `<MOD>` (it is the repo root for a single-module repo,
+            or a sub-path like `services/agent-memory` for a monorepo). ALL
+            files below go **inside that module** so `go test` compiles —
+            never at the repo root when the repo root has no `go.mod`.
+
+              1. ONE Gherkin `.feature` file at
+                 `<MOD>/test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}.feature`
+                 covering every acceptance scenario. Tag with
+                 `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+              2. ONE godog step-definition file at
+                 `<MOD>/test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}_test.go`,
+                 `package e2e`. Its FIRST line MUST be the build tag
+                 `//go:build e2e` so the suite only runs under
+                 `go test -tags e2e`. Implement every Given/When/Then step,
+                 register them in
+                 `func InitializeScenario_{{goPhase}}_{{goStage}}(ctx *godog.ScenarioContext)`,
+                 and add a test entrypoint
+                 `func TestE2E_{{goPhase}}_{{goStage}}(t *testing.T)` that runs a
+                 `godog.TestSuite` with `ScenarioInitializer:` set to that
+                 initializer and `Options: &godog.Options{Format: "pretty", Paths: []string{"{{goPhase}}_{{goStage}}.feature"}, TestingT: t}`.
+                 Use these UNIQUE per-stage function names so sibling stages
+                 sharing the `e2e` package don't collide. For any required
+                 env-var, define a small package-local helper
+                 `func requireEnv(t *testing.T, name string) string` that
+                 calls `t.Skip` when the var is unset (one copy per package).
+                 Add `github.com/cucumber/godog` to the module
+                 (`go get github.com/cucumber/godog` then `go mod tidy` IN
+                 `<MOD>`) and commit the updated `go.mod` / `go.sum`.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `<MOD>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
+                 the right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Do NOT commit build output (no compiled test binaries, no
+            vendored dependencies). Reply `DONE` when complete. Forge will
+            run `{{gateCommand}}` against your output; a non-zero
+            exit re-enters this loop with the failure summary as evaluator
+            feedback, so make sure the `e2e` package compiles AND the
+            scenarios actually exercise the impl diff above.
+            """;
+    }
+
+    private static string BuildRustQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        var storySafe = StoryPaths.Safe(inputs.StoryId);
+        var rustPhase = inputs.PhaseSlug.Replace('-', '_');
+        var rustStage = inputs.StageSlug.Replace('-', '_');
+        return $$"""
+            ## Your task
+
+            Produce the qa-e2e acceptance suite for the impl workstream above.
+            This is a **Rust** repository — do NOT scaffold a C#/.NET project
+            (no `.csproj`, no Reqnroll, no `dotnet`).
+
+            FIRST locate the crate that owns the code under test: find the
+            nearest `Cargo.toml` above the files in the impl diff. Call its
+            directory `<CRATE>` (repo root for a single-crate repo, or a
+            sub-path like `crates/agent-memory` for a workspace). ALL files
+            below go inside that crate so `cargo test` compiles.
+
+              1. ONE cucumber `.feature` file at
+                 `<CRATE>/tests/e2e/{{storySafe}}/{{rustPhase}}_{{rustStage}}.feature`
+                 covering every acceptance scenario. Tag with
+                 `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+              2. ONE integration test at
+                 `<CRATE>/tests/e2e_{{rustPhase}}_{{rustStage}}.rs`. Prefer the
+                 `cucumber` crate (cucumber-rs) to run the `.feature` file when
+                 a Gherkin runner fits; otherwise map each scenario to a
+                 `#[test]` / `#[tokio::test]` fn mirroring its Given/When/Then.
+                 Gate the WHOLE file behind `#![cfg(feature = "e2e")]` so it
+                 only compiles under the `e2e` feature, and add
+                 `[features]`/`e2e = []` (plus any `cucumber` / `tokio`
+                 dev-dependencies) to `<CRATE>/Cargo.toml`. Commit the updated
+                 `Cargo.toml` / `Cargo.lock`.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `<CRATE>/tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire the
+                 right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Do NOT commit build output (`target/`). Reply `DONE` when complete.
+            Forge will run `{{gateCommand}}` against your output; a non-zero
+            exit re-enters this loop with the failure summary as evaluator
+            feedback, so make sure the suite compiles under the `e2e` feature
+            AND the scenarios actually exercise the impl diff above.
+            """;
+    }
+
+    private static string BuildPythonQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        var pyStage = inputs.StageSlug.Replace('-', '_');
+        return $$"""
+            ## Your task
+
+            Produce the qa-e2e acceptance suite for the impl workstream above.
+            This is a **Python** repository — do NOT scaffold a C#/.NET project
+            (no `.csproj`, no Reqnroll, no `dotnet`).
+
+            FIRST locate the package/project that owns the code under test: find
+            the nearest `pyproject.toml` / `setup.cfg` / `requirements.txt`
+            above the files in the impl diff. Call its directory `<PKG>`.
+
+              1. ONE Gherkin `.feature` file at
+                 `<PKG>/tests/e2e/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.feature`
+                 covering every acceptance scenario. Tag with
+                 `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+              2. ONE pytest-bdd module at
+                 `<PKG>/tests/e2e/{{inputs.PhaseSlug}}/test_{{pyStage}}.py` that
+                 binds the feature via `scenarios("{{inputs.StageSlug}}.feature")`
+                 and implements every `@given` / `@when` / `@then` step. Mark
+                 the module `pytestmark = pytest.mark.e2e` and REGISTER the
+                 `e2e` marker (in `pyproject.toml`
+                 `[tool.pytest.ini_options] markers = ["e2e: end-to-end"]` or
+                 `pytest.ini`) so `-m e2e` selects it. Add `pytest-bdd` to the
+                 project's test dependencies.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `<PKG>/tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire the
+                 right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Reply `DONE` when complete. Forge will run `{{gateCommand}}` against
+            your output; a non-zero exit re-enters this loop with the failure
+            summary as evaluator feedback, so make sure the suite imports
+            cleanly AND the scenarios actually exercise the impl diff above.
+            """;
+    }
+
+    private static string BuildNodeQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        return $$"""
+            ## Your task
+
+            Produce the qa-e2e acceptance suite for the impl workstream above.
+            This is a **Node / TypeScript** repository — do NOT scaffold a
+            C#/.NET project (no `.csproj`, no Reqnroll, no `dotnet`).
+
+            FIRST locate the package that owns the code under test: find the
+            nearest `package.json` above the files in the impl diff. Call its
+            directory `<PKG>`.
+
+              1. ONE e2e spec at
+                 `<PKG>/test/e2e/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.e2e.test.ts`
+                 covering every acceptance scenario — one `describe(...)` for
+                 the stage and one `it(...)` per scenario, mirroring each
+                 Given/When/Then in the test body. Use the runner the repo
+                 ALREADY uses — **vitest** or **jest** (check `<PKG>/package.json`
+                 devDependencies; do NOT introduce a second runner).
+              2. Add an npm script `"test:e2e"` to `<PKG>/package.json` that runs
+                 ONLY the specs under `test/e2e/` (e.g. `vitest run test/e2e` or
+                 `jest test/e2e`). Add any missing dev-dependency for the chosen
+                 runner and commit the updated `package.json`.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `<PKG>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire the
+                 right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Do NOT commit build output (`node_modules/`, `dist/`). Reply `DONE`
+            when complete. Forge will run `{{gateCommand}}` against your output;
+            a non-zero exit re-enters this loop with the failure summary as
+            evaluator feedback, so make sure the spec type-checks / runs AND the
+            scenarios actually exercise the impl diff above.
+            """;
+    }
+
+    private static string BuildMavenQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        var javaPhase = inputs.PhaseSlug.Replace('-', '_');
+        var pascalStage = ToPascalCase(inputs.StageSlug);
+        return $$"""
+            ## Your task
+
+            Produce the qa-e2e acceptance suite for the impl workstream above.
+            This is a **Java / Maven** repository — do NOT scaffold a C#/.NET
+            project (no `.csproj`, no Reqnroll, no `dotnet`).
+
+              1. ONE Gherkin `.feature` file at
+                 `src/test/resources/e2e/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.feature`
+                 covering every acceptance scenario. Tag with
+                 `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+              2. ONE Cucumber-JVM glue class at
+                 `src/test/java/e2e/{{javaPhase}}/{{pascalStage}}Steps.java`
+                 implementing every step, plus a JUnit 5 runner annotated
+                 `@Tag("e2e")` (e.g. a `@Suite` + `@IncludeEngines("cucumber")`
+                 class) so `-Dgroups=e2e` selects it. Add
+                 `io.cucumber:cucumber-java` +
+                 `io.cucumber:cucumber-junit-platform-engine` (test scope) to
+                 `pom.xml` and commit it.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `src/test/resources/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire the
+                 right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Do NOT commit build output (`target/`). Reply `DONE` when complete.
+            Forge will run `{{gateCommand}}` against your output; a non-zero
+            exit re-enters this loop with the failure summary as evaluator
+            feedback, so make sure the suite compiles AND the scenarios actually
+            exercise the impl diff above.
+            """;
+    }
+
+    private static string BuildDotnetQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
+    {
+        // Historical .NET / Reqnroll behaviour — preserved verbatim so the
+        // prompt-shape spec tests (Stage43CrewQaE2eTests) stay green. The
+        // back-compat default for unrecognised ecosystems too.
+        return $$"""
+            ## Your task
+
+            Produce the qa-e2e artifacts for the impl workstream above:
+              1. ONE Gherkin `.feature` file at `tests/Features/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}.feature`
+                 covering every acceptance scenario. Tag with
+                 `@story-{{inputs.StoryId}} @phase-{{inputs.PhaseSlug}} @stage-{{inputs.StageSlug}} @setup-{{setupTypeWire}}`.
+              2. ONE Reqnroll step-definition file at
+                 `tests/Steps/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}Steps.cs`
+                 that implements every binding. `[Binding]` class,
+                 namespace `Forge.Tests.Stories.{{inputs.StoryId.Replace('-', '_')}}.{{inputs.PhaseSlug.Replace('-', '_')}}`.
+              3. When setup type is `compose` or `lab-*`, ALSO write
+                 `tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                 `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
+                 the right runner pool / secrets per docs/forge/e2e.md §8.
+
+            Reply `DONE` when complete. Forge will run
+            `{{gateCommand}}` against your output;
+            a non-zero exit re-enters this loop with the failure
+            summary as evaluator feedback, so make sure every Given /
+            When / Then binding compiles AND the scenarios actually
+            exercise the impl diff above.
+            """;
+    }
+
+    /// <summary>
+    /// Convert a hyphen/underscore slug to PascalCase for Java class names
+    /// (`agent-memory` ⇒ `AgentMemory`). Empty / null ⇒ `Stage`.
+    /// </summary>
+    private static string ToPascalCase(string? slug)
+    {
+        if (string.IsNullOrWhiteSpace(slug)) return "Stage";
+        var parts = slug.Split(new[] { '-', '_', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var sb = new System.Text.StringBuilder();
+        foreach (var p in parts)
+        {
+            sb.Append(char.ToUpperInvariant(p[0]));
+            if (p.Length > 1) sb.Append(p[1..]);
+        }
+        return sb.Length == 0 ? "Stage" : sb.ToString();
     }
 
     /// <summary>
@@ -5073,7 +5453,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // generator turn. Cheap query -- one row read + JSON parse.
             // Filtered to pins scoped to this work item (workItemId match)
             // OR globally-scoped pins (workItemId == null).
-            var decisionPinsBlock = await this.BuildDecisionPinsBlockAsync(workItemId, iterCt);
+            var decisionPinsBlock = await BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt);
 
             // Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the
             // agent's own working notes from the prior iteration. Each
@@ -5313,6 +5693,51 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 role = "generator",
                 iter,
             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+            // Phase 82 -- durable per-iter prompt audit trail. Mirrors the
+            // task.prompt emit above so the audit survives the transcript
+            // retention janitor (last-10-iters open / last-1 closed) and
+            // TaskChannel's 10 000-row cap. Per-iter scope (mirrors the
+            // AgentMemoryStore pattern below) -- the strategy is a
+            // singleton, IterationPromptStore is scoped on ProductDbContext.
+            // Failures must NOT abort the iteration: log + emit telemetry,
+            // never throw.
+            try
+            {
+                using var promptScope = this.scopeFactory.CreateScope();
+                var promptStore = promptScope.ServiceProvider.GetRequiredService<IterationPromptStore>();
+                await promptStore.SaveAsync(
+                    workItemId: workItemId,
+                    iter: iter,
+                    role: "generator",
+                    agentId: genAgentId,
+                    crewId: crew.Id,
+                    systemPrompt: string.IsNullOrEmpty(genContext.SoulMd) ? null : genContext.SoulMd,
+                    userPrompt: iterPrompt,
+                    model: genContext.Model,
+                    backend: genBackendStr,
+                    invokeMode: genInvokeStr,
+                    ct: iterCt);
+            }
+            catch (Exception persistEx)
+            {
+                this.logger?.LogWarning(persistEx,
+                    "Phase 82 -- failed to persist generator prompt for {WorkItemId} iter {Iter}",
+                    workItemId, iter);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                    {
+                        role = "generator",
+                        iter,
+                        error = persistEx.Message,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                }
+                catch
+                {
+                    // best-effort -- transcript channel itself may be down
+                }
+            }
 
             // Phase 55 / Phase C+D -- load the prior iteration's
             // memory handle (session id for CLI, conversation turns
@@ -6052,6 +6477,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 role = "evaluator",
                 iter,
             }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+            // Phase 82 -- durable per-iter prompt audit trail for the
+            // evaluator role. Mirrors the generator-side save above.
+            try
+            {
+                using var promptScope = this.scopeFactory.CreateScope();
+                var promptStore = promptScope.ServiceProvider.GetRequiredService<IterationPromptStore>();
+                await promptStore.SaveAsync(
+                    workItemId: workItemId,
+                    iter: iter,
+                    role: "evaluator",
+                    agentId: evalAgentId,
+                    crewId: evalCrewId,
+                    systemPrompt: string.IsNullOrEmpty(evalContext.SoulMd) ? null : evalContext.SoulMd,
+                    userPrompt: iterEvaluatorPrompt,
+                    model: evalContext.Model,
+                    backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                    invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                    ct: iterCt);
+            }
+            catch (Exception persistEx)
+            {
+                this.logger?.LogWarning(persistEx,
+                    "Phase 82 -- failed to persist evaluator prompt for {WorkItemId} iter {Iter}",
+                    workItemId, iter);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.prompt.persist-failed", new
+                    {
+                        role = "evaluator",
+                        iter,
+                        error = persistEx.Message,
+                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                }
+                catch
+                {
+                    // best-effort
+                }
+            }
 
             // Phase 55 / Phase C+D -- mirror the generator-side
             // memory wiring for the evaluator role. The evaluator's
@@ -6933,6 +7397,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             if (rel.StartsWith(".forge-attachments/", StringComparison.Ordinal)) continue;
             // Forge iteration scratch (iter-notes, conversation notes).
             if (rel.StartsWith(".forge/", StringComparison.Ordinal)) continue;
+            // Build output the gate (`dotnet test` / `go test` / …) wrote into
+            // the workspace — bin/, obj/, target/, node_modules/, etc. These
+            // are never deliverables; without this filter a blanket
+            // `git add -A` at commit time lands generated binaries in the PR
+            // (smartpcr/code-intelligence#51: 276 files, mostly tests/bin/...).
+            if (BuildArtifactPaths.IsBuildArtifact(rel)) continue;
             dict[rel] = File.ReadAllText(path);
         }
         return dict;
@@ -7222,7 +7692,44 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Resolves the worktree-local git exclude file (<c>info/exclude</c>
+    /// Phase 82.2 -- wraps the raw prior-iter-notes content from
+    /// <see cref="ReadPriorIterNotesAsync"/> in the canonical boxed
+    /// banner block. Returns empty when the workspace has no notes yet.
+    ///
+    /// <para>Extracted from <c>BuildIterPromptAsync</c> so
+    /// <see cref="CrewQueueWorker"/> (which doesn't inherit from this
+    /// strategy) can reuse the exact same formatting on impl-path
+    /// prompts. Without it, audit goal #2 (prior-iter context) is
+    /// honoured only on plan-doc + qa-e2e generator prompts; impl-path
+    /// generators re-discover the codebase every iter.</para>
+    ///
+    /// <para>Caller is responsible for appending a separator
+    /// (────...) + blank line after the block when concatenating with
+    /// downstream prompt sections.</para>
+    /// </summary>
+    internal static async Task<string> BuildPriorIterNotesPromptBlockAsync(string workspace, CancellationToken ct)
+    {
+        var raw = await ReadPriorIterNotesAsync(workspace, ct);
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var sb = new StringBuilder();
+        sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+        sb.AppendLine("║  NOTES FROM PRIOR ITERATIONS (your own working state)    ║");
+        sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+        sb.AppendLine();
+        sb.AppendLine("You wrote these notes across the prior iterations of this");
+        sb.AppendLine("workstream, newest first. The agent sessions that produced");
+        sb.AppendLine("them are gone -- this archive is your only memory of what");
+        sb.AppendLine("you already learned, decided, or tried. Forge appends a new");
+        sb.AppendLine("entry every iter; you do NOT need to copy prior entries");
+        sb.AppendLine("forward yourself.");
+        sb.AppendLine();
+        sb.AppendLine(raw);
+        sb.AppendLine();
+        sb.AppendLine("Overwrite `.forge/iter-notes.md` with THIS iter's reflection");
+        sb.AppendLine("only -- Forge will archive it and prepend the cumulative");
+        sb.AppendLine("history to your next prompt.");
+        return sb.ToString().TrimEnd();
+    }
     /// under whatever git dir the worktree maps to -- `git worktree add`
     /// sub-dirs point at <c>{cloneRoot}/.git/worktrees/{name}/</c>, the
     /// main checkout at <c>{cloneRoot}/.git/</c>) and appends the pattern

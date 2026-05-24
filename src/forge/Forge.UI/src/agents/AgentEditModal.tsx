@@ -64,6 +64,7 @@ function AgentEditModal({ agentId, onClose }: {
   const [soulText, setSoulText] = useState('');
   const [soulLoading, setSoulLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [showPathField, setShowPathField] = useState(false);
   const [avatar, setAvatar] = useState('');
@@ -183,6 +184,21 @@ function AgentEditModal({ agentId, onClose }: {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteAgent() {
+    if (!canEdit) return;
+    if (!window.confirm(`Delete agent "${name || agentId}"? This removes it from its crew. This cannot be undone.`)) return;
+    setDeleting(true); setError(null);
+    try {
+      await forgeApi.deleteAgent(agentId);
+      onClose();
+      // Reload so the roster / crews / swarm views drop the agent everywhere.
+      if (typeof window !== 'undefined') window.location.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
     }
   }
 
@@ -543,6 +559,16 @@ function AgentEditModal({ agentId, onClose }: {
         )}
 
         <footer style={soulFootStyle}>
+          {canEdit && (
+            <button
+              onClick={() => void deleteAgent()}
+              disabled={deleting || saving}
+              style={{ ...modalBtnSecondaryStyle, color: 'var(--danger)', borderColor: 'var(--danger-border, rgba(220,38,38,0.4))', marginRight: 'auto' }}
+              title="Delete this agent"
+            >
+              {deleting ? 'Deleting…' : 'Delete agent'}
+            </button>
+          )}
           <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
             {!canEdit && <em>read-only — PO required to save</em>}
             {canEdit && savedAt && !dirty && <span>saved · {savedAt.toLocaleTimeString()}</span>}

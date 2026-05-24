@@ -518,7 +518,7 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
         </button>
       </nav>
 
-      {totalIters > 0 && (
+      {totalIters > 0 && !isPromptMode && (
         <nav className="live-exec__iter-pager" aria-label="Iteration pager">
           <button
             type="button"

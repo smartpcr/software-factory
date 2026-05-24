@@ -43,6 +43,13 @@ public static class TaskExecutionEndpoints
         grp.MapGet("/{id}/transcript", GetTranscript).WithName("GetWorkItemTranscript");
         grp.MapGet("/{id}/transcript/{eventId:long}", GetTranscriptEvent).WithName("GetWorkItemTranscriptEvent");
         grp.MapDelete("/{id}/transcript", ClearTranscript).WithName("ClearWorkItemTranscript");
+        // Phase 82.1 — durable per-iter prompt audit. Surfaces the
+        // iteration_prompt rows (persisted by CrewQueueWorker +
+        // CrewStoryArtifactStrategy) so the operator can browse the FULL
+        // untruncated system + user prompt each gen / eval run saw. The
+        // /transcript endpoint truncates string fields at 320 bytes; this
+        // endpoint does not.
+        grp.MapGet("/{id}/iteration-prompts", GetIterationPrompts).WithName("GetWorkItemIterationPrompts");
         grp.MapPatch("/{id}/execution", PatchExecution).WithName("PatchWorkItemExecution");
         grp.MapPost("/{id}/resume", Resume).WithName("ResumeWorkItem");
         grp.MapGet("/{id}/commits", GetCommits).WithName("GetWorkItemCommits");
@@ -945,6 +952,40 @@ public static class TaskExecutionEndpoints
         return Results.Ok(new TaskTranscriptEvent(row.Id, row.WorkItemId, row.Kind, row.AgentId, row.CrewId, payload, row.At));
     }
 
+    /// <summary>
+    /// Phase 82.1 — list every persisted iteration_prompt pair (generator
+    /// + evaluator) for one work item. Untruncated payload — the
+    /// /transcript stream caps system + user prompts at 320 bytes per
+    /// field, but this endpoint returns the full bytes the agent saw.
+    /// Sorted ascending by iter. Used by the Prompt tab's in-tab pager.
+    /// </summary>
+    private static async Task<IResult> GetIterationPrompts(
+        string id,
+        Forge.Api.Services.IterationPromptStore promptStore,
+        CancellationToken ct)
+    {
+        var pairs = await promptStore.ListForWorkItemAsync(id, ct);
+        var iters = pairs.Select(p => new IterationPromptPairDto(
+            Iter: p.Iter,
+            Generator: p.Generator is null ? null : MapPromptRow(p.Generator),
+            Evaluator: p.Evaluator is null ? null : MapPromptRow(p.Evaluator),
+            GeneratorAttempts: p.GeneratorAttempts,
+            EvaluatorAttempts: p.EvaluatorAttempts)).ToList();
+        return Results.Ok(new IterationPromptListDto(id, iters));
+    }
+
+    private static IterationPromptDto MapPromptRow(IterationPromptRow r) => new(
+        Role: r.Role,
+        AgentId: r.AgentId,
+        CrewId: r.CrewId,
+        Attempt: r.Attempt,
+        SystemPrompt: r.SystemPrompt,
+        UserPrompt: r.UserPrompt,
+        Model: r.Model,
+        Backend: r.Backend,
+        InvokeMode: r.InvokeMode,
+        CreatedAt: r.CreatedAt);
+
     private static async Task<IResult> GetTranscript(
         string id,
         ControlDbContext control,
@@ -992,6 +1033,26 @@ public static class TaskExecutionEndpoints
             await db.SaveChangesAsync(ct);
         }
 
+        // Phase 82.1 — also wipe the durable iteration_prompt audit rows
+        // so a restarted workstream begins with a clean prompt history.
+        // Without this, the new Prompt-tab DB-backed pager would show
+        // stale iters from the pre-clear run alongside the fresh ones.
+        // Best-effort: failures log + continue (the transcript reset
+        // alone is enough to unblock the operator's restart).
+        int deletedPrompts = 0;
+        try
+        {
+            var promptStore = ctx.RequestServices.GetService<Forge.Api.Services.IterationPromptStore>();
+            if (promptStore is not null)
+            {
+                deletedPrompts = await promptStore.DeleteForWorkItemAsync(id, ct);
+            }
+        }
+        catch (Exception)
+        {
+            // best-effort
+        }
+
         // Phase 21 — also delete deliverable rows so the iter counter
         // resets to 0 when the live-exec view reloads after a restart.
         var deliverables = await db.Deliverables
@@ -1026,7 +1087,7 @@ public static class TaskExecutionEndpoints
             await db.SaveChangesAsync(ct);
         }
 
-        return Results.Ok(new { deleted = rows.Count, deletedDeliverables = deliverables.Count });
+        return Results.Ok(new { deleted = rows.Count, deletedDeliverables = deliverables.Count, deletedPrompts });
     }
 
     private static Deliverable MapDeliverable(DeliverableRow r)

@@ -4362,8 +4362,24 @@ public sealed class StorySpawnOrchestrator
         // Transition the upstream ADO work item to Closed (idempotent).
         // ProductStory-sourced spawns have no upstream provider record — we
         // mark the local ProductStoryRow as 'done' instead.
+        //
+        // The guard below is the "one-shot per spawn" contract the scheduler
+        // relies on (see SpawnDependencyScheduler.cs: "DriveDoneAsync
+        // short-circuits once the WI state is already closed"). Subsequent
+        // ticks must hit this short-circuit so we don't re-emit story-closed
+        // every 15 s.
         if (story.State is "closed" or "resolved") return false;
-        var hasUpstream = await db.WorkItems.AnyAsync(w => w.Id == spawn.StoryId, ct);
+
+        // `story` is the WorkItemRow loaded (or synthesised) by RunOneStepAsync.
+        // For ProductStory-sourced spawns the synthetic row is stamped with
+        // Provider="local" — those have no upstream provider record to
+        // transition, so the provider call is a no-op (and historically
+        // returned early WITHOUT touching wi.State, leaving the guard above
+        // permanently un-tripped). Drive the local Provider check off the
+        // synthetic row's Provider field rather than "row exists" because
+        // RunOneStepAsync guarantees the row always exists by this point.
+        var hasUpstream = !string.IsNullOrEmpty(story.Provider)
+            && !string.Equals(story.Provider, "local", StringComparison.OrdinalIgnoreCase);
         if (hasUpstream)
         {
             await this.provider.TransitionWorkItemAsync(story.Id, "closed", ct);
@@ -4377,6 +4393,21 @@ public sealed class StorySpawnOrchestrator
                 await db.SaveChangesAsync(ct);
             }
         }
+
+        // Stamp the local WorkItemRow as closed so the next-tick guard at the
+        // top of this method short-circuits. For upstream rows
+        // ProviderStoryProviderOps.TransitionWorkItemAsync already writes
+        // wi.State on the underlying DB row, but it does so in its own DI
+        // scope so the EF-tracked `story` entity in this scope still
+        // observes the original "active" value — re-stamping here makes the
+        // guard reliable regardless of which provider path executed. For
+        // local synthetic rows (Provider="local") the provider call is a
+        // silent no-op, so this stamp is the only place wi.State becomes
+        // "closed".
+        story.State = "closed";
+        story.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+
         await EmitChange(hub, "story-closed", spawn, ct);
         return true;
     }

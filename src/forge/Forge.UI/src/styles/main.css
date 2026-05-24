@@ -144,7 +144,11 @@
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-secondary { background: var(--bg-surface); border-color: var(--border); color: var(--text-primary); }
 .btn-secondary:hover { border-color: var(--border-strong); background: var(--bg-surface-2); }
-.btn-ghost { color: var(--text-secondary); padding: 7px 8px; }
-.btn-ghost:hover { color: var(--text-primary); background: var(--bg-surface); }
+/* Ghost buttons are interactive — keep them clearly enabled (not the muted
+   secondary/tertiary grays that read as "disabled"). Hover brightens to the
+   accent; disabled state is conveyed via opacity, never via gray text. */
+.btn-ghost { color: var(--text-primary); padding: 7px 8px; }
+.btn-ghost:hover { color: var(--accent); background: var(--bg-surface); }
+.btn-ghost:disabled { opacity: 0.45; cursor: default; }
 .btn-success { background: var(--success); color: var(--bg-base); }
 .btn-danger { background: var(--danger); color: white; }

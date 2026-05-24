@@ -255,6 +255,13 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(81, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "product_stories" }),
+        // Phase 82 — iteration_prompt audit table (per-iter generator +
+        // evaluator prompts). Product-only so the migration fans out to
+        // each {slug}.db. Lives outside transcript retention so the audit
+        // trail survives the TranscriptRetentionJanitor + TaskChannel cap.
+        new PhaseMigrationSpec(82, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "iteration_prompt" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

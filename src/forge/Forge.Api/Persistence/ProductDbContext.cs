@@ -94,6 +94,8 @@ public class ProductDbContext : DbContext
 
     public DbSet<TaskTranscriptEventRow> TaskTranscriptEvents => this.Set<TaskTranscriptEventRow>();
 
+    public DbSet<IterationPromptRow> IterationPrompts => this.Set<IterationPromptRow>();
+
     public DbSet<TaskQueueRow> TaskQueue => this.Set<TaskQueueRow>();
 
     public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();

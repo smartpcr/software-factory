@@ -10,7 +10,6 @@ import {
   forgeApi,
   type StorySpawn,
   type StorySpawnDetail,
-  type StorySpawnPhase,
   type StorySpawnWorkstreamSummary,
 } from '@/api/forgeApi';
 import { agentInfo } from '@/agentAvatar';
@@ -135,7 +134,7 @@ interface Rect {
   extras?: string[];
 }
 
-/* ─── Plan-anchored worktree slug for plan-docs / QA / step-defs ─────
+/* ─── Plan-anchored worktree slug for plan-docs ──────────────────────
  * Mirrors `RealStoryGitOps.WorktreePath` + `SanitizeBranchSlug` so the
  * client can derive the folder name for branches that the spawn contract
  * doesn't already expose a `worktreeFolder` for. Returns null when the
@@ -239,72 +238,6 @@ function workstreamRect(w: StorySpawnWorkstreamSummary): Rect {
   };
 }
 
-function qaPrRect(spawn: StorySpawn, qaMerged: boolean): Rect {
-  // Stage-3 head rect — the QA feature-file PR (e2e-scenarios.feature
-  // grouped per phase). Lifecycle is gated on spawn.phase rather than
-  // branch presence: the orchestrator can pre-create qaBranch as a
-  // side-effect of a base-branch change or recovery sweep, which would
-  // otherwise paint this rect magenta during impl. The phase field is
-  // the authoritative "where is QA right now" signal.
-  //
-  //   - complete → qaPrMerged OR spawn.phase === 'done'
-  //   - review   → spawn.phase === 'qa' (PR in flight, awaiting merge)
-  //   - pending  → otherwise (orchestrator hasn't reached QA phase)
-  let status: RectStatus;
-  if (qaMerged || spawn.phase === 'done') status = 'complete';
-  else if (spawn.phase === 'qa') status = 'review';
-  else status = 'pending';
-  const extras: string[] = [];
-  if (spawn.qaPrId) extras.push(`PR: ${spawn.qaPrId}`);
-  return {
-    key: 'release:qa-pr',
-    stage: 3,
-    status,
-    title: 'QA feature-file PR',
-    subtitle: 'QA crew · Gherkin scenarios → main',
-    branch: spawn.qaBranch,
-    worktreeFolder: legacyWorktreeFolder(spawn.qaBranch),
-    generator: null,
-    evaluator: null,
-    extras,
-  };
-}
-
-function stepDefRect(
-  w: StorySpawnWorkstreamSummary,
-  qaMerged: boolean,
-  spawnPhase: StorySpawnPhase,
-): Rect {
-  // One stage-3 rect per workstream representing its `-steps` PR (opened
-  // by StorySpawnOrchestrator.cs:1864 once the QA PR merges). `w.status
-  // === 'complete'` is intentionally NOT used as the merged signal — it
-  // flips on IMPL-PR merge before step-defs exist (DriveReviewAsync,
-  // line ~1699). We trust the dedicated stepDefMerged field.
-  //
-  // Status also gates on spawn.phase so a pre-merge phase can't paint
-  // these magenta. Order: explicit merged signal → explicit PR id →
-  // post-QA-merge "active but no PR yet" → pending.
-  let status: RectStatus;
-  if (w.stepDefMerged || spawnPhase === 'done') status = 'complete';
-  else if (w.stepDefPrId) status = 'review';
-  else if (qaMerged && spawnPhase === 'qa') status = 'active';
-  else status = 'pending';
-  const extras: string[] = [];
-  if (w.stepDefPrId) extras.push(`PR: ${w.stepDefPrId}`);
-  return {
-    key: `release:steps:${w.id}`,
-    stage: 3,
-    status,
-    title: `step-defs · ${w.name || w.id}`,
-    subtitle: 'Engineer crew · Gherkin step bindings',
-    branch: w.stepDefBranch ?? null,
-    worktreeFolder: legacyWorktreeFolder(w.stepDefBranch),
-    generator: null,
-    evaluator: null,
-    extras,
-  };
-}
-
 /* ─── Tooltip builder ──────────────────────────────────────────────── */
 
 function buildTooltip(r: Rect): string {
@@ -333,8 +266,15 @@ function buildTooltip(r: Rect): string {
 
 /**
  * Visual constants. Tuned so a typical XRAFT-shaped DAG (5 plan-doc roots
- * → decomp → ~5 phases of impl → QA → 21 step-defs) lays out compactly
- * without crowding the edges. Edges live in the gap between columns.
+ * → decomp → ~5 phases of impl, with trailing qa-e2e workstreams rendered
+ * inline as Stage-2 siblings) lays out compactly without crowding the
+ * edges. Edges live in the gap between columns.
+ *
+ * docs/forge/e2e.md Phase 58 — the pre-Phase-58 "batched QA + per-ws
+ * step-defs" Stage-3 column was removed; real qa-e2e tasks now exist as
+ * `Category='qa-e2e'` workstream rows in `detail.workstreams` and flow
+ * through `workstreamRect` like any other workstream, gated on real PR
+ * existence rather than synthesised from spawn.phase.
  */
 const CELL = 10;
 const COL_GAP = 18;
@@ -350,17 +290,17 @@ const PAD = 2;
  *   crew writes `workstreams.yaml` only after the four MD docs reach
  *   pass-verdict and the plan PR merges. (`ProducePlanArtifactsAsync`
  *   in CrewStoryArtifactStrategy.cs.)
- * - Each engineer workstream carries its server-resolved `deps[]` (impl
- *   PR ids it must wait on). When a workstream has NO impl deps it
- *   still depends on the decomposition implicitly — it can't claim
- *   until the plan-derived workstream rows exist.
- * - The QA-feature-file PR (`release:qa-pr`) cannot open until every
- *   impl PR merges (StorySpawnOrchestrator.DriveQaAsync). Falls back
- *   to the decomposition when no workstreams exist yet.
- * - The per-workstream step-def rect (`release:steps:{ws.Id}`) depends
- *   on BOTH the QA PR (it can't open until QA merges, line ~1858) and
- *   its parent workstream (the steps file targets THAT workstream's
- *   .feature scenarios).
+ * - Each workstream (impl or qa-e2e) carries its server-resolved
+ *   `deps[]` (impl PR ids it must wait on). When a workstream has NO
+ *   deps it still depends on the decomposition implicitly — it can't
+ *   claim until the plan-derived workstream rows exist. qa-e2e rows
+ *   carry their impl sibling's id in `deps[]` (set by
+ *   `PersistDecompositionAsync` via the `/e2e` planAnchor suffix), so
+ *   they naturally render to the right of their impl sibling here.
+ *
+ * docs/forge/e2e.md Phase 58 — the legacy `release:qa-pr` +
+ * `release:steps:{ws.Id}` synthesised stubs were removed once
+ * trailing per-stage qa-e2e workstreams replaced the batched QA pass.
  */
 function buildDeps(
   detail: StorySpawnDetail,
@@ -378,14 +318,6 @@ function buildDeps(
     deps.set(`impl:${w.id}`, wsDeps);
   }
 
-  const qaParents = detail.workstreams.length > 0
-    ? detail.workstreams.map((w) => `impl:${w.id}`)
-    : ['plan:decomposition'];
-  deps.set('release:qa-pr', qaParents);
-
-  for (const w of detail.workstreams) {
-    deps.set(`release:steps:${w.id}`, ['release:qa-pr', `impl:${w.id}`]);
-  }
   return deps;
 }
 
@@ -477,12 +409,9 @@ function rectY(lane: number): number {
  *   keys doc cards with the `doc:` prefix; the strip's rect keys use
  *   `plan:` so we re-prefix here).
  * - `impl:{wsId}` → impl mode, phase:{wsId} (matches PhaseCard's
- *   selection contract).
- * - `release:qa-pr` → release mode, gate:qa (the QA-merged release gate
- *   in ReleaseMaster).
- * - `release:steps:{wsId}` → impl mode, phase:{wsId}. The step-def task
- *   doesn't have its own card; routing the operator to the parent
- *   workstream surfaces the step-def state inside that card.
+ *   selection contract). Applies to both impl and qa-e2e workstream
+ *   rows — qa-e2e cards live inside the same phase board, stacked
+ *   beneath their impl sibling per docs/forge/e2e.md Stage 8.1.
  */
 function rectTarget(rect: Rect): { mode: 'design' | 'impl' | 'release'; selKind: string; selId: string } | null {
   if (rect.key.startsWith('plan:')) {
@@ -491,12 +420,6 @@ function rectTarget(rect: Rect): { mode: 'design' | 'impl' | 'release'; selKind:
   }
   if (rect.key.startsWith('impl:')) {
     return { mode: 'impl', selKind: 'phase', selId: rect.key.slice('impl:'.length) };
-  }
-  if (rect.key === 'release:qa-pr') {
-    return { mode: 'release', selKind: 'gate', selId: 'qa' };
-  }
-  if (rect.key.startsWith('release:steps:')) {
-    return { mode: 'impl', selKind: 'phase', selId: rect.key.slice('release:steps:'.length) };
   }
   return null;
 }
@@ -510,16 +433,15 @@ export function StoryDeliveryStrip({ detail }: Props) {
     ...PLAN_DOC_KEYS.map((k) => docRectFromStats(k, docStats[k], detail.spawn.planBranch)),
     decompositionRect(detail.spawn),
   ];
-  // Stage 2 — one rect per impl workstream.
+  // Stage 2 — one rect per workstream (impl + qa-e2e). qa-e2e rows
+  // carry `Category='qa-e2e'` and their impl sibling's id in `deps[]`,
+  // so `buildDeps` naturally places them to the right of their impl
+  // sibling. docs/forge/e2e.md Phase 58 — the pre-58 synthesised QA
+  // feature-file PR + per-workstream step-defs Stage-3 column was
+  // removed; trailing qa-e2e workstreams replaced that batched flow.
   const stage2: Rect[] = detail.workstreams.map(workstreamRect);
-  // Stage 3 — 1 QA rect + 1 step-def rect per workstream.
-  const qaMerged = detail.qaPrMerged ?? false;
-  const stage3: Rect[] = [
-    qaPrRect(detail.spawn, qaMerged),
-    ...detail.workstreams.map((w) => stepDefRect(w, qaMerged, detail.spawn.phase)),
-  ];
 
-  const allRects = [...stage1, ...stage2, ...stage3];
+  const allRects = [...stage1, ...stage2];
   if (allRects.length === 0) return null;
 
   const deps = buildDeps(detail);

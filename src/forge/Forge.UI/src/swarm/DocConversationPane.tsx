@@ -528,8 +528,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
         </button>
       </nav>
 
-      {/* Iteration pager — windowed page list with score chips */}
-      {totalIters > 0 && (
+      {/* Iteration pager — windowed page list with score chips. Hidden
+          in Prompt sub-tab mode because PromptView renders its own
+          pager chipped on actual persisted-prompt iters (avoids
+          double-pager and outer/inner mismatch). */}
+      {totalIters > 0 && !isPromptMode && (
         <nav className="live-exec__iter-pager" aria-label="Iteration pager">
           <button
             type="button"

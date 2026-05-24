@@ -120,11 +120,29 @@
   display: flex;
   justify-content: space-between;
 }
+/* Phase 80 — make the section "+" affordances obvious (they were a barely
+   visible tertiary glyph). Render as a small bordered chip that lights up
+   accent on hover. */
 .nav-section-title .add-btn {
-  color: var(--text-tertiary);
-  transition: color 120ms;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
 }
-.nav-section-title .add-btn:hover { color: var(--accent); }
+.nav-section-title .add-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
 .app.sidebar-collapsed .nav-section-title { display: none; }
 .app.sidebar-collapsed .nav-section { padding: 6px 0; }
 

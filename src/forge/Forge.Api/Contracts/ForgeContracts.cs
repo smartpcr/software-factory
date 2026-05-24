@@ -1265,6 +1265,58 @@ public sealed record IterationPromptGrowth(
     string? GeneratorTurnSamplesJson = null,
     string? EvaluatorTurnSamplesJson = null);
 
+// ─── Phase 82 — Per-iteration prompt audit (durable trail) ────────────────
+
+/// <summary>
+/// Phase 82 — one stored generator-or-evaluator user prompt for one
+/// iteration. Mirrors <see cref="Forge.Api.Persistence.IterationPromptRow"/>
+/// (append-only, attempt-numbered) so the UI's Prompts tab can replay the
+/// exact prompt the agent saw on iter N attempt M -- transcript-retention
+/// independent.
+/// </summary>
+public sealed record IterationPromptDto(
+    /// <summary>"generator" | "evaluator".</summary>
+    string Role,
+    string AgentId,
+    string CrewId,
+    /// <summary>1-based attempt; 2+ means a retry/replay of the same (workItemId, iter, role) tuple.</summary>
+    int Attempt,
+    /// <summary>Optional soul.md (system prompt). Null when the backend doesn't use one.</summary>
+    string? SystemPrompt,
+    /// <summary>The fully-composed user prompt -- pins + prior notes + gate + eval + brief.</summary>
+    string UserPrompt,
+    string? Model,
+    string? Backend,
+    string? InvokeMode,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
+/// Phase 82 — generator + evaluator pair for one iteration. Either or both
+/// roles may be null when the loop never reached them for this iter.
+/// <see cref="GeneratorAttempts"/> / <see cref="EvaluatorAttempts"/>
+/// indicate how many attempts exist so the UI can render a
+/// "Attempt N / M" selector; the embedded
+/// <see cref="IterationPromptDto"/> reflects the latest (or pinned via
+/// query string) attempt.
+/// </summary>
+public sealed record IterationPromptPairDto(
+    int Iter,
+    IterationPromptDto? Generator,
+    IterationPromptDto? Evaluator,
+    int GeneratorAttempts,
+    int EvaluatorAttempts);
+
+/// <summary>
+/// Phase 82 — list response: every iteration that has at least one stored
+/// prompt for this work item, ordered by ascending iter. The list may be
+/// sparse (e.g. iters [1, 3, 7]) for legacy work items whose early iters
+/// were never captured.
+/// </summary>
+public sealed record IterationPromptListDto(
+    string WorkItemId,
+    IReadOnlyList<IterationPromptPairDto> Iters);
+
+
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 
 /// <summary>
