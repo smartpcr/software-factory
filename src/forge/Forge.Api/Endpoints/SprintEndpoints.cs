@@ -94,11 +94,23 @@ public static class SprintEndpoints
 
     // ── List (15.7) ──────────────────────────────────────────────────────
 
-    private static async Task<IResult> ListIterations(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> ListIterations(string id, ControlDbContext control, IProductDbContextFactory factory)
     {
-        if (!await control.Products.AnyAsync(p => p.Id == id))
+        // Phase 73 follow-up — per-product data must resolve against the
+        // *target* product's DB, not whichever DB the request scope
+        // (X-Forge-Product-Id) resolved to. The Products & Repos page
+        // polls this endpoint for every product card while exactly one
+        // product is "active", so binding to the request-scope DB makes
+        // every non-active card show 0 iterations.
+        var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (product is null)
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
+        var db = factory.CreateFor(product.Slug);
+        return await ListIterationsCore(id, db);
+    }
 
+    private static async Task<IResult> ListIterationsCore(string id, ProductDbContext db)
+    {
         var rows = await db.ProductIterations.AsNoTracking()
             .Where(i => i.ProductId == id)
             .OrderBy(i => i.Path)
@@ -140,11 +152,19 @@ public static class SprintEndpoints
         return Results.Ok(list);
     }
 
-    private static async Task<IResult> ListAreaPaths(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> ListAreaPaths(string id, ControlDbContext control, IProductDbContextFactory factory)
     {
-        if (!await control.Products.AnyAsync(p => p.Id == id))
+        // Phase 73 follow-up — resolve per-product DB by path id (see
+        // ListIterations note).
+        var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (product is null)
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
+        var db = factory.CreateFor(product.Slug);
+        return await ListAreaPathsCore(id, db);
+    }
 
+    private static async Task<IResult> ListAreaPathsCore(string id, ProductDbContext db)
+    {
         var rows = await db.ProductAreaPaths.AsNoTracking()
             .Where(a => a.ProductId == id)
             .OrderBy(a => a.Path)
@@ -318,8 +338,8 @@ public static class SprintEndpoints
         // event drives the SprintManager UI to refresh.
         await hub.Clients.All.SendAsync("sprint.changed", new { kind = kind == "iterations" ? "iterations-imported" : "areas-imported", productId, count = requested.Count });
 
-        if (kind == "iterations") return await ListIterations(productId, control, db);
-        return await ListAreaPaths(productId, control, db);
+        if (kind == "iterations") return await ListIterationsCore(productId, db);
+        return await ListAreaPathsCore(productId, db);
     }
 
     // ── Default area path (15.2) ─────────────────────────────────────────
@@ -349,15 +369,24 @@ public static class SprintEndpoints
         row.IsDefaultFilter = !row.IsDefaultFilter;
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("sprint.changed", new { kind = "default-area-changed", productId = id, areaPathId, isDefault = row.IsDefaultFilter });
-        return await ListAreaPaths(id, control, db);
+        return await ListAreaPathsCore(id, db);
     }
 
     // ── Saved prefixes (15.10) ───────────────────────────────────────────
 
-    private static async Task<IResult> ListSavedPrefixes(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> ListSavedPrefixes(string id, ControlDbContext control, IProductDbContextFactory factory)
     {
-        if (!await control.Products.AnyAsync(p => p.Id == id))
+        // Phase 73 follow-up — resolve per-product DB by path id (see
+        // ListIterations note).
+        var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (product is null)
             return Results.Problem(title: $"Product {id} not found", statusCode: 404);
+        var db = factory.CreateFor(product.Slug);
+        return await ListSavedPrefixesCore(id, db);
+    }
+
+    private static async Task<IResult> ListSavedPrefixesCore(string id, ProductDbContext db)
+    {
         var rows = await db.ProductSavedPrefixes.AsNoTracking()
             .Where(p => p.ProductId == id)
             .OrderBy(p => p.Prefix)

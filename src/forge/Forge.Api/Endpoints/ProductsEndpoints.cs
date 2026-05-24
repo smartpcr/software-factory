@@ -14,6 +14,7 @@ using Forge.Api.Providers;
 using Forge.Api.Realtime;
 using Forge.Api.Services;
 using Forge.Api.Services.Git;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -865,18 +866,45 @@ public static class ProductsEndpoints
 
     // ----- /api/products/{id}/stats ---------------------------------------
 
-    private static async Task<IResult> GetProductStats(string id, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> GetProductStats(
+        string id,
+        ControlDbContext control,
+        Forge.Api.Persistence.IProductDbContextFactory factory)
     {
         var product = await control.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (product is null) return Results.Problem(title: $"Product {id} not found", statusCode: 404);
 
+        // Phase 73 follow-up — workstream + PR rows live in the *target*
+        // product's per-product DB, not whichever DB the request scope
+        // (X-Forge-Product-Id) resolved to. The Products & Repos page
+        // polls /stats for every product card while exactly one product
+        // is "active", so binding to the request-scope DB makes every
+        // non-active card show 0 / 0. Resolve explicitly by slug.
+        var db = factory.CreateFor(product.Slug);
+
         var repoIds = await control.RepoRegistry.Where(r => r.ProductId == id && r.DeletedAt == null).Select(r => r.Id).ToListAsync();
-        var activeWs = repoIds.Count == 0
-            ? 0
-            : await db.Workstreams.CountAsync(w => repoIds.Contains(w.RepoId!) && w.Status != "merging" && !w.Planned);
-        var openPrs = repoIds.Count == 0
-            ? 0
-            : await db.Prs.CountAsync(p => repoIds.Contains(p.RepoId!) && p.Col != "merged");
+
+        // Workstream breakdown — done / active / stalled, ignoring the
+        // historical `Planned` flag (which is set on virtually every row
+        // and was excluding 100% of real workstreams).
+        //   done    = complete + historic
+        //   stalled = stalled
+        //   active  = everything else (planning, active, review, merging…)
+        var wsRows = repoIds.Count == 0
+            ? new List<string>()
+            : await db.Workstreams.Where(w => repoIds.Contains(w.RepoId!)).Select(w => w.Status).ToListAsync();
+        var wsDone = wsRows.Count(s => s == "complete" || s == "historic");
+        var wsStalled = wsRows.Count(s => s == WorkstreamStatuses.Stalled);
+        var wsActive = wsRows.Count - wsDone - wsStalled;
+
+        // PR breakdown — open vs closed (where closed === merged today;
+        // Forge has no abandoned-without-merge column).
+        var prCols = repoIds.Count == 0
+            ? new List<string>()
+            : await db.Prs.Where(p => repoIds.Contains(p.RepoId!)).Select(p => p.Col).ToListAsync();
+        var prsClosed = prCols.Count(c => c == "merged");
+        var prsOpen = prCols.Count - prsClosed;
+
         var lastActiveTicks = repoIds.Count == 0
             ? null
             : await db.Workstreams.Where(w => repoIds.Contains(w.RepoId!)).Select(w => (double?)w.LastActive).MinAsync();
@@ -885,8 +913,17 @@ public static class ProductsEndpoints
         {
             productId = id,
             repoCount = repoIds.Count,
-            activeWorkstreams = activeWs,
-            openPrs,
+            // New breakdowns (preferred).
+            wsDone,
+            wsActive,
+            wsStalled,
+            prsOpen,
+            prsClosed,
+            // Back-compat aliases for older callers — `activeWorkstreams`
+            // now means "non-done, non-stalled" (formerly "non-merging,
+            // non-planned" which excluded everything).
+            activeWorkstreams = wsActive,
+            openPrs = prsOpen,
             lastActivity = lastActiveTicks?.ToString("0.###"),
         });
     }

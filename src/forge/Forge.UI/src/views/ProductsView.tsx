@@ -173,7 +173,7 @@ export function ProductsView() {
 interface ProductCardProps {
   product: Product;
   repos: Repo[];
-  stats?: { repoCount: number; activeWorkstreams: number; openPrs: number; lastActivity: string | null };
+  stats?: { repoCount: number; wsDone: number; wsActive: number; wsStalled: number; prsOpen: number; prsClosed: number; activeWorkstreams: number; openPrs: number; lastActivity: string | null };
   isActive: boolean;
   onActivate: () => void;
   onAttach: () => void;
@@ -284,11 +284,36 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
         </div>
         <div className="ws-stat">
           <div className="ws-stat-label">Workstreams</div>
-          <div className="ws-stat-val">{stats?.activeWorkstreams ?? 0}</div>
+          <div className="ws-stat-breakdown" title="done · active · stalled">
+            <span className="ws-stat-seg ws-stat-seg--done">
+              <span className="ws-stat-seg-num">{stats?.wsDone ?? 0}</span>
+              <span className="ws-stat-seg-lbl">done</span>
+            </span>
+            <span className="ws-stat-sep">·</span>
+            <span className="ws-stat-seg ws-stat-seg--active">
+              <span className="ws-stat-seg-num">{stats?.wsActive ?? 0}</span>
+              <span className="ws-stat-seg-lbl">active</span>
+            </span>
+            <span className="ws-stat-sep">·</span>
+            <span className="ws-stat-seg ws-stat-seg--stall">
+              <span className="ws-stat-seg-num">{stats?.wsStalled ?? 0}</span>
+              <span className="ws-stat-seg-lbl">stall</span>
+            </span>
+          </div>
         </div>
         <div className="ws-stat">
-          <div className="ws-stat-label">Open PRs</div>
-          <div className="ws-stat-val">{stats?.openPrs ?? 0}</div>
+          <div className="ws-stat-label">Pull Requests</div>
+          <div className="ws-stat-breakdown" title="open · closed">
+            <span className="ws-stat-seg ws-stat-seg--open">
+              <span className="ws-stat-seg-num">{stats?.prsOpen ?? 0}</span>
+              <span className="ws-stat-seg-lbl">open</span>
+            </span>
+            <span className="ws-stat-sep">·</span>
+            <span className="ws-stat-seg ws-stat-seg--closed">
+              <span className="ws-stat-seg-num">{stats?.prsClosed ?? 0}</span>
+              <span className="ws-stat-seg-lbl">closed</span>
+            </span>
+          </div>
         </div>
       </div>
 

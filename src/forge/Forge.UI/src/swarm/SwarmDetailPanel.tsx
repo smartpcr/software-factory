@@ -11,6 +11,8 @@ import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
 import { computeStageNumbers } from './stageNumbering';
+import { avatarFor } from '@/agentAvatar';
+import type { Pr } from '@/types';
 import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
@@ -153,7 +155,7 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
               workItemId={effectiveWorkItemId}
             />
           ) : tab === 'overview' ? (
-            <SwarmGridPane mode={mode} detail={detail} selection={selection} />
+            <SwarmGridPane mode={mode} detail={detail} artifacts={artifacts} selection={selection} />
           ) : null}
         </div>
         <div className={`tab-pane${tab === 'document' ? ' active' : ''}`}>
@@ -265,10 +267,50 @@ interface AgentRow {
 interface SwarmGridProps {
   mode: SwarmMode;
   detail: StorySpawnDetail;
+  artifacts: StorySpawnArtifacts | null;
   selection: Selection;
 }
 
-function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
+/** Phase 53 — canonical plan-doc keys driving the design-mode pair list.
+ *  These map to the architect-crew work items spawned by the planning loop.
+ *  Order mirrors the StoryDeliveryStrip so design-mode pair cards read in the
+ *  same sequence the operator already knows from the master panel. */
+const PLAN_DOC_KEYS = ['architecture', 'tech-spec', 'implementation-plan', 'e2e-scenarios'] as const;
+
+interface PairCard {
+  kind: 'design' | 'impl' | 'qa-e2e';
+  key: string;
+  team: 'arch' | 'eng' | 'qa';
+  cls: string;
+  task: string;
+  workItemId: string | null;
+  genId: string | null;
+  genName: string;
+  genModel: string;
+  evlId: string | null;
+  evlName: string;
+  evlModel: string;
+  iter: number;
+  maxScore: number | null;
+  hours: number | null;
+  costUsd: number;
+  status: string;
+}
+
+interface PrRow {
+  id: string;
+  title: string;
+  branch: string;
+  col: string;
+  additions: number;
+  deletions: number;
+  files: number;
+  webUrl: string | null;
+  tone: 'arch' | 'eng' | 'rev' | 'qa';
+  groupLabel: string;
+}
+
+function SwarmGridPane({ mode, detail, artifacts, selection }: SwarmGridProps) {
   const showToast = useToastStore((s) => s.show);
   const bumpSpawn = useSpawnStore((s) => s.bump);
   const [, setSearchParams] = useSearchParams();
@@ -367,13 +409,17 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
   const headlinePre = selection.kind === 'phase' ? 'WORKSTREAM' : selection.kind === 'doc' ? 'DOC' : selection.kind === 'gate' ? 'GATE' : 'STORY';
   const headlineId  = selection.id ?? detail.spawn.storyId;
   const subline = selection.kind === 'overview'
-    ? `${detail.workstreams.length} workstreams · phase ${detail.spawn.phase}`
+    ? sublineForMode(mode, detail)
     : selection.id ?? '';
 
-  // Pair cards: one per workstream (the generator / evaluator pair that owns it).
-  // All values are sourced from the StorySpawnWorkstreamSummary contract — the
-  // backend joins WorkstreamRow.AgentsJson + the deliverables table + the
-  // agent_usage cost ledger so we don't need per-card round-trips.
+  // Pair cards: agent generator/evaluator pairs working on the selected
+  // mode's stage. Mode-aware:
+  //  - design:  plan-doc work items (architecture, tech-spec, …)
+  //  - impl:    impl-category workstreams (engineer / reviewer pairs)
+  //  - release: qa-e2e-category workstreams (QA pairs)
+  // All values are sourced from existing endpoints; per-pair iter-kpis
+  // are fetched in parallel below so we can show real "hours spent" +
+  // max score (not just the latest iter's score).
   const agentsById = new Map(agents.map((a) => [a.id, a]));
   const displayName = (id: string | null | undefined): string => {
     if (!id) return '—';
@@ -386,62 +432,274 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
     if (!a) return '—';
     return (role === 'gen' ? a.generatorModel : a.evaluatorModel) ?? '—';
   };
-  const teamFor = (id: string | null | undefined): string => {
-    if (!id) return 'ENG';
-    const a = agentsById.get(id);
-    if (!a?.crewId) return 'ENG';
-    const team = a.crewId.replace(/^crew-/, '').replace(/-night$/, '');
-    return team.toUpperCase();
-  };
   // Phase 49 follow-up — only show an agent pair when the workstream is
   // currently RUNNING or has shipped (active/review/merging/complete/historic).
   // For pre-claim or aborted states (planning/blocked/stalled/cancelled),
   // `latestGen/EvalAgentId` may carry the pair from a prior aborted run;
   // displaying it as if it's the current assignment confused the
-  // operator (observed 2026-05-10: stage 2.1 was `blocked` waiting on
-  // deps 1.1/1.2/1.3, yet the Overview showed Zhu Rong + Bi Gan from
-  // the workstream's earlier iter-1/iter-2 deliverables). Treat those
-  // as "no current assignment"; the SwarmMasterPanel + Conversation
-  // tab still surface the historical iter / score data so the prior
-  // run isn't hidden, just not painted as "currently assigned".
-  // `historic` IS a successfully-shipped state (PR merged under a
-  // prior plan version, then the plan changed) — its latestDeliverable
-  // is the agent pair that actually completed the work, so we surface
-  // it the same as `complete` (observed 2026-05-14: stage 3.2 Leader
-  // Election was `historic` with a Mang Liu deliverable but the chips
-  // read "— not assigned —").
+  // operator. Treat those as "no current assignment".
   const isCurrentlyAssigned = (status: string): boolean =>
     status === 'active' || status === 'review' || status === 'merging' || status === 'complete' || status === 'historic';
-  const pairs = detail.workstreams
-    .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
-    .map((w, i) => {
-      const showPair = isCurrentlyAssigned(w.status);
-      const genId = showPair ? (w.latestGenAgentId ?? w.agents?.[0]) : undefined;
-      const evlId = showPair ? (w.latestEvalAgentId ?? w.agents?.[1]) : undefined;
-      return {
-        id: `WS·${String(i + 1).padStart(2, '0')}`,
-        team: teamFor(genId),
-        cls: pairClsForStatus(w.status),
-        task: w.name,
-        gen:  showPair ? displayName(genId) : '— not assigned —',
-        genM: showPair ? modelFor(genId, 'gen') : '',
-        evl:  showPair ? displayName(evlId) : '— not assigned —',
-        evlM: showPair ? modelFor(evlId, 'evl') : '',
-        meters: pairMetersForWorkstream(w),
-        status: w.status,
-      };
-    });
 
-  // Count day-shift only (`crew-{role}`, not `crew-{role}-night`) so the
-  // 20-cell swarm grid matches the spec's "~20 agents per team" capacity.
-  // Without this filter, day + night roster sums (e.g., 37 architects)
-  // produce nonsense ratios like "37/20".
-  const teamCounts: Record<string, number> = { arch: 0, eng: 0, rev: 0, qa: 0 };
-  for (const a of agents) {
-    if (!a.crewId || a.crewId.endsWith('-night')) continue;
-    const team = a.crewId.replace(/^crew-/, '');
-    if (team in teamCounts) teamCounts[team]++;
-  }
+  // ─── per-workstream iter-kpis (impl + release modes) ─────────────────
+  // Sum of iter durationMs gives wall-clock hours the pair has spent
+  // running gen/eval iterations; max of iter scores gives the pair's
+  // peak rubric score (the deliverable strip already shows the *latest*
+  // — which is misleading when the pair regressed in a later iter).
+  const wantedWsIds = useMemo(() => {
+    if (mode === 'design') return [] as string[];
+    const list = mode === 'release'
+      ? detail.workstreams.filter(isQaE2e)
+      : detail.workstreams.filter((w) => !isQaE2e(w));
+    return list
+      .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
+      .map((w) => w.id);
+  }, [mode, detail.workstreams, selection]);
+  const wantedWsKey = wantedWsIds.join('|');
+  const [wsKpis, setWsKpis] = useState<Record<string, { hours: number | null; maxScore: number | null }>>({});
+  useEffect(() => {
+    if (wantedWsIds.length === 0) { setWsKpis({}); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const results = await Promise.allSettled(
+          wantedWsIds.map((id) => forgeApi.fetchWorkstreamIterKpis(id)),
+        );
+        if (cancelled) return;
+        const next: Record<string, { hours: number | null; maxScore: number | null }> = {};
+        results.forEach((r, i) => {
+          if (r.status !== 'fulfilled') { next[wantedWsIds[i]] = { hours: null, maxScore: null }; return; }
+          const iters = r.value.iters ?? [];
+          const durSum = iters.reduce((acc, it) => acc + (it.durationMs ?? 0), 0);
+          const hours = durSum > 0 ? durSum / 3_600_000 : null;
+          const max = iters.length === 0
+            ? null
+            : iters.reduce((m, it) => Math.max(m, it.score ?? 0), -Infinity);
+          next[wantedWsIds[i]] = { hours, maxScore: max === -Infinity ? null : max };
+        });
+        setWsKpis(next);
+      } catch { /* silent */ }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantedWsKey]);
+
+  // ─── per-doc artifact iterations (design mode) ───────────────────────
+  // Architect crew owns one work item per plan-doc; we poll the same
+  // `getStoryArtifactIterations` endpoint the master panel uses so the
+  // overview reflects the same pair / score / cost the strip shows. We
+  // additionally fetch iter-kpis to get durationMs (hours).
+  const [docIters, setDocIters] = useState<Record<string, {
+    workItemId: string | null;
+    generator: { agentId: string; name: string; model: string | null } | null;
+    evaluator: { agentId: string; name: string; model: string | null } | null;
+    iter: number;
+    maxScore: number | null;
+    hours: number | null;
+    costUsd: number;
+    status: string;
+  } | null>>({});
+  useEffect(() => {
+    if (mode !== 'design') { setDocIters({}); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const iters = await Promise.allSettled(
+          PLAN_DOC_KEYS.map((k) => forgeApi.getStoryArtifactIterations(detail.spawn.storyId, k)),
+        );
+        const kpis = await Promise.allSettled(
+          PLAN_DOC_KEYS.map((k) => forgeApi.fetchStoryArtifactIterKpis(detail.spawn.storyId, k)),
+        );
+        if (cancelled) return;
+        const next: Record<string, typeof docIters[string]> = {};
+        PLAN_DOC_KEYS.forEach((k, i) => {
+          const it = iters[i];
+          const kp = kpis[i];
+          if (it.status !== 'fulfilled') { next[k] = null; return; }
+          const v = it.value;
+          const ks = kp.status === 'fulfilled' ? (kp.value.iters ?? []) : [];
+          const durSum = ks.reduce((acc, x) => acc + (x.durationMs ?? 0), 0);
+          const hours = durSum > 0 ? durSum / 3_600_000 : null;
+          const maxFromIters = v.iterations.length === 0
+            ? null
+            : v.iterations.reduce((m, x) => Math.max(m, x.score ?? 0), -Infinity);
+          next[k] = {
+            workItemId: v.workItemId,
+            generator: v.generator,
+            evaluator: v.evaluator,
+            iter: v.iterations.length,
+            maxScore: maxFromIters === -Infinity ? null : maxFromIters,
+            hours,
+            costUsd: v.totalCostUsd,
+            status: v.status,
+          };
+        });
+        setDocIters(next);
+      } catch { /* silent */ }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [mode, detail.spawn.storyId]);
+
+  // ─── PRs (mode-filtered list for the right column) ───────────────────
+  const [allPrs, setAllPrs] = useState<Pr[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const prs = await forgeApi.getPrs();
+        if (!cancelled) setAllPrs(prs);
+      } catch { /* silent */ }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 20_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // ─── Build pairs[] (mode-aware) ──────────────────────────────────────
+  const pairs: PairCard[] = useMemo(() => {
+    if (mode === 'design') {
+      return PLAN_DOC_KEYS.map<PairCard>((k) => {
+        const d = docIters[k];
+        const cls = d?.status === 'completed' || d?.status === 'awaiting-pr-review' ? 'e2e'
+                  : d?.status === 'stalled' ? 'stalled'
+                  : d?.status === 'live' || d?.status === 'iterating' ? '' : '';
+        return {
+          kind: 'design',
+          key: `design:${k}`,
+          team: 'arch',
+          cls,
+          task: prettyDocKey(k),
+          workItemId: d?.workItemId ?? null,
+          genId: d?.generator?.agentId ?? null,
+          genName: d?.generator?.name ?? '— not assigned —',
+          genModel: d?.generator?.model ?? '',
+          evlId: d?.evaluator?.agentId ?? null,
+          evlName: d?.evaluator?.name ?? '— not assigned —',
+          evlModel: d?.evaluator?.model ?? '',
+          iter: d?.iter ?? 0,
+          maxScore: d?.maxScore ?? null,
+          hours: d?.hours ?? null,
+          costUsd: d?.costUsd ?? 0,
+          status: d?.status ?? 'pending',
+        };
+      });
+    }
+    // impl / release
+    const list = mode === 'release'
+      ? detail.workstreams.filter(isQaE2e)
+      : detail.workstreams.filter((w) => !isQaE2e(w));
+    return list
+      .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
+      .map<PairCard>((w, i) => {
+        const showPair = isCurrentlyAssigned(w.status);
+        const genId = showPair ? (w.latestGenAgentId ?? w.agents?.[0] ?? null) : null;
+        const evlId = showPair ? (w.latestEvalAgentId ?? w.agents?.[1] ?? null) : null;
+        const kpi = wsKpis[w.id];
+        const team: PairCard['team'] = mode === 'release' ? 'qa' : 'eng';
+        return {
+          kind: mode === 'release' ? 'qa-e2e' : 'impl',
+          key: w.id,
+          team,
+          cls: pairClsForStatus(w.status),
+          task: `${String(i + 1).padStart(2, '0')} · ${w.name}`,
+          workItemId: w.id,
+          genId: genId ?? null,
+          genName: showPair && genId ? displayName(genId) : '— not assigned —',
+          genModel: showPair && genId ? modelFor(genId, 'gen') : '',
+          evlId: evlId ?? null,
+          evlName: showPair && evlId ? displayName(evlId) : '— not assigned —',
+          evlModel: showPair && evlId ? modelFor(evlId, 'evl') : '',
+          iter: w.iter ?? 0,
+          maxScore: kpi?.maxScore ?? w.latestScore ?? null,
+          hours: kpi?.hours ?? null,
+          costUsd: w.costUsd ?? 0,
+          status: w.status,
+        };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, detail.workstreams, selection, docIters, wsKpis, agents]);
+
+  // ─── Build PR rows (mode-aware) ──────────────────────────────────────
+  const prRows: PrRow[] = useMemo(() => {
+    const prById = new Map(allPrs.map((p) => [p.id, p]));
+    const out: PrRow[] = [];
+    const push = (
+      id: string | null | undefined,
+      tone: PrRow['tone'],
+      groupLabel: string,
+    ) => {
+      if (!id) return;
+      const pr = prById.get(id);
+      if (!pr) {
+        // PR is referenced (e.g. workstream.prId) but not yet in the
+        // cached /api/prs list. Surface a placeholder so the operator
+        // sees the link exists even before details land.
+        out.push({
+          id,
+          title: id,
+          branch: '',
+          col: 'pending',
+          additions: 0,
+          deletions: 0,
+          files: 0,
+          webUrl: null,
+          tone,
+          groupLabel,
+        });
+        return;
+      }
+      out.push({
+        id: pr.id,
+        title: pr.title,
+        branch: pr.branch,
+        col: pr.col,
+        additions: pr.additions ?? 0,
+        deletions: pr.deletions ?? 0,
+        files: pr.files ?? 0,
+        webUrl: pr.webUrl ?? null,
+        tone,
+        groupLabel,
+      });
+    };
+    if (mode === 'design') {
+      // Per-doc plan PRs first (sequential plan mode), then legacy single planPrId.
+      const seen = new Set<string>();
+      for (const d of detail.spawn.planDocPrs ?? []) {
+        if (d.prId && !seen.has(d.prId)) {
+          seen.add(d.prId);
+          push(d.prId, 'arch', `plan · ${prettyDocKey(d.key)}`);
+        }
+      }
+      if (detail.spawn.planPrId && !seen.has(detail.spawn.planPrId)) {
+        push(detail.spawn.planPrId, 'arch', 'plan');
+      }
+    } else if (mode === 'release') {
+      const qaList = detail.workstreams.filter(isQaE2e);
+      for (const w of qaList) {
+        for (const prId of w.prs ?? []) push(prId, 'qa', `qa-e2e · ${w.name}`);
+      }
+      if (detail.spawn.qaPrId) push(detail.spawn.qaPrId, 'qa', 'qa (legacy)');
+    } else {
+      // impl mode — workstream impl PRs (eng tone) + step-def PRs (rev tone) +
+      // artifacts.review.prs (reviewer feedback PRs, rev tone).
+      const implList = detail.workstreams.filter((w) => !isQaE2e(w));
+      for (const w of implList) {
+        for (const prId of w.prs ?? []) push(prId, 'eng', w.name);
+        if (w.stepDefPrId) push(w.stepDefPrId, 'rev', `${w.name} · step-defs`);
+      }
+      for (const prId of artifacts?.review.prs ?? []) push(prId, 'rev', 'review');
+    }
+    // Sort: open before merged so action items are first; within each group preserve insertion order.
+    const order: Record<string, number> = { implementation: 0, build: 1, review: 2, pending: 3, merged: 4 };
+    return out.slice().sort((a, b) => (order[a.col] ?? 9) - (order[b.col] ?? 9));
+  }, [mode, allPrs, detail, artifacts]);
+
+  const mergedCount = prRows.filter((r) => r.col === 'merged').length;
+  const activeCount = prRows.length - mergedCount;
 
   return (
     <div className="ov-grid">
@@ -489,83 +747,204 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
 
       <div className="ov-split">
         <div className="ov-split-l">
+          <div className="ov-section-hd">
+            <span className="ov-section-name">{pairsSectionLabel(mode)}</span>
+            <span className="ov-section-count">{pairs.length}</span>
+          </div>
           {pairs.length === 0 ? (
             <div className="tab-placeholder">
               <div className="lbl">▌ NO ACTIVE PAIRS</div>
-              <div className="sub">Pair cards will appear once the architect crew decomposes the story and engineer pairs claim workstreams.</div>
+              <div className="sub">{noPairsHint(mode)}</div>
             </div>
           ) : (
             <div className="pairs">
               {pairs.map((p) => (
-                <div key={p.id} className={`pair ${p.cls}`}>
-                  <div className="pair-hd">
-                    <div className="pair-id">
-                      <span className="team">{p.team}</span>{p.id}
-                    </div>
-                    <div className="pair-task" title={p.task}>{p.task}</div>
-                  </div>
-                  <div className="pair-agents">
-                    <div className="agent-tag gen">
-                      <span className="role">GENERATOR</span>
-                      <span className="name">{p.gen}</span>
-                      <span className="model">{p.genM}</span>
-                    </div>
-                    <div className="pair-link">⇄</div>
-                    <div className="agent-tag evl">
-                      <span className="role">EVALUATOR</span>
-                      <span className="name">{p.evl}</span>
-                      <span className="model">{p.evlM}</span>
-                    </div>
-                  </div>
-                  <div className="pair-meters">
-                    {p.meters.map((m, i) => (
-                      <div className="pair-m" key={i}>
-                        <div className="k">{m.k}</div>
-                        <div className="v">{m.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <PairCardRow key={p.key} pair={p} />
               ))}
             </div>
           )}
         </div>
 
         <div className="ov-split-r">
-          <div className="swarm">
-            {(['arch', 'eng', 'rev', 'qa'] as const).map((teamKey) => {
-              const visible = Math.min(teamCounts[teamKey], 20);
-              const pct = Math.round((visible / 20) * 100);
-              return (
-                <div key={teamKey} className={`team ${teamKey}`}>
-                  <div className="team-hd">
-                    <span className="team-name">{teamKey}</span>
-                    <div className="team-load"><div className="bar" style={{ width: `${pct}%` }} /></div>
-                    <span className="team-count">{visible}<span className="tot">/20</span></span>
-                    <span style={{ fontFamily: 'var(--sc-font-display)', fontSize: 8, letterSpacing: '0.16em', color: 'var(--sc-muted)' }}>IDLE</span>
-                  </div>
-                  <div className="team-grid">
-                    {Array.from({ length: 20 }).map((_, i) => {
-                      const filled = i < visible;
-                      return <div key={i} className={`a ${filled ? 'idle' : ''}`} />;
-                    })}
-                  </div>
-                </div>
-              );
-            })}
+          <div className="ov-section-hd">
+            <span className="ov-section-name">{prsSectionLabel(mode)}</span>
+            <span className="ov-section-count">
+              {activeCount > 0 && <span className="ov-pr-count-active">{activeCount} open</span>}
+              {activeCount > 0 && mergedCount > 0 && <span className="ov-pr-count-sep"> · </span>}
+              {mergedCount > 0 && <span className="ov-pr-count-merged">{mergedCount} merged</span>}
+            </span>
           </div>
-          <div className="legend" style={{ marginTop: 8 }}>
-            <div className="lg"><span className="d idle" /> idle</div>
-            <div className="lg"><span className="d gen" /> gen</div>
-            <div className="lg"><span className="d evl" /> evl</div>
-            <div className="lg"><span className="d rev" /> rev</div>
-            <div className="lg"><span className="d e2e" /> e2e</div>
-            <div className="lg"><span className="d stl" /> stl</div>
-          </div>
+          {prRows.length === 0 ? (
+            <div className="tab-placeholder">
+              <div className="lbl">▌ NO PRS YET</div>
+              <div className="sub">{noPrsHint(mode)}</div>
+            </div>
+          ) : (
+            <div className="ov-pr-list">
+              {prRows.map((r) => <PrListRow key={r.id} row={r} />)}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+/* ─── helpers for SwarmGridPane (Phase 81 overview redesign) ────────── */
+
+function pairsSectionLabel(mode: SwarmMode): string {
+  if (mode === 'design') return 'ARCHITECT PAIRS · DESIGN';
+  if (mode === 'release') return 'QA PAIRS · RELEASE';
+  return 'ENGINEER PAIRS · IMPL';
+}
+
+function prsSectionLabel(mode: SwarmMode): string {
+  if (mode === 'design') return 'PLAN PRs';
+  if (mode === 'release') return 'QA E2E PRs';
+  return 'IMPL / REVIEW PRs';
+}
+
+function noPairsHint(mode: SwarmMode): string {
+  if (mode === 'design') return 'Plan-doc pairs appear once the architect crew starts the design loop.';
+  if (mode === 'release') return 'QA pairs appear after impl workstreams ship and qa-e2e siblings spawn.';
+  return 'Pair cards will appear once the architect crew decomposes the story and engineer pairs claim workstreams.';
+}
+
+function noPrsHint(mode: SwarmMode): string {
+  if (mode === 'design') return 'Per-doc plan PRs open as the architect crew finalises each plan document.';
+  if (mode === 'release') return 'QA E2E PRs open after impl PRs merge and the qa-e2e workstream lands tests.';
+  return 'Impl PRs open as engineer pairs land code; review/step-def PRs follow.';
+}
+
+function sublineForMode(mode: SwarmMode, detail: StorySpawnDetail): string {
+  if (mode === 'design') {
+    return `${PLAN_DOC_KEYS.length} plan docs · phase ${detail.spawn.phase}`;
+  }
+  if (mode === 'release') {
+    const qa = detail.workstreams.filter((w) => isQaE2e(w)).length;
+    return `${qa} qa-e2e workstream${qa === 1 ? '' : 's'} · phase ${detail.spawn.phase}`;
+  }
+  const impl = detail.workstreams.filter((w) => !isQaE2e(w)).length;
+  return `${impl} impl workstream${impl === 1 ? '' : 's'} · phase ${detail.spawn.phase}`;
+}
+
+function prettyDocKey(key: string): string {
+  return key
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatHours(hours: number | null): string {
+  if (hours == null || !Number.isFinite(hours)) return '—';
+  if (hours < 0.05) return '<5m';
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 10) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours)}h`;
+}
+
+function PairCardRow({ pair }: { pair: PairCard }) {
+  return (
+    <div className={`pair pair--ov ${pair.cls}`} title={pair.task}>
+      <div className="pair-hd">
+        <div className="pair-id">
+          <span className={`team team--${pair.team}`}>{pair.team.toUpperCase()}</span>
+          <span className="pair-status">{pair.status}</span>
+        </div>
+        <div className="pair-task">{pair.task}</div>
+      </div>
+      <div className="pair-agents pair-agents--with-avatar">
+        <PairAgentSlot role="gen" id={pair.genId} name={pair.genName} model={pair.genModel} />
+        <div className="pair-link">⇄</div>
+        <PairAgentSlot role="evl" id={pair.evlId} name={pair.evlName} model={pair.evlModel} />
+      </div>
+      <div className="pair-meters">
+        <PairMeter k="HRS"   v={formatHours(pair.hours)} />
+        <PairMeter k="ITER"  v={pair.iter > 0 ? String(pair.iter) : '—'} />
+        <PairMeter k="MAX"   v={pair.maxScore == null ? '—' : String(pair.maxScore)} highlight={pair.maxScore != null && pair.maxScore >= 90} />
+        <PairMeter k="COST"  v={pair.costUsd > 0 ? `$${pair.costUsd.toFixed(2)}` : '—'} />
+      </div>
+    </div>
+  );
+}
+
+function PairAgentSlot({
+  role,
+  id,
+  name,
+  model,
+}: { role: 'gen' | 'evl'; id: string | null; name: string; model: string }) {
+  const url = id ? avatarFor(id, name) : null;
+  const roleLabel = role === 'gen' ? 'GEN' : 'EVL';
+  return (
+    <div className={`agent-tag agent-tag--ov ${role}`} title={id ? `${id} · ${name}\n${role === 'gen' ? 'generator' : 'evaluator'} · ${model || 'unknown model'}` : `no ${role} yet`}>
+      <div className="agent-avatar">
+        {url ? (
+          <img src={url} alt={name} onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+        ) : (
+          <span className="agent-avatar-fallback">{role === 'gen' ? '◇' : '◈'}</span>
+        )}
+      </div>
+      <div className="agent-text">
+        <span className="role">{roleLabel}</span>
+        <span className="name">{name}</span>
+        {model && <span className="model">{model}</span>}
+      </div>
+    </div>
+  );
+}
+
+function PairMeter({ k, v, highlight }: { k: string; v: string; highlight?: boolean }) {
+  return (
+    <div className={`pair-m${highlight ? ' pair-m--good' : ''}`}>
+      <div className="k">{k}</div>
+      <div className="v">{v}</div>
+    </div>
+  );
+}
+
+function PrListRow({ row }: { row: PrRow }) {
+  const status = colClass(row.col);
+  const content = (
+    <>
+      <div className="ov-pr-hd">
+        <span className={`ov-pr-tone ov-pr-tone--${row.tone}`} />
+        <span className="ov-pr-id">{row.id}</span>
+        <span className={`ov-pr-col ov-pr-col--${status}`}>{status}</span>
+      </div>
+      <div className="ov-pr-title">{row.title}</div>
+      <div className="ov-pr-meta">
+        <span className="ov-pr-group">{row.groupLabel}</span>
+        {row.branch && <span className="ov-pr-branch" title={row.branch}>{shortenBranch(row.branch)}</span>}
+        <span className="ov-pr-diff">
+          <span className="ov-pr-add">+{row.additions.toLocaleString()}</span>
+          <span className="ov-pr-del">−{row.deletions.toLocaleString()}</span>
+          <span className="ov-pr-files">{row.files} file{row.files === 1 ? '' : 's'}</span>
+        </span>
+      </div>
+    </>
+  );
+  if (row.webUrl) {
+    return (
+      <a className="ov-pr-row" href={row.webUrl} target="_blank" rel="noreferrer">
+        {content}
+      </a>
+    );
+  }
+  return <div className="ov-pr-row ov-pr-row--no-link">{content}</div>;
+}
+
+function colClass(col: string): string {
+  // Normalise the four Pr.col enum values to a short slug for CSS.
+  if (col === 'implementation') return 'impl';
+  if (col === 'merged') return 'merged';
+  if (col === 'review') return 'review';
+  if (col === 'build') return 'build';
+  return 'open';
+}
+
+function shortenBranch(b: string): string {
+  if (b.length <= 28) return b;
+  return b.slice(0, 12) + '…' + b.slice(-12);
 }
 
 /* ─── ARCH DOC PANE ──────────────────────────────────────────────────── */
@@ -2307,37 +2686,6 @@ function pairClsForStatus(status: string): string {
   if (status === 'complete') return 'e2e';
   if (status === 'stalled') return 'stalled';
   return '';
-}
-
-/** Real-data meters: TURNS = deliverables.count; SCORE = latest deliverable
- *  (or '—' if none); ELAPSED = since-latest-deliverable; COST = sum of
- *  agent_usage rows for this workstream. */
-function pairMetersForWorkstream(w: import('@/api/forgeApi').StorySpawnWorkstreamSummary): { k: string; v: string }[] {
-  const iter = w.iter ?? 0;
-  const score = w.latestScore;
-  const elapsed = w.lastActiveAt ? formatElapsed(w.lastActiveAt) : '—';
-  const cost = w.costUsd ?? 0;
-  return [
-    { k: 'TURNS',   v: iter > 0 ? String(iter) : '—' },
-    { k: 'SCORE',   v: score == null ? '—' : String(score) },
-    { k: 'ELAPSED', v: elapsed },
-    { k: 'COST',    v: cost > 0 ? `$${cost.toFixed(2)}` : '—' },
-  ];
-}
-
-function formatElapsed(iso: string): string {
-  const t = Date.parse(iso);
-  if (isNaN(t)) return '—';
-  const ms = Date.now() - t;
-  if (ms < 0) return '—';
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60)    return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60)    return `${min}m`;
-  const hr  = Math.floor(min / 60);
-  if (hr  < 48)    return `${hr}h ${min % 60}m`;
-  const day = Math.floor(hr / 24);
-  return `${day}d`;
 }
 
 /** Compact token formatter for the sloppy-meter readout.

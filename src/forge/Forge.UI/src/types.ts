@@ -509,7 +509,19 @@ export interface DiscoverableRepo {
 export interface ProductStats {
   productId: string;
   repoCount: number;
+  /** Workstreams shipped (status complete + historic). */
+  wsDone: number;
+  /** Workstreams in flight — anything not done and not stalled. */
+  wsActive: number;
+  /** Workstreams parked in stalled state, awaiting operator. */
+  wsStalled: number;
+  /** PRs that have not merged yet (any non-merged column). */
+  prsOpen: number;
+  /** PRs that have merged. */
+  prsClosed: number;
+  /** @deprecated use `wsActive` — kept for back-compat with older builds. */
   activeWorkstreams: number;
+  /** @deprecated use `prsOpen` — kept for back-compat with older builds. */
   openPrs: number;
   lastActivity: string | null;
 }

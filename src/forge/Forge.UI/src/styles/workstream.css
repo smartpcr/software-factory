@@ -232,6 +232,47 @@
 .ws-stat-val.behind { color: var(--danger); }
 .ws-stat-val.conflicts { color: var(--danger); }
 
+/* Multi-segment breakdown rendered inside a .ws-stat cell — used by the
+   Products & Repos card to show "done · active · stall" workstream split
+   and "open · closed" PR split. Each segment shows a tabular number with
+   a tiny lowercase label underneath it. */
+.ws-stat-breakdown {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ws-stat-seg {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1;
+}
+.ws-stat-seg-num {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ws-stat-seg-lbl {
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.ws-stat-sep {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  padding-bottom: 9px;
+  opacity: 0.5;
+}
+.ws-stat-seg--done .ws-stat-seg-num { color: var(--success, #10b981); }
+.ws-stat-seg--active .ws-stat-seg-num { color: var(--accent, #3b82f6); }
+.ws-stat-seg--stall .ws-stat-seg-num { color: var(--danger, #ef4444); }
+.ws-stat-seg--open .ws-stat-seg-num { color: var(--accent, #3b82f6); }
+.ws-stat-seg--closed .ws-stat-seg-num { color: var(--text-secondary); }
+
 .ws-card-section {
   margin-bottom: 10px;
 }

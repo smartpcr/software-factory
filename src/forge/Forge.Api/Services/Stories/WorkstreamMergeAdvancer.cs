@@ -60,6 +60,21 @@ public static class WorkstreamMergeAdvancer
     /// hours because <c>AdvanceForMergedPrAsync</c>'s gate excluded
     /// stalled rows.
     /// </para>
+    /// <para>
+    /// 2026-05-24 — <c>active</c>-row advance, same rationale. A workstream
+    /// can get stuck in <c>active</c> after its PR is opened/merged (orphaned
+    /// status transition — e.g. the orchestrator halted mid-transition, or a
+    /// terminal-replay re-drive left it active). When its PR then merges, the
+    /// old gate (review/merging/stalled only) left it <c>active</c> forever:
+    /// every tick re-drove it (terminal-replay of the prior pass) and the
+    /// delivery re-ran, opening DUPLICATE PRs against the same shipped work.
+    /// Observed on failover-cluster:XRAFT 4.2 / 6.1 — PR #21 / #25 merged but
+    /// the rows stayed <c>active</c> and each spawned a second review PR
+    /// (#30 / #26). Advancing <c>active</c> rows on merge (still behind the
+    /// active-comments guard) closes the loop: a merged PR means the work is
+    /// shipped regardless of the row's status, so the row completes and stops
+    /// re-running.
+    /// </para>
     /// </summary>
     public static async Task<IReadOnlyList<string>> AdvanceForMergedPrAsync(
         ControlDbContext control, ProductDbContext db, string prId, CancellationToken ct = default)
@@ -74,7 +89,8 @@ public static class WorkstreamMergeAdvancer
         var advanced = new List<string>();
         var candidates = await db.Workstreams
             .Where(w => w.PrsJson.Contains(prId)
-                && (w.Status == "review" || w.Status == "merging" || w.Status == WorkstreamStatuses.Stalled))
+                && (w.Status == "review" || w.Status == "merging"
+                    || w.Status == WorkstreamStatuses.Stalled || w.Status == "active"))
             .ToListAsync(ct);
         foreach (var w in candidates)
         {
