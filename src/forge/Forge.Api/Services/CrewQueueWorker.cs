@@ -722,7 +722,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     picked = priorAgent;
                 }
             }
-            picked ??= ResolveDiverseGenerator(onShiftMembers, busyAgents, leadForPick);
+            // Phase 47 + LRU — when not pinned/resumed above, pick the
+            // least-recently-used (or never-used) free member so successive
+            // claims rotate across the roster instead of re-selecting the
+            // same generator. Recency comes from the cost ledger.
+            if (string.IsNullOrEmpty(picked))
+            {
+                var genLastActive = await BusyAgentsHelper.LoadLastActiveAsync(control, onShiftMembers, ct);
+                picked = ResolveDiverseGenerator(onShiftMembers, busyAgents, leadForPick, genLastActive);
+            }
 
             // Phase 51 — once the rotation pick succeeds, clear the exclusion
             // semaphore on the work item so subsequent ticks (e.g. boot
@@ -3374,10 +3382,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private static string? ResolveDiverseGenerator(
         IReadOnlyList<string> onShiftMembers,
         HashSet<string> busyAgents,
-        string? lead)
+        string? lead,
+        IReadOnlyDictionary<string, string>? lastActive)
     {
         var (agentId, _) = PairDiversityResolver.PickGenerator(
-            onShiftMembers, busyAgents, lead, Environment.TickCount);
+            onShiftMembers, busyAgents, lead, Environment.TickCount, lastActive);
         return agentId;
     }
 
@@ -3422,15 +3431,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             ?? evaluatorCrew?.DefaultEvaluatorAgentId;
         var leadFallback = evaluatorCrew?.Lead;
 
+        // LRU — recency for the eval roster (plus the preferred eval, which
+        // may not be a roster member but is inserted at the head by
+        // PickEvaluator) so the evaluator rotates oldest-first rather than
+        // pinning to the configured default whenever it's free.
+        var evalRecencyIds = string.IsNullOrEmpty(preferredEvalAgentId)
+            ? (IReadOnlyCollection<string>)roster
+            : roster.Append(preferredEvalAgentId).ToList();
+        var evalLastActive = await BusyAgentsHelper.LoadLastActiveAsync(control, evalRecencyIds, ct);
+
         // Phase 50 fix (2026-05-11) — pass a real per-claim seed so the
-        // post-default Fisher-Yates shuffle inside PickEvaluator actually
-        // runs. The previous call defaulted seed=0, which skips the
-        // shuffle (guarded by `if (seed != 0)`), so concurrent claims all
-        // picked the same fallback evaluator in roster order. Mirrors the
-        // StorySpawnOrchestrator engineer-pair claim site at line 2317.
+        // tie-break shuffle inside PickEvaluator actually runs. The previous
+        // call defaulted seed=0, which skips the shuffle, so concurrent
+        // claims all picked the same fallback evaluator in roster order.
+        // Mirrors the StorySpawnOrchestrator engineer-pair claim site.
         var (picked, _) = PairDiversityResolver.PickEvaluator(
             roster, busyAgents, preferredEvalAgentId, generatorAgentId,
-            seed: Random.Shared.Next());
+            seed: Random.Shared.Next(), lastActiveByAgent: evalLastActive);
 
         // Q47.3 implication — evaluator diversity is best-effort. If
         // every roster member is busy, fall back to the legacy chain so

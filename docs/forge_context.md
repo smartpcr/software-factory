@@ -77,6 +77,18 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
   work-item id (`ws-{wi}`), not the workstream name** — each item runs isolated. Worker
   auto-appends `.worktree/` to the repo's `.gitignore` (Phase 28+ uses `.git/info/exclude` for
   story attachments). Falls back to `%TEMP%` if the worktree can't be made (soft failure — can't push).
+- **Agents NEVER write outside their worktree (hard invariant).** Every agent working a **doc or code
+  task** (plan-doc, engineer/implement, **reviewer**, qa, qa-e2e, conflict-fix) MUST have its working
+  directory set to that task's git worktree (`{repo.cloneRoot}\.worktree\{slug}` via
+  `IStoryGitOps.EnsureWorktreeAsync`) and may write **only inside it**. Agent scratch / memory / output
+  files (working notes, a reviewer's `comments.json`, etc.) go under **`.forge/` inside the worktree**,
+  which is git-excluded (`.git/info/exclude`) and scrubbed from the index — mirroring `.forge/iter-notes.md`.
+  It is **forbidden** to run a doc/code agent in a scratch dir under the Forge state folder
+  (`{Forge:Db:Folder}\storyworkspaces\…`, i.e. the `PrepareWorkspace` path) or to let it reach into the
+  shared clone root. *(Established by the 2026-05-05 "engineer edits real repo files in place" fix for the
+  implement path; this invariant extends that fix to every doc/code agent — see `forge_implementation.md`
+  §"Engineer agent edits real repo files in place". The `storyworkspaces` scratch sandbox is a documented
+  root-cause bug, not a sanctioned workspace.)*
 - **Repo ↔ provider exclusivity (Q4).** A repo is exactly one provider; sprint/iteration follows
   that provider (ADO iteration paths, GitHub milestones). **No local Forge sprint.**
 - **Product ↔ repo is strictly 1:N (Q5).** `repos.product_id` NOT NULL, `UNIQUE(remoteUrl)`.

@@ -63,6 +63,59 @@ internal static class BusyAgentsHelper
     }
 
     /// <summary>
+    /// Load each candidate agent's most-recent invocation start from the
+    /// cost ledger (<c>agent_usage</c>) — the input the pair pickers use to
+    /// prefer the least-recently-used (or never-used) agent. Returns a map
+    /// <c>agentId → MAX(StartedAt)</c> as the stored ISO-8601 text. Agents
+    /// with no ledger row are <b>absent</b> from the map; callers treat
+    /// "absent" as "never worked", which sorts first (oldest).
+    ///
+    /// <para>Scoped to <paramref name="agentIds"/> (the candidate roster, a
+    /// handful of crew members) so the scan is bounded — never the whole
+    /// ledger. <c>StartedAt</c> is stored as round-trip ISO-8601 text via
+    /// EF's <c>DateTimeOffset</c> converter, so <c>MAX</c> over that text is
+    /// chronological (lexicographic == chronological for that fixed format,
+    /// same assumption <see cref="ReapStaleAsync"/> relies on).</para>
+    /// </summary>
+    public static async Task<Dictionary<string, string>> LoadLastActiveAsync(
+        ControlDbContext db,
+        IReadOnlyCollection<string> agentIds,
+        CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (agentIds is null || agentIds.Count == 0) return result;
+
+        var conn = (Microsoft.Data.Sqlite.SqliteConnection)db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        var paramNames = new List<string>(agentIds.Count);
+        var i = 0;
+        foreach (var id in agentIds)
+        {
+            if (string.IsNullOrEmpty(id)) continue;
+            var name = "@a" + i++;
+            paramNames.Add(name);
+            cmd.Parameters.AddWithValue(name, id);
+        }
+        if (paramNames.Count == 0) return result;
+
+        cmd.CommandText =
+            "SELECT AgentId, MAX(StartedAt) FROM agent_usage " +
+            "WHERE AgentId IN (" + string.Join(",", paramNames) + ") " +
+            "GROUP BY AgentId;";
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+            result[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Phase 48 follow-up — boot-time reaper. By definition, no agent
     /// invocation can be in flight when the process just started, so
     /// EVERY row with <c>EndedAt = NULL</c> at boot is orphaned. Without

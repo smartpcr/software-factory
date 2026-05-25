@@ -497,7 +497,12 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // same roster don't always pick the same agent — match Phase 47
         // convention of mixing tick-count + work-item-hash for fairness.
         var seed = unchecked(Environment.TickCount ^ (wi.Id?.GetHashCode(StringComparison.Ordinal) ?? 0));
-        var (picked, _) = PairDiversityResolver.PickGenerator(roster, busy, lead: null, seed);
+
+        // LRU — among the non-prior, non-busy candidates, prefer the one
+        // that has run least recently (or never) so re-pairing also spreads
+        // load; equal-recency ties fall back to the seed above.
+        var lastActive = await BusyAgentsHelper.LoadLastActiveAsync(control, roster, ct);
+        var (picked, _) = PairDiversityResolver.PickGenerator(roster, busy, lead: null, seed, lastActive);
         return picked;
     }
 

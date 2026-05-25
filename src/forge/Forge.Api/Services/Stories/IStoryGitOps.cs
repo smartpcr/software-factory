@@ -189,6 +189,39 @@ public interface IStoryGitOps
         RepoRow? repo, string branch, IEnumerable<string> repoRelativePaths, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 85 — recoverable variant of
+    /// <see cref="AssertPlanDocPathsNotIgnoredAsync"/>: when the path(s)
+    /// would be excluded by the repo's <c>.gitignore</c>, append a narrow
+    /// allowlist exception (<c>!/{baseDir}/</c> with a parent-allow chain) as
+    /// a prep commit on <paramref name="branch"/> and push it BEFORE the
+    /// plan-doc work begins. Re-runs the ignore check after applying the
+    /// fix; if the path is still ignored (e.g. a nested <c>.gitignore</c>
+    /// blocks it), throws <see cref="GitIgnoredPathException"/> with an
+    /// augmented message pointing the operator at the nested file.
+    ///
+    /// <para>Scope per operator-confirmed design: narrow allowlist (only
+    /// the <paramref name="planDocBaseDir"/> subtree, not all of /docs/),
+    /// prep commit on the same branch (one PR), placement at the
+    /// orchestrator preflight (so the fix is applied at $0 LLM cost).
+    /// Plan docs only — other ignored paths (e.g. impl-phase deliverables
+    /// outside /src/) still fail loud via the per-commit preflight in
+    /// <see cref="CommitFilesAsync"/>.</para>
+    ///
+    /// <para>Idempotent: when preflight already passes (rules already on
+    /// branch from a prior run, or path was never ignored), this is a
+    /// no-op. Same branch is safe to call repeatedly.</para>
+    ///
+    /// <para>Requires the worktree to already exist — call
+    /// <see cref="EnsureWorktreeAsync"/> first.</para>
+    /// </summary>
+    Task EnsurePlanDocPathsCommittableAsync(
+        RepoRow? repo,
+        string branch,
+        IEnumerable<string> repoRelativePaths,
+        string planDocBaseDir,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Push the local branch to <c>origin</c>. Stages and commits any
     /// uncommitted changes in the worktree first so local-only per-iteration
     /// commits are included. No-op when nothing to push.

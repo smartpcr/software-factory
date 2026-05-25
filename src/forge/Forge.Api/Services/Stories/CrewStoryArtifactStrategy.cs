@@ -3549,21 +3549,56 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyList<ReviewComment>> ProduceReviewCommentsAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, string prId, int round, CancellationToken ct = default)
     {
-        var workspace = this.PrepareWorkspace(spawn.Id, $"review-{Slug(workstream.Id)}-r{round}");
+        // INVARIANT (forge_context.md "Agents NEVER write outside their
+        // worktree" / forge_implementation.md): a doc/code agent NEVER works
+        // in a scratch dir under the Forge state folder. The reviewer runs IN
+        // the workstream's git worktree on the PR branch -- the SAME worktree
+        // the engineer wrote into (reuse its slug, idempotent) -- so it
+        // reviews the real, checked-out file changes instead of spelunking
+        // for the repo and reconstructing a diff from the shared clone root.
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        if (repo is null)
+        {
+            throw new InvalidOperationException(
+                $"ProduceReviewCommentsAsync: no repo for spawn {spawn.Id} (RepoId '{spawn.RepoId}'); "
+                + "cannot materialise the PR worktree to review against.");
+        }
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
+        var workspace = await this.git.EnsureWorktreeAsync(
+            repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
+
+        // Reviewer scratch/output stays inside the worktree under .forge/
+        // (git-excluded via .git/info/exclude + scrubbed from the index,
+        // exactly like .forge/iter-notes.md) so comments.json can never leak
+        // into the PR.
+        await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
+        Directory.CreateDirectory(Path.Combine(workspace, ".forge"));
 
         // Phase 43 (extended) -- surface operator attachments to the reviewer
         // so divergence between the implementation and the operator's
-        // reference docs becomes a review comment. Scratch dir → no git
-        // exclude needed; ReadAllFiles filters .forge-attachments/ from any
-        // output collection paths defensively.
+        // reference docs becomes a review comment. GitInfoExclude keeps the
+        // copied .forge-attachments/ out of the worktree's index.
         var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
-            excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
+            excludeMode: AttachmentExcludeMode.GitInfoExclude, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
         var prompt = $$"""
             You are the Reviewer agent reviewing PR `{{prId}}` for workstream
             `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
+
+            ## Your working directory IS the PR's git worktree
+            You are inside a git worktree of the actual repo, checked out on the
+            PR branch `{{workstream.Branch}}` (base `{{baseBranch}}`). Every changed
+            file is already on disk right here -- do NOT go hunting for the repo
+            elsewhere and do NOT clone or cd into another directory. To see
+            exactly what this PR changed:
+
+            - `git --no-pager diff {{baseBranch}}...HEAD --stat`        (changed-file list)
+            - `git --no-pager diff {{baseBranch}}...HEAD -- <path>`     (one file's diff)
+
+            Then open the changed files in place (read-only) to review them.
 
             ## Story
             {{spawn.StoryTitle}}
@@ -3580,8 +3615,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             file/line and describe a concrete issue worth fixing -- not nits.
 
             ## How to deliver
-            Write a single file `comments.json` inside your working directory
-            containing valid JSON of this shape:
+            Write a single file at `.forge/comments.json` (the `.forge/` directory
+            inside this worktree is git-excluded, so it will NOT be committed to
+            the PR) containing valid JSON of this shape:
 
             [
               {
@@ -3603,11 +3639,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await this.InvokeAsync("Review", workstream.Id, $"review:{workstream.Id}:r{round}", prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "review"), ct);
 
-        var diskPath = Path.Combine(workspace, "comments.json");
+        var diskPath = Path.Combine(workspace, ".forge", "comments.json");
         if (!File.Exists(diskPath))
         {
             throw new InvalidOperationException(
-                $"Reviewer did not write comments.json. Workspace: {workspace}");
+                $"Reviewer did not write .forge/comments.json. Workspace: {workspace}");
         }
         var json = await File.ReadAllTextAsync(diskPath, ct);
         try

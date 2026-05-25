@@ -4850,6 +4850,16 @@ Fix shipping in this revision:
 
 This unblocks the entire impl phase for stories whose workstreams need to *modify* existing repo content — which is most real engineering work, not just scaffolding.
 
+#### REQUIREMENT (hard invariant): doc/code agents NEVER write outside their worktree
+
+Generalised from the fix above and made binding for **every** doc or code agent — not just the engineer:
+
+- **Working directory = the task's git worktree.** Any agent that produces code or docs (plan-doc / architect, engineer/implement, **reviewer** `ProduceReviewCommentsAsync`, review-fix, qa, qa-e2e, conflict-resolution) MUST set its `AgentContext.WorktreePath` to that task's worktree via `IStoryGitOps.EnsureWorktreeAsync(repo, branch, base, …)` → `{repo.cloneRoot}\.worktree\{slug}`. The reviewer reviews the **PR branch checked out in the worktree** — it does not reconstruct a diff from the shared clone.
+- **All writes stay inside the worktree.** Scratch / working-memory / output files (working notes, a reviewer's `comments.json`, discovery `targets.json`, etc.) go under **`.forge/` inside the worktree**, which is git-excluded via `.git/info/exclude` and scrubbed from the index — the same mechanism as `.forge/iter-notes.md`. They must never be committed into the PR.
+- **`PrepareWorkspace` is forbidden for doc/code agents.** The scratch dir it returns (`{Forge:Db:Folder}\storyworkspaces\{spawn}\{phase}`) lives under the **DB/state root**, is **not a worktree**, and contains no repo code. It is the root-cause sandbox this section eliminated for the engineer; running a reviewer/qa agent there forces it to spelunk the filesystem and reach into the shared clone root, burning its turn budget before it can produce output (observed 2026-05-25: reviewer for PR smartpcr/code-intelligence#76 hit the 60-turn cap, $41/2.7M-token wasted, workstream stalled). Reaching into the shared clone root is likewise forbidden.
+
+This invariant is the canonical rule; the per-agent migrations (engineer done 2026-05-05; reviewer + qa to follow) are just applications of it.
+
 ### Engineer agent: 30-second per-spawn timeout was killing every iter
 
 The worktree fix above turned out to be necessary but not sufficient. Operator inspected `E:/forge/update/.worktree/spawn-ws-...` after deploying it and found `git status` clean across 124 iters, with the workstream branch's HEAD untouched since the merged PR that opened it. The agent was getting cancelled mid-tool-call and never reaching a write.

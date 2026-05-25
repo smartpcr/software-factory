@@ -196,6 +196,14 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         RepoRow? repo, string branch, IEnumerable<string> repoRelativePaths, CancellationToken ct = default)
         => Task.CompletedTask;
 
+    public Task EnsurePlanDocPathsCommittableAsync(
+        RepoRow? repo,
+        string branch,
+        IEnumerable<string> repoRelativePaths,
+        string planDocBaseDir,
+        CancellationToken ct = default)
+        => Task.CompletedTask;
+
     public Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
         var dstKey = Key(repo, baseBranch);

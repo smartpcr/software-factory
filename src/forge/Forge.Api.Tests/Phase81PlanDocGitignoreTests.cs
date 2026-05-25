@@ -219,6 +219,56 @@ public class Phase81PlanDocGitignoreTests : IAsyncLifetime
         await git.AssertPlanDocPathsNotIgnoredAsync(repo, Branch, new[] { DocUnderSrc });
     }
 
+    // OneBranch repos commonly ignore broadly then RE-INCLUDE the docs tree
+    // with a negation rule (e.g. `!docs/**/*.md`). Git fully honors that: the
+    // doc is committable. But `git check-ignore -v` still prints the matching
+    // negation line AND exits 0 — only the NON-verbose form correctly exits 1.
+    // Keying the guard off the verbose exit code produced a false-positive halt
+    // ("Refusing to commit … !docs/**/*.md") that stalled the plan phase even
+    // though the commit would have succeeded. (Observed 2026-05-25 on the
+    // `update`/`clusterdb` repos.)
+    private const string ReincludeDocsGitignore =
+        "# ignore all markdown by default\n*.md\n# ... but keep the docs tree\n!docs/**/*.md\n";
+
+    [Fact]
+    public async Task ReincludeNegation_DocUnderDocs_CommitSucceeds()
+    {
+        if (!GitAvailable()) return;
+
+        // The doc is re-included by `!docs/**/*.md`, so it is NOT ignored and
+        // must commit cleanly — the guard must not fire on a negation match.
+        var cloneDir = await CreateRepoAsync(ReincludeDocsGitignore);
+        var git = new RealStoryGitOps();
+        var repo = new RepoRow { Id = "repo-reinc", Kind = "github", CloneRoot = cloneDir };
+        await git.EnsureBranchAsync(repo, Branch, "main");
+
+        var sha = await git.CommitFilesAsync(repo, Branch, Slug,
+            new Dictionary<string, string> { [DocUnderDocs] = "# arch\n" },
+            "plan: architecture");
+
+        Assert.False(string.IsNullOrWhiteSpace(sha), "Commit should have produced a HEAD sha.");
+        Assert.True(await git.FileExistsAsync(repo, Branch, DocUnderDocs),
+            "architecture.md re-included by !docs/**/*.md should exist on the branch after commit.");
+    }
+
+    [Fact]
+    public async Task OrchestratorPreflight_ReincludeNegation_DocUnderDocs_Succeeds()
+    {
+        if (!GitAvailable()) return;
+
+        // Same negation repo, exercised through the orchestrator pre-flight
+        // interface: a re-included doc must pass the guard (exit 1 on the
+        // authoritative non-verbose check-ignore), not throw on the verbose
+        // negation line.
+        var cloneDir = await CreateRepoAsync(ReincludeDocsGitignore);
+        var git = new RealStoryGitOps();
+        var repo = new RepoRow { Id = "repo-pf-reinc", Kind = "github", CloneRoot = cloneDir };
+        await git.EnsureBranchAsync(repo, Branch, "main");
+        await git.EnsureWorktreeAsync(repo, Branch, "main", worktreeSlug: Slug);
+
+        await git.AssertPlanDocPathsNotIgnoredAsync(repo, Branch, new[] { DocUnderDocs });
+    }
+
     [Fact]
     public async Task OrchestratorPreflight_NoWorktree_ThrowsInvalidOperation()
     {

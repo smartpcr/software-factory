@@ -664,17 +664,19 @@ public sealed class StorySpawnOrchestrator
         // Scrub already-tracked .forge/ from the index before the agent runs.
         await this.git.ScrubForgeScratchFromIndexAsync(worktreePath, ct);
 
-        // Phase 81/83 preflight — fail fast if the repo's .gitignore would
-        // exclude the plan-doc destination on this branch (e.g. OneBranch
-        // '/*' + '!/src/' allowlists routing the default 'docs/stories/...'
-        // path into the ignored set). Catches the configuration error BEFORE
-        // any LLM cost is incurred, instead of after N iterations of architect
-        // work that can never be committed. Operator fixes via repo.PlanDocBaseDir.
+        // Phase 81/83/85 preflight — when the repo's .gitignore would exclude
+        // the plan-doc destination on this branch (e.g. OneBranch '/*' +
+        // '!/src/' allowlists routing the default 'docs/stories/...' path
+        // into the ignored set), append a narrow allowlist exception as a
+        // prep commit on this branch BEFORE any LLM cost is incurred. Falls
+        // through to throw GitIgnoredPathException only when the root .gitignore
+        // wasn't the blocker (nested .gitignore, unsafe baseDir, etc.).
         var planDocFileName = PlanDocStateHelpers.PlanDocFileName[docKey];
+        var planDocBaseDir = StoryPaths.NormalizePlanDocBaseDir(repo?.PlanDocBaseDir);
         var planDocRelPath =
             $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/{planDocFileName}";
-        await this.git.AssertPlanDocPathsNotIgnoredAsync(
-            repo, docBranch, new[] { planDocRelPath }, ct);
+        await this.git.EnsurePlanDocPathsCommittableAsync(
+            repo, docBranch, new[] { planDocRelPath }, planDocBaseDir, ct);
 
         // Produce the doc content via the strategy. ProduceSinglePlanArtifactAsync
         // writes the file into the worktree as a side-effect (the agent's
@@ -4719,8 +4721,14 @@ public sealed class StorySpawnOrchestrator
         // workstream-position-dependent behaviour.
         var seed = unchecked(Random.Shared.Next() + seedOffset);
 
+        // LRU — prefer the least-recently-used (or never-used) engineer so
+        // successive workstream claims rotate across the roster instead of
+        // re-picking the same generator. Recency comes from the cost ledger
+        // (agent_usage); equal-recency ties fall back to the seed shuffle.
+        var genLastActive = await Forge.Api.Services.BusyAgentsHelper.LoadLastActiveAsync(control, genRoster, ct);
+
         var (genAgent, _) = PairDiversityResolver.PickGenerator(
-            genRoster, busyAgents, crew.Lead, seed);
+            genRoster, busyAgents, crew.Lead, seed, genLastActive);
 
         // No free roster member AND no lead — last-resort fallback.
         if (string.IsNullOrEmpty(genAgent))
@@ -4754,8 +4762,18 @@ public sealed class StorySpawnOrchestrator
             ?? evaluatorCrew?.DefaultEvaluatorAgentId;
         var leadFallback = evaluatorCrew?.Lead;
 
+        // LRU — recency for the eval roster (plus the preferred eval, which
+        // PickEvaluator inserts at the head even when it isn't a roster
+        // member) so the evaluator rotates oldest-first; the configured
+        // default now only wins equal-recency ties, not unconditionally.
+        var evalRecencyIds = string.IsNullOrEmpty(preferredEval)
+            ? (IReadOnlyCollection<string>)evalRoster
+            : evalRoster.Append(preferredEval).ToList();
+        var evalLastActive = await Forge.Api.Services.BusyAgentsHelper.LoadLastActiveAsync(control, evalRecencyIds, ct);
+
         var (evalAgent, _) = PairDiversityResolver.PickEvaluator(
-            evalRoster, busyAgents, preferredEval, genAgent, seed: unchecked(Random.Shared.Next() + seedOffset));
+            evalRoster, busyAgents, preferredEval, genAgent,
+            seed: unchecked(Random.Shared.Next() + seedOffset), lastActiveByAgent: evalLastActive);
 
         // Q47.3 — evaluator diversity is best-effort. If every candidate
         // is busy fall back so the row still claims; ledger contention

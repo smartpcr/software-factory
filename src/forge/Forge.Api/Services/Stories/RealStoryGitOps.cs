@@ -1163,6 +1163,219 @@ public sealed class RealStoryGitOps : IStoryGitOps
         await this.AssertPathsNotIgnoredAsync(wtPath, branch, repoRelativePaths, ct);
     }
 
+    /// <inheritdoc />
+    public async Task EnsurePlanDocPathsCommittableAsync(
+        RepoRow? repo,
+        string branch,
+        IEnumerable<string> repoRelativePaths,
+        string planDocBaseDir,
+        CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        if (string.IsNullOrEmpty(wtPath))
+        {
+            throw new InvalidOperationException(
+                $"EnsurePlanDocPathsCommittableAsync: no worktree registered for branch '{branch}'. "
+                + "Callers must materialise the worktree (via EnsureWorktreeAsync) first.");
+        }
+
+        var pathList = (repoRelativePaths ?? Enumerable.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToArray();
+        if (pathList.Length == 0) return;
+
+        // Validate planDocBaseDir up front — fail clearly on unsafe input
+        // BEFORE running git so the operator sees a config error, not a
+        // confusing git error.
+        _ = ComputeGitignoreNarrowExceptions(planDocBaseDir);
+
+        // Happy path: preflight already passes (either the repo's .gitignore
+        // doesn't block the path, or a prior run already landed the auto-fix
+        // exception on this branch). Either way nothing to do.
+        try
+        {
+            await this.AssertPathsNotIgnoredAsync(wtPath, branch, pathList, ct);
+            return;
+        }
+        catch (GitIgnoredPathException firstFailure)
+        {
+            this.logger?.LogWarning(
+                "Plan-doc path(s) ignored on branch '{Branch}'; attempting .gitignore narrow auto-fix for base '{Base}'. Paths: {Paths}",
+                branch, planDocBaseDir, string.Join(", ", firstFailure.IgnoredPaths));
+
+            // Serialise per-branch so a concurrent commit on the same branch
+            // doesn't race the .gitignore write or our prep commit.
+            var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(ct);
+            try
+            {
+                // Recheck under the lock — another caller may have just
+                // landed the fix while we were waiting.
+                try
+                {
+                    await this.AssertPathsNotIgnoredAsync(wtPath, branch, pathList, ct);
+                    return;
+                }
+                catch (GitIgnoredPathException)
+                {
+                    // Fall through to apply the fix.
+                }
+
+                await this.ApplyGitignoreNarrowFixAsync(wtPath, branch, planDocBaseDir, ct);
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            // Re-verify outside the lock — if the path is STILL ignored, the
+            // root .gitignore wasn't the blocker (likely a nested .gitignore
+            // under docs/ or similar). Re-throw with operator guidance.
+            try
+            {
+                await this.AssertPathsNotIgnoredAsync(wtPath, branch, pathList, ct);
+            }
+            catch (GitIgnoredPathException stillIgnored)
+            {
+                throw new GitIgnoredPathException(
+                    stillIgnored.Branch,
+                    stillIgnored.IgnoredPaths,
+                    stillIgnored.GitCheckIgnoreOutput.TrimEnd()
+                    + "\n\nForge appended a narrow allowlist exception to the root .gitignore but the path is STILL ignored. "
+                    + "This usually means a NESTED .gitignore (e.g. docs/.gitignore) is blocking the path with higher precedence. "
+                    + "Operator must either remove the nested ignore rule or set repo.PlanDocBaseDir to a path that no .gitignore (root OR nested) blocks.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Phase 85 — build the minimal narrow allowlist exception chain that
+    /// un-ignores <paramref name="planDocBaseDir"/> under a root-level
+    /// catch-all ignore (e.g. OneBranch's <c>/*/</c>). Each ancestor
+    /// directory needs both <c>!/x/</c> (un-ignore the dir itself) and
+    /// <c>/x/*</c> (re-ignore its other immediate children so the un-ignore
+    /// footprint stays minimal); the leaf gets only the un-ignore.
+    ///
+    /// <para>Example for <c>docs/stories</c>:</para>
+    /// <code>
+    /// !/docs/
+    /// /docs/*
+    /// !/docs/stories/
+    /// </code>
+    ///
+    /// <para>Strict validation: each segment must be
+    /// <c>[A-Za-z0-9._-]+</c> — gitignore metacharacters (<c>*</c>, <c>!</c>,
+    /// <c>#</c>, <c>[</c>, etc.) and whitespace are rejected so an
+    /// operator-supplied <see cref="RepoRow.PlanDocBaseDir"/> cannot produce
+    /// malformed rules.</para>
+    /// </summary>
+    internal static IReadOnlyList<string> ComputeGitignoreNarrowExceptions(string planDocBaseDir)
+    {
+        if (string.IsNullOrWhiteSpace(planDocBaseDir))
+        {
+            throw new ArgumentException("planDocBaseDir is required.", nameof(planDocBaseDir));
+        }
+
+        var normalized = planDocBaseDir.Replace('\\', '/').Trim('/');
+        var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            throw new ArgumentException(
+                "planDocBaseDir must contain at least one path segment.", nameof(planDocBaseDir));
+        }
+
+        foreach (var part in parts)
+        {
+            if (!SafeBaseDirSegment.IsMatch(part) || part == "." || part == "..")
+            {
+                throw new ArgumentException(
+                    $"planDocBaseDir segment '{part}' is unsafe; only [A-Za-z0-9._-] segments other than '.' and '..' allowed.",
+                    nameof(planDocBaseDir));
+            }
+        }
+
+        var rules = new List<string>(capacity: parts.Length * 2);
+        var current = string.Empty;
+        for (var i = 0; i < parts.Length; i++)
+        {
+            current = current + "/" + parts[i];
+            rules.Add("!" + current + "/");
+            if (i < parts.Length - 1)
+            {
+                rules.Add(current + "/*");
+            }
+        }
+        return rules;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SafeBaseDirSegment
+        = new(@"^[A-Za-z0-9._-]+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private const string GitignoreAutoFixMarker = "# Forge plan-doc allowlist (auto-fix)";
+
+    /// <summary>
+    /// Phase 85 — append a Forge-owned narrow allowlist block to the root
+    /// <c>.gitignore</c> on <paramref name="branch"/>, commit it as a single
+    /// prep commit, and push to <c>origin</c>. The append is unconditional
+    /// (control flow already established that the preflight failed), so
+    /// concurrent / repeated invocations on the same branch are bounded by
+    /// the per-branch lock in the caller — they only happen once per branch
+    /// per orchestrator tick.
+    /// </summary>
+    private async Task ApplyGitignoreNarrowFixAsync(
+        string wtPath, string branch, string planDocBaseDir, CancellationToken ct)
+    {
+        var gitignorePath = Path.Combine(wtPath, ".gitignore");
+        var rules = ComputeGitignoreNarrowExceptions(planDocBaseDir);
+
+        var existing = File.Exists(gitignorePath)
+            ? await File.ReadAllTextAsync(gitignorePath, ct)
+            : string.Empty;
+
+        var sb = new StringBuilder(existing);
+        if (existing.Length > 0 && !existing.EndsWith("\n", StringComparison.Ordinal))
+        {
+            sb.Append('\n');
+        }
+        sb.Append('\n');
+        sb.Append(GitignoreAutoFixMarker).Append('\n');
+        foreach (var rule in rules)
+        {
+            sb.Append(rule).Append('\n');
+        }
+
+        await File.WriteAllTextAsync(gitignorePath, sb.ToString(), new UTF8Encoding(false), ct);
+
+        await this.GitAsync(wtPath, ct, "add", "--", ".gitignore");
+
+        // Safety: confirm something actually got staged. A no-op stage means
+        // the .gitignore was already at the target content (e.g. via an
+        // out-of-band edit that we then re-wrote identically) — surfacing as
+        // "nothing to commit" rather than throwing.
+        var (stagedCode, _, _) = await this.RunGitCaptureAsync(wtPath, ct, "diff", "--cached", "--quiet");
+        if (stagedCode == 0)
+        {
+            this.logger?.LogWarning(
+                ".gitignore auto-fix on branch '{Branch}' produced no staged change; nothing to commit. " +
+                "Re-verification will determine whether the path is now committable.", branch);
+            return;
+        }
+
+        await this.GitAsync(wtPath, ct,
+            "-c", "user.email=forge-architect@local",
+            "-c", "user.name=Forge Architect",
+            "commit", "-m",
+            $"chore: allow {planDocBaseDir}/ in .gitignore (Forge auto-fix)",
+            "--", ".gitignore");
+
+        this.logger?.LogInformation(
+            "Applied .gitignore auto-fix on branch '{Branch}' for plan-doc base '{Base}': appended {Count} rule(s) and committed.",
+            branch, planDocBaseDir, rules.Count);
+
+        await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
+    }
+
     public async Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);
@@ -2265,10 +2478,20 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// <summary>
     /// Phase 81 preflight — throw <see cref="GitIgnoredPathException"/> when any
     /// of <paramref name="paths"/> is excluded by the worktree's <c>.gitignore</c>.
-    /// Uses <c>git check-ignore -v --</c>, which exits 0 (and lists the matching
-    /// rule per ignored path) when at least one path is ignored, 1 when none
-    /// are, and 128 on a tooling error. A tooling error is logged and treated as
-    /// non-blocking — the guard must never wedge an otherwise-valid commit.
+    ///
+    /// <para>The authoritative decision uses the <b>non-verbose</b>
+    /// <c>git check-ignore --</c> form: it exits 0 when at least one path is
+    /// genuinely ignored, 1 when none are, and 128 on a tooling error (which is
+    /// logged and treated as non-blocking — the guard must never wedge an
+    /// otherwise-valid commit). <b>The verbose <c>-v</c> form must NOT drive the
+    /// decision:</b> it also prints a line and exits 0 when the <em>winning</em>
+    /// rule is a negation (<c>!pattern</c>) that <em>re-includes</em> the file —
+    /// e.g. <c>.gitignore:421:!docs/**/*.md</c> — even though that file is NOT
+    /// ignored and commits cleanly. Keying off the verbose exit code caused
+    /// false-positive halts (a repo with a <c>!docs/**/*.md</c> re-include rule
+    /// stalling the plan phase). We therefore use the verbose form only to
+    /// describe the rule for the operator, restricted to the paths the
+    /// non-verbose form already confirmed are ignored.</para>
     /// </summary>
     private async Task AssertPathsNotIgnoredAsync(
         string wtPath, string branch, IEnumerable<string> paths, CancellationToken ct)
@@ -2278,11 +2501,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
             .ToArray();
         if (pathList.Length == 0) return;
 
-        var args = new List<string> { "check-ignore", "-v", "--" };
+        var args = new List<string> { "check-ignore", "--" };
         args.AddRange(pathList);
         var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
 
-        // Exit 1 = nothing ignored (the happy path); proceed.
+        // Exit 1 = nothing genuinely ignored (the happy path, which includes
+        // files re-included by a `!pattern` negation rule); proceed.
         if (code == 1) return;
 
         // Exit != 0 and != 1 means git itself failed (bad invocation, corrupt
@@ -2296,22 +2520,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
             return;
         }
 
-        // Exit 0 = one or more paths are ignored. Each `-v` line is
-        // `<source>:<linenum>:<pattern>\t<pathname>`; the pathname is the
-        // final tab-delimited field.
+        // Exit 0 = one or more paths are genuinely ignored. The non-verbose
+        // stdout lists exactly those paths, one per line.
         var ignored = stdout
             .Split('\n')
             .Select(line => line.TrimEnd('\r'))
             .Where(line => line.Length > 0)
-            .Select(line =>
-            {
-                var tab = line.LastIndexOf('\t');
-                return tab >= 0 ? line[(tab + 1)..] : line;
-            })
             .Distinct()
             .ToArray();
 
-        throw new GitIgnoredPathException(branch, ignored, stdout);
+        // Defensive: exit 0 should always carry at least one path, but never
+        // throw an empty exclusion list.
+        if (ignored.Length == 0) return;
+
+        // Re-run verbose ONLY on the confirmed-ignored subset to capture the
+        // matching rule (`<source>:<linenum>:<pattern>\t<path>`) for the
+        // operator-facing message. Restricting to the ignored subset keeps the
+        // detail free of misleading negation lines.
+        var verboseArgs = new List<string> { "check-ignore", "-v", "--" };
+        verboseArgs.AddRange(ignored);
+        var (_, verbose, _) = await this.RunGitCaptureAsync(wtPath, ct, verboseArgs.ToArray());
+        var detail = string.IsNullOrWhiteSpace(verbose) ? stdout : verbose;
+
+        throw new GitIgnoredPathException(branch, ignored, detail);
     }
 
     /// <summary>
