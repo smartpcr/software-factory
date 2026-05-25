@@ -81,13 +81,17 @@ public static class ProductsEndpoints
         string id,
         [FromBody] UpdateRepoRequest req,
         ControlDbContext control,
-        ProductDbContext db,
-        IHubContext<ForgeHub> hub)
+        Forge.Api.Persistence.IProductDbContextFactory factory,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (req.DisplayName is not null) row.DisplayName = req.DisplayName.Trim();
@@ -144,6 +148,16 @@ public static class ProductsEndpoints
         // round-trips JSON null vs. true vs. false.
         if (req.TestImpactedOnly is { } testImpactedOnly)
             row.TestImpactedOnly = testImpactedOnly;
+
+        // Phase 83 — per-repo plan-doc base dir. Empty string clears the
+        // override (inherit the default docs/stories); any other value is
+        // normalized (forward slashes, no leading/trailing slash, no
+        // traversal) so an absolute / `..` path can't escape the repo when
+        // fed into a commit path.
+        if (req.PlanDocBaseDir is not null)
+            row.PlanDocBaseDir = string.IsNullOrWhiteSpace(req.PlanDocBaseDir)
+                ? null
+                : Forge.Api.Services.Stories.StoryPaths.NormalizePlanDocBaseDir(req.PlanDocBaseDir);
 
         // Phase 33 — persisted sync settings.
         if (req.WiSyncAssignedTo is not null)
@@ -209,13 +223,17 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         ControlDbContext control,
-        ProductDbContext db,
-        IHubContext<ForgeHub> hub)
+        Forge.Api.Persistence.IProductDbContextFactory factory,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // Only meaningful when not mid-run; if a sync is currently running, leave
@@ -253,13 +271,16 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         IRepoCloneService cloneSvc,
         IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
@@ -303,6 +324,27 @@ public static class ProductsEndpoints
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
+    /// <summary>
+    /// Phase 80 — resolve a repo's OWN product DB from the control registry,
+    /// independent of the request's active product. A repo action
+    /// (<c>/api/repos/{id}/...</c>) targets a globally-unique repo id and must
+    /// work regardless of which product is active in the UI — the Edit-repo
+    /// modal can target a repo in any product. Resolving via the request's
+    /// active-product <c>ProductDbContext</c> 404s when the edited repo lives
+    /// in a different product (observed: clone/detect/validate on the `update`
+    /// repo while the active product was `code-intelligence`). Returns null
+    /// when the repo isn't in the registry (caller returns 404).
+    /// </summary>
+    private static async Task<ProductDbContext?> ResolveRepoDbAsync(
+        string repoId, ControlDbContext control,
+        Forge.Api.Persistence.IProductDbContextFactory factory, CancellationToken ct = default)
+    {
+        var reg = await control.RepoRegistry.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == repoId && r.DeletedAt == null, ct);
+        if (reg is null || string.IsNullOrEmpty(reg.ProductSlug)) return null;
+        return factory.CreateFor(reg.ProductSlug);
+    }
+
     // ── Phase 26 — build/test detection & validation ─────────────────────
 
     /// <summary>
@@ -311,12 +353,16 @@ public static class ProductsEndpoints
     /// The UI shows these to the operator who can accept or override.
     /// </summary>
     private static async Task<IResult> DetectBuild(
-        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db)
+        HttpContext ctx, string id, ControlDbContext control,
+        Forge.Api.Persistence.IProductDbContextFactory factory, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
         if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
             return Results.Problem(title: "Repo has no local clone", detail: "Set a cloneRoot and clone the repo first.", statusCode: 422);
@@ -398,10 +444,13 @@ public static class ProductsEndpoints
     /// Completion is notified via SignalR <c>repo.validation-complete</c>.
     /// </summary>
     private static async Task<IResult> ValidateBuild(
-        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, Forge.Api.Persistence.IProductDbContextFactory factory, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
@@ -410,6 +459,33 @@ public static class ProductsEndpoints
 
         var runId = Guid.NewGuid().ToString("N")[..12];
         var triggeredBy = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var hv) ? hv.ToString() : null;
+
+        // Reclaim ORPHANED runs first. A queued/running row that this worker
+        // instance isn't actually tracking was left behind by a server
+        // restart (the in-memory job channel is lost on restart, but the DB
+        // row survives). Such a row would otherwise (a) make every future
+        // validate-build return a false "already running" 409 forever and
+        // (b) sit at "Preparing pipeline…" with no log because the worker
+        // never picks it up. Mark it failed so this repo can validate again.
+        // A genuinely in-flight run IS tracked (worker.IsRepoActive) and is
+        // preserved by the 409 below.
+        if (!worker.IsRepoActive(id))
+        {
+            var orphans = await db.BuildValidationRuns
+                .Where(r => r.RepoId == id && (r.Status == "queued" || r.Status == "running"))
+                .ToListAsync(ct);
+            if (orphans.Count > 0)
+            {
+                var now = DateTime.UtcNow.ToString("O");
+                foreach (var o in orphans)
+                {
+                    o.Status = "failed";
+                    o.FinishedAt = now;
+                    o.ErrorMessage = "Interrupted by a server restart (in-memory job queue lost); superseded by a new run.";
+                }
+                await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+            }
+        }
 
         // Check for active run BEFORE persisting to avoid orphaned "queued" rows.
         var hasActive = await db.BuildValidationRuns
@@ -454,8 +530,11 @@ public static class ProductsEndpoints
     /// validation runs for the repo, ordered by start time descending.
     /// </summary>
     private static async Task<IResult> GetValidationRuns(
-        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, Forge.Api.Persistence.IProductDbContextFactory factory, CancellationToken ct)
     {
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
         var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
@@ -487,10 +566,13 @@ public static class ProductsEndpoints
     /// POST /api/repos/{id}/validation-runs/{runId}/cancel — cancel a running validation.
     /// </summary>
     private static async Task<IResult> CancelValidationRun(
-        HttpContext ctx, string id, string runId, ControlDbContext control, ProductDbContext db, BuildValidationWorker worker, CancellationToken ct)
+        HttpContext ctx, string id, string runId, ControlDbContext control, Forge.Api.Persistence.IProductDbContextFactory factory, BuildValidationWorker worker, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var run = await db.BuildValidationRuns.FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
         if (run is null) return Results.Problem(title: "Validation run not found", statusCode: 404);
@@ -515,10 +597,13 @@ public static class ProductsEndpoints
 
     /// <summary>DELETE /api/repos/{id}/validation-runs — clear all completed validation runs.</summary>
     private static async Task<IResult> ClearValidationRuns(
-        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, Forge.Api.Persistence.IProductDbContextFactory factory, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var completed = await db.BuildValidationRuns
             .Where(r => r.RepoId == id && r.Status != "queued" && r.Status != "running")
@@ -1044,7 +1129,8 @@ public static class ProductsEndpoints
             r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds,
             r.WorkItemSyncIntervalSeconds, r.PrSyncIntervalSeconds, r.BuildSyncIntervalSeconds,
             r.LastUpstreamChangedDate,
-            r.TestImpactedOnly);
+            r.TestImpactedOnly,
+            r.PlanDocBaseDir);
     }
 
     private static string Slugify(string name)

@@ -94,13 +94,15 @@ public sealed class PlanReconciler
         }
 
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
-        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
 
         // The repo + branch may not exist yet (e.g. spawn created but plan
         // phase hasn't started). Treat that as "no plan" — nothing to do.
         var repo = spawn.RepoId is null
             ? null
             : await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+        // Phase 83 — plan-doc path follows the repo's PlanDocBaseDir (default
+        // docs/stories); must match the write + gate paths.
+        var planPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/implementation-plan.md";
 
         // Read from the worktree on disk, NOT via `git show origin/{branch}`.
         // The architect agent writes to the worktree and `CommitPathInWorktreeAsync`
@@ -378,7 +380,7 @@ public sealed class PlanReconciler
 
             if (repo is not null)
             {
-                var artifactRepoPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/workstreams.yaml";
+                var artifactRepoPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/workstreams.yaml";
                 var artifactYaml = ToYaml(artifactJson);
                 // Sequential-mode reconciles run on the per-doc
                 // implementation-plan worktree; legacy parallel-mode stays

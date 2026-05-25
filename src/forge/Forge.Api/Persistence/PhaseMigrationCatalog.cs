@@ -262,6 +262,12 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(82, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "iteration_prompt" }),
+        // Phase 83 — repos.PlanDocBaseDir (per-repo plan-doc base dir override).
+        // Product-only: post-Phase-80.B `repos` is a ProductDbContext entity in
+        // each {slug}.db, so the runner fans this out per product DB.
+        new PhaseMigrationSpec(83, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "repos" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

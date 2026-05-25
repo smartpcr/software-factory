@@ -34,4 +34,45 @@ internal static class StoryPaths
         while (s.Contains("--")) s = s.Replace("--", "-");
         return s.Trim('-');
     }
+
+    /// <summary>
+    /// Phase 83 — default plan-doc base directory used when a repo does not
+    /// set <see cref="Persistence.RepoRow.PlanDocBaseDir"/>. Matches the
+    /// historical hardcoded location so behaviour is unchanged for repos
+    /// whose <c>.gitignore</c> already permits <c>docs/</c>.
+    /// </summary>
+    public const string DefaultPlanDocBaseDir = "docs/stories";
+
+    /// <summary>
+    /// Phase 83 — normalize an operator-supplied plan-doc base dir into a
+    /// repo-relative, forward-slash path with no leading/trailing slash.
+    /// Null / empty / absolute / traversal inputs collapse to
+    /// <see cref="DefaultPlanDocBaseDir"/> — the base dir must stay inside
+    /// the repo (it is fed straight into a commit path).
+    /// </summary>
+    public static string NormalizePlanDocBaseDir(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return DefaultPlanDocBaseDir;
+        var s = raw.Trim().Replace('\\', '/').Trim('/');
+        if (s.Length == 0) return DefaultPlanDocBaseDir;
+        // Reject absolute paths, drive-letter roots, and parent traversal.
+        if (s.StartsWith('/') || s.Contains("..") || (s.Length >= 2 && s[1] == ':'))
+        {
+            return DefaultPlanDocBaseDir;
+        }
+        return s;
+    }
+
+    /// <summary>
+    /// Phase 83 — the repo-relative directory that holds a story's plan docs:
+    /// <c>{baseDir}/{Safe(storyId)}</c>. <paramref name="planDocBaseDir"/> is
+    /// the owning repo's <see cref="Persistence.RepoRow.PlanDocBaseDir"/>
+    /// (null => default). Every write site (CrewStoryArtifactStrategy) and
+    /// every read/gate site (StorySpawnOrchestrator, PlanReconciler, the
+    /// artifacts endpoints) must route through here so they all agree on the
+    /// same location — a mismatch strands the plan gate waiting for docs that
+    /// landed somewhere else.
+    /// </summary>
+    public static string PlanDocDir(string? planDocBaseDir, string? storyId)
+        => $"{NormalizePlanDocBaseDir(planDocBaseDir)}/{Safe(storyId)}";
 }

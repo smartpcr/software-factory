@@ -3942,10 +3942,25 @@ public sealed class StorySpawnOrchestrator
         if (w.Status is not "cancelled" and not "paused" and not "complete")
         {
             w.Status = WorkstreamStatuses.Stalled;
-            w.StallReason =
-                $"Merge failed for PR {prId}: {FlattenMessage(ex)}. "
-                + "Resolve the conflict (rebase the ws branch onto the current base tip "
-                + "and push, or fix the failing required-status check), then Restart.";
+            // Classify the failure so the operator gets an ACTIONABLE reason
+            // instead of a one-size-fits-all "resolve the conflict" message.
+            // A 401/403 on the provider merge API is an AUTH failure, not a
+            // merge conflict — telling the operator to "rebase the branch"
+            // is misleading and wastes their time (observed on
+            // code-intelligence:CLEAN-CODE PR #70/#71: Forge's GitHub OAuth
+            // token expired → PUT /pulls/N/merge → 401, while the git-CLI
+            // credential still worked so fetch/push succeeded). The agent
+            // resolver can't fix auth, so this never routes through
+            // TryResolveConflictsAndRetryMergeAsync — the operator must
+            // re-authenticate, then Restart.
+            w.StallReason = IsAuthError(ex)
+                ? $"Merge failed for PR {prId}: provider authentication failed ({FlattenMessage(ex)}). "
+                    + "This is NOT a merge conflict — Forge's provider token (GitHub OAuth / ADO) is "
+                    + "expired or unauthorized. Re-authenticate the provider in Forge, then Restart. "
+                    + "(The git-CLI credential can still be valid, so clone/fetch/push may keep working.)"
+                : $"Merge failed for PR {prId}: {FlattenMessage(ex)}. "
+                    + "Resolve the conflict (rebase the ws branch onto the current base tip "
+                    + "and push, or fix the failing required-status check), then Restart.";
             try
             {
                 await db.SaveChangesAsync(ct);
@@ -3967,7 +3982,29 @@ public sealed class StorySpawnOrchestrator
             spawnId = spawn.Id,
             message = FlattenMessage(ex),
             exceptionType = ex.GetType().Name,
+            // Let the UI render the right banner: auth → "re-authenticate",
+            // conflict → "agent is resolving / resolve + Restart", other → generic.
+            kind = IsAuthError(ex) ? "auth" : (IsMergeConflictError(ex) ? "conflict" : "other"),
         }, ct);
+    }
+
+    /// <summary>
+    /// True when the merge failed because the provider rejected our
+    /// credentials (GitHub <c>401 Unauthorized "Requires authentication"</c> /
+    /// <c>"Bad credentials"</c>, ADO <c>TF400813</c> / 401 / 403). This is an
+    /// auth/token problem, NOT a merge conflict — the agent resolver can't fix
+    /// it, so the operator must re-authenticate the provider. Distinguished
+    /// from a normal 403 rate-limit by the auth wording.
+    /// </summary>
+    internal static bool IsAuthError(Exception ex)
+    {
+        if (ex is null) return false;
+        var msg = ex.Message ?? string.Empty;
+        return msg.Contains("401", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Requires authentication", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("TF400813", StringComparison.OrdinalIgnoreCase); // ADO: identity not authorized
     }
 
     /// <summary>
@@ -4736,12 +4773,16 @@ public sealed class StorySpawnOrchestrator
         // spawn's base branch, not necessarily main, so this is the branch
         // downstream phases will read from.
         var baseBranch = BaseBranchOf(spawn);
+        // Phase 83 — read from the repo's plan-doc base dir (default
+        // docs/stories). MUST match CrewStoryArtifactStrategy's write path or
+        // this gate waits forever for docs that landed elsewhere.
+        var docDir = StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId);
         var paths = new[]
         {
-            $"docs/stories/{GitSafe(spawn.StoryId)}/tech-spec.md",
-            $"docs/stories/{GitSafe(spawn.StoryId)}/architecture.md",
-            $"docs/stories/{GitSafe(spawn.StoryId)}/implementation-plan.md",
-            $"docs/stories/{GitSafe(spawn.StoryId)}/e2e-scenarios.md",
+            $"{docDir}/tech-spec.md",
+            $"{docDir}/architecture.md",
+            $"{docDir}/implementation-plan.md",
+            $"{docDir}/e2e-scenarios.md",
         };
         foreach (var p in paths)
         {

@@ -183,6 +183,23 @@ public static class StoryBuildRunner
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 
+        // Strip the MSBuild SDK-resolver vars that MSBuildLocator.RegisterDefaults()
+        // (Program.cs, for Roslyn's MSBuildWorkspace) injects into THIS process,
+        // pinned to the net8.0 SDK Forge.Api runs on (e.g. 8.0.421). They are
+        // process env vars, so a child `dotnet build`/`dotnet test` inherits them
+        // and is FORCED to resolve SDKs against that 8.x SDK's Sdks dir — which
+        // lacks Microsoft.Build.Traversal (the AzureStack build.proj SDK), so the
+        // gate build dies during evaluation with MSB4276 ("Build FAILED. 0 Error(s)")
+        // even though `dotnet --version` reports the global.json SDK. A fresh shell
+        // never has these set; removing them restores clean SDK resolution and
+        // matches how the engineer builds by hand. See BuildValidationWorker for
+        // the same fix on the repo-validation path.
+        psi.Environment.Remove("MSBUILD_EXE_PATH");
+        psi.Environment.Remove("MSBuildExtensionsPath");
+        psi.Environment.Remove("MSBuildExtensionsPath32");
+        psi.Environment.Remove("MSBuildExtensionsPath64");
+        psi.Environment.Remove("MSBuildSDKsPath");
+
         // Phase 49 — convert process-start failures (program not on
         // PATH, .NET SDK missing for a `dotnet build`, cargo absent
         // for a Rust workspace, etc.) into a StoryBuildResult instead

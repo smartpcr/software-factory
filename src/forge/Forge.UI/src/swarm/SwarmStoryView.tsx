@@ -560,32 +560,50 @@ function SpawnErrorBanner(props: {
  *  StorySpawnOrchestrator.StallWorkstreamForMergeFailureAsync when
  *  ApproveAndMergeAsync throws on a GitHub 405 / dirty / blocked PR).
  *
- *  Resolution paths surfaced in the body:
- *    - Open the PR in GitHub, resolve the conflict (rebase the ws
- *      branch onto the current base tip and push), then Restart the
- *      workstream from the chip menu.
- *    - Or, if the work is no longer needed, cancel the workstream.
+ *  The banner branches on the stall reason: an auth failure (401/403 —
+ *  Forge's provider token expired) shows a red "PROVIDER AUTH EXPIRED"
+ *  remedy (re-authenticate, then Restart); everything else shows the amber
+ *  "PR MERGE BLOCKED" remedy.
  *
- *  Intentionally has NO Retry button — the orchestrator cannot
- *  resolve a merge conflict on its own; the operator (or a future
- *  rebase-strategy implementation) must intervene first. */
+ *  Note: real merge conflicts ARE auto-resolved by the agent
+ *  (StorySpawnOrchestrator.TryResolveConflictsAndRetryMergeAsync / Phase
+ *  79c — merge base in, agent resolves, retry, up to 3 attempts). A row
+ *  only reaches this banner after the resolver EXHAUSTS those attempts or
+ *  the failure isn't agent-resolvable (auth, failing required check,
+ *  branch protection). No Retry button: the operator re-authenticates /
+ *  resolves the residual conflict / fixes the check, then Restarts. */
 function MergeConflictBanner(props: {
   workstreams: Array<{ id: string; name: string; prs: string[]; stallReason?: string | null }>;
 }) {
   const { workstreams } = props;
+  // The backend (StallWorkstreamForMergeFailureAsync) writes a distinct
+  // stall reason for auth failures (401/403) vs real conflicts. A 401 is
+  // NOT a merge conflict and the agent can't fix it — show the operator the
+  // right remedy (re-authenticate) instead of "rebase the branch".
+  const isAuthStall = (r?: string | null) => {
+    const s = (r ?? '').toLowerCase();
+    return s.includes('authentication failed')
+      || s.includes('re-authenticate')
+      || s.includes('not a merge conflict')
+      || s.includes('401')
+      || s.includes('unauthorized');
+  };
+  const allAuth = workstreams.length > 0 && workstreams.every((w) => isAuthStall(w.stallReason));
+  const anyAuth = workstreams.some((w) => isAuthStall(w.stallReason));
+  const accent = allAuth ? 'var(--sc-error, #e5484d)' : 'var(--sc-warn, #d4a017)';
   return (
     <div
       className="spawn-error-banner spawn-error-banner--merge-conflict"
       role="alert"
       style={{
-        borderColor: 'var(--sc-warn, #d4a017)',
-        background: 'rgba(212, 160, 23, 0.12)',
+        borderColor: accent,
+        background: allAuth ? 'rgba(229, 72, 77, 0.12)' : 'rgba(212, 160, 23, 0.12)',
       }}
     >
-      <div className="spawn-error-banner__icon" aria-hidden style={{ color: 'var(--sc-warn, #d4a017)' }}>⚠</div>
+      <div className="spawn-error-banner__icon" aria-hidden style={{ color: accent }}>⚠</div>
       <div className="spawn-error-banner__body">
-        <div className="spawn-error-banner__title" style={{ color: 'var(--sc-warn, #d4a017)' }}>
-          ▌ PR MERGE CONFLICT
+        <div className="spawn-error-banner__title" style={{ color: accent }}>
+          ▌ {allAuth ? 'PROVIDER AUTH EXPIRED' : 'PR MERGE BLOCKED'}
           {' · '}
           <span style={{ opacity: 0.85, fontWeight: 'normal' }}>
             {workstreams.length} workstream{workstreams.length === 1 ? '' : 's'} blocked
@@ -602,9 +620,23 @@ function MergeConflictBanner(props: {
             <div style={{ marginTop: 4, opacity: 0.7 }}>+ {workstreams.length - 4} more</div>
           )}
           <div style={{ marginTop: 8, opacity: 0.85 }}>
-            Resolve the conflict in GitHub (rebase the ws branch onto base + push),
-            then Restart from the workstream chip menu. Auto-recovery is intentionally
-            disabled — parallel PRs touching the same files require operator decision.
+            {allAuth ? (
+              <>
+                Forge&apos;s provider token (GitHub OAuth / ADO) is expired or unauthorized — this
+                is <strong>not</strong> a merge conflict. Re-authenticate the provider in Forge, then
+                Restart these workstreams. Your git-CLI credential may still be valid, so
+                clone/fetch/push can keep working while API merges return 401.
+              </>
+            ) : (
+              <>
+                Forge&apos;s agent auto-resolves real merge conflicts (merges base in, resolves, and
+                retries — up to 3 attempts). These exhausted that, or hit a non-resolvable gate
+                (failing required check / branch protection): resolve in the provider UI (rebase the
+                ws branch onto base + push) or fix the failing check, then Restart from the
+                workstream chip menu.
+                {anyAuth ? ' Some rows above are auth failures — re-authenticate the provider too.' : ''}
+              </>
+            )}
           </div>
         </div>
       </div>

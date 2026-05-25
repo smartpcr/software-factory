@@ -297,7 +297,8 @@ CREATE TABLE IF NOT EXISTS ""repos"" (
     ""WorkItemSyncIntervalSeconds"" INTEGER NULL,
     ""PrSyncIntervalSeconds"" INTEGER NULL,
     ""BuildSyncIntervalSeconds"" INTEGER NULL,
-    ""LastUpstreamChangedDate"" TEXT NULL
+    ""LastUpstreamChangedDate"" TEXT NULL,
+    ""PlanDocBaseDir"" TEXT NULL
 );";
 
     private const string ReposIndexSql = @"

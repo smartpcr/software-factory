@@ -305,7 +305,11 @@ public sealed record Repo(
     string? LastUpstreamChangedDate = null,
     // Phase 59 — per-repo override for impacted-test selection.
     // null = inherit Forge:Test:ImpactedOnly (defaults to true).
-    bool? TestImpactedOnly = null);
+    bool? TestImpactedOnly = null,
+    // Phase 83 — repo-relative plan-doc base dir. null/empty => "docs/stories".
+    // Set to a path the repo's .gitignore allows (e.g. "src/docs/stories" for
+    // OneBranch repos that only un-ignore /src/).
+    string? PlanDocBaseDir = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -525,7 +529,11 @@ public sealed record UpdateRepoRequest(
     // false = run repo.TestCommand verbatim (legacy whole-suite);
     // true = always narrow `dotnet test` to impacted projects when
     // the command carries no explicit project / --filter.
-    bool? TestImpactedOnly = null);
+    bool? TestImpactedOnly = null,
+    // Phase 83 — repo-relative plan-doc base dir. null = leave unchanged;
+    // empty string clears the override (inherit "docs/stories"); any other
+    // value is normalized and pinned (e.g. "src/docs/stories").
+    string? PlanDocBaseDir = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

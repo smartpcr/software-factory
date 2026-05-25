@@ -2086,8 +2086,21 @@ const WS_NODE_W = 224;
 const WS_NODE_H = 96;
 const WS_COL_GAP = 56;
 const WS_ROW_GAP = 14;
-const WS_PAD_X = 14;
+// Left padding doubles as the gutter the orthogonal edge rail lives in;
+// wide enough to fit a few nested lanes (see WS_RAIL_* below) without the
+// rail clipping past the phase box's left border.
+const WS_PAD_X = 36;
 const WS_PAD_Y = 14;
+
+// docs/forge/e2e.md — orthogonal side-rail edge router geometry. Same-column
+// (and leftward) dep edges leave a card's left edge, drop down a vertical
+// rail in the left gutter, then elbow back into the target's left edge so a
+// curve never crosses over a card's text. Nested / skip edges get pushed to
+// an outer lane so they don't overlap.
+const WS_RAIL_GAP = 12;      // lane-0 rail offset left of the card's left edge
+const WS_RAIL_LANE_GAP = 8;  // additional left offset per nested lane
+const WS_RAIL_MIN_X = 3;     // clamp so the rail never leaves the phase box
+const WS_RAIL_CORNER_R = 6;  // rounded-elbow radius
 
 interface PhaseLayout {
   cards: Array<{ ws: StorySpawnDetail['workstreams'][number]; x: number; y: number }>;
@@ -2101,6 +2114,34 @@ interface PhaseLayout {
  *  visually reads as ONE logical stage (the impl above + its trailing
  *  qa-e2e below), not two unrelated rows. */
 const WS_QAE2E_STACK_GAP = 8;
+
+/** Build an SVG path through `points` with rounded corners of radius `r`
+ *  at each interior vertex. Drives the workstream DAG's orthogonal
+ *  side-rail edges so elbows read as soft right-angles instead of the
+ *  harsh pixel notch a pure `L` join produces. Degenerate corners (where
+ *  a segment is shorter than the radius) fall back to a sharp join. */
+function orthogonalPath(points: ReadonlyArray<{ x: number; y: number }>, r: number): string {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const p0 = points[i - 1];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const len1 = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
+    const len2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+    const rr = Math.min(r, len1 / 2, len2 / 2);
+    if (rr <= 0.5) { d += ` L ${p1.x} ${p1.y}`; continue; }
+    const ax = p1.x - ((p1.x - p0.x) / len1) * rr;
+    const ay = p1.y - ((p1.y - p0.y) / len1) * rr;
+    const bx = p1.x + ((p2.x - p1.x) / len2) * rr;
+    const by = p1.y + ((p2.y - p1.y) / len2) * rr;
+    d += ` L ${ax} ${ay} Q ${p1.x} ${p1.y} ${bx} ${by}`;
+  }
+  const last = points[points.length - 1];
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
 
 /** Topologically position a phase's stages by INTRA-phase deps only.
  *  Cross-phase deps are surfaced separately (chips) rather than as
@@ -2317,24 +2358,22 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
   // Stage 8.1 — fixes the `1.1 → 1.1-e2e → 1.3` gap).
   const stageNumOf = useMemo(() => computeStageNumbers(ws), [ws]);
 
-  // docs/forge/e2e.md Stage 8.2 — pre-compute the impl-sibling id for
-  // every qa-e2e workstream so the arrow router can pick the
-  // vertical-stack anchor pair (impl bottom → qa-e2e top) for the
-  // short downward edge instead of the default left-to-right Bezier
-  // (which would render as a backward loop since the two cards share
-  // an x coordinate). Cross-stage qa-e2e deps (the Stage 2.1 H3 dep
-  // kind) keep the default routing — they look like ordinary
-  // intra-phase impl-dep edges to the router.
-  const implSiblingByQa = useMemo(() => {
-    const qaByImpl = qaE2eByImplId(ws);
-    const m = new Map<string, string>();
-    qaByImpl.forEach((qa, implId) => m.set(qa.id, implId));
-    return m;
-  }, [ws]);
-
   type ArrowSpec = { d: string; tone: 'normal' | 'blocked'; key: string };
+  // RawEdge carries the resolved source/target boxes plus a routing mode so
+  // we can assign rail lanes (which need a global view of every edge's
+  // vertical span) before emitting the final SVG `d` strings.
+  type RawEdge = {
+    from: Anchor;
+    to: Anchor;
+    tone: 'normal' | 'blocked';
+    key: string;
+    mode: 'rail' | 'horiz';
+  };
   const arrows = useMemo<ArrowSpec[]>(() => {
-    const out: ArrowSpec[] = [];
+    // 1) Collect every intra-phase edge with its DOM-measured boxes. Cross-
+    //    phase edges stay as `↥ deps` chips (Phase 49 follow-up) so the
+    //    overlay never turns into spaghetti when phases pile up.
+    const raw: RawEdge[] = [];
     for (const w of ws) {
       const myPhase = phaseAnchorOf.get(w.id) ?? WS_DAG_DEFAULT_PHASE;
       const toCollapsed = collapsed.has(myPhase);
@@ -2342,57 +2381,71 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
       if (!toBox) continue;
       for (const depId of w.deps ?? []) {
         const upPhase = phaseAnchorOf.get(depId) ?? WS_DAG_DEFAULT_PHASE;
-        // Phase 49 follow-up — only draw INTRA-phase arrows. Cross-phase
-        // edges are surfaced as `↥ 1.2 2.3 …` chips on each card so the
-        // overlay doesn't smother the cards with spaghetti when phases
-        // pile up. The chip set is shorter and orders-of-magnitude
-        // easier to read than the previous global arrow soup.
         if (upPhase !== myPhase) continue;
         const fromCollapsed = collapsed.has(upPhase);
         const fromBox = fromCollapsed ? boxes.headers.get(upPhase) : boxes.cards.get(depId);
         if (!fromBox) continue;
-
         const tone: 'normal' | 'blocked' = w.status === 'blocked' ? 'blocked' : 'normal';
-
-        // docs/forge/e2e.md Stage 8.2 — impl→qa-e2e short stacked
-        // edge: source and target share x; route bottom-of-impl to
-        // top-of-qa-e2e with a near-straight cubic Bezier so the line
-        // visually reads as "impl gates this qa-e2e" instead of a
-        // sideways loop.
-        if (implSiblingByQa.get(w.id) === depId) {
-          const x1 = fromBox.x + fromBox.w / 2;
-          const y1 = fromBox.y + fromBox.h;
-          const x2 = toBox.x + toBox.w / 2;
-          const y2 = toBox.y;
-          const midY = (y1 + y2) / 2;
-          out.push({
-            d: `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`,
-            tone,
-            key: `${depId}->${w.id}:stack`,
-          });
-          continue;
-        }
-
-        // Default left-to-right routing for intra-phase impl-dep and
-        // cross-stage qa-e2e edges. Anchor at the right edge of
-        // source, left edge of target so arrows read left-to-right
-        // (matches topological flow within a phase). The cubic Bezier
-        // with midX control points keeps the line clean and visually
-        // parses as a DAG edge rather than overlapping the cards.
-        const x1 = fromBox.x + fromBox.w;
-        const y1 = fromBox.y + fromBox.h / 2;
-        const x2 = toBox.x;
-        const y2 = toBox.y + toBox.h / 2;
-        const midX = (x1 + x2) / 2;
-        out.push({
-          d: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
-          tone,
-          key: `${depId}->${w.id}`,
-        });
+        // Target clearly to the right (a deeper column) → keep the
+        // left→right orthogonal route through the column gap. Otherwise
+        // (same column, the common vertically-stacked chain) ride the
+        // left rail so the edge never crosses an intervening card.
+        const mode: RawEdge['mode'] =
+          toBox.x > fromBox.x + fromBox.w / 2 ? 'horiz' : 'rail';
+        raw.push({ from: fromBox, to: toBox, tone, key: `${depId}->${w.id}`, mode });
       }
     }
+
+    // 2) Lane assignment for rail edges — greedy interval scheduling on the
+    //    vertical span so overlapping (skip / nested) edges nest outward
+    //    onto distinct lanes instead of drawing on top of each other.
+    const railSpan = (e: RawEdge): [number, number] => {
+      const a = e.from.y + e.from.h / 2;
+      const b = e.to.y + e.to.h / 2;
+      return a <= b ? [a, b] : [b, a];
+    };
+    const railEdges = raw.filter((e) => e.mode === 'rail')
+      .sort((a, b) => railSpan(a)[0] - railSpan(b)[0]);
+    const laneEnds: number[] = []; // yBottom currently occupying each lane
+    const laneOf = new Map<RawEdge, number>();
+    for (const e of railEdges) {
+      const [top, bottom] = railSpan(e);
+      let lane = laneEnds.findIndex((end) => end <= top);
+      if (lane === -1) { lane = laneEnds.length; laneEnds.push(bottom); }
+      else laneEnds[lane] = bottom;
+      laneOf.set(e, lane);
+    }
+
+    // 3) Emit the orthogonal path for each edge.
+    const out: ArrowSpec[] = [];
+    for (const e of raw) {
+      const fromY = e.from.y + e.from.h / 2;
+      const toY = e.to.y + e.to.h / 2;
+      let pts: Array<{ x: number; y: number }>;
+      if (e.mode === 'horiz') {
+        const x1 = e.from.x + e.from.w;
+        const midX = (x1 + e.to.x) / 2;
+        pts = [
+          { x: x1, y: fromY },
+          { x: midX, y: fromY },
+          { x: midX, y: toY },
+          { x: e.to.x, y: toY },
+        ];
+      } else {
+        const lane = laneOf.get(e) ?? 0;
+        const cardLeft = Math.min(e.from.x, e.to.x);
+        const railX = Math.max(WS_RAIL_MIN_X, cardLeft - WS_RAIL_GAP - lane * WS_RAIL_LANE_GAP);
+        pts = [
+          { x: e.from.x, y: fromY },
+          { x: railX, y: fromY },
+          { x: railX, y: toY },
+          { x: e.to.x, y: toY },
+        ];
+      }
+      out.push({ d: orthogonalPath(pts, WS_RAIL_CORNER_R), tone: e.tone, key: e.key });
+    }
     return out;
-  }, [ws, phaseAnchorOf, collapsed, boxes, implSiblingByQa]);
+  }, [ws, phaseAnchorOf, collapsed, boxes]);
 
   function togglePhase(anchor: string) {
     setCollapsed((prev) => {

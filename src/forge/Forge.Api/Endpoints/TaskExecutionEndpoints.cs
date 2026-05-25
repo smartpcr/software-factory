@@ -138,9 +138,12 @@ public static class TaskExecutionEndpoints
         var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
         if (spawn is null) return;
 
-        // Path under the repo: docs/stories/{safeStoryId}/{file}.
-        var safeStoryId = StoryPaths.Safe(spawn.StoryId);
-        var relPath = $"docs/stories/{safeStoryId}/{fileName.ToLowerInvariant()}";
+        // Path under the repo: {PlanDocBaseDir}/{safeStoryId}/{file}
+        // (Phase 83 — default docs/stories; OneBranch repos relocate under /src/).
+        var repo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct)
+            : null;
+        var relPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/{fileName.ToLowerInvariant()}";
         var repoRoot = Forge.Api.Persistence.ForgeSeed.FindRepoRoot();
         var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
 

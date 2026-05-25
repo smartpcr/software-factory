@@ -28,6 +28,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [testCommand, setTestCommand] = useState(repo.testCommand ?? '');
   const [buildTimeoutSec, setBuildTimeoutSec] = useState<number | ''>(repo.buildTimeoutSec ?? '');
   const [testTimeoutSec, setTestTimeoutSec] = useState<number | ''>(repo.testTimeoutSec ?? '');
+  // Phase 83 — per-repo plan-doc base dir (blank => default "docs/stories").
+  const [planDocBaseDir, setPlanDocBaseDir] = useState(repo.planDocBaseDir ?? '');
   // Phase 59 Stage A — tri-state override: null inherits the global
   // Forge:Test:ImpactedOnly default (true); 'true' / 'false' override.
   const [testImpactedOnly, setTestImpactedOnly] = useState<boolean | null>(repo.testImpactedOnly ?? null);
@@ -62,6 +64,7 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setTestCommand(repo.testCommand ?? '');
     setBuildTimeoutSec(repo.buildTimeoutSec ?? '');
     setTestTimeoutSec(repo.testTimeoutSec ?? '');
+    setPlanDocBaseDir(repo.planDocBaseDir ?? '');
     setTestImpactedOnly(repo.testImpactedOnly ?? null);
     setImpactedPreview(null);
     setPreviewingImpacted(false);
@@ -121,6 +124,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       // Phase 59 — only send the field when it changed from the saved
       // value so a no-op save doesn't churn the row.
       if (testImpactedOnly !== (repo.testImpactedOnly ?? null)) patch.testImpactedOnly = testImpactedOnly;
+      // Phase 83 — empty string clears the override (server inherits "docs/stories").
+      if (planDocBaseDir.trim() !== (repo.planDocBaseDir ?? '')) patch.planDocBaseDir = planDocBaseDir.trim();
 
       // Phase 34 — per-repo sync cadence overrides. Send 0 to clear; the server
       // treats <= 0 as "fall back to global default".
@@ -138,10 +143,19 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       if (updated.buildCommand && !buildCommand) setBuildCommand(updated.buildCommand);
       if (updated.testCommand && !testCommand) setTestCommand(updated.testCommand);
 
+      // Ensure the local clone exists before the detect/validate steps below.
+      // Both run against the on-disk repo, and the server's BuildValidationWorker
+      // fails with "Repo has no local clone" when the folder is missing — so a
+      // no-op Save that re-runs validation must guarantee the clone first.
+      // cloneRepo is idempotent (returns "already present" when the folder
+      // exists), so it's safe on every Save, not just when the path changed.
+      setPhase('cloning');
+      const cloneResult = await forgeApi.cloneRepo(repo.id);
+      const justCloned = cloneResult.outcome === 'cloned';
       if (patch.cloneRoot) {
-        setPhase('cloning');
-        const result = await forgeApi.cloneRepo(repo.id);
-        toast(result.outcome === 'cloned' ? `Cloned ${cleanName} to ${cleanPath}` : `Saved "${cleanName}" — local repo already present`, 'success');
+        toast(justCloned ? `Cloned ${cleanName} to ${cleanPath}` : `Saved "${cleanName}" — local repo already present`, 'success');
+      } else if (justCloned) {
+        toast(`Cloned ${cleanName} — local repo was missing`, 'success');
       }
 
       // Auto-detect + validate.
@@ -171,13 +185,16 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
         } catch { /* non-fatal */ }
       }
 
-      // Phase 29 — only auto-validate when pipeline commands actually changed.
-      const pipelineChanged = patch.initCommand !== undefined || patch.restoreCommand !== undefined
-        || patch.buildCommand !== undefined || patch.testCommand !== undefined
-        || patch.buildTimeoutSec !== undefined || patch.testTimeoutSec !== undefined;
+      // Save always re-runs validation when the repo has pipeline commands —
+      // even when nothing changed — so an operator can re-validate on demand
+      // by opening Edit and clicking Save. (Was Phase 29: gated on a pipeline
+      // command actually changing, which made a no-op Save skip validation;
+      // the operator asked for Save to always validate.) The (fI||fR||fB||fT)
+      // guard still skips a repo with no commands at all — there'd be nothing
+      // to run. The validateBuild 409 "already running" case is handled below.
       const fI = initCommand || eI; const fR = restoreCommand || eR;
       const fB = buildCommand || eB; const fT = testCommand || eT;
-      if (pipelineChanged && (fI || fR || fB || fT)) {
+      if (fI || fR || fB || fT) {
         try {
           const accepted = await forgeApi.validateBuild(repo.id);
           toast(`Validation queued (run ${accepted.runId}) — you'll be notified when it completes`, 'info');
@@ -187,7 +204,7 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
         }
       }
 
-      if (!patch.cloneRoot) toast(`Saved "${cleanName}"`, 'success');
+      if (!patch.cloneRoot && !justCloned) toast(`Saved "${cleanName}"`, 'success');
       onClose();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Save failed');
@@ -258,6 +275,9 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                 </FieldGroup>
                 <FieldGroup label="Default branch">
                   <input value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} placeholder="main" maxLength={120} spellCheck={false} disabled={busy} style={{ ...inputStyle, ...monoStyle }} />
+                </FieldGroup>
+                <FieldGroup label="Plan-doc base dir" hint="Repo-relative folder for story plan docs (architecture.md, tech-spec.md, …). Blank = docs/stories. For OneBranch / SDL repos whose .gitignore only allows /src/, set src/docs/stories so the docs aren't git-ignored.">
+                  <input value={planDocBaseDir} onChange={(e) => setPlanDocBaseDir(e.target.value)} placeholder="docs/stories" spellCheck={false} disabled={busy} style={{ ...inputStyle, ...monoStyle }} data-testid="repo-plandoc-basedir" />
                 </FieldGroup>
               </>
             )}

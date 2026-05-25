@@ -37,8 +37,9 @@ using System.Diagnostics;
 /// <para>Apply at every <c>new ProcessStartInfo("git")</c> call site via
 /// <see cref="ApplyFailFast"/> (or its alias <see cref="Apply"/>); do not
 /// hand-set <c>GIT_TERMINAL_PROMPT</c> / <c>GCM_INTERACTIVE</c> / <c>GIT_ASKPASS</c>
-/// directly — that bypasses the policy and re-introduces inconsistency
-/// between Interactive and FailFast deployments.</para>
+/// / <c>GCM_AZREPOS_CREDENTIALTYPE</c> directly — that bypasses the policy
+/// and re-introduces inconsistency between Interactive and FailFast
+/// deployments.</para>
 /// </summary>
 internal static class GitProcessEnv
 {
@@ -93,6 +94,26 @@ internal static class GitProcessEnv
         // makes the failure fast and clean instead of letting git try
         // to read from a closed stdin.
         psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+
+        // Azure DevOps: force Git Credential Manager to authenticate with
+        // an Azure AD OAuth token instead of minting a short-lived PAT
+        // (GCM's default credential type for the azure-repos host
+        // provider). Microsoft-internal tenants such as `msazure` enforce
+        // DisablePatCreationPolicy, so GCM's PAT mint is rejected with
+        // "Failed to create PAT: DisablePatCreationPolicyViolation"; git
+        // then falls back to a terminal username prompt that
+        // GIT_TERMINAL_PROMPT=0 immediately EOF-fails. Observed 2026-05-24
+        // on msazure.visualstudio.com/.../ASZ-UpdateService: every
+        // `git fetch origin main` died at exit 128 and HALTED the spawn.
+        // OAuth hands the AAD token straight to git so NO PAT is ever
+        // created. This is the env-var equivalent of
+        // `git config credential.azreposCredentialType oauth`, pinned here
+        // so the behaviour holds regardless of the operator's global git
+        // config. Honoured under both policies: in Interactive mode GCM can
+        // pop its sign-in dialog on first use; in FailFast it uses a
+        // cached / broker token silently and never attempts the (forbidden)
+        // PAT path.
+        psi.Environment["GCM_AZREPOS_CREDENTIALTYPE"] = "oauth";
 
         if (policy == GitPromptPolicy.FailFast)
         {

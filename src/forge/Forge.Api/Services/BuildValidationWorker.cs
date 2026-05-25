@@ -55,6 +55,18 @@ public sealed class BuildValidationWorker : BackgroundService
         return true;
     }
 
+    /// <summary>
+    /// True when this worker instance is actively tracking a run for the
+    /// given repo (queued in the in-memory channel or currently executing).
+    /// Lets the validate endpoint distinguish a genuinely in-flight run from
+    /// an ORPHANED DB row — one left at <c>queued</c>/<c>running</c> by a
+    /// server restart that cleared the in-memory channel. Without this, an
+    /// orphaned row makes every future <c>validate-build</c> return a false
+    /// "already running" 409 forever (and the worker never picks the orphan
+    /// up, so it shows "Preparing pipeline…" with no log indefinitely).
+    /// </summary>
+    public bool IsRepoActive(string repoId) => this.activeRepos.ContainsKey(repoId);
+
     /// <summary>Cancel a running or queued validation run.</summary>
     public bool TryCancel(string runId)
     {
@@ -95,8 +107,27 @@ public sealed class BuildValidationWorker : BackgroundService
 
         await using var scope = this.scopeFactory.CreateAsyncScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
+
+        // Route to the JOB's product DB. A background worker has no HTTP
+        // request, so the request-scoped ProductDbContext (CreateForCurrentRequest)
+        // can't resolve the per-product {slug}.db — it throws / falls back to the
+        // control DB, so the run row (which lives in the product DB after the
+        // Phase 80/F split) is invisible here and the job is silently dropped,
+        // leaving it stuck "queued" / "Preparing pipeline…" forever with no log.
+        // Resolve the repo's product slug from the control registry, then open
+        // that product's DB explicitly.
+        var factory = scope.ServiceProvider.GetRequiredService<IProductDbContextFactory>();
+        var reg = await control.RepoRegistry.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == job.RepoId && r.DeletedAt == null, CancellationToken.None);
+        if (reg is null || string.IsNullOrEmpty(reg.ProductSlug))
+        {
+            this.logger.LogError(
+                "Build validation run {RunId}: repo {RepoId} has no control-registry entry; cannot resolve its product DB.",
+                job.RunId, job.RepoId);
+            return;
+        }
+        var db = factory.CreateFor(reg.ProductSlug);
 
         var run = await db.BuildValidationRuns.FirstOrDefaultAsync(r => r.Id == job.RunId, CancellationToken.None);
         if (run is null) return;
@@ -163,7 +194,12 @@ public sealed class BuildValidationWorker : BackgroundService
         var doskeyMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrEmpty(initCmd))
         {
-            var initPath = Path.Combine(repo.CloneRoot, initCmd.Split(' ')[0]);
+            // initCmd may be a bare "init" that names the repo's init.cmd
+            // (AzureStack convention). Resolve the actual script file so the
+            // doskey scan reads it (a bare "init" path wouldn't exist on disk).
+            var initFirst = initCmd.Split(' ')[0];
+            var initScript = ResolveRootScript(repo.CloneRoot, initFirst);
+            var initPath = Path.Combine(repo.CloneRoot, initScript ?? initFirst);
             if (File.Exists(initPath))
             {
                 foreach (var line in File.ReadLines(initPath))
@@ -197,6 +233,23 @@ public sealed class BuildValidationWorker : BackgroundService
                 // Replace the alias with its expansion; append any extra args.
                 var extra = cmd.Length > firstToken.Length ? cmd[firstToken.Length..] : "";
                 resolvedCmd = expansion + extra;
+            }
+
+            // NoDefaultCurrentDirectoryInExePath (set on many corporate
+            // machines) stops cmd.exe from finding a repo-root script by bare
+            // name (e.g. "init" -> the repo's init.cmd). Rewrite the first
+            // token to an explicit ".\name" so it resolves regardless of that
+            // policy; the `call` logic below then runs it without exiting the
+            // parent script. Skip if already a path / already a `call`.
+            if (!resolvedCmd.StartsWith("call ", StringComparison.OrdinalIgnoreCase))
+            {
+                var t0 = resolvedCmd.Split(' ')[0];
+                var rootScript = ResolveRootScript(repo.CloneRoot, t0);
+                if (rootScript is not null)
+                {
+                    var extra = resolvedCmd.Length > t0.Length ? resolvedCmd[t0.Length..] : "";
+                    resolvedCmd = $".\\{rootScript}{extra}";
+                }
             }
 
             // Use `call` for .cmd/.bat so cmd.exe doesn't exit early.
@@ -259,6 +312,99 @@ public sealed class BuildValidationWorker : BackgroundService
     }
 
     /// <summary>
+    /// Resolve a command's first token to a script file in the repo root
+    /// (<c>init</c> → <c>init.cmd</c>/<c>init.bat</c>, or an explicit
+    /// <c>init.cmd</c>). Returns the matched file name (repo-relative) or null
+    /// when the token is a path / has no matching root script. Used so a bare
+    /// repo-root script command (the AzureStack <c>init</c> convention)
+    /// resolves even when <c>NoDefaultCurrentDirectoryInExePath</c> is set —
+    /// cmd.exe then won't search the current directory by bare name.
+    /// </summary>
+    private static string? ResolveRootScript(string cloneRoot, string firstToken)
+    {
+        if (string.IsNullOrEmpty(firstToken) || firstToken.IndexOfAny(new[] { '\\', '/', ':' }) >= 0)
+            return null;
+        foreach (var name in new[] { firstToken, firstToken + ".cmd", firstToken + ".bat" })
+        {
+            if ((name.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".bat", StringComparison.OrdinalIgnoreCase))
+                && File.Exists(Path.Combine(cloneRoot, name)))
+            {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Recompose the subprocess environment the way Windows builds a NEW
+    /// interactive shell: overlay the live Machine then User registry
+    /// environment onto the inherited process env. This makes <c>validate</c>
+    /// build/test run exactly as the operator runs it by hand on their devbox —
+    /// the Forge.Api host captures its environment once at launch (detached, and
+    /// possibly under a more limited context), so its <c>PATH</c>/<c>PSModulePath</c>
+    /// can be stale, causing the repo's PowerShell build targets (PSScriptAnalyzer
+    /// encoding checks, module-manifest updates) to resolve different modules and
+    /// fail spuriously.
+    ///
+    /// <para><c>PATH</c> and <c>PSModulePath</c> are rebuilt as Machine + User
+    /// (concatenated, the logon-session order); all other registry vars take the
+    /// User value over Machine. Volatile session vars already on the process
+    /// (USERNAME / USERPROFILE / APPDATA / TEMP / SystemRoot / ComSpec / …) are
+    /// preserved unless a registry value overrides them. REG_EXPAND_SZ values are
+    /// expanded. Best-effort: a registry read failure leaves the inherited env.</para>
+    /// </summary>
+    private static void ApplyInteractiveEnvironment(System.Diagnostics.ProcessStartInfo psi)
+    {
+        // Rebuild the two search-path vars from scratch so the Machine+User
+        // concat doesn't pile onto the already-composed inherited value.
+        psi.Environment.Remove("Path");
+        psi.Environment.Remove("PSModulePath");
+
+        // Strip the MSBuild SDK-resolver vars that MSBuildLocator.RegisterDefaults()
+        // (Program.cs, for Roslyn's MSBuildWorkspace) injects into THIS process,
+        // pinned to the net8.0 SDK Forge.Api runs on (e.g. 8.0.421). They are
+        // process env vars, so every child cmd.exe -> `dotnet build` inherits them
+        // and is FORCED to resolve SDKs against that 8.x SDK's Sdks dir — which
+        // lacks Microsoft.Build.Traversal (the repo's build.proj SDK), so the build
+        // dies during evaluation with MSB4276 in ~4s ("Build FAILED. 0 Error(s)").
+        // A fresh devbox shell never has these set, so the operator's manual build
+        // succeeds. Removing them restores clean, global.json-driven SDK resolution.
+        psi.Environment.Remove("MSBUILD_EXE_PATH");
+        psi.Environment.Remove("MSBuildExtensionsPath");
+        psi.Environment.Remove("MSBuildExtensionsPath32");
+        psi.Environment.Remove("MSBuildExtensionsPath64");
+        psi.Environment.Remove("MSBuildSDKsPath");
+
+        void Overlay(EnvironmentVariableTarget target)
+        {
+            System.Collections.IDictionary vars;
+            try { vars = Environment.GetEnvironmentVariables(target); }
+            catch { return; }
+            foreach (System.Collections.DictionaryEntry e in vars)
+            {
+                var key = (string)e.Key;
+                var raw = (string?)e.Value;
+                if (string.IsNullOrEmpty(raw)) continue;
+                var val = Environment.ExpandEnvironmentVariables(raw);
+                if (string.Equals(key, "Path", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(key, "PSModulePath", StringComparison.OrdinalIgnoreCase))
+                {
+                    psi.Environment.TryGetValue(key, out var cur);
+                    psi.Environment[key] = string.IsNullOrEmpty(cur) ? val : cur.TrimEnd(';') + ";" + val;
+                }
+                else
+                {
+                    psi.Environment[key] = val;
+                }
+            }
+        }
+
+        Overlay(EnvironmentVariableTarget.Machine);
+        Overlay(EnvironmentVariableTarget.User);
+    }
+
+    /// <summary>
     /// Runs a batch script in a single cmd.exe session so environment is
     /// shared across all steps (init sets vars, restore/build/test inherit them).
     /// The script is written inside <paramref name="cwd"/> so that
@@ -282,6 +428,14 @@ public sealed class BuildValidationWorker : BackgroundService
             };
             psi.ArgumentList.Add("/c");
             psi.ArgumentList.Add(tmpFile);
+
+            // Devbox parity: run the build/test in the same environment a FRESH
+            // interactive shell composes (live Machine + User registry), not the
+            // Forge.Api host's captured-at-launch process env. Otherwise the
+            // repo's PowerShell build targets (PSScriptAnalyzer, module-manifest
+            // updates, tool lookups) resolve different modules/tools than when
+            // the operator builds by hand, and fail spuriously.
+            ApplyInteractiveEnvironment(psi);
 
             using var proc = System.Diagnostics.Process.Start(psi)!;
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));

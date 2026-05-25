@@ -3770,12 +3770,18 @@ public static class StoriesEndpoints
             .ToArray();
 
         var safeStoryId = StoryPaths.Safe(storyId);
+        // Phase 83 — plan-doc paths follow the owning repo's PlanDocBaseDir
+        // (default docs/stories); must match the write + gate paths.
+        var docRepo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            : null;
+        var planDocDir = StoryPaths.PlanDocDir(docRepo?.PlanDocBaseDir, storyId);
         var planArtifacts = new[]
         {
-            $"docs/stories/{safeStoryId}/tech-spec.md",
-            $"docs/stories/{safeStoryId}/architecture.md",
-            $"docs/stories/{safeStoryId}/implementation-plan.md",
-            $"docs/stories/{safeStoryId}/e2e-scenarios.md",
+            $"{planDocDir}/tech-spec.md",
+            $"{planDocDir}/architecture.md",
+            $"{planDocDir}/implementation-plan.md",
+            $"{planDocDir}/e2e-scenarios.md",
         };
         var qaArtifacts = string.IsNullOrEmpty(spawn.QaPrId)
             ? Array.Empty<string>()
@@ -3858,8 +3864,13 @@ public static class StoriesEndpoints
             });
         }
 
-        var safeStoryId = StoryPaths.Safe(storyId);
-        var relPath = $"docs/stories/{safeStoryId}/{key.ToLowerInvariant()}.md";
+        // Phase 83 — relPath follows the owning repo's PlanDocBaseDir
+        // (default docs/stories). Loaded here (was below) so the path is
+        // correct for OneBranch repos that relocate docs under /src/.
+        var repo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            : null;
+        var relPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, storyId)}/{key.ToLowerInvariant()}.md";
 
         // Read source priority:
         //   1. Worktree   — `{repo.CloneRoot}/.worktree/{planSlug}/{relPath}`
@@ -3869,9 +3880,7 @@ public static class StoriesEndpoints
         //   3. Plan branch — `git show story/.../plan:{relPath}` (pushed but not merged).
         // Each source returns a distinct `source` field so the UI banner shows the
         // operator whether they're looking at WIP / shipped / pre-merge content.
-        var repo = !string.IsNullOrEmpty(spawn.RepoId)
-            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
-            : null;
+        // (repo resolved above for the PlanDocBaseDir-aware relPath.)
         var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
             ? repo.CloneRoot
             : ForgeSeed.FindRepoRoot();

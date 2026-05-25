@@ -1871,6 +1871,9 @@ export const forgeApi = {
     // Phase 59 — per-repo override for impacted-test selection.
     // null = inherit global Forge:Test:ImpactedOnly (defaults to true).
     testImpactedOnly?: boolean | null;
+    // Phase 83 — plan-doc base dir. Empty string clears the override
+    // (inherit "docs/stories"); any other value is pinned + normalized.
+    planDocBaseDir?: string | null;
     // Phase 33 — persisted sync settings.
     wiSyncAssignedTo?: string;
     wiSyncDateFromDays?: number | null;

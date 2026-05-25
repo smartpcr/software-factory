@@ -406,7 +406,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
-        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var docDir = StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId);
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
         var specs = BuildPlanDocSpecs(docDir).Values.ToArray();
@@ -418,7 +419,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // can read source files / prior docs / etc. -- no more isolated
         // scratch dir + sibling-copy trick.
         var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
-        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
@@ -496,7 +496,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new ArgumentException($"Unknown plan-doc key '{docKey}'.", nameof(docKey));
         }
 
-        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var docDir = StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId);
         var specs = BuildPlanDocSpecs(docDir);
         if (!specs.TryGetValue(docKey, out var spec))
         {
@@ -2465,7 +2465,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task ResumeSingleArtifactAsync(
         StorySpawnRow spawn, WorkItemRow story, string key, bool restartFromScratch = false, CancellationToken ct = default)
     {
-        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var docDir = StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId);
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
         var specs = BuildPlanDocSpecs(docDir);
@@ -2519,7 +2520,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // commit`) because that combined branch never existed on origin
         // for a sequential spawn.
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, key);
-        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         // Phase 45 -- root the worktree at the spawn's chosen base branch
         // (defaults to main). Plan branch was branched off this base, so
         // worktree create here mirrors that ancestry.
@@ -2574,7 +2574,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // not the legacy shared `plan` branch. FindDocBranch returns the
         // right branch for both sequential and legacy modes.
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
-        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
 
         RepoRow? repo = null;
         if (!string.IsNullOrEmpty(spawn.RepoId))
@@ -2584,6 +2583,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var db = lookup.ServiceProvider.GetRequiredService<ProductDbContext>();
             repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
         }
+        var planPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/implementation-plan.md";
 
         string? planMd = null;
         if (repo is not null)
@@ -4707,7 +4707,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         if (repo is null) return (E2eSetupType.Inline, string.Empty);
 
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
-        var path = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/e2e-scenarios.md";
+        var path = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/e2e-scenarios.md";
 
         string? md;
         try { md = await this.git.ReadFileAsync(repo, baseBranch, path, ct); }
@@ -7236,9 +7236,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (path.Length == 0 || path.Length > 200) continue;
                 if (path.StartsWith('/')) continue;
                 if (path.Contains("..", StringComparison.Ordinal)) continue;
-                // Skip docs/stories/... -- that's the plan-doc context, not
-                // a code edit target.
+                // Skip the plan-doc context (architecture.md / tech-spec.md /
+                // implementation-plan.md / e2e-scenarios.md) -- it's not a code
+                // edit target. Covers both the default `docs/stories/` base and
+                // a per-repo override that still nests under it (e.g. the
+                // OneBranch `src/docs/stories/` — Phase 83).
                 if (path.StartsWith("docs/stories/", StringComparison.OrdinalIgnoreCase)) continue;
+                if (path.Contains("/docs/stories/", StringComparison.OrdinalIgnoreCase)) continue;
                 if (seen.Add(path)) ordered.Add(path);
             }
         }
@@ -7263,7 +7267,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // per-doc branch in sequential mode (legacy shared `plan` branch
         // in legacy mode). Matches ProduceDecompositionAsync above.
         var planBranch = PlanDocStateHelpers.FindDocBranch(spawn, "implementation-plan");
-        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
+        var planPath = $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/implementation-plan.md";
         string? planMd;
         try
         {

@@ -1899,6 +1899,20 @@ public class RepoRow
     /// real "everything changed before this point is already in our cache" boundary.
     /// </summary>
     public string? LastUpstreamChangedDate { get; set; }
+
+    /// <summary>
+    /// Phase 83 — repo-relative base directory for story plan docs
+    /// (architecture.md / tech-spec.md / implementation-plan.md /
+    /// e2e-scenarios.md). Null / empty => the default
+    /// <see cref="Services.Stories.StoryPaths.DefaultPlanDocBaseDir"/>
+    /// (<c>docs/stories</c>). Set to a path the repo's <c>.gitignore</c>
+    /// permits (e.g. <c>src/docs/stories</c> for OneBranch / SDL repos whose
+    /// allowlist only un-ignores <c>/src/</c>); otherwise the Phase 81 commit
+    /// guard (<see cref="Services.Stories.GitIgnoredPathException"/>) refuses
+    /// to ship git-ignored plan docs and the plan phase halts. Stored
+    /// normalized (forward slashes, no leading/trailing slash, no traversal).
+    /// </summary>
+    public string? PlanDocBaseDir { get; set; }
 }
 
 /// <summary>

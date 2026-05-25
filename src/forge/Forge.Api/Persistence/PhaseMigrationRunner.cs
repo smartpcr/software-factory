@@ -76,6 +76,9 @@ public sealed class PhaseMigrationRunner
         // Phase 82 — iteration_prompt table for the per-iter prompt audit
         // trail (gen + eval). Product-only, fans out per {slug}.db.
         82,
+        // Phase 83 — repos.PlanDocBaseDir. Product-only, fans out per {slug}.db.
+        // Additive nullable column; no ordering dependency.
+        83,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

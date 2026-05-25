@@ -425,6 +425,12 @@ export interface Repo {
   buildSyncIntervalSeconds?: number | null;
   /** Phase 34 — ISO upstream-changedate cursor (max System.ChangedDate / updated_at observed). */
   lastUpstreamChangedDate?: string | null;
+  /**
+   * Phase 83 — repo-relative base dir for story plan docs. Null/empty =>
+   * default "docs/stories". Set to a path the repo's .gitignore allows
+   * (e.g. "src/docs/stories" for OneBranch repos that only un-ignore /src/).
+   */
+  planDocBaseDir?: string | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */
