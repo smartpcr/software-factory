@@ -36,6 +36,64 @@ public static class ForgeSeed
         await EnsureRosterBackfillAsync(control, db);
     }
 
+    /// <summary>
+    /// Ensure every per-product DB carries the canonical board columns. The
+    /// Phase 80 split to per-product <c>{slug}.db</c> files seeded columns into
+    /// some product DBs but not others — products migrated from the single
+    /// legacy DB carried over their work_items but not the <c>columns</c> table
+    /// — leaving their Plan &amp; Design board with zero columns, and therefore
+    /// no cells to render any card into. Idempotent: a product DB that already
+    /// has columns is left untouched. Mirrors the per-product fan-out of
+    /// <see cref="RepoRegistrySync.ReconcileAsync"/>.
+    /// </summary>
+    /// <returns>The number of product DBs that were backfilled.</returns>
+    public static async Task<int> EnsureBoardColumnsAsync(
+        ControlDbContext control,
+        IProductDbContextFactory factory,
+        ILogger? log = null,
+        CancellationToken ct = default)
+    {
+        var slugs = await control.Products
+            .Where(p => p.Slug != null && p.Slug != "")
+            .Select(p => p.Slug!)
+            .ToListAsync(ct);
+
+        var backfilled = 0;
+        foreach (var slug in slugs)
+        {
+            try
+            {
+                var db = factory.CreateFor(slug);
+                if (await db.Columns.AnyAsync(ct)) continue; // already seeded — leave as-is
+                db.Columns.AddRange(CanonicalBoardColumns());
+                await db.SaveChangesAsync(ct);
+                backfilled++;
+                log?.LogInformation("Board columns: seeded canonical columns into product '{Slug}'.", slug);
+            }
+            catch (Exception ex)
+            {
+                log?.LogWarning(ex, "Board columns: failed to ensure columns for product '{Slug}'.", slug);
+            }
+        }
+
+        return backfilled;
+    }
+
+    /// <summary>
+    /// The canonical Plan &amp; Design board columns (backlog → design → build
+    /// → review → done). Byte-for-byte identical to the prototype seed in
+    /// <see cref="SeedPrototypeDataAsync"/> so board structure stays consistent
+    /// across every product.
+    /// </summary>
+    private static IEnumerable<ColumnRow> CanonicalBoardColumns() =>
+    [
+        new ColumnRow { Id = "backlog", Name = "Backlog", Sort = 0, WipLimit = 20 },
+        new ColumnRow { Id = "design",  Name = "Design",  Sort = 1, WipLimit = 6 },
+        new ColumnRow { Id = "build",   Name = "Build",   Sort = 2, WipLimit = 8 },
+        new ColumnRow { Id = "review",  Name = "Review",  Sort = 3, WipLimit = 6 },
+        new ColumnRow { Id = "done",    Name = "Done",    Sort = 4, WipLimit = null },
+    ];
+
     public static async Task EnsureSeededAsync(ControlDbContext control, ProductDbContext db)
     {
         // Phase 8.3 — products / repos seed runs independently of the prototype

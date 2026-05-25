@@ -26,7 +26,10 @@ function saveCollapsed(set: Set<string>) {
 export function Board() {
   const apiState = useStateStore((s) => s.state);
   const legacyEpics = apiState?.epics ?? sampleState.epics;
-  const columns = apiState?.columns ?? sampleState.columns;
+  // Fall back to the default board columns when the API returns an EMPTY
+  // array (not just null) — a per-product DB that wasn't seeded with
+  // columns would otherwise render zero cells and hide every card.
+  const columns = apiState?.columns?.length ? apiState.columns : sampleState.columns;
   const groupBy = useBoardStore((s) => s.groupBy);
   const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const activeProductId = useProductsStore((s) => s.activeProductId);

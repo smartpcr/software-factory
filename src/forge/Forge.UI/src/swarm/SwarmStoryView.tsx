@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
@@ -30,6 +31,12 @@ export function SwarmStoryView() {
   // single thin strip. Persisted across reloads.
   const spawnHeaderCollapsed = useChromeCollapseStore((s) => s.spawnHeader);
   const toggleChrome = useChromeCollapseStore((s) => s.toggle);
+
+  // Story ids are product-prefixed ("{slug}:{KEY}"), so the route's story id
+  // fully determines its product. The slug is the part before the first ':'.
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const setActiveProduct = useProductsStore((s) => s.setActive);
+  const storyProductSlug = storyId.includes(':') ? storyId.slice(0, storyId.indexOf(':')) : '';
 
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
@@ -92,6 +99,19 @@ export function SwarmStoryView() {
     }, { replace: true });
   }
 
+  // Auto-switch the active product to the story's owning product. Without
+  // this, landing on a story whose product isn't active (stale URL / bookmark
+  // / a topbar product switch) fetches its spawn under the wrong
+  // X-Forge-Product-Id header and 404s. Declared BEFORE the load effect so on
+  // mount the localStorage product write (setActive -> setActiveProductId)
+  // lands before the first spawn fetch reads it. The guard
+  // (slug !== active) is self-stabilising, so there is no render loop.
+  useEffect(() => {
+    if (storyProductSlug && storyProductSlug !== activeProductId) {
+      setActiveProduct(storyProductSlug);
+    }
+  }, [storyProductSlug, activeProductId, setActiveProduct]);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -101,6 +121,7 @@ export function SwarmStoryView() {
           forgeApi.getStoryArtifacts(storyId),
         ]);
         if (!cancelled) {
+          setErr(null);
           setDetail(d);
           setArtifacts(a);
           setModeState((curr) => {
@@ -116,7 +137,9 @@ export function SwarmStoryView() {
     void load();
     const id = setInterval(() => { void load(); }, 15_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [storyId, tick]);
+    // activeProductId in deps: after the auto-switch above changes it, re-run
+    // load so the spawn fetch uses the corrected product header.
+  }, [storyId, tick, activeProductId]);
 
   // When mode flips via the nav-bar dropdown, setMode resets selection
   // inline. We intentionally do NOT mirror that into a useEffect on

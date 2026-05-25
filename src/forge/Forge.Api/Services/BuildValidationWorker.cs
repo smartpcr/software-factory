@@ -160,10 +160,10 @@ public sealed class BuildValidationWorker : BackgroundService
         // Phase 84 — per-repo elevation requirement. A repo flagged
         // RunTestsElevated must run its build/test gate as Administrator (its
         // tests write HKLM / bind HttpListener URLs, which need elevation). The
-        // subprocess inherits the Forge.Api host's token (the launcher
-        // self-elevates), so verify the host IS elevated and fail fast with an
-        // actionable message rather than letting every test fail cryptically
-        // with access-denied 20 minutes in.
+        // subprocess inherits the Forge.Api host's token (scripts\run-forge-ui.ps1
+        // self-elevates at launch, see its self-elevation block), so verify the
+        // host IS elevated and fail fast with an actionable message rather than
+        // letting every test fail cryptically with access-denied 20 minutes in.
         if (repo.RunTestsElevated == true && !IsProcessElevated())
         {
             run.Status = "failed";

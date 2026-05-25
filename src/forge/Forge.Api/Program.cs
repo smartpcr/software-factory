@@ -663,6 +663,17 @@ using (var scope = app.Services.CreateScope())
         var regLog = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("RepoRegistrySync");
         await Forge.Api.Persistence.RepoRegistrySync.ReconcileAsync(control, regFactory, regLog);
     }
+    // Board columns backfill — the Phase 80 per-product DB split left some
+    // product DBs (e.g. local/raft/failover-cluster) without the canonical
+    // board columns, so their Plan & Design board rendered empty (zero columns
+    // → zero cells → no cards visible). Idempotent: products that already have
+    // columns are untouched.
+    {
+        var colFactory = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.IProductDbContextFactory>();
+        var colLog = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.BoardColumns");
+        var seeded = await ForgeSeed.EnsureBoardColumnsAsync(control, colFactory, colLog);
+        if (seeded > 0) colLog?.LogInformation("Boot backfill seeded board columns into {Count} product DB(s).", seeded);
+    }
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(control, db, caller: "boot", ct: default);

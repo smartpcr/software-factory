@@ -3,12 +3,14 @@
 // failed, cancelled. Each card shows type mark, ID, title, assignee, exec
 // badge, and a PR status badge when a linked PR exists.
 
+import { useMemo } from 'react';
 import type { WorkItem } from './workItemTypes';
 import { EXEC_STATUSES, type ExecStatus } from './workItemTypes';
 import { TypeMark } from './TypeMark';
 import { ExecBadge } from './ExecBadge';
 import { PrStatusBadge } from './PrStatusBadge';
 import { useWitStore } from './useWitStore';
+import { useBoardStore, type BoardGroupBy } from '@/state/useBoardStore';
 
 interface Props {
   items: WorkItem[];
@@ -24,7 +26,87 @@ const EXEC_COPY: Record<ExecStatus, { label: string; sub: string }> = {
   cancelled: { label: 'Cancelled',  sub: 'Stopped' },
 };
 
+const GROUP_LABEL: Record<BoardGroupBy, string> = {
+  story: 'Story', epic: 'Epic', phase: 'Phase', agent: 'Agent', priority: 'Priority',
+};
+
+const NONE_KEY = '__none__';
+
+interface ExecGroup { key: string; label: string; items: WorkItem[]; }
+
+// Group the work items by the active GROUP BY field (shared with the legacy
+// Board via useBoardStore). story/epic/phase key off `featureRef` (which holds
+// the feature/story id, e.g. `local:UPDATE-HISTORY-IN-CL`, and is resolved to
+// that feature work item's title when present); agent keys off the WIT
+// assignee; priority off the priority field. Items with no key collapse into a
+// trailing "No <group>" lane.
+function computeExecGroups(items: WorkItem[], groupBy: BoardGroupBy): ExecGroup[] {
+  const titleById = new Map(items.map((i) => [i.id, i.title]));
+  const noneLabel =
+    groupBy === 'agent' ? 'Unassigned'
+    : groupBy === 'priority' ? 'No priority'
+    : `No ${GROUP_LABEL[groupBy].toLowerCase()}`;
+
+  const keyOf = (i: WorkItem): { key: string; label: string } => {
+    switch (groupBy) {
+      case 'agent': {
+        const id = i.assignedTo?.id ?? null;
+        return id ? { key: id, label: i.assignedTo!.displayName } : { key: NONE_KEY, label: noneLabel };
+      }
+      case 'priority':
+        return { key: String(i.priority), label: String(i.priority) };
+      case 'story':
+      case 'epic':
+      case 'phase':
+      default: {
+        const ref = i.featureRef ?? '';
+        return ref ? { key: ref, label: titleById.get(ref) ?? ref } : { key: NONE_KEY, label: noneLabel };
+      }
+    }
+  };
+
+  const map = new Map<string, ExecGroup>();
+  for (const i of items) {
+    const { key, label } = keyOf(i);
+    let g = map.get(key);
+    if (!g) { g = { key, label, items: [] }; map.set(key, g); }
+    g.items.push(i);
+  }
+  // Named groups alpha-sorted; the catch-all "None" lane always sinks last.
+  return [...map.values()].sort((a, b) => {
+    if (a.key === NONE_KEY) return 1;
+    if (b.key === NONE_KEY) return -1;
+    return a.label.localeCompare(b.label);
+  });
+}
+
 export function ExecBoard({ items, onOpen }: Props) {
+  const groupBy = useBoardStore((s) => s.groupBy);
+  const groups = useMemo(() => computeExecGroups(items, groupBy), [items, groupBy]);
+
+  return (
+    <div className="wit-exec-groups">
+      {groups.map((g) => {
+        const pts = g.items.reduce((n, i) => n + i.points, 0);
+        return (
+          <section className="wit-exec-group" key={g.key}>
+            <header className="wit-exec-group-head">
+              <span className="wit-exec-group-kind">{GROUP_LABEL[groupBy]}</span>
+              <h3 className="wit-exec-group-name">{g.label}</h3>
+              <span className="wit-exec-group-meta">
+                <span className="num">{g.items.length}</span> items · <span className="num">{pts}</span> pts
+              </span>
+            </header>
+            <ExecBoardGrid items={g.items} onOpen={onOpen} />
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+// The flat six-column execution-status grid, scoped to one group's items.
+function ExecBoardGrid({ items, onOpen }: Props) {
   const buckets: Record<ExecStatus, WorkItem[]> = {
     idle: [], queued: [], live: [], completed: [], failed: [], cancelled: [],
   };

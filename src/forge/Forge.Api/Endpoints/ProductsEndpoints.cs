@@ -622,10 +622,16 @@ public static class ProductsEndpoints
 
     /// <summary>DELETE /api/repos/{id}/sync-work-items/runs — clear all sync run history.</summary>
     private static async Task<IResult> ClearSyncRuns(
-        HttpContext ctx, string id, ControlDbContext control, ProductDbContext db, CancellationToken ct)
+        HttpContext ctx, string id, ControlDbContext control, Forge.Api.Persistence.IProductDbContextFactory factory, CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        // Phase 80 — resolve the per-product DB via repo_registry so this works
+        // regardless of the active X-Forge-Product-Id scope (a cross-product
+        // Products & Repos page polls every repo, not just the active product's).
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         // Delete run items first (child rows), then runs.
         var runIds = await db.WorkItemSyncRuns
@@ -1056,11 +1062,16 @@ public static class ProductsEndpoints
         string id,
         bool? force,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        // Phase 80 — resolve the per-product DB via repo_registry so deleting
+        // a repo works regardless of the active X-Forge-Product-Id scope.
+        var db = await ResolveRepoDbAsync(id, control, factory);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
@@ -1182,12 +1193,17 @@ public static class ProductsEndpoints
         string id,
         [FromBody] TriggerSyncRequest? req,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         WorkItemSyncService syncService,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
+
+        // Phase 80 — resolve the per-product DB via repo_registry so this works
+        // regardless of the active X-Forge-Product-Id scope.
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
@@ -1265,11 +1281,19 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         [FromQuery] int? limit,
         [FromQuery] string? target,
         CancellationToken ct)
     {
+        // Phase 80 — resolve the per-product DB via repo_registry so the
+        // Products & Repos page can pull sync history for repos outside the
+        // currently active X-Forge-Product-Id scope (otherwise this 404s with
+        // "Repo {id} not found" whenever the user is viewing a different
+        // product than the repo's owning product).
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
@@ -1311,9 +1335,15 @@ public static class ProductsEndpoints
         string id,
         string runId,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         CancellationToken ct)
     {
+        // Phase 80 — resolve the per-product DB via repo_registry so the
+        // sync-run drawer can drill into items for any repo, not just one in
+        // the active X-Forge-Product-Id scope.
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
         var run = await db.WorkItemSyncRuns.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
         if (run is null) return Results.Problem(title: $"Sync run {runId} not found", statusCode: 404);
@@ -1349,9 +1379,15 @@ public static class ProductsEndpoints
         string entityKind,
         string entityId,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         CancellationToken ct)
     {
+        // Phase 80 — resolve the per-product DB via repo_registry so the
+        // sync-run item detail endpoint works for any repo regardless of the
+        // active X-Forge-Product-Id scope.
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
         var run = await db.WorkItemSyncRuns.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
         if (run is null) return Results.Problem(title: $"Sync run {runId} not found", statusCode: 404);
@@ -1481,9 +1517,15 @@ public static class ProductsEndpoints
         HttpContext ctx,
         string id,
         ControlDbContext control,
-        ProductDbContext db,
+        Forge.Api.Persistence.IProductDbContextFactory factory,
         CancellationToken ct)
     {
+        // Phase 80 — resolve the per-product DB via repo_registry so the
+        // sync-status badge polls work for every repo card on the Products &
+        // Repos page, not just the active product's repos.
+        var db = await ResolveRepoDbAsync(id, control, factory, ct);
+        if (db is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 

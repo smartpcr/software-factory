@@ -36,6 +36,60 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ── Self-elevation ───────────────────────────────────────────────────────
+# Forge.Api spawns build/test workers with UseShellExecute=false, so the
+# child cmd.exe inherits THIS process's token. Repos flagged
+# RunTestsElevated (e.g. AzureStack-Common-Infrastructure 'update' and
+# 'common-infra'; their tests write HKLM and bind HttpListener URLs,
+# both of which require Administrator) will fail fast in
+# BuildValidationWorker.cs:IsProcessElevated() unless we relaunch this
+# script elevated up front. One UAC prompt at startup (silent when UAC
+# is in auto-elevate mode), then everything Forge.Api spawns runs admin.
+#
+# IMPORTANT: relaunch via pwsh.exe (PowerShell 7), not powershell.exe
+# (Windows PowerShell 5.1). The script contains UTF-8 box-drawing chars
+# and emoji and is stored without a BOM; 5.1 reads it as Windows-1252
+# and chokes with "Missing closing }" cascading parse errors. PS7 reads
+# UTF-8-no-BOM correctly. Fall back to powershell.exe only if pwsh.exe
+# is unavailable.
+#
+# -Stop and -Status only inspect processes; skip the prompt for those.
+if (-not ($Stop -or $Status)) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal] `
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+        ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Host "[run-forge-ui] Not elevated; relaunching with admin privileges (accept the UAC prompt)..." -ForegroundColor Yellow
+        # No -NoExit: the elevated launcher's job is to spawn the detached
+        # Forge.Api.exe and exit. Anything we'd want to see post-mortem is
+        # already captured in forge-launcher-transcript.log via Start-Transcript.
+        $forwarded = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
+        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [switch]) {
+                if ($entry.Value.IsPresent) { $forwarded += "-$($entry.Key)" }
+            } else {
+                $forwarded += "-$($entry.Key)"
+                $forwarded += "$($entry.Value)"
+            }
+        }
+        $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+        $shellExe = if ($pwshCmd) { $pwshCmd.Source } else { 'powershell.exe' }
+        Start-Process -FilePath $shellExe -ArgumentList $forwarded -Verb RunAs
+        exit
+    }
+}
+
+# ── Diagnostic transcript ───────────────────────────────────────────────
+# Capture everything the launcher does so the elevated relaunch (which runs
+# in a separate, silently-elevated console window that may close on error)
+# leaves an audit trail. Tail $RepoRoot\forge-launcher-transcript.log if a
+# restart appears to silently fail.
+try {
+    $transcriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'forge-launcher-transcript.log'
+    Start-Transcript -Path $transcriptPath -Append -Force | Out-Null
+} catch { Write-Host "  Could not start transcript: $_" -ForegroundColor Yellow }
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $UIDir = Join-Path $RepoRoot 'src\forge\Forge.UI'
 $ServerProj = Join-Path $RepoRoot 'src\forge\Forge.Api\Forge.Api.csproj'

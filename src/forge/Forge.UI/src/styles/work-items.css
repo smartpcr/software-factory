@@ -615,6 +615,46 @@
 /* ====================================================
  * EXEC BOARD (agent execution status columns)
  * ==================================================== */
+/* Exec board grouped by the active GROUP BY field: one section per group
+ * (story / epic / agent / priority), each a full six-status grid under a
+ * group header. */
+.wit-exec-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.wit-exec-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wit-exec-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.wit-exec-group-kind {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.wit-exec-group-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.wit-exec-group-meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+.wit-exec-group-meta .num { color: var(--text-secondary); font-weight: 600; }
+
 .wit-exec-board {
   display: grid;
   grid-template-columns: repeat(6, minmax(180px, 1fr));
