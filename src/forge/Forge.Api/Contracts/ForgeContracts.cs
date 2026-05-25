@@ -309,7 +309,10 @@ public sealed record Repo(
     // Phase 83 — repo-relative plan-doc base dir. null/empty => "docs/stories".
     // Set to a path the repo's .gitignore allows (e.g. "src/docs/stories" for
     // OneBranch repos that only un-ignore /src/).
-    string? PlanDocBaseDir = null);
+    string? PlanDocBaseDir = null,
+    // Per-repo build/test elevation requirement. true => the validation must run
+    // elevated (admin); null/false => no requirement. See RepoRow.RunTestsElevated.
+    bool? RunTestsElevated = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -533,7 +536,10 @@ public sealed record UpdateRepoRequest(
     // Phase 83 — repo-relative plan-doc base dir. null = leave unchanged;
     // empty string clears the override (inherit "docs/stories"); any other
     // value is normalized and pinned (e.g. "src/docs/stories").
-    string? PlanDocBaseDir = null);
+    string? PlanDocBaseDir = null,
+    // Per-repo build/test elevation requirement. null = leave unchanged;
+    // true/false pin whether this repo's validation must run elevated (admin).
+    bool? RunTestsElevated = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

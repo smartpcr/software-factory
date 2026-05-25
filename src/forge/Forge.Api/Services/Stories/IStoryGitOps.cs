@@ -168,6 +168,27 @@ public interface IStoryGitOps
         RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 81 / 83 preflight — throw <see cref="GitIgnoredPathException"/>
+    /// when any of <paramref name="repoRelativePaths"/> is excluded by the
+    /// repo's <c>.gitignore</c> on <paramref name="branch"/>'s worktree.
+    /// Lets the orchestrator surface a configuration error BEFORE running the
+    /// gen-eval loop, so misconfigured repos (e.g. OneBranch <c>/*</c> +
+    /// <c>!/src/</c> allowlists routing plan docs into the default
+    /// <c>docs/stories/...</c> path) halt with $0 LLM cost instead of burning
+    /// N iterations of agent work that can never be committed.
+    ///
+    /// <para>Requires the worktree to already exist — call
+    /// <see cref="EnsureWorktreeAsync"/> first; otherwise <c>git
+    /// check-ignore</c> has no working directory to evaluate against.</para>
+    ///
+    /// <para>Mirrors the per-commit preflight already wired into
+    /// <see cref="CommitFilesAsync"/> and <see cref="CommitPathInWorktreeAsync"/>,
+    /// just exposed at the interface for callers that want to fail fast.</para>
+    /// </summary>
+    Task AssertPlanDocPathsNotIgnoredAsync(
+        RepoRow? repo, string branch, IEnumerable<string> repoRelativePaths, CancellationToken ct = default);
+
+    /// <summary>
     /// Push the local branch to <c>origin</c>. Stages and commits any
     /// uncommitted changes in the worktree first so local-only per-iteration
     /// commits are included. No-op when nothing to push.

@@ -431,6 +431,12 @@ export interface Repo {
    * (e.g. "src/docs/stories" for OneBranch repos that only un-ignore /src/).
    */
   planDocBaseDir?: string | null;
+  /**
+   * Phase 84 — when true, this repo's build/test validation must run elevated
+   * (Administrator). Its tests write HKLM / bind HttpListener URLs, which need
+   * admin. Null/false = no elevation requirement.
+   */
+  runTestsElevated?: boolean | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */

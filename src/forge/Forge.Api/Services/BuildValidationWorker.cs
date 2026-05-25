@@ -157,6 +157,26 @@ public sealed class BuildValidationWorker : BackgroundService
             return;
         }
 
+        // Phase 84 — per-repo elevation requirement. A repo flagged
+        // RunTestsElevated must run its build/test gate as Administrator (its
+        // tests write HKLM / bind HttpListener URLs, which need elevation). The
+        // subprocess inherits the Forge.Api host's token (the launcher
+        // self-elevates), so verify the host IS elevated and fail fast with an
+        // actionable message rather than letting every test fail cryptically
+        // with access-denied 20 minutes in.
+        if (repo.RunTestsElevated == true && !IsProcessElevated())
+        {
+            run.Status = "failed";
+            run.FinishedAt = DateTime.UtcNow.ToString("O");
+            run.ErrorMessage =
+                "This repo is configured to run build/test elevated (Administrator), but Forge.Api is " +
+                "not running elevated. Restart it via scripts\\run-forge-ui.ps1 (it self-elevates — " +
+                "accept the UAC prompt), then re-run validation.";
+            await db.SaveChangesAsync(CancellationToken.None);
+            await this.NotifyCompletionAsync(hub, run);
+            return;
+        }
+
         var detected = BuildSystemDetector.Detect(repo.CloneRoot);
         var initCmd = !string.IsNullOrEmpty(repo.InitCommand) ? repo.InitCommand : detected.InitCommand;
         var restoreCmd = !string.IsNullOrEmpty(repo.RestoreCommand) ? repo.RestoreCommand : detected.RestoreCommand;
@@ -546,6 +566,27 @@ public sealed class BuildValidationWorker : BackgroundService
     }
 
     private static string Truncate(string s) => s.Length > 4000 ? s[^4000..] : s;
+
+    /// <summary>
+    /// True when the current process runs with an elevated (Administrator,
+    /// high-integrity) token. Windows-only; returns false elsewhere. Used to
+    /// enforce a repo's <see cref="BuildValidationRunRow"/> elevation
+    /// requirement (RunTestsElevated) before launching the build/test session.
+    /// </summary>
+    private static bool IsProcessElevated()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 

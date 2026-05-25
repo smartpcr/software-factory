@@ -79,6 +79,9 @@ public sealed class PhaseMigrationRunner
         // Phase 83 — repos.PlanDocBaseDir. Product-only, fans out per {slug}.db.
         // Additive nullable column; no ordering dependency.
         83,
+        // Phase 84 — repos.RunTestsElevated. Product-only, fans out per {slug}.db.
+        // Additive nullable column; no ordering dependency.
+        84,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

@@ -1858,6 +1858,16 @@ public class RepoRow
     /// </summary>
     public bool? TestImpactedOnly { get; set; }
 
+    /// <summary>
+    /// When <c>true</c>, the build/test validation for this repo must run with
+    /// administrator (elevated) privileges — the AzureStack repos' tests write
+    /// HKLM and bind HttpListener URLs, which require elevation. The validation
+    /// worker inherits elevation from the Forge.Api host (the launcher
+    /// self-elevates), and fails the run fast with a clear message if the host
+    /// is not elevated. <c>null</c>/<c>false</c> = no elevation requirement.
+    /// </summary>
+    public bool? RunTestsElevated { get; set; }
+
     // -- Phase 33 — persisted sync settings ----------------------------------
 
     /// <summary>Default assignee filter for WI sync (email or display name).</summary>

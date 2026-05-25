@@ -664,6 +664,18 @@ public sealed class StorySpawnOrchestrator
         // Scrub already-tracked .forge/ from the index before the agent runs.
         await this.git.ScrubForgeScratchFromIndexAsync(worktreePath, ct);
 
+        // Phase 81/83 preflight — fail fast if the repo's .gitignore would
+        // exclude the plan-doc destination on this branch (e.g. OneBranch
+        // '/*' + '!/src/' allowlists routing the default 'docs/stories/...'
+        // path into the ignored set). Catches the configuration error BEFORE
+        // any LLM cost is incurred, instead of after N iterations of architect
+        // work that can never be committed. Operator fixes via repo.PlanDocBaseDir.
+        var planDocFileName = PlanDocStateHelpers.PlanDocFileName[docKey];
+        var planDocRelPath =
+            $"{StoryPaths.PlanDocDir(repo?.PlanDocBaseDir, spawn.StoryId)}/{planDocFileName}";
+        await this.git.AssertPlanDocPathsNotIgnoredAsync(
+            repo, docBranch, new[] { planDocRelPath }, ct);
+
         // Produce the doc content via the strategy. ProduceSinglePlanArtifactAsync
         // writes the file into the worktree as a side-effect (the agent's
         // file-write tool) AND returns the content string.

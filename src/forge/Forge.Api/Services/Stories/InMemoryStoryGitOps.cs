@@ -192,6 +192,10 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return this.tips.TryGetValue(Key(repo, branch), out var sha) ? sha : string.Empty;
     }
 
+    public Task AssertPlanDocPathsNotIgnoredAsync(
+        RepoRow? repo, string branch, IEnumerable<string> repoRelativePaths, CancellationToken ct = default)
+        => Task.CompletedTask;
+
     public Task MergeAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
         var dstKey = Key(repo, baseBranch);

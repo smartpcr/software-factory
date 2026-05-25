@@ -2289,18 +2289,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             onIterationCompleted: async (iter, verdict) =>
             {
                 if (repo is null) return;
-                try
-                {
-                    await this.git.CommitPathInWorktreeAsync(
+                await SafeCommitPlanDocIterAsync(
+                    () => this.git.CommitPathInWorktreeAsync(
                         repo, planBranch, spec.RepoPath,
-                        $"plan({spec.FileName}): iter {iter} ({verdict})", ct);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    this.logger?.LogWarning(ex,
-                        "Per-iter commit failed for {File} iter {Iter}; loop continues.",
-                        spec.FileName, iter);
-                }
+                        $"plan({spec.FileName}): iter {iter} ({verdict})", ct),
+                    this.logger, spec.FileName, iter);
 
                 // Phase 42 -- when the implementation-plan committed, kick the
                 // reconciler so workstream rows + workstreams.json track the
@@ -2404,6 +2397,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// <param name="docWorkItemId">Synthetic work-item id (<c>plan-doc:{spawn.Id}:{fileName}</c>) used as the DB key for all per-doc rows.</param>
     /// <param name="restartFromScratch">When true, log as Restart; when false, log as fresh-spawn.</param>
     /// <param name="ct">Cancellation token.</param>
+    // ──────────────────────────────────────────────────────────────────────
+    // Phase 81/83 — per-iter commit + iteration-callback guards.
+    //
+    // Both swallow transient I/O exceptions so a single failed iter doesn't
+    // tank the gen-eval loop, but propagate GitIgnoredPathException so a
+    // misconfigured repo (e.g. OneBranch '/*' + '!/src/' allowlist routing
+    // plan docs into the default docs/stories/... path) halts the orchestrator
+    // at iter 1 instead of burning N iterations of agent work that can never
+    // be committed. The orchestrator's outer try/catch surfaces this as an
+    // 'ORCHESTRATOR HALTED' banner so the operator sees the configuration
+    // error and fixes repo.PlanDocBaseDir.
+    // ──────────────────────────────────────────────────────────────────────
+
+    internal static async Task SafeCommitPlanDocIterAsync(
+        Func<Task> commit, ILogger? logger, string fileName, int iter)
+    {
+        try
+        {
+            await commit();
+        }
+        catch (GitIgnoredPathException)
+        {
+            // Configuration error -- propagate so the orchestrator halts
+            // BEFORE burning more iterations the operator can't recover from.
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex,
+                "Per-iter commit failed for {File} iter {Iter}; loop continues.",
+                fileName, iter);
+        }
+    }
+
+    internal static async Task SafeInvokeIterationCallbackAsync(
+        Func<Task> callback, ILogger? logger, string workItemId, int iter)
+    {
+        try
+        {
+            await callback();
+        }
+        catch (GitIgnoredPathException)
+        {
+            // Configuration error -- propagate. The inner SafeCommit guard
+            // also re-throws this; without re-throwing here, the outer
+            // wrapper would re-swallow it and the bug would persist.
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex,
+                "onIterationCompleted callback threw at iter {Iter} for {WorkItemId}; loop continues.",
+                iter, workItemId);
+        }
+    }
+
     internal static async Task EnsureFreshDocWorkspaceAsync(
         IServiceScopeFactory scopeFactory,
         ILogger? logger,
@@ -6729,17 +6778,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // Phase 42 -- fire the per-iter post-completion hook AFTER the
             // evaluator has produced its text. The file's on disk; the
             // architect plan path uses this to commit the doc per iter.
-            // Best-effort -- exceptions bubble up but the surrounding
-            // try/catch wrapper at the call site keeps the loop alive.
+            // Phase 81/83 -- GitIgnoredPathException MUST bubble so the
+            // orchestrator halts at iter 1 instead of burning N iterations of
+            // unrecoverable agent work. Other exceptions remain best-effort.
             if (onIterationCompleted is not null)
             {
-                try { await onIterationCompleted(iter, "post-eval"); }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    this.logger?.LogWarning(ex,
-                        "onIterationCompleted callback threw at iter {Iter} for {WorkItemId}; loop continues.",
-                        iter, workItemId);
-                }
+                await SafeInvokeIterationCallbackAsync(
+                    () => onIterationCompleted(iter, "post-eval"),
+                    this.logger, workItemId, iter);
             }
 
             return new EvaluatorRunOutput(

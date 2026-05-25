@@ -268,6 +268,12 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(83, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "repos" }),
+        // Phase 84 — repos.RunTestsElevated (per-repo build/test elevation flag).
+        // Product-only: post-Phase-80.B `repos` is a ProductDbContext entity in
+        // each {slug}.db, so the runner fans this out per product DB.
+        new PhaseMigrationSpec(84, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "repos" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

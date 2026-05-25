@@ -1148,6 +1148,21 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
     }
 
+    /// <inheritdoc />
+    public async Task AssertPlanDocPathsNotIgnoredAsync(
+        RepoRow? repo, string branch, IEnumerable<string> repoRelativePaths, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var wtPath = await this.TryFindExistingWorktreeAsync(root, branch, ct);
+        if (string.IsNullOrEmpty(wtPath))
+        {
+            throw new InvalidOperationException(
+                $"AssertPlanDocPathsNotIgnoredAsync: no worktree registered for branch '{branch}'. "
+                + "Callers must materialise the worktree (via EnsureWorktreeAsync) first.");
+        }
+        await this.AssertPathsNotIgnoredAsync(wtPath, branch, repoRelativePaths, ct);
+    }
+
     public async Task PushBranchAsync(RepoRow? repo, string branch, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);

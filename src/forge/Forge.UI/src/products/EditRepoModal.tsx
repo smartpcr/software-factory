@@ -28,13 +28,13 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [testCommand, setTestCommand] = useState(repo.testCommand ?? '');
   const [buildTimeoutSec, setBuildTimeoutSec] = useState<number | ''>(repo.buildTimeoutSec ?? '');
   const [testTimeoutSec, setTestTimeoutSec] = useState<number | ''>(repo.testTimeoutSec ?? '');
-  // Phase 83 — per-repo plan-doc base dir (blank => default "docs/stories").
-  const [planDocBaseDir, setPlanDocBaseDir] = useState(repo.planDocBaseDir ?? '');
   // Phase 59 Stage A — tri-state override: null inherits the global
   // Forge:Test:ImpactedOnly default (true); 'true' / 'false' override.
   const [testImpactedOnly, setTestImpactedOnly] = useState<boolean | null>(repo.testImpactedOnly ?? null);
   const [impactedPreview, setImpactedPreview] = useState<ImpactedTestPreview | null>(null);
   const [previewingImpacted, setPreviewingImpacted] = useState(false);
+  // Phase 84 — per-repo build/test elevation requirement (Administrator).
+  const [runTestsElevated, setRunTestsElevated] = useState<boolean>(repo.runTestsElevated ?? false);
   // Phase 34 — per-repo sync cadence overrides. Stored as seconds; 0 clears
   // the override and the row inherits the global default (2 hr).
   const [wiIntervalSec, setWiIntervalSec] = useState<number>(repo.workItemSyncIntervalSeconds ?? 0);
@@ -64,8 +64,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setTestCommand(repo.testCommand ?? '');
     setBuildTimeoutSec(repo.buildTimeoutSec ?? '');
     setTestTimeoutSec(repo.testTimeoutSec ?? '');
-    setPlanDocBaseDir(repo.planDocBaseDir ?? '');
     setTestImpactedOnly(repo.testImpactedOnly ?? null);
+    setRunTestsElevated(repo.runTestsElevated ?? false);
     setImpactedPreview(null);
     setPreviewingImpacted(false);
     setWiIntervalSec(repo.workItemSyncIntervalSeconds ?? 0);
@@ -124,8 +124,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       // Phase 59 — only send the field when it changed from the saved
       // value so a no-op save doesn't churn the row.
       if (testImpactedOnly !== (repo.testImpactedOnly ?? null)) patch.testImpactedOnly = testImpactedOnly;
-      // Phase 83 — empty string clears the override (server inherits "docs/stories").
-      if (planDocBaseDir.trim() !== (repo.planDocBaseDir ?? '')) patch.planDocBaseDir = planDocBaseDir.trim();
+      // Phase 84 — per-repo build/test elevation requirement.
+      if (runTestsElevated !== (repo.runTestsElevated ?? false)) patch.runTestsElevated = runTestsElevated;
 
       // Phase 34 — per-repo sync cadence overrides. Send 0 to clear; the server
       // treats <= 0 as "fall back to global default".
@@ -276,9 +276,6 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                 <FieldGroup label="Default branch">
                   <input value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} placeholder="main" maxLength={120} spellCheck={false} disabled={busy} style={{ ...inputStyle, ...monoStyle }} />
                 </FieldGroup>
-                <FieldGroup label="Plan-doc base dir" hint="Repo-relative folder for story plan docs (architecture.md, tech-spec.md, …). Blank = docs/stories. For OneBranch / SDL repos whose .gitignore only allows /src/, set src/docs/stories so the docs aren't git-ignored.">
-                  <input value={planDocBaseDir} onChange={(e) => setPlanDocBaseDir(e.target.value)} placeholder="docs/stories" spellCheck={false} disabled={busy} style={{ ...inputStyle, ...monoStyle }} data-testid="repo-plandoc-basedir" />
-                </FieldGroup>
               </>
             )}
 
@@ -339,6 +336,30 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                     <input type="number" value={testTimeoutSec} onChange={(e) => setTestTimeoutSec(e.target.value ? Number(e.target.value) : '')} placeholder="600" min={0} disabled={busy} style={{ ...inputStyle, ...monoStyle }} data-testid="repo-test-timeout" />
                   </FieldGroup>
                 </div>
+
+                {/* Phase 84 — build/test elevation requirement */}
+                <SectionLabel>Privileges</SectionLabel>
+                <label
+                  style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: busy ? 'default' : 'pointer', fontSize: 13 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={runTestsElevated}
+                    onChange={(e) => setRunTestsElevated(e.target.checked)}
+                    disabled={busy}
+                    data-testid="repo-run-tests-elevated"
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    Run build/test as Administrator (elevated)
+                    <div style={{ opacity: 0.6, fontSize: 12, marginTop: 2 }}>
+                      Required for repos whose tests write HKLM or bind HttpListener URLs (e.g. AzureStack
+                      integration tests). Forge.Api must be started elevated — <code>scripts\run-forge-ui.ps1</code>{' '}
+                      self-elevates. If this is on but the server isn't elevated, the validation fails fast with
+                      a clear message.
+                    </div>
+                  </span>
+                </label>
 
                 {/* Phase 59 Stage A — Impacted-test selection */}
                 <SectionLabel>Impacted-test selection</SectionLabel>

@@ -149,6 +149,13 @@ public static class ProductsEndpoints
         if (req.TestImpactedOnly is { } testImpactedOnly)
             row.TestImpactedOnly = testImpactedOnly;
 
+        // Per-repo build/test elevation requirement. true/false pin it; the
+        // request DTO's bool? round-trips JSON null (leave unchanged) vs. the
+        // explicit value. The validation worker fails fast if this is true but
+        // Forge.Api is not elevated.
+        if (req.RunTestsElevated is { } runTestsElevated)
+            row.RunTestsElevated = runTestsElevated;
+
         // Phase 83 — per-repo plan-doc base dir. Empty string clears the
         // override (inherit the default docs/stories); any other value is
         // normalized (forward slashes, no leading/trailing slash, no
@@ -1130,7 +1137,8 @@ public static class ProductsEndpoints
             r.WorkItemSyncIntervalSeconds, r.PrSyncIntervalSeconds, r.BuildSyncIntervalSeconds,
             r.LastUpstreamChangedDate,
             r.TestImpactedOnly,
-            r.PlanDocBaseDir);
+            r.PlanDocBaseDir,
+            r.RunTestsElevated);
     }
 
     private static string Slugify(string name)

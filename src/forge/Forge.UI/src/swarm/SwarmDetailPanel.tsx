@@ -11,6 +11,7 @@ import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
 import { computeStageNumbers } from './stageNumbering';
+import { routeArrows, DEFAULT_ROUTER_CONSTANTS, type Anchor as RouterAnchor, type RawArrow } from './dagRouter';
 import { avatarFor } from '@/agentAvatar';
 import type { Pr } from '@/types';
 import { DocumentPane } from './DocumentPane';
@@ -2085,12 +2086,25 @@ function groupWsByPhase(ws: StorySpawnDetail['workstreams']): WsPhaseGroup[] {
 const WS_NODE_W = 224;
 const WS_NODE_H = 96;
 const WS_COL_GAP = 56;
-const WS_ROW_GAP = 14;
+const WS_ROW_GAP = 28;
 // Left padding doubles as the gutter the orthogonal edge rail lives in;
 // wide enough to fit a few nested lanes (see WS_RAIL_* below) without the
 // rail clipping past the phase box's left border.
 const WS_PAD_X = 36;
 const WS_PAD_Y = 14;
+
+// Boustrophedon (snake) grid inside each topological-depth bucket. When
+// many impl stages share the same intra-phase depth (e.g., a phase with
+// no explicit deps between 1.1/1.2/1.3/...), the old layout piled every
+// card into a single tall column. The snake grid tiles them into at most
+// WS_COLS_PER_ROW sub-columns per row, alternating L→R / R→L between
+// rows so the wrap-edge from row N's last cell to row N+1's first cell
+// is a short vertical (same sub-column). WS_SUB_COL_GAP is the gap
+// BETWEEN sub-columns inside one depth block — kept smaller than
+// WS_COL_GAP so users can still distinguish "same depth, snake wrap"
+// from "next topological depth".
+const WS_COLS_PER_ROW = 3;
+const WS_SUB_COL_GAP = 40;
 
 // docs/forge/e2e.md — orthogonal side-rail edge router geometry. Same-column
 // (and leftward) dep edges leave a card's left edge, drop down a vertical
@@ -2115,34 +2129,6 @@ interface PhaseLayout {
  *  qa-e2e below), not two unrelated rows. */
 const WS_QAE2E_STACK_GAP = 8;
 
-/** Build an SVG path through `points` with rounded corners of radius `r`
- *  at each interior vertex. Drives the workstream DAG's orthogonal
- *  side-rail edges so elbows read as soft right-angles instead of the
- *  harsh pixel notch a pure `L` join produces. Degenerate corners (where
- *  a segment is shorter than the radius) fall back to a sharp join. */
-function orthogonalPath(points: ReadonlyArray<{ x: number; y: number }>, r: number): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  let d = `M ${points[0].x} ${points[0].y}`;
-  for (let i = 1; i < points.length - 1; i++) {
-    const p0 = points[i - 1];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const len1 = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
-    const len2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
-    const rr = Math.min(r, len1 / 2, len2 / 2);
-    if (rr <= 0.5) { d += ` L ${p1.x} ${p1.y}`; continue; }
-    const ax = p1.x - ((p1.x - p0.x) / len1) * rr;
-    const ay = p1.y - ((p1.y - p0.y) / len1) * rr;
-    const bx = p1.x + ((p2.x - p1.x) / len2) * rr;
-    const by = p1.y + ((p2.y - p1.y) / len2) * rr;
-    d += ` L ${ax} ${ay} Q ${p1.x} ${p1.y} ${bx} ${by}`;
-  }
-  const last = points[points.length - 1];
-  d += ` L ${last.x} ${last.y}`;
-  return d;
-}
-
 /** Topologically position a phase's stages by INTRA-phase deps only.
  *  Cross-phase deps are surfaced separately (chips) rather than as
  *  arrows that would dangle when the upstream phase is collapsed.
@@ -2158,7 +2144,27 @@ function orthogonalPath(points: ReadonlyArray<{ x: number; y: number }>, r: numb
  *  drawn by the GLOBAL arrow overlay (see `DecompositionDiagram`'s
  *  `arrows` useMemo) — the qa-e2e card's DOM ref registers like any
  *  other stage, and the intra-phase predicate is satisfied (both
- *  share the same `phaseAnchor`). */
+ *  share the same `phaseAnchor`).
+ *
+ *  Snake (boustrophedon) tiling — when many impl stages share the
+ *  same intra-phase depth (common: no explicit deps wired between
+ *  sibling stages → every impl lands in depth 0 and the old layout
+ *  produced one absurdly tall column), tile them into a
+ *  WS_COLS_PER_ROW-wide grid INSIDE each depth bucket:
+ *
+ *      row 0:  [0] [1] [2]           ← L→R
+ *      row 1:  [5] [4] [3]           ← R→L (snake reverses)
+ *      row 2:  [6] [7] [8]           ← L→R
+ *
+ *  Each "cell" is one impl card PLUS its optional qa-e2e child
+ *  stacked directly below (same sub-column, WS_QAE2E_STACK_GAP
+ *  vertical gap). A row's height is `max(cellHeights[i] for i in
+ *  row)` so a row that contains any double-tall (impl+e2e) cell
+ *  doesn't get a single-tall row overlapping it. The snake order
+ *  guarantees the wrap edge from row N's last cell to row N+1's
+ *  first cell is a same-sub-column vertical (handled by the router's
+ *  'vert' mode — see `./dagRouter`). Cross-depth edges still flow
+ *  L→R between depth blocks via 'horiz' mode. */
 function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
   const implItems = items.filter((i) => !isQaE2e(i));
   const qaByImpl = qaE2eByImplId(items);
@@ -2188,32 +2194,65 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
     cols.push(implItems.filter((i) => (depths.get(i.id) ?? 0) === d));
   }
 
-  // docs/forge/e2e.md Stage 8.2 — variable row heights per column.
-  // An impl row whose qa-e2e sibling is present takes a "double-tall"
-  // slot (impl + small gap + qa-e2e); a lone-impl row takes the
-  // standard single height. Track per-column slot offsets so
-  // subsequent rows in the same column don't overlap their upstream
-  // sibling's qa-e2e child.
-  const cards: PhaseLayout['cards'] = [];
-  const colOffsetY = new Array<number>(maxDepth + 1).fill(WS_PAD_Y);
-  // Iterate column-by-column so within-column slot offsets accumulate
-  // correctly (a column with [A-with-qa, B] needs A at offset 0 and B
-  // at offset = WS_NODE_H + WS_QAE2E_STACK_GAP + WS_NODE_H + WS_ROW_GAP).
+  // First pass — per depth, compute the snake grid's row count, row
+  // heights (so subsequent rows clear any qa-e2e tail of the previous
+  // row), and the depth block's effective sub-column count + width.
+  type DepthLayout = {
+    rowHeights: number[];
+    rowTops: number[];     // y-offset of each row's TOP edge inside the phase body
+    effectiveSubCols: number;
+    blockWidth: number;
+    blockHeight: number;
+  };
+  const depthLayouts: DepthLayout[] = [];
   for (let d = 0; d <= maxDepth; d++) {
-    for (const item of cols[d]) {
-      const x = WS_PAD_X + d * (WS_NODE_W + WS_COL_GAP);
-      const y = colOffsetY[d];
-      cards.push({ ws: item, x, y });
-
-      const qa = qaByImpl.get(item.id);
-      let advance = WS_NODE_H + WS_ROW_GAP;
-      if (qa) {
-        const qaY = y + WS_NODE_H + WS_QAE2E_STACK_GAP;
-        cards.push({ ws: qa, x, y: qaY });
-        advance = WS_NODE_H + WS_QAE2E_STACK_GAP + WS_NODE_H + WS_ROW_GAP;
-      }
-      colOffsetY[d] = y + advance;
+    const n = cols[d].length;
+    const cellHeights = cols[d].map((it) =>
+      qaByImpl.get(it.id) ? WS_NODE_H + WS_QAE2E_STACK_GAP + WS_NODE_H : WS_NODE_H,
+    );
+    const numRows = Math.max(1, Math.ceil(n / WS_COLS_PER_ROW));
+    const rowHeights = new Array<number>(numRows).fill(WS_NODE_H);
+    for (let i = 0; i < n; i++) {
+      const r = Math.floor(i / WS_COLS_PER_ROW);
+      if (cellHeights[i] > rowHeights[r]) rowHeights[r] = cellHeights[i];
     }
+    const rowTops = new Array<number>(numRows);
+    let acc = WS_PAD_Y;
+    for (let r = 0; r < numRows; r++) {
+      rowTops[r] = acc;
+      acc += rowHeights[r] + WS_ROW_GAP;
+    }
+    // Guard for the (theoretically impossible after depth bucketing)
+    // n === 0 case so blockWidth stays ≥ NODE_W.
+    const effectiveSubCols = Math.max(1, Math.min(n, WS_COLS_PER_ROW));
+    const blockWidth = effectiveSubCols * WS_NODE_W + (effectiveSubCols - 1) * WS_SUB_COL_GAP;
+    const blockHeight = rowHeights.reduce((a, b) => a + b, 0) + (numRows - 1) * WS_ROW_GAP;
+    depthLayouts.push({ rowHeights, rowTops, effectiveSubCols, blockWidth, blockHeight });
+  }
+
+  // Second pass — assign card x/y. Walk depth blocks left→right; within
+  // each block, snake-tile items into sub-columns.
+  const cards: PhaseLayout['cards'] = [];
+  let blockX = WS_PAD_X;
+  for (let d = 0; d <= maxDepth; d++) {
+    const colItems = cols[d];
+    const { rowTops } = depthLayouts[d];
+    for (let i = 0; i < colItems.length; i++) {
+      const r = Math.floor(i / WS_COLS_PER_ROW);
+      const idxInRow = i % WS_COLS_PER_ROW;
+      const subCol = (r % 2 === 0)
+        ? idxInRow
+        : (WS_COLS_PER_ROW - 1 - idxInRow);
+      const x = blockX + subCol * (WS_NODE_W + WS_SUB_COL_GAP);
+      const y = rowTops[r];
+      const item = colItems[i];
+      cards.push({ ws: item, x, y });
+      const qa = qaByImpl.get(item.id);
+      if (qa) {
+        cards.push({ ws: qa, x, y: y + WS_NODE_H + WS_QAE2E_STACK_GAP });
+      }
+    }
+    blockX += depthLayouts[d].blockWidth + WS_COL_GAP;
   }
   const cardById = new Map(cards.map((c) => [c.ws.id, c]));
 
@@ -2246,15 +2285,14 @@ function layoutPhase(items: StorySpawnDetail['workstreams']): PhaseLayout {
     }
   }
 
-  // Width: impl-only column count, NOT total items. qa-e2e cards
-  // never push the phase wider (they stack vertically inside an
-  // existing column).
-  const width = WS_PAD_X * 2 + (maxDepth + 1) * WS_NODE_W + maxDepth * WS_COL_GAP;
-  // Height: tallest column's accumulated offset (already includes
-  // qa-e2e double-slot expansion). Final WS_ROW_GAP shouldn't count
-  // as bottom padding so subtract it back off.
-  const tallestColEnd = Math.max(WS_PAD_Y + WS_NODE_H, ...colOffsetY);
-  const height = Math.max(WS_PAD_Y * 2 + WS_NODE_H, tallestColEnd - WS_ROW_GAP + WS_PAD_Y);
+  // Total width = sum of every depth block's width + gaps between
+  // them + outer padding. Total height = the tallest depth block +
+  // outer padding (each depth lays out independently from row 0
+  // down).
+  const totalBlockWidth = depthLayouts.reduce((a, b) => a + b.blockWidth, 0);
+  const width = WS_PAD_X * 2 + totalBlockWidth + maxDepth * WS_COL_GAP;
+  const tallestBlock = depthLayouts.reduce((a, b) => Math.max(a, b.blockHeight), WS_NODE_H);
+  const height = WS_PAD_Y * 2 + tallestBlock;
   return { cards, arrows, width, height };
 }
 
@@ -2359,92 +2397,53 @@ function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
   const stageNumOf = useMemo(() => computeStageNumbers(ws), [ws]);
 
   type ArrowSpec = { d: string; tone: 'normal' | 'blocked'; key: string };
-  // RawEdge carries the resolved source/target boxes plus a routing mode so
-  // we can assign rail lanes (which need a global view of every edge's
-  // vertical span) before emitting the final SVG `d` strings.
-  type RawEdge = {
-    from: Anchor;
-    to: Anchor;
-    tone: 'normal' | 'blocked';
-    key: string;
-    mode: 'rail' | 'horiz';
-  };
+  // Routing modes and lane assignment live in `./dagRouter` so the
+  // logic is unit-testable without a DOM. See dagRouter.spec.ts for
+  // the contracts (lane separation, unsafe-Z fallback to rail,
+  // impl→qa-e2e vertical, etc.).
   const arrows = useMemo<ArrowSpec[]>(() => {
     // 1) Collect every intra-phase edge with its DOM-measured boxes. Cross-
     //    phase edges stay as `↥ deps` chips (Phase 49 follow-up) so the
     //    overlay never turns into spaghetti when phases pile up.
-    const raw: RawEdge[] = [];
+    const rawEdges: RawArrow[] = [];
     for (const w of ws) {
       const myPhase = phaseAnchorOf.get(w.id) ?? WS_DAG_DEFAULT_PHASE;
       const toCollapsed = collapsed.has(myPhase);
-      const toBox = toCollapsed ? boxes.headers.get(myPhase) : boxes.cards.get(w.id);
+      const toBox: RouterAnchor | undefined = toCollapsed ? boxes.headers.get(myPhase) : boxes.cards.get(w.id);
       if (!toBox) continue;
       for (const depId of w.deps ?? []) {
         const upPhase = phaseAnchorOf.get(depId) ?? WS_DAG_DEFAULT_PHASE;
         if (upPhase !== myPhase) continue;
         const fromCollapsed = collapsed.has(upPhase);
-        const fromBox = fromCollapsed ? boxes.headers.get(upPhase) : boxes.cards.get(depId);
+        const fromBox: RouterAnchor | undefined = fromCollapsed ? boxes.headers.get(upPhase) : boxes.cards.get(depId);
         if (!fromBox) continue;
         const tone: 'normal' | 'blocked' = w.status === 'blocked' ? 'blocked' : 'normal';
-        // Target clearly to the right (a deeper column) → keep the
-        // left→right orthogonal route through the column gap. Otherwise
-        // (same column, the common vertically-stacked chain) ride the
-        // left rail so the edge never crosses an intervening card.
-        const mode: RawEdge['mode'] =
-          toBox.x > fromBox.x + fromBox.w / 2 ? 'horiz' : 'rail';
-        raw.push({ from: fromBox, to: toBox, tone, key: `${depId}->${w.id}`, mode });
+        rawEdges.push({ from: fromBox, to: toBox, tone, key: `${depId}->${w.id}` });
       }
     }
 
-    // 2) Lane assignment for rail edges — greedy interval scheduling on the
-    //    vertical span so overlapping (skip / nested) edges nest outward
-    //    onto distinct lanes instead of drawing on top of each other.
-    const railSpan = (e: RawEdge): [number, number] => {
-      const a = e.from.y + e.from.h / 2;
-      const b = e.to.y + e.to.h / 2;
-      return a <= b ? [a, b] : [b, a];
-    };
-    const railEdges = raw.filter((e) => e.mode === 'rail')
-      .sort((a, b) => railSpan(a)[0] - railSpan(b)[0]);
-    const laneEnds: number[] = []; // yBottom currently occupying each lane
-    const laneOf = new Map<RawEdge, number>();
-    for (const e of railEdges) {
-      const [top, bottom] = railSpan(e);
-      let lane = laneEnds.findIndex((end) => end <= top);
-      if (lane === -1) { lane = laneEnds.length; laneEnds.push(bottom); }
-      else laneEnds[lane] = bottom;
-      laneOf.set(e, lane);
-    }
+    // 2) Obstacle list — every card box currently rendered. The router
+    //    excludes each edge's own endpoints when checking for unsafe-Z
+    //    crossings, so we can safely pass the whole collection.
+    const obstacles: RouterAnchor[] = Array.from(boxes.cards.values());
 
-    // 3) Emit the orthogonal path for each edge.
-    const out: ArrowSpec[] = [];
-    for (const e of raw) {
-      const fromY = e.from.y + e.from.h / 2;
-      const toY = e.to.y + e.to.h / 2;
-      let pts: Array<{ x: number; y: number }>;
-      if (e.mode === 'horiz') {
-        const x1 = e.from.x + e.from.w;
-        const midX = (x1 + e.to.x) / 2;
-        pts = [
-          { x: x1, y: fromY },
-          { x: midX, y: fromY },
-          { x: midX, y: toY },
-          { x: e.to.x, y: toY },
-        ];
-      } else {
-        const lane = laneOf.get(e) ?? 0;
-        const cardLeft = Math.min(e.from.x, e.to.x);
-        const railX = Math.max(WS_RAIL_MIN_X, cardLeft - WS_RAIL_GAP - lane * WS_RAIL_LANE_GAP);
-        pts = [
-          { x: e.from.x, y: fromY },
-          { x: railX, y: fromY },
-          { x: railX, y: toY },
-          { x: e.to.x, y: toY },
-        ];
-      }
-      out.push({ d: orthogonalPath(pts, WS_RAIL_CORNER_R), tone: e.tone, key: e.key });
-    }
-    return out;
+    // 3) Delegate to the pure router. It picks the initial mode,
+    //    downgrades unsafe horizontal Z routes to rail, assigns lanes
+    //    for horiz / horiz-back / rail, and emits the SVG `d` string.
+    const routed = routeArrows({
+      edges: rawEdges,
+      obstacles,
+      constants: {
+        railGap: WS_RAIL_GAP,
+        railLaneGap: WS_RAIL_LANE_GAP,
+        railMinX: WS_RAIL_MIN_X,
+        cornerR: WS_RAIL_CORNER_R,
+        laneStep: DEFAULT_ROUTER_CONSTANTS.laneStep,
+        bucketGrain: DEFAULT_ROUTER_CONSTANTS.bucketGrain,
+        obstaclePadding: DEFAULT_ROUTER_CONSTANTS.obstaclePadding,
+      },
+    });
+    return routed.map((r) => ({ d: r.d, tone: r.tone, key: r.key }));
   }, [ws, phaseAnchorOf, collapsed, boxes]);
 
   function togglePhase(anchor: string) {

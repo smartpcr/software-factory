@@ -100,6 +100,144 @@ public class Phase81PlanDocGitignoreTests : IAsyncLifetime
             "architecture.md under src/ should exist on the branch after a successful commit.");
     }
 
+    // ── Phase 81/83 follow-up: in-process unit tests of the per-iter guards.
+    //
+    // These lock in the fail-fast contract for the two catch points inside
+    // CrewStoryArtifactStrategy (per-iter commit + iteration-callback
+    // dispatcher). Without the GitIgnoredPathException re-throw, a
+    // misconfigured repo would burn N iterations of architect agent cost
+    // (~$88/iter) before the final commit halts the orchestrator. WITH the
+    // re-throw, iter-1 halts at $0–$88 instead. The transient-error tests
+    // pin the legacy best-effort behavior for non-config exceptions.
+
+    [Fact]
+    public async Task PerIterCommitGuard_GitIgnoredException_Propagates()
+    {
+        var ex = await Assert.ThrowsAsync<GitIgnoredPathException>(() =>
+            CrewStoryArtifactStrategy.SafeCommitPlanDocIterAsync(
+                () => throw new GitIgnoredPathException(
+                    "story/local-X/plan-arch",
+                    new[] { "docs/stories/local-X/architecture.md" },
+                    ".gitignore:7:/*/\tdocs/stories/local-X/architecture.md"),
+                logger: null,
+                fileName: "architecture.md",
+                iter: 1));
+        Assert.Contains("Refusing to commit", ex.Message);
+        Assert.Equal("story/local-X/plan-arch", ex.Branch);
+    }
+
+    [Fact]
+    public async Task PerIterCommitGuard_TransientException_Swallowed()
+    {
+        // Non-GitIgnored exceptions remain best-effort -- a single failed
+        // per-iter commit must NOT tank the gen-eval loop.
+        await CrewStoryArtifactStrategy.SafeCommitPlanDocIterAsync(
+            () => throw new IOException("transient lock"),
+            logger: null,
+            fileName: "architecture.md",
+            iter: 3);
+    }
+
+    [Fact]
+    public async Task PerIterCommitGuard_OperationCanceled_Propagates()
+    {
+        // Cancellation must always bubble even though it's not gitignore --
+        // the gen-eval loop's outer try/finally relies on this to unwind.
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            CrewStoryArtifactStrategy.SafeCommitPlanDocIterAsync(
+                () => throw new OperationCanceledException(),
+                logger: null,
+                fileName: "architecture.md",
+                iter: 1));
+    }
+
+    [Fact]
+    public async Task IterationCallbackGuard_GitIgnoredException_Propagates()
+    {
+        // The OUTER catch site MUST also re-throw -- otherwise the re-throw
+        // from the inner per-iter commit catch would be re-swallowed here and
+        // the bug would persist.
+        var ex = await Assert.ThrowsAsync<GitIgnoredPathException>(() =>
+            CrewStoryArtifactStrategy.SafeInvokeIterationCallbackAsync(
+                () => throw new GitIgnoredPathException(
+                    "story/local-Y/plan-tech-spec",
+                    new[] { "docs/stories/local-Y/tech-spec.md" },
+                    ".gitignore:7:/*/\tdocs/stories/local-Y/tech-spec.md"),
+                logger: null,
+                workItemId: "plan-doc:spawn-1:tech-spec.md",
+                iter: 7));
+        Assert.Contains("tech-spec.md", ex.GitCheckIgnoreOutput);
+    }
+
+    [Fact]
+    public async Task IterationCallbackGuard_TransientException_Swallowed()
+    {
+        // Same best-effort guarantee for non-config exceptions in the
+        // post-eval callback.
+        await CrewStoryArtifactStrategy.SafeInvokeIterationCallbackAsync(
+            () => throw new InvalidOperationException("reconciler hiccup"),
+            logger: null,
+            workItemId: "plan-doc:spawn-2:implementation-plan.md",
+            iter: 4);
+    }
+
+    [Fact]
+    public async Task OrchestratorPreflight_DocsPath_ThrowsGitIgnoredException()
+    {
+        if (!GitAvailable()) return;
+
+        // The orchestrator-level pre-flight that catches the configuration
+        // error BEFORE any LLM cost is incurred. Same allowlist repo as the
+        // legacy CommitFilesAsync test, but invoking the new
+        // AssertPlanDocPathsNotIgnoredAsync interface method.
+        var cloneDir = await CreateRepoAsync(AllowlistGitignore);
+        var git = new RealStoryGitOps();
+        var repo = new RepoRow { Id = "repo-pf-docs", Kind = "github", CloneRoot = cloneDir };
+        await git.EnsureBranchAsync(repo, Branch, "main");
+        await git.EnsureWorktreeAsync(repo, Branch, "main", worktreeSlug: Slug);
+
+        var ex = await Assert.ThrowsAsync<GitIgnoredPathException>(() =>
+            git.AssertPlanDocPathsNotIgnoredAsync(repo, Branch, new[] { DocUnderDocs }));
+        Assert.Equal(Branch, ex.Branch);
+        Assert.Contains(DocUnderDocs, ex.IgnoredPaths);
+    }
+
+    [Fact]
+    public async Task OrchestratorPreflight_SrcPath_Succeeds()
+    {
+        if (!GitAvailable()) return;
+
+        // Happy path: src/-rooted path is inside the allowlist, preflight
+        // returns without throwing. This is the post-fix configuration for
+        // OneBranch repos (operator sets repo.PlanDocBaseDir = 'src/docs/stories').
+        var cloneDir = await CreateRepoAsync(AllowlistGitignore);
+        var git = new RealStoryGitOps();
+        var repo = new RepoRow { Id = "repo-pf-src", Kind = "github", CloneRoot = cloneDir };
+        await git.EnsureBranchAsync(repo, Branch, "main");
+        await git.EnsureWorktreeAsync(repo, Branch, "main", worktreeSlug: Slug);
+
+        await git.AssertPlanDocPathsNotIgnoredAsync(repo, Branch, new[] { DocUnderSrc });
+    }
+
+    [Fact]
+    public async Task OrchestratorPreflight_NoWorktree_ThrowsInvalidOperation()
+    {
+        if (!GitAvailable()) return;
+
+        // EnsureWorktreeAsync was not called -- the preflight has no working
+        // directory to evaluate against. Surface the precondition violation
+        // as a clear InvalidOperationException rather than letting `git
+        // check-ignore` fail with an opaque tooling error.
+        var cloneDir = await CreateRepoAsync(AllowlistGitignore);
+        var git = new RealStoryGitOps();
+        var repo = new RepoRow { Id = "repo-pf-nowt", Kind = "github", CloneRoot = cloneDir };
+        await git.EnsureBranchAsync(repo, Branch, "main");
+        // Deliberately skip EnsureWorktreeAsync.
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            git.AssertPlanDocPathsNotIgnoredAsync(repo, Branch, new[] { DocUnderSrc }));
+    }
+
     // ── fixture + git helpers ────────────────────────────────────────────
 
     /// <summary>

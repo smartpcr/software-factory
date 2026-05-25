@@ -1874,6 +1874,8 @@ export const forgeApi = {
     // Phase 83 — plan-doc base dir. Empty string clears the override
     // (inherit "docs/stories"); any other value is pinned + normalized.
     planDocBaseDir?: string | null;
+    // Phase 84 — per-repo build/test elevation requirement (Administrator).
+    runTestsElevated?: boolean | null;
     // Phase 33 — persisted sync settings.
     wiSyncAssignedTo?: string;
     wiSyncDateFromDays?: number | null;
