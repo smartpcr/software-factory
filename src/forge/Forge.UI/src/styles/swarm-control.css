@@ -2207,6 +2207,14 @@
 .swarm-ctrl .doc-conv {
   display: grid;
   grid-template-rows: auto auto auto auto 1fr;
+  /* Cap the single implicit column at the pane width (minmax(0,1fr) instead
+     of the default max-content) so wide rows -- the iteration KPI strip and
+     the filter/action toolbar -- stay inside the pane and let their own
+     overflow-x / flex-wrap handle the excess, rather than expanding .doc-conv
+     past the pane edge where .tab-body's overflow:hidden silently clips them
+     (lost KPI scrollbar + action buttons running off-screen). */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   height: 100%;
   min-height: 0;
 }
@@ -3383,7 +3391,14 @@
 /* FILTER STRIP ── kill pill backgrounds; use baseline underline-active. */
 .swarm-ctrl .doc-conv--quiet .live-exec__filters {
   display: flex;
+  /* Wrap the filter tabs + right-side action buttons (Has logs / Resume /
+     Retry / Cancel / Restart / Accept) onto additional rows when the pane
+     is too narrow, instead of letting them run off the right edge of the
+     screen. gap:0 first, then row-gap override so wrapped rows get vertical
+     breathing room while horizontal spacing stays as before. */
+  flex-wrap: wrap;
   gap: 0;
+  row-gap: 6px;
   padding: 6px 0 0;
   border: 0;
   background: transparent;
