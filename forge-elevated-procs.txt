@@ -1,0 +1,95 @@
+Resolved Forge.Api PID: 263772
+== Children of Forge.Api PID 263772 ==
+
+ProcessId Name        Started  CommandLine
+--------- ----        -------  -----------
+   302976 conhost.exe 13:56:35 \??\C:\WINDOWS\system32\conhost.exe 0x4
+   279512 cmd.exe     14:07:14 "cmd.exe" /c E:\forge\update\.forge-validate-2297fa7fa487471abe4bbd3bed335c0e.cmd
+   244336 copilot.exe 14:17:03 "C:\Users\xiaodoli\AppData\Roaming\npm\node_modules\@github/copilot\node_modules\@github/copilot-win32-x64\copilot.exe" --yolo --headless --no-auto-update --log-level info --auth-token-env
+                               COPILOT_SDK_AUTH_TOKEN --no-auto-login
+   195652 git.exe     14:32:38 "git" fetch origin users/xiaodoli/update-history
+   193460 git.exe     14:32:38 "git" fetch origin feature/xiaodoli/http-memory
+
+
+
+== ALL cmd/dotnet/nuget/MSBuild/git/powershell processes (last 30 min) ==
+
+ProcessId ParentProcessId Name       Started  Cmd
+--------- --------------- ----       -------  ---
+   279512          263772 cmd.exe    14:07:14 "cmd.exe" /c E:\forge\update\.forge-validate-2297fa7fa487471abe4bbd3bed335c0e.cmd
+   267976          279512 dotnet.exe 14:08:18 dotnet  test build.proj --filter "TestCategory!~CTQ&TestCategory!~Env"
+    94528          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   130228          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   182312          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   155408          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    55688          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   268336          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   184640          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   167172          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   181300          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   207148          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   297764          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   134576          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   266112          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   302872          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   237384          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   195884          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   225704          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   270176          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   157688          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    98756          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   139724          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   120952          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   112548          267976 dotnet.exe 14:08:19 "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+   289644          237384 dotnet.exe 14:11:33 "dotnet" exec "C:\Program Files\dotnet\sdk\10.0.204\vstest.console.dll" --settings:E:\forge\update\src\Default.runsettings
+                                              --testAdapterPath:e:\nupkg_cache\coverlet.collector\6.0.0\build\netstandard1.0\ --framework:".NET
+   195652          263772 git.exe    14:32:38 "git" fetch origin users/xiaodoli/update-history
+   183484          195652 git.exe    14:32:38 
+   128304          183484 git.exe    14:32:38 
+   193460          263772 git.exe    14:32:38 "git" fetch origin feature/xiaodoli/http-memory
+   245320          193460 git.exe    14:32:38 git.exe fetch origin feature/xiaodoli/http-memory
+    61544          245320 git.exe    14:32:38 git remote-https origin https://msazure.visualstudio.com/One/_git/AzureStack-Common-Infrastructure
+   112068          245320 git.exe    14:32:40 
+   231076          183484 git.exe    14:32:40 
+   108104          263772 git.exe    14:32:40 
+   117116          108104 git.exe    14:32:40 
+
+
+
+== Descendants of Forge.Api PID 263772 (recursive) ==
+PID=302976 conhost.exe :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+PID=279512 cmd.exe :: "cmd.exe" /c E:\forge\update\.forge-validate-2297fa7fa487471abe4bbd3bed335c0e.cmd
+  PID=195204 conhost.exe :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+  PID=267976 dotnet.exe :: dotnet  test build.proj --filter "TestCategory!~CTQ&TestCategory!~Env"
+    PID=157688 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=237384 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+      PID=289644 dotnet.exe :: "dotnet" exec "C:\Program Files\dotnet\sdk\10.0.204\vstest.console.dll" --settings:E:\forge\update\src\Default.runsettings --testAdapterPath:e:\nupkg_cache\coverlet.collector\6.0.0
+        PID=78056 testhost.net472.exe :: "C:\Program Files\dotnet\sdk\10.0.204\Extensions\..\TestHostNetFramework\testhost.net472.exe"  --port 53635 --endpoint 127.0.0.1:053635 --role client --parentprocessid 289644 --tel
+          PID=268284 conhost.exe :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+    PID=195884 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=225704 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=270176 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=112548 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=98756 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=139724 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=120952 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=266112 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=302872 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=297764 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=207148 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=181300 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=167172 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=134576 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=184640 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=268336 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=55688 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=155408 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=182312 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=130228 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+    PID=94528 dotnet.exe :: "C:\Program Files\dotnet\dotnet.exe" "C:\Program Files\dotnet\sdk\10.0.204\MSBuild.dll" /noautoresponse /nologo /nodemode:1 /nodeReuse:false /low:false
+PID=244336 copilot.exe :: "C:\Users\xiaodoli\AppData\Roaming\npm\node_modules\@github/copilot\node_modules\@github/copilot-win32-x64\copilot.exe" --yolo --headless --no-auto-update --log-level info --auth-t
+  PID=241748 conhost.exe :: \??\C:\WINDOWS\system32\conhost.exe 0x4
+PID=112984 git.exe :: 
+
+== Forge.Api process snapshot ==
+PID=263772 Name=Forge.Api StartTime=05/25/2026 13:56:35 Threads=82 Handles=2092

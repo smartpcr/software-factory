@@ -7,10 +7,12 @@
 namespace Forge.Api.Services;
 
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
@@ -288,14 +290,93 @@ public sealed class BuildValidationWorker : BackgroundService
         var script = string.Join("\r\n", scriptLines);
         var overallTimeout = pipeline.Sum(p => p.timeout ?? 600);
 
+        // 2026-05-25 — durable build/test log + TRX capture (rubber-duck
+        // critique addressed):
+        //   1. Pre-flight: ensure `.forge/` is gitignored in this repo so
+        //      the log file + copied TRX we're about to write never get
+        //      committed. Mirrors the per-workstream behaviour in
+        //      CrewQueueWorker (now sharing GateLogPaths.EnsureGitignoreLinesAsync).
+        //   2. Snapshot UtcNow *before* launching cmd.exe so the post-run
+        //      TRX scan only picks up files written by THIS run.
+        //   3. Combined log streams to disk line-by-line (RunScriptAsync
+        //      below) so even a 200 MB MSBuild verbose log doesn't OOM the
+        //      worker — but we still keep the full stdout in memory for
+        //      ParseStepResults (which needs to locate the STEP markers).
+        //      An 8 MB in-memory cap on the StringBuilder bounds memory
+        //      for pathological output sizes (see RunScriptAsync).
+        //   4. After exit: collect new *.trx files anywhere under the repo
+        //      clone root EXCEPT under `.worktree/` (concurrent gate runs)
+        //      and `.forge/logs/trx/` (our own prior copies). Copy each
+        //      into the per-run TRX dir, parse for failed UnitTestResult
+        //      nodes, and PREPEND the failure summary to the test step's
+        //      stdout before persistence so the 16 KB DB tail starts with
+        //      actionable names (not random "[end] GetActionPlanInstances"
+        //      noise). If the repo emits no TRX (e.g. `update` uses a
+        //      driver that doesn't pass --logger), fall back to a regex
+        //      scan of stdout for "  Failed FQTN" lines.
+        var beforeUtc = DateTime.UtcNow.AddSeconds(-1);
+        var validateLog = GateLogPaths.ForValidateRun(repo.CloneRoot, run.Id);
+        await GateLogPaths.EnsureForgeGitignoredAsync(repo.CloneRoot, CancellationToken.None);
+
         try
         {
             ct.ThrowIfCancellationRequested();
             var (exitCode, stdout, stderr, timedOut) = await RunScriptAsync(
-                script, repo.CloneRoot, overallTimeout);
+                script, repo.CloneRoot, overallTimeout, validateLog.LogPath);
 
-            // Parse per-step results from stdout markers.
-            steps = ParseStepResults(stdout, stderr, pipeline, timedOut);
+            // Collect any TRX files written during this run, excluding the
+            // worktree subtree (a concurrent iteration gate may be writing
+            // TRX there) and our own .forge/logs/trx/ subtree (prior copies).
+            var newTrxPaths = GateLogPaths.CollectNewTrxFiles(
+                repo.CloneRoot,
+                beforeUtc,
+                excludeDirNames: new[] { ".worktree", ".forge", "node_modules" });
+            var copiedTrxRel = new List<string>();
+            var trxFailures = new List<GateLogPaths.TrxFailure>();
+            if (newTrxPaths.Count > 0)
+            {
+                try { Directory.CreateDirectory(validateLog.TrxDir); }
+                catch { /* best-effort; copy below will just fail per-file */ }
+                // Cap how many TRX files we copy (some repos produce hundreds)
+                // so disk + parse cost stays bounded. Newest first so a
+                // capped result is the most relevant set.
+                var ordered = newTrxPaths
+                    .Select(p => new { Path = p, Info = SafeFileInfo(p) })
+                    .OrderByDescending(x => x.Info?.LastWriteTimeUtc ?? DateTime.MinValue)
+                    .Take(50)
+                    .ToList();
+                foreach (var entry in ordered)
+                {
+                    try
+                    {
+                        var fileName = Path.GetFileName(entry.Path);
+                        var dest = Path.Combine(validateLog.TrxDir, fileName);
+                        File.Copy(entry.Path, dest, overwrite: true);
+                        var rel = Path.GetRelativePath(repo.CloneRoot, dest).Replace('\\', '/');
+                        copiedTrxRel.Add(rel);
+                        trxFailures.AddRange(GateLogPaths.ParseTrxFailures(dest));
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.LogDebug(ex, "TRX copy/parse failed for {Trx}", entry.Path);
+                    }
+                }
+            }
+
+            // Fallback: if no TRX failures were parseable, scrape stdout for
+            // `dotnet test` "  Failed FQTN" lines so repos that don't emit
+            // TRX (e.g. `update`'s build.proj driver) still surface names.
+            if (trxFailures.Count == 0)
+            {
+                trxFailures.AddRange(GateLogPaths.ParseDotnetTestFailuresFromText(stdout));
+            }
+
+            // Parse per-step results; the failure-summary block is prepended
+            // to the test step's stdout BEFORE truncation so the DB tail
+            // starts with actionable failure names.
+            steps = ParseStepResults(
+                stdout, stderr, pipeline, timedOut,
+                trxFailures, validateLog.LogRelPath, copiedTrxRel);
             allPassed = steps.All(s => s.Passed);
 
             // Persist after completion.
@@ -429,9 +510,20 @@ public sealed class BuildValidationWorker : BackgroundService
     /// shared across all steps (init sets vars, restore/build/test inherit them).
     /// The script is written inside <paramref name="cwd"/> so that
     /// <c>%~dp0</c> resolves to the repo root (init.cmd depends on this).
+    ///
+    /// <para>2026-05-25 — combined stdout+stderr is streamed line-by-line to
+    /// <paramref name="logFilePath"/> as the process runs (best-effort: a
+    /// failed open silently falls back to in-memory-only). The full output
+    /// is also kept in a StringBuilder capped at 8 MB so <see cref="ParseStepResults"/>
+    /// can find STEP_START/STEP_END markers; beyond the cap a single
+    /// truncation marker is appended and subsequent lines are written to
+    /// disk only. Stderr is interleaved with stdout in the disk log (the
+    /// order is approximate — pumps are independent — but useful enough for
+    /// diagnostics) and also returned separately for the "stderr on failed
+    /// step" UI.</para>
     /// </summary>
     private static async Task<(int code, string stdout, string stderr, bool timedOut)> RunScriptAsync(
-        string script, string cwd, int timeoutSec)
+        string script, string cwd, int timeoutSec, string? logFilePath = null)
     {
         // Place the temp script in the repo root so %~dp0 = repo root.
         var tmpFile = Path.Combine(cwd, $".forge-validate-{Guid.NewGuid():N}.cmd");
@@ -459,25 +551,101 @@ public sealed class BuildValidationWorker : BackgroundService
 
             using var proc = System.Diagnostics.Process.Start(psi)!;
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+
+            // Open the log file lazily; best-effort.
+            StreamWriter? logWriter = null;
+            if (!string.IsNullOrWhiteSpace(logFilePath))
+            {
+                try
+                {
+                    var dir = Path.GetDirectoryName(logFilePath);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    logWriter = new StreamWriter(
+                        new FileStream(logFilePath!, FileMode.Create, FileAccess.Write, FileShare.Read),
+                        Encoding.UTF8)
+                    { AutoFlush = false };
+                }
+                catch
+                {
+                    logWriter = null;
+                }
+            }
+
+            // In-memory accumulators. ParseStepResults needs the full stdout
+            // to find markers, so we keep it in a StringBuilder. Capped at
+            // ~8 MB so pathological build output (e.g. detailed MSBuild diag)
+            // doesn't blow process memory. Stderr is typically tiny (cmd.exe
+            // batch error messages); cap at 1 MB.
+            const int StdoutMemCap = 8 * 1024 * 1024;
+            const int StderrMemCap = 1 * 1024 * 1024;
+            var stdoutBuf = new StringBuilder();
+            var stderrBuf = new StringBuilder();
+            var stdoutTruncated = false;
+            var stderrTruncated = false;
+            var writeLock = new object();
+
+            async Task PumpAsync(StreamReader reader, StringBuilder buf, int cap, bool trackStderrTruncated)
+            {
+                string? line;
+                while ((line = await reader.ReadLineAsync(cts.Token).ConfigureAwait(false)) is not null)
+                {
+                    lock (writeLock)
+                    {
+                        if (buf.Length < cap)
+                        {
+                            // Reserve a few bytes for the truncation marker so
+                            // we don't overshoot the cap by an unbounded amount.
+                            if (buf.Length + line.Length + 1 <= cap)
+                            {
+                                buf.AppendLine(line);
+                            }
+                            else
+                            {
+                                if (trackStderrTruncated) stderrTruncated = true;
+                                else stdoutTruncated = true;
+                                buf.AppendLine("…[output truncated in-memory; full log on disk]");
+                                // Pin buf.Length above cap so further appends short-circuit.
+                                while (buf.Length < cap) buf.Append('x');
+                            }
+                        }
+                        if (logWriter is not null)
+                        {
+                            try { logWriter.WriteLine(line); }
+                            catch { /* best-effort */ }
+                        }
+                    }
+                }
+            }
+
+            var stdoutTask = PumpAsync(proc.StandardOutput, stdoutBuf, StdoutMemCap, trackStderrTruncated: false);
+            var stderrTask = PumpAsync(proc.StandardError, stderrBuf, StderrMemCap, trackStderrTruncated: true);
+
             try
             {
-                var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
-                var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token);
                 await proc.WaitForExitAsync(cts.Token);
-                return (proc.ExitCode, await stdoutTask, await stderrTask, false);
+                try { await stdoutTask; } catch { /* drain swallow */ }
+                try { await stderrTask; } catch { /* drain swallow */ }
+                if (logWriter is not null)
+                {
+                    try { await logWriter.FlushAsync(); } catch { }
+                    try { logWriter.Dispose(); } catch { }
+                }
+                _ = stdoutTruncated; _ = stderrTruncated; // currently informational only
+                return (proc.ExitCode, stdoutBuf.ToString(), stderrBuf.ToString(), false);
             }
             catch (OperationCanceledException)
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
-                string pOut = "", pErr = "";
-                try
+                try { await stdoutTask; } catch { }
+                try { await stderrTask; } catch { }
+                stderrBuf.AppendLine("\n[TIMED OUT]");
+                if (logWriter is not null)
                 {
-                    using var rCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                    pOut = await proc.StandardOutput.ReadToEndAsync(rCts.Token);
-                    pErr = await proc.StandardError.ReadToEndAsync(rCts.Token);
+                    try { await logWriter.WriteLineAsync("[TIMED OUT]"); } catch { }
+                    try { await logWriter.FlushAsync(); } catch { }
+                    try { logWriter.Dispose(); } catch { }
                 }
-                catch { }
-                return (-1, pOut, pErr + "\n[TIMED OUT]", true);
+                return (-1, stdoutBuf.ToString(), stderrBuf.ToString(), true);
             }
         }
         finally
@@ -486,13 +654,29 @@ public sealed class BuildValidationWorker : BackgroundService
         }
     }
 
+    /// <summary>Best-effort <see cref="FileInfo"/> ctor that doesn't throw.</summary>
+    private static FileInfo? SafeFileInfo(string path)
+    {
+        try { return new FileInfo(path); }
+        catch { return null; }
+    }
+
     /// <summary>
     /// Parses per-step pass/fail from the echo markers embedded in stdout.
+    /// When <paramref name="testFailures"/> is non-empty AND we're processing
+    /// the <c>test</c> step, the formatted failure block is prepended to that
+    /// step's stdout BEFORE truncation so the 16 KB DB tail starts with
+    /// actionable failure names (not random tail noise). The combined log
+    /// path + copied-TRX rel paths are attached to every step row for UI
+    /// visibility — they're the same per run.
     /// </summary>
     private static List<StepResult> ParseStepResults(
         string stdout, string stderr,
         List<(string name, string cmd, int? timeout)> pipeline,
-        bool overallTimedOut)
+        bool overallTimedOut,
+        IReadOnlyList<GateLogPaths.TrxFailure>? testFailures = null,
+        string? combinedLogRelPath = null,
+        IReadOnlyList<string>? trxRelPaths = null)
     {
         var results = new List<StepResult>();
         var lines = stdout.Split('\n');
@@ -530,11 +714,30 @@ public sealed class BuildValidationWorker : BackgroundService
             }
 
             var stepStdout = string.Join("\n", stepOutput).Trim();
+
+            // Prepend failed-test summary to the test step's stdout BEFORE
+            // truncation so the visible tail starts with names, not noise.
+            // Only applied on failure (no point spamming a passing run with
+            // an empty FAILED TESTS header, and TRX-on-pass would be empty
+            // anyway).
+            if (name == "test" && !passed && testFailures is { Count: > 0 })
+            {
+                var summary = GateLogPaths.FormatFailureSummary(testFailures);
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    stepStdout = summary + "\n────────────────────────────\n" + stepStdout;
+                }
+            }
+
             // stderr is shared across all steps; include it on the failing step.
             var stepStderr = !passed ? Truncate(stderr) : "";
             var timedOut = !passed && overallTimedOut && endIdx < 0;
 
-            results.Add(new StepResult(name, cmd, passed, exitCode, timedOut, Truncate(stepStdout), stepStderr));
+            results.Add(new StepResult(
+                name, cmd, passed, exitCode, timedOut,
+                Truncate(stepStdout), stepStderr,
+                LogRelPath: combinedLogRelPath,
+                TrxRelPaths: name == "test" ? trxRelPaths : null));
 
             if (!passed) break; // pipeline aborts on first failure
         }
@@ -565,7 +768,12 @@ public sealed class BuildValidationWorker : BackgroundService
         }
     }
 
-    private static string Truncate(string s) => s.Length > 4000 ? s[^4000..] : s;
+    // 2026-05-25 — raised from 4 KB → 16 KB so the tail of a dotnet test
+    // step preserves failed test names + assertion messages. The test
+    // step's stdout is also prepended with a FAILED TESTS summary by
+    // ParseStepResults so the head of the truncated text always shows
+    // actionable names regardless of cap.
+    private static string Truncate(string s) => s.Length > 16000 ? s[^16000..] : s;
 
     /// <summary>
     /// True when the current process runs with an elevated (Administrator,
@@ -597,7 +805,14 @@ public sealed class BuildValidationWorker : BackgroundService
         int ExitCode,
         bool TimedOut,
         string Stdout,
-        string Stderr);
+        string Stderr,
+        // 2026-05-25 — repo-relative path to the combined stdout+stderr
+        // log under .forge/logs/. Same value on every step in a run
+        // (one log per run). UI shows a 📎 view-log chip.
+        string? LogRelPath = null,
+        // Repo-relative paths to TRX files copied from the test step.
+        // Only populated on the test step; null elsewhere.
+        IReadOnlyList<string>? TrxRelPaths = null);
 }
 
 /// <summary>

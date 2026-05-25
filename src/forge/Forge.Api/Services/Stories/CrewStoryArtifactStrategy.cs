@@ -1161,6 +1161,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // task.test-gate.{passed,failed} payload (reader's URL).
             var (testLogPath, testLogRel) = GateLogPaths.For(workspace, "test", iter);
             var testLogUrl = BuildLogUrl(workItemId, testLogRel);
+            // 2026-05-25 — stable scope tag for the per-iter TRX copy dir
+            // so a re-run of the same iter doesn't collide with the prior
+            // attempt's captured TRX.
+            var testTrxTag = $"test-{iter}-{DateTime.UtcNow.Ticks}";
             StoryBuildResult? t = null;
             try
             {
@@ -1169,7 +1173,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     buildCommand: effectiveTestCommand,
                     logFilePath: testLogPath,
                     logRelPath: testLogRel,
-                    sessionSetupCommands: sessionSetup);
+                    sessionSetupCommands: sessionSetup,
+                    // Test gate ONLY: scan for *.trx files written during
+                    // the run, copy them under .forge/logs/trx/, and
+                    // prepend a "FAILED TESTS" block to ErrorSummary so
+                    // the next-iter generator prompt names the failing
+                    // tests by FQTN. See CrewStoryArtifactStrategy ~line
+                    // 5611 ("TEST FAILURE FROM PRIOR ITERATION") for
+                    // where this lands in the prompt.
+                    collectTestFailures: true,
+                    trxScopeTag: testTrxTag);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1212,6 +1225,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         workspace,
                         logUrl = testLogUrl,
                         logRelPath = t.LogRelPath,
+                        trxRelPaths = t.TrxRelPaths,
                     }, agentId: agentId, crewId: crewId, ct: ct);
                     return new GateFailure("test", effectiveTestCommand, t);
                 }
@@ -1233,6 +1247,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     workspace,
                     logUrl = testLogUrl,
                     logRelPath = t.LogRelPath,
+                    trxRelPaths = t.TrxRelPaths,
                 }, agentId: agentId, crewId: crewId, ct: ct);
                 // Phase 59.9 — prune older test logs after a green
                 // gate. Quality and build prune in their own

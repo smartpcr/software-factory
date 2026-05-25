@@ -1,0 +1,3 @@
+Forge.Api PID 263772 found: Forge.Api started 05/25/2026 13:56:35
+THIS probe shell admin: True
+Forge.Api 263772 TokenIsElevated: True

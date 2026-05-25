@@ -1159,31 +1159,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         $"ws-{workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-")}");
 
                 // Ensure .worktree/ and .forge/ are in .gitignore so they're never committed.
-                try
-                {
-                    var gitignorePath = Path.Combine(repoCloneRoot, ".gitignore");
-                    var existingLines = File.Exists(gitignorePath)
-                        ? await File.ReadAllLinesAsync(gitignorePath, ct)
-                        : Array.Empty<string>();
-
-                    var appendLines = new List<string>();
-                    if (!existingLines.Any(l => l.Trim() is ".worktree/" or ".worktree"))
-                        appendLines.Add(".worktree/");
-                    if (!existingLines.Any(l => l.Trim() is ".forge/" or ".forge"))
-                        appendLines.Add(".forge/");
-
-                    if (appendLines.Count > 0)
-                    {
-                        await File.AppendAllTextAsync(
-                            gitignorePath,
-                            "\n" + string.Join("\n", appendLines) + "\n",
-                            ct);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    this.logger.LogDebug(ex, "Could not update .gitignore for {Repo}", repoCloneRoot);
-                }
+                // 2026-05-25 — extracted to GateLogPaths.EnsureGitignoreLinesAsync
+                // so BuildValidationWorker (repo-validate runs, which never go
+                // through workstream init) gets identical treatment for the
+                // log + TRX files it writes under .forge/logs/.
+                await Forge.Api.Services.Stories.GateLogPaths.EnsureGitignoreLinesAsync(
+                    repoCloneRoot,
+                    new[] { ".worktree/", ".forge/" },
+                    ct);
 
                 try
                 {

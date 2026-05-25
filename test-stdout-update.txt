@@ -1,0 +1,66 @@
+lanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+ [start] GetActionPlanInstances with runtime parameters: updateId=
+ [start] GetActionPlanInstances with ActionTypeName= and ActionPlanName=
+ [end] GetActionPlanInstances with 0 action plans
+
+
+  Skipped GetUpdatesWhileUpdatePreparationInProgress
+  Skipped PostTwoUpdatePrepreparations
+  Skipped PostTwoUpdatePrepreparationsWithOneFailing
+  Skipped RePostUpdatePreparationsUntillSuccesful
+  Skipped PostUpdatePreperationAndThenPostApplyUpdate
+  Skipped PostUpdateForFailedUpdatePrepataion
+
+Failed!  - Failed:     4, Passed:   276, Skipped:     6, Total:   286, Duration: 21 m 53 s - UpdateResourceProvider.UpdateService.IntegrationTest.dll (net472)

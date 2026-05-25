@@ -81,7 +81,24 @@ public static class StoryBuildRunner
         // 2026-05-22 — when non-empty, these setup commands (e.g.
         // init.cmd, restore) run, in order, in the SAME cmd.exe session
         // that runs the build/test command. See the session block below.
-        IReadOnlyList<string>? sessionSetupCommands = null)
+        IReadOnlyList<string>? sessionSetupCommands = null,
+        // 2026-05-25 — when true AND ExitCode != 0, scan the workspace for
+        // *.trx files written during this run, parse their failed
+        // UnitTestResult nodes, and prepend a "FAILED TESTS:" block to
+        // ErrorSummary. Falls back to a regex scrape of stdout for
+        // "  Failed FQTN" lines when no TRX was produced (e.g. the
+        // `update` repo's build.proj driver). The caller (the test gate)
+        // sets this; quality/build gates leave it false because their
+        // failures are compiler/linter errors that the existing regex
+        // already captures. New TRX files are also copied into
+        // {workspace}/.forge/logs/trx/{iter|gate}/ so they survive a
+        // subsequent `dotnet clean`; TrxRelPaths on the result lists the
+        // copies relative to the workspace.
+        bool collectTestFailures = false,
+        // Stable suffix appended to the per-iter TRX copy dir so a
+        // re-run of the same iter doesn't collide with the prior attempt
+        // (the caller typically uses iter + ticks).
+        string? trxScopeTag = null)
     {
         if (string.IsNullOrEmpty(workspace) || !Directory.Exists(workspace))
         {
@@ -208,6 +225,11 @@ public static class StoryBuildRunner
         // the workstream into the retry loop instead of the BuildFailed
         // → blocked path, masking the real problem (missing toolchain)
         // behind retry backoff noise.
+        // 2026-05-25 — snapshot UtcNow BEFORE start so the post-run TRX
+        // scan only picks up files written by THIS run (collectTestFailures
+        // path). Snapshot a second earlier to ride out clock resolution
+        // quirks on Windows (FAT-style mtime is 2 s precision).
+        var trxScanStartUtc = DateTime.UtcNow.AddSeconds(-1);
         Process? proc;
         try
         {
@@ -401,6 +423,74 @@ public static class StoryBuildRunner
             summary = "(no parsed error lines; raw output tail below)\n" + tail.Snapshot().Trim();
         }
 
+        // 2026-05-25 — test-gate path: scan for new TRX, parse failed
+        // UnitTestResult nodes, fall back to stdout regex when no TRX,
+        // and PREPEND the resulting "FAILED TESTS" block to ErrorSummary
+        // so the next-iter generator's "TEST FAILURE FROM PRIOR
+        // ITERATION" block shows actionable per-test detail (the
+        // existing ErrorLineRegex matches `\):\s+error\s+\w+:` which
+        // catches compiler errors only, not dotnet-test failures).
+        var trxRelPaths = (IReadOnlyList<string>?)null;
+        if (collectTestFailures && proc.ExitCode != 0)
+        {
+            var trxFailures = new List<GateLogPaths.TrxFailure>();
+            try
+            {
+                // Exclude .forge/logs/trx/ so we don't re-pick-up our own
+                // prior copies, and node_modules to keep the walk fast.
+                var newTrxPaths = GateLogPaths.CollectNewTrxFiles(
+                    workspace,
+                    trxScanStartUtc,
+                    excludeDirNames: new[] { ".forge", "node_modules", ".git" });
+                if (newTrxPaths.Count > 0)
+                {
+                    var scopeTag = trxScopeTag ?? $"test-{DateTime.UtcNow.Ticks}";
+                    var trxDir = Path.Combine(workspace, ".forge", "logs", "trx", scopeTag);
+                    var copied = new List<string>();
+                    try { Directory.CreateDirectory(trxDir); } catch { /* best-effort */ }
+                    foreach (var trx in newTrxPaths.Take(50))
+                    {
+                        try
+                        {
+                            var fileName = Path.GetFileName(trx);
+                            var dest = Path.Combine(trxDir, fileName);
+                            File.Copy(trx, dest, overwrite: true);
+                            copied.Add(Path.GetRelativePath(workspace, dest).Replace('\\', '/'));
+                            trxFailures.AddRange(GateLogPaths.ParseTrxFailures(dest));
+                        }
+                        catch { /* best-effort per-file */ }
+                    }
+                    if (copied.Count > 0) trxRelPaths = copied;
+                }
+            }
+            catch { /* never block the gate on TRX side-effects */ }
+
+            // Fallback: scrape regex from the buffered tail + the samples
+            // we already captured. We don't have full stdout here (line
+            // streaming bounded by TailRing), so the tail is the best
+            // available source for failure name extraction.
+            if (trxFailures.Count == 0)
+            {
+                var tailText = tail.Snapshot();
+                trxFailures.AddRange(GateLogPaths.ParseDotnetTestFailuresFromText(tailText));
+            }
+
+            if (trxFailures.Count > 0)
+            {
+                var failureBlock = GateLogPaths.FormatFailureSummary(trxFailures);
+                if (!string.IsNullOrEmpty(failureBlock))
+                {
+                    // Prepend before the existing summary so the prompt
+                    // block at CrewStoryArtifactStrategy.cs ~5645 shows
+                    // names first, compiler/tail text second.
+                    var combined = failureBlock + "\n" + summary;
+                    summary = combined.Length > ErrorSummaryMaxChars
+                        ? combined[..ErrorSummaryMaxChars] + "…(truncated; full log at the chip link)"
+                        : combined;
+                }
+            }
+        }
+
         return new StoryBuildResult(
             Success: proc.ExitCode == 0,
             ExitCode: proc.ExitCode,
@@ -410,7 +500,8 @@ public static class StoryBuildRunner
             Duration: sw.Elapsed,
             TimedOut: false,
             LogPath: effectiveLogPath,
-            LogRelPath: logRelPath);
+            LogRelPath: logRelPath,
+            TrxRelPaths: trxRelPaths);
     }
 
     /// <summary>
@@ -568,4 +659,9 @@ public sealed record StoryBuildResult(
     // /api/workstreams/{id}/logs/{*relPath} endpoint URL. Caller
     // computes this against its own root convention; the runner just
     // round-trips whatever the caller passed in.
-    string? LogRelPath = null);
+    string? LogRelPath = null,
+    // 2026-05-25 — workspace-relative paths to TRX files captured from
+    // a test-gate run (collectTestFailures: true). Empty/null when no
+    // TRX was found or the run passed. Stable across `dotnet clean` —
+    // the files have been copied into {workspace}/.forge/logs/trx/.
+    IReadOnlyList<string>? TrxRelPaths = null);

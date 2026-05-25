@@ -1,0 +1,46 @@
+ft.AzureStack.Common.Infrastructure.Telemetry.TelemetryReporter.UnitTests.dll (net462)
+Test run for E:\forge\common-infra\out\build\Testing.Workflow.UnitTest\net462\Testing.Workflow.UnitTest.dll (.NETFramework,Version=v4.6.2)
+A total of 1 test files matched the specified pattern.
+Results File: E:\forge\common-infra\TestResults\SYSTEM_XD001_2026-05-25_14_41_52.trx
+
+Passed!  - Failed:     0, Passed:    26, Skipped:     0, Total:    26, Duration: 2 s - Testing.Workflow.UnitTest.dll (net462)
+Test run for E:\forge\common-infra\out\build\Testing.PowerShell.UnitTests\net462\Testing.PowerShell.UnitTest.dll (.NETFramework,Version=v4.6.2)
+A total of 1 test files matched the specified pattern.
+  Failed TestJea [7 m 5 s]
+  Error Message:
+   Test method Microsoft.AzureStack.Common.Infrastructure.Testing.PowerShell.UnitTest.JeaTests.TestJea threw exception: 
+System.Management.Automation.Remoting.PSRemotingTransportException: Connecting to remote server localhost failed with the following error message : Access is denied. For more information, see the about_Remote_Troubleshooting Help topic.
+  Stack Trace:
+     at System.Management.Automation.Runspaces.AsyncResult.EndInvoke()
+   at System.Management.Automation.Runspaces.Internal.RunspacePoolInternal.EndOpen(IAsyncResult asyncResult)
+   at System.Management.Automation.RemoteRunspace.Open()
+   at Microsoft.AzureStack.Common.Infrastructure.Testing.PowerShell.PowerShellRunner.Run(String computerName, WSManConnectionInfo connectionInfo, Action`1 setup, Boolean throwOnError) in E:\forge\common-infra\src\Testing\PowerShell\Source\PowerShellRunner.cs:line 147
+   at Microsoft.AzureStack.Common.Infrastructure.Testing.PowerShell.UnitTest.JeaTests.<>c__DisplayClass0_0.<TestJea>b__2() in E:\forge\common-infra\src\Testing\PowerShell\UnitTest\JeaTests.cs:line 49
+   at System.Threading.Tasks.Task.Execute()
+--- End of stack trace from previous location where exception was thrown ---
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   at Microsoft.AzureStack.Common.Infrastructure.Testing.PowerShell.UnitTest.JeaTests.<TestJea>d__0.MoveNext() in E:\forge\common-infra\src\Testing\PowerShell\UnitTest\JeaTests.cs:line 47
+--- End of stack trace from previous location where exception was thrown ---
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+
+Results File: E:\forge\common-infra\TestResults\SYSTEM_XD001_2026-05-25_14_49_04.trx
+
+Failed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: 7 m 5 s - Testing.PowerShell.UnitTest.dll (net462)
+
+Attachments:
+  E:\forge\common-infra\TestResults\1a5e17fd-38a6-43dc-b2b7-639d4d2a89ac\SYSTEM_XD001_2026-05-25.14_41_54.coverage
+
+E:\forge\common-infra>(call E:\forge\common-infra\.pipelines\test\TestCoverage.cmd  ) 
+
+E:\forge\common-infra>reportgenerator.exe -reports:E:\forge\common-infra\\TestResults\*\coverage.cobertura.xml -reporttypes:HtmlInline_AzurePipelines;Cobertura -targetdir:E:\forge\common-infra\\TestResults\CodeCoverage "-assemblyfilters:-Microsoft.WindowsAzure.Tools.Vhd;-*IntegrationTest*;-*UnitTest*;-*ConsistencyTest*;-*TestBase*" 
+2026-05-25T14:49:07: Arguments
+2026-05-25T14:49:07:  -reports:E:\forge\common-infra\\TestResults\*\coverage.cobertura.xml
+2026-05-25T14:49:07:  -reporttypes:HtmlInline_AzurePipelines;Cobertura
+2026-05-25T14:49:07:  -targetdir:E:\forge\common-infra\\TestResults\CodeCoverage
+2026-05-25T14:49:07:  -assemblyfilters:-Microsoft.WindowsAzure.Tools.Vhd;-*IntegrationTest*;-*UnitTest*;-*ConsistencyTest*;-*TestBase*
+2026-05-25T14:49:07: The report file pattern 'E:\forge\common-infra\\TestResults\*\coverage.cobertura.xml' found no matching files.
+2026-05-25T14:49:07: No report files specified.
+
+E:\forge\common-infra>echo ===STEP_END:test:EXIT:1===
