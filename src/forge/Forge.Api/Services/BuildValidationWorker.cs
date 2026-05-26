@@ -167,14 +167,23 @@ public sealed class BuildValidationWorker : BackgroundService
         // self-elevates at launch, see its self-elevation block), so verify the
         // host IS elevated and fail fast with an actionable message rather than
         // letting every test fail cryptically with access-denied 20 minutes in.
-        if (repo.RunTestsElevated == true && !IsProcessElevated())
+        // Phase 84 / 2026-05-26 — per-repo elevation. A repo flagged
+        // RunTestsElevated runs its build/test as Administrator (its tests
+        // write HKLM / bind HttpListener URLs). Forge.Api itself is NON-elevated
+        // now; the elevated work is marshalled to the elevated broker (a
+        // separate `Forge.Api.exe --elevated-broker` the launcher starts as
+        // admin). Verify the broker is reachable and fail fast with an
+        // actionable message rather than running the tests non-elevated (cryptic
+        // access-denied) or silently dropping the elevation requirement.
+        var runElevated = repo.RunTestsElevated == true;
+        if (runElevated && !await Forge.Api.Agents.ElevatedCommandBroker.IsAvailableAsync(CancellationToken.None).ConfigureAwait(false))
         {
             run.Status = "failed";
             run.FinishedAt = DateTime.UtcNow.ToString("O");
             run.ErrorMessage =
-                "This repo is configured to run build/test elevated (Administrator), but Forge.Api is " +
-                "not running elevated. Restart it via scripts\\run-forge-ui.ps1 (it self-elevates — " +
-                "accept the UAC prompt), then re-run validation.";
+                "This repo runs build/test elevated (Administrator), but the elevated test broker is not " +
+                "reachable. Start it via scripts\\run-forge-ui.ps1 (it launches the broker elevated — accept " +
+                "the UAC prompt), then re-run validation.";
             await db.SaveChangesAsync(CancellationToken.None);
             await this.NotifyCompletionAsync(hub, run);
             return;
@@ -322,8 +331,12 @@ public sealed class BuildValidationWorker : BackgroundService
         try
         {
             ct.ThrowIfCancellationRequested();
-            var (exitCode, stdout, stderr, timedOut) = await RunScriptAsync(
-                script, repo.CloneRoot, overallTimeout, validateLog.LogPath);
+            // RunTestsElevated repos run the validation script via the elevated
+            // broker (Forge.Api is non-elevated); everything else runs locally.
+            var (exitCode, stdout, stderr, timedOut) = runElevated
+                ? await Forge.Api.Agents.ElevatedCommandBroker.RunScriptAsync(
+                    new Forge.Api.Agents.ElevatedScriptRequest(script, repo.CloneRoot, overallTimeout, validateLog.LogPath), ct)
+                : await RunScriptAsync(script, repo.CloneRoot, overallTimeout, validateLog.LogPath);
 
             // Collect any TRX files written during this run, excluding the
             // worktree subtree (a concurrent iteration gate may be writing
@@ -521,7 +534,10 @@ public sealed class BuildValidationWorker : BackgroundService
     /// diagnostics) and also returned separately for the "stderr on failed
     /// step" UI.</para>
     /// </summary>
-    private static async Task<(int code, string stdout, string stderr, bool timedOut)> RunScriptAsync(
+    // internal so the elevated broker (Forge.Api.exe --elevated-broker) can
+    // run a RunTestsElevated repo's validation script as Administrator while
+    // the non-elevated Forge.Api host marshals it over the pipe.
+    internal static async Task<(int code, string stdout, string stderr, bool timedOut)> RunScriptAsync(
         string script, string cwd, int timeoutSec, string? logFilePath = null)
     {
         // Place the temp script in the repo root so %~dp0 = repo root.

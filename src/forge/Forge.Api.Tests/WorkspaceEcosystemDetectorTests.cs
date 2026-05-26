@@ -97,7 +97,7 @@ public class WorkspaceEcosystemDetectorTests
     [InlineData("rust", "rust")]
     [InlineData("python", "python")]
     [InlineData("node", "typescript")]
-    [InlineData("dotnet", null)]
+    [InlineData("dotnet", "csharp")]
     [InlineData("maven", null)]
     [InlineData("unknown", null)]
     public void ToLspLanguageId_MapsEcosystemToServerLanguage(string ecosystem, string? expected)

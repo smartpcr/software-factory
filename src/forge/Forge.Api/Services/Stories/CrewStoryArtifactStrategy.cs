@@ -870,7 +870,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // run in the SAME shell session as each stage's build/test command
         // (RepoRow.InitCommand / RestoreCommand). Null/empty = direct exec.
         string? initCommand = null,
-        string? restoreCommand = null)
+        string? restoreCommand = null,
+        // 2026-05-26 — when true (repo.RunTestsElevated), the TEST stage is
+        // marshalled to the elevated broker (Forge.Api runs non-elevated).
+        // Build / quality stages always run locally non-elevated. If the
+        // broker is unreachable the test stage throws
+        // ElevatedBrokerUnavailableException → the workstream stalls.
+        bool runTestsElevated = false)
     {
         // init → restore prologue, prepended to each gate stage's command
         // so they share one cmd.exe session (empty = direct exec).
@@ -1168,21 +1174,73 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             StoryBuildResult? t = null;
             try
             {
-                t = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, testTimeout ?? StoryBuildRunner.DefaultTimeout,
-                    buildCommand: effectiveTestCommand,
-                    logFilePath: testLogPath,
-                    logRelPath: testLogRel,
-                    sessionSetupCommands: sessionSetup,
-                    // Test gate ONLY: scan for *.trx files written during
-                    // the run, copy them under .forge/logs/trx/, and
-                    // prepend a "FAILED TESTS" block to ErrorSummary so
-                    // the next-iter generator prompt names the failing
-                    // tests by FQTN. See CrewStoryArtifactStrategy ~line
-                    // 5611 ("TEST FAILURE FROM PRIOR ITERATION") for
-                    // where this lands in the prompt.
-                    collectTestFailures: true,
-                    trxScopeTag: testTrxTag);
+                if (runTestsElevated)
+                {
+                    // RunTestsElevated repo: the test command (its tests write
+                    // HKLM / bind HttpListener) must run as admin, but Forge.Api
+                    // itself is non-elevated. Marshal JUST this command to the
+                    // elevated broker. Broker-unreachable throws
+                    // ElevatedBrokerUnavailableException, which we deliberately
+                    // do NOT swallow below — it propagates so the workstream
+                    // stalls (a RunTestsElevated repo must never silently run
+                    // its tests non-elevated).
+                    t = await Forge.Api.Agents.ElevatedCommandBroker.RunBuildAsync(
+                        new Forge.Api.Agents.ElevatedBuildRequest(
+                            Workspace: workspace,
+                            TimeoutMs: (long)(testTimeout ?? StoryBuildRunner.DefaultTimeout).TotalMilliseconds,
+                            BuildCommand: effectiveTestCommand,
+                            LogFilePath: testLogPath,
+                            LogRelPath: testLogRel,
+                            SessionSetupCommands: sessionSetup,
+                            CollectTestFailures: true,
+                            TrxScopeTag: testTrxTag),
+                        ct);
+                }
+                else
+                {
+                    t = await StoryBuildRunner.RunBuildAsync(
+                        workspace, ct, testTimeout ?? StoryBuildRunner.DefaultTimeout,
+                        buildCommand: effectiveTestCommand,
+                        logFilePath: testLogPath,
+                        logRelPath: testLogRel,
+                        sessionSetupCommands: sessionSetup,
+                        // Test gate ONLY: scan for *.trx files written during
+                        // the run, copy them under .forge/logs/trx/, and
+                        // prepend a "FAILED TESTS" block to ErrorSummary so
+                        // the next-iter generator prompt names the failing
+                        // tests by FQTN. See CrewStoryArtifactStrategy ~line
+                        // 5611 ("TEST FAILURE FROM PRIOR ITERATION") for
+                        // where this lands in the prompt.
+                        collectTestFailures: true,
+                        trxScopeTag: testTrxTag);
+                }
+            }
+            catch (Forge.Api.Agents.ElevatedBrokerUnavailableException ex)
+            {
+                // Operator's chosen fallback: STALL the workstream. Convert to
+                // the BuildFailedException the orchestrator already routes to a
+                // stall (DriveImplementAsync → ws.Status=stalled). Do NOT
+                // downgrade to a skipped/iterate gate — a RunTestsElevated repo
+                // must never run its tests non-elevated.
+                await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
+                {
+                    stage = stagePrefix,
+                    gateStage = "test",
+                    iter,
+                    reason = "elevated-test-broker-unavailable",
+                }, agentId: agentId, crewId: crewId, ct: ct);
+
+                throw new BuildFailedException(
+                    "Elevated test runner unavailable — this repo is flagged RunTestsElevated, but the "
+                    + "elevated test broker could not be reached. Start it via scripts\\run-forge-ui.ps1 "
+                    + $"(it launches the broker elevated). {ex.Message}")
+                {
+                    Stage = "test",
+                    Command = effectiveTestCommand ?? testCommand ?? string.Empty,
+                    ErrorSummary = ex.Message,
+                    ExitCode = -1,
+                    LastIteration = iter,
+                };
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1280,7 +1338,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TimeSpan? buildTimeout = null,
         TimeSpan? testTimeout = null,
         string? initCommand = null,
-        string? restoreCommand = null) =>
+        string? restoreCommand = null,
+        bool runTestsElevated = false) =>
         this.RunGateChainAsync(
             workItemId, workspace, iter, "per-iter",
             buildCommand, qualityCommands, testCommand,
@@ -1290,7 +1349,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             buildTimeout: buildTimeout,
             testTimeout: testTimeout,
             initCommand: initCommand,
-            restoreCommand: restoreCommand);
+            restoreCommand: restoreCommand,
+            runTestsElevated: runTestsElevated);
 
     /// <summary>
     /// Phase 59 Stage B — build the URL that <c>TranscriptLine.tsx</c>
@@ -3508,6 +3568,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // scope. Null for repos that configure neither (direct exec).
             initCommand: ResolveInitCommand(repo),
             restoreCommand: ResolveRestoreCommand(repo),
+            // 2026-05-26 — RunTestsElevated repos run the test stage via the
+            // elevated broker (Forge.Api is non-elevated). Broker unreachable
+            // => the gate throws BuildFailedException => workstream stalls.
+            runTestsElevated: repo?.RunTestsElevated == true,
             ct: ct);
 
         // Phase 45 follow-up -- collect only files the agent actually changed
@@ -5308,6 +5372,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // repo.InitCommand / repo.RestoreCommand.
         string? initCommand = null,
         string? restoreCommand = null,
+        // 2026-05-26 — repo.RunTestsElevated: route the TEST stage of both
+        // gate chains to the elevated broker (Forge.Api runs non-elevated).
+        bool runTestsElevated = false,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -6281,7 +6348,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         buildTimeout: buildTimeout,
                         testTimeout: testTimeout,
                         initCommand: initCommand,
-                        restoreCommand: restoreCommand);
+                        restoreCommand: restoreCommand,
+                        runTestsElevated: runTestsElevated);
 
                     if (perIterFailure is not null)
                     {
@@ -6939,7 +7007,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         buildTimeout: buildTimeout,
                         testTimeout: testTimeout,
                         initCommand: initCommand,
-                        restoreCommand: restoreCommand);
+                        restoreCommand: restoreCommand,
+                        runTestsElevated: runTestsElevated);
 
                     if (failure is null)
                     {

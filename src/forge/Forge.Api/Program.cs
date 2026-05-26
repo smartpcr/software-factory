@@ -32,6 +32,52 @@ ChildProcessTracker.Initialize();
 // burned the agent's entire wall-clock budget at score 0.
 ChildProcessEnv.CaptureBaseline();
 
+// ── Elevated-broker mode ──────────────────────────────────────────────────
+// The launcher starts a SECOND Forge.Api.exe with --elevated-broker as
+// Administrator (one UAC prompt). That instance runs ONLY the named-pipe test
+// broker (no web host), so the MAIN Forge.Api runs non-elevated — every git /
+// agent / normal-build child is non-elevated — and only the build/test command
+// of a RunTestsElevated repo is marshalled to this broker to run as admin.
+// --broker-shutdown: tell a running elevated broker to exit, then quit. Run
+// (non-elevated) by run-forge-ui.ps1 -Stop so the detached elevated broker is
+// cleaned up gracefully without an elevated taskkill / UAC prompt.
+if (Array.Exists(args, a => string.Equals(a, Forge.Api.Agents.ElevatedCommandBroker.ShutdownArg, StringComparison.Ordinal)))
+{
+    using var shutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    await Forge.Api.Agents.ElevatedCommandBroker.RequestShutdownAsync(shutCts.Token);
+    return;
+}
+
+if (Array.Exists(args, a => string.Equals(a, Forge.Api.Agents.ElevatedCommandBroker.ModeArg, StringComparison.Ordinal)))
+{
+    using var brokerCts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; brokerCts.Cancel(); };
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => brokerCts.Cancel();
+
+    // --watch-pid <pid>: exit when the (non-elevated) Forge.Api web host this
+    // broker serves exits. That way a plain non-elevated `-Stop` (which kills
+    // the host) also tears down this elevated broker — no separate elevated
+    // stop, and a `-Rebuild` restart cleanly replaces both.
+    var watchIdx = Array.IndexOf(args, "--watch-pid");
+    if (watchIdx >= 0 && watchIdx + 1 < args.Length
+        && int.TryParse(args[watchIdx + 1], out var watchPid) && watchPid > 0)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var host = System.Diagnostics.Process.GetProcessById(watchPid);
+                await host.WaitForExitAsync(brokerCts.Token);
+            }
+            catch { /* host already gone / bad pid */ }
+            brokerCts.Cancel();
+        });
+    }
+
+    await Forge.Api.Agents.ElevatedCommandBroker.RunServerAsync(brokerCts.Token);
+    return;
+}
+
 // ── Global crash diagnostics ──────────────────────────────────────────────
 // Log unhandled exceptions that would otherwise kill the process silently.
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -453,13 +499,15 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>(
 //   IStoryGitOps           → RealStoryGitOps (real git CLI against repo.CloneRoot)
 //   IStoryProviderOps      → ProviderStoryProviderOps (real provider.CreatePullRequest / Merge)
 // Phase 59 Stage C + S2 — impacted-test resolver chain. Order matters:
-// Roslyn first (precise, call-graph based for C# workspaces),
-// LSP second (precise, references-based for Rust / Go / Python / TS
-// via rust-analyzer / gopls / pylsp / typescript-language-server),
-// Heuristic last (filename + dir + content scan, universal fallback
-// for any workspace + the safety net when an LSP server isn't on
-// PATH). The chain is a singleton so per-workspace caches (Roslyn's
-// Solution, LSP's server processes) survive across gate runs.
+// LSP first so EVERY ecosystem (Rust / Go / Python / TS AND C# via
+// csharp-ls) narrows through the same references-based provider — the
+// consistent path. Roslyn second as a C# fallback (when csharp-ls isn't
+// on PATH or can't load the workspace); it also has an over-broad
+// "--filter present => no-op" guard that defeats narrowing on repos whose
+// TestCommand carries a standing category exclude, which the LSP path
+// avoids. Heuristic last (filename + dir + content scan, universal
+// fallback). The chain is a singleton so per-workspace caches (LSP server
+// processes, Roslyn's Solution) survive across gate runs.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>();
@@ -467,8 +515,8 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.ImpactedT
     new Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain(
         new Forge.Api.Services.Stories.ImpactedTests.IImpactedTestProvider[]
         {
-            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>(),
             sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>(),
+            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>(),
             sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>(),
         }));
 

@@ -72,8 +72,10 @@ public static class WorkspaceEcosystemDetector
     /// Map an ecosystem token to the language id the impacted-test LSP
     /// chain keys its <c>ILspLanguageSupport</c> set on. Returns
     /// <c>null</c> for ecosystems with no stdio language server in the
-    /// chain (<c>dotnet</c> goes to Roslyn in-process; <c>maven</c> /
-    /// <see cref="Unknown"/> fall through to the heuristic).
+    /// chain (<c>maven</c> / <see cref="Unknown"/> fall through to the
+    /// heuristic). <c>dotnet</c> now routes to the C# LSP support
+    /// (csharp-ls) so every ecosystem narrows through the same provider;
+    /// the in-process Roslyn provider remains a fallback behind LSP.
     /// </summary>
     public static string? ToLspLanguageId(string ecosystem) => ecosystem switch
     {
@@ -81,6 +83,7 @@ public static class WorkspaceEcosystemDetector
         "rust" => "rust",
         "python" => "python",
         "node" => "typescript",
+        "dotnet" => "csharp",
         _ => null,
     };
 

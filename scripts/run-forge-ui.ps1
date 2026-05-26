@@ -37,48 +37,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── Self-elevation ───────────────────────────────────────────────────────
-# Forge.Api spawns build/test workers with UseShellExecute=false, so the
-# child cmd.exe inherits THIS process's token. Repos flagged
-# RunTestsElevated (e.g. AzureStack-Common-Infrastructure 'update' and
-# 'common-infra'; their tests write HKLM and bind HttpListener URLs,
-# both of which require Administrator) will fail fast in
-# BuildValidationWorker.cs:IsProcessElevated() unless we relaunch this
-# script elevated up front. One UAC prompt at startup (silent when UAC
-# is in auto-elevate mode), then everything Forge.Api spawns runs admin.
-#
-# IMPORTANT: relaunch via pwsh.exe (PowerShell 7), not powershell.exe
-# (Windows PowerShell 5.1). The script contains UTF-8 box-drawing chars
-# and emoji and is stored without a BOM; 5.1 reads it as Windows-1252
-# and chokes with "Missing closing }" cascading parse errors. PS7 reads
-# UTF-8-no-BOM correctly. Fall back to powershell.exe only if pwsh.exe
-# is unavailable.
-#
-# -Stop and -Status only inspect processes; skip the prompt for those.
-if (-not ($Stop -or $Status)) {
-    $isAdmin = ([Security.Principal.WindowsPrincipal] `
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-        ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) {
-        Write-Host "[run-forge-ui] Not elevated; relaunching with admin privileges (accept the UAC prompt)..." -ForegroundColor Yellow
-        # No -NoExit: the elevated launcher's job is to spawn the detached
-        # Forge.Api.exe and exit. Anything we'd want to see post-mortem is
-        # already captured in forge-launcher-transcript.log via Start-Transcript.
-        $forwarded = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
-        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
-            if ($entry.Value -is [switch]) {
-                if ($entry.Value.IsPresent) { $forwarded += "-$($entry.Key)" }
-            } else {
-                $forwarded += "-$($entry.Key)"
-                $forwarded += "$($entry.Value)"
-            }
-        }
-        $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-        $shellExe = if ($pwshCmd) { $pwshCmd.Source } else { 'powershell.exe' }
-        Start-Process -FilePath $shellExe -ArgumentList $forwarded -Verb RunAs
-        exit
-    }
-}
+# ── Privilege model (2026-05-26) ─────────────────────────────────────────
+# Forge.Api runs NON-elevated, so every git / agent (Copilot CLI/SDK) /
+# normal-build child it spawns is non-elevated too — which avoids the whole
+# class of elevation bugs (shared ~/.gitconfig access denials, MSBuildLocator
+# env pollution, worktree pollution). The ONLY thing that needs Administrator
+# is the build/test command of a repo flagged RunTestsElevated (its tests
+# write HKLM / bind HttpListener URLs). That single command is marshalled to a
+# small ELEVATED broker — a second `Forge.Api.exe --elevated-broker` this
+# launcher starts via one UAC prompt (Start-ElevatedBroker below). The broker
+# watches the web host's PID and self-exits when it stops, so a plain
+# non-elevated -Stop tears down both. This launcher therefore NO LONGER
+# self-elevates the whole script.
 
 # ── Diagnostic transcript ───────────────────────────────────────────────
 # Capture everything the launcher does so the elevated relaunch (which runs
@@ -93,8 +63,19 @@ try {
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $UIDir = Join-Path $RepoRoot 'src\forge\Forge.UI'
 $ServerProj = Join-Path $RepoRoot 'src\forge\Forge.Api\Forge.Api.csproj'
+$ServerBinDir = Join-Path $RepoRoot 'src\forge\Forge.Api\bin\Debug'
 $ApiPort = 5180
 $UiPort  = 5181
+
+# ── Resolve the built Forge.Api apphost (single source of truth) ──────────
+# Don't hard-code the TFM/RID subdir (e.g. net8.0\win-x64) — that's a csproj
+# fact a framework/RID change would silently break. Glob under bin\Debug for
+# the apphost, newest first. Returns $null when it hasn't been built yet.
+function Get-ServerExe {
+    Get-ChildItem -Path $ServerBinDir -Recurse -Filter 'Forge.Api.exe' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
 
 # ── Helper: find running processes ───────────────────────────────────────
 function Get-ServerProcesses {
@@ -140,6 +121,15 @@ function Stop-TargetProcesses {
     param([switch]$IncludeServer, [switch]$IncludeUI)
 
     if ($IncludeServer) {
+        # Gracefully stop the detached ELEVATED broker FIRST. It runs as admin,
+        # so a non-elevated Stop-Process can't kill it; instead we tell it to
+        # exit over its named pipe (no UAC). Runs the lightweight --broker-shutdown
+        # mode which connects, sends shutdown, and returns (~2s, no-op if absent).
+        $brokerExe = Get-ServerExe
+        if ($brokerExe) {
+            Write-Host "  Signalling elevated broker to shut down..." -ForegroundColor Gray
+            try { & $brokerExe --broker-shutdown 2>$null | Out-Null } catch { }
+        }
         Get-ServerProcesses | ForEach-Object {
             Write-Host "  Stopping server (PID $($_.Id))..." -ForegroundColor Gray
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -249,8 +239,6 @@ if ($targetServer) {
     # Windows Terminal allocates a fresh console so it doesn't hit this).
     # The leaf exe has no stdio-forwarding behaviour, so the launcher detaches
     # cleanly for every caller.
-    $serverExe = Join-Path $RepoRoot 'src\forge\Forge.Api\bin\Debug\net8.0\win-x64\Forge.Api.exe'
-
     # Ensure the binary is up-to-date. -Rebuild already handled this above;
     # otherwise do an incremental compile (no-op when nothing changed).
     if (-not $Rebuild) {
@@ -258,8 +246,10 @@ if ($targetServer) {
         dotnet build $ServerProj -c Debug --nologo --verbosity quiet | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Server build failed" }
     }
-    if (-not (Test-Path $serverExe)) {
-        throw "Forge.Api.exe not found at $serverExe — build output path may have changed."
+    # Resolve the apphost AFTER the build so a first-ever build is found too.
+    $serverExe = Get-ServerExe
+    if (-not $serverExe) {
+        throw "Forge.Api.exe not found under $ServerBinDir — build output path may have changed."
     }
 
     Write-Host "🚀 Starting Forge.Api on http://localhost:$ApiPort ..." -ForegroundColor Yellow
@@ -318,13 +308,38 @@ if ($targetServer) {
         }
     }
 
-    Start-Process -FilePath $serverExe `
+    $serverProc = Start-Process -FilePath $serverExe `
         -ArgumentList "--environment","Development" `
         -WorkingDirectory $RepoRoot `
         -RedirectStandardOutput $serverLog `
         -RedirectStandardError $serverErr `
-        -WindowStyle Hidden
+        -WindowStyle Hidden `
+        -PassThru
     Wait-ForPort -Port $ApiPort -Label "Forge.Api" -TimeoutSeconds 30 | Out-Null
+
+    # ── Elevated test broker (one UAC prompt) ─────────────────────────────
+    # Start a SECOND Forge.Api.exe in --elevated-broker mode as Administrator.
+    # It serves ONLY the build/test command of RunTestsElevated repos over a
+    # per-user named pipe; the main host above stays NON-elevated (so git /
+    # agents / normal build run non-elevated). --watch-pid ties the broker's
+    # lifetime to the web host, so a plain non-elevated -Stop / -Rebuild tears
+    # down both. -Verb RunAs uses ShellExecute, which cannot redirect stdio,
+    # so we don't pass -RedirectStandard*. If the operator declines the UAC
+    # prompt the broker just isn't there: RunTestsElevated gates stall (safe)
+    # and everything non-elevated is unaffected.
+    if ($serverProc) {
+        Write-Host "🔐 Starting elevated test broker (accept the UAC prompt; only RunTestsElevated repos use it)..." -ForegroundColor Yellow
+        try {
+            Start-Process -FilePath $serverExe `
+                -ArgumentList "--elevated-broker","--watch-pid","$($serverProc.Id)" `
+                -WorkingDirectory $RepoRoot `
+                -Verb RunAs `
+                -WindowStyle Hidden | Out-Null
+            Write-Host "  ✅ Elevated test broker started (PID $($serverProc.Id) watched)." -ForegroundColor Gray
+        } catch {
+            Write-Host "  ⚠ Elevated broker not started ($_). RunTestsElevated repos will stall their test gate until it's running; everything else is unaffected." -ForegroundColor Yellow
+        }
+    }
 }
 
 # ── Start UI (detached) ─────────────────────────────────────────────────

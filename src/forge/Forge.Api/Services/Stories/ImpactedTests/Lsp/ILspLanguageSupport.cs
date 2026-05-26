@@ -92,6 +92,20 @@ public interface ILspLanguageSupport
     /// where it gets centralised.
     /// </summary>
     string RewriteCommand(string originalCommand, string workspace, IReadOnlyList<TestEntryPoint> impacted);
+
+    /// <summary>
+    /// When the server found NO impacted tests, whether to DEFER (the
+    /// provider returns <c>null</c> so the next chain provider gets a
+    /// turn) instead of SKIP (terminate the chain — the gate runs
+    /// nothing). Defaults to <c>false</c>: the trusted servers
+    /// (rust-analyzer / gopls / pylsp / tsserver) treat an empty match as
+    /// a genuine "no impacted tests → safe to skip". C# overrides this to
+    /// <c>true</c> — <c>csharp-ls</c> on large sln-less traversal repos
+    /// can return empty because it couldn't load the workspace, and
+    /// skipping the gate there would be a false green; deferring lets
+    /// Roslyn / the heuristic still run.
+    /// </summary>
+    bool DeferGateWhenNoImpactedFound => false;
 }
 
 /// <summary>

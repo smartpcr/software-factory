@@ -222,6 +222,33 @@ public interface IStoryGitOps
         CancellationToken ct = default);
 
     /// <summary>
+    /// Phase 86 — generalised counterpart to
+    /// <see cref="EnsurePlanDocPathsCommittableAsync"/> for non-plan-doc paths
+    /// (qa-e2e <c>tests/...</c> artifacts, future configurable output trees).
+    /// Same auto-fix semantics as the plan-doc variant: when the path(s)
+    /// would be excluded by the repo's <c>.gitignore</c>, append a narrow
+    /// allowlist exception for <paramref name="baseDir"/> as a prep commit
+    /// on <paramref name="branch"/>, then re-verify. If the path is still
+    /// ignored (nested <c>.gitignore</c> blocker), throws
+    /// <see cref="GitIgnoredPathException"/> with operator guidance.
+    ///
+    /// <para>Use this when an orchestrator path commits files under a
+    /// configurable / non-plan-doc base directory (e.g. qa-e2e writes
+    /// <c>tests/...</c> by default — OneBranch repos' <c>.gitignore</c>
+    /// <c>/*/</c> rule would silently swallow those without preflight).</para>
+    ///
+    /// <para>Idempotent + worktree-required like the plan-doc variant.
+    /// Implementation may delegate to the same underlying narrow-allowlist
+    /// helper.</para>
+    /// </summary>
+    Task EnsurePathsCommittableAsync(
+        RepoRow? repo,
+        string branch,
+        IEnumerable<string> repoRelativePaths,
+        string baseDir,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Push the local branch to <c>origin</c>. Stages and commits any
     /// uncommitted changes in the worktree first so local-only per-iteration
     /// commits are included. No-op when nothing to push.

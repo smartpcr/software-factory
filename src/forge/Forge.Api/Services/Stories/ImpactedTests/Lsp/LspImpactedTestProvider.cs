@@ -91,9 +91,13 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
     };
 
     /// <summary>
-    /// Default-wired with the four S2 language supports in priority
-    /// order (Rust, Go, Python, TypeScript). Tests construct with a
-    /// custom set when they want to pin a specific support.
+    /// Default-wired with the language supports in priority order
+    /// (Rust, Go, Python, TypeScript, C#). C# (csharp-ls) lets the LSP
+    /// path narrow C# repos too, so every ecosystem flows through the
+    /// SAME provider. Per-workspace language selection is by the shared
+    /// <see cref="WorkspaceEcosystemDetector"/> (then marker probe), so a
+    /// stray C# project in a Go repo doesn't mis-route. Tests construct
+    /// with a custom set when they want to pin a specific support.
     /// </summary>
     public LspImpactedTestProvider()
         : this(new ILspLanguageSupport[]
@@ -102,6 +106,7 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
             new Languages.GoLanguageSupport(),
             new Languages.PythonLanguageSupport(),
             new Languages.TypeScriptLanguageSupport(),
+            new Languages.CSharpLanguageSupport(),
         })
     {
     }
@@ -219,6 +224,11 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
             // chain with a skip — the heuristic / Roslyn may still find
             // impacted tests for the files we don't own.
             if (diffHasForeignSourceCode) return null;
+            // Languages whose server can return empty because it couldn't
+            // load the workspace (C# / csharp-ls on large sln-less repos)
+            // DEFER instead of skipping — a skipped gate there is a false
+            // green. Roslyn / the heuristic get a turn instead.
+            if (language.DeferGateWhenNoImpactedFound) return null;
             return new ImpactedTestResolverResult(
                 Command: originalCommand,
                 Rewritten: false,

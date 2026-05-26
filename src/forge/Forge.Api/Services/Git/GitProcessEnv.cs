@@ -87,8 +87,104 @@ internal static class GitProcessEnv
     /// </summary>
     public static void ApplyExplicit(ProcessStartInfo psi, GitPromptPolicy policy) => ApplyInternal(psi, policy);
 
+    private static readonly object ConfigLock = new();
+    private static string? forgeGlobalConfigPath;
+    private static bool forgeGlobalConfigResolved;
+
+    /// <summary>
+    /// Resolve (and lazily create) a Forge-private copy of the operator's
+    /// global git config at <c>%LOCALAPPDATA%\Forge\gitconfig</c>, refreshed
+    /// when the source is newer. Forge's git subprocesses point
+    /// <c>GIT_CONFIG_GLOBAL</c> here so they never contend on the shared
+    /// <c>~/.gitconfig</c> (see <see cref="ApplyInternal"/>).
+    ///
+    /// <para>Returns <c>null</c> on any failure (e.g. the source genuinely
+    /// can't be read), in which case the caller leaves
+    /// <c>GIT_CONFIG_GLOBAL</c> unset and git falls back to its default
+    /// <c>~/.gitconfig</c> resolution — i.e. the prior behaviour, so this
+    /// can never make git worse than before.</para>
+    /// </summary>
+    private static string? EnsureForgeGlobalConfig()
+    {
+        if (forgeGlobalConfigResolved) return forgeGlobalConfigPath;
+        lock (ConfigLock)
+        {
+            if (forgeGlobalConfigResolved) return forgeGlobalConfigPath;
+            try
+            {
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Forge");
+                Directory.CreateDirectory(dir);
+                var dest = Path.Combine(dir, "gitconfig");
+
+                // Source = the operator's global config (USERPROFILE\.gitconfig,
+                // matching git's resolution when HOME is unset on Windows).
+                var profile = Environment.GetEnvironmentVariable("USERPROFILE");
+                var src = string.IsNullOrEmpty(profile) ? null : Path.Combine(profile, ".gitconfig");
+
+                if (src is not null && File.Exists(src))
+                {
+                    // Copy on first use or when the operator's config changed
+                    // (e.g. a re-auth updated credential settings). Forge's own
+                    // git writes go to the copy; refreshing from a newer source
+                    // is the intended source-of-truth direction.
+                    if (!File.Exists(dest)
+                        || File.GetLastWriteTimeUtc(src) > File.GetLastWriteTimeUtc(dest))
+                    {
+                        File.Copy(src, dest, overwrite: true);
+                    }
+                }
+                else if (!File.Exists(dest))
+                {
+                    // No operator config to copy — start with an empty private
+                    // config rather than leaving git on the shared file.
+                    File.WriteAllText(dest, string.Empty);
+                }
+
+                forgeGlobalConfigPath = dest;
+            }
+            catch
+            {
+                // Safe fallback: leave GIT_CONFIG_GLOBAL unset so git uses its
+                // default ~/.gitconfig (prior behaviour). Never throw from a
+                // process-launch hook.
+                forgeGlobalConfigPath = null;
+            }
+            finally
+            {
+                forgeGlobalConfigResolved = true;
+            }
+
+            return forgeGlobalConfigPath;
+        }
+    }
+
     private static void ApplyInternal(ProcessStartInfo psi, GitPromptPolicy policy)
     {
+        // Isolate Forge's git from the user's SHARED global ~/.gitconfig.
+        // Forge.Api runs many git ops concurrently (one+ per workstream) and
+        // — when launched via the dev script for RunTestsElevated repos — runs
+        // ELEVATED, while the operator may ALSO be running manual git in the
+        // same clone. All of those hammer the one global config file. Git for
+        // Windows (MSYS) opens it per-op; when one git/GCM is mid-write of the
+        // file (atomic write = .lock + rename) a concurrent reader hits an
+        // ERROR_SHARING_VIOLATION that surfaces as the maddening
+        //   "warning: unable to access '…/.gitconfig': Permission denied"
+        //   "fatal: unknown error occurred while reading the configuration files"
+        // (exit 128) — NOT an ACL/permission problem (Administrators have full
+        // control); it's pure contention. Observed 2026-05-26 on the `update`
+        // repo: EVERY task failed there. Pointing GIT_CONFIG_GLOBAL at a
+        // Forge-OWNED copy means Forge's git reads/writes its own file and
+        // never contends on the user's ~/.gitconfig. The copy preserves the
+        // user's identity + credential settings, so GCM/wincred auth (which
+        // reads the Windows Credential vault, not this file) is unaffected.
+        var forgeGlobalCfg = EnsureForgeGlobalConfig();
+        if (forgeGlobalCfg is not null)
+        {
+            psi.Environment["GIT_CONFIG_GLOBAL"] = forgeGlobalCfg;
+        }
+
         // GIT_TERMINAL_PROMPT=0 is always set: Forge.Api has no TTY, so
         // a terminal prompt would just EOF-fail. Setting this to 0
         // makes the failure fast and clean instead of letting git try

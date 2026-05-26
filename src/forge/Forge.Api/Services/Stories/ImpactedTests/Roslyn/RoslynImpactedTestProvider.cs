@@ -64,20 +64,16 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         // chain falls through to the next provider.
         try
         {
-            foreach (var _ in Directory.EnumerateFiles(workspace, "*.sln", SearchOption.AllDirectories))
-            {
-                return Task.FromResult(true);
-            }
-            foreach (var _ in Directory.EnumerateFiles(workspace, "*.csproj", SearchOption.AllDirectories))
-            {
-                return Task.FromResult(true);
-            }
+            // Use the same entry resolution as ResolveAsync (which excludes
+            // build-output dirs), so we don't claim-handle a repo whose only
+            // .csproj live under out\/bin\/obj\.
+            return Task.FromResult(FindEntry(workspace) is not null);
         }
         catch
         {
             // IO error → can't handle.
+            return Task.FromResult(false);
         }
-        return Task.FromResult(false);
     }
 
     public async Task<ImpactedTestResolverResult?> ResolveAsync(
@@ -303,8 +299,8 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
             return cached;
         }
 
-        var entryPath = FindEntryPath(workspace);
-        if (entryPath is null) return null;
+        var entry = FindEntry(workspace);
+        if (entry is null) return null;
 
         // MSBuildWorkspace expects the locator to be registered;
         // Program.cs does this at startup. If registration failed
@@ -314,14 +310,37 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         Solution solution;
         try
         {
-            if (entryPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            if (entry.Value.IsSolution)
             {
-                solution = await mb.OpenSolutionAsync(entryPath, cancellationToken: ct).ConfigureAwait(false);
+                solution = await mb.OpenSolutionAsync(entry.Value.Paths[0], cancellationToken: ct).ConfigureAwait(false);
             }
             else
             {
-                var proj = await mb.OpenProjectAsync(entryPath, cancellationToken: ct).ConfigureAwait(false);
-                solution = proj.Solution;
+                // sln-less (traversal-based, e.g. build.proj / dirs.proj) repo:
+                // load the SOURCE test projects (+ their transitive references)
+                // so the reference graph AND test-project count are real.
+                // Loading one arbitrary .csproj (the old behaviour) picked a
+                // project under out\ on the FRP `update` repo, yielding a
+                // 0-test-project graph that defeated narrowing entirely and ran
+                // the whole suite.
+                foreach (var projPath in entry.Value.Paths)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        await mb.OpenProjectAsync(projPath, cancellationToken: ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // One project failed to load (unrestored / malformed) —
+                        // keep loading the rest so partial narrowing still works.
+                    }
+                }
+                solution = mb.CurrentSolution;
             }
         }
         catch
@@ -330,21 +349,93 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
             throw;
         }
 
-        var entry = new CachedSolution(solution, mb);
-        SolutionCache[cacheKey] = entry;
-        return entry;
+        var cachedEntry = new CachedSolution(solution, mb);
+        SolutionCache[cacheKey] = cachedEntry;
+        return cachedEntry;
     }
 
-    private static string? FindEntryPath(string workspace)
+    /// <summary>
+    /// Locate the workspace entry to load. Prefers a real <c>.sln</c> (root,
+    /// then anywhere); for sln-less traversal repos (build.proj / dirs.proj)
+    /// returns the set of SOURCE test projects to load so the reference graph
+    /// and test-project count are complete. Build-output and intermediate
+    /// directories (out/bin/obj/packages/TestResults/.git/…) are excluded so we
+    /// never load a generated project out of <c>out\</c> (which silently
+    /// defeated narrowing on the FRP repos).
+    /// </summary>
+    private static (bool IsSolution, IReadOnlyList<string> Paths)? FindEntry(string workspace)
     {
-        // Prefer a .sln at the workspace root, then any .sln, then
-        // the first .csproj. The first match wins — we don't try
-        // to merge multiple solutions.
-        var rootSln = Directory.EnumerateFiles(workspace, "*.sln", SearchOption.TopDirectoryOnly).FirstOrDefault();
-        if (rootSln is not null) return rootSln;
-        var anySln = Directory.EnumerateFiles(workspace, "*.sln", SearchOption.AllDirectories).FirstOrDefault();
-        if (anySln is not null) return anySln;
-        return Directory.EnumerateFiles(workspace, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
+        var workspaceFull = Path.GetFullPath(workspace);
+
+        var slns = SafeEnumerate(workspace, "*.sln")
+            .Where(p => !IsUnderExcludedDir(p, workspaceFull))
+            .ToList();
+        var rootSln = slns.FirstOrDefault(p =>
+            string.Equals(Path.GetDirectoryName(p), workspaceFull, StringComparison.OrdinalIgnoreCase));
+        if (rootSln is not null) return (true, new[] { rootSln });
+        if (slns.Count > 0) return (true, new[] { slns[0] });
+
+        var csprojs = SafeEnumerate(workspace, "*.csproj")
+            .Where(p => !IsUnderExcludedDir(p, workspaceFull))
+            .ToList();
+        var testProjs = csprojs.Where(IsTestProjectFile).ToList();
+        if (testProjs.Count > 0) return (false, testProjs);
+        if (csprojs.Count > 0) return (false, new[] { csprojs[0] });
+        return null;
+    }
+
+    private static readonly string[] ExcludedDirSegments =
+    {
+        "out", "bin", "obj", "packages", "TestResults", "node_modules",
+        ".git", ".vs", ".nuget", ".worktree",
+    };
+
+    private static bool IsUnderExcludedDir(string fullPath, string workspaceFull)
+    {
+        string rel;
+        try { rel = Path.GetRelativePath(workspaceFull, fullPath); }
+        catch { return false; }
+        foreach (var seg in rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            foreach (var ex in ExcludedDirSegments)
+            {
+                if (string.Equals(seg, ex, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<string> SafeEnumerate(string workspace, string pattern)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(workspace, pattern, SearchOption.AllDirectories).ToList();
+        }
+        catch
+        {
+            try { return Directory.EnumerateFiles(workspace, pattern, SearchOption.TopDirectoryOnly).ToList(); }
+            catch { return new List<string>(); }
+        }
+    }
+
+    /// <summary>
+    /// Cheap pre-load test-project probe (MetadataReferences aren't available
+    /// before the workspace loads): the project file references
+    /// <c>Microsoft.NET.Test.Sdk</c> or sets <c>&lt;IsTestProject&gt;true</c>.
+    /// Mirrors the file-content fallback in <see cref="IsTestProject"/>.
+    /// </summary>
+    private static bool IsTestProjectFile(string csprojPath)
+    {
+        try
+        {
+            var text = File.ReadAllText(csprojPath);
+            return text.Contains("Microsoft.NET.Test.Sdk", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("<IsTestProject>true</IsTestProject>", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task<string> ComputeHeadShaAsync(string workspace, CancellationToken ct)

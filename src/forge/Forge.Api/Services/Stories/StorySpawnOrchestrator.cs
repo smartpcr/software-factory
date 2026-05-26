@@ -3250,16 +3250,83 @@ public sealed class StorySpawnOrchestrator
             return;
         }
 
+        // Phase 86 — recheck status after the LLM producer returns; operator
+        // may have paused/cancelled the workstream mid-loop (Pair 2 caught by
+        // an operator action between producer start and return). Without this
+        // recheck the stale `w` row from the outer dispatcher slips through.
+        var afterProducerRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+        if (afterProducerRow is null) return;
+        if (afterProducerRow.Status is "cancelled" or "paused" or "complete" or "merging" or "review")
+        {
+            this.logger?.LogDebug(
+                "qa-e2e workstream {WsId} status={Status} after producer; skipping commit (idempotent).",
+                w.Id, afterProducerRow.Status);
+            return;
+        }
+
         // Commit qa-e2e files to the workstream branch. The slug
         // computation reuses WorkstreamWorktreeSlug.Compute which
         // (Stage 3.2) shadows the impl sibling's `stage-{N.M}-{slug}`
         // with a `-e2e` suffix so the on-disk paths are intuitive.
         var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, control2, db2, ct);
-        await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
-            $"qa-e2e({w.Id}): {w.Name}", ct);
 
-        // Merge latest base into the branch so the PR diff is minimal.
-        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
+        // Phase 86 — the LLM producer used a temp workspace
+        // (CrewStoryArtifactStrategy.PrepareWorkspace), NOT a git worktree.
+        // Materialise the git worktree HERE so the auto-fix preflight has a
+        // working directory for `git check-ignore`, AND so CommitFilesAsync
+        // reuses the same worktree slug deterministically.
+        await this.git.EnsureWorktreeAsync(repo, w.Branch, baseBranch, ct, worktreeSlug: wsSlug);
+
+        // Phase 86 — auto-fix preflight + commit + merge under one
+        // try/catch. When the repo's root `.gitignore` would exclude the
+        // qa-e2e output paths (OneBranch `/*/` + allowlist case), the
+        // preflight appends a narrow `!/tests/` exception as a prep commit
+        // BEFORE the actual file commit. On failure (nested .gitignore
+        // blocker, etc.) the fail-fast guard inside CommitFilesAsync still
+        // throws GitIgnoredPathException — we catch it here and STALL
+        // instead of bubbling up. Without this catch the outer
+        // DriveImplementAsync sweep re-enters the workstream on every tick
+        // and spins forever burning LLM tokens (observed 3 retry cycles in
+        // task_transcript_event before this fix).
+        //
+        // Note: only `GitIgnoredPathException` is caught; transient git /
+        // transport errors continue to bubble for the existing backoff +
+        // retry path in DriveImplementAsync (matches the producer's
+        // IsTransientTransportError contract at line ~3217).
+        const string e2eBaseDir = "tests";
+        try
+        {
+            await this.git.EnsurePathsCommittableAsync(
+                repo, w.Branch, files.Keys, e2eBaseDir, ct);
+
+            await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
+                $"qa-e2e({w.Id}): {w.Name}", ct);
+
+            // Merge latest base into the branch so the PR diff is minimal.
+            await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
+        }
+        catch (GitIgnoredPathException ex)
+        {
+            this.logger?.LogWarning(ex,
+                "qa-e2e commit hit gitignored paths for workstream {WsId} on branch {Branch}; "
+                + "marking stalled (auto-fix could not land the allowlist exception, "
+                + "or a nested .gitignore is blocking). Paths: {Paths}",
+                w.Id, w.Branch, string.Join(", ", ex.IgnoredPaths));
+
+            var stalledRow = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            if (stalledRow is not null && stalledRow.Status is not "cancelled" and not "complete")
+            {
+                stalledRow.Status = WorkstreamStatuses.Stalled;
+                // The exception's message already includes the actionable
+                // operator guidance (PlanDocBaseDir / nested-gitignore hint)
+                // and the raw `git check-ignore -v` output. Preserve it
+                // verbatim so the UI Stalled badge renders enough context.
+                stalledRow.StallReason = $"qa-e2e gitignored paths: {ex.Message}";
+                await db2.SaveChangesAsync(ct);
+                await EmitChange(hub, "ws-stalled", spawn, ct);
+            }
+            return;
+        }
 
         // Skip the PR when the commit produced no diff vs base. This happens
         // when every file the producer emitted matched a repo `.gitignore`

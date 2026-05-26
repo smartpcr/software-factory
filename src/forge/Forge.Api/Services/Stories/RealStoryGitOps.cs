@@ -1250,6 +1250,27 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
+    /// Phase 86 — generalised auto-fix for any commit base directory (not
+    /// just plan docs). Delegates to <see cref="EnsurePlanDocPathsCommittableAsync"/>
+    /// because the underlying narrow-allowlist logic is content-agnostic:
+    /// the caller picks <paramref name="baseDir"/>, the helper computes the
+    /// minimal <c>!/{baseDir}/</c> exception chain (via
+    /// <see cref="ComputeGitignoreNarrowExceptions"/>), appends it as a prep
+    /// commit on <paramref name="branch"/>, and re-verifies.
+    ///
+    /// <para>Worktree-required: caller must invoke
+    /// <see cref="EnsureWorktreeAsync"/> first so <c>git check-ignore</c>
+    /// has a working directory.</para>
+    /// </summary>
+    public Task EnsurePathsCommittableAsync(
+        RepoRow? repo,
+        string branch,
+        IEnumerable<string> repoRelativePaths,
+        string baseDir,
+        CancellationToken ct = default)
+        => this.EnsurePlanDocPathsCommittableAsync(repo, branch, repoRelativePaths, baseDir, ct);
+
+    /// <summary>
     /// Phase 85 — build the minimal narrow allowlist exception chain that
     /// un-ignores <paramref name="planDocBaseDir"/> under a root-level
     /// catch-all ignore (e.g. OneBranch's <c>/*/</c>). Each ancestor
@@ -2038,6 +2059,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
             CreateNoWindow = true,
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
+        // Apply the shared git policy (prompt fail-fast, ADO oauth, and the
+        // Forge-private GIT_CONFIG_GLOBAL that avoids ~/.gitconfig contention)
+        // FIRST, then layer the caller's explicit overrides (e.g. GIT_EDITOR)
+        // on top so they still win. Without this, merge/commit ran without the
+        // policy and could hit the shared-config "Permission denied" failure.
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
         foreach (var kv in envOverride)
         {
             if (kv.Value is null) psi.Environment.Remove(kv.Key);
