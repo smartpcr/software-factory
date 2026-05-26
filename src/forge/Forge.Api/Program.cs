@@ -24,6 +24,14 @@ using Microsoft.EntityFrameworkCore;
 // they can't pile up as orphans across restarts.
 ChildProcessTracker.Initialize();
 
+// Capture the PRISTINE process environment NOW — before MSBuildLocator
+// (below) or anything else mutates it — so every child process Forge spawns
+// (Copilot CLI/SDK, dotnet build/test/restore, …) gets a clean, fresh-shell
+// environment instead of inheriting Forge.Api's SDK-resolver pollution.
+// See ChildProcessEnv for why this prevents the MSB4276 build failures that
+// burned the agent's entire wall-clock budget at score 0.
+ChildProcessEnv.CaptureBaseline();
+
 // ── Global crash diagnostics ──────────────────────────────────────────────
 // Log unhandled exceptions that would otherwise kill the process silently.
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>

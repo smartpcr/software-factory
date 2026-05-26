@@ -6311,6 +6311,48 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             workspace,
                         }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
+                        // 2026-05-25 — a TEST-gate TIMEOUT (distinct from a
+                        // normal assertion failure) means the suite is too
+                        // large/slow or hung for the gate budget; re-running
+                        // the same command next iter just burns another full
+                        // timeout + generator iter ($$$). Stall IMMEDIATELY for
+                        // operator triage instead of waiting for
+                        // BuildFailThreshold consecutive timeouts. Observed on
+                        // local:UPDATE-HISTORY-IN-CL stage-1.1: with impacted-
+                        // only off, the gate ran the whole build.proj suite
+                        // (OnlineDiscoveryTests needs real online-discovery
+                        // infra) and timed out at 15 min every iter.
+                        if (perIterFailure.Stage == "test" && perIterFailure.Result.TimedOut)
+                        {
+                            await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
+                            {
+                                stage = "per-iter",
+                                gateStage = perIterFailure.Stage,
+                                iter,
+                                reason = "test-gate-timeout",
+                                durationSec = perIterFailure.Result.Duration.TotalSeconds,
+                                command = perIterFailure.Command,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                            throw new BuildFailedException(
+                                $"Test gate `{perIterFailure.Command}` TIMED OUT after "
+                                + $"{perIterFailure.Result.Duration.TotalMinutes:F1} min (iter {iter}). The suite is "
+                                + "too large/slow or hung for the gate budget — re-running won't help, so stalling "
+                                + "for operator triage. Fix: enable impacted-only on the repo, raise TestTimeoutSec, "
+                                + $"or exclude the infra-dependent tests.\n\n{perIterFailure.Result.ErrorSummary}")
+                            {
+                                ExitCode = perIterFailure.Result.ExitCode,
+                                ErrorCount = perIterFailure.Result.ErrorCount,
+                                WarningCount = perIterFailure.Result.WarningCount,
+                                ErrorSummary = perIterFailure.Result.ErrorSummary,
+                                TrippedByConsecutiveIters = false,
+                                ConsecutiveBrokenIters = consecutiveGateFailure,
+                                LastIteration = iter,
+                                Stage = perIterFailure.Stage,
+                                Command = perIterFailure.Command,
+                            };
+                        }
+
                         if (consecutiveGateFailure >= BuildFailThreshold)
                         {
                             await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new

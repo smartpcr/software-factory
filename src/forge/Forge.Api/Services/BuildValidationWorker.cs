@@ -10,6 +10,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Stories;
@@ -470,12 +471,10 @@ public sealed class BuildValidationWorker : BackgroundService
         // lacks Microsoft.Build.Traversal (the repo's build.proj SDK), so the build
         // dies during evaluation with MSB4276 in ~4s ("Build FAILED. 0 Error(s)").
         // A fresh devbox shell never has these set, so the operator's manual build
-        // succeeds. Removing them restores clean, global.json-driven SDK resolution.
-        psi.Environment.Remove("MSBUILD_EXE_PATH");
-        psi.Environment.Remove("MSBuildExtensionsPath");
-        psi.Environment.Remove("MSBuildExtensionsPath32");
-        psi.Environment.Remove("MSBuildExtensionsPath64");
-        psi.Environment.Remove("MSBuildSDKsPath");
+        // succeeds. This path rebuilds PATH from the registry above (interactive
+        // devbox simulation), so we only need to strip the SDK-resolver denylist
+        // here — centralised in ChildProcessEnv so the list has one home.
+        ChildProcessEnv.StripDenied(psi);
 
         void Overlay(EnvironmentVariableTarget target)
         {

@@ -89,6 +89,20 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
   implement path; this invariant extends that fix to every doc/code agent — see `forge_implementation.md`
   §"Engineer agent edits real repo files in place". The `storyworkspaces` scratch sandbox is a documented
   root-cause bug, not a sanctioned workspace.)*
+- **Child processes get a clean env from the worktree — never Forge.Api's (hard invariant, code-enforced).**
+  Every build/test/agent subprocess (the Copilot CLI/SDK server, `dotnet build/test/restore`, cargo/npm/go)
+  launches with **cwd = the worktree** and an environment rebuilt from a **pristine baseline captured at
+  process start before any in-process mutation** (`Agents/ChildProcessEnv`), NOT a copy of Forge.Api's live
+  env. Forge.Api calls `MSBuildLocator.RegisterDefaults()` for its in-process Roslyn workspace, which injects
+  SDK-resolver vars (`MSBUILD_EXE_PATH`/`MSBuildSDKsPath`/…) into its process; a child that inherits them
+  resolves SDKs against Forge's net8 SDK and dies with `MSB4276` (e.g. can't find `Microsoft.Build.Traversal`)
+  — which an LLM agent then misreports as a "NuGet feed auth" failure and burns its full wall-clock budget on.
+  The guarantee is **deterministic in code, never via the agent prompt**: `ChildProcessEnv.CaptureBaseline()`
+  (Program.cs) + `.Apply(psi)` / `.ToDictionary()` at each launch site, a denied-vars list as
+  belt-and-suspenders, and `ChildProcessEnvIsolationTests` locking it. cwd is set via
+  `AgentContext.WorktreePath` → `ProcessStartInfo.WorkingDirectory` (CLI) / `SessionConfig.WorkingDirectory`
+  (SDK). *(Root cause: local:UPDATE-HISTORY-IN-CL stage-1.1, 2026-05-25. No PAT is needed for restore — the
+  interactive credential provider's cached token is reused once the env is clean.)*
 - **Repo ↔ provider exclusivity (Q4).** A repo is exactly one provider; sprint/iteration follows
   that provider (ADO iteration paths, GitHub milestones). **No local Forge sprint.**
 - **Product ↔ repo is strictly 1:N (Q5).** `repos.product_id` NOT NULL, `UNIQUE(remoteUrl)`.

@@ -225,7 +225,7 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   return (
     <>
       <div className={`modal-backdrop${open ? ' show' : ''}`} onClick={() => { if (!busy) onClose(); }} aria-hidden={!open} />
-      <div className={`modal${open ? ' show' : ''}`} role="dialog" aria-modal="true" aria-labelledby="edit-repo-title" onKeyDown={onKeyDownForm} style={{ width: 580 }}>
+      <div className={`modal${open ? ' show' : ''}`} role="dialog" aria-modal="true" aria-labelledby="edit-repo-title" onKeyDown={onKeyDownForm} style={{ width: 580, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Header ─────────────────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10 }}>
@@ -260,9 +260,16 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
           ))}
         </div>
 
-        {/* ── Tab content (scrollable) ───────────────────────────── */}
-        <div style={{ maxHeight: 'min(60vh, 440px)', overflowY: 'auto', paddingRight: 4, marginBottom: 14 }}>
-          <div style={{ display: 'grid', gap: 12 }}>
+        {/* ── Tab content ────────────────────────────────────────── */}
+        {/*
+         * Layout: a flex column. The form-area takes its natural height.
+         * For the Validation tab, the History block flex-fills any space
+         * the form leaves, so the History scrollbar is the ONLY scrollbar
+         * the user normally sees. The form area itself only scrolls on
+         * extremely small viewports (safety net).
+         */}
+        <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', marginBottom: 14, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: '0 1 auto', minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
 
             {/* ── General tab ──────────────────────────────────────── */}
             {tab === 'general' && (
@@ -435,11 +442,16 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                   </button>
                 </div>
 
-                {/* Validation history */}
-                {validationRuns.length > 0 && <ValidationHistory runs={validationRuns} expandedRunId={expandedRunId} onToggle={(id) => setExpandedRunId(expandedRunId === id ? null : id)} />}
+                {/* History rendered OUTSIDE the form scroll wrapper below — it gets flex-fill so it owns the only scrollbar. */}
               </>
             )}
           </div>
+          {/* Validation history — flex-grows into whatever vertical space the form leaves, has the only scrollbar. */}
+          {tab === 'validation' && validationRuns.length > 0 && (
+            <div style={{ flex: '1 1 0', minHeight: 100, overflowY: 'auto', marginTop: 12, paddingRight: 4, border: '1px solid var(--border-subtle)', borderRadius: 4 }}>
+              <ValidationHistory runs={validationRuns} expandedRunId={expandedRunId} onToggle={(id) => setExpandedRunId(expandedRunId === id ? null : id)} />
+            </div>
+          )}
         </div>
 
         {/* ── Status / error ─────────────────────────────────────── */}
@@ -477,8 +489,11 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function FieldGroup({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  // minWidth: 0 lets this FieldGroup shrink correctly inside a `1fr 1fr` parent grid.
+  // Without it, the input's intrinsic min-content (placeholder text width) can force
+  // grid cells beyond 50%, collapsing 2-col layouts to a single column.
   return (
-    <label style={{ display: 'grid', gap: 4 }}>
+    <label style={{ display: 'grid', gap: 4, minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
         {label}
       </span>

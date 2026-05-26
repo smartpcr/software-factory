@@ -8,6 +8,7 @@ namespace Forge.Api.Services.Stories;
 
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Forge.Api.Agents;
 
 /// <summary>
 /// Phase 47e — runs <c>dotnet build</c> against a workstream's worktree
@@ -197,25 +198,17 @@ public static class StoryBuildRunner
         // node reuse also lets the timeout process-tree kill land on testhost
         // cleanly (no persistent server parent to re-home it), which reduces
         // the orphaned-testhost worktree locks this gate has hit.
+        // Isolate the child build/test from Forge.Api's own (MSBuildLocator-
+        // polluted) environment: rebuild it from the pristine baseline
+        // captured before RegisterDefaults ran, so SDK resolution behaves like
+        // a fresh shell (no inherited MSBUILD_EXE_PATH / MSBuildSDKsPath → no
+        // MSB4276; matches how the engineer builds by hand). The repo's own
+        // init.cmd / restore.cmd then establish PATH/CDP context from the
+        // worktree. See ChildProcessEnv. Re-assert the build-tuning vars AFTER
+        // the clean rebuild so they survive.
+        ChildProcessEnv.Apply(psi);
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
-
-        // Strip the MSBuild SDK-resolver vars that MSBuildLocator.RegisterDefaults()
-        // (Program.cs, for Roslyn's MSBuildWorkspace) injects into THIS process,
-        // pinned to the net8.0 SDK Forge.Api runs on (e.g. 8.0.421). They are
-        // process env vars, so a child `dotnet build`/`dotnet test` inherits them
-        // and is FORCED to resolve SDKs against that 8.x SDK's Sdks dir — which
-        // lacks Microsoft.Build.Traversal (the AzureStack build.proj SDK), so the
-        // gate build dies during evaluation with MSB4276 ("Build FAILED. 0 Error(s)")
-        // even though `dotnet --version` reports the global.json SDK. A fresh shell
-        // never has these set; removing them restores clean SDK resolution and
-        // matches how the engineer builds by hand. See BuildValidationWorker for
-        // the same fix on the repo-validation path.
-        psi.Environment.Remove("MSBUILD_EXE_PATH");
-        psi.Environment.Remove("MSBuildExtensionsPath");
-        psi.Environment.Remove("MSBuildExtensionsPath32");
-        psi.Environment.Remove("MSBuildExtensionsPath64");
-        psi.Environment.Remove("MSBuildSDKsPath");
 
         // Phase 49 — convert process-start failures (program not on
         // PATH, .NET SDK missing for a `dotnet build`, cargo absent

@@ -77,7 +77,11 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
     );
   }
 
-  const scores = useMemo(() => iters.map((i) => i.score), [iters]);
+  // Exclude failed "no-delivery" iterations (scored 0 with 0 files changed —
+  // the generator timed out / produced nothing and the loop auto-retried) from
+  // the score TREND, so a transient failure doesn't read as a quality collapse
+  // on the sparkline. The per-iter chip below still surfaces the failure.
+  const scores = useMemo(() => iters.filter((i) => !isNoDelivery(i)).map((i) => i.score), [iters]);
   const totalTokens = useMemo(() => iters.map((i) => i.inputTokens + i.outputTokens), [iters]);
   const costs = useMemo(() => iters.map((i) => i.costUsd), [iters]);
   const files = useMemo(() => iters.map((i) => i.filesChanged), [iters]);
@@ -141,8 +145,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                 borderRadius: 2,
               }}
             >
-              <div style={{ fontWeight: 700, color: scoreColor(it.score, it.verdict) }}>
-                {it.score}
+              <div
+                style={{ fontWeight: 700, color: isNoDelivery(it) ? 'var(--sc-red, #f87171)' : scoreColor(it.score, it.verdict) }}
+                title={isNoDelivery(it)
+                  ? 'No changes delivered this iteration — the generator produced 0 files (likely timed out); scored 0 and auto-retried.'
+                  : undefined}
+              >
+                {isNoDelivery(it) ? '✗' : it.score}
               </div>
               <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
                 {formatTokens(it.inputTokens + it.outputTokens)}
@@ -228,6 +237,17 @@ function formatDurationMs(ms: number): string {
   return s === 0 ? `${m}m` : `${m}m${s}`;
 }
 
+/**
+ * A "no-delivery" iteration: scored 0 with zero files changed. The generator
+ * produced nothing (timed out / failed), so the loop recorded a 0 and
+ * auto-retried — this is a transient failure, not a genuine low evaluator
+ * score. Rendered distinctly (✗, red) and dropped from the score trend so it
+ * doesn't read as a quality collapse.
+ */
+function isNoDelivery(it: IterKpi): boolean {
+  return it.score === 0 && it.filesChanged === 0;
+}
+
 function scoreColor(score: number, verdict: string): string {
   if (verdict === 'pass') return 'var(--sc-green, #6ee7b7)';
   if (verdict === 'reject' || verdict.startsWith('stalled') || verdict === 'sloppy') {
@@ -281,6 +301,9 @@ function buildChipTitle(it: IterKpi): string {
   const lines: string[] = [];
   lines.push(`iter ${it.iter} · ${it.verdict}`);
   lines.push(`score: ${it.score}`);
+  if (isNoDelivery(it)) {
+    lines.push('⚠ no changes delivered — generator produced 0 files (likely timed out); auto-retried');
+  }
   lines.push(`cost: $${it.costUsd.toFixed(3)} · ${it.filesChanged} files · ${formatDuration(it.durationMs)}`);
   lines.push(`input: ${formatTokens(it.inputTokens)} fresh + ${formatTokens(it.outputTokens)} output`);
   if (it.cacheReadTokens != null || it.cacheWriteTokens != null) {

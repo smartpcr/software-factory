@@ -647,4 +647,266 @@ public class Phase59ImpactedTestResolverTests
         Assert.False(result.Rewritten);
         Assert.Contains("no test projects", result.Reason);
     }
+
+    // ── T8 — Traversal .proj + --filter compose ──────────────────────────
+
+    // 2026-05-25 — Phase 59 refinement. The pre-fix classifier
+    // hard-no-op'd on ANY `--filter`, so a repo with
+    // `dotnet test build.proj --filter "TestCategory!~CTQ&TestCategory!~Env"`
+    // (orthogonal category EXCLUSION) skipped impacted-test narrowing
+    // entirely + ran the whole suite via build.proj's Traversal SDK.
+    // Post-fix: a Traversal `.proj` token anchors operator intent
+    // ("across all projects, filtered") so we narrow the project set
+    // and PRESERVE the filter. Inclusion / FQN filters still no-op
+    // (vacuous-pass risk if the targeted test lives in a non-impacted
+    // project). Non-Traversal `.proj` orchestrators still no-op (we
+    // can't safely replace a custom build target with a list of
+    // .csproj paths). `--filter` without a Traversal anchor still
+    // no-ops (the plain `dotnet test --filter X` shape is too
+    // ambiguous to second-guess).
+
+    /// <summary>Writes a Traversal SDK build.proj at the fixture root.</summary>
+    private static void WriteTraversalProj(string root, string fileName = "build.proj")
+    {
+        File.WriteAllText(
+            Path.Combine(root, fileName),
+            "<Project Sdk=\"Microsoft.Build.Traversal/2.0.24\">\n" +
+            "  <ItemGroup>\n" +
+            "    <ProjectReference Include=\"src/**/*.csproj\" />\n" +
+            "  </ItemGroup>\n" +
+            "</Project>\n");
+    }
+
+    [Fact]
+    public void T8a_TraversalProj_WithExclusionFilter_NarrowsAndPreservesFilterAndDropsBuildProj()
+    {
+        // The exact shape that broke for the `update` repo: a build.proj
+        // Traversal target + a category-exclusion --filter.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("src/Bar/Bar.csproj", null),
+            ("tests/Bar.Tests/Bar.Tests.csproj", new[] { "../../src/Bar/Bar.csproj" }));
+        WriteTraversalProj(root);
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: "dotnet test build.proj --filter \"TestCategory!~CTQ&TestCategory!~Env\"",
+            impactedOnly: true);
+
+        Assert.True(result.Rewritten);
+        Assert.False(result.WholeSuiteFallback);
+        Assert.False(result.Skipped);
+        Assert.Single(result.ImpactedProjects);
+        Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.Tests.csproj"));
+
+        // build.proj must be DROPPED (else Traversal re-includes everything).
+        Assert.DoesNotContain("build.proj", result.Command);
+        // Filter must be preserved AND re-quoted (the `&` would otherwise
+        // be a cmd.exe command-chain operator in the session-script path).
+        Assert.Contains("--filter \"TestCategory!~CTQ&TestCategory!~Env\"", result.Command);
+        // Impacted project inserted right after `dotnet test`.
+        Assert.StartsWith("dotnet test ", result.Command);
+        Assert.Contains("Foo.Tests.csproj", result.Command);
+    }
+
+    [Fact]
+    public void T8b_TraversalProj_NoFilter_NarrowsAndDropsBuildProj()
+    {
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("src/Bar/Bar.csproj", null),
+            ("tests/Bar.Tests/Bar.Tests.csproj", new[] { "../../src/Bar/Bar.csproj" }));
+        WriteTraversalProj(root);
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: "dotnet test build.proj",
+            impactedOnly: true);
+
+        Assert.True(result.Rewritten);
+        Assert.DoesNotContain("build.proj", result.Command);
+        Assert.Contains("Foo.Tests.csproj", result.Command);
+    }
+
+    [Theory]
+    [InlineData("FullyQualifiedName~Foo")]
+    [InlineData("DisplayName=BarTest")]
+    [InlineData("Name~Login")]
+    [InlineData("TestCategory=Fast")]
+    [InlineData("Priority=1")]
+    [InlineData("TestCategory!~Slow&FullyQualifiedName~Foo")]
+    public void T8c_TraversalProj_WithFqnOrInclusionFilter_NoOps(string filterValue)
+    {
+        // Inclusion (`=` / `~`) or FQN-targeted filters could vacuous-
+        // pass if the targeted test is in a non-impacted project. Treat
+        // as hard override even with a Traversal anchor.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }));
+        WriteTraversalProj(root);
+        var command = $"dotnet test build.proj --filter \"{filterValue}\"";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.False(result.Rewritten);
+        Assert.Equal(command, result.Command);
+        Assert.Contains("--filter", result.Reason);
+    }
+
+    [Fact]
+    public void T8d_FilterWithoutTraversalAnchor_NoOps()
+    {
+        // `dotnet test --filter X` (no project, no Traversal target) is
+        // ambiguous: operator may have meant FQN-narrowing across the
+        // whole workspace. Don't second-guess — preserve pre-fix
+        // behaviour and no-op.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }));
+        const string command = "dotnet test --filter \"TestCategory!~Slow\"";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.False(result.Rewritten);
+        Assert.Equal(command, result.Command);
+        Assert.Contains("without a Traversal", result.Reason);
+    }
+
+    [Fact]
+    public void T8e_NonTraversalCustomProj_NoOps()
+    {
+        // A custom `.proj` orchestrator (no Microsoft.Build.Traversal
+        // SDK marker) may define properties, imports, or targets we
+        // don't understand. Replacing it with a list of .csproj could
+        // silently change behaviour — stay conservative and no-op.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }));
+        File.WriteAllText(
+            Path.Combine(root, "custom-orchestrator.proj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n" +
+            "  <PropertyGroup><CustomBuildLogic>true</CustomBuildLogic></PropertyGroup>\n" +
+            "</Project>\n");
+        const string command = "dotnet test custom-orchestrator.proj";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.False(result.Rewritten);
+        Assert.Equal(command, result.Command);
+        Assert.Contains("custom (non-Traversal)", result.Reason);
+    }
+
+    [Fact]
+    public void T8f_OptionValueEndingInProj_IsNotClassifiedAsTraversal()
+    {
+        // `-p:Prop=value.proj` is an MSBuild property assignment, not a
+        // positional Traversal target. The classifier must NOT drop it
+        // during rewrite + must not over-eagerly require Traversal
+        // content-check. With no Traversal anchor + no --filter, the
+        // resolver narrows normally and preserves the -p:... token.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("src/Bar/Bar.csproj", null),
+            ("tests/Bar.Tests/Bar.Tests.csproj", new[] { "../../src/Bar/Bar.csproj" }));
+        const string command = "dotnet test -p:SomeProp=value.proj";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.True(result.Rewritten);
+        Assert.Contains("Foo.Tests.csproj", result.Command);
+        Assert.Contains("-p:SomeProp=value.proj", result.Command);
+    }
+
+    [Fact]
+    public void T8g_TraversalProj_TraversalAndOptionValueProj_PreservesOptionAndDropsTraversal()
+    {
+        // Combined case: build.proj IS a Traversal target (gets dropped)
+        // AND a separate -p:File=other.proj option value (must be
+        // preserved as-is). Validates that we drop ONLY the classified
+        // Traversal index, not every .proj suffix.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("src/Bar/Bar.csproj", null),
+            ("tests/Bar.Tests/Bar.Tests.csproj", new[] { "../../src/Bar/Bar.csproj" }));
+        WriteTraversalProj(root);
+        const string command = "dotnet test build.proj -p:SomeProp=value.proj";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.True(result.Rewritten);
+        // build.proj dropped from rewrite, -p:...proj preserved.
+        Assert.DoesNotContain(" build.proj", result.Command);
+        Assert.Contains("-p:SomeProp=value.proj", result.Command);
+        Assert.Contains("Foo.Tests.csproj", result.Command);
+    }
+
+    // ── T9 — Helper unit tests for IsFilterNarrowingSafe ────────────────
+
+    [Theory]
+    [InlineData("TestCategory!~Slow", true)]
+    [InlineData("TestCategory!~Slow&TestCategory!~Env", true)]
+    [InlineData("TestCategory!~Slow|TestCategory!=Long", true)]
+    [InlineData("TestCategory != Slow", true)]    // spaces between ! and =
+    [InlineData("TestCategory!= Slow & TestCategory !~ Env", true)]
+    [InlineData("", true)]
+    [InlineData("TestCategory=Fast", false)]
+    [InlineData("FullyQualifiedName~Foo", false)]
+    [InlineData("TestCategory!~Slow&FullyQualifiedName~Foo", false)]   // mixed
+    [InlineData("Priority=1", false)]
+    public void T9_IsFilterNarrowingSafe_ClassifiesCorrectly(string filterValue, bool expected)
+    {
+        Assert.Equal(expected, ImpactedTestResolver.IsFilterNarrowingSafe(filterValue));
+    }
+
+    // ── T10 — Helper unit tests for IsTraversalProjFile ─────────────────
+
+    [Fact]
+    public void T10_IsTraversalProjFile_DetectsTraversalSdkMarker()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "phase59-traversal-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        // Canonical Traversal SDK file → true.
+        File.WriteAllText(Path.Combine(root, "build.proj"),
+            "<Project Sdk=\"Microsoft.Build.Traversal/2.0.24\"></Project>");
+        Assert.True(ImpactedTestResolver.IsTraversalProjFile(root, "build.proj"));
+
+        // Custom non-Traversal .proj → false.
+        File.WriteAllText(Path.Combine(root, "custom.proj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>");
+        Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, "custom.proj"));
+
+        // Missing file → false (defensive, never throws).
+        Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, "does-not-exist.proj"));
+
+        // Empty / null guards → false.
+        Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, ""));
+        Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, "   "));
+    }
 }

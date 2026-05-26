@@ -41,11 +41,59 @@ interface Props {
  * conversation panes branch when <c>filter === 'build'</c> and render
  * this component inline instead of the regular transcript list.
  */
+const TOOL_CALL_KINDS = new Set(['task.tool-call', 'task.toolcall']);
+const TOOL_RESULT_KINDS = new Set(['task.tool-result', 'task.toolresult']);
+
+/** One build row: a Forge gate event, OR an agent build tool-call paired with
+ *  its matching tool-result (by invocationId) so the command and its output
+ *  render together. */
+interface BuildRow {
+  event: TaskTranscriptEvent;
+  result?: TaskTranscriptEvent | null;
+}
+
+/**
+ * Pair agent build tool-calls with their tool-results (matched on
+ * invocationId) so the Build tab shows each command's OUTPUT inline. The
+ * result is looked up from ALL tool-results in the transcript — not just
+ * build-matched ones — because a `dotnet build` result whose stdout is
+ * "Build succeeded" doesn't itself match the build-command regex and would
+ * otherwise be dropped by isBuildEvent, leaving the command with no output.
+ */
+function pairBuildEvents(transcript: TaskTranscriptEvent[]): BuildRow[] {
+  const resultByInv = new Map<string, TaskTranscriptEvent>();
+  for (const e of transcript) {
+    if (!TOOL_RESULT_KINDS.has(e.kind)) continue;
+    const inv = (e.payload as Record<string, unknown> | null)?.invocationId;
+    if (typeof inv === 'string') resultByInv.set(inv, e);
+  }
+
+  const foldedInv = new Set<string>();
+  const rows: BuildRow[] = [];
+  for (const e of transcript) {
+    if (!isBuildEvent(e)) continue;
+    if (TOOL_CALL_KINDS.has(e.kind)) {
+      const inv = (e.payload as Record<string, unknown> | null)?.invocationId;
+      const result = typeof inv === 'string' ? resultByInv.get(inv) ?? null : null;
+      if (typeof inv === 'string' && result) foldedInv.add(inv);
+      rows.push({ event: e, result });
+    } else if (TOOL_RESULT_KINDS.has(e.kind)) {
+      const inv = (e.payload as Record<string, unknown> | null)?.invocationId;
+      // Skip a result already folded into its call card above.
+      if (typeof inv === 'string' && foldedInv.has(inv)) continue;
+      rows.push({ event: e });
+    } else {
+      rows.push({ event: e }); // Forge gate event
+    }
+  }
+  return rows;
+}
+
 export function BuildPane({ workItemId }: Props) {
   const live = useTaskLive(workItemId);
   const transcript = live?.transcript ?? [];
 
-  const buildEvents = useMemo(() => transcript.filter(isBuildEvent), [transcript]);
+  const rows = useMemo(() => pairBuildEvents(transcript), [transcript]);
 
   if (!workItemId) {
     return (
@@ -56,7 +104,7 @@ export function BuildPane({ workItemId }: Props) {
     );
   }
 
-  if (buildEvents.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="tab-placeholder">
         <div className="lbl">▌ NO BUILD ACTIVITY YET</div>
@@ -74,8 +122,12 @@ export function BuildPane({ workItemId }: Props) {
 
   return (
     <div className="build-pane" style={{ padding: 6, overflow: 'auto' }}>
-      {buildEvents.map((evt) => (
-        <BuildEventCard key={`${evt.id}-${evt.kind}`} event={evt} />
+      {rows.map((row) => (
+        <BuildEventCard
+          key={`${row.event.id}-${row.event.kind}`}
+          event={row.event}
+          result={row.result ?? null}
+        />
       ))}
     </div>
   );
@@ -83,6 +135,9 @@ export function BuildPane({ workItemId }: Props) {
 
 interface EventCardProps {
   event: TaskTranscriptEvent;
+  /** For an agent build tool-call, the matching tool-result (by invocationId).
+   *  Supplies the exit code + output the call event itself doesn't carry. */
+  result?: TaskTranscriptEvent | null;
 }
 
 /**
@@ -106,9 +161,23 @@ interface EventCardProps {
  *   - <c>build-failed.detected</c>                            → amber
  *     (per-iter warning, hasn't aborted yet)
  */
-function BuildEventCard({ event }: EventCardProps) {
+function BuildEventCard({ event, result = null }: EventCardProps) {
   const p = (event.payload as Record<string, unknown> | null) ?? {};
-  const classification = classify(event, p);
+  const rp = (result?.payload as Record<string, unknown> | null) ?? null;
+  const isAgentCall = TOOL_CALL_KINDS.has(event.kind);
+  const isAgentResult = TOOL_RESULT_KINDS.has(event.kind);
+
+  // For an agent build call the status + exit code live on the paired RESULT
+  // (the call itself hasn't finished when emitted), so classify off the result.
+  let classification = classify(event, p);
+  if (isAgentCall && rp) {
+    const exit = pickExitCode(rp);
+    classification = exit == null
+      ? { tone: 'gray', statusText: 'done' }
+      : exit === 0
+        ? { tone: 'green', statusText: 'pass' }
+        : { tone: 'red', statusText: 'fail' };
+  }
 
   // Phase 59 — prefer effectiveTestCommand (the narrowed command after
   // impacted-test selection) over the configured testCommand when
@@ -125,12 +194,20 @@ function BuildEventCard({ event }: EventCardProps) {
     ?? extractAgentCommand(p);
   const showConfiguredFallback = effectiveCmd && configuredCmd && effectiveCmd !== configuredCmd;
   const stage = (p.stage as string) ?? null;
-  const exitCode = typeof p.exitCode === 'number' ? (p.exitCode as number) : null;
+  const exitCode = pickExitCode(rp ?? p);
   const errorCount = typeof p.errorCount === 'number' ? (p.errorCount as number) : null;
   const warningCount = typeof p.warningCount === 'number' ? (p.warningCount as number) : null;
   const duration = typeof p.durationSec === 'number' ? (p.durationSec as number) : null;
   const errorSummary = (p.errorSummary as string) ?? null;
   const reason = (p.reason as string) ?? null;
+
+  // Agent build OUTPUT — from the paired result (for a tool-call) or this
+  // event itself (a standalone tool-result). This is the stdout/stderr the
+  // agent's `dotnet build` / `cargo build` / etc. produced; Forge gate events
+  // keep using errorSummary. Without this the Build tab showed the command
+  // but never what it printed.
+  const agentOutput = (isAgentCall || isAgentResult) ? extractAgentOutput(rp ?? p) : null;
+  const detailBody = errorSummary ?? agentOutput;
 
   // Phase 59 — impacted-test metadata from the resolver chain
   const impactedRewritten = p.impactedRewritten === true;
@@ -236,8 +313,8 @@ function BuildEventCard({ event }: EventCardProps) {
         </div>
       )}
 
-      {errorSummary && (
-        <details style={{ marginTop: 2 }}>
+      {detailBody && (
+        <details style={{ marginTop: 2 }} open={classification.tone === 'red'}>
           <summary
             style={{
               cursor: 'pointer',
@@ -246,7 +323,7 @@ function BuildEventCard({ event }: EventCardProps) {
               letterSpacing: '0.06em',
             }}
           >
-            error summary ({errorSummary.split('\n').length} line{errorSummary.split('\n').length === 1 ? '' : 's'})
+            {errorSummary ? 'error summary' : 'build output'} ({detailBody.split('\n').length} line{detailBody.split('\n').length === 1 ? '' : 's'})
           </summary>
           <pre
             style={{
@@ -264,7 +341,7 @@ function BuildEventCard({ event }: EventCardProps) {
               color: 'var(--sc-text, currentColor)',
             }}
           >
-            {errorSummary}
+            {truncate(detailBody, 20000)}
           </pre>
         </details>
       )}
@@ -451,6 +528,35 @@ function extractAgentCommand(p: Record<string, unknown>): string | null {
     const inner = tp as Record<string, unknown>;
     if (typeof inner.command === 'string') return inner.command as string;
     if (typeof inner.cmd === 'string') return inner.cmd as string;
+  }
+  return null;
+}
+
+/**
+ * Pull the human-readable OUTPUT (stdout/stderr) out of an agent tool-result
+ * payload so the Build tab can show what `dotnet build` / `cargo build` / etc.
+ * actually printed. Backends vary: some put it on `text`, others stringify a
+ * JSON envelope under `toolPayload` ({ content | output | stdout | stderr }).
+ */
+function extractAgentOutput(p: Record<string, unknown> | null): string | null {
+  if (!p) return null;
+  if (typeof p.text === 'string' && p.text.trim()) return p.text;
+  const tp = p.toolPayload;
+  if (typeof tp === 'string' && tp.trim()) {
+    try {
+      const parsed = JSON.parse(tp) as Record<string, unknown>;
+      const cand = parsed?.content ?? parsed?.output ?? parsed?.stdout ?? parsed?.stderr ?? parsed?.result;
+      if (typeof cand === 'string' && cand.trim()) return cand;
+    } catch {
+      /* not JSON — fall through to the raw string */
+    }
+    return tp;
+  }
+  if (tp && typeof tp === 'object' && !Array.isArray(tp)) {
+    const o = tp as Record<string, unknown>;
+    const cand = o.content ?? o.output ?? o.stdout ?? o.stderr ?? o.result;
+    if (typeof cand === 'string' && cand.trim()) return cand;
+    return JSON.stringify(tp, null, 2);
   }
   return null;
 }

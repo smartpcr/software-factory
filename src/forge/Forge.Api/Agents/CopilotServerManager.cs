@@ -357,14 +357,14 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
             // in the OS credential store / ~/.copilot/. That suffices on
             // a workstation where the operator already signed in
             // (verified by `copilot -p "ping"` returning a real response).
-            var spawnEnv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-            {
-                if (entry.Key is string key && entry.Value is string value)
-                {
-                    spawnEnv[key] = value;
-                }
-            }
+            // Build the Copilot CLI's environment from the PRISTINE baseline
+            // (captured in Program.cs before MSBuildLocator ran), NOT from
+            // Forge.Api's live (polluted) process env. Without this the agent's
+            // `dotnet restore`/`build` inherited MSBUILD_EXE_PATH /
+            // MSBuildSDKsPath and died with MSB4276 (see ChildProcessEnv). The
+            // baseline keeps PATH/USERPROFILE/SYSTEMROOT/etc. so the Node-based
+            // CLI still starts (a full env-clear crashed it — ncrypto::CSPRNG).
+            var spawnEnv = ChildProcessEnv.ToDictionary();
             string? ghToken = null;
             if (this.ghAuth is not null)
             {

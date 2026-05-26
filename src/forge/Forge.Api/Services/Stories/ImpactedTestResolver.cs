@@ -208,7 +208,7 @@ public static class ImpactedTestResolver
         {
             return ImpactedTestResolverResult.NoOp(originalCommand, "not a `dotnet test` command");
         }
-        if (HasOperatorOverrideArgs(tokens, out var overrideReason))
+        if (HasOperatorOverrideArgs(tokens, workspace, out var overrideReason, out var traversalProjIndex))
         {
             return ImpactedTestResolverResult.NoOp(originalCommand, overrideReason);
         }
@@ -320,7 +320,7 @@ public static class ImpactedTestResolver
         }
 
         var sortedRelative = SortRelative(workspace, impacted);
-        var rewrittenCommand = RewriteCommand(tokens, sortedRelative);
+        var rewrittenCommand = RewriteCommand(tokens, sortedRelative, traversalProjIndex);
         return new ImpactedTestResolverResult(
             Command: rewrittenCommand,
             Rewritten: true,
@@ -417,8 +417,34 @@ public static class ImpactedTestResolver
                && string.Equals(tokens[1], "test", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool HasOperatorOverrideArgs(string[] tokens, out string reason)
+    // 2026-05-25 — Phase 59 Stage A refinement. The previous override
+    // policy was too coarse: ANY `--filter` token caused a hard no-op,
+    // even when the filter was an orthogonal category exclusion
+    // (e.g. `TestCategory!~CTQ&TestCategory!~Env`) that should compose
+    // with project narrowing. Similarly, Traversal SDK `*.proj` files
+    // (e.g. `build.proj` with `Sdk="Microsoft.Build.Traversal/2.x"`)
+    // were preserved verbatim during rewrite, so the rewritten command
+    // STILL re-included every project in `dirs.proj`. This classifier
+    // now: (a) treats Traversal `.proj` as a REPLACEABLE token (records
+    // its index so RewriteCommand can drop just that one), (b) treats
+    // pure-exclusion `--filter` values (only `!=`/`!~` conditions) as
+    // narrowing-safe so they compose, (c) still hard-overrides on
+    // explicit `.csproj` / `.sln*`, `--list-tests`, inclusion / FQN
+    // filters, custom non-Traversal `.proj` orchestrators, and the
+    // `--filter` + no-Traversal-anchor combination (since plain
+    // `dotnet test --filter X` may mean FQN-narrowing across all
+    // projects — too ambiguous to second-guess).
+    private static bool HasOperatorOverrideArgs(
+        string[] tokens,
+        string workspace,
+        out string reason,
+        out int traversalProjIndex)
     {
+        traversalProjIndex = -1;
+        var hasFilter = false;
+        var filterValue = string.Empty;
+        string filterReason = string.Empty;
+
         // tokens[0] = "dotnet", tokens[1] = "test"; scan the rest.
         for (var i = 2; i < tokens.Length; i++)
         {
@@ -435,10 +461,40 @@ public static class ImpactedTestResolver
                 reason = "command already names a solution file";
                 return true;
             }
+            if (t.EndsWith(".proj", StringComparison.OrdinalIgnoreCase)
+                && !t.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+                && LooksLikePositionalProjectToken(t))
+            {
+                // *.proj that isn't *.csproj and isn't an option-value
+                // (e.g. `-p:File=foo.proj`). If it's a Traversal SDK
+                // file, mark it for replacement during rewrite. Custom
+                // .proj orchestrators (no Traversal SDK marker) remain
+                // a hard override — we can't safely replace them.
+                if (IsTraversalProjFile(workspace, t))
+                {
+                    // First Traversal proj wins; treat any subsequent
+                    // .proj as override (operator may have something
+                    // specific in mind we don't understand).
+                    if (traversalProjIndex >= 0)
+                    {
+                        reason = "command names multiple .proj targets";
+                        return true;
+                    }
+                    traversalProjIndex = i;
+                    continue;
+                }
+                reason = "command names a custom (non-Traversal) .proj";
+                return true;
+            }
             if (string.Equals(t, "--filter", StringComparison.OrdinalIgnoreCase))
             {
-                reason = "command already carries --filter";
-                return true;
+                hasFilter = true;
+                filterReason = "command already carries --filter";
+                if (i + 1 < tokens.Length)
+                {
+                    filterValue = tokens[i + 1];
+                }
+                continue;
             }
             if (string.Equals(t, "--list-tests", StringComparison.OrdinalIgnoreCase))
             {
@@ -446,8 +502,115 @@ public static class ImpactedTestResolver
                 return true;
             }
         }
+
+        // --filter narrows tests within a project; project narrowing
+        // narrows the project set. Composition is only safe when:
+        //   (a) a Traversal .proj anchors operator intent ("across all
+        //       projects, filtered") — without an anchor, the operator
+        //       may have meant FQN-narrowing across the whole workspace;
+        //       narrowing the project set could vacuously pass.
+        //   (b) the filter is pure exclusion (every condition uses
+        //       `!=` or `!~`) — inclusion (`=` / `~`) targets a
+        //       specific value that might live in a non-impacted
+        //       project, also a vacuous-pass risk.
+        if (hasFilter)
+        {
+            if (traversalProjIndex < 0)
+            {
+                reason = filterReason + " without a Traversal .proj anchor";
+                return true;
+            }
+            if (!IsFilterNarrowingSafe(filterValue))
+            {
+                reason = filterReason + " with non-exclusion conditions (may vacuous-pass if narrowed)";
+                return true;
+            }
+        }
+
         reason = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// True iff <paramref name="token"/> looks like a positional
+    /// project-file argument (`build.proj`, `src/build.proj`) rather
+    /// than an MSBuild option value (`-p:Prop=foo.proj` or
+    /// `/p:Prop=foo.proj`).
+    /// </summary>
+    private static bool LooksLikePositionalProjectToken(string token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        if (token[0] == '-' || token[0] == '/') return false;
+        // -p:Foo=bar.proj would have been caught above, but a bare
+        // `Foo=bar.proj` token is also clearly an assignment.
+        if (token.Contains('=')) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolve <paramref name="tokenPath"/> against
+    /// <paramref name="workspace"/>, read the file, and return true if
+    /// it imports the <c>Microsoft.Build.Traversal</c> SDK (the
+    /// canonical multi-project orchestrator). Returns false on any IO
+    /// error, missing file, or absent SDK marker — the resolver's
+    /// classifier then treats the token as a hard operator override.
+    /// </summary>
+    internal static bool IsTraversalProjFile(string workspace, string tokenPath)
+    {
+        if (string.IsNullOrWhiteSpace(tokenPath)) return false;
+        string absolutePath;
+        try
+        {
+            absolutePath = Path.IsPathRooted(tokenPath)
+                ? tokenPath
+                : Path.GetFullPath(Path.Combine(workspace ?? string.Empty, tokenPath));
+        }
+        catch
+        {
+            return false;
+        }
+        if (!File.Exists(absolutePath)) return false;
+
+        string contents;
+        try
+        {
+            // Cheap read — Traversal proj files are tiny (sub-KB
+            // typically). No size guard needed.
+            contents = File.ReadAllText(absolutePath);
+        }
+        catch
+        {
+            return false;
+        }
+        return contents.Contains("Microsoft.Build.Traversal", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// True iff <paramref name="filterValue"/> is composed entirely of
+    /// exclusion conditions (`!=` / `!~`) joined by `&` / `|`. Any
+    /// inclusion operator (`=` / `~` not preceded by `!`) marks the
+    /// filter as potentially FQN-targeted, in which case narrowing the
+    /// project set could vacuously pass if the targeted test lives in a
+    /// non-impacted project.
+    /// </summary>
+    internal static bool IsFilterNarrowingSafe(string filterValue)
+    {
+        if (string.IsNullOrEmpty(filterValue)) return true;
+        for (var i = 0; i < filterValue.Length; i++)
+        {
+            var ch = filterValue[i];
+            if (ch != '=' && ch != '~') continue;
+
+            // Walk back past whitespace to find the previous non-space
+            // char — vstest accepts `TestCategory != Slow` with spaces.
+            var j = i - 1;
+            while (j >= 0 && (filterValue[j] == ' ' || filterValue[j] == '\t')) j--;
+            if (j < 0 || filterValue[j] != '!')
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static List<string> EnumerateCsprojFiles(string workspace)
@@ -743,7 +906,10 @@ public static class ImpactedTestResolver
         return result;
     }
 
-    private static string RewriteCommand(string[] tokens, IReadOnlyList<string> impactedRelative)
+    private static string RewriteCommand(
+        string[] tokens,
+        IReadOnlyList<string> impactedRelative,
+        int traversalProjIndex)
     {
         // Insert the project paths right after `dotnet test`. Quote any
         // path with whitespace defensively, even though normalised
@@ -760,6 +926,13 @@ public static class ImpactedTestResolver
         }
         for (var i = 2; i < tokens.Length; i++)
         {
+            // 2026-05-25 — drop the Traversal SDK `.proj` token (e.g.
+            // `build.proj`) identified by the classifier. We're
+            // replacing "run all projects via Traversal" with the
+            // narrowed impacted set; preserving the Traversal target
+            // would re-include every project and defeat the rewrite.
+            if (i == traversalProjIndex) continue;
+
             sb.Append(' ');
             sb.Append(NeedsQuoting(tokens[i]) ? $"\"{tokens[i]}\"" : tokens[i]);
         }
@@ -768,9 +941,23 @@ public static class ImpactedTestResolver
 
     private static bool NeedsQuoting(string s)
     {
+        // 2026-05-25 — extended beyond whitespace to cover cmd.exe shell
+        // metacharacters. The session-script execution path
+        // (`StoryBuildRunner.WriteSessionScript` → `cmd /c <script.cmd>`)
+        // dumps the rewritten command verbatim into a .cmd file; in cmd,
+        // `&` chains commands and `|` pipes them, so an unquoted
+        // `--filter TestCategory!~CTQ&TestCategory!~Env` would split
+        // into two and corrupt the gate. Quoting on emit keeps the
+        // command round-trip-safe across BOTH execution paths (direct
+        // ProcessStartInfo with re-parse, and the session-script path).
         foreach (var ch in s)
         {
             if (ch == ' ' || ch == '\t') return true;
+            if (ch == '&' || ch == '|' || ch == ';') return true;
+            if (ch == '<' || ch == '>') return true;
+            if (ch == '(' || ch == ')') return true;
+            if (ch == '^' || ch == '%') return true;
+            if (ch == '"' || ch == '`') return true;
         }
         return false;
     }

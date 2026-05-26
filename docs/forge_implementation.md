@@ -4860,6 +4860,14 @@ Generalised from the fix above and made binding for **every** doc or code agent 
 
 This invariant is the canonical rule; the per-agent migrations (engineer done 2026-05-05; reviewer + qa to follow) are just applications of it.
 
+#### REQUIREMENT (hard invariant): child processes get a clean env from the worktree, never Forge.Api's
+
+Companion to the worktree-write rule, covering the *environment* (not just the cwd):
+
+- **cwd = the worktree.** Confirmed wired both ways: CLI → `ProcessStartInfo.WorkingDirectory = context.WorktreePath` (`AgentRunnerDispatcher.cs:549/608/978`); SDK → `sessionConfig.WorkingDirectory = context.WorktreePath` (`:1290`, validated by `EnsureWorkingDirectoryAccessible`); the Forge tool host requires it as the sandbox root (`AgentToolHost.cs:176`).
+- **Env = a pristine baseline, NOT Forge.Api's live env.** Forge.Api calls `MSBuildLocator.RegisterDefaults()` at startup (for the in-process Roslyn `MSBuildWorkspace`), injecting `MSBUILD_EXE_PATH` / `MSBuildSDKsPath` / `MSBuildExtensionsPath*` into its own process — pinned to Forge's net8 SDK. A child `dotnet` that inherits them resolves SDKs against that SDK's `Sdks` dir, which lacks the repo's build SDK (`Microsoft.Build.Traversal`), and dies with `MSB4276`. `CopilotServerManager` used to copy Forge.Api's *entire* env into the Copilot CLI, so the engineer agent's restore/build was always broken — it burned the full 24-min budget × N iters at score 0 (local:UPDATE-HISTORY-IN-CL stage-1.1, 2026-05-25), and the LLM **misreported** the `MSB4276` as "can't authenticate to the ASZ feed" (it is NOT a credential issue; no PAT is required — the interactive credential provider's cached token is reused once the env is clean).
+- **The guarantee is structural and in code, never prompt-based.** `Agents/ChildProcessEnv` captures the pristine env once at the top of `Program.cs` (BEFORE `RegisterDefaults`), strips a denied-vars list (belt-and-suspenders), and exposes `Apply(ProcessStartInfo)` / `ToDictionary()`. Applied at every launch site: `CopilotServerManager` (agent), `StoryBuildRunner` (build/test gate), `BuildValidationWorker` (repo validation, which also rebuilds PATH from the registry). `ChildProcessEnvIsolationTests` locks it. Forge.Api's OWN process keeps the registered MSBuild (its Roslyn needs it); only its children get the clean env. The prior per-subprocess "remove 5 vars" calls were a band-aid that had also missed the Copilot path entirely.
+
 ### Engineer agent: 30-second per-spawn timeout was killing every iter
 
 The worktree fix above turned out to be necessary but not sufficient. Operator inspected `E:/forge/update/.worktree/spawn-ws-...` after deploying it and found `git status` clean across 124 iters, with the workstream branch's HEAD untouched since the merged PR that opened it. The agent was getting cancelled mid-tool-call and never reaching a write.
