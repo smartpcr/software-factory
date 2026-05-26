@@ -1028,6 +1028,20 @@ public class DeliverableRow
     /// <summary>1-based iteration counter, capped at <see cref="ScoringConstants.MaxIterations"/>.</summary>
     public int Iter { get; set; } = 1;
 
+    /// <summary>
+    /// Phase 87 — 1-based pair-attempt counter mirroring
+    /// <see cref="WorkItemRow.PairAttemptCount"/> at the moment this row was
+    /// written. Disambiguates rows whose <see cref="Iter"/> resets when an
+    /// operator Retry / <c>WorkstreamRecovery.SoftResetForResumeAsync</c>
+    /// path wipes <c>agent_pair_assignment</c> + <c>agent_usage</c> and the
+    /// orchestrator spawns a fresh generator/evaluator pair against the
+    /// surviving deliverable history (the post-Phase-87 fix for the
+    /// "two rows with Iter=1, different pairs" case observed on stage 3.3-e2e
+    /// CLEAN-CODE 2026-05-26). Null on pre-Phase-87 rows — the UI treats
+    /// null as pair 1 so legacy workstreams render unchanged.
+    /// </summary>
+    public int? PairAttempt { get; set; }
+
     /// <summary>0..100. Derived verdict: ≥90 pass, [reject..89] iterate, &lt;reject reject. Reject threshold varies by work-item points.</summary>
     public int Score { get; set; }
 

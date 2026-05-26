@@ -11,6 +11,7 @@ import { ExecBadge } from './ExecBadge';
 import { PrStatusBadge } from './PrStatusBadge';
 import { useWitStore } from './useWitStore';
 import { useBoardStore, type BoardGroupBy } from '@/state/useBoardStore';
+import { useExecGroupCollapseStore } from '@/state/useExecGroupCollapseStore';
 
 interface Props {
   items: WorkItem[];
@@ -83,21 +84,42 @@ function computeExecGroups(items: WorkItem[], groupBy: BoardGroupBy): ExecGroup[
 export function ExecBoard({ items, onOpen }: Props) {
   const groupBy = useBoardStore((s) => s.groupBy);
   const groups = useMemo(() => computeExecGroups(items, groupBy), [items, groupBy]);
+  const collapsedMap = useExecGroupCollapseStore((s) => s.collapsed);
+  const toggleCollapsed = useExecGroupCollapseStore((s) => s.toggle);
 
   return (
     <div className="wit-exec-groups">
       {groups.map((g) => {
         const pts = g.items.reduce((n, i) => n + i.points, 0);
+        const collapsed = collapsedMap[`${groupBy}:${g.key}`] === true;
+        const onToggle = () => toggleCollapsed(groupBy, g.key);
         return (
-          <section className="wit-exec-group" key={g.key}>
-            <header className="wit-exec-group-head">
+          <section
+            className={`wit-exec-group${collapsed ? ' collapsed' : ''}`}
+            key={g.key}
+          >
+            <header
+              className="wit-exec-group-head"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!collapsed}
+              aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${GROUP_LABEL[groupBy]} ${g.label}`}
+              onClick={onToggle}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onToggle();
+                }
+              }}
+            >
+              <span className="wit-exec-group-chevron" aria-hidden>{collapsed ? '▸' : '▾'}</span>
               <span className="wit-exec-group-kind">{GROUP_LABEL[groupBy]}</span>
               <h3 className="wit-exec-group-name">{g.label}</h3>
               <span className="wit-exec-group-meta">
                 <span className="num">{g.items.length}</span> items · <span className="num">{pts}</span> pts
               </span>
             </header>
-            <ExecBoardGrid items={g.items} onOpen={onOpen} />
+            {!collapsed && <ExecBoardGrid items={g.items} onOpen={onOpen} />}
           </section>
         );
       })}

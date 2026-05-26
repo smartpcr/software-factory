@@ -1124,7 +1124,32 @@ public static class TaskExecutionEndpoints
     {
         JsonElement payload;
         var raw = string.IsNullOrEmpty(r.PayloadJson) ? "{}" : r.PayloadJson;
-        if (raw.Length > SnapshotPayloadByteCap && r.Kind is "task.prompt" or "task.tool-call" or "task.tool-result" or "task.iteration.scored")
+
+        // 2026-05-23 perf fix — the dual-kind UI schema (see Forge.UI
+        // `filters.ts:58-64`, `TranscriptLine.tsx:240-241`,
+        // `BuildPane.tsx:44-45`, `ToolsPane.tsx:663-664`) accepts BOTH
+        // hyphenated (`task.tool-call`) and non-hyphenated
+        // (`task.toolcall`) forms because emitters disagree:
+        //   * CrewQueueWorker.cs:1698-1702 → hyphenated.
+        //   * CrewStoryArtifactStrategy.cs:5988/6797 (story crew impl
+        //     loop) → non-hyphenated via
+        //     `$"task.{evt.Kind.ToString().ToLowerInvariant()}"`.
+        //   * Same file line 7383 → `story.agent-{...}` non-hyphenated.
+        // Pre-fix the predicate only matched hyphenated forms, so the
+        // story crew's tool events were never truncated. On a CLEAN-CODE
+        // workstream this ballooned `/execution.recentTranscript` to
+        // 2.1 MB (151 task.toolresult @ avg 9.3 KB each + 68 story.agent-
+        // toolresult @ 5.6 KB) and the conversation tab took several
+        // seconds to load. Full payload is still available via
+        // GET /api/work-items/{wi}/transcript/{eventId:long} (bypasses
+        // truncation — see GetTranscriptEvent line 941-942), so the UI
+        // can refetch on demand (cf. PromptView.tsx:204).
+        if (raw.Length > SnapshotPayloadByteCap && r.Kind is
+                "task.prompt"
+                or "task.tool-call" or "task.tool-result"
+                or "task.toolcall" or "task.toolresult"
+                or "story.agent-toolcall" or "story.agent-toolresult"
+                or "task.iteration.scored")
         {
             // Replace bulky text fields with truncation markers so the UI
             // still renders the row but doesn't tax the wire.

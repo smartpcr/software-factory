@@ -274,6 +274,16 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(84, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "repos" }),
+        // Phase 87 — deliverables.PairAttempt (per-row 1-based pair-attempt
+        // counter mirroring WorkItem.PairAttemptCount at deliverable-write
+        // time). Disambiguates rows whose `Iter` column has been reset by an
+        // operator Retry / SoftResetForResumeAsync path. Product-only, fans
+        // out per {slug}.db. (Phases 85 / 86 are non-migration code-phase
+        // numbers used by Phase85GitignoreAutoFixTests, Phase85AgentLruRotationTests
+        // and Phase86E2eGitignoreStallTests — they do not need a schema row.)
+        new PhaseMigrationSpec(87, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "deliverables" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

@@ -82,6 +82,10 @@ public sealed class PhaseMigrationRunner
         // Phase 84 — repos.RunTestsElevated. Product-only, fans out per {slug}.db.
         // Additive nullable column; no ordering dependency.
         84,
+        // Phase 87 — deliverables.PairAttempt. Product-only, fans out per
+        // {slug}.db. Additive nullable column; no ordering dependency. Phases
+        // 85 and 86 are non-migration code-phase numbers.
+        87,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

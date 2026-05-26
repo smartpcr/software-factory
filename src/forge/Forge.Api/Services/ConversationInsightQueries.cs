@@ -55,11 +55,24 @@ public static class ConversationInsightQueries
         // EF/SQLite refuses server-side ORDER BY on DateTimeOffset
         // (NotSupportedException), so we materialise then sort
         // client-side. Memory'd in [[feedback_sqlite_no_order_by_datetimeoffset]].
+        //
+        // 2026-05-26 — order chronologically (CreatedAt first, Iter as
+        // tiebreaker) so the per-iter chip strip + sparkline track real
+        // wall-clock progress. `Iter` resets per pair attempt — a Retry that
+        // wipes pair-attempt accounting and lands a fresh pair (e.g. ws
+        // 3.3-e2e: YS4 stuck at 86 for iters 1..65 → SoftReset on Retry →
+        // FL passes at score 95 stamped as Iter=1 again) produces TWO rows
+        // with `Iter=1`. Ordering by Iter parked the 95 at chip position 2
+        // and pushed the 64 zero-token chips (whose agent_usage was wiped)
+        // to positions 3..66, so the score sparkline spiked at position 2
+        // instead of the rightmost. Matches the secondary sort used by
+        // TaskExecutionEndpoints.GetExecution.deliverableRows so both views
+        // agree on chip-to-slot mapping.
         var deliverables = (await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == workItemId)
             .ToListAsync(ct))
-            .OrderBy(d => d.Iter)
-            .ThenBy(d => d.CreatedAt)
+            .OrderBy(d => d.CreatedAt)
+            .ThenBy(d => d.Iter)
             .ToList();
         if (deliverables.Count == 0)
         {
@@ -178,6 +191,10 @@ public static class ConversationInsightQueries
             iters.Add(new
             {
                 iter = d.Iter,
+                // Phase 87 — null on pre-Phase-87 rows; UI treats null as
+                // pair 1 so legacy workstreams render unchanged. Stamped
+                // by DeliverableLoop from WorkItem.PairAttemptCount.
+                pairAttempt = d.PairAttempt,
                 score = d.Score,
                 verdict = d.Verdict,
                 inputTokens = inTok,

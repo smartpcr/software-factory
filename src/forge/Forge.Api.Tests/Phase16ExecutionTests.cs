@@ -2036,4 +2036,113 @@ public class Phase16ExecutionTests
             try { Directory.Delete(testRoot, recursive: true); } catch { }
         }
     }
+
+    // 2026-05-23 perf regression test — `/api/work-items/{id}/execution`
+    // returns up to 500 recent transcript events inline. Prior to this fix
+    // the `TruncateBulkyFields` predicate only matched hyphenated tool
+    // kinds (`task.tool-call` / `task.tool-result`) — but
+    // `CrewStoryArtifactStrategy` emits the non-hyphenated variants
+    // (`task.toolcall` / `task.toolresult` / `story.agent-toolcall` /
+    // `story.agent-toolresult`). On a real workstream this ballooned the
+    // recentTranscript payload to ~2 MB (151 toolresult × avg 9 KB +
+    // 68 story.agent-toolresult × avg 5 KB) and made the conversation tab
+    // sluggish.
+    [Fact]
+    public async Task Execution_Truncates_Bulky_NonHyphenated_Tool_Kinds()
+    {
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-trunc",
+                Type = "step", Track = "design", State = "active",
+                Title = "Bulky tool truncation",
+                AssignedToJson = "{\"kind\":\"agent\",\"id\":\"a\",\"displayName\":\"A\"}",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            // toolPayload string > the 4096-byte outer gate AND > the
+            // 320-char per-field cap. The truncation marker contains the
+            // arrow "→" so we assert on that substring.
+            var bigBody = new string('x', 5000);
+            var bulkyPayload = "{\"toolName\":\"build\",\"toolPayload\":\"" + bigBody + "\"}";
+
+            foreach (var kind in new[]
+            {
+                "task.toolcall",
+                "task.toolresult",
+                "story.agent-toolcall",
+                "story.agent-toolresult",
+                // Hyphenated forms should remain truncated (regression
+                // guard so we don't accidentally narrow the predicate).
+                "task.tool-call",
+                "task.tool-result",
+            })
+            {
+                db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
+                {
+                    WorkItemId = "wi-trunc",
+                    Kind = kind,
+                    AgentId = "a",
+                    CrewId = "c",
+                    PayloadJson = bulkyPayload,
+                    At = DateTimeOffset.UtcNow,
+                });
+            }
+
+            // Negative control — a non-tool kind with a bulky payload must
+            // pass through untouched (so we don't over-truncate).
+            db.TaskTranscriptEvents.Add(new TaskTranscriptEventRow
+            {
+                WorkItemId = "wi-trunc",
+                Kind = "task.token",
+                AgentId = "a",
+                CrewId = "c",
+                PayloadJson = "{\"text\":\"" + bigBody + "\"}",
+                At = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            using var client = f.CreateClient();
+            var resp = await client.GetAsync("/api/work-items/wi-trunc/execution");
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var transcript = doc.RootElement.GetProperty("recentTranscript");
+
+            foreach (var kind in new[]
+            {
+                "task.toolcall",
+                "task.toolresult",
+                "story.agent-toolcall",
+                "story.agent-toolresult",
+                "task.tool-call",
+                "task.tool-result",
+            })
+            {
+                JsonElement? match = null;
+                foreach (var e in transcript.EnumerateArray())
+                {
+                    if (e.GetProperty("kind").GetString() == kind) { match = e; break; }
+                }
+                Assert.True(match.HasValue, $"missing kind in response: {kind}");
+                var tp = match!.Value.GetProperty("payload").GetProperty("toolPayload").GetString();
+                Assert.NotNull(tp);
+                Assert.True(tp!.Length < 1000, $"{kind} toolPayload not truncated — length {tp.Length}");
+                Assert.Contains("[truncated", tp);
+            }
+
+            // Negative control passes through.
+            JsonElement? tokenEvt = null;
+            foreach (var e in transcript.EnumerateArray())
+            {
+                if (e.GetProperty("kind").GetString() == "task.token") { tokenEvt = e; break; }
+            }
+            Assert.True(tokenEvt.HasValue);
+            var tokenText = tokenEvt!.Value.GetProperty("payload").GetProperty("text").GetString();
+            Assert.Equal(5000, tokenText!.Length);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
 }

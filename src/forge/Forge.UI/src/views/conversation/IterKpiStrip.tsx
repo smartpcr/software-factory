@@ -9,6 +9,17 @@ import { IterSparkline } from './IterSparkline';
 
 export interface IterKpi {
   iter: number;
+  /**
+   * 2026-05-26 Phase 87 — 1-based pair-attempt counter mirroring
+   * <c>WorkItem.PairAttemptCount</c> at the moment this deliverable row
+   * was written. Disambiguates rows whose <c>iter</c> resets when an
+   * operator Retry / SoftResetForResumeAsync path wipes pair-attempt
+   * accounting and the orchestrator spawns a fresh generator/evaluator
+   * pair against the surviving deliverable history. Null on pre-Phase-87
+   * rows — UI treats null as pair 1 so legacy workstreams render
+   * unchanged.
+   */
+  pairAttempt?: number | null;
   score: number;
   verdict: string;
   inputTokens: number;
@@ -112,71 +123,100 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
     >
       {/* Chip strip */}
       <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-        {iters.map((it) => {
+        {iters.map((it, idx) => {
           const isActive = activeIter === it.iter;
           const cachePct = cacheHitPercent(it);
           const convTok = it.conversationTokens ?? null;
+          // 2026-05-26 Phase 87 — render a vertical divider before any
+          // chip whose pair-attempt differs from the previous chip's.
+          // Treat null as pair 1 (pre-Phase-87 baseline) so legacy
+          // workstreams never trigger a spurious boundary. The divider
+          // gives the operator a clean visual cue for "the chips on
+          // either side belong to different (generator, evaluator) pairs
+          // because an operator Retry / SoftReset reassigned mid-run"
+          // — exactly the case where `iter` numbers repeat and the bare
+          // chip strip is misleading.
+          const prev = idx > 0 ? iters[idx - 1] : null;
+          const thisPair = it.pairAttempt ?? 1;
+          const prevPair = prev != null ? prev.pairAttempt ?? 1 : thisPair;
+          const showPairDivider = idx > 0 && thisPair !== prevPair;
           return (
-            <button
-              key={it.iter}
-              type="button"
-              onClick={() => onSelectIter?.(it.iter)}
-              title={buildChipTitle(it)}
-              style={{
-                display: 'grid',
-                gridTemplateRows: 'repeat(6, 1fr)',
-                gap: 1,
-                padding: '4px 6px',
-                minWidth: 56,
-                fontSize: 10,
-                lineHeight: '12px',
-                textAlign: 'right',
-                background: isActive
-                  ? 'var(--sc-cyan-bg, rgba(94,234,212,0.12))'
-                  : 'transparent',
-                border: `1px solid ${
-                  isActive
-                    ? 'var(--sc-cyan, #5eead4)'
-                    : 'var(--border, #2a2f3a)'
-                }`,
-                color: 'var(--text-primary, #e3e6eb)',
-                cursor: onSelectIter ? 'pointer' : 'default',
-                fontFamily: 'inherit',
-                borderRadius: 2,
-              }}
+            <div
+              key={it.createdAt || `${thisPair}.${it.iter}.${idx}`}
+              style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}
             >
-              <div
-                style={{ fontWeight: 700, color: isNoDelivery(it) ? 'var(--sc-red, #f87171)' : scoreColor(it.score, it.verdict) }}
-                title={isNoDelivery(it)
-                  ? 'No changes delivered this iteration — the generator produced 0 files (likely timed out); scored 0 and auto-retried.'
-                  : undefined}
+              {showPairDivider && (
+                <div
+                  aria-hidden="true"
+                  title={`pair attempt ${prevPair} → ${thisPair}`}
+                  style={{
+                    width: 2,
+                    background: 'var(--sc-amber, #ffb347)',
+                    margin: '2px 2px',
+                    borderRadius: 1,
+                  }}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => onSelectIter?.(it.iter)}
+                title={buildChipTitle(it)}
+                style={{
+                  display: 'grid',
+                  gridTemplateRows: 'repeat(6, 1fr)',
+                  gap: 1,
+                  padding: '4px 6px',
+                  minWidth: 56,
+                  fontSize: 10,
+                  lineHeight: '12px',
+                  textAlign: 'right',
+                  background: isActive
+                    ? 'var(--sc-cyan-bg, rgba(94,234,212,0.12))'
+                    : 'transparent',
+                  border: `1px solid ${
+                    isActive
+                      ? 'var(--sc-cyan, #5eead4)'
+                      : 'var(--border, #2a2f3a)'
+                  }`,
+                  color: 'var(--text-primary, #e3e6eb)',
+                  cursor: onSelectIter ? 'pointer' : 'default',
+                  fontFamily: 'inherit',
+                  borderRadius: 2,
+                }}
               >
-                {isNoDelivery(it) ? '✗' : it.score}
-              </div>
-              <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
-                {formatTokens(it.inputTokens + it.outputTokens)}
-              </div>
-              <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
-                ${it.costUsd.toFixed(2)}
-              </div>
-              <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
-                {it.filesChanged}f
-              </div>
-              <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
-                {formatDuration(it.durationMs)}
-              </div>
-              {/* 2026-05-16 Phase 72 — cache-hit indicator. Cyan when
-                  >=50% (cheap iter), amber 1-49% (some reuse), gray
-                  zero / unknown so the operator can tell the SDK
-                  *did* report cache data even when the hit rate was
-                  zero (means session was reused but the prompt
-                  prefix changed). */}
-              <div style={{ color: cachePctColor(cachePct) }}>
-                {cachePct === null
-                  ? (convTok != null ? `${formatTokens(convTok)}ctx` : '—')
-                  : `${cachePct}%${convTok != null ? ` ${formatTokens(convTok)}ctx` : ''}`}
-              </div>
-            </button>
+                <div
+                  style={{ fontWeight: 700, color: isNoDelivery(it) ? 'var(--sc-red, #f87171)' : scoreColor(it.score, it.verdict) }}
+                  title={isNoDelivery(it)
+                    ? 'No changes delivered this iteration — the generator produced 0 files (likely timed out); scored 0 and auto-retried.'
+                    : undefined}
+                >
+                  {isNoDelivery(it) ? '✗' : it.score}
+                </div>
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
+                  {formatTokens(it.inputTokens + it.outputTokens)}
+                </div>
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
+                  ${it.costUsd.toFixed(2)}
+                </div>
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
+                  {it.filesChanged}f
+                </div>
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
+                  {formatDuration(it.durationMs)}
+                </div>
+                {/* 2026-05-16 Phase 72 — cache-hit indicator. Cyan when
+                    >=50% (cheap iter), amber 1-49% (some reuse), gray
+                    zero / unknown so the operator can tell the SDK
+                    *did* report cache data even when the hit rate was
+                    zero (means session was reused but the prompt
+                    prefix changed). */}
+                <div style={{ color: cachePctColor(cachePct) }}>
+                  {cachePct === null
+                    ? (convTok != null ? `${formatTokens(convTok)}ctx` : '—')
+                    : `${cachePct}%${convTok != null ? ` ${formatTokens(convTok)}ctx` : ''}`}
+                </div>
+              </button>
+            </div>
           );
         })}
       </div>
@@ -299,7 +339,13 @@ function cachePctColor(pct: number | null): string {
  */
 function buildChipTitle(it: IterKpi): string {
   const lines: string[] = [];
-  lines.push(`iter ${it.iter} · ${it.verdict}`);
+  // 2026-05-26 Phase 87 — surface pair-attempt N in the tooltip so the
+  // operator can see (pair 1, iter 1) vs (pair 2, iter 1) on chips
+  // that look identical at a glance. Null/1 hidden to keep tooltips
+  // terse on the common case.
+  const pair = it.pairAttempt ?? 1;
+  const pairSuffix = pair > 1 ? ` · pair ${pair}` : '';
+  lines.push(`iter ${it.iter}${pairSuffix} · ${it.verdict}`);
   lines.push(`score: ${it.score}`);
   if (isNoDelivery(it)) {
     lines.push('⚠ no changes delivered — generator produced 0 files (likely timed out); auto-retried');
