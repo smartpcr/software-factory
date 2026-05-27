@@ -366,6 +366,40 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Test hook for <see cref="ScoreMergedPrAsync"/>. Defaults to a clean
+    /// pass (92) so the merged-PR re-score recovery closes the work item in
+    /// integration tests. Set this to a sub-pass score to exercise the
+    /// follow-up branch.
+    /// </summary>
+    public Func<WorkstreamRow, MergedPrScore>? MergedPrScoreFactory { get; set; }
+
+    public Task<MergedPrScore> ScoreMergedPrAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+    {
+        if (this.MergedPrScoreFactory is not null)
+        {
+            return Task.FromResult(this.MergedPrScoreFactory(workstream));
+        }
+
+        var dims = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["correctness"] = 37,
+            ["quality"] = 23,
+            ["tests"] = 13,
+            ["scope"] = 10,
+            ["risk"] = 9,
+        };
+        return Task.FromResult(new MergedPrScore(
+            Score: 92,
+            Dims: dims,
+            Verdict: "pass",
+            Notes: $"[deterministic] merged PR {mergedPrId} for ws {workstream.Id} scored against landed code.",
+            EvalCostUsd: 0m,
+            EvaluatorAgentId: "eval-deterministic",
+            ParseFailed: false));
+    }
+
+    /// <summary>
     /// docs/forge/e2e.md Stage 4.2 — deterministic per-stage qa-e2e
     /// emission. Always returns one Gherkin <c>.feature</c> file + one
     /// Reqnroll <c>*Steps.cs</c> file under the

@@ -3961,6 +3961,161 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
     }
 
+    public async Task<MergedPrScore> ScoreMergedPrAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+    {
+        // 2026-05-27 recovery path. The workstream's PR already merged but its
+        // latest deliverable is a non-pass (typically the generator hit its
+        // 24-min wall-clock budget and the loop force-scored 0). Run the
+        // evaluator ONCE against the LANDED code so the work item can close on
+        // a real score instead of re-driving merged work into the same
+        // timeout. INVARIANT (forge_context.md): the evaluator runs IN the
+        // workstream's git worktree — never a scratch dir.
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        if (repo is null)
+        {
+            throw new InvalidOperationException(
+                $"ScoreMergedPrAsync: no repo for spawn {spawn.Id} (RepoId '{spawn.RepoId}'); "
+                + "cannot materialise the worktree to score the merged PR against.");
+        }
+
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
+        // EnsureWorktreeAsync recreates the branch off base when the merged
+        // workstream branch was already pruned (PrSyncJob removes it on PR
+        // terminal state) — base carries the landed code either way, so the
+        // evaluator always sees the merged implementation on disk.
+        var workspace = await this.git.EnsureWorktreeAsync(
+            repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
+
+        await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
+        Directory.CreateDirectory(Path.Combine(workspace, ".forge"));
+
+        // Best-effort changed-file hint (handles the already-merged empty-diff
+        // case via the merge range / merge-commit first-parent fallback). When
+        // empty, the prompt tells the evaluator to discover the diff itself.
+        IReadOnlyList<string> changedFiles = Array.Empty<string>();
+        try
+        {
+            (changedFiles, _) = await this.GetMergedPrChangedFilesFallbackAsync(workstream.Id, workspace, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "ScoreMergedPrAsync: changed-file hint failed for ws {WsId}; evaluator will self-discover.",
+                workstream.Id);
+        }
+
+        var attachmentsJson = await this.LoadFreshAttachmentsJsonAsync(spawn.Id, ct);
+        await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
+            excludeMode: AttachmentExcludeMode.GitInfoExclude, stateDir: this.dbPaths.Folder);
+        var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
+
+        var changedFilesSection = changedFiles.Count > 0
+            ? "## Files this PR changed\n" + string.Join("\n", changedFiles.Take(200).Select(f => $"- `{f}`"))
+            : "## Files this PR changed\n(Could not auto-resolve the changed-file list. Discover it yourself with "
+              + "`git --no-pager log --oneline " + baseBranch + "..HEAD` and `git --no-pager diff` against the "
+              + "merge-base, or inspect the workstream's stated deliverables in the tree.)";
+
+        var prompt = $$"""
+            You are the Evaluator scoring an ALREADY-MERGED pull request.
+
+            PR `{{mergedPrId}}` for workstream `{{workstream.Id}}` (story
+            `{{spawn.StoryId}}`) has been **merged** into `{{baseBranch}}`. Your
+            job is NOT to change anything — it is to read the LANDED code and
+            score how well it satisfies the workstream's goal, exactly as the
+            gen↔eval loop's evaluator would have if the generator hadn't been
+            cut off by its wall-clock budget.
+
+            ## Your working directory IS a git worktree of the real repo
+            You are inside a worktree checked out on `{{workstream.Branch}}`
+            (base `{{baseBranch}}`), which contains the merged code. Do NOT
+            clone or cd elsewhere. Inspect the actual files in place.
+
+            ## Story
+            {{spawn.StoryTitle}}
+
+            ## Workstream
+            **{{workstream.Name}}** — {{workstream.Summary}}
+            {{attachmentPromptSection}}
+            {{changedFilesSection}}
+
+            ## How to deliver
+            Write a single file at `.forge/merged-pr-score.json` (the `.forge/`
+            directory is git-excluded, so it will NOT be committed) containing a
+            fenced JSON block of EXACTLY this shape:
+
+            ```json
+            {
+              "score": 0,
+              "dims": { "correctness": 0, "quality": 0, "tests": 0, "scope": 0, "risk": 0 },
+              "verdict": "pass | iterate",
+              "notes": "concrete justification: what the merged code does well, and any real gaps"
+            }
+            ```
+
+            Scoring rubric (max per dim): correctness 40, quality 25, tests 15,
+            scope 10, risk 10 — `score` is their sum (0–100). Score the work as
+            MERGED; do not penalise it for the generator timeout. Reply `DONE`
+            when the file is written.
+            """;
+
+        await this.InvokeAsync("Review", workstream.Id, $"merged-pr-rescore:{workstream.Id}", prompt, workspace,
+            BudgetForPhase(spawn.StoryPoints, "review"), ct);
+
+        var diskPath = Path.Combine(workspace, ".forge", "merged-pr-score.json");
+        if (!File.Exists(diskPath))
+        {
+            this.logger?.LogWarning(
+                "ScoreMergedPrAsync: evaluator did not write .forge/merged-pr-score.json for ws {WsId} (workspace {Ws}); "
+                + "returning ParseFailed so the reconciler retries next tick.",
+                workstream.Id, workspace);
+            return new MergedPrScore(0, new Dictionary<string, int>(), "iterate",
+                "Evaluator produced no score file.", 0m, await this.ResolveReviewEvaluatorAgentIdAsync(ct), ParseFailed: true);
+        }
+
+        var raw = await File.ReadAllTextAsync(diskPath, ct);
+        var parsed = EvaluatorScoreParser.Parse(raw, spawn.StoryPoints > 0 ? spawn.StoryPoints : 1);
+        var evaluatorAgentId = await this.ResolveReviewEvaluatorAgentIdAsync(ct);
+        if (parsed.ParseFailed)
+        {
+            this.logger?.LogWarning(
+                "ScoreMergedPrAsync: evaluator score for ws {WsId} failed to parse ({Err}); reconciler retries next tick.",
+                workstream.Id, parsed.ParseError);
+            return new MergedPrScore(0, new Dictionary<string, int>(), "iterate",
+                $"Evaluator score failed to parse: {parsed.ParseError}", 0m, evaluatorAgentId, ParseFailed: true);
+        }
+
+        return new MergedPrScore(
+            Score: parsed.Score,
+            Dims: parsed.Dims,
+            Verdict: parsed.Verdict,
+            Notes: string.IsNullOrWhiteSpace(parsed.Notes) ? "(no notes)" : parsed.Notes,
+            EvalCostUsd: 0m,
+            EvaluatorAgentId: evaluatorAgentId,
+            ParseFailed: false);
+    }
+
+    /// <summary>Resolve the Review crew's evaluator/lead agent id for the
+    /// merged-PR re-score deliverable's <c>EvaluatorAgentId</c> stamp.
+    /// Best-effort — returns null when no review crew is configured.</summary>
+    private async Task<string?> ResolveReviewEvaluatorAgentIdAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var prefix = CrewIdPrefix("Review");
+            var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
+                ?? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct);
+            return crew?.DefaultEvaluatorAgentId ?? crew?.DefaultGeneratorAgentId ?? crew?.Lead;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public async Task<ReviewFix> ProduceReviewFixAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, ReviewCommentContext comment, CancellationToken ct = default)
     {

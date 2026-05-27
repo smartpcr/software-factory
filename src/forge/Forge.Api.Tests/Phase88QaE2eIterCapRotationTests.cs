@@ -130,6 +130,10 @@ public class Phase88QaE2eIterCapRotationTests
             StorySpawnRow spawn, WorkstreamRow workstream, IReadOnlyList<ConflictedFile> conflictedFiles,
             string baseBranch, CancellationToken ct = default)
             => throw new NotImplementedException();
+
+        public Task<MergedPrScore> ScoreMergedPrAsync(
+            StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+            => throw new NotImplementedException("Phase 88 qa-e2e rotation test must not invoke merged-PR re-score path");
     }
 
     /// <summary>

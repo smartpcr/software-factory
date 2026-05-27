@@ -458,6 +458,14 @@ if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredServ
 // stalled row whose PR is in `merged`. Idempotent; ticks every 60 s.
 builder.Services.AddSingleton<Forge.Api.Services.StalledMergedRecoveryReconciler>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.StalledMergedRecoveryReconciler>());
+// 2026-05-27 — merged-PR re-score recovery. When a workstream's PR merged but
+// its latest deliverable is a non-pass (the generator hit its wall-clock
+// budget and the loop force-scored 0), the evaluator scores the LANDED code so
+// the work item can close on a real score instead of the operator Restarting
+// merged work into the same timeout forever. Gated by
+// Forge:Stories:MergedPrRescoreEnabled (default on). Ticks every 120 s.
+builder.Services.AddSingleton<Forge.Api.Services.MergedPrRescoreReconciler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.MergedPrRescoreReconciler>());
 // Phase 29 — async build validation worker.
 builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
 builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();

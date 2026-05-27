@@ -158,6 +158,10 @@ public sealed class Phase74WorkstreamInFlightTests
             string baseBranch,
             CancellationToken ct = default)
             => this.inner.ProduceConflictResolutionAsync(spawn, workstream, conflictedFiles, baseBranch, ct);
+
+        public Task<MergedPrScore> ScoreMergedPrAsync(
+            StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+            => this.inner.ScoreMergedPrAsync(spawn, workstream, mergedPrId, ct);
     }
 
     private sealed class FilesWithoutDeliverableStrategy : IStoryArtifactStrategy
@@ -231,6 +235,10 @@ public sealed class Phase74WorkstreamInFlightTests
             string baseBranch,
             CancellationToken ct = default)
             => this.inner.ProduceConflictResolutionAsync(spawn, workstream, conflictedFiles, baseBranch, ct);
+
+        public Task<MergedPrScore> ScoreMergedPrAsync(
+            StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+            => this.inner.ScoreMergedPrAsync(spawn, workstream, mergedPrId, ct);
     }
 
     private sealed class ThrowSloppyVerdictStrategy : IStoryArtifactStrategy
@@ -306,6 +314,10 @@ public sealed class Phase74WorkstreamInFlightTests
             string baseBranch,
             CancellationToken ct = default)
             => this.inner.ProduceConflictResolutionAsync(spawn, workstream, conflictedFiles, baseBranch, ct);
+
+        public Task<MergedPrScore> ScoreMergedPrAsync(
+            StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+            => this.inner.ScoreMergedPrAsync(spawn, workstream, mergedPrId, ct);
     }
 
     [Fact]

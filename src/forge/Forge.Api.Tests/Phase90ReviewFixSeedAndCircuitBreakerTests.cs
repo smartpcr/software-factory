@@ -403,6 +403,10 @@ public class Phase90ReviewFixSeedAndCircuitBreakerTests
             StorySpawnRow spawn, WorkstreamRow workstream, IReadOnlyList<ConflictedFile> conflictedFiles,
             string baseBranch, CancellationToken ct = default)
             => this.inner.ProduceConflictResolutionAsync(spawn, workstream, conflictedFiles, baseBranch, ct);
+
+        public Task<MergedPrScore> ScoreMergedPrAsync(
+            StorySpawnRow spawn, WorkstreamRow workstream, string mergedPrId, CancellationToken ct = default)
+            => this.inner.ScoreMergedPrAsync(spawn, workstream, mergedPrId, ct);
     }
 
     /// <summary>
