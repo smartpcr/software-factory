@@ -3608,7 +3608,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // SnapshotBranchHeadAsync was wrong here). No prevIterSha state
         // needed — each call is self-contained against baseBranch.
 
-        await this.RunGenEvalLoopAsync(
+        var skippedConcurrent = await this.RunGenEvalLoopAsync(
             team: "Engineer",
             workItemId: workstream.Id,
             phaseTag: $"impl:{workstream.Id}",
@@ -3682,6 +3682,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // => the gate throws BuildFailedException => workstream stalls.
             runTestsElevated: repo?.RunTestsElevated == true,
             ct: ct);
+
+        // Phase 74 follow-up — DeliverableLoop fast-failed because another
+        // impl run already owns this work item. Do not read stale workspace
+        // files, build a PR body from prior deliverables, or trip Phase 75's
+        // failure-marker gate; the winning in-flight run owns the real verdict.
+        if (skippedConcurrent)
+        {
+            throw new WorkstreamInFlightException(workstream.Id);
+        }
 
         // Phase 45 follow-up -- collect only files the agent actually changed
         // in the worktree (via `git status --porcelain`), not every file in
@@ -8597,4 +8606,22 @@ public sealed class PlanDocInFlightException : Exception
     public string RepoPath { get; }
 
     public string WorkItemId { get; }
+}
+
+/// <summary>
+/// 2026-05-27 — transient signal thrown by the impl workstream producer when
+/// the gen-eval loop was a no-op because another <c>DeliverableLoop.RunAsync</c>
+/// already owns the same work item (Phase 74 skipped-concurrent). The winning
+/// in-flight run produces the deliverable; this loser must not continue into
+/// stale-file collection, PR creation, or Phase 75 stall handling.
+/// </summary>
+public sealed class WorkstreamInFlightException : Exception
+{
+    public WorkstreamInFlightException(string workstreamId)
+        : base($"Workstream {workstreamId} skipped: another in-flight run owns it; retry after the active run finishes.")
+    {
+        this.WorkstreamId = workstreamId;
+    }
+
+    public string WorkstreamId { get; }
 }

@@ -7,6 +7,7 @@
 namespace Forge.Api.Services.Stories;
 
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -2332,6 +2333,50 @@ public sealed class StorySpawnOrchestrator
                     message = "process shutdown",
                 }, CancellationToken.None);
             }
+            catch (WorkstreamInFlightException ifEx)
+            {
+                // Phase 74 follow-up — the per-work-item DeliverableLoop
+                // mutex proved another impl run is currently owning this
+                // workstream. This is a transient no-op, not a failed
+                // engineer attempt and not a successful no-progress spawn.
+                // Record a distinct skipped-concurrent finish so the guard
+                // suppresses duplicate outer spawns while the winning run
+                // continues.
+                this.logger?.LogInformation(
+                    "Workstream {WsId} impl skipped because another run is in-flight: {Message}",
+                    item.ws.Id, ifEx.Message);
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    skippedConcurrent = true,
+                    exceptionType = nameof(WorkstreamInFlightException),
+                    message = ifEx.Message,
+                }, CancellationToken.None);
+            }
+            catch (WorkstreamPassGateRefusedException pgEx)
+            {
+                // Phase 75 follow-up — artifact files without a persisted
+                // natural pass (or operator ACCEPT audit) are not shippable.
+                // Treat this like a failed spawn for the in-flight guard, but
+                // do not mark the workstream stalled here: the next tick can
+                // re-enter gen-eval after the invalid row is demoted or after
+                // the racing invocation finishes.
+                this.logger?.LogWarning(
+                    pgEx,
+                    "Workstream {WsId} pass gate refused commit/PR; leaving active for retry.",
+                    item.ws.Id);
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    passGateRefused = true,
+                    exceptionType = nameof(WorkstreamPassGateRefusedException),
+                    message = pgEx.Message,
+                }, CancellationToken.None);
+            }
             catch (NoProgressException npe)
             {
                 // Phase 47 — the engineer agent produced zero file changes
@@ -2742,6 +2787,17 @@ public sealed class StorySpawnOrchestrator
         return isNatural ? PassGateClassification.NaturalPass : PassGateClassification.CorruptPass;
     }
 
+    private sealed class WorkstreamPassGateRefusedException : Exception
+    {
+        public WorkstreamPassGateRefusedException(string workstreamId, string message)
+            : base($"Workstream {workstreamId} pass gate refused commit/PR: {message}")
+        {
+            this.WorkstreamId = workstreamId;
+        }
+
+        public string WorkstreamId { get; }
+    }
+
     /// <summary>
     /// Execute the gen↔eval loop, commit, and open PR for a single workstream.
     /// Designed to run in parallel across workstreams — uses its own
@@ -2831,7 +2887,10 @@ public sealed class StorySpawnOrchestrator
                     : liveDel.Notes + "\n\n" + demoteNote;
                 await db2.SaveChangesAsync(ct);
             }
-            return;
+            throw new WorkstreamPassGateRefusedException(
+                w.Id,
+                $"latest deliverable {lastDel.Id} was a corrupt pass (score={lastDel.Score}, "
+                + $"failureKind={lastDel.FailureKind ?? "(none)"}).");
         }
 
         if (passClass is PassGateClassification.NaturalPass or PassGateClassification.OperatorAccepted)
@@ -3023,21 +3082,6 @@ public sealed class StorySpawnOrchestrator
             return;
         }
 
-        if (files.Count > 0)
-        {
-            var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, control2, db2, ct);
-            await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
-                $"impl({w.Id}): {w.Name}", ct);
-        }
-
-        // Phase 46 — merge latest from the spawn's base branch into the
-        // workstream branch before creating the PR. Always enforced.
-        // Phase 49 follow-up — was hardcoded to "main"; spawns can use
-        // a non-main base (e.g. failover-cluster:XRAFT uses
-        // feature/xraft) and merging the wrong branch produces
-        // spurious "behind" deltas on the PR.
-        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
-
         // Build rich PR description from the last deliverable, matching the
         // format used by CrewQueueWorker for regular work-item PRs:
         // title, score, iterations, generator/evaluator names, what changed,
@@ -3053,6 +3097,72 @@ public sealed class StorySpawnOrchestrator
             .OrderByDescending(d => d.CreatedAt)
             .ThenByDescending(d => d.Iter)
             .FirstOrDefault();
+
+        // Phase 75 follow-up — ProduceWorkstreamChangesAsync may have
+        // materialized files, but the orchestrator must still verify the
+        // persisted final verdict before it commits those files or opens a PR.
+        // The local UPDATE-HISTORY-IN-CL stage-1.3 incident proved that a
+        // concurrent/failed eval path can leave files available while no
+        // natural pass deliverable exists. In that state, opening or merging a
+        // PR makes the UI read as complete without score evidence.
+        var finalPassClass = finalDel is null
+            ? PassGateClassification.NotPass
+            : ClassifyPassGate(finalDel.Verdict, finalDel.Score, finalDel.FailureKind, finalDel.Notes);
+        if (finalPassClass == PassGateClassification.CorruptPass)
+        {
+            this.logger?.LogWarning(
+                "Phase 75: workstream {WsId} produced files but latest deliverable {DeliverableId} "
+                + "is a corrupt pass (score={Score}, failureKind={FailureKind}); refusing commit + PR.",
+                w.Id, finalDel!.Id, finalDel.Score, finalDel.FailureKind ?? "(none)");
+
+            var liveDel = await db2.Deliverables.FirstOrDefaultAsync(d => d.Id == finalDel.Id, ct);
+            if (liveDel is not null)
+            {
+                liveDel.Verdict = "iterate";
+                var demoteNote = $"PHASE 75 POST-LOOP CORRUPT-PASS REJECT — orchestrator refused to "
+                    + $"commit a verdict=pass row with score={finalDel.Score} "
+                    + $"(< {ScoringConstants.PassThreshold}) and failureKind="
+                    + $"{finalDel.FailureKind ?? "(none)"} and no OPERATOR ACCEPT audit. "
+                    + $"Verdict demoted to 'iterate' for the next gen-eval cycle.";
+                liveDel.Notes = string.IsNullOrEmpty(liveDel.Notes)
+                    ? demoteNote
+                    : liveDel.Notes + "\n\n" + demoteNote;
+                await db2.SaveChangesAsync(ct);
+            }
+
+            throw new WorkstreamPassGateRefusedException(
+                w.Id,
+                $"post-loop deliverable {finalDel.Id} was a corrupt pass (score={finalDel.Score}, "
+                + $"failureKind={finalDel.FailureKind ?? "(none)"}).");
+        }
+
+        if (finalPassClass is not (PassGateClassification.NaturalPass or PassGateClassification.OperatorAccepted))
+        {
+            var verdict = finalDel?.Verdict ?? "(none)";
+            var score = finalDel?.Score.ToString(CultureInfo.InvariantCulture) ?? "(none)";
+            this.logger?.LogWarning(
+                "Phase 75: workstream {WsId} produced {FileCount} file(s) but latest deliverable "
+                + "is not a valid pass (verdict={Verdict}, score={Score}); refusing commit + PR.",
+                w.Id, files.Count, verdict, score);
+            throw new WorkstreamPassGateRefusedException(
+                w.Id,
+                $"latest deliverable was not a valid pass (verdict={verdict}, score={score}).");
+        }
+
+        if (files.Count > 0)
+        {
+            var wsSlug = await WorkstreamWorktreeSlug.ComputeAsync(w, control2, db2, ct);
+            await this.git.CommitFilesAsync(repo, w.Branch, wsSlug, files,
+                $"impl({w.Id}): {w.Name}", ct);
+        }
+
+        // Phase 46 — merge latest from the spawn's base branch into the
+        // workstream branch before creating the PR. Always enforced.
+        // Phase 49 follow-up — was hardcoded to "main"; spawns can use
+        // a non-main base (e.g. failover-cluster:XRAFT uses
+        // feature/xraft) and merging the wrong branch produces
+        // spurious "behind" deltas on the PR.
+        await this.git.MergeUpstreamIntoBranchAsync(repo, w.Branch, baseBranch, ct: ct);
 
         if (finalDel is not null)
         {
@@ -3159,7 +3269,7 @@ public sealed class StorySpawnOrchestrator
         // Without the bypass, Phase 70 ACCEPT silently re-stalls the
         // workstream forever, defeating its design intent. See
         // <see cref="ShouldRefusePrBody"/> for the combined gate.
-        if (ShouldRefusePrBody(passClass, prBody))
+        if (ShouldRefusePrBody(finalPassClass, prBody))
         {
             this.logger?.LogError(
                 "Phase 75: workstream {WsId} PR body contains failure markers "

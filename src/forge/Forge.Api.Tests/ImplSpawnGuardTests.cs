@@ -417,6 +417,54 @@ public sealed class ImplSpawnGuardTests
     }
 
     [Fact]
+    public async Task SkippedConcurrentFinish_WithinGuard_SkipsAsInFlight()
+    {
+        // Phase 74 follow-up: a skipped-concurrent finish is neither a real
+        // success nor an engineer failure. It proves another DeliverableLoop
+        // run owned the work item at that moment, so the guard should suppress
+        // duplicate outer spawns for the normal in-flight window.
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddSeconds(-60));
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnFinishedKind,
+                now.AddSeconds(-30),
+                new { success = false, skippedConcurrent = true });
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 5,
+                now: now, ct: default);
+
+            Assert.Equal(ImplSpawnGuard.Decision.SkipInFlight, r.Outcome);
+            Assert.Contains("skipped-concurrent", r.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task SkippedConcurrentFinish_AfterGuard_AllowsRecovery()
+    {
+        var (conn, control, db) = await NewDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            var now = DateTimeOffset.UtcNow;
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnStartedKind,
+                now.AddSeconds(-2000));
+            await AddEventAsync(control, db, ImplSpawnGuard.SpawnFinishedKind,
+                now.AddSeconds(-1900),
+                new { success = false, skippedConcurrent = true });
+
+            var r = await ImplSpawnGuard.CheckAsync(control, db, WsId, wsPoints: 0,
+                now: now, ct: default);
+
+            Assert.Equal(ImplSpawnGuard.Decision.Allow, r.Outcome);
+            Assert.Contains("guard elapsed", r.Reason);
+        }
+    }
+
+    [Fact]
     public async Task ConsecutiveFailures_ScalesBackoff()
     {
         // 3 consecutive failures → 3 * 90 = 270s backoff. 250s after the

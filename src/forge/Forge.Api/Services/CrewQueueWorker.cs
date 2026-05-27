@@ -3310,6 +3310,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         var openComments = (await db.PrComments.AsNoTracking()
             .Where(c => c.PrId == pr.Id && c.RequiresAttention)
             .ToListAsync(ct))
+            .Where(c => PrSyncJob.ShouldRequireAgentAttention(
+                c.AuthorKind,
+                c.State,
+                c.Body,
+                c.FilePath,
+                c.Line,
+                c.LinkedCommitSha is not null || c.LinkedAgentResponseId.HasValue,
+                bumped: false))
             .OrderBy(c => c.CreatedAt)
             .ToList();
 

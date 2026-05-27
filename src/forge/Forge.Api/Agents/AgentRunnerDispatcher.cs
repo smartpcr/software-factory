@@ -110,8 +110,49 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         AgentContext context,
         string? ghToken)
     {
-        var (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession) =
-            CreateCopilotSessionConfigs(context, ghToken);
+        var memoryStorePath = PrepareCopilotMemoryStore(context);
+        var memorySessionId = context.Memory?.SessionId;
+        var shouldResumeSession = context.Memory?.ResumeSession == true
+            && !string.IsNullOrEmpty(memorySessionId);
+
+        var sessionConfig = new SessionConfig
+        {
+            SessionId = string.IsNullOrEmpty(memorySessionId) ? null : memorySessionId,
+            Model = context.Model,
+            OnPermissionRequest = PermissionHandler.ApproveAll,
+            GitHubToken = ghToken,
+        };
+        if (!string.IsNullOrEmpty(memoryStorePath))
+        {
+            sessionConfig.ConfigDir = memoryStorePath;
+        }
+        if (!string.IsNullOrEmpty(context.WorktreePath))
+        {
+            sessionConfig.WorkingDirectory = context.WorktreePath;
+        }
+        if (!string.IsNullOrEmpty(context.SoulMd))
+        {
+            sessionConfig.SystemMessage = new SystemMessageConfig
+            {
+                Mode = SystemMessageMode.Append,
+                Content = context.SoulMd,
+            };
+        }
+
+        var resumeConfig = new ResumeSessionConfig
+        {
+            Model = context.Model,
+            OnPermissionRequest = PermissionHandler.ApproveAll,
+            GitHubToken = ghToken,
+        };
+        if (!string.IsNullOrEmpty(memoryStorePath))
+        {
+            resumeConfig.ConfigDir = memoryStorePath;
+        }
+        if (!string.IsNullOrEmpty(context.WorktreePath))
+        {
+            resumeConfig.WorkingDirectory = context.WorktreePath;
+        }
 
         return (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession);
     }
@@ -1352,49 +1393,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 try { ghToken = await this.ghAuth.GetAccessTokenAsync(effectiveCt); }
                 catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
             }
-            var memoryStorePath = PrepareCopilotMemoryStore(context);
-            var memorySessionId = context.Memory?.SessionId;
-            var shouldResumeSession = context.Memory?.ResumeSession == true
-                && !string.IsNullOrEmpty(memorySessionId);
-
-            var sessionConfig = new SessionConfig
-            {
-                SessionId = string.IsNullOrEmpty(memorySessionId) ? null : memorySessionId,
-                Model = context.Model,
-                OnPermissionRequest = PermissionHandler.ApproveAll,
-                GitHubToken = ghToken,
-            };
-            if (!string.IsNullOrEmpty(memoryStorePath))
-            {
-                sessionConfig.ConfigDir = memoryStorePath;
-            }
-            if (!string.IsNullOrEmpty(context.WorktreePath))
-            {
-                sessionConfig.WorkingDirectory = context.WorktreePath;
-            }
-            if (!string.IsNullOrEmpty(context.SoulMd))
-            {
-                sessionConfig.SystemMessage = new SystemMessageConfig
-                {
-                    Mode = SystemMessageMode.Append,
-                    Content = context.SoulMd,
-                };
-            }
-
-            var resumeConfig = new ResumeSessionConfig
-            {
-                Model = context.Model,
-                OnPermissionRequest = PermissionHandler.ApproveAll,
-                GitHubToken = ghToken,
-            };
-            if (!string.IsNullOrEmpty(memoryStorePath))
-            {
-                resumeConfig.ConfigDir = memoryStorePath;
-            }
-            if (!string.IsNullOrEmpty(context.WorktreePath))
-            {
-                resumeConfig.WorkingDirectory = context.WorktreePath;
-            }
+            var (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession) =
+                CreateCopilotSessionConfigs(context, ghToken);
 
             async Task<CopilotSession> CreateOrResumeSessionAsync(CancellationToken factoryCt)
             {

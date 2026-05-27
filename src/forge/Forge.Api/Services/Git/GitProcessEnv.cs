@@ -88,35 +88,37 @@ internal static class GitProcessEnv
     public static void ApplyExplicit(ProcessStartInfo psi, GitPromptPolicy policy) => ApplyInternal(psi, policy);
 
     private static readonly object ConfigLock = new();
-    private static string? forgeGlobalConfigPath;
-    private static bool forgeGlobalConfigResolved;
+    private static string? forgeGitHomePath;
+    private static bool forgeGitHomeResolved;
 
     /// <summary>
-    /// Resolve (and lazily create) a Forge-private copy of the operator's
-    /// global git config at <c>%LOCALAPPDATA%\Forge\gitconfig</c>, refreshed
-    /// when the source is newer. Forge's git subprocesses point
-    /// <c>GIT_CONFIG_GLOBAL</c> here so they never contend on the shared
-    /// <c>~/.gitconfig</c> (see <see cref="ApplyInternal"/>).
+    /// Resolve (and lazily create) a Forge-private HOME containing a copy of
+    /// the operator's global git config at
+    /// <c>%LOCALAPPDATA%\Forge\git-home\.gitconfig</c>, refreshed when the
+    /// source is newer. Forge's git subprocesses point <c>HOME</c> here so
+    /// Git for Windows resolves <c>~/.gitconfig</c> to Forge's private copy
+    /// instead of the shared operator file (see <see cref="ApplyInternal"/>).
     ///
     /// <para>Returns <c>null</c> on any failure (e.g. the source genuinely
-    /// can't be read), in which case the caller leaves
-    /// <c>GIT_CONFIG_GLOBAL</c> unset and git falls back to its default
-    /// <c>~/.gitconfig</c> resolution — i.e. the prior behaviour, so this
-    /// can never make git worse than before.</para>
+    /// can't be read), in which case the caller leaves <c>HOME</c> unchanged
+    /// and git falls back to its default <c>~/.gitconfig</c> resolution — i.e.
+    /// the prior behaviour, so this can never make git worse than before.</para>
     /// </summary>
-    private static string? EnsureForgeGlobalConfig()
+    private static string? EnsureForgeGitHome()
     {
-        if (forgeGlobalConfigResolved) return forgeGlobalConfigPath;
+        if (forgeGitHomeResolved) return forgeGitHomePath;
         lock (ConfigLock)
         {
-            if (forgeGlobalConfigResolved) return forgeGlobalConfigPath;
+            if (forgeGitHomeResolved) return forgeGitHomePath;
             try
             {
-                var dir = Path.Combine(
+                var root = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "Forge");
-                Directory.CreateDirectory(dir);
-                var dest = Path.Combine(dir, "gitconfig");
+                Directory.CreateDirectory(root);
+                var home = Path.Combine(root, "git-home");
+                Directory.CreateDirectory(home);
+                var dest = Path.Combine(home, ".gitconfig");
 
                 // Source = the operator's global config (USERPROFILE\.gitconfig,
                 // matching git's resolution when HOME is unset on Windows).
@@ -138,25 +140,25 @@ internal static class GitProcessEnv
                 else if (!File.Exists(dest))
                 {
                     // No operator config to copy — start with an empty private
-                    // config rather than leaving git on the shared file.
+                    // HOME rather than leaving git on the shared file.
                     File.WriteAllText(dest, string.Empty);
                 }
 
-                forgeGlobalConfigPath = dest;
+                forgeGitHomePath = home;
             }
             catch
             {
-                // Safe fallback: leave GIT_CONFIG_GLOBAL unset so git uses its
+                // Safe fallback: leave HOME unchanged so git uses its
                 // default ~/.gitconfig (prior behaviour). Never throw from a
                 // process-launch hook.
-                forgeGlobalConfigPath = null;
+                forgeGitHomePath = null;
             }
             finally
             {
-                forgeGlobalConfigResolved = true;
+                forgeGitHomeResolved = true;
             }
 
-            return forgeGlobalConfigPath;
+            return forgeGitHomePath;
         }
     }
 
@@ -174,15 +176,19 @@ internal static class GitProcessEnv
         //   "fatal: unknown error occurred while reading the configuration files"
         // (exit 128) — NOT an ACL/permission problem (Administrators have full
         // control); it's pure contention. Observed 2026-05-26 on the `update`
-        // repo: EVERY task failed there. Pointing GIT_CONFIG_GLOBAL at a
-        // Forge-OWNED copy means Forge's git reads/writes its own file and
-        // never contends on the user's ~/.gitconfig. The copy preserves the
-        // user's identity + credential settings, so GCM/wincred auth (which
+        // repo: EVERY task failed there. Pointing HOME at a Forge-OWNED
+        // directory containing a .gitconfig copy means Forge's git reads/writes
+        // its own file and never contends on the user's ~/.gitconfig. We also
+        // set GIT_CONFIG_GLOBAL for newer Git builds, but HOME is the important
+        // knob for older Git for Windows/GVFS builds that ignore
+        // GIT_CONFIG_GLOBAL (verified with 2.31.0.vfs.0.1). The copy preserves
+        // the user's identity + credential settings, so GCM/wincred auth (which
         // reads the Windows Credential vault, not this file) is unaffected.
-        var forgeGlobalCfg = EnsureForgeGlobalConfig();
-        if (forgeGlobalCfg is not null)
+        var forgeGitHome = EnsureForgeGitHome();
+        if (forgeGitHome is not null)
         {
-            psi.Environment["GIT_CONFIG_GLOBAL"] = forgeGlobalCfg;
+            psi.Environment["HOME"] = forgeGitHome;
+            psi.Environment["GIT_CONFIG_GLOBAL"] = Path.Combine(forgeGitHome, ".gitconfig");
         }
 
         // GIT_TERMINAL_PROMPT=0 is always set: Forge.Api has no TTY, so

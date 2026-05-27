@@ -294,6 +294,30 @@ internal static class ImplSpawnGuard
         }
 
         // Case C — most recent attempt finished. Decide based on success/fail.
+        if (SpawnFinishedSkippedConcurrent(latestFinish.PayloadJson))
+        {
+            // Phase 74 follow-up — a skipped-concurrent finish is evidence
+            // that another DeliverableLoop run owned the work item at the
+            // time this loser attempted to run. Treat it like in-flight for
+            // the normal guard window instead of as either a success
+            // (no-progress counter) or a failure (short 90s backoff).
+            var budget = CrewStoryArtifactStrategy.BudgetForPhase(wsPoints, "impl");
+            var guardSeconds = Math.Max(
+                SyncConstants.InflightSpawnGuardMinSeconds,
+                (int)budget.TotalSeconds + SyncConstants.InflightSpawnGuardBudgetSlackSeconds);
+            var sinceSkip = (now - latestFinish.At).TotalSeconds;
+            if (sinceSkip < guardSeconds)
+            {
+                return new Result(
+                    Decision.SkipInFlight,
+                    $"skipped-concurrent: another run owned this workstream {sinceSkip:0}s ago < guard {guardSeconds}s; refusing duplicate outer spawn");
+            }
+
+            return new Result(
+                Decision.Allow,
+                $"skipped-concurrent guard elapsed: {sinceSkip:0}s >= {guardSeconds}s; allowing recovery spawn");
+        }
+
         var lastFailed = LastSpawnFailed(latestFinish.PayloadJson);
         if (!lastFailed)
         {
@@ -430,6 +454,7 @@ internal static class ImplSpawnGuard
         var consecutiveFailures = 0;
         foreach (var ev in events.Where(e => e.Kind == SpawnFinishedKind))
         {
+            if (SpawnFinishedSkippedConcurrent(ev.PayloadJson)) break;
             if (LastSpawnFailed(ev.PayloadJson)) consecutiveFailures++;
             else break;
         }
@@ -502,6 +527,7 @@ internal static class ImplSpawnGuard
 
             // A failure-finish belongs to the failure-backoff path; don't
             // count, and break (the streak doesn't extend through a fail).
+            if (SpawnFinishedSkippedConcurrent(ev.PayloadJson)) break;
             if (LastSpawnFailed(ev.PayloadJson)) break;
 
             // Spawn started BEFORE the latest deliverable → its window may
@@ -511,6 +537,25 @@ internal static class ImplSpawnGuard
             count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// True when <c>task.impl.spawn-finished</c> represents a Phase 74
+    /// skipped-concurrent no-op rather than a real engineer success/failure.
+    /// </summary>
+    private static bool SpawnFinishedSkippedConcurrent(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
+            return doc.RootElement.TryGetProperty("skippedConcurrent", out var skipped)
+                && skipped.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

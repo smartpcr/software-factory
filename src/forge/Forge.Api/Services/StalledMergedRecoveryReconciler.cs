@@ -177,10 +177,25 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
 
             // Mirror the workstream completion on the linked work item.
             var wi = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
-            if (wi is not null && !string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase))
+            if (wi is not null)
             {
-                wi.State = "closed";
-                wi.UpdatedAt = DateTimeOffset.UtcNow;
+                var wiChanged = false;
+                if (!string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase))
+                {
+                    wi.State = "closed";
+                    wiChanged = true;
+                }
+
+                if (!string.Equals(wi.ExecutionStatus, ExecutionStatuses.Completed, StringComparison.Ordinal))
+                {
+                    wi.ExecutionStatus = ExecutionStatuses.Completed;
+                    wiChanged = true;
+                }
+
+                if (wiChanged)
+                {
+                    wi.UpdatedAt = DateTimeOffset.UtcNow;
+                }
             }
 
             recovered++;

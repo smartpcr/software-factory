@@ -158,8 +158,8 @@ public sealed class PrSyncJob : BackgroundService
                 .Where(c => !string.IsNullOrEmpty(c.RepoId))
                 .Select(c => c.RepoId!)
                 .Distinct()
-                .ToArray();
-            var intervals = repoIds.Length == 0
+                .ToList();
+            var intervals = repoIds.Count == 0
                 ? new Dictionary<string, int?>()
                 : await db.Repos
                     .AsNoTracking()
@@ -519,7 +519,14 @@ public sealed class PrSyncJob : BackgroundService
                     UpdatedAt = u.UpdatedAt,
                     ResolvedByUserId = u.ResolvedByUserId,
                     ResolvedAt = u.ResolvedAt,
-                    RequiresAttention = u.AuthorKind != "agent" && u.State == "active" && !IsPrAssistantBody(u.Body),
+                    RequiresAttention = ShouldRequireAgentAttention(
+                        u.AuthorKind,
+                        u.State,
+                        u.Body,
+                        u.FilePath,
+                        u.Line,
+                        hadLink: false,
+                        bumped: false),
                 };
                 db.PrComments.Add(row);
                 this.metrics.Comments("added");
@@ -559,7 +566,20 @@ public sealed class PrSyncJob : BackgroundService
 
     private void UpdateExisting(ControlDbContext control, ProductDbContext db, PrCommentRow local, PrSyncComment u, PrRow pr)
     {
-        if (u.UpdatedAt <= local.UpdatedAt && local.State == u.State && local.Body == u.Body) return;
+        var hadLink = local.LinkedCommitSha is not null || local.LinkedAgentResponseId.HasValue;
+        var bumped = u.UpdatedAt > local.UpdatedAt;
+        var desiredAttention = ShouldRequireAgentAttention(
+            u.AuthorKind,
+            u.State,
+            u.Body,
+            u.FilePath,
+            u.Line,
+            hadLink,
+            bumped);
+        if (u.UpdatedAt <= local.UpdatedAt
+            && local.State == u.State
+            && local.Body == u.Body
+            && local.RequiresAttention == desiredAttention) return;
         var prevState = local.State;
         var prevBody = local.Body;
         var prevAttention = local.RequiresAttention;
@@ -600,20 +620,9 @@ public sealed class PrSyncJob : BackgroundService
         local.ResolvedAt = u.ResolvedAt;
         local.AuthorKind = u.AuthorKind;
 
-        // Recompute RequiresAttention. Edits/reopens after a link invalidate it.
-        // PR Assistant / AI-generated suggestions never raise the
-        // attention flag — they're advisory and shouldn't show up as
-        // "needs response" on the PR card or in the comments tab.
-        var hadLink = local.LinkedCommitSha is not null || local.LinkedAgentResponseId.HasValue;
-        if (u.State != "active" || IsPrAssistantBody(u.Body))
-        {
-            local.RequiresAttention = false;
-        }
-        else
-        {
-            var bumped = u.UpdatedAt > local.UpdatedAt;
-            local.RequiresAttention = local.AuthorKind != "agent" && (!hadLink || bumped);
-        }
+        // Recompute RequiresAttention. Edits/reopens after a link invalidate it,
+        // while automation-only provider events never ask the agent to respond.
+        local.RequiresAttention = desiredAttention;
 
         if (prevAttention != local.RequiresAttention)
         {
@@ -645,7 +654,18 @@ public sealed class PrSyncJob : BackgroundService
             return;
         }
 
-        var hasAttention = await db.PrComments.AnyAsync(c => c.PrId == candidate.PrId && c.RequiresAttention, ct);
+        var openAttention = await db.PrComments
+            .AsNoTracking()
+            .Where(c => c.PrId == candidate.PrId && c.RequiresAttention)
+            .ToListAsync(ct);
+        var hasAttention = openAttention.Any(c => ShouldRequireAgentAttention(
+            c.AuthorKind,
+            c.State,
+            c.Body,
+            c.FilePath,
+            c.Line,
+            c.LinkedCommitSha is not null || c.LinkedAgentResponseId.HasValue,
+            bumped: false));
         if (!hasAttention) return;
 
         // Q24.13 livelock guard — refuse to re-enqueue when the agent has
@@ -921,8 +941,66 @@ public sealed class PrSyncJob : BackgroundService
     /// the "needs response" attention flag because no human will ever
     /// explicitly resolve them in ADO.
     /// </summary>
-    private static bool IsPrAssistantBody(string body)
+    internal static bool ShouldRequireAgentAttention(
+        string? authorKind,
+        string? state,
+        string? body,
+        string? filePath,
+        int? line,
+        bool hadLink,
+        bool bumped)
+    {
+        if (!string.Equals(state, "active", StringComparison.Ordinal)
+            || string.Equals(authorKind, "agent", StringComparison.OrdinalIgnoreCase)
+            || IsPrAssistantBody(body)
+            || IsForgeAgentReplyBody(body)
+            || IsProviderAutomationBody(authorKind, body, filePath, line))
+        {
+            return false;
+        }
+
+        return !hadLink || bumped;
+    }
+
+    private static bool IsPrAssistantBody(string? body)
         => !string.IsNullOrEmpty(body) && body.Contains("PR Assistant", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsForgeAgentReplyBody(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        var trimmed = body.TrimEnd();
+        return trimmed.EndsWith("reply)_", StringComparison.OrdinalIgnoreCase)
+            && trimmed.Contains("\n_(", StringComparison.Ordinal);
+    }
+
+    private static bool IsProviderAutomationBody(string? authorKind, string? body, string? filePath, int? line)
+    {
+        if (string.Equals(authorKind, "system", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        var hasLocation = !string.IsNullOrWhiteSpace(filePath) || line.HasValue;
+        if (hasLocation)
+        {
+            return false;
+        }
+
+        return body.Contains("The reference refs/heads/", StringComparison.OrdinalIgnoreCase)
+            || body.Contains(" deleted the source branch", StringComparison.OrdinalIgnoreCase)
+            || body.Contains(" restored the source branch", StringComparison.OrdinalIgnoreCase)
+            || body.StartsWith("@@@ci", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("Pipeline: [", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 internal sealed class LoggerWrapper<T> : ILogger<T>

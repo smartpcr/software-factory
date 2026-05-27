@@ -10,6 +10,8 @@ using System.Text;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Stories;
 using Forge.Api.Services.Stories.Templates;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// TEST-ONLY <see cref="IStoryArtifactStrategy"/> — produces deterministic
@@ -33,6 +35,7 @@ using Forge.Api.Services.Stories.Templates;
 public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
 {
     private readonly IStoryGitOps? git;
+    private readonly IServiceScopeFactory? scopeFactory;
 
     /// <summary>
     /// docs/forge/e2e.md Stage 7.3 — per-spawn idempotency marker for
@@ -85,6 +88,18 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     public DeterministicStoryArtifactStrategy(IStoryGitOps? git)
     {
         this.git = git;
+    }
+
+    /// <summary>
+    /// DI ctor used by orchestrator integration tests. The production
+    /// strategy persists a pass deliverable before returning implementation
+    /// files; the deterministic strategy mirrors that contract so Phase 75's
+    /// post-loop pass gate exercises the same invariant in tests.
+    /// </summary>
+    public DeterministicStoryArtifactStrategy(IStoryGitOps? git, IServiceScopeFactory scopeFactory)
+    {
+        this.git = git;
+        this.scopeFactory = scopeFactory;
     }
 
     public Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
@@ -261,9 +276,38 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         return Task.FromResult<IReadOnlyList<DecompositionWorkstream>>(ws);
     }
 
-    public Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
+    public async Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
+        if (this.scopeFactory is not null)
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var hasPass = await db.Deliverables.AsNoTracking()
+                .AnyAsync(d => d.WorkItemId == workstream.Id
+                    && d.Verdict == "pass"
+                    && d.Score >= ScoringConstants.PassThreshold
+                    && d.FailureKind == null, ct);
+            if (!hasPass)
+            {
+                db.Deliverables.Add(new DeliverableRow
+                {
+                    WorkItemId = workstream.Id,
+                    CrewId = "crew-eng",
+                    GeneratorAgentId = "gen",
+                    EvaluatorAgentId = "eval",
+                    Iter = 1,
+                    Score = ScoringConstants.PassThreshold,
+                    Verdict = "pass",
+                    DimsJson = "{}",
+                    Notes = "Deterministic test pass.",
+                    GeneratorSummary = "## Change Summary\nDeterministic test implementation.",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
         // Each workstream lays a single deterministic file at a path that
         // depends on the workstream slug. Keeps the test fixture small but
         // gives the artifact-existence check + commit/PR flow real content.
@@ -277,8 +321,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine()
             .AppendLine($"Implements the `{slug}` slice of story `{spawn.StoryId}` per the merged plan.")
             .ToString();
-        return Task.FromResult<IReadOnlyDictionary<string, string>>(
-            new Dictionary<string, string>(StringComparer.Ordinal) { [path] = body });
+        return new Dictionary<string, string>(StringComparer.Ordinal) { [path] = body };
     }
 
     public Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(

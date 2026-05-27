@@ -887,7 +887,133 @@ public class Phase24PrSyncTests
         Assert.Equal("human", c1.AuthorKind);
         var c2 = comments.First(c => c.ProviderCommentId == "c2");
         Assert.Equal("system", c2.AuthorKind);
+        Assert.False(c2.RequiresAttention);
         Assert.Equal(c1.Id, c2.ParentCommentId);
+    }
+
+    [Fact]
+    public async Task PrSync_Upsert_Ignores_Ado_Automation_Comments()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        SeedPr(control, db, "p24-snap-automation");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p24-snap-automation");
+        pr.Provider = "ado";
+        pr.ProviderRef = "3";
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: new[]
+            {
+                new PrSyncComment("human", "t1", "alice@example.com", "human",
+                    "Please add a test for this behavior.", "src/foo.cs", 12, "active",
+                    now, now, null, null, null),
+                new PrSyncComment("ref-update", "t2", "xiaodong@example.com", "human",
+                    "> Re: : - The reference refs/heads/ws/local-UPDATE-HISTORY-IN-CL was updated from commit a to commit b.",
+                    null, null, "active", now, now, null, null, null),
+                new PrSyncComment("source-deleted", "t3", "xiaodong@example.com", "human",
+                    "Xiaodong Li deleted the source branch.", null, null, "active",
+                    now, now, null, null, null),
+                new PrSyncComment("source-restored", "t4", "xiaodong@example.com", "human",
+                    "Xiaodong Li restored the source branch.", null, null, "active",
+                    now, now, null, null, null),
+                new PrSyncComment("system-build", "t5", "bot@example.com", "system",
+                    "Build failed", "src/foo.cs", 5, "active",
+                    now, now, null, null, null),
+                new PrSyncComment("agent-reply", "t6", "xiaodong@example.com", "human",
+                    "> Re: /src/foo.cs:12 - stale review text\n\nNo code change needed.\n\n_(BE reply)_",
+                    null, null, "active", now, now, null, null, null),
+            },
+            CommentsFetched: true);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-automation", "ado", "3", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var comments = await db2.PrComments.Where(c => c.PrId == "p24-snap-automation").ToListAsync();
+
+        Assert.True(comments.Single(c => c.ProviderCommentId == "human").RequiresAttention);
+        Assert.False(comments.Single(c => c.ProviderCommentId == "ref-update").RequiresAttention);
+        Assert.False(comments.Single(c => c.ProviderCommentId == "source-deleted").RequiresAttention);
+        Assert.False(comments.Single(c => c.ProviderCommentId == "source-restored").RequiresAttention);
+        Assert.False(comments.Single(c => c.ProviderCommentId == "system-build").RequiresAttention);
+        Assert.False(comments.Single(c => c.ProviderCommentId == "agent-reply").RequiresAttention);
+    }
+
+    [Fact]
+    public async Task PrSync_Upsert_Clears_Stale_Attention_On_Ado_Automation_Comment()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        SeedPr(control, db, "p24-snap-stale-automation");
+        var existingAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var existing = new PrCommentRow
+        {
+            PrId = "p24-snap-stale-automation",
+            ProviderCommentId = "ref-update",
+            ThreadId = "t1",
+            AuthorId = "xiaodong@example.com",
+            AuthorKind = "human",
+            Body = "> Re: : - The reference refs/heads/ws/local-UPDATE-HISTORY-IN-CL was updated from commit a to commit b.",
+            State = "active",
+            CreatedAt = existingAt,
+            UpdatedAt = existingAt,
+            RequiresAttention = true,
+        };
+        db.PrComments.Add(existing);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: new[]
+            {
+                new PrSyncComment(
+                    "ref-update",
+                    "t1",
+                    "xiaodong@example.com",
+                    "human",
+                    existing.Body,
+                    null,
+                    null,
+                    "active",
+                    existingAt,
+                    existingAt,
+                    null,
+                    null,
+                    null),
+            },
+            CommentsFetched: true);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-stale-automation", "ado", "4", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var refreshed = await db2.PrComments.AsNoTracking().SingleAsync(c => c.Id == existing.Id);
+        Assert.False(refreshed.RequiresAttention);
+        var history = await db2.PrCommentHistory.AsNoTracking()
+            .Where(h => h.CommentId == existing.Id && h.Kind == "attention-flipped")
+            .ToListAsync();
+        Assert.Single(history);
     }
 
     [Fact]
