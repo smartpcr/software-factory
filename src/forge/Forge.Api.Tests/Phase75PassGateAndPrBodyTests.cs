@@ -202,4 +202,76 @@ public class Phase75PassGateAndPrBodyTests
             + "GENERATOR FAILED (generator-timeout): Copilot SDK hard timeout: exceeded 39m budget";
         Assert.True(StorySpawnOrchestrator.PrBodyHasFailureMarker(body));
     }
+
+    // ── ShouldRefusePrBody (Phase 70 × Phase 75 cross-cut) ──────────────
+
+    [Fact]
+    public void ShouldRefusePrBody_OperatorAccepted_FailureMarkerBody_BypassesAndAllows()
+    {
+        // The 2026-05-27 local:UPDATE-HISTORY-IN-CL stage-1.4 case:
+        // ACCEPT flipped iter 2 verdict iterate→pass on a generator-timeout
+        // row (score=0, FailureKind=generator-timeout, agent commit already
+        // pushed). The orchestrator built the PR body from finalDel which
+        // still had Score=0 and Notes containing "GENERATOR FAILED"; the
+        // body-marker check would otherwise re-stall the workstream forever.
+        // OPERATOR ACCEPT bypasses the body check by design.
+        var body = "## [impl] Implement ClusterDbPersistenceProvider base class\n"
+            + "**Score:** 0 | **Iterations:** 2\n\n"
+            + "### Evaluator Review\n"
+            + "GENERATOR FAILED (generator-timeout): Copilot SDK hard timeout: exceeded 24m budget\n\n"
+            + "OPERATOR ACCEPT (po@forge.local) — verdict overridden from 'iterate' to 'pass' at score 0.";
+        Assert.False(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.OperatorAccepted, body));
+    }
+
+    [Fact]
+    public void ShouldRefusePrBody_OperatorAccepted_CleanBody_AllowsTrivially()
+    {
+        var body = "## [impl] OK ws\n**Score:** 95 | **Iterations:** 1\n";
+        Assert.False(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.OperatorAccepted, body));
+    }
+
+    [Fact]
+    public void ShouldRefusePrBody_NaturalPass_FailureMarkerBody_Refuses()
+    {
+        // NaturalPass should NOT bypass — if a high-score legitimate-pass row
+        // somehow produced a body containing "GENERATOR FAILED" (would be a
+        // bug elsewhere), refuse to open the PR. Belt-and-suspenders intent
+        // of Phase 75 Fix 3 is preserved for every non-operator-accept path.
+        var body = "## [impl] WS\n**Score:** 95 | **Iterations:** 3\n\nGENERATOR FAILED elsewhere";
+        Assert.True(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.NaturalPass, body));
+    }
+
+    [Fact]
+    public void ShouldRefusePrBody_CorruptPass_FailureMarkerBody_Refuses()
+    {
+        // The DriveOneWorkstreamImplAsync top-of-method gate normally
+        // demotes CorruptPass to "iterate" before the body assembly runs,
+        // but if a future code path ever reaches this gate in the
+        // CorruptPass state, refuse just as Phase 75 Fix 3 intended.
+        var body = "**Score:** 0 | **Iterations:** 1\n\nGENERATOR FAILED";
+        Assert.True(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.CorruptPass, body));
+    }
+
+    [Fact]
+    public void ShouldRefusePrBody_NotPass_FailureMarkerBody_Refuses()
+    {
+        // Defensive — caller shouldn't reach this helper on NotPass, but
+        // if they do, treat as a non-operator path and apply the body check.
+        var body = "**Score:** 0 | **Iterations:** 1";
+        Assert.True(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.NotPass, body));
+    }
+
+    [Fact]
+    public void ShouldRefusePrBody_OperatorAccepted_NullBody_AllowsTrivially()
+    {
+        Assert.False(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.OperatorAccepted, null));
+        Assert.False(StorySpawnOrchestrator.ShouldRefusePrBody(
+            StorySpawnOrchestrator.PassGateClassification.OperatorAccepted, string.Empty));
+    }
 }

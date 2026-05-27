@@ -192,7 +192,16 @@ public sealed record GeneratorRunOutput(
     /// persists this so the operator can verify session reuse via
     /// <c>/api/workstreams/{id}/memory</c>.
     /// </summary>
-    string? SessionId = null);
+    string? SessionId = null,
+    /// <summary>
+    /// Phase 88 — count of <see cref="AgentEventKind.ToolCall"/> events
+    /// observed during the generator turn. <c>null</c> means the runner
+    /// did not instrument tool calls (legacy callers / test fakes). When
+    /// non-null and zero, combined with a refusal-like output text,
+    /// triggers <see cref="SloppyReasons.AgentRefusal"/> in
+    /// <see cref="DeliverableLoop"/>.
+    /// </summary>
+    long? ToolCallCount = null);
 
 /// <summary>
 /// Phase 65 — per-iter commit snapshot captured by the producer right
@@ -914,6 +923,87 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
                 await this.EmitAsync(request.WorkItemId, "task.iteration.iterated", new { iter, score = 0, notes = failNote }, ct);
                 continue;
+            }
+
+            // Phase 88 — refusal guard. When the runner instrumented tool
+            // calls (ToolCallCount != null) AND the generator emitted zero
+            // tool calls with a short refusal-like output ("DONE", "ok",
+            // "n/a", etc.), the agent is self-vetoing the task. Rather
+            // than burning $7/iter for 65 iters waiting for iter-cap, exit
+            // immediately so SloppyReassignmentReconciler can rotate the
+            // pair (typically a wrong-crew routing — e.g.,
+            // code-refactor-defender drawn into a qa-e2e workstream).
+            // Observed 2026-05-25: code-intelligence:CLEAN-CODE stage 6.1-e2e
+            // HD3 emitted literally "DONE" with 0 tool calls for 65 iters
+            // burning $458.91 before operator restart.
+            if (gen.ToolCallCount == 0 && IsRefusalLikeOutput(gen.OutputText))
+            {
+                totalCost += gen.CostUsd;
+                var refusalText = (gen.OutputText ?? string.Empty).Trim();
+                var refusalNote =
+                    $"SLOPPY ({SloppyReasons.AgentRefusal}): generator emitted "
+                    + $"'{refusalText}' with 0 tool calls. Likely a wrong-crew "
+                    + "routing or model self-veto against the task. "
+                    + "Reassigning to a fresh pair on the next reconciler tick.";
+                if (!string.IsNullOrEmpty(notesForNext))
+                {
+                    refusalNote += "\n\n---\n\n" + notesForNext;
+                }
+                var refusalRow = new DeliverableRow
+                {
+                    WorkItemId = request.WorkItemId,
+                    CrewId = request.CrewId,
+                    GeneratorAgentId = request.GeneratorAgentId,
+                    EvaluatorAgentId = pinnedEvaluator,
+                    Iter = iter,
+                    PairAttempt = workItemRow?.PairAttemptCount ?? 1,
+                    Score = 0,
+                    DimsJson = "{}",
+                    Verdict = "sloppy",
+                    Notes = refusalNote,
+                    GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
+                    GenCostUsd = gen.CostUsd,
+                    EvalCostUsd = 0m,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                };
+                this.db.Deliverables.Add(refusalRow);
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
+                rowIds.Add(refusalRow.Id);
+
+                await this.UpdatePairAssignmentTotalsAsync(
+                    pairAssignmentId,
+                    iter,
+                    gen.InputTokens,
+                    gen.OutputTokens,
+                    gen.CostUsd,
+                    latestScore: 0,
+                    ct);
+
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.ReassignedSloppy,
+                    sloppyReason: SloppyReasons.AgentRefusal,
+                    finalScore: 0,
+                    ct);
+
+                await this.EmitAsync(request.WorkItemId, "task.sloppy", new
+                {
+                    iter,
+                    score = 0,
+                    reason = SloppyReasons.AgentRefusal,
+                    outputText = refusalText,
+                    generatorAgentId = request.GeneratorAgentId,
+                    evaluatorAgentId = pinnedEvaluator,
+                    pairAssignmentId,
+                }, ct);
+
+                return new DeliverableLoopResult(
+                    "sloppy",
+                    iter,
+                    FinalScore: 0,
+                    rowIds,
+                    totalCost,
+                    SloppyReasons.AgentRefusal);
             }
 
             // (b) evaluator
@@ -2199,6 +2289,91 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// thing three rounds in a row" instead of treating each round as
     /// independent.
     /// </summary>
+    /// <summary>
+    /// Phase 88 — detect refusal-like generator outputs that indicate the
+    /// agent self-vetoed the task. Combined with
+    /// <see cref="GeneratorRunOutput.ToolCallCount"/> == 0, this triggers
+    /// <see cref="SloppyReasons.AgentRefusal"/> immediately rather than
+    /// burning a full iter-cap window. The list is intentionally small —
+    /// a short denylist is safer than a length-only predicate, which
+    /// would false-positive on legitimate brief evaluator-iterate
+    /// responses (e.g., "Reading the test file first."). Match is
+    /// case-insensitive and ignores trailing punctuation.
+    /// </summary>
+    internal static bool IsRefusalLikeOutput(string? text)
+    {
+        var t = (text ?? string.Empty).Trim();
+        if (t.Length == 0) return true;
+        if (t.Length > 80) return false;
+        // Strip trailing punctuation and lowercase for matching.
+        var trimmed = t.TrimEnd('.', '!', ' ', '\t', '\r', '\n').ToLowerInvariant();
+        return trimmed
+            is "done"
+            or "ok"
+            or "okay"
+            or "n/a"
+            or "na"
+            or "nothing to do"
+            or "no changes needed"
+            or "no changes required"
+            or "no action needed"
+            or "no action required"
+            or "complete"
+            or "completed"
+            or "finished";
+    }
+
+    /// <summary>
+    /// Phase 75 follow-up (root cause for Stage 2.1 stall, 2026-05-27):
+    /// strip the literal <c>"GENERATOR FAILED (kind): reason"</c> marker
+    /// that <see cref="GeneratorFailureKinds"/>'s failure-path
+    /// (line 840) persists into the deliverable <c>Notes</c> column when
+    /// the generator hits a transient failure (timeout, inactive).
+    /// <para>
+    /// When this text re-enters the next iter's prelude via
+    /// <see cref="FormatPriorChain"/>, an agent under prompt-bloat
+    /// (3.5M+ token context — observed on local-http-memory:
+    /// extend-requesttraceexpressions-with-stream-evaluator iter 2)
+    /// tends to echo the phrase into its own
+    /// <c>## Change Summary</c> output. That echo lands in the next
+    /// deliverable's <c>GeneratorSummary</c>, then
+    /// <c>StorySpawnOrchestrator.DriveOneWorkstreamImplAsync</c>'s
+    /// PR-body assembly pipes the summary into the
+    /// <c>### What changed</c> section verbatim, and
+    /// <c>StorySpawnOrchestrator.PrBodyHasFailureMarker</c> stalls the
+    /// workstream on PR-open with the verbatim
+    /// "Phase 75: refused to open PR because the body embedded a
+    /// generator-failure marker" message.
+    /// </para>
+    /// <para>
+    /// The fix is to replace the marker phrase with a neutralized
+    /// descriptor BEFORE feeding the prior chain to the next generator —
+    /// the agent still learns the prior iter aborted (and why) but
+    /// cannot propagate the literal trigger phrase downstream. Raw
+    /// <c>DeliverableRow.Notes</c> remains unchanged (operator UI and
+    /// the Phase 64 parser still see the original prefix). Also
+    /// neutralizes a <c>**Score:** 0 |</c> header pattern in case a
+    /// prior iter's notes ever embed it (defense for the second Gate
+    /// B regex trigger; harmless for the common case where no such
+    /// header appears in notes).
+    /// </para>
+    /// </summary>
+    internal static string SanitizePriorIterMarkers(string? notes)
+    {
+        if (string.IsNullOrEmpty(notes)) return notes ?? string.Empty;
+        var sanitized = System.Text.RegularExpressions.Regex.Replace(
+            notes,
+            @"GENERATOR FAILED \(([^)]+)\)",
+            "[Prior iter aborted: $1]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        sanitized = System.Text.RegularExpressions.Regex.Replace(
+            sanitized,
+            @"\*\*Score:\*\*\s*0\s*\|",
+            "**Score:** prior-zero |",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return sanitized;
+    }
+
     private static string FormatPriorChain(IReadOnlyList<(int Iter, int Score, string Verdict, string Notes)> chain)
     {
         if (chain.Count == 0) return string.Empty;
@@ -2208,7 +2383,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var latest = chain[chain.Count - 1];
         sb.AppendLine($"## LATEST evaluator feedback (iteration {latest.Iter}, score {latest.Score}, verdict: {latest.Verdict})");
         sb.AppendLine();
-        sb.AppendLine(string.IsNullOrWhiteSpace(latest.Notes) ? "(no notes)" : latest.Notes);
+        sb.AppendLine(string.IsNullOrWhiteSpace(latest.Notes) ? "(no notes)" : SanitizePriorIterMarkers(latest.Notes));
         sb.AppendLine();
 
         // Phase 50 (2026-05-11) — explicit instruction to treat the
@@ -2248,11 +2423,11 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 if (idx == chain.Count - 2)
                 {
                     sb.AppendLine($"**Iteration {i}** — score {s} ({v})");
-                    sb.AppendLine(string.IsNullOrWhiteSpace(n) ? "(no notes)" : n);
+                    sb.AppendLine(string.IsNullOrWhiteSpace(n) ? "(no notes)" : SanitizePriorIterMarkers(n));
                 }
                 else
                 {
-                    var oneLiner = string.IsNullOrWhiteSpace(n) ? "(no notes)" : n.Split('\n')[0];
+                    var oneLiner = string.IsNullOrWhiteSpace(n) ? "(no notes)" : SanitizePriorIterMarkers(n).Split('\n')[0];
                     if (oneLiner.Length > 120) oneLiner = oneLiner[..117] + "...";
                     sb.AppendLine($"- Iter {i}: score {s} ({v}) — {oneLiner}");
                 }

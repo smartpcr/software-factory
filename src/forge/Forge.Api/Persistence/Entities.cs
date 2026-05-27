@@ -1265,6 +1265,22 @@ public static class SloppyReasons
     /// terminal cap all behave identically to legacy sloppy reasons.</para>
     /// </summary>
     public const string NoProgressScoreZero = "no-progress-score-zero";
+
+    /// <summary>
+    /// Phase 88 — the generator emitted a refusal-like output
+    /// (empty / "DONE" / "ok" / "n/a" / etc.) with zero tool calls.
+    /// Indicates a wrong-crew routing (e.g., <c>code-refactor-defender</c>
+    /// assigned to a qa-e2e test-writing workstream) or a model self-veto
+    /// against the task. Fires on the very first such iteration so the
+    /// pair can be rotated before burning multi-thousand-dollar
+    /// loops. Observed 2026-05-25 on
+    /// <c>code-intelligence:CLEAN-CODE</c> stage 6.1-e2e: HD3
+    /// (<c>code-refactor-defender</c>) wrongly drawn from <c>crew-eng</c>
+    /// for a qa-e2e workstream, emitted literally <c>"DONE"</c> with 0
+    /// tool calls for 65 consecutive iters at ~$7/iter ($458 total) before
+    /// operator intervention.
+    /// </summary>
+    public const string AgentRefusal = "agent-refusal";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's

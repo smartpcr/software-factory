@@ -1088,27 +1088,95 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var impactedMode = "heuristic";
             if (testImpactedOnly && !string.IsNullOrWhiteSpace(testBaseRef))
             {
+                // Time the impacted-test resolution and bracket it with telemetry.
+                // The resolver chain bounds each provider with a wall-clock budget
+                // (ImpactedTestResolverChain.PerProviderTimeout) and falls through to
+                // the heuristic on timeout; the resolving→resolved event pair makes
+                // that observable in the live-exec trace and feeds the per-iter
+                // "resolve" sparkline in iteration insights. (Root cause 2026-05-26:
+                // a hung csharp-ls textDocument/references with no deadline wedged a
+                // workstream for hours with zero events between build-gate-pass and
+                // the test stage — this instrumentation surfaces that window.)
+                var resolveSw = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
                     var changedFiles = await ImpactedTestResolver.DiscoverChangedFilesAsync(
                         workspace, testBaseRef!, ct);
+                    // 2026-05-26 — drop analyzer-only Directory.Build.props/.targets
+                    // changes so a build-time-only analyzer-wiring change (e.g. a
+                    // BannedApiAnalyzer + BannedSymbols.txt) doesn't trip the
+                    // global-impact whole-suite trigger. The build gate already
+                    // validates the analyzer; forcing the entire (flaky) suite just
+                    // stranded common-infra stage-1.3. Real source files in the diff
+                    // still drive narrowing. Conservative — keeps the file on any doubt.
+                    changedFiles = await ImpactedTestResolver.FilterCompilationNeutralGlobalFilesAsync(
+                        workspace, testBaseRef!, changedFiles, ct);
+
+                    // 2026-05-26 — pull the repo's STANDING `--filter` (a category
+                    // exclude like `TestCategory!~CTQ&TestCategory!~Env`) out of the
+                    // command BEFORE resolution, then AND-merge it back AFTER. Every
+                    // provider (Roslyn / LSP / heuristic) treats a bare `--filter` as
+                    // an operator pin and refuses to narrow — that's why csharp-ls
+                    // (LSP) used to be tried first for repos with a standing filter,
+                    // and why that flaky server wedged stage-1.3. Resolving the
+                    // filter-free command lets the native Roslyn provider narrow
+                    // these repos directly; re-merging preserves the exclude.
+                    // Mirrors the global Forge:Test:ExcludeFilter handling below.
+                    var (resolveBaseCommand, standingFilter) = SplitStandingFilter(testCommand);
+
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.resolving", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        changedFileCount = changedFiles.Count,
+                        providerTimeoutSec = this.impactedTestChain?.PerProviderTimeout.TotalSeconds,
+                        standingFilter,
+                        testBaseRef,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+
                     ImpactedTestResolverResult resolution;
                     if (this.impactedTestChain is not null)
                     {
                         resolution = await this.impactedTestChain.ResolveAsync(
-                            workspace, changedFiles, testCommand, ct);
+                            workspace, changedFiles, resolveBaseCommand, ct);
                     }
                     else
                     {
                         resolution = ImpactedTestResolver.Resolve(
-                            workspace, changedFiles, testCommand, impactedOnly: true);
+                            workspace, changedFiles, resolveBaseCommand, impactedOnly: true);
                     }
-                    effectiveTestCommand = resolution.Command;
+                    resolveSw.Stop();
+                    // Re-merge the standing category filter onto whatever the resolver
+                    // produced (narrowed command OR whole-suite fallback). ApplyTest-
+                    // ExcludeFilter AND-merges with any --filter the resolver added, so
+                    // a narrowed run becomes `(FQN~…)&(TestCategory!~…)`.
+                    effectiveTestCommand = ApplyTestExcludeFilter(resolution.Command, standingFilter);
                     impactedProjects = resolution.ImpactedProjects;
                     wholeSuiteFallback = resolution.WholeSuiteFallback;
                     impactedRewritten = resolution.Rewritten;
                     allTestProjectCount = resolution.AllTestProjectCount;
                     impactedMode = resolution.Mode;
+
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.resolved", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        impactedMode = resolution.Mode,
+                        durationMs = resolveSw.ElapsedMilliseconds,
+                        impactedProjectCount = resolution.ImpactedProjects.Count,
+                        allTestProjectCount = resolution.AllTestProjectCount,
+                        rewritten = resolution.Rewritten,
+                        wholeSuiteFallback = resolution.WholeSuiteFallback,
+                        skipped = resolution.Skipped,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    this.logger?.LogInformation(
+                        "{Prefix} impacted-test resolution finished in {Ms}ms: mode={Mode} impacted={Impacted}/{All} rewritten={Rewritten} skipped={Skipped} (iter {Iter}).",
+                        stagePrefix, resolveSw.ElapsedMilliseconds, resolution.Mode,
+                        resolution.ImpactedProjects.Count, resolution.AllTestProjectCount,
+                        resolution.Rewritten, resolution.Skipped, iter);
 
                     if (resolution.Skipped)
                     {
@@ -1129,13 +1197,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Resolver should never throw under normal
-                    // conditions (it swallows git failures + IO
-                    // errors), but defend against the surprise so a
-                    // bug here doesn't take down the gate chain.
+                    // Resolver should never throw under normal conditions (it
+                    // swallows git failures + IO errors and the chain falls through
+                    // on a provider timeout), but defend against the surprise so a
+                    // bug here doesn't take down the gate chain. Emit a failure
+                    // event so the fallback is visible in the trace + insights.
+                    resolveSw.Stop();
                     this.logger?.LogWarning(ex,
-                        "{Prefix} impacted-test resolver threw for {Workspace}; falling back to whole-suite command.",
-                        stagePrefix, workspace);
+                        "{Prefix} impacted-test resolver threw after {Ms}ms for {Workspace}; falling back to whole-suite command.",
+                        stagePrefix, resolveSw.ElapsedMilliseconds, workspace);
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.resolve-failed", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        durationMs = resolveSw.ElapsedMilliseconds,
+                        error = $"{ex.GetType().Name}: {ex.Message}",
+                    }, agentId: agentId, crewId: crewId, ct: ct);
                     effectiveTestCommand = testCommand;
                     impactedProjects = Array.Empty<string>();
                     wholeSuiteFallback = false;
@@ -1406,6 +1484,37 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     ///   <item>Otherwise the exclusion is appended as a fresh <c>--filter "EXCLUDE"</c>.</item>
     /// </list>
     /// </summary>
+    /// <summary>
+    /// Split a repo test command into its body and any standing <c>--filter</c>
+    /// expression (the quoted or bare value after the flag). Returns the command
+    /// with the <c>--filter &lt;expr&gt;</c> removed plus the extracted expression
+    /// (null when absent). Used to feed the impacted-test resolver a filter-free
+    /// command — every provider treats a bare <c>--filter</c> as an operator pin
+    /// and refuses to narrow — then re-merge the filter via
+    /// <see cref="ApplyTestExcludeFilter"/>. Inverse of that merge.
+    /// </summary>
+    internal static (string Command, string? Filter) SplitStandingFilter(string testCommand)
+    {
+        if (string.IsNullOrWhiteSpace(testCommand)) return (testCommand, null);
+        // `--filter` is vstest syntax — only split for `dotnet test`. A non-.NET
+        // command (cargo / go / npm) that happens to carry `--filter` must keep
+        // it, since ApplyTestExcludeFilter (the re-merge) only touches dotnet test
+        // and would otherwise drop it.
+        if (!System.Text.RegularExpressions.Regex.IsMatch(
+                testCommand, @"\bdotnet\s+test\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            return (testCommand, null);
+        }
+        var m = System.Text.RegularExpressions.Regex.Match(
+            testCommand, "\\s*--filter\\s+(?:\"(?<q>[^\"]*)\"|(?<u>\\S+))");
+        if (!m.Success) return (testCommand, null);
+        var filter = m.Groups["q"].Success ? m.Groups["q"].Value : m.Groups["u"].Value;
+        var stripped = testCommand[..m.Index] + testCommand[(m.Index + m.Length)..];
+        stripped = System.Text.RegularExpressions.Regex.Replace(stripped, "\\s{2,}", " ").Trim();
+        return (stripped, string.IsNullOrWhiteSpace(filter) ? null : filter);
+    }
+
     internal static string ApplyTestExcludeFilter(string testCommand, string? excludeFilter)
     {
         if (string.IsNullOrWhiteSpace(testCommand) || string.IsNullOrWhiteSpace(excludeFilter))
@@ -3799,6 +3908,86 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
         var attachmentPromptSection = BuildAttachmentPromptSection(attachmentsJson);
 
+        // 2026-05-26 — seed the file under review into the scratch workspace
+        // so the engineer has immediate context. Without this, agents waste
+        // 5+ min of their 8m budget hunting the filesystem for the file
+        // (observed on ws stage-1.2-clusterdbstore: 4× hard timeouts at 8m
+        // each, JI spent 5.5min on `Get-ChildItem -Recurse` scans of E:\
+        // before locating ClusterDbStore.cs). Best-effort: any failure here
+        // falls back to the legacy "engineer hunts" behaviour with a warning
+        // log so the regression is observable.
+        string? worktreeHintPath = null;
+        string? seededFileSlice = null;
+        var seededFileAbsent = false;
+        try
+        {
+            using var wtScope = this.scopeFactory.CreateScope();
+            var wtControl = wtScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var wtDb = wtScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var resolved = await WorktreePathResolver.ResolveForWorkstreamAsync(wtControl, wtDb, workstream.Id, ct);
+            (worktreeHintPath, seededFileAbsent, seededFileSlice) = await TrySeedReviewFileAsync(
+                workspace, resolved.WorktreePath, safePath, comment.Line, ct);
+            if (worktreeHintPath is null)
+            {
+                this.logger?.LogWarning(
+                    "ProduceReviewFixAsync: no worktree on disk for ws {WsId} "
+                    + "(branch '{Branch}'); engineer will search blind.",
+                    workstream.Id, resolved.Branch);
+            }
+            else if (seededFileAbsent)
+            {
+                this.logger?.LogWarning(
+                    "ProduceReviewFixAsync: worktree {Wt} exists but file '{File}' not found; "
+                    + "engineer will need to locate the file via search tools.",
+                    worktreeHintPath, safePath);
+            }
+        }
+        catch (Exception seedEx) when (seedEx is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(seedEx,
+                "ProduceReviewFixAsync: file-seed failed for ws {WsId} comment '{File}'; "
+                + "engineer will search blind.",
+                workstream.Id, safePath);
+        }
+
+        var fileContextSection = worktreeHintPath is not null && !seededFileAbsent
+            ? $$"""
+
+                ## File context (already seeded)
+                The file under review has been COPIED into your working directory at
+                the SAME relative path (`{{comment.FilePath}}`). View it directly with
+                your `view` tool — there is no need to search the filesystem.
+
+                When taking **Path A**, overwrite that seeded file in place with the
+                fixed full content. When taking **Path B**, leave the seeded file
+                unchanged (the orchestrator detects Path B by the absence of changes).
+
+                Read-only reference (do NOT modify): the workstream's worktree on disk
+                is at `{{worktreeHintPath}}`. Use it only if the fix needs context from
+                sibling files; your edits MUST be written to your working directory,
+                not to the worktree itself.
+                """
+            : worktreeHintPath is not null
+                ? $$"""
+
+                    ## File context
+                    The file under review was NOT found at
+                    `{{worktreeHintPath}}\{{comment.FilePath}}` — it may have been
+                    moved or renamed. Locate it via search tools before producing a
+                    fix; consider Path B (reply-only) if it no longer exists.
+                    """
+                : string.Empty;
+
+        var sliceSection = !string.IsNullOrEmpty(seededFileSlice)
+            ? $$"""
+
+                ## Code around line {{comment.Line}}
+                ```
+                {{seededFileSlice}}
+                ```
+                """
+            : string.Empty;
+
         var prompt = $$"""
             You are the Engineer agent responding to review feedback on workstream
             `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
@@ -3806,7 +3995,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Reviewer comment
             File: `{{comment.FilePath}}` line {{comment.Line}}
             Body: {{comment.Body}}
-            {{attachmentPromptSection}}
+            {{attachmentPromptSection}}{{fileContextSection}}{{sliceSection}}
             ## Decide first
             Read the comment carefully. EVERY comment needs an explicit response --
             either a code change OR a written reply explaining why no change is
@@ -5977,6 +6166,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // output. See DeliverableLoop's FailureReason short-circuit
             // and GeneratorFailureKinds.Classify for the receiving end.
             string? failureReason = null;
+            // Phase 88 -- count tool-call events so the DeliverableLoop
+            // refusal guard can distinguish "agent did nothing" from
+            // "agent did legitimate work then summarized briefly". Zero
+            // tool calls + a refusal-like output text is the signature
+            // of a wrong-crew routing (e.g., code-refactor-defender
+            // assigned to a qa-e2e workstream) where the model
+            // self-vetoes via its soul prompt.
+            long toolCallCount = 0;
             // Phase 54 -- capture per-AssistantUsageEvent samples so the
             // per-invocation row on agent_usage retains the sub-invocation
             // curve for richer UI later. Cleared on each invocation; null
@@ -6031,6 +6228,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     failureReason = evt.Error;
                 }
+                // Phase 88 — tool-call counter for the DeliverableLoop refusal guard.
+                if (evt.Kind == AgentEventKind.ToolCall)
+                {
+                    toolCallCount++;
+                }
                 // Phase 54 -- a non-zero token tally on a single event is the
                 // SDK's per-turn usage report. Record the snapshot so the
                 // post-iter rollup can render a sub-invocation curve.
@@ -6075,7 +6277,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
                     ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
                     ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
-                    SessionId: capturedSessionId);
+                    SessionId: capturedSessionId,
+                    ToolCallCount: toolCallCount);
             }
 
             // Phase 55 / Phase A.2 -- archive this iter's working
@@ -6475,7 +6678,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
                 ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
                 ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
-                SessionId: capturedSessionId);
+                SessionId: capturedSessionId,
+                ToolCallCount: toolCallCount);
             }
             finally
             {
@@ -6538,8 +6742,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 IReadOnlyList<string> changedFiles;
                 try
                 {
+                    // 2026-05-26 — diff against the merge target (testBaseRef ==
+                    // the workstream's base branch) rather than the workstream's
+                    // OWN remote tracking branch. With baseBranch=null
+                    // GetChangedFilesAsync measures `git status` (uncommitted) +
+                    // `origin/{ws-branch}..HEAD`. For a workstream already in
+                    // review, the engineer's work is committed AND pushed to its
+                    // own branch, so BOTH signals are zero (clean tree, HEAD ==
+                    // origin/{ws-branch}) and the guard below false-fires the
+                    // "ZERO file changes" reject with score 0 / $0 eval — even
+                    // though the branch is 1000+ lines ahead of the PR base.
+                    // Observed on local:UPDATE-HISTORY-IN-CL stage-1.2 (PR
+                    // #15864664): 4 committed files vs base, but 0 vs the
+                    // ws-branch → synthetic reject every iter. The delivery /
+                    // pass-time GetChangedFilesAsync call already passes
+                    // baseBranch; this guard must use the SAME reference so the
+                    // evaluator scores the real contribution. testBaseRef is the
+                    // base branch on the impl path; null on the (non-impl) plan /
+                    // qa-e2e paths, which never reach this guard.
                     changedFiles = await this.git.GetChangedFilesAsync(
-                        repo: null, worktreePath: workspace, ct: iterCt);
+                        repo: null, worktreePath: workspace, baseBranch: testBaseRef, ct: iterCt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -6594,9 +6816,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     ? changedFiles.Take(MaxPathsInHeader).ToList()
                     : changedFiles;
                 var diffHeaderSb = new StringBuilder();
-                diffHeaderSb.AppendLine($"## Engineer changes this iter — GROUND TRUTH (from `git status --porcelain` + ahead-of-tracking)");
+                diffHeaderSb.AppendLine($"## Engineer changes — GROUND TRUTH (uncommitted `git status` + commits vs the PR base)");
                 diffHeaderSb.AppendLine();
-                diffHeaderSb.AppendLine($"The engineer changed {changedFiles.Count} file(s) this iter:");
+                diffHeaderSb.AppendLine($"The engineer's branch changes {changedFiles.Count} file(s) vs the merge target:");
                 diffHeaderSb.AppendLine();
                 foreach (var p in displayList)
                 {
@@ -7156,8 +7378,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
-                $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened -- bump max-iterations or restart the architect crew.");
+            // Phase 88 — sloppy verdicts (iter-cap, agent-refusal,
+            // score-plateau, token-cap, consecutive-zero,
+            // no-progress-score-zero) get a typed exception so the
+            // qa-e2e driver can branch to PendingReassign. Non-sloppy
+            // fatal verdicts (stalled from generator transport failure,
+            // etc.) still surface as the generic
+            // InvalidOperationException so they need operator
+            // attention.
+            var msg = $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict}"
+                + (string.IsNullOrEmpty(result.SloppyReason) ? string.Empty : $" (reason={result.SloppyReason})")
+                + $" after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened -- bump max-iterations or restart the architect crew.";
+            if (string.Equals(result.FinalVerdict, "sloppy", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SloppyVerdictException(result, msg);
+            }
+
+            throw new InvalidOperationException(msg);
         }
 
         // Terminal pass — not skipped; the caller proceeds to commit / PR.
@@ -7589,6 +7826,112 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private sealed class DiscoveryTargetsJson
     {
         public List<string>? Targets { get; set; }
+    }
+
+    /// <summary>
+    /// 2026-05-26 — read up to <paramref name="contextLines"/> lines on either
+    /// side of <paramref name="line"/> in <paramref name="filePath"/> and
+    /// return as a numbered slice suitable for direct prompt embedding.
+    /// Returns <c>null</c> on any IO error so callers can degrade gracefully
+    /// (the broader file-seed pipeline must tolerate missing slices). Used by
+    /// <see cref="ProduceReviewFixAsync"/> to give the engineer instant
+    /// visibility into the code around the reviewer's comment without forcing
+    /// an extra `view` round-trip.
+    /// </summary>
+    /// <summary>
+    /// Phase 2 (2026-05-26) helper for <see cref="ProduceReviewFixAsync"/>:
+    /// produce a numbered ±<paramref name="contextLines"/> slice around
+    /// <paramref name="line"/> in <paramref name="filePath"/>. Used to embed
+    /// a "## Code around line N" section directly in the engineer-fix prompt
+    /// so the agent doesn't burn its wall-clock budget hunting the file.
+    ///
+    /// <para>Best-effort: any IO error returns <c>null</c> rather than
+    /// propagating, because the caller falls back to a prompt without the
+    /// slice (legacy "engineer hunts" behaviour). <paramref name="line"/>
+    /// values ≤ 0 anchor at the file head; values past the file's last line
+    /// clamp to the last line.</para>
+    ///
+    /// <para>Exposed as <c>internal</c> so
+    /// <c>Phase90ReviewFixSeedAndCircuitBreakerTests</c> can exercise the
+    /// edge cases (empty file, missing file, anchor clamping) without
+    /// standing up an entire strategy.</para>
+    /// </summary>
+    internal static async Task<string?> TryBuildSliceAroundLineAsync(
+        string filePath, int line, int contextLines, CancellationToken ct)
+    {
+        try
+        {
+            var allLines = await File.ReadAllLinesAsync(filePath, ct);
+            if (allLines.Length == 0) return null;
+            // Clamp `line` into [1..count]. `comment.Line` can be 0 when the
+            // reviewer attached a file-level comment (no anchor); anchor the
+            // slice at the file head in that case so we still emit something
+            // useful.
+            var anchor = line > 0 ? Math.Min(line, allLines.Length) : 1;
+            var start = Math.Max(1, anchor - contextLines);
+            var end = Math.Min(allLines.Length, anchor + contextLines);
+            var sb = new StringBuilder();
+            for (var i = start; i <= end; i++)
+            {
+                sb.Append(i.ToString().PadLeft(4)).Append(": ").AppendLine(allLines[i - 1]);
+            }
+            return sb.ToString().TrimEnd();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Phase 2 (2026-05-26) helper for <see cref="ProduceReviewFixAsync"/>:
+    /// copy the file under review from the on-disk worktree into the
+    /// engineer's scratch <paramref name="workspace"/> at the SAME relative
+    /// <paramref name="safePath"/>, and produce a numbered slice around
+    /// <paramref name="line"/> for direct prompt embedding.
+    ///
+    /// <para>The return tuple matches the three states the prompt-builder
+    /// distinguishes:</para>
+    /// <list type="bullet">
+    ///   <item><c>(WorktreeHintPath=path, SeededFileAbsent=false, SeededFileSlice=...)</c>
+    ///     — file was copied; prompt renders "## File context (already seeded)" +
+    ///     "## Code around line N".</item>
+    ///   <item><c>(WorktreeHintPath=path, SeededFileAbsent=true, SeededFileSlice=null)</c>
+    ///     — worktree exists but the named file does not (rename / move);
+    ///     prompt renders the "moved or renamed" warning section.</item>
+    ///   <item><c>(WorktreeHintPath=null, …)</c> — no worktree on disk (PR
+    ///     branch already cleaned up); prompt has no file-context section
+    ///     and the engineer falls back to legacy filesystem search.</item>
+    /// </list>
+    ///
+    /// <para>Pure filesystem semantics — no DB, no logger. The caller in
+    /// <see cref="ProduceReviewFixAsync"/> wraps this in a try/catch that
+    /// downgrades any IO error to a warning log + legacy fallback, so this
+    /// helper does NOT need its own try/catch around the copy.</para>
+    /// </summary>
+    internal static async Task<(string? WorktreeHintPath, bool SeededFileAbsent, string? SeededFileSlice)>
+        TrySeedReviewFileAsync(
+            string workspace,
+            string? resolvedWorktreePath,
+            string safePath,
+            int line,
+            CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(resolvedWorktreePath) || !Directory.Exists(resolvedWorktreePath))
+        {
+            return (null, false, null);
+        }
+        var sourceFile = Path.Combine(resolvedWorktreePath, safePath);
+        if (!File.Exists(sourceFile))
+        {
+            return (resolvedWorktreePath, true, null);
+        }
+        var seedTarget = Path.Combine(workspace, safePath);
+        var seedDir = Path.GetDirectoryName(seedTarget);
+        if (!string.IsNullOrEmpty(seedDir)) Directory.CreateDirectory(seedDir);
+        File.Copy(sourceFile, seedTarget, overwrite: true);
+        var slice = await TryBuildSliceAroundLineAsync(sourceFile, line, contextLines: 25, ct);
+        return (resolvedWorktreePath, false, slice);
     }
 
     // ── Filesystem helpers ───────────────────────────────────────────────────

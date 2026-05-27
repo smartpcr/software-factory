@@ -102,8 +102,43 @@ public interface IStoryGitOps
     /// <c>git diff --quiet origin/{base}...origin/{branch}</c>; on any git error
     /// the implementation returns <c>true</c> (fail-open, so a legitimate PR is
     /// never suppressed by a transient check failure).
+    /// <para>
+    /// NOTE: returns <c>false</c> for BOTH "branch never committed" AND
+    /// "branch already fully merged into base" — three-dot diff is empty in
+    /// both cases (merge-base equals branch tip in the merged case, so the
+    /// walk merge-base→branch.tip is a single commit). Callers that need to
+    /// distinguish the two must follow up with
+    /// <see cref="IsBranchAlreadyMergedIntoBaseAsync"/>.
+    /// </para>
     /// </summary>
     Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="branch"/>'s tip is reachable
+    /// from <paramref name="baseBranch"/> on origin — i.e. the branch has
+    /// ALREADY been merged into base (typically because the operator hit the
+    /// Merge button on GitHub/ADO out of band, or a sibling spawn merged via
+    /// the provider's auto-merge before our local review crew reached the
+    /// merge step). Distinct from <see cref="BranchHasChangesVsBaseAsync"/>:
+    /// both return "no changes / no diff" for an already-merged branch, but
+    /// only this method reports the underlying reason.
+    /// <para>
+    /// Used by <c>StorySpawnOrchestrator.ApproveAndMergeAsync</c> to
+    /// disambiguate the two cases hidden behind a "no diff" result so the
+    /// orchestrator can advance to "merging" (the PR was effectively merged
+    /// externally) instead of stalling with the misleading "empty PR — fix
+    /// your .gitignore" error.
+    /// </para>
+    /// <para>
+    /// Production runs
+    /// <c>git merge-base --is-ancestor origin/{branch} origin/{base}</c>
+    /// (exit 0 = ancestor = already merged). FAILS CLOSED — returns
+    /// <c>false</c> on any git error so a transient probe failure cannot
+    /// falsely short-circuit a legitimate empty-PR refusal.
+    /// </para>
+    /// </summary>
+    Task<bool> IsBranchAlreadyMergedIntoBaseAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default);
 
     /// <summary>
     /// Phase 42 — ensure a git worktree exists for <paramref name="branch"/>

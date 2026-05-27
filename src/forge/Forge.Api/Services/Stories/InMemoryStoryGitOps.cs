@@ -27,6 +27,13 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     // RemoveWorktreeAsync. Used by WorktreeExistsAsync so tests can model
     // the "PR merged → worktree wiped" sequence without a real disk.
     private readonly ConcurrentDictionary<string, bool> removedBranches = new();
+    // 2026-05-26 — set of (repoId | "_default", branch, baseBranch) tuples
+    // recording that `branch` has been merged into `baseBranch`. Populated
+    // by MergeAsync; queried by IsBranchAlreadyMergedIntoBaseAsync. Tests
+    // can also seed this via MarkBranchMergedIntoBase to simulate an
+    // external merge (operator hit "Merge" on GitHub before our review
+    // crew got to ApproveAndMergeAsync).
+    private readonly ConcurrentDictionary<string, bool> branchMergedIntoBase = new();
 
     public Task EnsureBranchAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
@@ -94,6 +101,16 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
 
     public Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
+        // Mirror the real-git contract: once the branch has been merged into
+        // base (either by our own MergeAsync or by a test simulating an
+        // external merge), the three-dot diff merge-base→branch.tip is
+        // empty — branch's tip is an ancestor of base, so there's nothing
+        // in branch that isn't already in base. Return false so callers see
+        // the same "no diff" signal RealStoryGitOps would.
+        if (this.IsBranchMergedIntoBase(repo, branch, baseBranch))
+        {
+            return Task.FromResult(false);
+        }
         var branchTree = this.TryGetTreeForRead(repo, branch, out var b)
             ? b : new Dictionary<string, string>(StringComparer.Ordinal);
         var baseTree = this.TryGetTreeForRead(repo, baseBranch, out var bb)
@@ -106,6 +123,49 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
             || branchTree.Any(kv => !baseTree.TryGetValue(kv.Key, out var v) || v != kv.Value);
         return Task.FromResult(changed);
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// In-memory implementation. Returns <c>true</c> when the (repo, branch,
+    /// baseBranch) tuple has been recorded as merged — either by our
+    /// <see cref="MergeAsync"/> (the normal Forge merge flow) or by a test
+    /// calling <see cref="MarkBranchMergedIntoBase"/> to simulate an
+    /// external/out-of-band merge. Tests use the latter to drive the
+    /// "operator merged externally before our review crew got there" race
+    /// scenario covered by <see cref="BranchHasChangesVsBaseAsync"/>'s
+    /// follow-up.
+    /// </remarks>
+    public Task<bool> IsBranchAlreadyMergedIntoBaseAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+        => Task.FromResult(this.IsBranchMergedIntoBase(repo, branch, baseBranch));
+
+    /// <summary>
+    /// Test seam — record that <paramref name="branch"/> has been merged
+    /// into <paramref name="baseBranch"/> WITHOUT actually copying the
+    /// tree. Mirrors the "external merge already happened" scenario the
+    /// real git probe detects via <c>git merge-base --is-ancestor</c>.
+    /// Used by tests that need <see cref="BranchHasChangesVsBaseAsync"/>
+    /// to return false AND
+    /// <see cref="IsBranchAlreadyMergedIntoBaseAsync"/> to return true
+    /// without driving a full merge through <see cref="MergeAsync"/>.
+    /// </summary>
+    public void MarkBranchMergedIntoBase(RepoRow? repo, string branch, string baseBranch)
+    {
+        this.branchMergedIntoBase[MergedKey(repo, branch, baseBranch)] = true;
+    }
+
+    private bool IsBranchMergedIntoBase(RepoRow? repo, string branch, string baseBranch)
+    {
+        if (this.branchMergedIntoBase.ContainsKey(MergedKey(repo, branch, baseBranch))) return true;
+        // Phase 80.F symmetry — when the repo-specific key isn't set but a
+        // default-key registration is (tests seed repo:null), still report
+        // merged so a repo-bound spawn's probe matches the test setup.
+        if (repo is not null && this.branchMergedIntoBase.ContainsKey(MergedKey(null, branch, baseBranch))) return true;
+        return false;
+    }
+
+    private static string MergedKey(RepoRow? repo, string branch, string baseBranch)
+        => $"{repo?.Id ?? "_default"}@{branch}->{baseBranch}";
 
     public Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default) =>
         Task.FromResult(this.ReadCandidates(repo, branch).Any(t => t.ContainsKey(filePath)));
@@ -223,6 +283,11 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         }
         foreach (var (path, body) in src) dst[path] = body;
         this.tips[dstKey] = ShaOf(dst, $"merge {branch} → {baseBranch}");
+        // Mirror the real-git outcome: after a merge, branch.tip is an
+        // ancestor of base, so future probes report the branch as
+        // already-merged. Symmetric with MarkBranchMergedIntoBase for tests
+        // that drive merges explicitly vs simulate external merges.
+        this.branchMergedIntoBase[MergedKey(repo, branch, baseBranch)] = true;
         return Task.CompletedTask;
     }
 

@@ -133,7 +133,9 @@ public sealed class Phase50EvaluatorDistributionTests
                 // hid the bug.
                 var busy = new HashSet<string>(StringComparer.Ordinal);
                 var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                    control, db, allocation, busy, seedOffset: i, CancellationToken.None);
+                    control, db, allocation, busy, seedOffset: i,
+                    workstreamCategory: WorkstreamCategories.Impl,
+                    CancellationToken.None);
 
                 Assert.True(pair.Length >= 2,
                     $"Expected pair to include both generator and evaluator; got {pair.Length} agents.");
@@ -190,7 +192,9 @@ public sealed class Phase50EvaluatorDistributionTests
             {
                 var busy = new HashSet<string>(StringComparer.Ordinal);
                 var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                    control, db, allocation, busy, seedOffset: i, CancellationToken.None);
+                    control, db, allocation, busy, seedOffset: i,
+                    workstreamCategory: WorkstreamCategories.Impl,
+                    CancellationToken.None);
                 if (pair.Length >= 2 && string.Equals(pair[1], preferred, StringComparison.Ordinal))
                 {
                     preferredHits++;
@@ -229,7 +233,9 @@ public sealed class Phase50EvaluatorDistributionTests
             foreach (var a in NightMembers) busy.Add(a);
 
             var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                control, db, allocation, busy, seedOffset: 1, CancellationToken.None);
+                control, db, allocation, busy, seedOffset: 1,
+                workstreamCategory: WorkstreamCategories.Impl,
+                CancellationToken.None);
 
             // Generator falls back to crew-eng.Lead = "DLEAD".
             // Evaluator falls back to crew-eng-night.Lead = "NLEAD"

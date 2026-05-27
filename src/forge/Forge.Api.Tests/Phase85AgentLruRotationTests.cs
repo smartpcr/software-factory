@@ -199,7 +199,9 @@ public sealed class Phase85AgentLruRotationTests
             var busy = new HashSet<string>(StringComparer.Ordinal);
 
             var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                control, db, allocation, busy, seedOffset: 0, CancellationToken.None);
+                control, db, allocation, busy, seedOffset: 0,
+                workstreamCategory: WorkstreamCategories.Impl,
+                CancellationToken.None);
 
             Assert.True(pair.Length >= 1);
             Assert.Equal("DC", pair[0]);
@@ -227,7 +229,9 @@ public sealed class Phase85AgentLruRotationTests
             var busy = new HashSet<string>(StringComparer.Ordinal);
 
             var pair = await StorySpawnOrchestrator.ResolveImplPairAsync(
-                control, db, allocation, busy, seedOffset: 0, CancellationToken.None);
+                control, db, allocation, busy, seedOffset: 0,
+                workstreamCategory: WorkstreamCategories.Impl,
+                CancellationToken.None);
 
             Assert.True(pair.Length >= 1);
             Assert.Equal("DB", pair[0]);

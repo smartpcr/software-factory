@@ -91,6 +91,41 @@ public sealed class StorySpawnOrchestrator
     private static readonly ConcurrentDictionary<string, DateTimeOffset> planDocInFlight =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// 2026-05-26 — per-comment consecutive-timeout counter for
+    /// <see cref="RunReviewFixLoopAsync"/>. Keyed by
+    /// <c>(workstream id, pr_comment row id)</c>; incremented each time
+    /// <see cref="IStoryArtifactStrategy.ProduceReviewFixAsync"/> throws with
+    /// a "hard timeout" / "exceeded budget" message. Once it hits
+    /// <see cref="MaxReviewFixTimeouts"/> the loop auto-resolves the comment
+    /// with a system reply + transcript event so the operator can step in
+    /// without paying for additional ~$30 retries (observed 2026-05-26 on
+    /// ws stage-1.2-clusterdbstore: 4× back-to-back 8m timeouts before
+    /// operator restart).
+    /// Resets on a successful fix; cleared on circuit-break to keep memory
+    /// bounded. In-memory only — orchestrator restart re-arms a fresh attempt,
+    /// which is the intended behaviour (operator restart == fresh attempt).
+    /// </summary>
+    private readonly ConcurrentDictionary<(string WsId, long CommentId), int> reviewFixTimeoutCounter =
+        new();
+
+    /// <summary>
+    /// Number of consecutive review-fix budget exhaustions on the SAME
+    /// comment before the orchestrator auto-resolves it. Set deliberately
+    /// low (3) because each attempt burns the full per-phase wall-clock
+    /// budget (~8m for an 8-pt story) with no metered usage row, so the
+    /// blast radius scales linearly with the cap.
+    /// </summary>
+    private const int MaxReviewFixTimeouts = 3;
+
+    /// <summary>
+    /// Resolver-id stamped on <see cref="PrCommentRow.ResolvedByUserId"/>
+    /// when the circuit breaker auto-resolves a comment. Distinguishes from
+    /// <c>"system:post-merge-cleanup"</c> (Phase 59 stale-PR cleanup) so
+    /// telemetry and tests can tell the two paths apart.
+    /// </summary>
+    private const string ReviewFixBudgetResolverId = "system:review-fix-budget";
+
     private readonly IServiceProvider services;
     private readonly IStoryArtifactStrategy strategy;
     private readonly IStoryGitOps git;
@@ -536,7 +571,7 @@ public sealed class StorySpawnOrchestrator
                 var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
                 try
                 {
-                    await this.ApproveAndMergeAsync(entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
+                    await this.ApproveAndMergeAsync(db, entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
                     var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                     await ClearLastErrorAsync(control, db, sRow, ct);
                     await db.SaveChangesAsync(ct);
@@ -1024,7 +1059,7 @@ public sealed class StorySpawnOrchestrator
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
-                await this.ApproveAndMergeAsync(spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(db, spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
                 var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                 await ClearLastErrorAsync(control, db, spawnRow, ct);
                 await db.SaveChangesAsync(ct);
@@ -2251,7 +2286,13 @@ public sealed class StorySpawnOrchestrator
                     }
 
                     var assignedPair = await ResolveImplPairAsync(
-                        pickControl, pickDb, this.allocation, freshBusy, w.Sort, ct);
+                        pickControl, pickDb, this.allocation, freshBusy, w.Sort,
+                        // Phase 88 — qa-e2e workstreams must draw from crew-qa
+                        // (test-attackers + memory + ai-test-engineer), not
+                        // crew-eng (which includes refusal-prone refactor-
+                        // defenders that self-veto "write more tests" tasks).
+                        WorkstreamCategories.IsValid(w.Category) ? w.Category! : WorkstreamCategories.Impl,
+                        ct);
                     var assignedJson = JsonSerializer.Serialize(assignedPair);
                     w.AgentsJson = assignedJson;
                     var pickRow = await pickDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
@@ -2605,6 +2646,44 @@ public sealed class StorySpawnOrchestrator
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Phase 70 × Phase 75 cross-cut — combines the pass-gate
+    /// classification with the PR-body failure-marker check into one
+    /// decision the orchestrator can apply at the moment of PR open.
+    /// <para>OPERATOR-ACCEPTED iters bypass the body marker check
+    /// because the operator has explicitly authorised the PR despite
+    /// failure-marker content (typical case: a score=0
+    /// generator-timeout iter where the agent's commit IS already on
+    /// the branch, but the wall-clock budget pre-empted the evaluator
+    /// score so <c>finalDel.Score=0</c> and <c>finalDel.Notes</c>
+    /// still contains the original "GENERATOR FAILED" text — both
+    /// of which would otherwise trip <see cref="PrBodyHasFailureMarker"/>
+    /// even though the underlying work is good).</para>
+    /// <para>NaturalPass + CorruptPass + NotPass paths all delegate
+    /// to <see cref="PrBodyHasFailureMarker"/> — the body check is
+    /// still belt-and-suspenders for any future code path that gets
+    /// past the verdict gate without operator intent.</para>
+    /// <para>Observed 2026-05-27 on local:UPDATE-HISTORY-IN-CL
+    /// stage-1.4-clusterdbpersistenceprovider-base-class: ACCEPT
+    /// flipped iter 2 verdict iterate→pass, ClassifyPassGate returned
+    /// OperatorAccepted as designed, then this body check silently
+    /// re-stalled the workstream because finalDel.Score=0 from the
+    /// pre-empted iter. Without the operator-accept bypass, Phase 70
+    /// can never unstick a generator-timeout race even though the
+    /// agent's commit is already on origin and ready to ship.</para>
+    /// </summary>
+    /// <param name="passClass">Result of <see cref="ClassifyPassGate"/>
+    /// on the deliverable row driving this PR.</param>
+    /// <param name="prBody">The assembled PR body about to be sent
+    /// to the provider.</param>
+    /// <returns>True iff the orchestrator should refuse to open the
+    /// PR and re-stall the workstream.</returns>
+    internal static bool ShouldRefusePrBody(PassGateClassification passClass, string? prBody)
+    {
+        if (passClass == PassGateClassification.OperatorAccepted) return false;
+        return PrBodyHasFailureMarker(prBody);
     }
 
     /// <summary>
@@ -3070,7 +3149,17 @@ public sealed class StorySpawnOrchestrator
         // recognised it as broken-on-the-PR-page; making the orchestrator
         // recognise it too prevents the embarrassment of a broken PR
         // ever reaching the reviewer.
-        if (PrBodyHasFailureMarker(prBody))
+        //
+        // Phase 70 × Phase 75 cross-cut (2026-05-27, local:UPDATE-HISTORY-IN-CL
+        // stage-1.4) — OPERATOR ACCEPT overrides bypass the body check. The
+        // operator's `POST /accept` is an explicit "open this PR" signal,
+        // typically issued on a generator-timeout race where the agent's
+        // commit IS on the branch but score=0 and the original
+        // "GENERATOR FAILED" text is still pinned in `finalDel.Notes`.
+        // Without the bypass, Phase 70 ACCEPT silently re-stalls the
+        // workstream forever, defeating its design intent. See
+        // <see cref="ShouldRefusePrBody"/> for the combined gate.
+        if (ShouldRefusePrBody(passClass, prBody))
         {
             this.logger?.LogError(
                 "Phase 75: workstream {WsId} PR body contains failure markers "
@@ -3199,10 +3288,72 @@ public sealed class StorySpawnOrchestrator
         // directly; the LLM-driven strategy runs its own gen↔eval loop
         // with the post-pass dotnet-test gate. Failures surface here as
         // exceptions; we mark the row stalled with a clear reason.
+        //
+        // Phase 88: sloppy verdicts (iter-cap, agent-refusal, score-
+        // plateau, token-cap, etc.) are now thrown as
+        // SloppyVerdictException so we can mirror the impl-path's
+        // PendingReassign bookkeeping (CrewQueueWorker.cs:2848-2884) and
+        // let SloppyReassignmentReconciler rotate the pair. Without
+        // this, pre-Phase-88 qa-e2e iter-cap exits left the work item
+        // ExecutionStatus untouched and the reconciler (which filters
+        // on ExecutionStatus == PendingReassign) never picked it up,
+        // requiring operator Restart to unstick.
         IReadOnlyDictionary<string, string> files;
         try
         {
             files = await this.strategy.ProduceStageE2eAsync(spawn, w, ct);
+        }
+        catch (SloppyVerdictException ex)
+        {
+            this.logger?.LogWarning(
+                "qa-e2e producer returned sloppy verdict for {WsId}: reason={Reason}, iters={Iters}, score={Score}; "
+                + "marking stalled + parking for SloppyReassignmentReconciler.",
+                w.Id, ex.SloppyReason, ex.Iterations, ex.FinalScore);
+
+            var liveWs = await db2.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
+            var liveWi = await db2.WorkItems.FirstOrDefaultAsync(wi => wi.Id == w.Id, ct);
+            if (liveWi is not null)
+            {
+                liveWi.ExecutionStatus = ExecutionStatuses.PendingReassign;
+                liveWi.UpdatedAt = DateTimeOffset.UtcNow;
+
+                // Mirror CrewQueueWorker.cs:2861-2877 PriorPairsJson
+                // append with dedupe so the reconciler's pair-exclusion
+                // filter doesn't re-pick the same refusing pair.
+                var priorPairs = new List<string[]>();
+                if (!string.IsNullOrWhiteSpace(liveWi.PriorPairsJson))
+                {
+                    try
+                    {
+                        var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string[]>>(liveWi.PriorPairsJson);
+                        if (parsed is not null) priorPairs = parsed;
+                    }
+                    catch (System.Text.Json.JsonException) { /* malformed — start fresh */ }
+                }
+                var pairList = ParseStringList(liveWs?.AgentsJson ?? w.AgentsJson);
+                var gen = pairList.Count > 0 ? pairList[0] : string.Empty;
+                var eval = pairList.Count > 1 ? pairList[1] : string.Empty;
+                var currentPair = new[] { gen ?? string.Empty, eval ?? string.Empty };
+                var alreadyLast = priorPairs.Count > 0
+                    && priorPairs[priorPairs.Count - 1].Length == 2
+                    && string.Equals(priorPairs[priorPairs.Count - 1][0], currentPair[0], StringComparison.Ordinal)
+                    && string.Equals(priorPairs[priorPairs.Count - 1][1], currentPair[1], StringComparison.Ordinal);
+                if (!alreadyLast) priorPairs.Add(currentPair);
+                liveWi.PriorPairsJson = System.Text.Json.JsonSerializer.Serialize(priorPairs);
+            }
+            if (liveWs is not null && liveWs.Status is not "cancelled" and not "complete")
+            {
+                liveWs.Status = WorkstreamStatuses.Stalled;
+                liveWs.StallReason = string.IsNullOrEmpty(ex.SloppyReason)
+                    ? $"qa-e2e sloppy: {ex.Iterations} iters, final score {ex.FinalScore}"
+                    : $"qa-e2e sloppy ({ex.SloppyReason}): {ex.Iterations} iters, final score {ex.FinalScore}";
+            }
+            // Save both rows in one transaction so we never have a
+            // visible "stalled workstream without parked work item".
+            await db2.SaveChangesAsync(ct);
+
+            await EmitChange(hub, "ws-stalled", spawn, ct);
+            return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3497,7 +3648,10 @@ public sealed class StorySpawnOrchestrator
     }
 
     // ── review ───────────────────────────────────────────────────────────────
-    private async Task<bool> DriveReviewAsync(
+    // internal (was private) so ReviewDispatchRaceGuardTests can exercise the
+    // IsTaskActive concurrent-dispatch guard in isolation, without driving the
+    // full DriveAsync flow (which would also run DriveImplementAsync).
+    internal async Task<bool> DriveReviewAsync(
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
@@ -3517,6 +3671,20 @@ public sealed class StorySpawnOrchestrator
         // review-fix loop blocked the foreach on every tick.
         var fixNeeded = new List<(WorkstreamRow ws, string prId, List<PrCommentRow> activeComments)>();
 
+        // 2026-05-26 — concurrent-dispatch guard. The impl DeliverableLoop runs
+        // a workstream's generator in the BACKGROUND (it can't block the per-spawn
+        // drive tick for the full wall-clock budget), so a workstream can be
+        // Status="review" (PR opened) while its impl loop is STILL iterating for
+        // the same workItemId. If DriveReviewAsync then dispatches a reviewer /
+        // review-fix agent for that workItemId, it collides with the live impl
+        // invocation and AgentRunnerDispatcher's Phase-74 guard throws
+        // "Concurrent dispatch refused" → review-failed → the workstream stalls.
+        // (Observed: update-history stage-1.3 — iter-1 generator-timeout, loop
+        // auto-retried iter-2 while a Review dispatch raced it.) Skip any
+        // workstream whose impl/agent invocation is still live; the next tick
+        // re-evaluates once the loop has terminated (pass / iter-cap / stall).
+        var reviewRunner = this.services.GetService<Forge.Api.Agents.IAgentRunner>();
+
         foreach (var w in workstreams)
         {
             // 2026-05-13 — include "complete" so late-arriving review comments
@@ -3525,6 +3693,16 @@ public sealed class StorySpawnOrchestrator
             // stranded (PrSyncJob imports it with State="active" but the
             // workstream is out of DriveReviewAsync's scan window).
             if (w.Status != "review" && w.Status != "merging" && w.Status != "complete") continue;
+
+            // Serialise dispatch per workItemId (see comment above): defer this
+            // workstream's review while its impl/generator invocation is still live.
+            if (reviewRunner is not null && reviewRunner.IsTaskActive(w.Id))
+            {
+                this.logger?.LogDebug(
+                    "DriveReviewAsync: deferring ws {WsId} this tick — an agent invocation is still active "
+                    + "for this workItemId (avoids the Phase-74 concurrent-dispatch stall).", w.Id);
+                continue;
+            }
 
             var prs = ParseStringList(w.PrsJson);
             if (prs.Count == 0) continue;
@@ -3726,7 +3904,7 @@ public sealed class StorySpawnOrchestrator
                     // down all 21 workstreams).
                     try
                     {
-                        await this.ApproveAndMergeAsync(prId, w.Branch, reviewer, repo, baseBranch, ct);
+                        await this.ApproveAndMergeAsync(db, prId, w.Branch, reviewer, repo, baseBranch, ct);
                         w.Status = "merging";
                         await db.SaveChangesAsync(ct);
                         changed = true;
@@ -3774,7 +3952,7 @@ public sealed class StorySpawnOrchestrator
             var approveReviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
             try
             {
-                await this.ApproveAndMergeAsync(prId, w.Branch, approveReviewer, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(db, prId, w.Branch, approveReviewer, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
                 changed = true;
@@ -3975,13 +4153,75 @@ public sealed class StorySpawnOrchestrator
                 // Mark the original reviewer comment resolved so it
                 // drops out of the active set on the next tick.
                 await this.provider.ResolvePrCommentAsync(oc.Id, engineerId, ct);
+                // 2026-05-26 — reset the per-comment timeout counter on
+                // success so a future unrelated comment on the same ws
+                // doesn't inherit stale failure count from an earlier one.
+                this.reviewFixTimeoutCounter.TryRemove((w.Id, oc.Id), out _);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                this.logger?.LogWarning(ex,
-                    "DriveReviewAsync: failed to fix comment {CommentId} on PR {PrId} for ws {WsId}; "
-                    + "will retry next tick. surviving comments will still be processed in this loop.",
-                    oc.Id, prId, w.Id);
+                // 2026-05-26 — circuit breaker for budget-exhaustion
+                // failures. AgentRunnerDispatcher surfaces hard-timeout /
+                // per-turn-stuck / transport-silent as failures whose
+                // messages contain either "hard timeout" or "exceeded …
+                // budget" (the dispatcher's own error template). Everything
+                // else (commit failures, comment-post 5xx, etc.) keeps the
+                // legacy "log + retry next tick" behaviour because those are
+                // typically transient and self-heal.
+                var isBudgetExhaustion = ex.Message.Contains("hard timeout", StringComparison.OrdinalIgnoreCase)
+                    || (ex.Message.Contains("exceeded", StringComparison.OrdinalIgnoreCase)
+                        && ex.Message.Contains("budget", StringComparison.OrdinalIgnoreCase));
+                if (isBudgetExhaustion)
+                {
+                    var key = (w.Id, oc.Id);
+                    var count = this.reviewFixTimeoutCounter.AddOrUpdate(key, 1, (_, v) => v + 1);
+                    this.logger?.LogWarning(ex,
+                        "RunReviewFixLoopAsync: review-fix budget exhausted on comment {CommentId} on PR {PrId} "
+                        + "for ws {WsId} (consecutive attempt {Count}/{Max}).",
+                        oc.Id, prId, w.Id, count, MaxReviewFixTimeouts);
+                    if (count >= MaxReviewFixTimeouts)
+                    {
+                        try
+                        {
+                            var systemReply =
+                                $"System: review-fix exceeded its wall-clock budget on {count} consecutive attempts. "
+                                + "Auto-resolving so the workstream can advance — please address the reviewer's "
+                                + "concern manually if it remains relevant. "
+                                + $"Last failure: {TrimStack(ex.Message, 200)}";
+                            await this.provider.ReplyPrCommentAsync(oc.Id, systemReply, ReviewFixBudgetResolverId, ct);
+                            await this.provider.ResolvePrCommentAsync(oc.Id, ReviewFixBudgetResolverId, ct);
+                            if (this.taskChannel is not null)
+                            {
+                                await this.taskChannel.EmitAsync(w.Id, "review-fix.budget-exhausted", new
+                                {
+                                    wsId = w.Id,
+                                    spawnId = spawn.Id,
+                                    prId,
+                                    commentId = oc.Id,
+                                    attempts = count,
+                                    filePath = oc.FilePath,
+                                    line = oc.Line,
+                                    lastError = TrimStack(ex.Message, 400),
+                                }, ct: ct);
+                            }
+                            this.reviewFixTimeoutCounter.TryRemove(key, out _);
+                        }
+                        catch (Exception escalateEx) when (escalateEx is not OperationCanceledException)
+                        {
+                            this.logger?.LogError(escalateEx,
+                                "RunReviewFixLoopAsync: failed to auto-resolve comment {CommentId} after {Count} "
+                                + "consecutive budget exhaustions; will retry the escalation next tick.",
+                                oc.Id, count);
+                        }
+                    }
+                }
+                else
+                {
+                    this.logger?.LogWarning(ex,
+                        "DriveReviewAsync: failed to fix comment {CommentId} on PR {PrId} for ws {WsId}; "
+                        + "will retry next tick. surviving comments will still be processed in this loop.",
+                        oc.Id, prId, w.Id);
+                }
                 // Don't break — continue with the next comment so a
                 // failure on one doesn't strand the rest.
             }
@@ -4352,7 +4592,7 @@ public sealed class StorySpawnOrchestrator
             // 4. Push succeeded → retry the upstream PR merge.
             try
             {
-                await this.ApproveAndMergeAsync(prId, w.Branch, reviewerAgentId, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(db, prId, w.Branch, reviewerAgentId, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
                 await this.EmitSpawnEventAsync(w.Id, "task.merge-conflict-resolved", new
@@ -4499,7 +4739,7 @@ public sealed class StorySpawnOrchestrator
 
             // Auto-merge the QA PR (review of QA artifacts is implicit in the deterministic flow).
             var qaReviewer = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(prId, qaBranch, qaReviewer, repo, baseBranch, ct);
+            await this.ApproveAndMergeAsync(db, prId, qaBranch, qaReviewer, repo, baseBranch, ct);
             await EmitChange(hub, "qa-pr-merged", spawnRow, ct);
             return true;
         }
@@ -4547,7 +4787,7 @@ public sealed class StorySpawnOrchestrator
 
             // Approve + merge.
             var qaId = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(prId, stepBranch, qaId, repo, baseBranch, ct);
+            await this.ApproveAndMergeAsync(db, prId, stepBranch, qaId, repo, baseBranch, ct);
 
             // Stash on workstream PrsJson so artifacts endpoint surfaces it.
             var prsList = ParseStringList(w.PrsJson);
@@ -4680,6 +4920,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task ApproveAndMergeAsync(
+        ProductDbContext db,
         string prId, string branch, string reviewerAgentId,
         RepoRow? repo, string baseBranch, CancellationToken ct)
     {
@@ -4693,6 +4934,32 @@ public sealed class StorySpawnOrchestrator
         if (repo is not null
             && !await this.git.BranchHasChangesVsBaseAsync(repo, branch, baseBranch, ct))
         {
+            // 2026-05-26 — `git diff --quiet base...branch` reports "no diff"
+            // for BOTH (a) genuinely empty branches AND (b) branches already
+            // merged into base (merge-base collapses to branch.tip, so the
+            // three-dot walk is empty). Without disambiguating, the operator
+            // sees "fix your .gitignore" — but really an out-of-band merge
+            // already happened on GitHub/ADO and our review crew lost the race.
+            // Probe ancestry: when branch.tip is reachable from base, the
+            // merge already landed. Reconcile local state (PrRow.Col=merged)
+            // so the orchestrator's merging→complete advance fires on the next
+            // tick without waiting for PrSyncJob's 2-hour cadence.
+            if (await this.git.IsBranchAlreadyMergedIntoBaseAsync(repo, branch, baseBranch, ct))
+            {
+                var localPr = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId, ct);
+                if (localPr is not null && localPr.Col != "merged")
+                {
+                    localPr.Col = "merged";
+                    localPr.IsActive = false;
+                    localPr.LastSyncAt = DateTimeOffset.UtcNow.ToString("O");
+                    await db.SaveChangesAsync(ct);
+                }
+                this.logger?.LogInformation(
+                    "PR {PrId} branch {Branch} already merged into {Base} (external merge); "
+                    + "reconciled local state to merged, skipping provider approve/merge.",
+                    prId, branch, baseBranch);
+                return;
+            }
             throw new EmptyPrMergeRefusedException(prId, branch, baseBranch);
         }
 
@@ -4743,20 +5010,44 @@ public sealed class StorySpawnOrchestrator
     /// <c>crew_members</c> rows or every member is busy — the row still
     /// claims and the ledger contention sorts itself out as runs finish.
     /// </summary>
+    /// <summary>
+    /// Resolves the (generator, evaluator) agent pair for a workstream.
+    /// Phase 88: <paramref name="workstreamCategory"/> selects between
+    /// <c>crew-eng</c> (impl + plan-doc + any non-QA category) and
+    /// <c>crew-qa</c> (when category equals
+    /// <see cref="WorkstreamCategories.QaE2e"/>). Pre-Phase-88 callers
+    /// implicitly used <c>crew-eng</c>; pass
+    /// <see cref="WorkstreamCategories.Impl"/> for the legacy behavior.
+    /// </summary>
+    /// <remarks>
+    /// Method name is preserved (rather than renamed to <c>ResolvePairAsync</c>)
+    /// to keep blast radius small on tests; the doc-comment is the source of
+    /// truth for the contract now that qa-e2e is routed too.
+    /// </remarks>
     internal static async Task<string[]> ResolveImplPairAsync(
         ControlDbContext control,
         ProductDbContext db,
         AgentAllocationLoader allocation,
         HashSet<string> busyAgents,
         int seedOffset,
+        string workstreamCategory,
         CancellationToken ct)
     {
-        const string prefix = "crew-eng";
+        // Phase 88 — qa-e2e workstreams draw from crew-qa (test-attackers,
+        // memory agents, ai-test-engineer) instead of crew-eng (which
+        // includes refusal-prone personas like code-refactor-defender
+        // that would self-veto a "write more tests" task). Pre-Phase-88,
+        // the const "crew-eng" caused all qa-e2e workstreams to draw
+        // from the wrong roster.
+        var isQa = string.Equals(workstreamCategory, WorkstreamCategories.QaE2e, StringComparison.Ordinal);
+        var prefix = isQa ? "crew-qa" : "crew-eng";
+        var fallbackTeam = isQa ? "QA" : "Engineer";
+        var fallbackDefaultId = isQa ? "qa-default" : "eng-default";
         var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
             ?? await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct);
         if (crew is null)
         {
-            var fallback = allocation.ForTeam("Engineer").FirstOrDefault()?.Id ?? "eng-default";
+            var fallback = allocation.ForTeam(fallbackTeam).FirstOrDefault()?.Id ?? fallbackDefaultId;
             return new[] { fallback };
         }
 
@@ -4802,8 +5093,8 @@ public sealed class StorySpawnOrchestrator
         {
             genAgent = crew.DefaultGeneratorAgentId
                 ?? crew.Lead
-                ?? allocation.ForTeam("Engineer").FirstOrDefault()?.Id
-                ?? "eng-default";
+                ?? allocation.ForTeam(fallbackTeam).FirstOrDefault()?.Id
+                ?? fallbackDefaultId;
         }
         busyAgents.Add(genAgent);
 

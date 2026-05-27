@@ -499,26 +499,49 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>(
 //   IStoryGitOps           → RealStoryGitOps (real git CLI against repo.CloneRoot)
 //   IStoryProviderOps      → ProviderStoryProviderOps (real provider.CreatePullRequest / Merge)
 // Phase 59 Stage C + S2 — impacted-test resolver chain. Order matters:
-// LSP first so EVERY ecosystem (Rust / Go / Python / TS AND C# via
-// csharp-ls) narrows through the same references-based provider — the
-// consistent path. Roslyn second as a C# fallback (when csharp-ls isn't
-// on PATH or can't load the workspace); it also has an over-broad
-// "--filter present => no-op" guard that defeats narrowing on repos whose
-// TestCommand carries a standing category exclude, which the LSP path
-// avoids. Heuristic last (filename + dir + content scan, universal
-// fallback). The chain is a singleton so per-workspace caches (LSP server
-// processes, Roslyn's Solution) survive across gate runs.
+// ROSLYN FIRST for C# — it's the native in-process analyzer (no external
+// language-server process to spawn/hang). LSP second for the ecosystems
+// Roslyn can't speak (Rust / Go / Python / TS) and as a C# fall-through
+// when Roslyn can't load the workspace. Heuristic last (filename + dir +
+// content scan, universal fallback). The chain is a singleton so
+// per-workspace caches (LSP server processes, Roslyn's Solution) survive
+// across gate runs.
+//
+// 2026-05-26 — reordered to Roslyn-first. The prior LSP-first ordering
+// existed only because Roslyn no-op'd on repos whose TestCommand carries a
+// standing category `--filter` (the FRP `update` repo), so csharp-ls was the
+// only narrower for them. That flaky csharp-ls server then hung on
+// `textDocument/references` with no deadline and wedged stage-1.3 for hours.
+// CrewStoryArtifactStrategy now splits the standing `--filter` off before
+// resolution and re-merges it after (SplitStandingFilter + ApplyTestExclude-
+// Filter), so Roslyn narrows those repos natively — csharp-ls is no longer
+// needed for the common C# path. ImpactedTestResolverChain.PerProviderTimeout
+// also bounds any provider that does hang.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain>(sp =>
-    new Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain(
+{
+    // Per-provider wall-clock budget (config override:
+    // Forge:Test:ImpactedResolveTimeoutSec). A provider that exceeds it is
+    // cancelled and the chain falls through to the next (ultimately the
+    // heuristic). Guards against a hung in-process resolver wedging an
+    // iteration forever — see ImpactedTestResolverChain.DefaultPerProviderTimeout.
+    var timeoutSec = sp.GetRequiredService<IConfiguration>()
+        .GetValue<int?>("Forge:Test:ImpactedResolveTimeoutSec");
+    var timeout = timeoutSec is > 0
+        ? TimeSpan.FromSeconds(timeoutSec.Value)
+        : (TimeSpan?)null;
+    return new Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain(
         new Forge.Api.Services.Stories.ImpactedTests.IImpactedTestProvider[]
         {
-            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>(),
             sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Roslyn.RoslynImpactedTestProvider>(),
+            sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.Lsp.LspImpactedTestProvider>(),
             sp.GetRequiredService<Forge.Api.Services.Stories.ImpactedTests.HeuristicImpactedTestProvider>(),
-        }));
+        },
+        sp.GetService<ILogger<Forge.Api.Services.Stories.ImpactedTests.ImpactedTestResolverChain>>(),
+        timeout);
+});
 
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.CrewStoryArtifactStrategy>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.RealStoryGitOps>();

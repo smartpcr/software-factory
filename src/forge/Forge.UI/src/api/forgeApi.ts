@@ -1122,6 +1122,10 @@ export const forgeApi = {
       cacheWriteTokens?: number | null;
       reasoningTokens?: number | null;
       conversationTokens?: number | null;
+      // 2026-05-26 — impacted-test resolution wall-clock (ms) for this iter
+      // (build-gate-pass → test-command-start). Surfaces a slow/hung resolver
+      // in the insights sparkline. Null when resolution didn't run / legacy row.
+      resolveMs?: number | null;
     }[];
   }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/iter-kpis`);

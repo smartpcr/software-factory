@@ -25,10 +25,20 @@
     <!-- Phase 59 Stage C — Roslyn-in-process impacted-test resolver
          for C# (xUnit / MSTest / NUnit). Locator must run via
          MSBuildLocator.RegisterDefaults() at Program.cs startup
-         before any MSBuildWorkspace.Create() call. Common pinned
-         directly here to override the transitive 4.5.0 EF Core 8's
-         Design package brings in (NU1107 collision otherwise). -->
+         before any MSBuildWorkspace.Create() call.
+         2026-05-26 — ALL Microsoft.CodeAnalysis.* pinned directly to 5.3.0
+         here. Microsoft.EntityFrameworkCore.Design 8.0.10 transitively pulls
+         CSharp + CSharp.Workspaces 4.5.0; pinning only Common/Workspaces.MSBuild
+         (the prior fix) left CSharp + CSharp.Workspaces at 4.5.0, so at runtime
+         the 4.5.0 CSharp.Workspaces bound against 5.3.0 Workspaces and threw
+         ReflectionTypeLoadException inside MSBuildWorkspace — silently breaking
+         the Roslyn impacted-test provider for every repo (verified via
+         RoslynNet472DiagTests). Pinning the CSharp pair directly forces 5.3.0
+         everywhere (EF Design's Roslyn use is design-time only — Forge uses
+         hand-written migrations — so the runtime is unaffected). -->
     <PackageReference Include="Microsoft.CodeAnalysis.Common" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
     <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" />
     <PackageReference Include="Microsoft.Build.Locator" />
   </ItemGroup>

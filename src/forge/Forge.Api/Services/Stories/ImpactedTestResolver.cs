@@ -377,6 +377,139 @@ public static class ImpactedTestResolver
         return paths.ToArray();
     }
 
+    private static readonly Regex CompilationAffectingElementRegex = new(
+        @"<\s*(TargetFrameworks?|LangVersion|DefineConstants|Nullable|OutputType|AssemblyName|RootNamespace|ProjectReference|FrameworkReference|RuntimeIdentifiers?|TargetPlatform\w*|Reference)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex AnalyzerMarkerRegex = new(
+        @"BannedApiAnalyzer|BannedSymbols|<\s*AdditionalFiles\b|<\s*WarningsAsErrors\b|RS0030|IncludeAssets\s*=\s*""[^""]*analyzers|<\s*PackageReference[^>]*(Analyzer|BannedApi)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex StructuralElementRegex = new(
+        @"^</?\s*(Project|Choose|When|Otherwise|ItemGroup|PropertyGroup|NoWarn|WarningLevel)\b|^</",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// 2026-05-26 — drop a <c>Directory.Build.props</c> / <c>.targets</c> change
+    /// from <paramref name="changedFiles"/> when its diff is provably ANALYZER-ONLY
+    /// (build-time only — e.g. wiring a BannedApiAnalyzer + BannedSymbols.txt). Such
+    /// a change can only alter analyzer diagnostics, which the BUILD gate (whole-repo
+    /// build) already validates; it cannot change runtime test behaviour, so forcing
+    /// the entire (often flaky / multi-hour) suite via the global-impact trigger adds
+    /// no signal and strands the workstream. Removing it lets the diff's real source
+    /// files drive narrowing instead. <c>Directory.Packages.props</c> is NEVER relaxed
+    /// (it pins dependency versions = genuinely compilation-affecting). Conservative:
+    /// any uncertainty (git error, a removed/modified line, a compilation-affecting or
+    /// unrecognized element) keeps the file → whole-suite. Root cause: common-infra
+    /// stage-1.3 banned-api-analyzer wiring was forced whole-suite and failed on
+    /// unrelated flaky integration tests (WordCount / Powershell / TestJea), 2026-05-26.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> FilterCompilationNeutralGlobalFilesAsync(
+        string workspace, string baseRef, IReadOnlyList<string> changedFiles, CancellationToken ct = default)
+    {
+        if (changedFiles.Count == 0
+            || string.IsNullOrWhiteSpace(workspace) || !Directory.Exists(workspace)
+            || string.IsNullOrWhiteSpace(baseRef))
+        {
+            return changedFiles;
+        }
+
+        List<string>? kept = null; // lazily built only when we actually drop something
+        for (var i = 0; i < changedFiles.Count; i++)
+        {
+            var f = changedFiles[i];
+            var name = Path.GetFileName(f);
+            var relaxCandidate =
+                string.Equals(name, "Directory.Build.props", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase);
+
+            var drop = false;
+            if (relaxCandidate)
+            {
+                try
+                {
+                    var diff = await RunGitCaptureAsync(workspace, ct, "diff", baseRef, "--", f);
+                    if (string.IsNullOrWhiteSpace(diff))
+                    {
+                        diff = await RunGitCaptureAsync(workspace, ct, "diff", "HEAD", "--", f);
+                    }
+                    drop = IsAnalyzerOnlyBuildPropsDiff(diff);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { drop = false; } // safe default: keep → whole-suite
+            }
+
+            if (drop)
+            {
+                kept ??= new List<string>(changedFiles.Take(i));
+            }
+            else
+            {
+                kept?.Add(f);
+            }
+        }
+        return kept ?? changedFiles;
+    }
+
+    /// <summary>
+    /// True only when a unified <c>git diff</c> of a global build file is provably
+    /// build-time-only (analyzer / diagnostics wiring). Conservative — returns false
+    /// (treat as compilation-affecting → whole-suite) on ANY of: empty diff, a removed
+    /// or modified content line, a compilation-affecting element (TargetFramework,
+    /// DefineConstants, a non-analyzer PackageReference, …), or an unrecognized element.
+    /// Returns true only for a purely-additive diff whose added XML is limited to
+    /// analyzer/diagnostic + structural elements (and comments) AND includes at least
+    /// one analyzer marker. Internal for unit testing.
+    /// </summary>
+    internal static bool IsAnalyzerOnlyBuildPropsDiff(string? diffText)
+    {
+        if (string.IsNullOrWhiteSpace(diffText)) return false;
+        var sawAnalyzer = false;
+        var inComment = false;
+        foreach (var rawLine in diffText!.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.Length == 0) continue;
+            if (line.StartsWith("+++") || line.StartsWith("---") || line.StartsWith("@@")
+                || line.StartsWith("diff ") || line.StartsWith("index ")
+                || line.StartsWith("new file") || line.StartsWith("deleted file")
+                || line.StartsWith("similarity ") || line.StartsWith("rename "))
+            {
+                continue;
+            }
+
+            var sign = line[0];
+            if (sign != '+' && sign != '-') continue; // unchanged context line
+            var content = line.Substring(1).Trim();
+            if (content.Length == 0) continue;
+
+            // A removed/modified content line means existing build config changed —
+            // can't prove neutral (the analyzer-wiring case is purely additive).
+            if (sign == '-') return false;
+
+            // Added line — track XML comment spans so prose inside <!-- --> is benign.
+            if (inComment)
+            {
+                if (content.Contains("-->")) inComment = false;
+                continue;
+            }
+            if (content.StartsWith("<!--"))
+            {
+                if (!content.Contains("-->")) inComment = true;
+                continue;
+            }
+            // Pure comment / plain text (no XML tag) is benign.
+            if (!content.Contains('<')) continue;
+
+            if (CompilationAffectingElementRegex.IsMatch(content)) return false;
+            if (AnalyzerMarkerRegex.IsMatch(content)) { sawAnalyzer = true; continue; }
+            if (StructuralElementRegex.IsMatch(content)) continue;
+            // Unrecognized XML element in a global build file → conservative.
+            return false;
+        }
+        return sawAnalyzer;
+    }
+
     /// <summary>
     /// Quote-aware command-line splitter. Mirrors
     /// <c>StoryBuildRunner.ParseCommandLine</c> intentionally — both

@@ -48,15 +48,29 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     /// </summary>
     internal static readonly TimeSpan DefaultStuckTaskTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// Phase 89 — when a per-spawn lock entry has been held longer than
+    /// this multiple of <see cref="stuckTaskTimeout"/>, the next tick
+    /// treats it as permanently wedged and force-replaces it with a fresh
+    /// entry (see <see cref="TryAcquireSpawnLockAsync"/>). 5× is the
+    /// production default: at the 60 s stuck timeout that becomes 5 min,
+    /// far longer than any healthy DriveAsync but short enough that one
+    /// wedged orphan can't DOS the whole product (the 6.1-e2e CLEAN-CODE
+    /// incident on 2026-05-08 wedged the entire pipeline for 17 min
+    /// because the only recovery path was a process restart).
+    /// </summary>
+    internal const int DefaultSpawnLockForceReplaceMultiplier = 5;
+
     private readonly IServiceProvider services;
     private readonly TimeSpan interval;
     private readonly TimeSpan stuckTaskTimeout;
+    private readonly TimeSpan spawnLockForceReplaceThreshold;
     private readonly ILogger<SpawnDependencyScheduler>? logger;
 
     /// <summary>
-    /// Phase 78 — per-spawn semaphores that prevent two scheduler ticks
-    /// from concurrently driving the same spawn. Without this, a long-
-    /// running dispatch in tick N's <see cref="RunWithTimeoutAsync"/>
+    /// Phase 78 / 89 — per-spawn semaphores that prevent two scheduler
+    /// ticks from concurrently driving the same spawn. Without the lock,
+    /// a long-running dispatch in tick N's <see cref="RunWithTimeoutAsync"/>
     /// (abandoned at 60 s but still running on the thread pool per the
     /// Phase 45 follow-up rationale) would race tick N+1's fresh
     /// <see cref="StorySpawnOrchestrator.DriveAsync"/> for the same
@@ -67,16 +81,20 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     ///
     /// <para>Keyed by <c>spawnId</c>. Each tick attempts a non-blocking
     /// <see cref="SemaphoreSlim.WaitAsync(int, CancellationToken)"/>;
-    /// on miss, the tick simply skips that spawn this cycle. The
-    /// <c>DriveAsync</c> task itself takes care of cleanup via
-    /// <c>Release()</c> in a finally block.</para>
+    /// on miss, the tick checks how long the entry has been held — if
+    /// the holder is past <see cref="spawnLockForceReplaceThreshold"/>
+    /// (5× stuck timeout), the entry is force-replaced (Phase 89). The
+    /// old entry is left in place for its abandoned holder to eventually
+    /// release; that release lands on a now-orphaned <see cref="SemaphoreSlim"/>
+    /// which is harmless (no waiters, GC'd after the orphan task settles).
+    /// </para>
     ///
     /// <para>Stale entries don't leak: terminated spawns just sit with
-    /// a free semaphore that never gets acquired again — &lt; 100 bytes
+    /// a free semaphore that never gets acquired again — &lt; 200 bytes
     /// per spawn ever spawned. Acceptable for the lifetime of the
     /// process.</para>
     /// </summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> spawnLocks = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpawnLockEntry> spawnLocks = new();
 
     public SpawnDependencyScheduler(IServiceProvider services, ILogger<SpawnDependencyScheduler>? logger = null)
         : this(services, DefaultStuckTaskTimeout, logger)
@@ -86,17 +104,135 @@ public sealed class SpawnDependencyScheduler : BackgroundService
     /// <summary>
     /// Test-only overload — lets unit tests pass a small timeout (e.g.,
     /// <c>TimeSpan.FromMilliseconds(200)</c>) so a hung-task test doesn't
-    /// have to wait the production 60s.
+    /// have to wait the production 60s. The optional
+    /// <paramref name="spawnLockForceReplaceThreshold"/> overrides the
+    /// 5× stuckTaskTimeout default so Phase 89 force-replace tests can
+    /// trigger on millisecond budgets.
     /// </summary>
     internal SpawnDependencyScheduler(
         IServiceProvider services,
         TimeSpan stuckTaskTimeout,
-        ILogger<SpawnDependencyScheduler>? logger = null)
+        ILogger<SpawnDependencyScheduler>? logger = null,
+        TimeSpan? spawnLockForceReplaceThreshold = null)
     {
         this.services = services;
         this.logger = logger;
         this.interval = TimeSpan.FromSeconds(15);
         this.stuckTaskTimeout = stuckTaskTimeout;
+        this.spawnLockForceReplaceThreshold = spawnLockForceReplaceThreshold
+            ?? TimeSpan.FromTicks(stuckTaskTimeout.Ticks * DefaultSpawnLockForceReplaceMultiplier);
+    }
+
+    /// <summary>
+    /// Phase 89 — wraps a <see cref="SemaphoreSlim"/> with the
+    /// acquisition timestamp so a wedged entry can be detected and
+    /// force-replaced. <see cref="AcquiredAt"/> is set immediately
+    /// after a successful acquire and cleared on release; a non-null
+    /// timestamp older than <see cref="spawnLockForceReplaceThreshold"/>
+    /// is the signal that the holder has been wedged past the
+    /// production budget and the lock should be abandoned.
+    /// </summary>
+    internal sealed class SpawnLockEntry
+    {
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public DateTimeOffset? AcquiredAt;
+    }
+
+    /// <summary>
+    /// Phase 89 — outcome of <see cref="TryAcquireSpawnLockAsync"/>.
+    /// </summary>
+    internal enum SpawnLockAcquireOutcome
+    {
+        /// <summary>Fresh acquisition of a previously-free entry.</summary>
+        Acquired,
+
+        /// <summary>Entry is held by someone else and the holder is
+        /// still under the force-replace threshold — caller should skip
+        /// this tick.</summary>
+        Skipped,
+
+        /// <summary>Entry was held past the force-replace threshold and
+        /// has now been swapped for a fresh entry, which is acquired.
+        /// Caller proceeds. The old entry is left to be released by its
+        /// (eventual) holder; that release lands on a now-orphaned
+        /// semaphore (harmless).</summary>
+        ForceReplaced,
+    }
+
+    /// <summary>
+    /// Phase 89 — non-blocking acquire that force-replaces a wedged
+    /// entry (held past <see cref="spawnLockForceReplaceThreshold"/>)
+    /// instead of skipping. Returns the entry the caller now holds
+    /// (after acquire or force-replace) so the caller can pair its
+    /// release on the same instance the acquire happened on.
+    /// <para>Internal for unit tests; production path is the loop body
+    /// inside <see cref="TickOnceAsync"/>.</para>
+    /// </summary>
+    internal async Task<(SpawnLockAcquireOutcome Outcome, SpawnLockEntry Entry)> TryAcquireSpawnLockAsync(
+        string spawnId, CancellationToken ct)
+    {
+        var entry = this.spawnLocks.GetOrAdd(spawnId, _ => new SpawnLockEntry());
+        if (await entry.Semaphore.WaitAsync(0, ct))
+        {
+            entry.AcquiredAt = DateTimeOffset.UtcNow;
+            return (SpawnLockAcquireOutcome.Acquired, entry);
+        }
+
+        // Acquire failed — someone else holds it. Check whether the
+        // holder is wedged past the force-replace threshold. Capture
+        // the timestamp ONCE (it could be cleared concurrently by a
+        // release on another thread; we don't want to read it twice
+        // and produce inconsistent decisions).
+        var snapshot = entry.AcquiredAt;
+        if (snapshot is not null)
+        {
+            var heldFor = DateTimeOffset.UtcNow - snapshot.Value;
+            if (heldFor > this.spawnLockForceReplaceThreshold)
+            {
+                var fresh = new SpawnLockEntry();
+                if (this.spawnLocks.TryUpdate(spawnId, fresh, entry))
+                {
+                    // Brand new entry: WaitAsync(0) is guaranteed to
+                    // succeed since no one else can have a reference yet.
+                    await fresh.Semaphore.WaitAsync(0, ct);
+                    fresh.AcquiredAt = DateTimeOffset.UtcNow;
+                    this.logger?.LogWarning(
+                        "spawnLock for {SpawnId} held {HeldMin:F1} min > {ThresholdMin:F1} min force-replace threshold; "
+                        + "abandoning wedged orphan lock and acquiring fresh entry. The orphaned task will Release "
+                        + "the abandoned semaphore (harmless no-op) when it eventually completes.",
+                        spawnId, heldFor.TotalMinutes, this.spawnLockForceReplaceThreshold.TotalMinutes);
+                    return (SpawnLockAcquireOutcome.ForceReplaced, fresh);
+                }
+                // Lost the race: another tick already replaced. Fall
+                // through to Skipped; the next tick will try again.
+            }
+        }
+        return (SpawnLockAcquireOutcome.Skipped, entry);
+    }
+
+    /// <summary>
+    /// Phase 89 — release helper that tolerates the case where the
+    /// entry being released has already been force-replaced (in which
+    /// case the underlying semaphore is the abandoned one, and another
+    /// release path may have already brought the count back to 1).
+    /// We swallow <see cref="SemaphoreFullException"/> because a
+    /// double-release on an abandoned entry is the harmless steady-state.
+    /// </summary>
+    private static void ReleaseEntrySafe(SpawnLockEntry entry)
+    {
+        try
+        {
+            entry.Semaphore.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // Force-replaced abandoned entry already released by its
+            // orphaned ContinueWith — harmless.
+        }
+        finally
+        {
+            entry.AcquiredAt = null;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -206,25 +342,32 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         {
             var (sid, spawnId) = item;
 
-            // Phase 78 — per-spawn lock. Prevents two ticks driving the
-            // same spawn concurrently when tick N's dispatch overran the
-            // 60 s RunWithTimeoutAsync and tick N+1 picks up while the
-            // orphan is still alive. The lock is acquired non-blocking;
-            // on miss, this tick simply skips this spawn and the next
-            // tick (15 s later) tries again. CRITICAL: when DriveAsync
-            // is orphaned by the timeout, the lock release is chained to
-            // the actual orphan task completion (NOT released on
-            // RunWithTimeoutAsync's return) so the next tick still
-            // skips the spawn while the orphan runs — that's what
-            // prevents the Phase 74 concurrent-dispatch throw.
-            var spawnLock = this.spawnLocks.GetOrAdd(spawnId, _ => new SemaphoreSlim(1, 1));
-            if (!await spawnLock.WaitAsync(0, ct))
+            // Phase 78 / 89 — per-spawn lock. Prevents two ticks driving
+            // the same spawn concurrently when tick N's dispatch overran
+            // the 60 s RunWithTimeoutAsync and tick N+1 picks up while
+            // the orphan is still alive. The lock is acquired non-
+            // blocking; on miss the tick skips this spawn for this
+            // cycle UNLESS the holder is past the force-replace
+            // threshold (5× stuck timeout, default 5 min), in which
+            // case Phase 89 swaps a fresh entry in and we proceed.
+            // CRITICAL: when DriveAsync is orphaned by the timeout,
+            // the lock release is chained to the actual orphan task
+            // completion (NOT released on RunWithTimeoutAsync's
+            // return) so the next tick still skips the spawn while the
+            // orphan runs — that's what prevents the Phase 74
+            // concurrent-dispatch throw. The Phase 89 force-replace
+            // exists for the case where the orphan never finishes
+            // (process-internal deadlock) — without it, one wedged
+            // spawn DOS'd the whole product (2026-05-08 incident).
+            var lockResult = await this.TryAcquireSpawnLockAsync(spawnId, ct);
+            if (lockResult.Outcome == SpawnLockAcquireOutcome.Skipped)
             {
                 this.logger?.LogDebug(
                     "Skipping spawn {SpawnId} ({StoryId}) this tick — previous DriveAsync still in flight.",
                     spawnId, sid);
                 return;
             }
+            var entry = lockResult.Entry;
 
             // Capture the work task BEFORE handing it to RunWithTimeoutAsync
             // so we can attach a release-on-completion continuation when
@@ -240,8 +383,11 @@ public sealed class SpawnDependencyScheduler : BackgroundService
                 // Orphaned. Lock stays held until the orphan finishes;
                 // continuation runs on a background thread so we don't
                 // block this tick's task. ExecuteSynchronously is safe
-                // here because Release is non-blocking.
-                _ = driveWork.ContinueWith(_ => spawnLock.Release(),
+                // here because Release is non-blocking. Capture the
+                // local `entry` reference so the release lands on the
+                // SAME instance even if a later tick force-replaces it.
+                var releaseEntry = entry;
+                _ = driveWork.ContinueWith(_ => ReleaseEntrySafe(releaseEntry),
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default);
@@ -259,7 +405,7 @@ public sealed class SpawnDependencyScheduler : BackgroundService
             }
             finally
             {
-                spawnLock.Release();
+                ReleaseEntrySafe(entry);
             }
         }, ct)).ToArray();
 

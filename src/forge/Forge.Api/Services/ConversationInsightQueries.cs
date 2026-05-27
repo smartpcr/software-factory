@@ -98,12 +98,22 @@ public static class ConversationInsightQueries
             .Where(e => e.WorkItemId == workItemId
                 && (e.Kind == "task.iteration.started"
                     || e.Kind == "task.iteration.scored"
-                    || e.Kind == "task.worktree-tick"))
+                    || e.Kind == "task.worktree-tick"
+                    || e.Kind == "task.test-gate.resolving"
+                    || e.Kind == "task.test-gate.resolved"))
             .Select(e => new { e.Kind, e.At, e.PayloadJson })
             .ToListAsync(ct);
 
         var startedByIter = new Dictionary<int, DateTimeOffset>();
         var scoredByIter = new Dictionary<int, DateTimeOffset>();
+        // Impacted-test resolution window per iter (the in-process phase between
+        // the build gate passing and the test command running — where a hung
+        // language server stranded stage-1.3 for hours, 2026-05-26). resolveMs
+        // = resolved.At - resolving.At feeds the per-iter "resolve" sparkline so
+        // a slow/runaway resolve is visible without a heap dump. Prefer the
+        // emitted durationMs from the resolved event when present (authoritative).
+        var resolvingByIter = new Dictionary<int, DateTimeOffset>();
+        var resolveMsByIter = new Dictionary<int, long>();
         foreach (var e in transcript)
         {
             if (e.Kind == "task.iteration.started" || e.Kind == "task.iteration.scored")
@@ -112,6 +122,25 @@ public static class ConversationInsightQueries
                 if (iter is null) continue;
                 if (e.Kind == "task.iteration.started") startedByIter[iter.Value] = e.At;
                 else scoredByIter[iter.Value] = e.At;
+            }
+            else if (e.Kind == "task.test-gate.resolving")
+            {
+                int? iter = TryExtractIter(e.PayloadJson);
+                if (iter is not null) resolvingByIter[iter.Value] = e.At;
+            }
+            else if (e.Kind == "task.test-gate.resolved")
+            {
+                int? iter = TryExtractIter(e.PayloadJson);
+                if (iter is null) continue;
+                // Authoritative duration from the event payload; else derive from
+                // the resolving→resolved wall-clock gap.
+                long? durMs = TryExtractLong(e.PayloadJson, "durationMs");
+                if (durMs is null && resolvingByIter.TryGetValue(iter.Value, out var startedAt))
+                {
+                    var gap = (long)(e.At - startedAt).TotalMilliseconds;
+                    if (gap >= 0) durMs = gap;
+                }
+                if (durMs is { } ms && ms >= 0) resolveMsByIter[iter.Value] = ms;
             }
         }
         var worktreeChanged = transcript
@@ -211,6 +240,12 @@ public static class ConversationInsightQueries
                 cacheWriteTokens = cacheWriteTok > 0 ? (long?)cacheWriteTok : null,
                 reasoningTokens = reasoningTok > 0 ? (long?)reasoningTok : null,
                 conversationTokens = conversationTokLatest,
+                // 2026-05-26 — impacted-test resolution wall-clock for this iter
+                // (build-gate-pass → test-command-start window). Null on iters that
+                // didn't resolve (resolution disabled, or legacy rows pre-dating the
+                // task.test-gate.resolving/resolved events). Feeds the "resolve"
+                // sparkline so a hung/slow resolver is visible in iteration insights.
+                resolveMs = resolveMsByIter.TryGetValue(d.Iter, out var rms) ? (long?)rms : null,
             });
             prevAt = windowEnd;
         }
@@ -415,6 +450,22 @@ public static class ConversationInsightQueries
             if (!doc.RootElement.TryGetProperty("iter", out var v)) return null;
             if (v.ValueKind != JsonValueKind.Number) return null;
             return v.GetInt32();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static long? TryExtractLong(string payloadJson, string property)
+    {
+        if (string.IsNullOrEmpty(payloadJson)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (!doc.RootElement.TryGetProperty(property, out var v)) return null;
+            if (v.ValueKind != JsonValueKind.Number) return null;
+            return v.GetInt64();
         }
         catch
         {

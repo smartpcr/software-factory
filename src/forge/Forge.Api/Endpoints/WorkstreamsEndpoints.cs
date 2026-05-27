@@ -1218,8 +1218,26 @@ public static class WorkstreamsEndpoints
 
         // If the PR is already merged, promote straight to "complete" —
         // the gen/eval loop has nothing left to do.
-        var pr = await db.Prs.FirstOrDefaultAsync(p => p.Workstream == id);
-        if (pr is not null && string.Equals(pr.Col, "merged", StringComparison.OrdinalIgnoreCase))
+        //
+        // 2026-05-26 — Two-pronged hardening after observing falsely-merged
+        // PRs cascade through this shortcut:
+        //   (1) When a workstream has multiple PRs (e.g. operator retried,
+        //       opening a 2nd PR after the 1st was closed without merge),
+        //       FirstOrDefaultAsync was non-deterministic. Now requires
+        //       *all* PRs to be Col="merged" before firing — a single
+        //       stale-merged row no longer overrides an active follow-up PR.
+        //   (2) Source-of-truth fix landed in AdoPrCommentSyncClient: ADO
+        //       status="completed" with lastMergeCommit=null is now mapped
+        //       to "abandoned" (mirrors GitHub's closed+merged_at=null), so
+        //       Col="merged" will only be set for true merges going forward.
+        var allPrs = await db.Prs
+            .Where(p => p.Workstream == id)
+            .OrderBy(p => p.Sort)
+            .ThenBy(p => p.Id)
+            .ToListAsync();
+        var shortCircuitToMerged = allPrs.Count > 0
+            && allPrs.All(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase));
+        if (shortCircuitToMerged)
         {
             ws.Status = "complete";
             ws.StallReason = null;

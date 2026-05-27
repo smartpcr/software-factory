@@ -306,6 +306,41 @@ public sealed class RealStoryGitOps : IStoryGitOps
         return code != 0;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Implementation note — uses <c>git merge-base --is-ancestor A B</c>
+    /// (exit 0 ⇒ A is an ancestor of B). Fails CLOSED: any non-zero exit
+    /// (including 1 for "not ancestor", 128 for "missing ref", or a
+    /// transient git failure) returns <c>false</c>. The asymmetry with
+    /// <see cref="BranchHasChangesVsBaseAsync"/> (which fails OPEN) is
+    /// intentional — a stuck "already-merged" probe should fall through to
+    /// the empty-PR exception so genuine empty PRs still surface to the
+    /// operator instead of being silently swallowed.
+    /// </remarks>
+    public async Task<bool> IsBranchAlreadyMergedIntoBaseAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        try
+        {
+            // Refresh both refs from origin so the ancestry probe sees the
+            // latest tip the upstream merge button moved base to.
+            await this.RunGitCaptureAsync(root, ct, "fetch", "origin", baseBranch, branch);
+            var (code, _, _) = await this.RunGitCaptureAsync(
+                root, ct, "merge-base", "--is-ancestor",
+                $"origin/{branch}", $"origin/{baseBranch}");
+            return code == 0;
+        }
+        catch
+        {
+            // Fail-closed: a transient probe failure must not bypass the
+            // empty-PR refusal path. Caller will treat this as "not
+            // already merged" and surface the EmptyPrMergeRefusedException
+            // so the operator sees the issue.
+            return false;
+        }
+    }
+
     public async Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default)
     {
         var root = ResolveCloneRoot(repo);

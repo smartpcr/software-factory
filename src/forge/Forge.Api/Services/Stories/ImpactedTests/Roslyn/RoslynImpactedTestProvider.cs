@@ -131,6 +131,27 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         if (cached is null) return null;
         var solution = cached.Solution;
 
+        // 2026-05-26 — if the workspace loaded but exposes NO test projects,
+        // Roslyn can't narrow OR meaningfully whole-suite-fallback, and
+        // returning ANY non-null result here would STOP the chain before the
+        // filename-based heuristic (which doesn't need MSBuild) gets a turn.
+        // Confirmed failure mode: the FRP `update` repo is .NET Framework
+        // (net472). The in-process MSBuildWorkspace runs under the .NET SDK and
+        // can't load net472 projects, so `solution.Projects` comes back empty
+        // (observed live: a same-repo story resolved with allTestProjectCount=0
+        // / solution.Projects.Count()=0) — Roslyn then ran the WHOLE suite and
+        // the gate timed out at 25 min. Fall through (null) instead so the
+        // heuristic narrows by filename (38 *.UnitTest.csproj on disk → the one
+        // impacted project), turning a 25-min timeout into a ~3-min green gate.
+        if (CountTestProjects(solution) == 0)
+        {
+            Debug.WriteLine(
+                "RoslynImpactedTestProvider: workspace loaded 0 test projects "
+                + "(likely a .NET Framework repo the SDK MSBuildWorkspace can't load); "
+                + "deferring to the next provider (heuristic).");
+            return null;
+        }
+
         // Normalise + bound changed files to .cs entries inside the
         // workspace. Global-impact files (Directory.Build.props /
         // global.json / *.sln) still trigger the heuristic's
@@ -634,10 +655,20 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
 
         // Preserve any trailing flags the operator supplied
         // (--logger trx, --verbosity minimal, etc.) — they live
-        // in tokens[2..]; explicit project / --filter overrides
-        // were already caught by HasOperatorOverrideArgs.
+        // in tokens[2..]. SKIP the positional project / solution /
+        // traversal entry (build.proj / dirs.proj / *.csproj / *.sln):
+        // Roslyn just REPLACED it with the impacted-project list above,
+        // so re-appending it would re-run the whole traversal and defeat
+        // the narrowing. Explicit *.csproj / *.sln overrides are already
+        // short-circuited by HasOperatorOverrideArgs, but a traversal
+        // *.proj is NOT an override (it's the normal sln-less entry point
+        // on the FRP `update` repo) and must be dropped here — without
+        // this, `dotnet test build.proj --filter "TestCategory!~…"`
+        // narrowed to `dotnet test {impacted.csproj} build.proj …` and
+        // ran everything anyway.
         for (var i = 2; i < tokens.Length; i++)
         {
+            if (IsProjectLikeArg(tokens[i])) continue;
             sb.Append(' ');
             sb.Append(QuoteIfNeeded(tokens[i]));
         }
@@ -665,6 +696,19 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
     }
 
     // ── Shared helpers ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// True when the token is a positional project / solution / traversal file
+    /// (the entry point Roslyn replaces with the impacted-project list). Used to
+    /// drop it from the rewritten command's trailing passthrough so narrowing
+    /// isn't defeated by re-running the original entry point.
+    /// </summary>
+    private static bool IsProjectLikeArg(string token) =>
+        token.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+        || token.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+        || token.EndsWith(".slnf", StringComparison.OrdinalIgnoreCase)
+        || token.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+        || token.EndsWith(".proj", StringComparison.OrdinalIgnoreCase);
 
     private static bool HasOperatorOverrideArgs(string[] tokens)
     {

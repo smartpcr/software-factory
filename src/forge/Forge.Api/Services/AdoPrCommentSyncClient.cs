@@ -99,6 +99,30 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
 
         using var prDoc = JsonDocument.Parse(await prResp.Content.ReadAsStringAsync(ct));
         var rawState = prDoc.RootElement.TryGetProperty("status", out var s) ? s.GetString() ?? "active" : "active";
+
+        // 2026-05-26 — ADO's status="completed" covers BOTH "successfully merged" AND
+        // "closed without merge" (operator clicks "Mark as complete" / "Override and complete"
+        // without producing a merge). PrSyncJob blindly maps "completed" → Col="merged",
+        // which fires the merged-PR shortcut in WorkstreamsEndpoints.Retry and makes the
+        // workstream report complete despite zero actual code on the target branch
+        // (observed 2026-05-26 on update/1.3 PR #15864663 and common-infra/1.3 PR #15874434
+        // — both showed status=completed with lastMergeCommit=null, work files still in
+        // worktree untracked, branch HEAD identical to base HEAD, Forge UI marked DONE).
+        // Real merges populate lastMergeCommit.commitId; closed-without-merge leaves it null.
+        // Mirror the GitHub client's "closed + merged_at=null" → "abandoned" handling so
+        // the canonical state, Col, and IsActive all reflect reality.
+        var hasMergeCommit = prDoc.RootElement.TryGetProperty("lastMergeCommit", out var lmc)
+            && lmc.ValueKind == JsonValueKind.Object
+            && lmc.TryGetProperty("commitId", out var cid)
+            && cid.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(cid.GetString());
+        if (string.Equals(rawState, "completed", StringComparison.OrdinalIgnoreCase) && !hasMergeCommit)
+        {
+            this.logger.LogInformation(
+                "ADO PR sync: PR={Pr} reports status=completed but lastMergeCommit is null — treating as abandoned (closed without merge).",
+                pr.Id);
+            rawState = "abandoned";
+        }
         var canonical = PrSyncJob.MapUpstreamState("ado", rawState);
 
         // Capture base + source so the local PrRow.Base / .Branch tracks

@@ -87,4 +87,61 @@ public class GateExcludeFilterTests
             "dotnet test Foo.csproj --filter \"(FullyQualifiedName~A)&(" + Exclude + ")\" --logger trx",
             result);
     }
+
+    // ── SplitStandingFilter (2026-05-26) ─────────────────────────────────
+    // Pulls a repo's STANDING --filter off the command before impacted-test
+    // resolution (every provider treats a bare --filter as an operator pin
+    // and refuses to narrow), to be AND-merged back via ApplyTestExcludeFilter
+    // afterward. This is what lets the native Roslyn provider narrow repos
+    // like `update` (standing `TestCategory!~…` exclude) instead of leaning on
+    // the flaky csharp-ls LSP server.
+
+    [Fact]
+    public void Split_ExtractsQuotedFilter_AndStripsIt()
+    {
+        var (cmd, filter) = CrewStoryArtifactStrategy.SplitStandingFilter(
+            "dotnet test build.proj --filter \"TestCategory!~CTQ&TestCategory!~Env\"");
+        Assert.Equal("dotnet test build.proj", cmd);
+        Assert.Equal("TestCategory!~CTQ&TestCategory!~Env", filter);
+    }
+
+    [Fact]
+    public void Split_NoFilter_ReturnsNull()
+    {
+        var (cmd, filter) = CrewStoryArtifactStrategy.SplitStandingFilter("dotnet test build.proj");
+        Assert.Equal("dotnet test build.proj", cmd);
+        Assert.Null(filter);
+    }
+
+    [Theory]
+    [InlineData("cargo test --filter foo")]
+    [InlineData("go test ./... -run X")]
+    public void Split_NonDotnet_IsNoOp(string cmd)
+    {
+        // Don't strip a non-.NET command's --filter — ApplyTestExcludeFilter
+        // (the re-merge) only touches `dotnet test`, so stripping here would
+        // silently drop it.
+        var (outCmd, filter) = CrewStoryArtifactStrategy.SplitStandingFilter(cmd);
+        Assert.Equal(cmd, outCmd);
+        Assert.Null(filter);
+    }
+
+    [Fact]
+    public void SplitThenRemerge_ComposesNarrowedCommandWithStandingFilter()
+    {
+        // End-to-end of the call-site flow: strip the standing category filter,
+        // (resolver narrows the now-clean command to a method-level --filter),
+        // then re-merge → the standing exclude AND-composes with the narrowing.
+        var (baseCmd, standing) = CrewStoryArtifactStrategy.SplitStandingFilter(
+            "dotnet test build.proj --filter \"TestCategory!~CTQ\"");
+        Assert.Equal("dotnet test build.proj", baseCmd);
+
+        // What Roslyn would produce from the filter-free command:
+        const string narrowed = "dotnet test tests/Widget.Tests.csproj --filter \"FullyQualifiedName~MyApp.WidgetTests.Total\"";
+        var final = CrewStoryArtifactStrategy.ApplyTestExcludeFilter(narrowed, standing);
+
+        Assert.Equal(
+            "dotnet test tests/Widget.Tests.csproj --filter \"(FullyQualifiedName~MyApp.WidgetTests.Total)&(TestCategory!~CTQ)\"",
+            final);
+    }
 }

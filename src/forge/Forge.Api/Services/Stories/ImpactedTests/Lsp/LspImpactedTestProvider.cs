@@ -92,12 +92,21 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
 
     /// <summary>
     /// Default-wired with the language supports in priority order
-    /// (Rust, Go, Python, TypeScript, C#). C# (csharp-ls) lets the LSP
-    /// path narrow C# repos too, so every ecosystem flows through the
-    /// SAME provider. Per-workspace language selection is by the shared
-    /// <see cref="WorkspaceEcosystemDetector"/> (then marker probe), so a
-    /// stray C# project in a Go repo doesn't mis-route. Tests construct
-    /// with a custom set when they want to pin a specific support.
+    /// (Rust, Go, Python, TypeScript). Per-workspace language selection is by
+    /// the shared <see cref="WorkspaceEcosystemDetector"/> (then marker probe),
+    /// so a stray file of one language in another's repo doesn't mis-route.
+    /// Tests construct with a custom set when they want to pin a specific
+    /// support (including <c>CSharpLanguageSupport</c>).
+    ///
+    /// <para>2026-05-26 — <c>CSharpLanguageSupport</c> (csharp-ls) was REMOVED
+    /// from the default chain. C# is handled by the native in-process
+    /// <see cref="Roslyn.RoslynImpactedTestProvider"/> (now first in the chain),
+    /// with the filename heuristic as fall-through for repos Roslyn can't load
+    /// (e.g. .NET Framework / net472). csharp-ls was hang-prone on large
+    /// solutions — it wedged a workstream for hours on a `textDocument/references`
+    /// that never returned — and for repos that fall through Roslyn it only added
+    /// up to a 180s timeout of wasted wall-clock before the heuristic. It stays
+    /// available for explicit test wiring but is no longer auto-spawned.</para>
     /// </summary>
     public LspImpactedTestProvider()
         : this(new ILspLanguageSupport[]
@@ -106,7 +115,6 @@ public sealed class LspImpactedTestProvider : IImpactedTestProvider, IAsyncDispo
             new Languages.GoLanguageSupport(),
             new Languages.PythonLanguageSupport(),
             new Languages.TypeScriptLanguageSupport(),
-            new Languages.CSharpLanguageSupport(),
         })
     {
     }

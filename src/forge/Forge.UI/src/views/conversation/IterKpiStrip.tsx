@@ -36,6 +36,13 @@ export interface IterKpi {
   cacheWriteTokens?: number | null;
   reasoningTokens?: number | null;
   conversationTokens?: number | null;
+  // 2026-05-26 — impacted-test resolution wall-clock (ms) for this iter:
+  // the in-process phase between the build gate passing and the test
+  // command running. A hung language server here stranded a workstream
+  // for hours with no visible signal; surfacing it as a sparkline makes
+  // a slow/runaway resolve obvious. Null when resolution didn't run
+  // (disabled) or on legacy rows pre-dating the resolve telemetry events.
+  resolveMs?: number | null;
 }
 
 interface Props {
@@ -105,6 +112,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
   // the badge).
   const cachePcts = useMemo(() => iters.map((i) => cacheHitPercent(i) ?? 0), [iters]);
   const hasAnyCacheData = useMemo(() => iters.some((i) => cacheHitPercent(i) !== null), [iters]);
+  // 2026-05-26 — impacted-test resolve duration trend. Only rendered when at
+  // least one iter reported it (so legacy/older workstreams render unchanged).
+  // A spike here is the signature of a slow/hung resolver (e.g. a wedged LSP
+  // server) — now visible at a glance instead of needing a heap dump.
+  const resolveMsVals = useMemo(() => iters.map((i) => i.resolveMs ?? 0), [iters]);
+  const hasAnyResolveData = useMemo(() => iters.some((i) => i.resolveMs != null), [iters]);
+  const sparkRowCount = 5 + (hasAnyCacheData ? 1 : 0) + (hasAnyResolveData ? 1 : 0);
 
   return (
     <div
@@ -225,7 +239,7 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
       <div
         style={{
           display: 'grid',
-          gridTemplateRows: `repeat(${hasAnyCacheData ? 6 : 5}, 1fr)`,
+          gridTemplateRows: `repeat(${sparkRowCount}, 1fr)`,
           gap: 1,
           alignItems: 'center',
           fontSize: 10,
@@ -238,6 +252,9 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
         <SparkRow label="cost"  values={costs}       format={(v) => `$${v.toFixed(2)}`} stroke="var(--sc-green, #6ee7b7)" />
         <SparkRow label="files" values={files}       format={(v) => `${v}f`} stroke="var(--sc-purple, #c4b5fd)" />
         <SparkRow label="dur"   values={durations}   format={formatDurationMs} stroke="var(--text-tertiary, #8d94a3)" />
+        {hasAnyResolveData && (
+          <SparkRow label="resolve" values={resolveMsVals} format={formatDurationMs} stroke="var(--sc-orange, #fb923c)" />
+        )}
         {hasAnyCacheData && (
           <SparkRow label="cache" values={cachePcts} format={(v) => `${Math.round(v)}%`} stroke="var(--sc-blue, #60a5fa)" />
         )}
@@ -351,6 +368,9 @@ function buildChipTitle(it: IterKpi): string {
     lines.push('⚠ no changes delivered — generator produced 0 files (likely timed out); auto-retried');
   }
   lines.push(`cost: $${it.costUsd.toFixed(3)} · ${it.filesChanged} files · ${formatDuration(it.durationMs)}`);
+  if (it.resolveMs != null) {
+    lines.push(`impacted-test resolve: ${formatDuration(it.resolveMs)}`);
+  }
   lines.push(`input: ${formatTokens(it.inputTokens)} fresh + ${formatTokens(it.outputTokens)} output`);
   if (it.cacheReadTokens != null || it.cacheWriteTokens != null) {
     const r = it.cacheReadTokens ?? 0;

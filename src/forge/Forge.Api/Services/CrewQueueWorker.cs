@@ -1689,6 +1689,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // See DeliverableLoop.cs FailureReason short-circuit and
                 // GeneratorFailureKinds.Classify for the receiving end.
                 string? failureReason = null;
+                // Phase 88 -- tool-call counter for the DeliverableLoop
+                // refusal guard (zero tool calls + refusal-like text
+                // triggers immediate sloppy/agent-refusal exit instead of
+                // burning a full iter-cap window).
+                long toolCallCount = 0;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -1741,6 +1746,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
                     {
                         failureReason = evt.Error;
+                    }
+                    // Phase 88 — tool-call counter for the refusal guard.
+                    if (evt.Kind == AgentEventKind.ToolCall)
+                    {
+                        toolCallCount++;
                     }
                 }
 
@@ -1812,7 +1822,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     CacheWriteTokens: cacheWriteTok > 0 ? cacheWriteTok : null,
                     ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
                     ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
-                    SessionId: capturedSessionId);
+                    SessionId: capturedSessionId,
+                    ToolCallCount: toolCallCount);
             }
 
             // Evaluator delegate: invokes the evaluator agent for critical review.

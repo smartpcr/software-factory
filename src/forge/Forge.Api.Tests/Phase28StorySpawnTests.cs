@@ -1063,6 +1063,164 @@ public class Phase28StorySpawnTests
         finally { f.Dispose(); }
     }
 
+    /// <summary>
+    /// 2026-05-26 — branch already merged externally (operator hit Merge on
+    /// GitHub before our review crew reached <c>ApproveAndMergeAsync</c>).
+    /// Before this fix:
+    /// <c>BranchHasChangesVsBaseAsync</c> ran <c>git diff --quiet base...branch</c>
+    /// (three-dot, asymmetric). Once branch was merged into base, the
+    /// merge-base collapsed to the branch's tip, so the diff was empty and
+    /// the orchestrator misclassified the workstream as "empty PR — fix
+    /// your .gitignore", writing a misleading <c>StallReason</c> and
+    /// pinning <c>w.Status="stalled"</c> until operator-Restart.
+    /// <para>
+    /// This test seeds the race exactly: <c>PrRow.Col="review"</c> (PrSyncJob
+    /// has NOT yet observed the upstream merge — PrSyncJob runs on a 2-hour
+    /// cadence and is reset by every Forge.Api restart, so this window can
+    /// stretch indefinitely in practice). The branch is "already merged"
+    /// from git's perspective via <see cref="InMemoryStoryGitOps.MarkBranchMergedIntoBase"/>.
+    /// Drives once and asserts: NOT stalled (no <c>.gitignore</c> in
+    /// StallReason), <c>PrRow.Col</c> reconciled to "merged" locally so the
+    /// orchestrator's <c>merging → complete</c> advance can fire on the
+    /// next tick without waiting for PrSyncJob.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Review_Branch_Already_Merged_Externally_Reconciles_Without_Stalling()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-50143", "external-race");
+            await SpawnAsync(c, "WI-50143");
+            await SetPlanPrAsync(f, "WI-50143", "pr-plan-143", "merged");
+            await SeedAllPlanDocsPassedAsync(f, "WI-50143");
+            await c.PatchAsync("/api/stories/WI-50143/spawn/phase",
+                JsonContent.Create(new { targetPhase = "decompose" }, options: JsonOpts));
+            await c.PostAsJsonAsync("/api/stories/WI-50143/spawn/decompose", new
+            {
+                workstreams = new[] { new { title = "ws1" } },
+            }, JsonOpts);
+            await c.PostAsync("/api/stories/WI-50143/spawn/decompose/approve", null);
+            await c.PatchAsync("/api/stories/WI-50143/spawn/phase",
+                JsonContent.Create(new { targetPhase = "implement" }, options: JsonOpts));
+
+            // Seed the race: ws is at "review" with a PR that is STILL
+            // Col="review" (PrSyncJob hasn't observed the upstream merge
+            // yet — this is the exact window the bug fires in). The
+            // workstream branch is recorded as already-merged in
+            // InMemoryStoryGitOps so BranchHasChangesVsBaseAsync returns
+            // false (mirroring the real git triple-dot semantics) AND
+            // IsBranchAlreadyMergedIntoBaseAsync returns true.
+            const string wsId = "ws-wi-50143-ws1";
+            const string prId = "pr-ws1-143";
+            string wsBranch;
+            string baseBranch;
+            using (var scope = f.Services.CreateScope())
+            {
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var spawn = await db.StorySpawns.FirstAsync(s => s.StoryId == "WI-50143");
+                baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+                var ws = await db.Workstreams.FirstAsync(w => w.Id == wsId);
+                ws.Status = "review";
+                ws.PrsJson = JsonSerializer.Serialize(new[] { prId });
+                wsBranch = ws.Branch;
+                db.Prs.Add(new PrRow
+                {
+                    Id = prId,
+                    // CRITICAL: still "review" here. The fix ensures
+                    // ApproveAndMergeAsync reconciles this to "merged"
+                    // when it detects the branch is already an ancestor
+                    // of base.
+                    Col = "review",
+                    IsActive = true,
+                    Branch = ws.Branch,
+                    Base = baseBranch,
+                    Title = $"[impl] {ws.Name}",
+                    Workstream = wsId,
+                });
+                // Seed a resolved PrComment so DriveReviewAsync's Step 1
+                // (allComments.Count == 0 → invoke reviewer) is skipped
+                // and Step 3 (ApproveAndMergeAsync) fires directly. The
+                // deterministic strategy would post a fresh comment that
+                // queues the row in fixNeeded — not the path under test.
+                db.PrComments.Add(new PrCommentRow
+                {
+                    PrId = prId,
+                    ProviderCommentId = "seed-1",
+                    ThreadId = "seed-thread-1",
+                    AuthorId = "seed",
+                    AuthorKind = "agent",
+                    Body = "seeded resolved comment",
+                    State = "resolved",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                await control.SaveChangesAsync(); await db.SaveChangesAsync();
+            }
+
+            // Simulate the external merge in the git fake. After this,
+            // BranchHasChangesVsBaseAsync returns false (no diff vs base)
+            // AND IsBranchAlreadyMergedIntoBaseAsync returns true — the
+            // exact signal pair RealStoryGitOps would report when the
+            // operator merged on GitHub.
+            var git = (InMemoryStoryGitOps)f.Services.GetRequiredService<IStoryGitOps>();
+            git.MarkBranchMergedIntoBase(repo: null, branch: wsBranch, baseBranch: baseBranch);
+
+            await c.PatchAsync("/api/stories/WI-50143/spawn/phase",
+                JsonContent.Create(new { targetPhase = "review" }, options: JsonOpts));
+
+            // Drive once — DriveReviewAsync Step 3 → ApproveAndMergeAsync
+            // → branch has no diff → IsBranchAlreadyMergedIntoBaseAsync
+            // returns true → reconcile PrRow.Col="merged" → return →
+            // caller sets w.Status="merging". NO StallForEmptyMergeAsync.
+            using (var scope = f.Services.CreateScope())
+            {
+                var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync("WI-50143");
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+                // The whole point: must NOT be stalled. Pre-fix the
+                // status went straight to "stalled" with the misleading
+                // .gitignore StallReason.
+                Assert.NotEqual("stalled", reload.Status);
+                Assert.Null(reload.StallReason);
+                // Local PR cache reconciled — proves
+                // IsBranchAlreadyMergedIntoBaseAsync was consulted and
+                // its true result flipped Col="merged" without waiting
+                // for PrSyncJob's 2h sweep.
+                var pr = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == prId);
+                Assert.Equal("merged", pr.Col);
+                Assert.False(pr.IsActive);
+                // After the reconciliation the workstream is at
+                // "merging"; the merging→complete advance fires on the
+                // next tick.
+                Assert.Equal("merging", reload.Status);
+            }
+
+            // Drive again — merging → complete now that PrRow.Col is
+            // "merged" (set by ApproveAndMergeAsync's reconciliation).
+            using (var scope = f.Services.CreateScope())
+            {
+                var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync("WI-50143");
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var reload = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+                Assert.Equal("complete", reload.Status);
+            }
+        }
+        finally { f.Dispose(); }
+    }
+
     // -----------------------------------------------------------------------
     // 28.7 — QA phase
     // -----------------------------------------------------------------------

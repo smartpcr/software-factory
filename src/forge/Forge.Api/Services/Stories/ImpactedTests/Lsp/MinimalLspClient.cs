@@ -191,6 +191,21 @@ public sealed class MinimalLspClient : IAsyncDisposable
     /// LSP method name (<c>"textDocument/references"</c>) + the
     /// params object.
     /// </summary>
+    /// <summary>
+    /// Backstop per-request timeout. The response is delivered by
+    /// <see cref="PumpReadLoopAsync"/> completing the pending
+    /// <see cref="TaskCompletionSource{JsonNode}"/>; if the server accepts the
+    /// request but never answers, the await below would otherwise block until the
+    /// caller's token cancels — and on the test-gate path that token historically
+    /// carried no deadline, so the iteration wedged forever (root cause noted on
+    /// <see cref="ImpactedTestResolverChain"/>). This deadline guarantees a hung
+    /// request surfaces as an <see cref="LspProtocolException"/> (a soft failure the
+    /// provider/chain catch and fall through on) regardless of the caller's token.
+    /// The <see cref="ImpactedTestResolverChain"/> applies its own coarser
+    /// per-provider budget on top; this is the finer-grained inner guard.
+    /// </summary>
+    public static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(120);
+
     public async Task<JsonNode?> RequestAsync(string method, JsonNode? @params, CancellationToken ct = default)
     {
         this.ThrowIfDisposed();
@@ -208,8 +223,29 @@ public sealed class MinimalLspClient : IAsyncDisposable
 
         this.WriteMessage(envelope);
 
-        using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
-        return await tcs.Task.ConfigureAwait(false);
+        // Link the caller's token with an independent per-request deadline so a
+        // silent server can't strand us. Distinguish OUR timeout (→ throw a soft
+        // LspProtocolException the provider treats as a fall-through) from the
+        // caller cancelling (→ propagate OperationCanceledException).
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(DefaultRequestTimeout);
+        using var reg = timeoutCts.Token.Register(() => tcs.TrySetCanceled(timeoutCts.Token));
+        try
+        {
+            return await tcs.Task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new LspProtocolException(
+                $"LSP request '{method}' (id {id}) timed out after {DefaultRequestTimeout.TotalSeconds:0}s — "
+                + "the language server accepted the request but never responded.");
+        }
+        finally
+        {
+            // Don't leak the pending entry when we cancel/timeout (the read pump
+            // only removes it on a matching response, which will never arrive here).
+            this.pending.TryRemove(id, out _);
+        }
     }
 
     /// <summary>

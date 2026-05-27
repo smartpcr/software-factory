@@ -1,0 +1,117 @@
+// -----------------------------------------------------------------------
+// <copyright file="AnalyzerOnlyBuildPropsDiffTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Tests;
+
+using Forge.Api.Services.Stories;
+using Xunit;
+
+/// <summary>
+/// 2026-05-26 — contract for <see cref="ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff"/>,
+/// which decides whether a Directory.Build.props/.targets change is build-time-only
+/// (analyzer wiring → safe to NOT force the whole test suite). The classifier must be
+/// CONSERVATIVE: only a purely-additive, analyzer/diagnostics-only diff is neutral;
+/// anything else stays whole-suite. Getting this wrong skips tests that should run, so
+/// the negative cases matter most.
+/// </summary>
+public class AnalyzerOnlyBuildPropsDiffTests
+{
+    // Mirrors the real common-infra stage-1.3 banned-api-analyzer wiring diff:
+    // an additive Choose/When block + comment + analyzer PackageReference +
+    // WarningsAsErrors + AdditionalFiles. Should be classified analyzer-only.
+    private const string AnalyzerWiringDiff = @"diff --git a/Directory.Build.props b/Directory.Build.props
+index 7cf201af5..1c627bc73 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -143,4 +143,40 @@
+ 	</Target>
+
++  <!--
++  Banned-API analyzer wiring (story local:HTTP-MEMORY, Stage 1.3).
++  Attaches Microsoft.CodeAnalysis.BannedApiAnalyzers to src\Http and src\WebLayer.
++  -->
++  <Choose>
++    <When Condition=""$(MSBuildProjectExtension) == '.csproj'"">
++      <ItemGroup>
++        <PackageReference Include=""Microsoft.CodeAnalysis.BannedApiAnalyzers"" />
++        <AdditionalFiles Include=""$(SRCROOT)\Http\BannedSymbols.txt"" />
++      </ItemGroup>
++      <PropertyGroup>
++        <WarningsAsErrors>$(WarningsAsErrors);RS0030</WarningsAsErrors>
++      </PropertyGroup>
++    </When>
++  </Choose>
+";
+
+    [Fact]
+    public void RealAnalyzerWiringDiff_IsNeutral()
+    {
+        Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(AnalyzerWiringDiff));
+    }
+
+    [Fact]
+    public void EmptyOrNullDiff_IsNotNeutral()
+    {
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(null));
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(""));
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff("   "));
+    }
+
+    [Fact]
+    public void TargetFrameworkChange_IsNotNeutral()
+    {
+        const string diff = @"@@ -1,1 +1,2 @@
++  <PropertyGroup>
++    <TargetFramework>net9.0</TargetFramework>
++  </PropertyGroup>";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
+    [Fact]
+    public void DefineConstantsChange_IsNotNeutral()
+    {
+        const string diff = "@@ -1 +1 @@\n+    <DefineConstants>$(DefineConstants);FEATURE_X</DefineConstants>";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
+    [Fact]
+    public void NonAnalyzerPackageReference_IsNotNeutral()
+    {
+        // Adding a real (non-analyzer) dependency can change runtime behaviour.
+        const string diff = "@@ -1 +1 @@\n+    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
+    [Fact]
+    public void RemovedOrModifiedLine_IsNotNeutral()
+    {
+        // A modification (remove + add) to existing build config — can't prove neutral.
+        const string diff = @"@@ -10,2 +10,2 @@
+-    <WarningsAsErrors>RS0030</WarningsAsErrors>
++    <WarningsAsErrors>RS0030;CS1591</WarningsAsErrors>";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
+    [Fact]
+    public void AdditiveButNoAnalyzerMarker_IsNotNeutral()
+    {
+        // Purely structural additions with no analyzer marker → not provably neutral.
+        const string diff = "@@ -1 +1 @@\n+  <ItemGroup>\n+  </ItemGroup>";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
+    [Fact]
+    public void CommentMentioningTargetFramework_StaysNeutral()
+    {
+        // A compilation keyword INSIDE an XML comment must not flip the verdict.
+        const string diff = @"@@ -1 +1 @@
++  <!-- bumps nothing; do not confuse with a <TargetFramework> change -->
++  <ItemGroup>
++    <AdditionalFiles Include=""BannedSymbols.txt"" />
++  </ItemGroup>";
+        Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+}
