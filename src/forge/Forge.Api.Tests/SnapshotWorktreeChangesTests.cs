@@ -160,6 +160,54 @@ public class SnapshotWorktreeChangesTests : IDisposable
         Assert.Null(snap);
     }
 
+    [Fact]
+    public async Task MergedPrDiff_Uses_ProviderMergeRange_For_FastForwardMerge()
+    {
+        var baseSha = GitOut("rev-parse", "HEAD");
+        Run("checkout", "-b", "ws/ff-pr");
+        File.WriteAllText(Path.Combine(this.repoDir, "first.txt"), "first");
+        Run("add", ".");
+        Run("commit", "-m", "first change");
+        File.WriteAllText(Path.Combine(this.repoDir, "second.txt"), "second");
+        Run("add", ".");
+        Run("commit", "-m", "second change");
+        var headSha = GitOut("rev-parse", "HEAD");
+
+        Run("checkout", "main");
+        Run("merge", "--ff-only", "ws/ff-pr");
+
+        var paths = await this.git.GetChangedFilesFromMergedPrAsync(
+            repo: null,
+            worktreePath: this.repoDir,
+            mergeCommitSha: headSha,
+            mergeBaseSha: baseSha,
+            mergeHeadSha: headSha,
+            ct: CancellationToken.None);
+
+        Assert.Equal(new[] { "first.txt", "second.txt" }, paths.OrderBy(p => p, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task MergedPrDiff_Falls_Back_To_FirstParent_For_MergeCommit()
+    {
+        Run("checkout", "-b", "ws/no-ff-pr");
+        File.WriteAllText(Path.Combine(this.repoDir, "feature.txt"), "feature");
+        Run("add", ".");
+        Run("commit", "-m", "feature change");
+
+        Run("checkout", "main");
+        Run("merge", "--no-ff", "ws/no-ff-pr", "-m", "merge feature");
+        var mergeSha = GitOut("rev-parse", "HEAD");
+
+        var paths = await this.git.GetChangedFilesFromMergedPrAsync(
+            repo: null,
+            worktreePath: this.repoDir,
+            mergeCommitSha: mergeSha,
+            ct: CancellationToken.None);
+
+        Assert.Equal(new[] { "feature.txt" }, paths);
+    }
+
     private void Run(params string[] args)
     {
         var psi = new ProcessStartInfo("git")
@@ -177,5 +225,26 @@ public class SnapshotWorktreeChangesTests : IDisposable
             throw new InvalidOperationException(
                 $"git {string.Join(' ', args)} exited {p.ExitCode}: {p.StandardError.ReadToEnd()}");
         }
+    }
+
+    private string GitOut(params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = this.repoDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        p.WaitForExit(10_000);
+        if (p.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git {string.Join(' ', args)} exited {p.ExitCode}: {p.StandardError.ReadToEnd()}");
+        }
+
+        return p.StandardOutput.ReadToEnd().Trim();
     }
 }

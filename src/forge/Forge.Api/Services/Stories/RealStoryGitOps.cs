@@ -1724,6 +1724,147 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <inheritdoc/>
+    public async Task<IReadOnlyList<string>> GetChangedFilesFromMergedPrAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string? mergeCommitSha,
+        string? mergeBaseSha = null,
+        string? mergeHeadSha = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return Array.Empty<string>();
+        }
+
+        // Preferred path: provider-captured source/target tips from merge
+        // time. This covers merge commits, squash merges, and rebase/FF
+        // merges where "parent..mergeCommit" would only show the last PR
+        // commit.
+        var rangePaths = await this.DiffResolvedRangeAsync(
+            worktreePath, mergeBaseSha, mergeHeadSha, ct);
+        if (rangePaths.Count > 0)
+        {
+            return rangePaths;
+        }
+
+        // Fallback: diff the merge/squash commit against its first parent.
+        // If the provider did not persist a SHA yet, HEAD is still useful for
+        // the common recovery case where the worktree is parked directly on
+        // the base-branch merge commit.
+        var commit = await this.ResolveCommitishAsync(worktreePath, mergeCommitSha, ct);
+        if (string.IsNullOrEmpty(commit) && string.IsNullOrWhiteSpace(mergeCommitSha))
+        {
+            commit = await this.ResolveCommitishAsync(worktreePath, "HEAD", ct);
+        }
+        if (string.IsNullOrEmpty(commit))
+        {
+            return Array.Empty<string>();
+        }
+
+        var (parentsCode, parentsOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "rev-list", "--parents", "-n", "1", commit);
+        if (parentsCode != 0 || string.IsNullOrWhiteSpace(parentsOut))
+        {
+            return Array.Empty<string>();
+        }
+
+        var parts = parentsOut.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            return Array.Empty<string>();
+        }
+
+        return await this.DiffNameOnlyAsync(worktreePath, parts[1], parts[0], ct);
+    }
+
+    private async Task<IReadOnlyList<string>> DiffResolvedRangeAsync(
+        string worktreePath,
+        string? baseSha,
+        string? headSha,
+        CancellationToken ct)
+    {
+        var baseCommit = await this.ResolveCommitishAsync(worktreePath, baseSha, ct);
+        var headCommit = await this.ResolveCommitishAsync(worktreePath, headSha, ct);
+        if (string.IsNullOrEmpty(baseCommit) || string.IsNullOrEmpty(headCommit)
+            || string.Equals(baseCommit, headCommit, StringComparison.OrdinalIgnoreCase))
+        {
+            return Array.Empty<string>();
+        }
+
+        return await this.DiffNameOnlyAsync(worktreePath, baseCommit, headCommit, ct);
+    }
+
+    private async Task<string?> ResolveCommitishAsync(
+        string worktreePath,
+        string? commitish,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(commitish))
+        {
+            return null;
+        }
+
+        var trimmed = commitish.Trim();
+        var (code, stdout, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "rev-parse", "--verify", $"{trimmed}^{{commit}}");
+        if (code == 0 && !string.IsNullOrWhiteSpace(stdout))
+        {
+            return stdout.Trim();
+        }
+
+        if (LooksLikeSha(trimmed))
+        {
+            await this.RunGitCaptureAsync(worktreePath, ct, "fetch", "--no-tags", "origin", trimmed);
+            (code, stdout, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "rev-parse", "--verify", $"{trimmed}^{{commit}}");
+            if (code == 0 && !string.IsNullOrWhiteSpace(stdout))
+            {
+                return stdout.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<IReadOnlyList<string>> DiffNameOnlyAsync(
+        string worktreePath,
+        string baseCommit,
+        string headCommit,
+        CancellationToken ct)
+    {
+        var ordered = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
+            worktreePath, ct, "diff", "--name-only", "--diff-filter=ACMRT", "-z", $"{baseCommit}..{headCommit}");
+        if (diffCode != 0 || string.IsNullOrEmpty(diffOut))
+        {
+            return ordered;
+        }
+
+        foreach (var entry in diffOut.Split('\0'))
+        {
+            if (string.IsNullOrEmpty(entry)) continue;
+            if (entry.Contains("..", StringComparison.Ordinal)) continue;
+            var norm = entry.Replace('\\', '/');
+            if (IsBuildArtifactPath(norm)) continue;
+            if (seen.Add(norm)) ordered.Add(norm);
+        }
+
+        return ordered;
+    }
+
+    private static bool LooksLikeSha(string value)
+    {
+        if (value.Length is < 7 or > 64) return false;
+        foreach (var ch in value)
+        {
+            if (!Uri.IsHexDigit(ch)) return false;
+        }
+        return true;
+    }
+
+    /// <inheritdoc/>
     public async Task<IterCommitSnapshot?> SnapshotBranchHeadAsync(
         RepoRow? repo,
         string branch,

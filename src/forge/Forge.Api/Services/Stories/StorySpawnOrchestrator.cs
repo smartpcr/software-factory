@@ -2418,6 +2418,44 @@ public sealed class StorySpawnOrchestrator
                     lastIter = npe.LastIteration,
                 }, CancellationToken.None);
             }
+            catch (SloppyVerdictException sve)
+            {
+                this.logger?.LogWarning(sve,
+                    "Workstream {WsId} impl produced sloppy verdict; parking for reassignment. reason={SloppyReason} iterations={Iterations} finalScore={FinalScore}",
+                    item.ws.Id, sve.SloppyReason, sve.Iterations, sve.FinalScore);
+
+                var parkedForReassign = false;
+                using (var sloppyScope = this.services.CreateScope())
+                {
+                    var sloppyControl = sloppyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                    var sloppyDb = sloppyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                    var sloppyRow = await sloppyDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == item.ws.Id, CancellationToken.None);
+                    if (sloppyRow is not null)
+                    {
+                        await this.TryRouteToSloppyReassignAsync(
+                            sloppyControl,
+                            sloppyDb,
+                            sloppyRow,
+                            consecutiveNoProgress: 0,
+                            CancellationToken.None,
+                            $"impl sloppy verdict ({sve.SloppyReason ?? "unknown"}); routing to SloppyReassignmentReconciler");
+                        parkedForReassign = true;
+                    }
+                }
+
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = nameof(SloppyVerdictException),
+                    message = sve.Message,
+                    sloppyReason = sve.SloppyReason,
+                    iterations = sve.Iterations,
+                    finalScore = sve.FinalScore,
+                    parkedForReassign,
+                }, CancellationToken.None);
+            }
             catch (BuildFailedException bfe)
             {
                 // Phase 47e — the build command rejected the engineer's diff.
@@ -2591,7 +2629,8 @@ public sealed class StorySpawnOrchestrator
         Forge.Api.Persistence.ProductDbContext db,
         Forge.Api.Persistence.WorkstreamRow w,
         int consecutiveNoProgress,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? reasonOverride = null)
     {
         var wiRow = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
         if (wiRow is null) return;
@@ -2655,7 +2694,7 @@ public sealed class StorySpawnOrchestrator
         {
             wsId = w.Id,
             consecutiveNoProgress,
-            reason = $"orchestrator re-spawn loop without new deliverables; routing to SloppyReassignmentReconciler ({consecutiveNoProgress} consecutive no-progress successes)",
+            reason = reasonOverride ?? $"orchestrator re-spawn loop without new deliverables; routing to SloppyReassignmentReconciler ({consecutiveNoProgress} consecutive no-progress successes)",
             priorPair = currentPair,
         }, ct);
     }

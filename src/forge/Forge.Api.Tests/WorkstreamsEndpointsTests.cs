@@ -282,6 +282,180 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         Assert.Contains("Original pass note.", deliverables[0].Notes);
     }
 
+    [Fact]
+    public async Task RetryWorkstream_MergedPrWithSloppyLatest_ActivatesInsteadOfCompleting()
+    {
+        const string wsId = "ws-retry-merged-sloppy";
+
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "retry-merged-sloppy", Branch = "ws/retry-merged-sloppy",
+                    Epic = "EPIC-RETRY", Status = "stalled", PrsJson = "[\"PR #retry-merged-sloppy\"]",
+                });
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active", Title = "retry-merged-sloppy",
+                    ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Live,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+                {
+                    WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                    EvaluatorAgentId = "eval-1", Iter = 1, Score = 0,
+                    Verdict = "sloppy",
+                    Notes = "REJECTED: Engineer produced ZERO file changes.",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Prs.Add(new Forge.Api.Persistence.PrRow
+                {
+                    Id = "PR #retry-merged-sloppy", Col = "merged", Epic = "EPIC-RETRY", EpicColor = "retry",
+                    Workstream = wsId, Base = "main", Branch = "ws/retry-merged-sloppy",
+                    Title = "retry merged sloppy",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("sloppy", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("active", body.GetProperty("status").GetString());
+
+        using var verifyScope = this.factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal("active", ws.Status);
+
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal(Forge.Api.Persistence.ExecutionStatuses.Queued, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task RetryWorkstream_FalseCompleteWithNonPassingLatest_Activates()
+    {
+        const string wsId = "ws-retry-false-complete-iterate";
+
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "retry-false-complete", Branch = "ws/retry-false-complete",
+                    Epic = "EPIC-RETRY", Status = "complete", PrsJson = "[]",
+                });
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active", Title = "retry-false-complete",
+                    ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Completed,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+                {
+                    WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                    EvaluatorAgentId = "eval-1", Iter = 1, Score = 0,
+                    Verdict = "iterate", FailureKind = "generator-timeout",
+                    Notes = "GENERATOR FAILED (generator-timeout): Copilot SDK hard timeout.",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Prs.Add(new Forge.Api.Persistence.PrRow
+                {
+                    Id = "PR #retry-false-complete", Col = "merged", Epic = "EPIC-RETRY", EpicColor = "retry",
+                    Workstream = wsId, Base = "main", Branch = "ws/retry-false-complete",
+                    Title = "retry false complete",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("iterate", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("active", body.GetProperty("status").GetString());
+
+        using var verifyScope = this.factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal("active", ws.Status);
+
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == wsId);
+        Assert.Equal(Forge.Api.Persistence.ExecutionStatuses.Queued, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task RetryWorkstream_MergedPrWithPassingLatest_CompletesWithoutDemoting()
+    {
+        const string wsId = "ws-retry-merged-pass";
+
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == wsId))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "retry-merged-pass", Branch = "ws/retry-merged-pass",
+                    Epic = "EPIC-RETRY", Status = "stalled", PrsJson = "[\"PR #retry-merged-pass\"]",
+                });
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active", Title = "retry-merged-pass",
+                    ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Live,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+                {
+                    WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                    EvaluatorAgentId = "eval-1", Iter = 2, Score = 95,
+                    Verdict = "pass",
+                    Notes = "Looks good.",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+                db.Prs.Add(new Forge.Api.Persistence.PrRow
+                {
+                    Id = "PR #retry-merged-pass", Col = "merged", Epic = "EPIC-RETRY", EpicColor = "retry",
+                    Workstream = wsId, Base = "main", Branch = "ws/retry-merged-pass",
+                    Title = "retry merged pass",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("pass", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("pass", body.GetProperty("newVerdict").GetString());
+        Assert.False(body.GetProperty("demoted").GetBoolean());
+        Assert.Equal("complete", body.GetProperty("status").GetString());
+
+        using var verifyScope = this.factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+        var deliverable = await verifyDb.Deliverables.AsNoTracking().SingleAsync(d => d.WorkItemId == wsId);
+        Assert.Equal("pass", deliverable.Verdict);
+        Assert.DoesNotContain("OPERATOR RECOVERY", deliverable.Notes);
+    }
+
     /// <summary>Retry against workstream with no deliverables → 400.</summary>
     [Fact]
     public async Task RetryWorkstream_NoDeliverables_Returns400()

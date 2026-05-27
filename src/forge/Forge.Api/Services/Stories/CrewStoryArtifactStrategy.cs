@@ -1447,6 +1447,108 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return $"/api/workstreams/{Uri.EscapeDataString(workItemId)}/logs/{logRelPath}";
     }
 
+    private async Task<(IReadOnlyList<string> Files, IReadOnlyList<string> PrIds)> GetMergedPrChangedFilesFallbackAsync(
+        string workItemId,
+        string workspace,
+        CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        var linkedPrIds = new List<string>();
+        var ws = await db.Workstreams.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => new { w.PrsJson })
+            .FirstOrDefaultAsync(ct);
+        if (!string.IsNullOrWhiteSpace(ws?.PrsJson))
+        {
+            try
+            {
+                linkedPrIds.AddRange(JsonSerializer.Deserialize<List<string>>(ws.PrsJson) ?? new List<string>());
+            }
+            catch (JsonException ex)
+            {
+                this.logger?.LogWarning(ex,
+                    "Merged-PR diff fallback: failed to parse Workstream.PrsJson for {WorkItemId}; falling back to PrRow.Workstream links.",
+                    workItemId);
+            }
+        }
+
+        var candidates = new Dictionary<string, PrRow>(StringComparer.OrdinalIgnoreCase);
+        var byWorkstream = await db.Prs.AsNoTracking()
+            .Where(p => p.Workstream == workItemId)
+            .ToListAsync(ct);
+        foreach (var pr in byWorkstream)
+        {
+            candidates[pr.Id] = pr;
+        }
+
+        if (linkedPrIds.Count > 0)
+        {
+            var distinctIds = linkedPrIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (distinctIds.Count > 0)
+            {
+                var byJson = await db.Prs.AsNoTracking()
+                    .Where(p => distinctIds.Contains(p.Id))
+                    .ToListAsync(ct);
+                foreach (var pr in byJson)
+                {
+                    candidates[pr.Id] = pr;
+                }
+            }
+        }
+
+        var orderedMerged = candidates.Values
+            .Where(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => p.UpdatedAt ?? p.LastSyncAt ?? p.CreatedAt ?? string.Empty)
+            .ToList();
+        if (orderedMerged.Count == 0)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>());
+        }
+
+        var files = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var prIds = new List<string>();
+        foreach (var pr in orderedMerged)
+        {
+            IReadOnlyList<string> prFiles;
+            try
+            {
+                prFiles = await this.git.GetChangedFilesFromMergedPrAsync(
+                    repo: null,
+                    worktreePath: workspace,
+                    mergeCommitSha: pr.MergeCommitSha,
+                    mergeBaseSha: pr.MergeBaseSha,
+                    mergeHeadSha: pr.MergeHeadSha,
+                    ct: ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "Merged-PR diff fallback failed for {WorkItemId} {PrId}; continuing with other linked merged PRs.",
+                    workItemId, pr.Id);
+                continue;
+            }
+
+            if (prFiles.Count == 0)
+            {
+                continue;
+            }
+
+            prIds.Add(pr.Id);
+            foreach (var path in prFiles)
+            {
+                if (seen.Add(path)) files.Add(path);
+            }
+        }
+
+        return (files, prIds);
+    }
+
     /// <summary>
     /// Phase 59 Stage A — resolve the effective impacted-test setting
     /// for a repo. Per-repo override wins; null falls through to the
@@ -6820,6 +6922,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             if (isImplPhase)
             {
                 IReadOnlyList<string> changedFiles;
+                IReadOnlyList<string> mergedPrIds = Array.Empty<string>();
                 try
                 {
                     // 2026-05-26 — diff against the merge target (testBaseRef ==
@@ -6849,6 +6952,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         "Empty-diff guard: GetChangedFilesAsync threw for {Workspace}; skipping evaluator diff injection.",
                         workspace);
                     changedFiles = Array.Empty<string>();
+                }
+
+                if (changedFiles.Count == 0)
+                {
+                    var mergedPrFallback = await this.GetMergedPrChangedFilesFallbackAsync(
+                        workItemId, workspace, iterCt);
+                    if (mergedPrFallback.Files.Count > 0)
+                    {
+                        changedFiles = mergedPrFallback.Files;
+                        mergedPrIds = mergedPrFallback.PrIds;
+                        await this.taskChannel.EmitAsync(workItemId, "task.eval.merged-pr-diff", new
+                        {
+                            iter,
+                            workspace,
+                            prIds = mergedPrIds,
+                            fileCount = changedFiles.Count,
+                            note = "Live branch-vs-base diff was empty, so evaluator will score the historical merged PR diff.",
+                        }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                    }
                 }
 
                 if (changedFiles.Count == 0)
@@ -6896,9 +7018,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     ? changedFiles.Take(MaxPathsInHeader).ToList()
                     : changedFiles;
                 var diffHeaderSb = new StringBuilder();
-                diffHeaderSb.AppendLine($"## Engineer changes — GROUND TRUTH (uncommitted `git status` + commits vs the PR base)");
+                if (mergedPrIds.Count > 0)
+                {
+                    diffHeaderSb.AppendLine("## Engineer changes — GROUND TRUTH (historical merged PR diff)");
+                    diffHeaderSb.AppendLine();
+                    diffHeaderSb.Append("The live branch-vs-base diff is empty because linked PR(s) ");
+                    diffHeaderSb.Append(string.Join(", ", mergedPrIds));
+                    diffHeaderSb.AppendLine(" are already merged. Score the code changes from that PR diff:");
+                }
+                else
+                {
+                    diffHeaderSb.AppendLine($"## Engineer changes — GROUND TRUTH (uncommitted `git status` + commits vs the PR base)");
+                    diffHeaderSb.AppendLine();
+                    diffHeaderSb.AppendLine($"The engineer's branch changes {changedFiles.Count} file(s) vs the merge target:");
+                }
                 diffHeaderSb.AppendLine();
-                diffHeaderSb.AppendLine($"The engineer's branch changes {changedFiles.Count} file(s) vs the merge target:");
+                diffHeaderSb.AppendLine($"{changedFiles.Count} file(s) changed:");
                 diffHeaderSb.AppendLine();
                 foreach (var p in displayList)
                 {

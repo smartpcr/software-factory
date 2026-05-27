@@ -111,11 +111,20 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         // Real merges populate lastMergeCommit.commitId; closed-without-merge leaves it null.
         // Mirror the GitHub client's "closed + merged_at=null" → "abandoned" handling so
         // the canonical state, Col, and IsActive all reflect reality.
-        var hasMergeCommit = prDoc.RootElement.TryGetProperty("lastMergeCommit", out var lmc)
-            && lmc.ValueKind == JsonValueKind.Object
-            && lmc.TryGetProperty("commitId", out var cid)
-            && cid.ValueKind == JsonValueKind.String
-            && !string.IsNullOrEmpty(cid.GetString());
+        static string? ReadCommitId(JsonElement root, string propertyName)
+        {
+            return root.TryGetProperty(propertyName, out var commit)
+                && commit.ValueKind == JsonValueKind.Object
+                && commit.TryGetProperty("commitId", out var commitId)
+                && commitId.ValueKind == JsonValueKind.String
+                ? commitId.GetString()
+                : null;
+        }
+
+        var mergeCommitSha = ReadCommitId(prDoc.RootElement, "lastMergeCommit");
+        var mergeHeadSha = ReadCommitId(prDoc.RootElement, "lastMergeSourceCommit");
+        var mergeBaseSha = ReadCommitId(prDoc.RootElement, "lastMergeTargetCommit");
+        var hasMergeCommit = !string.IsNullOrEmpty(mergeCommitSha);
         if (string.Equals(rawState, "completed", StringComparison.OrdinalIgnoreCase) && !hasMergeCommit)
         {
             this.logger.LogInformation(
@@ -146,7 +155,10 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
             this.logger.LogWarning("ADO threads fetch failed: PR={Pr} status={Status}", pr.Id, threadsResp.StatusCode);
             return new PrSyncSnapshot(canonical, lastUpdated, Array.Empty<PrSyncComment>(), false,
                 BaseBranch: string.IsNullOrEmpty(baseRef) ? null : baseRef,
-                SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef);
+                SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef,
+                MergeCommitSha: mergeCommitSha,
+                MergeBaseSha: mergeBaseSha,
+                MergeHeadSha: mergeHeadSha);
         }
 
         using var threadsDoc = JsonDocument.Parse(await threadsResp.Content.ReadAsStringAsync(ct));
@@ -242,7 +254,10 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
             Files: await this.FetchFileCountAsync(http, project, repo, num, ct),
             Commits: await this.FetchCommitCountAsync(http, project, repo, num, ct),
             BaseBranch: string.IsNullOrEmpty(baseRef) ? null : baseRef,
-            SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef);
+            SourceBranch: string.IsNullOrEmpty(headRef) ? null : headRef,
+            MergeCommitSha: mergeCommitSha,
+            MergeBaseSha: mergeBaseSha,
+            MergeHeadSha: mergeHeadSha);
     }
 
     /// <summary>

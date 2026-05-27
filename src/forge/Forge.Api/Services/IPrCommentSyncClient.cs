@@ -54,7 +54,13 @@ public sealed record PrSyncSnapshot(
     /// </summary>
     string? BaseBranch = null,
     /// <summary>Current upstream source branch. Null when not fetched.</summary>
-    string? SourceBranch = null);
+    string? SourceBranch = null,
+    /// <summary>Provider merge commit SHA. Null when not merged or provider omitted it.</summary>
+    string? MergeCommitSha = null,
+    /// <summary>Provider-captured target/base SHA at merge time. Null when not merged or unavailable.</summary>
+    string? MergeBaseSha = null,
+    /// <summary>Provider-captured source/head SHA at merge time. Null when not merged or unavailable.</summary>
+    string? MergeHeadSha = null);
 
 /// <summary>Phase 24 — provider-neutral comment shape for upsert.</summary>
 public sealed record PrSyncComment(

@@ -361,6 +361,20 @@ public interface IStoryGitOps
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns repo-relative paths changed by an already-merged PR, using the
+    /// provider-captured merge range when available. This is the historical
+    /// diff used when the live branch-vs-base diff is empty because the PR has
+    /// already landed on the target branch.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetChangedFilesFromMergedPrAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string? mergeCommitSha,
+        string? mergeBaseSha = null,
+        string? mergeHeadSha = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 65 — snapshot a branch's current HEAD SHA + commit subject +
     /// diff numstat against a baseline. Used by the gen/eval loop's
     /// <c>OnIterationCommit</c> hook to record deterministic per-iter

@@ -892,6 +892,85 @@ public class Phase24PrSyncTests
     }
 
     [Fact]
+    public async Task PrSync_ApplySnapshot_Persists_Merged_Pr_Metadata()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        SeedPr(control, db, "p24-snap-merged-metadata");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p24-snap-merged-metadata");
+        pr.Provider = "ado";
+        pr.ProviderRef = "99";
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "completed",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: true,
+            MergeCommitSha: " merge-sha ",
+            MergeBaseSha: "base-sha",
+            MergeHeadSha: "head-sha");
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-merged-metadata", "ado", "99", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var updated = await db2.Prs.AsNoTracking().SingleAsync(p => p.Id == "p24-snap-merged-metadata");
+        Assert.Equal("merged", updated.Col);
+        Assert.Equal("merge-sha", updated.MergeCommitSha);
+        Assert.Equal("base-sha", updated.MergeBaseSha);
+        Assert.Equal("head-sha", updated.MergeHeadSha);
+    }
+
+    [Fact]
+    public async Task PrSync_ApplySnapshot_Clears_Merged_Pr_Metadata_When_Reopened()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        SeedPr(control, db, "p24-snap-reopen-metadata");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p24-snap-reopen-metadata");
+        pr.Provider = "ado";
+        pr.ProviderRef = "100";
+        pr.Col = "merged";
+        pr.MergeCommitSha = "merge-sha";
+        pr.MergeBaseSha = "base-sha";
+        pr.MergeHeadSha = "head-sha";
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: true);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-reopen-metadata", "ado", "100", "merged", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var updated = await db2.Prs.AsNoTracking().SingleAsync(p => p.Id == "p24-snap-reopen-metadata");
+        Assert.Equal("review", updated.Col);
+        Assert.Null(updated.MergeCommitSha);
+        Assert.Null(updated.MergeBaseSha);
+        Assert.Null(updated.MergeHeadSha);
+    }
+
+    [Fact]
     public async Task PrSync_Upsert_Ignores_Ado_Automation_Comments()
     {
         using var f = new ForgeWebApplicationFactory();

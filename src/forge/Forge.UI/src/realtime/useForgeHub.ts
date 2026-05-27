@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { HubConnectionBuilder, LogLevel, type HubConnection } from '@microsoft/signalr';
-import type { Card, Pr } from '@/types';
+import type { Card, Pr, Workstream } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
 import { usePrsStore } from '@/state/usePrsStore';
 import { usePrLogStore } from '@/state/usePrLogStore';
@@ -9,6 +9,7 @@ import { useSprintsStore } from '@/state/useSprintsStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { useTaskLiveStore } from '@/realtime/useTaskLiveStore';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -25,6 +26,12 @@ interface CardChangedPayload {
 interface PrChangedPayload {
   kind: 'autoMerge' | 'build.rerun' | 'build.cancel' | 'updated';
   pr: Pr;
+}
+
+interface WorkstreamChangedPayload {
+  kind?: 'created' | 'synced' | 'deleted' | 'restarted' | 'retried' | 'cancelled' | 'accepted' | 'updated';
+  id?: string;
+  workstream?: Workstream;
 }
 
 async function ensureConnected() {
@@ -55,6 +62,21 @@ async function ensureConnected() {
     connection.on('pr.log', (payload: { id?: string; line?: string }) => {
       if (payload?.id && typeof payload.line === 'string') {
         usePrLogStore.getState().append(payload.id, payload.line);
+      }
+    });
+    connection.on('workstream.changed', (payload: WorkstreamChangedPayload) => {
+      const store = useWorkstreamsStore.getState();
+      if (payload?.kind === 'deleted' && payload.id) {
+        store.removeFromRealtime(payload.id);
+        return;
+      }
+      if (payload?.kind === 'restarted' && payload.id) {
+        useTaskLiveStore.getState().resetEntry(payload.id);
+      }
+      if (payload?.workstream) {
+        store.upsertFromRealtime(payload.workstream);
+      } else {
+        void store.load();
       }
     });
     // Phase 15 — sprint registry changes invalidate the per-product cache.

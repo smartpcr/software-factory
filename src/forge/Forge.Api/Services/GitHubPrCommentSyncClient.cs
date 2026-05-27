@@ -94,6 +94,10 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         var mergedAt = prDoc.RootElement.TryGetProperty("merged_at", out var ma) && ma.ValueKind != JsonValueKind.Null
             ? ma.GetString()
             : null;
+        var mergeCommitSha = prDoc.RootElement.TryGetProperty("merge_commit_sha", out var mergeShaEl)
+            && mergeShaEl.ValueKind == JsonValueKind.String
+            ? mergeShaEl.GetString()
+            : null;
         // Translate to provider-state used by MapUpstreamState.
         var providerState = rawState switch
         {
@@ -133,6 +137,8 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         // runs against the current base.
         string? baseRef = null;
         string? headRef = null;
+        string? baseSha = null;
+        string? headSha = null;
         if (prDoc.RootElement.TryGetProperty("base", out var baseEl)
             && baseEl.ValueKind == JsonValueKind.Object
             && baseEl.TryGetProperty("ref", out var baseRefEl)
@@ -140,12 +146,24 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
         {
             baseRef = baseRefEl.GetString();
         }
+        if (baseEl.ValueKind == JsonValueKind.Object
+            && baseEl.TryGetProperty("sha", out var baseShaEl)
+            && baseShaEl.ValueKind == JsonValueKind.String)
+        {
+            baseSha = baseShaEl.GetString();
+        }
         if (prDoc.RootElement.TryGetProperty("head", out var headEl)
             && headEl.ValueKind == JsonValueKind.Object
             && headEl.TryGetProperty("ref", out var headRefEl)
             && headRefEl.ValueKind == JsonValueKind.String)
         {
             headRef = headRefEl.GetString();
+        }
+        if (headEl.ValueKind == JsonValueKind.Object
+            && headEl.TryGetProperty("sha", out var headShaEl)
+            && headShaEl.ValueKind == JsonValueKind.String)
+        {
+            headSha = headShaEl.GetString();
         }
 
         // Skip the comment fetch entirely when nothing has changed —
@@ -160,7 +178,10 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
                 Commits: commitsCount,
                 Additions: additions,
                 Deletions: deletions,
-                BaseBranch: baseRef, SourceBranch: headRef);
+                BaseBranch: baseRef, SourceBranch: headRef,
+                MergeCommitSha: mergeCommitSha,
+                MergeBaseSha: baseSha,
+                MergeHeadSha: headSha);
         }
 
         var since = string.IsNullOrEmpty(pr.LastUpstreamUpdatedAt) ? null : pr.LastUpstreamUpdatedAt;
@@ -203,7 +224,10 @@ public sealed class GitHubPrCommentSyncClient : IPrCommentSyncClient
             Commits: commitsCount,
             Additions: additions,
             Deletions: deletions,
-            BaseBranch: baseRef, SourceBranch: headRef);
+            BaseBranch: baseRef, SourceBranch: headRef,
+            MergeCommitSha: mergeCommitSha,
+            MergeBaseSha: baseSha,
+            MergeHeadSha: headSha);
     }
 
     private static async Task<List<PrSyncComment>> FetchReviewCommentsAsync(

@@ -395,6 +395,15 @@ public class PrRow
 
     /// <summary>Phase 27 — last updated timestamp from the provider.</summary>
     public string? UpdatedAt { get; set; }
+
+    /// <summary>Phase 88 — provider merge commit SHA, when the PR was merged.</summary>
+    public string? MergeCommitSha { get; set; }
+
+    /// <summary>Phase 88 — provider-captured target/base commit SHA at merge time.</summary>
+    public string? MergeBaseSha { get; set; }
+
+    /// <summary>Phase 88 — provider-captured source/head commit SHA at merge time.</summary>
+    public string? MergeHeadSha { get; set; }
 }
 
 /// <summary>Phase 24 — mirrors upstream PR comment threads + individual comments.</summary>

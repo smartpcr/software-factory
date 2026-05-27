@@ -37,7 +37,8 @@ public class StalledQuestionsRecoveryTests
 
     private static async Task SeedStalledWorkstreamAsync(
         ControlDbContext control, ProductDbContext db, string wsId, string stallReason, string executionStatus,
-        string? failureReason, string? latestVerdict, string? prsJson = null)
+        string? failureReason, string? latestVerdict, string? prsJson = null, int latestScore = 92,
+        string? latestFailureKind = null, string latestNotes = "")
     {
         db.Workstreams.Add(new WorkstreamRow
         {
@@ -68,9 +69,11 @@ public class StalledQuestionsRecoveryTests
                 GeneratorAgentId = "gen",
                 EvaluatorAgentId = "eval",
                 Iter = 3,
-                Score = 92,
+                Score = latestScore,
                 Verdict = latestVerdict,
                 DimsJson = "{}",
+                FailureKind = latestFailureKind,
+                Notes = latestNotes,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
@@ -214,6 +217,258 @@ public class StalledQuestionsRecoveryTests
 
         // Cancelled stays cancelled — recovery only fires when Status=="stalled".
         Assert.Equal("cancelled", ws.Status);
+    }
+
+    [Fact]
+    public async Task PhaseA_MergedPrRecovery_Stamps_WorkItem_Completed_Even_When_Already_Closed()
+    {
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        await SeedStalledWorkstreamAsync(control, db, WsId,
+            stallReason: "Sloppy-3-attempts: stale terminal failure",
+            executionStatus: ExecutionStatuses.Queued,
+            failureReason: null,
+            latestVerdict: "pass",
+            prsJson: "[\"PR-merged-1\"]");
+        var wiSeed = await db.WorkItems.FirstAsync(w => w.Id == WsId);
+        wiSeed.State = "closed";
+        db.Prs.Add(new PrRow
+        {
+            Id = "PR-merged-1",
+            Workstream = WsId,
+            Branch = "ws/test",
+            Base = "main",
+            Title = "merged implementation",
+            Col = "merged",
+        });
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<StalledMergedRecoveryReconciler>();
+        var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
+
+        using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
+
+        Assert.True(recovered >= 1);
+        Assert.Equal("complete", ws.Status);
+        Assert.Null(ws.StallReason);
+        Assert.Equal("closed", wi.State);
+        Assert.Equal(ExecutionStatuses.Completed, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task PhaseA_MergedPrRecovery_Uses_PrRow_Workstream_When_PrsJson_Was_Cleared()
+    {
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        await SeedStalledWorkstreamAsync(control, db, WsId,
+            stallReason: "Sloppy-3-attempts: stale terminal failure",
+            executionStatus: ExecutionStatuses.Queued,
+            failureReason: null,
+            latestVerdict: "pass",
+            prsJson: "[]");
+        var wiSeed = await db.WorkItems.FirstAsync(w => w.Id == WsId);
+        wiSeed.State = "closed";
+        db.Prs.Add(new PrRow
+        {
+            Id = "PR-merged-row-link",
+            Workstream = WsId,
+            Branch = "ws/test",
+            Base = "main",
+            Title = "merged implementation",
+            Col = "merged",
+        });
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<StalledMergedRecoveryReconciler>();
+        var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
+
+        using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
+
+        Assert.True(recovered >= 1);
+        Assert.Equal("complete", ws.Status);
+        Assert.Null(ws.StallReason);
+        Assert.Equal("closed", wi.State);
+        Assert.Equal(ExecutionStatuses.Completed, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task PhaseA_CompleteMergedWorkstream_Aligns_WorkItem_Completed_When_Already_Closed()
+    {
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        db.Workstreams.Add(new WorkstreamRow
+        {
+            Id = WsId,
+            Name = "complete ws",
+            Branch = "ws/test",
+            Base = "main",
+            Epic = "EPIC-test",
+            Status = "complete",
+            PrsJson = "[]",
+            CardsJson = $"[\"{WsId}\"]",
+            LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        });
+        db.WorkItems.Add(new WorkItemRow
+        {
+            Id = WsId,
+            Title = "test",
+            State = "closed",
+            ExecutionStatus = ExecutionStatuses.Queued,
+        });
+        db.Deliverables.Add(new DeliverableRow
+        {
+            WorkItemId = WsId,
+            CrewId = "crew-x",
+            GeneratorAgentId = "gen",
+            EvaluatorAgentId = "eval",
+            Iter = 3,
+            Score = 92,
+            Verdict = "pass",
+            DimsJson = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        db.Prs.Add(new PrRow
+        {
+            Id = "PR-merged-1",
+            Workstream = WsId,
+            Branch = "ws/test",
+            Base = "main",
+            Title = "merged implementation",
+            Col = "merged",
+        });
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<StalledMergedRecoveryReconciler>();
+        var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
+
+        using var verifyScope = f.Services.CreateScope();
+        var control_verifyDb = verifyScope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
+
+        Assert.True(recovered >= 1);
+        Assert.Equal("complete", ws.Status);
+        Assert.Equal("closed", wi.State);
+        Assert.Equal(ExecutionStatuses.Completed, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task PhaseA_MergedPrRecovery_Refuses_Completion_When_Latest_Deliverable_Is_Sloppy_Zero()
+    {
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        await SeedStalledWorkstreamAsync(control, db, WsId,
+            stallReason: "Sloppy-3-attempts: stale terminal failure",
+            executionStatus: ExecutionStatuses.Queued,
+            failureReason: null,
+            latestVerdict: "sloppy",
+            prsJson: "[\"PR-merged-1\"]",
+            latestScore: 0);
+        db.Prs.Add(new PrRow
+        {
+            Id = "PR-merged-1",
+            Workstream = WsId,
+            Branch = "ws/test",
+            Base = "main",
+            Title = "merged implementation",
+            Col = "merged",
+        });
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<StalledMergedRecoveryReconciler>();
+        var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
+
+        using var verifyScope = f.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var ws = await verifyDb.Workstreams.AsNoTracking().FirstAsync(w => w.Id == WsId);
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
+
+        Assert.Equal(0, recovered);
+        Assert.Equal("stalled", ws.Status);
+        Assert.NotNull(ws.StallReason);
+        Assert.Equal(ExecutionStatuses.Queued, wi.ExecutionStatus);
+    }
+
+    [Fact]
+    public async Task PhaseA_CompleteMergedWorkstream_Refuses_WorkItem_Completion_When_Latest_Deliverable_Is_Sloppy_Zero()
+    {
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        db.Workstreams.Add(new WorkstreamRow
+        {
+            Id = WsId,
+            Name = "complete ws",
+            Branch = "ws/test",
+            Base = "main",
+            Epic = "EPIC-test",
+            Status = "complete",
+            PrsJson = "[]",
+            CardsJson = $"[\"{WsId}\"]",
+            LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        });
+        db.WorkItems.Add(new WorkItemRow
+        {
+            Id = WsId,
+            Title = "test",
+            State = "closed",
+            ExecutionStatus = ExecutionStatuses.Queued,
+        });
+        db.Deliverables.Add(new DeliverableRow
+        {
+            WorkItemId = WsId,
+            CrewId = "crew-x",
+            GeneratorAgentId = "gen",
+            EvaluatorAgentId = "eval",
+            Iter = 3,
+            Score = 0,
+            Verdict = "sloppy",
+            DimsJson = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        db.Prs.Add(new PrRow
+        {
+            Id = "PR-merged-1",
+            Workstream = WsId,
+            Branch = "ws/test",
+            Base = "main",
+            Title = "merged implementation",
+            Col = "merged",
+        });
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<StalledMergedRecoveryReconciler>();
+        var recovered = await reconciler.RunOnceAsync(CancellationToken.None);
+
+        using var verifyScope = f.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var wi = await verifyDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == WsId);
+
+        Assert.Equal(0, recovered);
+        Assert.Equal(ExecutionStatuses.Queued, wi.ExecutionStatus);
     }
 
     // ────────────────────────────────────────────────────────────────────

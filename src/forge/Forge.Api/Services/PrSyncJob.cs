@@ -398,6 +398,21 @@ public sealed class PrSyncJob : BackgroundService
                 candidate.PrId, prRow.Branch, snapshot.SourceBranch);
             prRow.Branch = snapshot.SourceBranch;
         }
+
+        static string? CleanSha(string? value)
+            => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        if (string.Equals(newState, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            prRow.MergeCommitSha = CleanSha(snapshot.MergeCommitSha);
+            prRow.MergeBaseSha = CleanSha(snapshot.MergeBaseSha);
+            prRow.MergeHeadSha = CleanSha(snapshot.MergeHeadSha);
+        }
+        else if (newState is "open" or "abandoned")
+        {
+            prRow.MergeCommitSha = null;
+            prRow.MergeBaseSha = null;
+            prRow.MergeHeadSha = null;
+        }
         if (!string.IsNullOrEmpty(snapshot.UpstreamUpdatedAt))
         {
             prRow.LastUpstreamUpdatedAt = snapshot.UpstreamUpdatedAt;

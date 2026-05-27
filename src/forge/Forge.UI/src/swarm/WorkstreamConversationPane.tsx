@@ -123,6 +123,7 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
       checklist: [
         'Clear all deliverables for this workstream',
         'Clear transcript events',
+        'Clear prompt, build, and test history',
         'Reset workstream status to "active"',
         'Reset PRs / commits / ahead-behind counters',
         'Wipe the impl workspace on disk',
@@ -134,6 +135,8 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
     setRestarting(true);
     try {
       const r = await forgeApi.restartWorkstream(workstreamId);
+      useTaskLiveStore.getState().resetEntry(workstreamId);
+      void useTaskLiveStore.getState().ensureLoaded(workstreamId);
       showToast(`Restarted — ${r.deliverablesCleaned} deliverables cleared.`, 'success');
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Restart failed', 'danger');

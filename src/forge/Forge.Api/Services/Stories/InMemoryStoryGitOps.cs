@@ -334,6 +334,15 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         RepoRow? repo, string worktreePath, string? baseBranch = null, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
+    public Task<IReadOnlyList<string>> GetChangedFilesFromMergedPrAsync(
+        RepoRow? repo,
+        string worktreePath,
+        string? mergeCommitSha,
+        string? mergeBaseSha = null,
+        string? mergeHeadSha = null,
+        CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+
     /// <summary>
     /// Phase 65 — in-memory stub. Returns a synthetic snapshot derived
     /// from the test tree's tip SHA when the branch exists, else null.

@@ -717,6 +717,7 @@ public static class WorkstreamsEndpoints
         IEnumerable<IForgeProvider> providers,
         StorySpawnOrchestrator orchestrator,
         AgentMemoryStore memStore,
+        IterationPromptStore promptStore,
         CopilotSessionPool copilotPool)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -724,6 +725,23 @@ public static class WorkstreamsEndpoints
 
         var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
         if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
+
+        var prIdsForRestart = ParseStringList(ws.PrsJson);
+        var mergedLinkedPr = await db.Prs.AsNoTracking()
+            .Where(p => p.Col == "merged"
+                && (p.Workstream == id || prIdsForRestart.Contains(p.Id)))
+            .OrderBy(p => p.Sort)
+            .ThenBy(p => p.Id)
+            .FirstOrDefaultAsync(ctx.RequestAborted);
+        if (mergedLinkedPr is not null)
+        {
+            return Results.Problem(
+                title: "Cannot restart a workstream with a merged PR",
+                detail: $"Workstream {id} is linked to merged PR {mergedLinkedPr.Id}; restart would abandon the local PR row and rerun against an already-merged base.",
+                statusCode: 409);
+        }
+
+        var resolvedWorktreeBeforeRestart = await WorktreePathResolver.ResolveForWorkstreamAsync(control, db, id, ctx.RequestAborted);
 
         // ── 0. Cancel in-flight work (mirrors Cancel endpoint logic) ────
         try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
@@ -758,6 +776,13 @@ public static class WorkstreamsEndpoints
         var events = await db.TaskTranscriptEvents.Where(e => e.WorkItemId == id).ToListAsync();
         db.TaskTranscriptEvents.RemoveRange(events);
 
+        // ── 2b. Delete durable prompt audit rows ────────────────────────
+        // The Prompt tab reads iteration_prompts, not only task transcript
+        // rows. Restart is a clean slate, so stale prompt/build/test audit
+        // history must be purged with the transcript (matching
+        // TaskExecutionEndpoints.ClearTranscript).
+        var iterationPromptsDeleted = await promptStore.DeleteForWorkItemAsync(id, ctx.RequestAborted);
+
         // ── 3. Delete open questions ────────────────────────────────────
         var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == id).ToListAsync();
         db.DeliverableQuestions.RemoveRange(questions);
@@ -786,8 +811,7 @@ public static class WorkstreamsEndpoints
         control.AgentUsage.RemoveRange(usageRows);
 
         // ── 4. Close upstream PRs and deactivate local rows ─────────────
-        var prIds = ParseStringList(ws.PrsJson);
-        foreach (var prId in prIds)
+        foreach (var prId in prIdsForRestart)
         {
             var prRow = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId);
             if (prRow is null) continue;
@@ -822,6 +846,7 @@ public static class WorkstreamsEndpoints
         ws.Ahead = 0;
         ws.Behind = 0;
         ws.Conflicts = 0;
+        ws.WorktreeJson = CardMapper.Serialize(new[] { "(not yet created)" });
         ws.AgentsJson = "[]";
         // Phase 49 — clear the operator-triage reason when leaving the
         // stalled state. Restart is the explicit unblock path; any prior
@@ -889,6 +914,15 @@ public static class WorkstreamsEndpoints
         }
 
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
+
+        // ── 5b. Prune gate logs even if git cleanup below cannot resolve
+        // or remove the entire worktree. Build/Test history lives under
+        // .forge/logs and must disappear immediately on Restart.
+        var gateLogsPruned = false;
+        if (!string.IsNullOrEmpty(resolvedWorktreeBeforeRestart.WorktreePath))
+        {
+            gateLogsPruned = GateLogPaths.PruneAll(resolvedWorktreeBeforeRestart.WorktreePath);
+        }
 
         // ── 6. Clear the cached workspace(s) ────────────────────────────
         // Reap EVERY per-workstream scratch dir, not just impl-{id}. A
@@ -1037,7 +1071,16 @@ public static class WorkstreamsEndpoints
             }
         }
 
-        return Results.Ok(new { id, status = "restarted", deliverablesCleaned = deliverables.Count, eventsCleaned = events.Count, memoryRowsCleaned = memoryDeleted });
+        return Results.Ok(new
+        {
+            id,
+            status = "restarted",
+            deliverablesCleaned = deliverables.Count,
+            eventsCleaned = events.Count,
+            iterationPromptsCleaned = iterationPromptsDeleted,
+            memoryRowsCleaned = memoryDeleted,
+            gateLogsPruned,
+        });
     }
 
     /// <summary>
@@ -1196,7 +1239,8 @@ public static class WorkstreamsEndpoints
     /// <list type="bullet">
     ///   <item>Workstream not found → 404.</item>
     ///   <item>No prior deliverable → 400 (nothing to demote; use Restart instead).</item>
-    ///   <item>Workstream already in a non-retryable status (<c>cancelled</c>, <c>complete</c>, <c>merging</c>) → 409.</item>
+    ///   <item>Workstream already in a non-retryable status (<c>cancelled</c>, <c>complete</c>, <c>merging</c>) → 409,
+    ///   except an inconsistent <c>complete</c> row whose latest deliverable is not a real pass.</item>
     /// </list></para>
     /// </summary>
     private static async Task<IResult> Retry(
@@ -1213,7 +1257,24 @@ public static class WorkstreamsEndpoints
         var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
         if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
 
-        if (ws.Status is "cancelled" or "complete" or "merging")
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync();
+        var lastDel = deliverables
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+        var latestPassClass = lastDel is null
+            ? StorySpawnOrchestrator.PassGateClassification.NotPass
+            : StorySpawnOrchestrator.ClassifyPassGate(
+                lastDel.Verdict, lastDel.Score, lastDel.FailureKind, lastDel.Notes);
+        var latestCanCompleteMergedPr = latestPassClass is StorySpawnOrchestrator.PassGateClassification.NaturalPass
+            or StorySpawnOrchestrator.PassGateClassification.OperatorAccepted;
+        var isRecoverableFalseComplete = string.Equals(ws.Status, "complete", StringComparison.OrdinalIgnoreCase)
+            && lastDel is not null
+            && !latestCanCompleteMergedPr;
+
+        if (ws.Status is "cancelled" or "merging"
+            || (string.Equals(ws.Status, "complete", StringComparison.OrdinalIgnoreCase) && !isRecoverableFalseComplete))
         {
             return Results.Problem(
                 type: "retry.terminal",
@@ -1222,12 +1283,6 @@ public static class WorkstreamsEndpoints
                 statusCode: 409);
         }
 
-        var deliverables = await db.Deliverables
-            .Where(d => d.WorkItemId == id)
-            .ToListAsync();
-        var lastDel = deliverables
-            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
-            .FirstOrDefault();
         if (lastDel is null)
         {
             return Results.Problem(
@@ -1252,32 +1307,15 @@ public static class WorkstreamsEndpoints
             q.LastUpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        // (2) Phase 67 — operator-recovery reset. The previous demotion
-        // list was incomplete (missing `stalled-questions` / `sloppy` /
-        // `stalled-no-convergence`) AND the pair-attempt accounting was
-        // never reset, so a Retry on a sloppy-capped row was a no-op:
-        // ws.Status flipped to active but `wi.PairAttemptCount = 3`
-        // immediately re-tripped the orchestrator's claim-loop cap at
-        // StorySpawnOrchestrator.cs:2431 and the row stayed terminal-
-        // failed. WorkstreamRecovery centralizes the correct shape:
-        // demote any terminal verdict, and when stalled-or-at-cap, also
-        // wipe the pair-attempt accounting + agent_pair_assignment +
-        // agent_usage rows so the orchestrator gets a clean slate.
-        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
-        var report = await Forge.Api.Services.Stories.WorkstreamRecovery.SoftResetForResumeAsync(
-            control, db, ws, await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id), lastDel,
-            operatorActor: actor,
-            noteSuffix: "operator clicked Retry",
-            ct: ctx.RequestAborted);
-        var priorVerdict = report.PriorVerdict;
-        var demoted = report.VerdictDemoted;
-
-        // (3) Load work-item row early — needed by both the merged-PR
+        // (2) Load work-item row early — needed by both the merged-PR
         // short-circuit and the normal active-reset path below.
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
 
-        // If the PR is already merged, promote straight to "complete" —
-        // the gen/eval loop has nothing left to do.
+        // If the PR is already merged and the latest deliverable genuinely
+        // passed, promote straight to "complete" — the gen/eval loop has
+        // nothing left to do. A merged PR alone is not sufficient: if the
+        // latest row is score-zero/sloppy/iterate, Retry must reactivate the
+        // loop so the evaluator can score the historical merged PR diff.
         //
         // 2026-05-26 — Two-pronged hardening after observing falsely-merged
         // PRs cascade through this shortcut:
@@ -1296,7 +1334,8 @@ public static class WorkstreamsEndpoints
             .ThenBy(p => p.Id)
             .ToListAsync();
         var shortCircuitToMerged = allPrs.Count > 0
-            && allPrs.All(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase));
+            && allPrs.All(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase))
+            && latestCanCompleteMergedPr;
         if (shortCircuitToMerged)
         {
             ws.Status = "complete";
@@ -1315,21 +1354,42 @@ public static class WorkstreamsEndpoints
                 workstreamId = id,
                 status = ws.Status,
                 kind = "retry-promoted-complete",
-                priorVerdict,
+                priorVerdict = lastDel.Verdict,
                 prMerged = true,
+                passClass = latestPassClass.ToString(),
             });
 
             return Results.Ok(new
             {
                 workstreamId = id,
-                priorVerdict,
+                priorVerdict = lastDel.Verdict,
                 newVerdict = lastDel.Verdict,
-                demoted,
+                demoted = false,
                 priorIter = lastDel.Iter,
                 priorScore = lastDel.Score,
                 status = ws.Status,
             });
         }
+
+        // (3) Phase 67 — operator-recovery reset. The previous demotion
+        // list was incomplete (missing `stalled-questions` / `sloppy` /
+        // `stalled-no-convergence`) AND the pair-attempt accounting was
+        // never reset, so a Retry on a sloppy-capped row was a no-op:
+        // ws.Status flipped to active but `wi.PairAttemptCount = 3`
+        // immediately re-tripped the orchestrator's claim-loop cap at
+        // StorySpawnOrchestrator.cs:2431 and the row stayed terminal-
+        // failed. WorkstreamRecovery centralizes the correct shape:
+        // demote any terminal verdict, and when stalled-or-at-cap, also
+        // wipe the pair-attempt accounting + agent_pair_assignment +
+        // agent_usage rows so the orchestrator gets a clean slate.
+        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var report = await Forge.Api.Services.Stories.WorkstreamRecovery.SoftResetForResumeAsync(
+            control, db, ws, wi, lastDel,
+            operatorActor: actor,
+            noteSuffix: "operator clicked Retry",
+            ct: ctx.RequestAborted);
+        var priorVerdict = report.PriorVerdict;
+        var demoted = report.VerdictDemoted;
 
         ws.Status = "active";
         ws.StallReason = null;

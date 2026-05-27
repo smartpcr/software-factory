@@ -1017,7 +1017,15 @@ export const forgeApi = {
   },
 
   /** POST /api/workstreams/{id}/restart — nuke and restart from scratch. */
-  async restartWorkstream(id: string): Promise<{ id: string; status: string; deliverablesCleaned: number }> {
+  async restartWorkstream(id: string): Promise<{
+    id: string;
+    status: string;
+    deliverablesCleaned: number;
+    eventsCleaned: number;
+    iterationPromptsCleaned: number;
+    memoryRowsCleaned: number;
+    gateLogsPruned: boolean;
+  }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/restart`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },

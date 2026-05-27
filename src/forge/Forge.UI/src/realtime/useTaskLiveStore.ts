@@ -163,6 +163,7 @@ interface TaskLiveStore {
   ensureLoaded: (workItemId: string) => Promise<void>;
   appendEvent: (workItemId: string, evt: TaskTranscriptEvent) => void;
   applyWorktree: (workItemId: string, snap: WorktreeSnapshot) => void;
+  resetEntry: (workItemId: string) => void;
   attach: (workItemId: string) => void;
   detach: (workItemId: string) => void;
   loadOlderEvents: (workItemId: string) => Promise<void>;
@@ -462,6 +463,26 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
   applyWorktree: (workItemId, snap) => {
     const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0, transcriptTotalCount: 0, loadingOlder: false };
     set({ entries: { ...get().entries, [workItemId]: { ...cur, worktree: snap } } });
+  },
+
+  resetEntry: (workItemId) => {
+    const cur = get().entries[workItemId];
+    set({
+      entries: {
+        ...get().entries,
+        [workItemId]: {
+          snapshot: null,
+          transcript: [],
+          worktree: null,
+          loading: false,
+          error: undefined,
+          lastEventId: 0,
+          refCount: cur?.refCount ?? 0,
+          transcriptTotalCount: 0,
+          loadingOlder: false,
+        },
+      },
+    });
   },
 
   attach: (workItemId) => {

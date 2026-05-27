@@ -86,6 +86,8 @@ public sealed class PhaseMigrationRunner
         // {slug}.db. Additive nullable column; no ordering dependency. Phases
         // 85 and 86 are non-migration code-phase numbers.
         87,
+        // Phase 88 — prs merge metadata for already-merged PR evaluation fallback.
+        88,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

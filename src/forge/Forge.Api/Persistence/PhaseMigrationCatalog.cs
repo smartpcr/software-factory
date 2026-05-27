@@ -284,6 +284,10 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(87, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "deliverables" }),
+        // Phase 88 — PR merge metadata for already-merged PR evaluation fallback.
+        new PhaseMigrationSpec(88, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "prs" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

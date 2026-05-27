@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Infrastructure;
 
 using System.Text;
+using Forge.Api;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Stories;
 using Forge.Api.Services.Stories.Templates;

@@ -116,6 +116,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
             var recovered = 0;
             recovered += await this.RecoverStalledWithMergedPrAsync(control, db, fct);
             recovered += await this.ClearStaleStallReasonOnShippedAsync(control, db, fct);
+            recovered += await this.AlignCompletedWorkItemsForMergedWorkstreamsAsync(control, db, fct);
             recovered += await this.RecoverBogusSloppyStallWithPassedDeliverableAsync(control, db, fct);
             if (recovered > 0)
             {
@@ -143,6 +144,7 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
         if (stalled.Count == 0) return 0;
 
         // Collect candidate PR IDs across all stalled rows in one shot.
+        var stalledIds = stalled.Select(w => w.Id).ToList();
         var prIdsToCheck = new HashSet<string>(StringComparer.Ordinal);
         var prsByWs = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var w in stalled)
@@ -152,23 +154,37 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
             prsByWs[w.Id] = prIds;
             foreach (var p in prIds) prIdsToCheck.Add(p);
         }
-        if (prIdsToCheck.Count == 0) return 0;
 
-        var mergedPrIds = await db.Prs.AsNoTracking()
-            .Where(p => prIdsToCheck.Contains(p.Id) && p.Col == "merged")
-            .Select(p => p.Id)
+        var mergedPrLinks = await db.Prs.AsNoTracking()
+            .Where(p => p.Col == "merged"
+                && (prIdsToCheck.Contains(p.Id) || stalledIds.Contains(p.Workstream)))
+            .Select(p => new { p.Id, p.Workstream })
             .ToListAsync(ct);
-        if (mergedPrIds.Count == 0) return 0;
-        var mergedSet = new HashSet<string>(mergedPrIds, StringComparer.Ordinal);
+        if (mergedPrLinks.Count == 0) return 0;
+        var mergedSet = new HashSet<string>(mergedPrLinks.Select(p => p.Id), StringComparer.Ordinal);
+        var mergedWorkstreams = new HashSet<string>(
+            mergedPrLinks
+                .Where(p => !string.IsNullOrWhiteSpace(p.Workstream))
+                .Select(p => p.Workstream),
+            StringComparer.Ordinal);
 
+        var passEligible = await LoadPassEligibleLatestDeliverablesAsync(db, stalledIds, ct);
         var recovered = 0;
         foreach (var w in stalled)
         {
-            if (!prsByWs.TryGetValue(w.Id, out var wsPrIds)) continue;
-            if (!wsPrIds.Any(id => mergedSet.Contains(id))) continue;
+            var hasMergedPr = mergedWorkstreams.Contains(w.Id)
+                || (prsByWs.TryGetValue(w.Id, out var wsPrIds) && wsPrIds.Any(id => mergedSet.Contains(id)));
+            if (!hasMergedPr) continue;
+            if (!passEligible.Contains(w.Id))
+            {
+                this.logger.LogWarning(
+                    "StalledMergedRecoveryReconciler: refusing ws={WsId} stall->complete because merged PR is present but latest deliverable is not a natural pass or operator accept.",
+                    w.Id);
+                continue;
+            }
 
             this.logger.LogInformation(
-                "StalledMergedRecoveryReconciler: ws={WsId} stall->complete (merged PR present); prior StallReason={Reason}",
+                "StalledMergedRecoveryReconciler: ws={WsId} stall->complete (merged PR present and latest deliverable passed); prior StallReason={Reason}",
                 w.Id, w.StallReason ?? "(null)");
 
             w.Status = "complete";
@@ -207,6 +223,112 @@ public sealed class StalledMergedRecoveryReconciler : BackgroundService
             RecoveredCounter.Add(recovered, new KeyValuePair<string, object?>("phase", "stalled->complete"));
         }
         return recovered;
+    }
+
+    private async Task<int> AlignCompletedWorkItemsForMergedWorkstreamsAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct)
+    {
+        // A merged implementation workstream is terminal from the operator's
+        // perspective. Keep the linked WI terminal too; otherwise cards can
+        // remain closed/queued with no queue row, which makes restart/retry
+        // monitoring look like the task is still waiting to be picked up.
+        var complete = await db.Workstreams
+            .Where(w => w.Status == "complete")
+            .ToListAsync(ct);
+        if (complete.Count == 0) return 0;
+
+        var completeIds = complete.Select(w => w.Id).ToList();
+        var prIdsToCheck = new HashSet<string>(StringComparer.Ordinal);
+        var prsByWs = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var w in complete)
+        {
+            var prIds = StoriesJsonHelpers.Deserialize(w.PrsJson);
+            if (prIds is null || prIds.Count == 0) continue;
+            prsByWs[w.Id] = prIds;
+            foreach (var p in prIds) prIdsToCheck.Add(p);
+        }
+
+        var mergedPrLinks = await db.Prs.AsNoTracking()
+            .Where(p => p.Col == "merged"
+                && (prIdsToCheck.Contains(p.Id) || completeIds.Contains(p.Workstream)))
+            .Select(p => new { p.Id, p.Workstream })
+            .ToListAsync(ct);
+        if (mergedPrLinks.Count == 0) return 0;
+
+        var mergedSet = new HashSet<string>(mergedPrLinks.Select(p => p.Id), StringComparer.Ordinal);
+        var mergedWorkstreams = new HashSet<string>(
+            mergedPrLinks
+                .Where(p => !string.IsNullOrWhiteSpace(p.Workstream))
+                .Select(p => p.Workstream),
+            StringComparer.Ordinal);
+        var candidateWsIds = complete
+            .Where(w => mergedWorkstreams.Contains(w.Id)
+                || (prsByWs.TryGetValue(w.Id, out var wsPrIds) && wsPrIds.Any(id => mergedSet.Contains(id))))
+            .Select(w => w.Id)
+            .ToList();
+        if (candidateWsIds.Count == 0) return 0;
+
+        var passEligible = await LoadPassEligibleLatestDeliverablesAsync(db, candidateWsIds, ct);
+        candidateWsIds = candidateWsIds.Where(passEligible.Contains).ToList();
+        if (candidateWsIds.Count == 0)
+        {
+            this.logger.LogWarning(
+                "StalledMergedRecoveryReconciler: refusing WI completion alignment for complete merged workstreams because latest deliverables are not natural pass/operator accept.");
+            return 0;
+        }
+
+        var workItems = await db.WorkItems
+            .Where(x => candidateWsIds.Contains(x.Id)
+                     && (x.State != "closed"
+                         || x.ExecutionStatus != ExecutionStatuses.Completed))
+            .ToListAsync(ct);
+        if (workItems.Count == 0) return 0;
+
+        foreach (var wi in workItems)
+        {
+            this.logger.LogInformation(
+                "StalledMergedRecoveryReconciler: wi={WorkItemId} aligning complete merged workstream state (State={State}, ExecutionStatus={ExecutionStatus})",
+                wi.Id, wi.State, wi.ExecutionStatus);
+            wi.State = "closed";
+            wi.ExecutionStatus = ExecutionStatuses.Completed;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
+        RecoveredCounter.Add(workItems.Count, new KeyValuePair<string, object?>("phase", "complete-merged-wi-align"));
+        return workItems.Count;
+    }
+
+    private static async Task<HashSet<string>> LoadPassEligibleLatestDeliverablesAsync(
+        ProductDbContext db,
+        IReadOnlyList<string> workItemIds,
+        CancellationToken ct)
+    {
+        var ids = workItemIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0) return new HashSet<string>(StringComparer.Ordinal);
+
+        var rows = await db.Deliverables.AsNoTracking()
+            .Where(d => ids.Contains(d.WorkItemId))
+            .OrderByDescending(d => d.PairAttempt ?? 0)
+            .ThenByDescending(d => d.Iter)
+            .ThenByDescending(d => d.Id)
+            .ToListAsync(ct);
+
+        var eligible = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var latest in rows.GroupBy(d => d.WorkItemId).Select(g => g.First()))
+        {
+            var passClass = StorySpawnOrchestrator.ClassifyPassGate(
+                latest.Verdict, latest.Score, latest.FailureKind, latest.Notes);
+            if (passClass is StorySpawnOrchestrator.PassGateClassification.NaturalPass
+                or StorySpawnOrchestrator.PassGateClassification.OperatorAccepted)
+            {
+                eligible.Add(latest.WorkItemId);
+            }
+        }
+
+        return eligible;
     }
 
     /// <summary>

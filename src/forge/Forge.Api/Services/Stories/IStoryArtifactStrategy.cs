@@ -189,7 +189,52 @@ public interface IStoryArtifactStrategy
         IReadOnlyList<ConflictedFile> conflictedFiles,
         string baseBranch,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// 2026-05-27 recovery path — score an ALREADY-MERGED workstream's landed
+    /// code with the evaluator. Used by <c>MergedPrRescoreReconciler</c> when a
+    /// workstream's PR merged but its latest deliverable is a non-pass (the
+    /// dominant case: the generator hit its wall-clock budget and the
+    /// gen↔eval loop force-scored 0 / verdict=iterate even though the work
+    /// actually landed and merged). The evaluator opens the merged files in a
+    /// git worktree on the workstream/base branch and returns a real score so
+    /// the work item can close (score ≥ <see cref="ScoringConstants.PassThreshold"/>)
+    /// or a follow-up can be filed (&lt; threshold) — instead of the system
+    /// re-driving merged work into the same timeout forever.
+    ///
+    /// <para>This is an evaluator-ONLY invocation: no generator runs and no
+    /// files are written to the PR. <paramref name="mergedPrId"/> is the
+    /// <c>PrRow.Id</c> of the merged PR whose changes should be scored.</para>
+    /// </summary>
+    Task<MergedPrScore> ScoreMergedPrAsync(
+        StorySpawnRow spawn,
+        WorkstreamRow workstream,
+        string mergedPrId,
+        CancellationToken ct = default);
 }
+
+/// <summary>
+/// 2026-05-27 — return shape of
+/// <see cref="IStoryArtifactStrategy.ScoreMergedPrAsync"/>. Mirrors the
+/// fields the gen↔eval loop persists on a <c>DeliverableRow</c> so the
+/// reconciler can write a deliverable that <see cref="StorySpawnOrchestrator.ClassifyPassGate"/>
+/// treats identically to a natural pass when the score clears the threshold.
+/// </summary>
+/// <param name="Score">0–100 evaluator score for the landed code.</param>
+/// <param name="Dims">Per-dimension breakdown (correctness/quality/tests/scope/risk); may be empty when the evaluator omitted it.</param>
+/// <param name="Verdict">Derived verdict (<c>pass</c> when <see cref="Score"/> ≥ <see cref="ScoringConstants.PassThreshold"/>, else <c>iterate</c>).</param>
+/// <param name="Notes">Evaluator notes / rationale; surfaced on the deliverable and (sub-pass) as the follow-up signal.</param>
+/// <param name="EvalCostUsd">Best-effort USD cost of the evaluator invocation (0 when the runner did not report it; the authoritative figure is in <c>agent_usage</c>).</param>
+/// <param name="EvaluatorAgentId">The agent that produced the score (for the deliverable's <c>EvaluatorAgentId</c> stamp).</param>
+/// <param name="ParseFailed">True when the evaluator's output could not be parsed into a score; the reconciler then leaves the workstream untouched for the next tick rather than writing a bogus 0.</param>
+public sealed record MergedPrScore(
+    int Score,
+    IReadOnlyDictionary<string, int> Dims,
+    string Verdict,
+    string Notes,
+    decimal EvalCostUsd,
+    string? EvaluatorAgentId,
+    bool ParseFailed = false);
 
 /// <summary>
 /// One workstream entry in a decomposition. <see cref="PlanAnchor"/> +

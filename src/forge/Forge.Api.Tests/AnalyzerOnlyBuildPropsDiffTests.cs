@@ -46,10 +46,45 @@ index 7cf201af5..1c627bc73 100644
 +  </Choose>
 ";
 
+    private const string AnalyzerWiringDiffWithAnalyzerPackageMetadata = @"diff --git a/Directory.Build.props b/Directory.Build.props
+index 7cf201af5..f99436cd5 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -114,6 +114,42 @@
+     <AdditionalFiles Include=""$(SRCROOT)\stylecop.json"" />
+   </ItemGroup>
+
++  <!--
++  Banned-API analyzer wiring (story local:HTTP-MEMORY, Phase 1 / Stage 1.3)
++  -->
++  <Choose>
++    <When Condition="" '$(MSBuildProjectExtension)' == '.csproj' And ( $(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src\Http\')) Or $(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src\WebLayer\')) ) "">
++      <ItemGroup>
++        <PackageReference Include=""Microsoft.CodeAnalysis.BannedApiAnalyzers"">
++          <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
++          <PrivateAssets>all</PrivateAssets>
++        </PackageReference>
++        <AdditionalFiles Include=""$(MSBuildThisFileDirectory)src\Http\BannedSymbols.txt""
++                         Condition="" $(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src\Http\')) "" />
++        <AdditionalFiles Include=""$(MSBuildThisFileDirectory)src\WebLayer\BannedSymbols.txt""
++                         Condition="" $(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src\WebLayer\')) "" />
++      </ItemGroup>
++    </When>
++  </Choose>
+
+   <!-- Packaging settings  -->
+   <PropertyGroup>";
+
     [Fact]
     public void RealAnalyzerWiringDiff_IsNeutral()
     {
         Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(AnalyzerWiringDiff));
+    }
+
+    [Fact]
+    public void RealAnalyzerWiringDiffWithPackageMetadata_IsNeutral()
+    {
+        Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(AnalyzerWiringDiffWithAnalyzerPackageMetadata));
     }
 
     [Fact]

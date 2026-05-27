@@ -151,7 +151,7 @@ public class Phase59ImpactedTestResolverTests
     }
 
     [Fact]
-    public void T2b_SharedCsprojChange_StaysImpactedWhenSuiteWiderThanClosure()
+    public void T2b_SharedCsprojChange_FallsBackWhenMultipleProjectsAreImpacted()
     {
         // Add a fourth, unrelated test project so the impacted closure
         // (3 of 4) sits BELOW the 80% threshold ceil(0.8 * 4) = 4.
@@ -173,10 +173,12 @@ public class Phase59ImpactedTestResolverTests
             originalCommand: "dotnet test",
             impactedOnly: true);
 
-        Assert.True(result.Rewritten);
+        Assert.False(result.Rewritten);
         Assert.Equal(3, result.ImpactedProjects.Count);
         Assert.DoesNotContain(result.ImpactedProjects, p => p.EndsWith("Standalone.Tests.csproj"));
-        Assert.False(result.WholeSuiteFallback);
+        Assert.True(result.WholeSuiteFallback);
+        Assert.Equal("dotnet test", result.Command);
+        Assert.Contains("dotnet test accepts only one project target", result.Reason);
         Assert.Equal(4, result.AllTestProjectCount);
     }
 
@@ -489,7 +491,10 @@ public class Phase59ImpactedTestResolverTests
             originalCommand: "dotnet test",
             impactedOnly: true);
 
-        Assert.True(result.Rewritten);
+        Assert.False(result.Rewritten);
+        Assert.True(result.WholeSuiteFallback);
+        Assert.Equal("dotnet test", result.Command);
+        Assert.Contains("dotnet test accepts only one project target", result.Reason);
         Assert.Equal(5, result.AllTestProjectCount);
         Assert.Equal(2, result.ImpactedProjects.Count);
         Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.UnitTest.csproj"));
@@ -864,6 +869,45 @@ public class Phase59ImpactedTestResolverTests
         Assert.DoesNotContain(" build.proj", result.Command);
         Assert.Contains("-p:SomeProp=value.proj", result.Command);
         Assert.Contains("Foo.Tests.csproj", result.Command);
+    }
+
+    [Fact]
+    public void T8h_TraversalProj_MultipleImpactedProjects_KeepsSingleOriginalTarget()
+    {
+        // Regression for update/1.3: the heuristic resolver previously
+        // emitted `dotnet test proj1.csproj proj2.csproj build.proj ...`,
+        // which MSBuild rejected because dotnet test accepts only one
+        // positional target. With multiple impacted projects, keep the
+        // Traversal target and original safe exclusion filter.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.UnitTest/Foo.UnitTest.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("tests/Foo.IntegrationTest/Foo.IntegrationTest.csproj", new[] { "../../src/Foo/Foo.csproj" }),
+            ("src/Bar/Bar.csproj", null),
+            ("tests/Bar.UnitTest/Bar.UnitTest.csproj", new[] { "../../src/Bar/Bar.csproj" }),
+            ("src/Baz/Baz.csproj", null),
+            ("tests/Baz.UnitTest/Baz.UnitTest.csproj", new[] { "../../src/Baz/Baz.csproj" }));
+        WriteTraversalProj(root);
+        const string command = "dotnet test build.proj --filter \"TestCategory!~CTQ&TestCategory!~Env\"";
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Foo/Bar.cs" },
+            originalCommand: command,
+            impactedOnly: true);
+
+        Assert.False(result.Rewritten);
+        Assert.True(result.WholeSuiteFallback);
+        Assert.Equal(command, result.Command);
+        Assert.Equal(2, result.ImpactedProjects.Count);
+        Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.UnitTest.csproj"));
+        Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.IntegrationTest.csproj"));
+        Assert.Contains("dotnet test accepts only one project target", result.Reason);
+
+        var projectTargets = ImpactedTestResolver.ParseCommandLine(result.Command)
+            .Where(t => t.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.Empty(projectTargets);
     }
 
     // ── T9 — Helper unit tests for IsFilterNarrowingSafe ────────────────

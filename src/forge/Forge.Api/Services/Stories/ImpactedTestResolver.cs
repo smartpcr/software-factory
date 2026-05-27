@@ -18,9 +18,11 @@ using System.Text.RegularExpressions;
 /// (operator screenshot 2026-05-19 on
 /// <c>stage-1.1-base-classes-and-port-allocation</c>) is wasted wall-
 /// clock and triggers gate timeouts. By rewriting
-/// <c>dotnet test</c> → <c>dotnet test {proj1} {proj2} …</c> the
-/// gate only invokes test projects whose code (or whose
-/// <c>&lt;ProjectReference&gt;</c> graph) touches a changed file.
+/// <c>dotnet test</c> → <c>dotnet test {proj}</c> when exactly one test
+/// project is impacted, the gate avoids unnecessary whole-suite runs for
+/// common single-project changes. When multiple test projects are impacted,
+/// the resolver keeps the original command because <c>dotnet test</c>
+/// accepts only one positional project/solution target.
 ///
 /// <para><b>No-op contracts</b> — the resolver returns the original
 /// command unchanged (with <see cref="ImpactedTestResolverResult.Rewritten"/>=false)
@@ -320,6 +322,18 @@ public static class ImpactedTestResolver
         }
 
         var sortedRelative = SortRelative(workspace, impacted);
+        if (sortedRelative.Count > 1)
+        {
+            return new ImpactedTestResolverResult(
+                Command: originalCommand,
+                Rewritten: false,
+                ImpactedProjects: sortedRelative,
+                AllTestProjectCount: allTestProjects.Count,
+                WholeSuiteFallback: true,
+                Skipped: false,
+                Reason: $"matched {impacted.Count} of {allTestProjects.Count} test projects, but dotnet test accepts only one project target; running original command");
+        }
+
         var rewrittenCommand = RewriteCommand(tokens, sortedRelative, traversalProjIndex);
         return new ImpactedTestResolverResult(
             Command: rewrittenCommand,
@@ -386,7 +400,7 @@ public static class ImpactedTestResolver
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex StructuralElementRegex = new(
-        @"^</?\s*(Project|Choose|When|Otherwise|ItemGroup|PropertyGroup|NoWarn|WarningLevel)\b|^</",
+        @"^</?\s*(Project|Choose|When|Otherwise|ItemGroup|PropertyGroup|NoWarn|WarningLevel|IncludeAssets|PrivateAssets)\b|^</",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
