@@ -43,6 +43,23 @@ public static class PlanDocStateHelpers
     };
 
     /// <summary>
+    /// Return the canonical position for <paramref name="docKey"/> in
+    /// <see cref="PlanDocOrder"/>.
+    /// </summary>
+    public static int PlanDocIndexOf(string docKey)
+    {
+        for (var i = 0; i < PlanDocOrder.Count; i++)
+        {
+            if (string.Equals(PlanDocOrder[i], docKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
     /// Map plan-doc key → on-disk file name (matches
     /// <c>BuildPlanDocSpecs</c> + <c>PlanDocFileNames</c>). Both with the
     /// <c>.md</c> suffix because deliverables, transcripts, and queue rows

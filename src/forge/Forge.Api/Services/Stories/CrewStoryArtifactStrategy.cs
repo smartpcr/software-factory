@@ -505,12 +505,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        // Phase 47 / 53 -- pick a (generator, evaluator) pair fresh per call.
-        // Calling LoadArchitectAndEvaluatorRostersAsync re-queries
-        // agent_usage so a long-running upstream doc doesn't re-pin the
-        // same agents to the next doc in the chain.
-        var (generatorAgentIds, evaluatorAgentIds) =
-            await this.LoadArchitectAndEvaluatorRostersAsync(1, ct);
+        // Phase 47 / 53 -- pick the doc's canonical roster slot even though
+        // sequential mode invokes one doc per scheduler tick. Loading the full
+        // four-doc roster preserves the Phase-47 pair distribution contract;
+        // requesting count=1 here re-pinned every sequential doc to slot 0.
+        var (generatorAgentId, evaluatorAgentId) =
+            await this.LoadPlanDocAgentPairAsync(docKey, ct);
 
         // Siblings are the three non-active canonical keys, in canonical
         // order. The agent's filesystem tools resolve them against the
@@ -534,8 +534,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var content = await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume,
-            generatorAgentOverride: generatorAgentIds.Count > 0 ? generatorAgentIds[0] : null,
-            evaluatorAgentOverride: evaluatorAgentIds.Count > 0 ? evaluatorAgentIds[0] : null,
+            generatorAgentOverride: generatorAgentId,
+            evaluatorAgentOverride: evaluatorAgentId,
             siblingSpecs: siblingSpecs,
             worktreePath: worktreePath,
             repo: repo,
@@ -1838,6 +1838,39 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 53 follow-up -- resolve the Phase-47 architect/evaluator roster
+    /// slot for a single sequential plan doc. Sequential mode invokes one doc
+    /// per tick, but the assignment must stay keyed to the canonical four-doc
+    /// order so architecture, tech-spec, implementation-plan, and e2e-scenarios
+    /// do not all collapse to roster slot 0.
+    /// </summary>
+    internal async Task<(string? GeneratorAgentId, string? EvaluatorAgentId)> LoadPlanDocAgentPairAsync(
+        string docKey,
+        CancellationToken ct)
+    {
+        var docIndex = PlanDocStateHelpers.PlanDocIndexOf(docKey);
+        if (docIndex < 0)
+        {
+            throw new ArgumentException($"Unknown plan-doc key '{docKey}'.", nameof(docKey));
+        }
+
+        var (generatorAgentIds, evaluatorAgentIds) =
+            await this.LoadArchitectAndEvaluatorRostersAsync(PlanDocStateHelpers.PlanDocOrder.Count, ct);
+
+        var generatorAgentId = generatorAgentIds.Count > docIndex
+            ? NullIfEmpty(generatorAgentIds[docIndex])
+            : null;
+        var evaluatorAgentId = evaluatorAgentIds.Count > docIndex
+            ? NullIfEmpty(evaluatorAgentIds[docIndex])
+            : null;
+
+        return (generatorAgentId, evaluatorAgentId);
+    }
+
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>
     /// 2026-05-20 — per-plan-doc production lock, keyed by the synthetic
     /// <c>plan-doc:{spawnId}:{file}</c> work-item id. Acquired at the top of
     /// <see cref="ProducePlanFileAsync"/> — before the fresh-start cleanup
@@ -2819,17 +2852,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Assign a stable generator per doc key -- uses the roster index
         // so each doc gets a different agent even on resume. The key index
         // is deterministic: architecture=0, tech-spec=1, etc.
-        var allKeys = specs.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
-        var docIndex = allKeys.IndexOf(key);
-        if (docIndex < 0) docIndex = 0;
         // Phase 47 -- load BOTH rosters (gen + eval) so a single-doc resume
         // doesn't accidentally re-pin the original (potentially still busy)
-        // evaluator. The doc keeps its position in both rosters via
-        // docIndex so a Restart of doc-3 picks the same gen+eval pair the
-        // full run would have assigned to doc-3.
-        var (genRoster, evalRoster) = await this.LoadArchitectAndEvaluatorRostersAsync(allKeys.Count, ct);
-        var generatorOverride = genRoster.Count > docIndex ? genRoster[docIndex] : null;
-        var evaluatorOverride = evalRoster.Count > docIndex ? evalRoster[docIndex] : null;
+        // evaluator. The doc keeps its canonical position in both rosters so
+        // a Restart of doc-3 picks the same gen+eval pair the full run would
+        // have assigned to doc-3.
+        var (generatorOverride, evaluatorOverride) =
+            await this.LoadPlanDocAgentPairAsync(key, ct);
 
         // Phase 42 -- same git-worktree plumbing as the full plan run.
         // Phase 62 (operator-reported 2026-05-14 on
