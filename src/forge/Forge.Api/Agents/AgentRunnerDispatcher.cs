@@ -56,6 +56,66 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
+    internal static string? ResolveCopilotMemoryStorePath(string? worktreePath)
+    {
+        if (string.IsNullOrEmpty(worktreePath)) return null;
+        return Path.Combine(worktreePath, ".forge", "memory");
+    }
+
+    internal static string? ResolveCopilotMemoryStorePath(AgentContext context)
+    {
+        if (context.Memory is null) return null;
+        return ResolveCopilotMemoryStorePath(context.WorktreePath);
+    }
+
+    internal static string? PrepareCopilotMemoryStore(AgentContext context)
+    {
+        var path = ResolveCopilotMemoryStorePath(context);
+        if (string.IsNullOrEmpty(path)) return null;
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    internal static string MaybePrependWorkstreamMemoryPointer(string prompt, AgentContext context)
+    {
+        if (context.Memory is null || string.IsNullOrEmpty(context.WorktreePath)) return prompt;
+        var memoryFile = Path.Combine(context.WorktreePath, ".forge", "memory", "workstream-context.md");
+        if (!File.Exists(memoryFile)) return prompt;
+        return "## Forge workstream memory\n"
+            + "Before planning or editing, read `.forge/memory/workstream-context.md`. "
+            + "It contains concise iteration-forward context: prior summaries, evaluator feedback, changed-file pointers, dead ends, Q&A, gate failures, dependencies, review comments, and merge rationale. "
+            + "Do not treat it as a transcript or edit it.\n\n---\n\n"
+            + prompt;
+    }
+
+    internal static string? ApplyCopilotCliMemory(ProcessStartInfo psi, AgentContext context)
+    {
+        var memoryStorePath = PrepareCopilotMemoryStore(context);
+        if (!string.IsNullOrEmpty(memoryStorePath))
+        {
+            psi.Environment["COPILOT_HOME"] = memoryStorePath;
+        }
+
+        var sessionId = context.Memory?.SessionId;
+        if (!string.IsNullOrEmpty(sessionId))
+        {
+            psi.ArgumentList.Add("--session-id");
+            psi.ArgumentList.Add(sessionId!);
+        }
+
+        return memoryStorePath;
+    }
+
+    internal static (SessionConfig SessionConfig, ResumeSessionConfig ResumeConfig, string? MemorySessionId, bool ShouldResumeSession) CreateCopilotSessionConfigs(
+        AgentContext context,
+        string? ghToken)
+    {
+        var (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession) =
+            CreateCopilotSessionConfigs(context, ghToken);
+
+        return (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession);
+    }
+
     private readonly IHttpClientFactory http;
     private readonly IModelRegistry models;
     private readonly IOptions<AgentRunnerOptions> options;
@@ -158,20 +218,22 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var resolvedModel = NormalizeModelForBackend(context.Model, context.Backend);
         var ctx = resolvedModel == context.Model ? context : context with { Model = resolvedModel };
 
+        var effectivePrompt = MaybePrependWorkstreamMemoryPointer(prompt, ctx);
+
         IAsyncEnumerable<AgentEvent> raw;
         if (string.Equals(ctx.Model, "local-stub", StringComparison.OrdinalIgnoreCase))
         {
             // local-stub bypasses all backends — used by tests + offline dev.
-            raw = this.RunLocalStub(prompt, ctx, linked.Token);
+            raw = this.RunLocalStub(effectivePrompt, ctx, linked.Token);
         }
         else
         {
             raw = (ctx.Backend, ctx.InvokeMode) switch
             {
-                (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, ctx, linked.Token),
-                (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, ctx, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, taskId, agentId, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, ctx, linked.Token),
+                (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(effectivePrompt, ctx, linked.Token),
+                (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(effectivePrompt, ctx, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(effectivePrompt, ctx, taskId, agentId, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(effectivePrompt, ctx, linked.Token),
                 _ => RunUnsupported(ctx),
             };
         }
@@ -313,7 +375,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             DateTimeOffset.UtcNow,
             InputTokens: inTokens,
             OutputTokens: outTokens,
-            CostUsd: ComputeCost(modelInfo, inTokens, outTokens));
+            CostUsd: ComputeCost(modelInfo, inTokens, outTokens),
+            SessionId: context.Memory?.SessionId);
     }
 
     // ── Claude · SDK (Anthropic /v1/messages with streaming SSE) ────────────
@@ -961,6 +1024,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var fullPrompt = string.IsNullOrEmpty(context.SoulMd)
             ? prompt
             : $"{context.SoulMd}\n\n---\n\n{prompt}";
+        string? ghToken = null;
+        if (this.ghAuth is not null)
+        {
+            try { ghToken = await this.ghAuth.GetAccessTokenAsync(ct); }
+            catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot CLI session"); }
+        }
 
         // copilot CLI: `--prompt -` reads from stdin, `--model` selects model.
         // (Recent copilot CLI versions dropped the `-m` short form — the
@@ -977,10 +1046,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             CreateNoWindow = true,
             WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
         };
+        if (!string.IsNullOrEmpty(ghToken))
+        {
+            psi.Environment["COPILOT_GITHUB_TOKEN"] = ghToken;
+        }
         psi.ArgumentList.Add("--prompt");
         psi.ArgumentList.Add("-");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(context.Model);
+        ApplyCopilotCliMemory(psi, context);
         foreach (var a in this.options.Value.CopilotCliExtraArgs) psi.ArgumentList.Add(a);
 
         await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
@@ -1278,13 +1352,22 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 try { ghToken = await this.ghAuth.GetAccessTokenAsync(effectiveCt); }
                 catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
             }
+            var memoryStorePath = PrepareCopilotMemoryStore(context);
+            var memorySessionId = context.Memory?.SessionId;
+            var shouldResumeSession = context.Memory?.ResumeSession == true
+                && !string.IsNullOrEmpty(memorySessionId);
 
             var sessionConfig = new SessionConfig
             {
+                SessionId = string.IsNullOrEmpty(memorySessionId) ? null : memorySessionId,
                 Model = context.Model,
                 OnPermissionRequest = PermissionHandler.ApproveAll,
                 GitHubToken = ghToken,
             };
+            if (!string.IsNullOrEmpty(memoryStorePath))
+            {
+                sessionConfig.ConfigDir = memoryStorePath;
+            }
             if (!string.IsNullOrEmpty(context.WorktreePath))
             {
                 sessionConfig.WorkingDirectory = context.WorktreePath;
@@ -1296,6 +1379,36 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                     Mode = SystemMessageMode.Append,
                     Content = context.SoulMd,
                 };
+            }
+
+            var resumeConfig = new ResumeSessionConfig
+            {
+                Model = context.Model,
+                OnPermissionRequest = PermissionHandler.ApproveAll,
+                GitHubToken = ghToken,
+            };
+            if (!string.IsNullOrEmpty(memoryStorePath))
+            {
+                resumeConfig.ConfigDir = memoryStorePath;
+            }
+            if (!string.IsNullOrEmpty(context.WorktreePath))
+            {
+                resumeConfig.WorkingDirectory = context.WorktreePath;
+            }
+
+            async Task<CopilotSession> CreateOrResumeSessionAsync(CancellationToken factoryCt)
+            {
+                EnsureWorkingDirectoryAccessible(sessionConfig);
+                if (shouldResumeSession)
+                {
+                    return await this.copilotServer.ResumeSessionAsync(memorySessionId!, resumeConfig, factoryCt)
+                        ?? throw new InvalidOperationException(
+                            "CopilotServerManager.ResumeSessionAsync returned null — shared server is not running.");
+                }
+
+                return await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
+                    ?? throw new InvalidOperationException(
+                        "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
             }
 
             // 2026-05-20 — Phase 75c: wrap session acquire in a catch so a
@@ -1362,11 +1475,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                     // returns "Directory does not exist or cannot
                                     // be accessed: <path>" when the worktree
                                     // got wiped between EnsureWorktreeAsync's
-                                    // success and this CreateSessionAsync call.
-                                    EnsureWorkingDirectoryAccessible(sessionConfig);
-                                    var s = await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
-                                        ?? throw new InvalidOperationException(
-                                            "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                                    // success and this session call.
+                                    var s = await CreateOrResumeSessionAsync(factoryCt);
                                     // The pool entry retains a CopilotClient
                                     // reference for diagnostics and parity with
                                     // legacy code paths; in the shared-server
@@ -1414,10 +1524,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                     {
                         try
                         {
-                            EnsureWorkingDirectoryAccessible(sessionConfig);
-                            session = await this.copilotServer.CreateSessionAsync(sessionConfig, effectiveCt)
-                                ?? throw new InvalidOperationException(
-                                    "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                            session = await CreateOrResumeSessionAsync(effectiveCt);
                             client = null;  // shared; do NOT dispose in finally
                             break;
                         }

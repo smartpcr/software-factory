@@ -146,6 +146,20 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
+    /// Resumes a provider-persisted session on the shared, authenticated
+    /// <see cref="CopilotClient"/>. Mirrors <see cref="CreateSessionAsync"/>
+    /// so callers do not create unauthenticated clients against the shared
+    /// server's URL.
+    /// </summary>
+    public async Task<CopilotSession?> ResumeSessionAsync(string sessionId, ResumeSessionConfig config, CancellationToken ct)
+    {
+        await this.EnsureRunningAsync(ct);
+        var snapshot = this.serverClient;
+        if (snapshot is null) return null;
+        return await snapshot.ResumeSessionAsync(sessionId, config, ct);
+    }
+
+    /// <summary>
     /// Whether the shared server is currently running and healthy.
     /// </summary>
     public bool IsRunning => this.serverClient is not null;

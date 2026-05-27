@@ -98,7 +98,84 @@ public sealed class AgentMemoryStore
         var hasTurns = priorTurns is { Count: > 0 };
         if (!hasSession && !hasTurns) return null;
 
-        return new AgentMemoryHandle(SessionId: row.SessionId, PriorTurns: priorTurns);
+        return new AgentMemoryHandle(
+            SessionId: row.SessionId,
+            PriorTurns: priorTurns,
+            ResumeSession: hasSession);
+    }
+
+    /// <summary>
+    /// Ensures a session-backed runner has a stable provider session id
+    /// before invocation. Returns <c>ShouldResume=true</c> only when the
+    /// row already carried a session id; a newly generated id should be
+    /// passed to "create new session" APIs rather than resume APIs.
+    /// </summary>
+    public async Task<(string SessionId, bool ShouldResume)> EnsureSessionIdAsync(
+        string workItemId,
+        string agentId,
+        string role,
+        string backend,
+        string invokeMode,
+        string? memoryStorePath = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(workItemId)) throw new ArgumentException("workItemId required", nameof(workItemId));
+        if (string.IsNullOrEmpty(agentId)) throw new ArgumentException("agentId required", nameof(agentId));
+        if (string.IsNullOrEmpty(role)) throw new ArgumentException("role required", nameof(role));
+
+        var row = await this.db.AgentMemory
+            .FirstOrDefaultAsync(
+                m => m.WorkItemId == workItemId && m.AgentId == agentId && m.Role == role,
+                ct);
+        if (!string.IsNullOrEmpty(row?.SessionId))
+        {
+            if (!string.IsNullOrEmpty(memoryStorePath) && !Directory.Exists(memoryStorePath))
+            {
+                var nowMissingStore = DateTimeOffset.UtcNow;
+                var replacementSessionId = Guid.NewGuid().ToString("D");
+                row.Backend = backend;
+                row.InvokeMode = invokeMode;
+                row.SessionId = replacementSessionId;
+                row.MessagesJson = null;
+                row.LastIter = 0;
+                row.ApproxInputTokens = 0;
+                row.UpdatedAt = nowMissingStore;
+                await this.db.SaveChangesAsync(ct);
+                return (replacementSessionId, false);
+            }
+
+            return (row.SessionId!, true);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var sessionId = Guid.NewGuid().ToString("D");
+        if (row is null)
+        {
+            this.db.AgentMemory.Add(new AgentMemoryRow
+            {
+                WorkItemId = workItemId,
+                AgentId = agentId,
+                Role = role,
+                Backend = backend,
+                InvokeMode = invokeMode,
+                SessionId = sessionId,
+                MessagesJson = null,
+                LastIter = 0,
+                ApproxInputTokens = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+        }
+        else
+        {
+            row.Backend = backend;
+            row.InvokeMode = invokeMode;
+            row.SessionId = sessionId;
+            row.UpdatedAt = now;
+        }
+
+        await this.db.SaveChangesAsync(ct);
+        return (sessionId, false);
     }
 
     /// <summary>

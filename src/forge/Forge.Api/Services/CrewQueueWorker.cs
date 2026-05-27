@@ -1496,6 +1496,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 InvokeMode: invokeMode,
                 WallClockBudget: taskBudget,
                 MaxTurns: taskMaxTurns);
+            var genMemoryEnabled = (agent?.AgentMemoryOverride ?? crew.EnableAgentMemory)
+                && (backend == AgentBackend.Copilot || invokeMode == AgentInvokeMode.Cli);
 
             // (2) Resolve evaluator crew + agent for the gen-eval loop.
             // (`evaluatorAgentId`/`evaluatorCrewId` are declared at the top of
@@ -1673,7 +1675,51 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }
                 }
 
-                var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
+                var contextForIter = context;
+                AgentMemoryHandle? genMemoryHandle = null;
+                if (genMemoryEnabled)
+                {
+                    try
+                    {
+                        using var memScope = this.scopeFactory.CreateScope();
+                        var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                        genMemoryHandle = await memStore.GetHandleAsync(
+                            workItemId, agentId, AgentMemoryRoles.Generator, iterCt);
+                        var ensured = await memStore.EnsureSessionIdAsync(
+                            workItemId, agentId, AgentMemoryRoles.Generator,
+                            backend: backendStr, invokeMode: invokeModeStr,
+                            memoryStorePath: backend == AgentBackend.Copilot
+                                ? AgentRunnerDispatcher.ResolveCopilotMemoryStorePath(worktreePath)
+                                : null,
+                            ct: iterCt);
+                        genMemoryHandle = new AgentMemoryHandle(
+                            SessionId: ensured.SessionId,
+                            PriorTurns: genMemoryHandle?.PriorTurns,
+                            ResumeSession: ensured.ShouldResume);
+                        if (!string.IsNullOrEmpty(worktreePath))
+                        {
+                            var contextStore = memScope.ServiceProvider.GetRequiredService<WorkstreamMemoryContextStore>();
+                            await contextStore.WriteAsync(workItemId, worktreePath, iterCt);
+                        }
+                        contextForIter = contextForIter with { Memory = genMemoryHandle };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.resumed", new
+                        {
+                            role = "generator",
+                            agentId,
+                            sessionId = genMemoryHandle.SessionId,
+                            resumeSession = genMemoryHandle.ResumeSession,
+                            iter,
+                        }, crewId: crewId, ct: iterCt);
+                    }
+                    catch (Exception memEx) when (memEx is not OperationCanceledException)
+                    {
+                        this.logger.LogWarning(memEx,
+                            "AgentMemoryStore.Get/Ensure failed for {WorkItem}/{Agent}/gen; running without memory.",
+                            workItemId, agentId);
+                    }
+                }
+
+                var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, contextForIter, iterCt);
                 var output = new System.Text.StringBuilder();
                 decimal cost = 0m;
                 long inTok = 0, outTok = 0;
@@ -1751,6 +1797,32 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.Kind == AgentEventKind.ToolCall)
                     {
                         toolCallCount++;
+                    }
+                }
+
+                if (genMemoryEnabled)
+                {
+                    var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
+                        ? capturedSessionId
+                        : genMemoryHandle?.SessionId;
+                    if (!string.IsNullOrEmpty(sessionIdToPersist))
+                    {
+                        try
+                        {
+                            using var memScope = this.scopeFactory.CreateScope();
+                            var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                            await memStore.UpsertAsync(
+                                workItemId, agentId, AgentMemoryRoles.Generator,
+                                backend: backendStr, invokeMode: invokeModeStr,
+                                sessionId: sessionIdToPersist, messagesJson: null,
+                                lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                        }
+                        catch (Exception memEx) when (memEx is not OperationCanceledException)
+                        {
+                            this.logger.LogWarning(memEx,
+                                "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/gen at iter {Iter}.",
+                                workItemId, agentId, iter);
+                        }
                     }
                 }
 
@@ -1972,6 +2044,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     InvokeMode: AgentInvokeMode.Sdk,
                     WallClockBudget: taskBudget,
                     MaxTurns: taskMaxTurns);
+                var evalMemoryEnabled = (evalAgent?.AgentMemoryOverride ?? evalCrew.EnableAgentMemory)
+                    && evalBackend == AgentBackend.Copilot;
 
                 // The evaluator prompt is lean — just the task context + work item
                 // title. The evaluator uses tools to inspect the worktree itself.
@@ -2011,7 +2085,51 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "Start by running `git diff HEAD~1 --stat -p` to see what was changed, "
                     + "then read the modified files to verify the approach is correct.";
 
-                var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
+                var evalContextForIter = evalContext;
+                AgentMemoryHandle? evalMemoryHandle = null;
+                if (evalMemoryEnabled)
+                {
+                    try
+                    {
+                        using var memScope = this.scopeFactory.CreateScope();
+                        var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                        evalMemoryHandle = await memStore.GetHandleAsync(
+                            workItemId, evaluatorAgentId, AgentMemoryRoles.Evaluator, iterCt);
+                        var ensured = await memStore.EnsureSessionIdAsync(
+                            workItemId, evaluatorAgentId, AgentMemoryRoles.Evaluator,
+                            backend: evalBackendStr, invokeMode: "sdk",
+                            memoryStorePath: evalBackend == AgentBackend.Copilot
+                                ? AgentRunnerDispatcher.ResolveCopilotMemoryStorePath(worktreePath)
+                                : null,
+                            ct: iterCt);
+                        evalMemoryHandle = new AgentMemoryHandle(
+                            SessionId: ensured.SessionId,
+                            PriorTurns: evalMemoryHandle?.PriorTurns,
+                            ResumeSession: ensured.ShouldResume);
+                        if (!string.IsNullOrEmpty(worktreePath))
+                        {
+                            var contextStore = memScope.ServiceProvider.GetRequiredService<WorkstreamMemoryContextStore>();
+                            await contextStore.WriteAsync(workItemId, worktreePath, iterCt);
+                        }
+                        evalContextForIter = evalContextForIter with { Memory = evalMemoryHandle };
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.resumed", new
+                        {
+                            role = "evaluator",
+                            agentId = evaluatorAgentId,
+                            sessionId = evalMemoryHandle.SessionId,
+                            resumeSession = evalMemoryHandle.ResumeSession,
+                            iter,
+                        }, crewId: evaluatorCrewId!, ct: iterCt);
+                    }
+                    catch (Exception memEx) when (memEx is not OperationCanceledException)
+                    {
+                        this.logger.LogWarning(memEx,
+                            "AgentMemoryStore.Get/Ensure failed for {WorkItem}/{Agent}/eval; running without memory.",
+                            workItemId, evaluatorAgentId);
+                    }
+                }
+
+                var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContextForIter, iterCt);
 
                 // Emit evaluator prompt so the live execution view shows it.
                 await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
@@ -2124,6 +2242,32 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.ReasoningTokens is > 0) evalReasoning += evt.ReasoningTokens.Value;
                     if (evt.ConversationTokens is > 0) evalConversationLatest = evt.ConversationTokens.Value;
                     if (!string.IsNullOrEmpty(evt.SessionId)) evalSessionId = evt.SessionId;
+                }
+
+                if (evalMemoryEnabled)
+                {
+                    var sessionIdToPersist = !string.IsNullOrEmpty(evalSessionId)
+                        ? evalSessionId
+                        : evalMemoryHandle?.SessionId;
+                    if (!string.IsNullOrEmpty(sessionIdToPersist))
+                    {
+                        try
+                        {
+                            using var memScope = this.scopeFactory.CreateScope();
+                            var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                            await memStore.UpsertAsync(
+                                workItemId, evaluatorAgentId!, AgentMemoryRoles.Evaluator,
+                                backend: evalBackendStr, invokeMode: "sdk",
+                                sessionId: sessionIdToPersist, messagesJson: null,
+                                lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                        }
+                        catch (Exception memEx) when (memEx is not OperationCanceledException)
+                        {
+                            this.logger.LogWarning(memEx,
+                                "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/eval at iter {Iter}.",
+                                workItemId, evaluatorAgentId, iter);
+                        }
+                    }
                 }
 
                 return new EvaluatorRunOutput(

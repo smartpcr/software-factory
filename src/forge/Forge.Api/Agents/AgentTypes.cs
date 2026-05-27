@@ -259,11 +259,13 @@ public sealed record AgentContext(
 /// <see cref="PriorTurns"/>. Records that hold both are valid only on
 /// migrations across backends (rare).
 /// </summary>
-/// <param name="SessionId">Provider-native session handle. Null until the first Layer-2 invocation writes a row to <c>agent_memory</c>.</param>
+/// <param name="SessionId">Provider-native session handle. Null until a session-backed runner has allocated one.</param>
 /// <param name="PriorTurns">Conversation history to replay as the <c>messages</c> array. Null when the backend doesn't need replay.</param>
+/// <param name="ResumeSession">True when <see cref="SessionId"/> points at a previously-created provider session; false when it is a caller-assigned id for a new session.</param>
 public sealed record AgentMemoryHandle(
     string? SessionId = null,
-    IReadOnlyList<ConversationTurn>? PriorTurns = null);
+    IReadOnlyList<ConversationTurn>? PriorTurns = null,
+    bool ResumeSession = false);
 
 /// <summary>
 /// Phase 55 — one conversation turn persisted in

@@ -399,6 +399,7 @@ builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Servic
 // the Memory handle on AgentContext consumed by the runner cells in
 // Phases C/D/E.
 builder.Services.AddScoped<Forge.Api.Services.AgentMemoryStore>();
+builder.Services.AddScoped<Forge.Api.Services.WorkstreamMemoryContextStore>();
 // Phase 82 — durable per-iteration prompt audit store. Scoped so it
 // shares the caller's ProductDbContext / transaction; mirrors every
 // task.prompt emit in CrewStoryArtifactStrategy so the audit trail

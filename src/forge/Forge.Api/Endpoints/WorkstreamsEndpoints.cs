@@ -12,6 +12,7 @@ using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Realtime;
+using Forge.Api.Services;
 using Forge.Api.Services.Git;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
@@ -714,7 +715,9 @@ public static class WorkstreamsEndpoints
         IHubContext<ForgeHub> hub,
         IForgeDbPaths paths,
         IEnumerable<IForgeProvider> providers,
-        StorySpawnOrchestrator orchestrator)
+        StorySpawnOrchestrator orchestrator,
+        AgentMemoryStore memStore,
+        CopilotSessionPool copilotPool)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -725,6 +728,16 @@ public static class WorkstreamsEndpoints
         // ── 0. Cancel in-flight work (mirrors Cancel endpoint logic) ────
         try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
         catch { /* best-effort — don't block restart if runner is down */ }
+
+        // ── 0b. Force-dispose any cached Copilot SDK session for this
+        // work item BEFORE we wipe agent_memory. Without this, a long
+        // SendAsync mid-flight from a Phase E pool entry can outlive the
+        // cancellation token and continue against a session id whose row
+        // is about to be deleted, which causes the next iter to either
+        // resume against ghost state or hang. Force-dispose tears the
+        // entry down regardless of refcount; idempotent if no entry.
+        try { await copilotPool.DisposeForWorkItemForceAsync(id, ctx.RequestAborted); }
+        catch { /* best-effort — pool may be empty or already disposed */ }
 
         var queueRows = await db.TaskQueue
             .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
@@ -962,6 +975,53 @@ public static class WorkstreamsEndpoints
 
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "restarted", id });
 
+        // ── 7b. Wipe Phase 55 agent_memory rows so the next attempt does
+        // not inherit prior conversation state. Two failure modes the
+        // wipe prevents:
+        //
+        //  • Claude/SDK message-replay: rows carrying a 100K-300K-token
+        //    MessagesJson blob were being deserialised into priorTurns
+        //    and re-fed to the SDK as conversation history. The model
+        //    cannot work through that context inside the BudgetForPhase
+        //    wall-clock budget (e.g. 8 points × 60 s × 3.0 = 24 min for
+        //    impl). Every iter hit the hard timeout, scored 0, autoRetry
+        //    re-loaded the same memory, loop forever.
+        //
+        //  • Copilot/SDK session resume: rows carrying a SessionId cause
+        //    the runner to reattach to the prior provider session in
+        //    .forge/memory. After section 7's worktree nuke deletes
+        //    that on-disk store, the saved SessionId points at nothing
+        //    and the SDK either errors ("unable to open database file")
+        //    or resumes against a phantom session.
+        //
+        // The doc-comment on AgentMemoryStore.DeleteForWorkItemAsync
+        // already advertises this method as the "reaper called on
+        // terminal verdicts" — but until this fix, nothing actually
+        // invoked it. AgentMemoryReaper only sweeps by age (days), and
+        // MemoryCompactor only fires at 300K tokens (rows can sit at
+        // 290K for weeks).
+        //
+        // Placement is LATE (after every cancellation + pool teardown
+        // + branch nuke) so any straggler UpsertAsync from a cancelled
+        // iter's finally block has had time to either complete-before
+        // (we wipe it) or trip its OperationCanceledException (it
+        // never writes). User-observed symptom: 2026-05-26 stuck
+        // ws-local-http-memory-phase-foundations-stage-add-banned-api-analyzer-wiring;
+        // operator clicked Restart 20+ times over 2 days; 11 stale
+        // agent_memory rows survived every click (HD3=292K tokens
+        // LastIter=8, HB=194K, LG=150K, JI=108K, …); every restart
+        // routed back to the same 24-min timeout.
+        int memoryDeleted;
+        try
+        {
+            memoryDeleted = await memStore.DeleteForWorkItemAsync(id, ctx.RequestAborted);
+        }
+        catch
+        {
+            memoryDeleted = 0;
+            /* best-effort — never block restart on memory cleanup */
+        }
+
         // ── 8. Re-drive the story orchestrator ──────────────────────────
         if (!string.IsNullOrEmpty(ws.StorySpawnId))
         {
@@ -977,7 +1037,7 @@ public static class WorkstreamsEndpoints
             }
         }
 
-        return Results.Ok(new { id, status = "restarted", deliverablesCleaned = deliverables.Count, eventsCleaned = events.Count });
+        return Results.Ok(new { id, status = "restarted", deliverablesCleaned = deliverables.Count, eventsCleaned = events.Count, memoryRowsCleaned = memoryDeleted });
     }
 
     /// <summary>

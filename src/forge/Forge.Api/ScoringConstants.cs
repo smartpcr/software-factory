@@ -244,4 +244,45 @@ public static class ScoringConstants
     /// </summary>
     public const int SloppyConsecutiveZeroThreshold = 3;
 
+    // ── Phase 90 — flat-score-plateau sloppy trigger ────────────────────
+
+    /// <summary>
+    /// Phase 90 — minimum iter count before the flat-plateau trigger can
+    /// fire. Tasks legitimately need a few warmup iters to find a
+    /// non-zero baseline; we don't want to short-circuit early
+    /// exploration. Set to <c>8</c> so the trigger never fires before
+    /// iter 8, which still saves ~$200/attempt vs. the 40-iter cap.
+    /// </summary>
+    /// <remarks>
+    /// Empirical reference: <c>local:HTTP-MEMORY:bounded-trace-primitives-
+    /// stage-extend-requesttraceexpressions-with-stream-evaluator-e2e</c>
+    /// (2026-05-27) — 34 iters at flat score 68 burned ~$200 per attempt
+    /// × 3 reassignments = ~$1,080 before iter-cap finally fired. Phase 90
+    /// would have caught this at iter 8 (3 iters into the 6-window) ×
+    /// 3 attempts ≈ ~$150 vs. the ~$1,080 actually spent.
+    /// </remarks>
+    public const int SloppyFlatPlateauMinIters = 8;
+
+    /// <summary>
+    /// Phase 90 — width (K) of the trailing window that must all hold
+    /// IDENTICAL non-zero scores for the flat-plateau trigger to fire.
+    /// K=6 is chosen so the signal is unambiguous (six consecutive
+    /// identical scores is extremely rare absent score quantization /
+    /// rubric collapse) while still triggering early.
+    /// </summary>
+    /// <remarks>
+    /// <para>Compare to the legacy <see cref="SloppyDetector.CheckScorePlateau"/>
+    /// (Q52.1, disabled 2026-05-13): that one fires when peak is at
+    /// <c>iter &lt;= N-3</c> i.e. only the LAST score must be ≤ peak. The
+    /// 2026-05-13 disable rationale was correct for the Q52.1 form (3-iter
+    /// window too noisy, fires on benign downgrades). Phase 90's K=6
+    /// identical-score window is a strictly narrower signal — far less
+    /// false-positive-prone.</para>
+    /// <para>Distinct from <see cref="SloppyConsecutiveZeroThreshold"/>
+    /// (Phase 61): that handles non-converging zero scores; Phase 90
+    /// handles non-zero stuck plateaus. Both fire on the same code path
+    /// (<see cref="SloppyReasons"/> + reassignment reconciler).</para>
+    /// </remarks>
+    public const int SloppyFlatPlateauWindow = 6;
+
 }

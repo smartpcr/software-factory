@@ -1281,6 +1281,35 @@ public static class SloppyReasons
     /// operator intervention.
     /// </summary>
     public const string AgentRefusal = "agent-refusal";
+
+    /// <summary>
+    /// Phase 90 — the last
+    /// <see cref="ScoringConstants.SloppyFlatPlateauWindow"/> deliverable
+    /// scores on this work item are ALL IDENTICAL and non-zero, with
+    /// the chain length at or above
+    /// <see cref="ScoringConstants.SloppyFlatPlateauMinIters"/>. Catches
+    /// the case where the generator is producing artifacts (so the score
+    /// is non-zero) but the evaluator's rubric is pinned at the same
+    /// number iter-after-iter — i.e. the work has reached its quality
+    /// ceiling for the current pair and further iters cost $6+/iter with
+    /// no expected upside.
+    /// <para>Observed 2026-05-27 on
+    /// <c>local:HTTP-MEMORY:bounded-trace-primitives-stage-extend-
+    /// requesttraceexpressions-with-stream-evaluator-e2e</c> — 34
+    /// iters at flat score 68 across attempt 3-of-3, ~$200 burned,
+    /// then iter-cap finally fired. Across 3 reassignment attempts
+    /// the total cost was ~$1,080 to learn what was unambiguous by
+    /// iter 8. Phase 90 fires at iter 8 (window of 6 trailing
+    /// identical 68s) so each attempt costs ~$50 instead of ~$200,
+    /// dropping the worst-case 3-attempt total from $1k+ to ~$150.</para>
+    /// <para>Distinct from the disabled <see cref="ScorePlateau"/>
+    /// (Q52.1): that fires on personal-best-not-improved-in-trailing-3,
+    /// which has too many false positives on benign single-iter
+    /// downgrades. Phase 90's identical-score-for-6 window is strictly
+    /// narrower — flat plateaus are extremely strong evidence of
+    /// non-convergence.</para>
+    /// </summary>
+    public const string FlatPlateau = "flat-plateau";
 }
 
 /// conversation-tab wizard; answers are prepended to the next iteration's

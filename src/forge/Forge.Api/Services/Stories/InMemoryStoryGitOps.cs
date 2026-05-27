@@ -99,6 +99,32 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.FromResult(sha);
     }
 
+    /// <summary>
+    /// 2026-05-27 — Records the per-iter commit invocations so tests can
+    /// assert that <see cref="CrewStoryArtifactStrategy"/> wires the call
+    /// once per dirty iter. Each entry is <c>(worktreePath, commitMessage)</c>.
+    /// The in-memory store has no real worktree concept (every "branch"
+    /// is just a path→content dictionary), so we record-and-return-false
+    /// when no recorder has stubbed a positive return value; tests that
+    /// model "agent left dirty changes" can set
+    /// <see cref="CommitAllAndPushReturnQueue"/> to control the response.
+    /// </summary>
+    public List<(string WorktreePath, string CommitMessage)> CommitAllAndPushCalls { get; } = new();
+
+    /// <summary>Queue of <c>bool</c> results to return from successive calls to <see cref="CommitAllAndPushAsync"/>. Empty queue ⇒ default <c>false</c>.</summary>
+    public Queue<bool> CommitAllAndPushReturnQueue { get; } = new();
+
+    /// <inheritdoc />
+    public Task<bool> CommitAllAndPushAsync(
+        string worktreePath, string commitMessage, CancellationToken ct = default)
+    {
+        this.CommitAllAndPushCalls.Add((worktreePath ?? string.Empty, commitMessage ?? string.Empty));
+        var result = this.CommitAllAndPushReturnQueue.Count > 0
+            ? this.CommitAllAndPushReturnQueue.Dequeue()
+            : false;
+        return Task.FromResult(result);
+    }
+
     public Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
     {
         // Mirror the real-git contract: once the branch has been merged into

@@ -257,6 +257,23 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             .Where(q => q.WorkItemId == wi.Id)
             .ExecuteDeleteAsync(ct);
 
+        // Phase 55 agent_memory wipe. Without this, sloppy reassignment
+        // would hand the new pair a half-clean slate: transcript /
+        // deliverables / questions gone, but the prior generator and
+        // evaluator's MessagesJson + SessionId persist on agent_memory.
+        // The picker honours PriorPairsJson, but two-iters into the new
+        // pair's attempt, if any prior-pair agent is reused on another
+        // workitem and the runner happens to reach back into the
+        // (workItemId, agentId, role) tuple — or if the operator later
+        // clicks Restart and the next assignment lands on a prior pair —
+        // the stale row reactivates the same 24-min-timeout loop that
+        // motivated the parallel fix on Restart. Wiping inside Q52.4
+        // matches the rest of this block's "no state survives the new
+        // pair's first iter" promise.
+        var memoryDeleted = await db.AgentMemory
+            .Where(m => m.WorkItemId == wi.Id)
+            .ExecuteDeleteAsync(ct);
+
         // Worktree reset is best-effort — a missing worktree (e.g. on a
         // synthetic plan-doc work item) is fine; a failing worktree leaves
         // the row requeued with stale code, which the new pair will see
@@ -312,9 +329,9 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         ReassignedCounter.Add(1, new KeyValuePair<string, object?>("attempt", newAttempt));
         this.logger.LogInformation(
             "SloppyReassignmentReconciler reassigned wi={Wi} crew={Crew} attempt={Attempt}/{Max} newGen={Gen} "
-            + "wipedTranscript={T} wipedDeliverables={D} wipedQuestions={Q}",
+            + "wipedTranscript={T} wipedDeliverables={D} wipedQuestions={Q} wipedMemory={M}",
             wi.Id, crewId, newAttempt, ScoringConstants.MaxPairAttempts, preferredGenerator,
-            transcriptDeleted, deliverablesDeleted, questionsDeleted);
+            transcriptDeleted, deliverablesDeleted, questionsDeleted, memoryDeleted);
 
         await this.taskChannel.EmitAsync(wi.Id, "task.sloppy-reassigned", new
         {
@@ -324,6 +341,7 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             newGeneratorAgentId = preferredGenerator,
             wipedTranscriptEvents = transcriptDeleted,
             wipedDeliverables = deliverablesDeleted,
+            wipedMemoryRows = memoryDeleted,
             queueId = queueRow.Id,
         }, ct: ct);
 

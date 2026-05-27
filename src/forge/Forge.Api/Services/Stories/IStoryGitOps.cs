@@ -53,6 +53,35 @@ public interface IStoryGitOps
         RepoRow? repo, string branch, string worktreeSlug,
         IReadOnlyDictionary<string, string> files, string message, CancellationToken ct = default);
 
+    /// <summary>
+    /// 2026-05-27 — Per-iter durability for the gen↔eval loop: stage all
+    /// worktree changes (excluding <c>.forge/</c> scratch + build artifacts
+    /// via the same scrub pipeline as <see cref="CommitFilesAsync"/>),
+    /// commit them with the forge-engineer identity, and push to
+    /// <c>origin/{branch}</c>. Branch is resolved from the worktree's HEAD
+    /// (<c>git rev-parse --abbrev-ref HEAD</c>) so callers don't need to
+    /// thread it through.
+    ///
+    /// <para>Returns <c>true</c> if a new commit was created and pushed;
+    /// <c>false</c> when nothing was staged (clean worktree) OR a git step
+    /// failed transiently. <b>Best-effort:</b> every failure logs a warning
+    /// and the method returns <c>false</c> rather than throwing — the agent
+    /// loop must keep running even when a transient git glitch blocks a
+    /// per-iter push.</para>
+    ///
+    /// <para>Without this, every generator iter leaves edits uncommitted;
+    /// a Copilot SDK 24-min timeout (or any premature termination) loses
+    /// the iter's work entirely because <see cref="EnsureWorktreeAsync"/>'s
+    /// <c>git reset --hard origin/{branch}</c> wipes the uncommitted state
+    /// at the start of iter N+1. The same fix has been live in
+    /// <c>CrewQueueWorker</c> since 2026-05-13 (XRAFT stage 3.1 root cause);
+    /// this method exposes it for the story-spawn impl path, which routes
+    /// through <c>CrewStoryArtifactStrategy.GeneratorDelegate</c> and was
+    /// previously unprotected.</para>
+    /// </summary>
+    Task<bool> CommitAllAndPushAsync(
+        string worktreePath, string commitMessage, CancellationToken ct = default);
+
     /// <summary>Returns true when <paramref name="filePath"/> exists at the branch tip.</summary>
     Task<bool> FileExistsAsync(RepoRow? repo, string branch, string filePath, CancellationToken ct = default);
 

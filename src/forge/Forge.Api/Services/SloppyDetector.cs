@@ -122,6 +122,64 @@ public static class SloppyDetector
     }
 
     /// <summary>
+    /// Phase 90 — pure helper. Returns <c>true</c> when the trailing
+    /// <paramref name="windowSize"/> scores in
+    /// <paramref name="scoresInOrder"/> are ALL IDENTICAL and ALL
+    /// non-zero, AND the chain length is at or above
+    /// <paramref name="minIters"/>. Captures the "stuck at score X for
+    /// many iters" non-convergence pattern that the disabled Q52.1
+    /// plateau trigger was originally meant to catch but did too loosely.
+    ///
+    /// <para>The window must be entirely <em>non-zero</em> because
+    /// trailing zeros are handled by <see cref="CheckConsecutiveScoreZero"/>
+    /// (Phase 61) with a tighter threshold (3 vs. 6) — splitting the two
+    /// classes lets each trigger be tuned independently.</para>
+    ///
+    /// <para>Pure function — caller supplies the scores in 1-indexed iter
+    /// order. Returns <c>false</c> for chains shorter than
+    /// <paramref name="minIters"/> (cannot fire from early iters).</para>
+    /// </summary>
+    /// <param name="scoresInOrder">
+    /// Scores from iter 1 (index 0) through iter N (index N-1).
+    /// </param>
+    /// <param name="minIters">
+    /// Minimum chain length. Defaults to
+    /// <see cref="ScoringConstants.SloppyFlatPlateauMinIters"/> (8).
+    /// </param>
+    /// <param name="windowSize">
+    /// Width of the trailing identical-score window. Defaults to
+    /// <see cref="ScoringConstants.SloppyFlatPlateauWindow"/> (6).
+    /// </param>
+    /// <returns>
+    /// A tuple of <c>(IsSloppy, PlateauScore, WindowLength)</c>. When
+    /// the trigger does not fire <c>PlateauScore=0</c> and
+    /// <c>WindowLength=0</c>; on fire they hold the identical score and
+    /// the configured window size, useful for telemetry / UI display.
+    /// </returns>
+    public static (bool IsSloppy, int PlateauScore, int WindowLength) CheckFlatPlateau(
+        IReadOnlyList<int> scoresInOrder,
+        int minIters = -1,
+        int windowSize = -1)
+    {
+        if (scoresInOrder is null) throw new ArgumentNullException(nameof(scoresInOrder));
+        if (minIters < 0) minIters = ScoringConstants.SloppyFlatPlateauMinIters;
+        if (windowSize < 0) windowSize = ScoringConstants.SloppyFlatPlateauWindow;
+        if (windowSize <= 1) return (false, 0, 0);
+        var n = scoresInOrder.Count;
+        if (n < minIters) return (false, 0, 0);
+        if (n < windowSize) return (false, 0, 0);
+
+        var anchor = scoresInOrder[n - windowSize];
+        if (anchor <= 0) return (false, 0, 0);
+        for (var i = n - windowSize + 1; i < n; i++)
+        {
+            if (scoresInOrder[i] != anchor) return (false, 0, 0);
+        }
+
+        return (true, anchor, windowSize);
+    }
+
+    /// <summary>
     /// Q52.2 — generator token cap. Sums
     /// <c>agent_usage.InputTokens + OutputTokens</c> for the generator
     /// agent's invocations against this work item since
@@ -170,9 +228,9 @@ public static class SloppyDetector
     /// DISABLED at the operator's direction — the cumulative-token meter
     /// doesn't reflect actual context size (the protocol re-reads context
     /// each turn, so cumulative input balloons naturally on long tasks
-    /// without indicating runaway behavior), and score-plateau adds little
-    /// signal once the legacy 5-iter cap and Phase 51 dollar cap are in
-    /// play.
+    /// without indicating runaway behavior), and the broad Q52.1
+    /// plateau-against-best signal had too many false positives on
+    /// benign single-iter downgrades.
     /// <para>
     /// Phase 61 (2026-05-14) re-enabled a NARROWER trigger:
     /// <see cref="CheckConsecutiveScoreZero"/>. When the last
@@ -186,12 +244,24 @@ public static class SloppyDetector
     /// iter cap chain.
     /// </para>
     /// <para>
+    /// Phase 90 (2026-05-27) re-enabled a SECOND narrower trigger:
+    /// <see cref="CheckFlatPlateau"/>. When the trailing
+    /// <see cref="ScoringConstants.SloppyFlatPlateauWindow"/> deliverable
+    /// scores are ALL IDENTICAL and non-zero AND the chain length is at
+    /// least <see cref="ScoringConstants.SloppyFlatPlateauMinIters"/>,
+    /// the deliverable is sloppy with <see cref="SloppyReasons.FlatPlateau"/>.
+    /// Reference: <c>local:HTTP-MEMORY:bounded-trace-primitives-...-stream-
+    /// evaluator-e2e</c> (2026-05-27) burned ~$1,080 across 3 reassignments
+    /// at flat score 68 before the 40-iter cap fired; Phase 90 would
+    /// have caught each attempt at iter 8 for ~$50 ≈ ~$150 total.
+    /// </para>
+    /// <para>
     /// The helper methods <see cref="CheckTokenCapAsync"/> and
     /// <see cref="CheckScorePlateau"/> remain available — the UI and debug
     /// endpoints still consume them to display "tokens used / cap" ratios
-    /// and "personal best" stats. The first two triggers deliberately
-    /// report <c>IsSloppy=false</c> regardless. The remaining stall paths
-    /// also still apply:
+    /// and "personal best" stats. Those two helpers deliberately report
+    /// <c>IsSloppy=false</c> regardless. The remaining stall paths also
+    /// still apply:
     /// </para>
     /// <list type="bullet">
     ///   <item>Legacy 5-iter cap (<see cref="DeliverableLoop"/> rewrites
@@ -228,6 +298,22 @@ public static class SloppyDetector
             return new SloppyCheckResult(
                 IsSloppy: true,
                 Reason: SloppyReasons.ConsecutiveScoreZero,
+                BestIter: bestIter,
+                BestScore: bestScore,
+                TotalTokens: totalTokens);
+        }
+
+        // Phase 90 — flat non-zero plateau. Catches the "stuck at score X
+        // for K iters with no improvement" pattern. Strictly narrower than
+        // the disabled Q52.1 plateau check: requires K=6 IDENTICAL scores
+        // in the trailing window AND chain length >= 8 iters. Fires before
+        // the iter-cap so we don't burn the full 40-iter budget.
+        var (flatSloppy, _, _) = CheckFlatPlateau(scoresInOrder);
+        if (flatSloppy)
+        {
+            return new SloppyCheckResult(
+                IsSloppy: true,
+                Reason: SloppyReasons.FlatPlateau,
                 BestIter: bestIter,
                 BestScore: bestScore,
                 TotalTokens: totalTokens);

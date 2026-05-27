@@ -81,8 +81,9 @@ These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phase
   task** (plan-doc, engineer/implement, **reviewer**, qa, qa-e2e, conflict-fix) MUST have its working
   directory set to that task's git worktree (`{repo.cloneRoot}\.worktree\{slug}` via
   `IStoryGitOps.EnsureWorktreeAsync`) and may write **only inside it**. Agent scratch / memory / output
-  files (working notes, a reviewer's `comments.json`, etc.) go under **`.forge/` inside the worktree**,
-  which is git-excluded (`.git/info/exclude`) and scrubbed from the index — mirroring `.forge/iter-notes.md`.
+  files (working notes, a reviewer's `comments.json`, provider session state under `.forge/memory/`, etc.)
+  go under **`.forge/` inside the worktree**, which is git-excluded (`.git/info/exclude`) and scrubbed
+  from the index — mirroring `.forge/iter-notes.md`.
   It is **forbidden** to run a doc/code agent in a scratch dir under the Forge state folder
   (`{Forge:Db:Folder}\storyworkspaces\…`, i.e. the `PrepareWorkspace` path) or to let it reach into the
   shared clone root. *(Established by the 2026-05-05 "engineer edits real repo files in place" fix for the
@@ -438,6 +439,15 @@ cells** picked from `AgentContext.Backend`/`InvokeMode` (defaults **Copilot · S
 
 **Model registry** (`models.json`, `GET /api/models`): id/vendor/pricing/contextWindow/supportsTools.
 Pricing is **denormalized onto each `Crew` row** at assignment so historical salary is reproducible.
+
+**Agent memory (P55):** `agent_memory` persists one row per `(WorkItemId, AgentId, Role)`. For Copilot,
+Forge now creates a stable session id before invocation and stores provider state under
+`{worktree}\.forge\memory\`: SDK sessions set `SessionConfig.ConfigDir` / `SessionId` and resume with
+`ResumeSessionAsync` only when that worktree-local memory directory still exists; CLI sessions set
+`COPILOT_HOME={worktree}\.forge\memory` and pass `--session-id`. `.forge/memory/` is kept on disk across
+normal commit / merge scrubs while still being removed from the git index. Closing/removing the worktree
+removes the memory store; if a stale `agent_memory` DB row remains but `.forge\memory` is gone, Forge rotates
+to a fresh session id instead of resuming.
 
 **soul.md** *(P11.3, P13.3)*: per-agent system prompt at `%LOCALAPPDATA%\Forge\agents\{id}\soul.md`
 (path on the agent row). YAML front-matter declares `capabilities:`, `tools:`, and (planned, P30)

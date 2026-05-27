@@ -5686,8 +5686,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // covered Claude/CLI (--resume); Phase D added Claude/SDK
         // (conversation history replay against /v1/messages); Phase E
         // adds Copilot/SDK (pooled live session reused across iters).
-        // Copilot/CLI has no equivalent native continuity surface and
-        // falls back to Phase A scratch notes alone. Each side is
+        // Copilot/CLI now uses COPILOT_HOME + --session-id against the
+        // worktree-local .forge/memory store. Each side is
         // gated on its OWN crew row (the paired evaluator crew may
         // opt in independently). When false, the delegate skips the
         // load/upsert pair and the runner sees a null ctx.Memory --
@@ -5711,13 +5711,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var genMemoryEnabled = genCrewWantsMemory
             && (genContext.Backend == AgentBackend.Claude
-                || (genContext.Backend == AgentBackend.Copilot
-                    && genContext.InvokeMode == AgentInvokeMode.Sdk));
+                || genContext.Backend == AgentBackend.Copilot);
         var evalMemoryEnabled = evalCrewWantsMemory
             && evalContext is not null
             && (evalContext.Backend == AgentBackend.Claude
-                || (evalContext.Backend == AgentBackend.Copilot
-                    && evalContext.InvokeMode == AgentInvokeMode.Sdk));
+                || evalContext.Backend == AgentBackend.Copilot);
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
         {
@@ -6105,6 +6103,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // tracked entities.
             var genContextForIter = genContext;
             AgentMemoryHandle? loadedGenHandle = null;
+            var genUsesProviderSession = UsesProviderSessionMemory(genContext);
             if (genMemoryEnabled)
             {
                 try
@@ -6113,6 +6112,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
                     loadedGenHandle = await memStore.GetHandleAsync(
                         workItemId, genAgentId, AgentMemoryRoles.Generator, iterCt);
+                    if (genUsesProviderSession)
+                    {
+                        var ensured = await memStore.EnsureSessionIdAsync(
+                            workItemId, genAgentId, AgentMemoryRoles.Generator,
+                            backend: genBackendStr, invokeMode: genInvokeStr,
+                            memoryStorePath: genContext.Backend == AgentBackend.Copilot
+                                ? AgentRunnerDispatcher.ResolveCopilotMemoryStorePath(genContext.WorktreePath)
+                                : null,
+                            ct: iterCt);
+                        loadedGenHandle = new AgentMemoryHandle(
+                            SessionId: ensured.SessionId,
+                            PriorTurns: loadedGenHandle?.PriorTurns,
+                            ResumeSession: ensured.ShouldResume);
+                    }
+                    if (genUsesProviderSession && !string.IsNullOrEmpty(genContext.WorktreePath))
+                    {
+                        var contextStore = memScope.ServiceProvider.GetRequiredService<WorkstreamMemoryContextStore>();
+                        await contextStore.WriteAsync(workItemId, genContext.WorktreePath, iterCt);
+                    }
                     if (loadedGenHandle is not null)
                     {
                         genContextForIter = genContextForIter with { Memory = loadedGenHandle };
@@ -6121,6 +6139,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             role = "generator",
                             agentId = genAgentId,
                             sessionId = loadedGenHandle.SessionId,
+                            resumeSession = loadedGenHandle.ResumeSession,
                             priorTurns = loadedGenHandle.PriorTurns?.Count ?? 0,
                             iter,
                         }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
@@ -6319,7 +6338,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // those may throw; the conversation is valid regardless
             // of whether the diff compiled. Best-effort: an upsert
             // failure logs but doesn't fail the iter.
-            if (genMemoryEnabled && genContext.InvokeMode == AgentInvokeMode.Sdk)
+            if (genMemoryEnabled && UsesMessageReplayMemory(genContext))
             {
                 try
                 {
@@ -6374,30 +6393,36 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         workItemId, genAgentId, iter);
                 }
             }
-            else if (genMemoryEnabled && !string.IsNullOrEmpty(capturedSessionId))
+            else if (genMemoryEnabled)
             {
-                try
+                var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
+                    ? capturedSessionId
+                    : genContextForIter.Memory?.SessionId;
+                if (!string.IsNullOrEmpty(sessionIdToPersist))
                 {
-                    using var memScope = this.scopeFactory.CreateScope();
-                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
-                    await memStore.UpsertAsync(
-                        workItemId, genAgentId, AgentMemoryRoles.Generator,
-                        backend: genBackendStr, invokeMode: genInvokeStr,
-                        sessionId: capturedSessionId, messagesJson: null,
-                        lastIter: iter, approxInputTokens: 0, ct: iterCt);
-                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    try
                     {
-                        role = "generator",
-                        agentId = genAgentId,
-                        sessionId = capturedSessionId,
-                        iter,
-                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    this.logger?.LogWarning(ex,
-                        "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/gen at iter {Iter}.",
-                        workItemId, genAgentId, iter);
+                        using var memScope = this.scopeFactory.CreateScope();
+                        var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                        await memStore.UpsertAsync(
+                            workItemId, genAgentId, AgentMemoryRoles.Generator,
+                            backend: genBackendStr, invokeMode: genInvokeStr,
+                            sessionId: sessionIdToPersist, messagesJson: null,
+                            lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                        {
+                            role = "generator",
+                            agentId = genAgentId,
+                            sessionId = sessionIdToPersist,
+                            iter,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/gen at iter {Iter}.",
+                            workItemId, genAgentId, iter);
+                    }
                 }
             }
 
@@ -6519,6 +6544,52 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 else if (changedCount > 0)
                 {
                     consecutiveNoChange = 0;
+
+                    // 2026-05-27 root-cause fix for the story-spawn path: persist
+                    // the agent's iter work as a commit on the workstream branch
+                    // and push it BEFORE running the per-iter gate chain. Without
+                    // this, a Copilot SDK 24-min timeout (or any premature
+                    // generator termination) loses everything the agent edited
+                    // because EnsureWorktreeAsync's `git reset --hard
+                    // origin/{branch}` at the start of iter N+1 wipes the
+                    // uncommitted state. Mirrors CrewQueueWorker.cs:1820-1873
+                    // (live since 2026-05-13 for the queue-worker path; XRAFT
+                    // stage 3.1 root cause). Pre-gate placement is deliberate:
+                    // even when the gate chain throws BuildFailedException after
+                    // 3 consecutive failures, the work itself is durable on
+                    // origin so the operator can inspect / fix it. Best-effort:
+                    // failures inside CommitAllAndPushAsync log a warning and
+                    // return false; we never throw the iter just because git
+                    // hiccuped. Observed pre-fix on local:UPDATE-HISTORY-IN-CL
+                    // InMemoryIndex stage: 6 work items / 8 generator-timeout
+                    // iters / ALL with empty CommitSha / $481+ cumulative cost
+                    // with zero forward progress until operator hand-salvaged.
+                    try
+                    {
+                        var commitMsg = $"forge[{genAgentId}] iter {iter}: {workItemId}";
+                        var committed = await this.git.CommitAllAndPushAsync(
+                            workspace, commitMsg, iterCt);
+                        if (committed)
+                        {
+                            await this.taskChannel.EmitAsync(workItemId, "task.iter-commit.pushed", new
+                            {
+                                iter,
+                                workspace,
+                                workItemId,
+                                commitMessage = commitMsg,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "Per-iter commit/push threw for wi={Wi} iter={Iter} workspace={Workspace}; continuing.",
+                            workItemId, iter, workspace);
+                    }
 
                     // Phase 56 (was Phase 47e/49) -- agent edited files
                     // this iter. Run the unified gate chain (build →
@@ -6960,6 +7031,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // iter to keep convergence detection honest.
             var evalContextForIter = evalContext;
             AgentMemoryHandle? loadedEvalHandle = null;
+            var evalUsesProviderSession = UsesProviderSessionMemory(evalContext);
             if (evalMemoryEnabled)
             {
                 try
@@ -6968,6 +7040,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
                     loadedEvalHandle = await memStore.GetHandleAsync(
                         workItemId, evalAgentId, AgentMemoryRoles.Evaluator, iterCt);
+                    if (evalUsesProviderSession)
+                    {
+                        var ensured = await memStore.EnsureSessionIdAsync(
+                            workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
+                            backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                            invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                            memoryStorePath: evalContext.Backend == AgentBackend.Copilot
+                                ? AgentRunnerDispatcher.ResolveCopilotMemoryStorePath(evalContext.WorktreePath)
+                                : null,
+                            ct: iterCt);
+                        loadedEvalHandle = new AgentMemoryHandle(
+                            SessionId: ensured.SessionId,
+                            PriorTurns: loadedEvalHandle?.PriorTurns,
+                            ResumeSession: ensured.ShouldResume);
+                    }
+                    if (evalUsesProviderSession && !string.IsNullOrEmpty(evalContext.WorktreePath))
+                    {
+                        var contextStore = memScope.ServiceProvider.GetRequiredService<WorkstreamMemoryContextStore>();
+                        await contextStore.WriteAsync(workItemId, evalContext.WorktreePath, iterCt);
+                    }
                     if (loadedEvalHandle is not null)
                     {
                         evalContextForIter = evalContextForIter with { Memory = loadedEvalHandle };
@@ -6976,6 +7068,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             role = "evaluator",
                             agentId = evalAgentId,
                             sessionId = loadedEvalHandle.SessionId,
+                            resumeSession = loadedEvalHandle.ResumeSession,
                             priorTurns = loadedEvalHandle.PriorTurns?.Count ?? 0,
                             iter,
                         }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
@@ -7074,7 +7167,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // persists session id; SDK path persists the rebuilt turn
             // list. Best-effort: an upsert failure logs but doesn't
             // fail the iter.
-            if (evalMemoryEnabled && evalContext.InvokeMode == AgentInvokeMode.Sdk)
+            if (evalMemoryEnabled && UsesMessageReplayMemory(evalContext))
             {
                 try
                 {
@@ -7130,31 +7223,37 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         workItemId, evalAgentId, iter);
                 }
             }
-            else if (evalMemoryEnabled && !string.IsNullOrEmpty(capturedSessionId))
+            else if (evalMemoryEnabled)
             {
-                try
+                var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
+                    ? capturedSessionId
+                    : evalContextForIter.Memory?.SessionId;
+                if (!string.IsNullOrEmpty(sessionIdToPersist))
                 {
-                    using var memScope = this.scopeFactory.CreateScope();
-                    var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
-                    await memStore.UpsertAsync(
-                        workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
-                        backend: evalContext.Backend.ToString().ToLowerInvariant(),
-                        invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
-                        sessionId: capturedSessionId, messagesJson: null,
-                        lastIter: iter, approxInputTokens: 0, ct: iterCt);
-                    await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                    try
                     {
-                        role = "evaluator",
-                        agentId = evalAgentId,
-                        sessionId = capturedSessionId,
-                        iter,
-                    }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    this.logger?.LogWarning(ex,
-                        "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/eval at iter {Iter}.",
-                        workItemId, evalAgentId, iter);
+                        using var memScope = this.scopeFactory.CreateScope();
+                        var memStore = memScope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
+                        await memStore.UpsertAsync(
+                            workItemId, evalAgentId, AgentMemoryRoles.Evaluator,
+                            backend: evalContext.Backend.ToString().ToLowerInvariant(),
+                            invokeMode: evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                            sessionId: sessionIdToPersist, messagesJson: null,
+                            lastIter: iter, approxInputTokens: 0, ct: iterCt);
+                        await this.taskChannel.EmitAsync(workItemId, "task.memory.upserted", new
+                        {
+                            role = "evaluator",
+                            agentId = evalAgentId,
+                            sessionId = sessionIdToPersist,
+                            iter,
+                        }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "AgentMemoryStore.UpsertAsync failed for {WorkItem}/{Agent}/eval at iter {Iter}.",
+                            workItemId, evalAgentId, iter);
+                    }
                 }
             }
 
@@ -7476,6 +7575,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         return (agentId, context, backendStr, invokeStr);
     }
+
+    private static bool UsesMessageReplayMemory(AgentContext context) =>
+        context.Backend == AgentBackend.Claude && context.InvokeMode == AgentInvokeMode.Sdk;
+
+    private static bool UsesProviderSessionMemory(AgentContext context) =>
+        context.Backend == AgentBackend.Copilot || context.InvokeMode == AgentInvokeMode.Cli;
 
     private static string? NonEmptyOrNull(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 

@@ -245,14 +245,10 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         await this.StageAllAndScrubAsync(wtPath, ct);
 
-        // Delete .forge/ from disk so a subsequent `git add -A` (e.g., in
-        // MergeUpstreamIntoBranchAsync) doesn't re-stage the files.
-        var forgeDir = Path.Combine(wtPath, ".forge");
-        if (Directory.Exists(forgeDir))
-        {
-            try { Directory.Delete(forgeDir, recursive: true); }
-            catch { /* best-effort — Windows file handles may hold the dir */ }
-        }
+        // Delete Forge scratch from disk so a subsequent `git add -A` (e.g.,
+        // in MergeUpstreamIntoBranchAsync) doesn't re-stage the files.
+        // Preserve .forge/memory: Copilot CLI/SDK session state lives there.
+        this.DeleteForgeScratchExceptMemory(wtPath);
 
         // Detect "nothing to commit" — git returns non-zero for an empty
         // commit unless --allow-empty is passed; we don't want empty
@@ -289,6 +285,119 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Return the head sha of the branch.
         var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
         return shaCode == 0 ? shaOut.Trim() : string.Empty;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> CommitAllAndPushAsync(
+        string worktreePath, string commitMessage, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(commitMessage))
+        {
+            commitMessage = "forge: per-iter snapshot";
+        }
+
+        try
+        {
+            // Quick gate: anything to stage?
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "status", "--porcelain");
+            if (statusCode != 0)
+            {
+                this.logger?.LogWarning(
+                    "CommitAllAndPushAsync: `git status` exited {Code} at {Path}; skipping per-iter commit.",
+                    statusCode, worktreePath);
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(statusOut))
+            {
+                return false; // clean worktree — nothing to commit
+            }
+
+            // Resolve the current branch from the worktree itself so callers
+            // don't have to thread it through.
+            var (branchCode, branchOut, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
+            if (branchCode != 0 || string.IsNullOrWhiteSpace(branchOut))
+            {
+                this.logger?.LogWarning(
+                    "CommitAllAndPushAsync: could not resolve HEAD branch at {Path}; skipping.",
+                    worktreePath);
+                return false;
+            }
+            var branch = branchOut.Trim();
+            if (branch == "HEAD")
+            {
+                this.logger?.LogWarning(
+                    "CommitAllAndPushAsync: HEAD is detached at {Path}; skipping per-iter push.",
+                    worktreePath);
+                return false;
+            }
+
+            // Stage everything, scrubbing .forge/ scratch + well-known build
+            // artifacts (mirrors the CommitFilesAsync pipeline).
+            await this.StageAllAndScrubAsync(worktreePath, ct);
+
+            // Re-check: after the scrub, is anything actually staged?
+            var (stagedCode, _, _) = await this.RunGitCaptureAsync(
+                worktreePath, ct, "diff", "--cached", "--quiet");
+            if (stagedCode == 0)
+            {
+                // index == HEAD — every change was scrubbed (e.g. only
+                // .forge/ + build artifacts in the worktree). Treat as
+                // clean rather than failing the iter.
+                return false;
+            }
+
+            // Commit with the forge-engineer identity. Mirrors
+            // CrewQueueWorker.cs:1844-1849.
+            var (commitCode, _, commitErr) = await this.RunGitCaptureAsync(
+                worktreePath, ct,
+                "-c", "user.email=forge-engineer@local",
+                "-c", "user.name=Forge",
+                "commit", "-m", commitMessage);
+            if (commitCode != 0)
+            {
+                this.logger?.LogWarning(
+                    "CommitAllAndPushAsync: `git commit` exited {Code} on branch {Branch}: {Err}",
+                    commitCode, branch, commitErr);
+                return false;
+            }
+
+            // Push. PushWithAutoRecoverAsync handles the typical fast-forward
+            // failure modes (non-fast-forward → fetch + merge → re-push).
+            try
+            {
+                await this.PushWithAutoRecoverAsync(worktreePath, branch, ct);
+            }
+            catch (Exception pushEx) when (pushEx is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(pushEx,
+                    "CommitAllAndPushAsync: push failed on branch {Branch}; commit is local-only. The next iter's EnsureWorktreeAsync `git reset --hard origin/{Branch}` will lose it if the push isn't recovered.",
+                    branch, branch);
+                // Commit succeeded but push failed — still report true so the
+                // caller knows progress was made locally. The next iter's
+                // pre-dispatch reset may lose it, but a local-only commit is
+                // strictly better than no commit at all.
+                return true;
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogWarning(ex,
+                "CommitAllAndPushAsync: unexpected failure at {Path}; continuing with iter.",
+                worktreePath);
+            return false;
+        }
     }
 
     public async Task<bool> BranchHasChangesVsBaseAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
@@ -2178,6 +2287,57 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
+    /// Removes Forge scratch files from <c>.forge/</c> while preserving
+    /// <c>.forge/memory/</c>, which is the worktree-local Copilot session
+    /// store. Best-effort: locked files are logged at debug level and left
+    /// for the next cleanup pass.
+    /// </summary>
+    private void DeleteForgeScratchExceptMemory(string wtPath)
+    {
+        var forgeDir = Path.Combine(wtPath, ".forge");
+        if (!Directory.Exists(forgeDir)) return;
+
+        try
+        {
+            var dir = new DirectoryInfo(forgeDir);
+            foreach (var file in dir.EnumerateFiles())
+            {
+                try { file.Delete(); }
+                catch (Exception ex)
+                {
+                    this.logger?.LogDebug(ex,
+                        "DeleteForgeScratchExceptMemory: could not delete Forge scratch file {Path}.",
+                        file.FullName);
+                }
+            }
+
+            foreach (var child in dir.EnumerateDirectories())
+            {
+                if (string.Equals(child.Name, "memory", StringComparison.OrdinalIgnoreCase)) continue;
+                try { child.Delete(recursive: true); }
+                catch (Exception ex)
+                {
+                    this.logger?.LogDebug(ex,
+                        "DeleteForgeScratchExceptMemory: could not delete Forge scratch dir {Path}.",
+                        child.FullName);
+                }
+            }
+
+            if (!Directory.EnumerateFileSystemEntries(forgeDir).Any())
+            {
+                try { Directory.Delete(forgeDir); }
+                catch { /* best-effort */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex,
+                "DeleteForgeScratchExceptMemory: best-effort scrub failed at {WtPath}.",
+                wtPath);
+        }
+    }
+
+    /// <summary>
     /// Removes <c>.forge/</c> from both the git index AND the working tree
     /// (on disk). If the removal produces a staged diff, commits the
     /// deletion so that the branch tree is clean before a merge or push.
@@ -2191,20 +2351,10 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.RunGitCaptureAsync(wtPath, ct,
                 "rm", "-r", "--cached", "--ignore-unmatch", "--", ".forge/");
 
-            // Remove from disk so a subsequent `git add -A` or merge commit
-            // doesn't re-introduce them. Swallow IO exceptions — on Windows,
-            // file handles from an agent process can keep directories locked.
-            var forgeDir = Path.Combine(wtPath, ".forge");
-            if (Directory.Exists(forgeDir))
-            {
-                try { Directory.Delete(forgeDir, recursive: true); }
-                catch (Exception ex)
-                {
-                    this.logger?.LogDebug(ex,
-                        "ScrubForgeScratchFromTreeAsync: could not delete .forge/ from disk at {WtPath}; "
-                        + "index scrub still applied.", wtPath);
-                }
-            }
+            // Remove scratch from disk so a subsequent `git add -A` or merge
+            // commit doesn't re-introduce it. Preserve .forge/memory because
+            // Copilot session state is intentionally worktree-local there.
+            this.DeleteForgeScratchExceptMemory(wtPath);
 
             // If the scrub staged any deletions, commit them so the tree is
             // clean for the next merge. Only check .forge/ paths to avoid
@@ -2271,13 +2421,9 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     "rm", "--ignore-unmatch", "--", path);
             }
 
-            // Delete from disk too.
-            var forgeDir = Path.Combine(wtPath, ".forge");
-            if (Directory.Exists(forgeDir))
-            {
-                try { Directory.Delete(forgeDir, recursive: true); }
-                catch { /* best-effort */ }
-            }
+            // Delete scratch from disk too, but keep .forge/memory for
+            // provider session continuity.
+            this.DeleteForgeScratchExceptMemory(wtPath);
 
             this.logger?.LogInformation(
                 "TryResolveForgeConflictsAsync: resolved {Count} .forge/ conflict(s) in {WtPath}; "
