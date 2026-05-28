@@ -123,12 +123,39 @@ function Stop-TargetProcesses {
     if ($IncludeServer) {
         # Gracefully stop the detached ELEVATED broker FIRST. It runs as admin,
         # so a non-elevated Stop-Process can't kill it; instead we tell it to
-        # exit over its named pipe (no UAC). Runs the lightweight --broker-shutdown
-        # mode which connects, sends shutdown, and returns (~2s, no-op if absent).
-        $brokerExe = Get-ServerExe
-        if ($brokerExe) {
-            Write-Host "  Signalling elevated broker to shut down..." -ForegroundColor Gray
-            try { & $brokerExe --broker-shutdown 2>$null | Out-Null } catch { }
+        # exit over its named pipe (no UAC).
+        #
+        # 2026-05-28 — probe the pipe BEFORE launching the signaller. The pipe
+        # name (forge.elevated.<SID>, see ElevatedCommandBroker.PipeName) only
+        # exists while a broker is listening; Test-Path against \\.\pipe\<name>
+        # is a sub-ms kernel lookup. When no broker is running we now skip the
+        # apphost launch entirely instead of paying ~2-5s cold-start + a 2s
+        # ConnectAsync timeout just to discover absence. We still wrap the
+        # signaller with an outer WaitForExit timeout for the HUNG-broker case
+        # (process alive, pipe listening, but stuck mid-frame — the in-process
+        # 5s CTS depends on native pipe I/O honouring cancellation, which is
+        # not guaranteed). If the signaller times out we kill it and continue;
+        # the main server's hard Stop below tears the broker down anyway via
+        # --watch-pid.
+        $sid       = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+        $pipePath  = "\\.\pipe\forge.elevated.$sid"
+        if (Test-Path $pipePath) {
+            $brokerExe = Get-ServerExe
+            if ($brokerExe) {
+                Write-Host "  Signalling elevated broker to shut down..." -ForegroundColor Gray
+                try {
+                    $shutProc = Start-Process -FilePath $brokerExe `
+                        -ArgumentList '--broker-shutdown' `
+                        -WindowStyle Hidden `
+                        -PassThru
+                    if ($shutProc -and -not $shutProc.WaitForExit(10000)) {
+                        Write-Host "  ⚠ Broker-shutdown signalling timed out after 10s (broker likely hung) — killing the signaller and continuing." -ForegroundColor Yellow
+                        try { $shutProc.Kill() } catch { }
+                    }
+                } catch {
+                    Write-Host "  ⚠ Could not launch broker-shutdown signaller: $_" -ForegroundColor Yellow
+                }
+            }
         }
         Get-ServerProcesses | ForEach-Object {
             Write-Host "  Stopping server (PID $($_.Id))..." -ForegroundColor Gray
