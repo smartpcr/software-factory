@@ -3014,6 +3014,47 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
     private async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureAsync(string cwd, CancellationToken ct, params string[] args)
     {
+        // Per-clone-root serialization + transient-lock retry. Solves the
+        // Windows packed-refs / index.lock race that halted two spawn
+        // orchestrators on 2026-05-28 (see SharedRepoGitGate docstring).
+        var repoKey = Forge.Api.Services.Git.SharedRepoGitGate.ResolveCloneRootKey(cwd);
+        (int Code, string StdOut, string StdErr) lastResult = (0, string.Empty, string.Empty);
+
+        for (var attempt = 0; attempt < Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts; attempt++)
+        {
+            var delayMs = Forge.Api.Services.Git.SharedRepoGitGate.RetryDelayMs(attempt);
+            if (delayMs > 0)
+            {
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
+            }
+
+            var sem = await Forge.Api.Services.Git.SharedRepoGitGate.AcquireAsync(repoKey, ct).ConfigureAwait(false);
+            try
+            {
+                lastResult = await this.RunGitCaptureOnceAsync(cwd, ct, args).ConfigureAwait(false);
+            }
+            finally
+            {
+                sem.Release();
+            }
+
+            if (!Forge.Api.Services.Git.SharedRepoGitGate.IsTransientLockError(lastResult.Code, lastResult.StdErr))
+            {
+                return lastResult;
+            }
+
+            this.logger?.LogWarning(
+                "git {Args} hit transient lock race (attempt {Attempt}/{Max}) in '{Cwd}'. stderr: {StdErr}",
+                string.Join(' ', args), attempt + 1, Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts, cwd, lastResult.StdErr);
+        }
+
+        // Exhausted all retries. Return the last (still-failing) result
+        // so the caller's existing error-reporting path runs unchanged.
+        return lastResult;
+    }
+
+    private async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureOnceAsync(string cwd, CancellationToken ct, string[] args)
+    {
         var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = cwd,
