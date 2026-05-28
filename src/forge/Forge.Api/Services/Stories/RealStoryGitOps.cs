@@ -220,6 +220,36 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
 
+        // 2026-05-28 — defense against Win32Exception "working directory
+        // missing". EnsureWorktreeAsync trusts git's internal worktree
+        // state (it short-circuits when `git worktree list` lists this
+        // path), but the on-disk directory can disappear out of band:
+        // a sibling spawn's cleanup, an antivirus quarantine, an operator
+        // `rm`, or a Windows %TEMP%-cleaner pass. When `Process.Start`
+        // is then handed this path as cwd it throws Win32Exception
+        // "An error occurred trying to start process 'git' with working
+        // directory '…'", which the qa-e2e catch site stamps as a hard
+        // stall — observed code-intelligence:AST-PARSER-FOR-ADDIT stage
+        // 1.5-e2e 2026-05-28: iter-3 passed at 08:33:11Z, post-pass commit
+        // hit Win32 at 08:33:16Z, workstream sat stalled for 11+ hours
+        // despite the deliverable being valid. Re-prune + re-create the
+        // worktree in place when the on-disk dir is missing.
+        if (!Directory.Exists(wtPath))
+        {
+            this.logger?.LogWarning(
+                "CommitFilesAsync: worktree directory missing at {WtPath} after EnsureWorktreeAsync " +
+                "(branch={Branch}). Pruning stale ref and re-creating in place before proceeding.",
+                wtPath, branch);
+            await this.RunGitCaptureAsync(root, ct, "worktree", "prune");
+            await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
+            if (!Directory.Exists(wtPath))
+            {
+                throw new InvalidOperationException(
+                    $"CommitFilesAsync: failed to materialize worktree at '{wtPath}' for branch '{branch}' " +
+                    "after `git worktree prune` + EnsureWorktreeAsync — operator intervention required.");
+            }
+        }
+
         // Phase 81 — preflight: fail loudly when any input path is excluded
         // by the repo's .gitignore (e.g. OneBranch "/*\n!/src/" allowlists
         // silently exclude docs/**). Without this, `git add -A` would succeed

@@ -2022,7 +2022,31 @@ public sealed class StorySpawnOrchestrator
             // sat indefinitely after 1.1/1.2/1.3 completed because the
             // skip list excluded them. "stalled" stays in the skip
             // list because that IS the operator-attention state.
-            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "paused" or WorkstreamStatuses.Stalled) continue;
+            if (w.Status is "review" or "merging" or "complete" or "cancelled" or "paused") continue;
+
+            // 2026-05-28 — auto-heal the "pass-stalled-no-PR" pattern.
+            // When the gen↔eval loop's evaluator scored a pass but the
+            // post-pass commit/PR step failed (Win32Exception starting git
+            // in a transiently-missing worktree path, scratch dir scrubbed
+            // before ReadAllFiles, .git/ leak into commit dict before the
+            // 2026-05-28 ReadAllFiles fix, etc.), the orchestrator stamps
+            // Status=stalled. The latest deliverable keeps its verdict=pass
+            // row, but the outer claim sweep was skipping stalled rows so
+            // the only recovery was an operator Retry click — and rows
+            // like code-intelligence:AST-PARSER-FOR-ADDIT stage 1.5-e2e
+            // sat for ~11 h with a passing score because the operator
+            // hadn't noticed. Eligibility is narrow (latest verdict=pass
+            // AND no PR opened yet) so non-recoverable stalls (.gitignore
+            // blockers, sloppy-3-attempts, build-gate failures, merge-PR
+            // Phase 79c exhaustion) still surface for operator triage.
+            if (string.Equals(w.Status, WorkstreamStatuses.Stalled, StringComparison.Ordinal))
+            {
+                if (!await this.TryAutoHealPassStalledAsync(control, db, w, ct))
+                {
+                    continue;
+                }
+                // Fall through — workstream is now active again.
+            }
 
             // Block until every dep is merged. Reads from the merged
             // depsByWs map (FK table + DepsJson title fallback) so a
@@ -2470,14 +2494,18 @@ public sealed class StorySpawnOrchestrator
                     var sloppyRow = await sloppyDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == item.ws.Id, CancellationToken.None);
                     if (sloppyRow is not null)
                     {
-                        await this.TryRouteToSloppyReassignAsync(
+                        // Use the routed return value so the spawn-finished event reflects
+                        // the ACTUAL outcome (not just the upstream Workstreams existence
+                        // check). Without this, parkedForReassign:true was reported even
+                        // when TryRouteToSloppyReassignAsync silently no-op'd on its guard,
+                        // hiding the stuck-WS bug under a misleading success signal.
+                        parkedForReassign = await this.TryRouteToSloppyReassignAsync(
                             sloppyControl,
                             sloppyDb,
                             sloppyRow,
                             consecutiveNoProgress: 0,
                             CancellationToken.None,
                             $"impl sloppy verdict ({sve.SloppyReason ?? "unknown"}); routing to SloppyReassignmentReconciler");
-                        parkedForReassign = true;
                     }
                 }
 
@@ -2662,7 +2690,7 @@ public sealed class StorySpawnOrchestrator
     ///   the routing.</item>
     /// </list>
     /// </summary>
-    private async Task TryRouteToSloppyReassignAsync(
+    private async Task<bool> TryRouteToSloppyReassignAsync(
         Forge.Api.Persistence.ControlDbContext control,
         Forge.Api.Persistence.ProductDbContext db,
         Forge.Api.Persistence.WorkstreamRow w,
@@ -2671,13 +2699,27 @@ public sealed class StorySpawnOrchestrator
         string? reasonOverride = null)
     {
         var wiRow = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
-        if (wiRow is null) return;
+        if (wiRow is null) return false;
 
-        // Idempotent guard — don't double-park or override a terminal state.
-        if (wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.PendingReassign
-            || wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.Failed)
+        // Idempotent guard — don't double-park already-parked rows, and don't
+        // override a terminal-failed row that carries a real FailureReason
+        // (set by SloppyReassignmentReconciler, BudgetCooldownReconciler, or
+        // operator). HOWEVER we DO allow recovery of the "phantom-Failed"
+        // state produced by SweepLiveBadgeReconciliationAsync racing
+        // DeliverableLoop.TryMarkWorkItemLiveAsync: that path sets
+        // ExecutionStatus=Failed with FailureReason=null and never
+        // appends PriorPairsJson. Without this recovery branch, the
+        // SloppyVerdictException catch silently no-ops and the WI stays
+        // stuck forever (root cause of the 2026-05-28 4-WS stuck-sloppy
+        // incident).
+        if (wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.PendingReassign)
         {
-            return;
+            return false;
+        }
+        if (wiRow.ExecutionStatus == Forge.Api.Persistence.ExecutionStatuses.Failed
+            && !string.IsNullOrWhiteSpace(wiRow.FailureReason))
+        {
+            return false;
         }
 
         // Append the workstream's currently-assigned pair to PriorPairsJson.
@@ -2735,6 +2777,7 @@ public sealed class StorySpawnOrchestrator
             reason = reasonOverride ?? $"orchestrator re-spawn loop without new deliverables; routing to SloppyReassignmentReconciler ({consecutiveNoProgress} consecutive no-progress successes)",
             priorPair = currentPair,
         }, ct);
+        return true;
     }
 
     private static string TrimStack(string? stack, int maxChars)
@@ -2873,6 +2916,94 @@ public sealed class StorySpawnOrchestrator
         }
 
         public string WorkstreamId { get; }
+    }
+
+    /// <summary>
+    /// 2026-05-28 — auto-heal the "pass-stalled-no-PR" pattern. When the
+    /// gen↔eval loop's evaluator scored a pass but the post-pass commit/PR
+    /// step failed (e.g. <c>Win32Exception</c> starting git in a transiently
+    /// missing worktree path, scratch dir scrubbed before
+    /// <c>ReadAllFiles</c>, <c>.git/</c> leak into commit dict before the
+    /// 2026-05-28 <see cref="CrewStoryArtifactStrategy.ReadAllFiles"/> fix),
+    /// the orchestrator stamps Status=stalled at
+    /// <c>DriveOneQaE2eWorkstreamAsync</c>:3593 / equivalent impl-path
+    /// sites. The latest deliverable retains its verdict=pass row but the
+    /// outer claim sweep at <see cref="DriveImplementAsync"/> was skipping
+    /// stalled rows — the only recovery was an operator <c>Retry</c> click.
+    /// Observed 2026-05-28 on <c>code-intelligence:AST-PARSER-FOR-ADDIT</c>
+    /// stage 1.5-e2e: ~11 h with iter-3 score 94 and Status=stalled because
+    /// the post-pass <c>Process.Start("git")</c> threw Win32 ("working
+    /// directory missing").
+    ///
+    /// <para>This helper runs the same recovery as the operator
+    /// <c>Retry</c> endpoint
+    /// (<see cref="WorkstreamRecovery.SoftResetForResumeAsync"/>) when
+    /// the eligibility pattern matches: latest deliverable verdict=pass
+    /// AND no PR opened yet (<c>PrsJson</c> is empty). Both branches of
+    /// the lifecycle ensure the workstream re-enters the loop with a
+    /// fresh gen↔eval pair on a zeroed cost ledger; the prior chain
+    /// stays in deliverables so the regenerated artifacts converge.</para>
+    ///
+    /// <para>Returns <c>true</c> when the heal fired (caller should NOT
+    /// skip the workstream on this tick). Returns <c>false</c> on
+    /// non-eligible stalls — operator triage required for
+    /// <c>.gitignore</c> blockers, sloppy-3-attempts, build-gate
+    /// failures, merge-PR Phase 79c exhaustion, etc.</para>
+    /// </summary>
+    private async Task<bool> TryAutoHealPassStalledAsync(
+        ControlDbContext control, ProductDbContext db, WorkstreamRow w,
+        CancellationToken ct)
+    {
+        // Non-empty PrsJson means the prior attempt at least opened a PR —
+        // the stall is a real merge-side problem (Phase 79c exhausted,
+        // failing required check, branch protection, etc.) that the
+        // operator must triage. Auto-healing would re-run gen↔eval and
+        // race against the open PR.
+        var prsList = ParseStringList(w.PrsJson);
+        if (prsList.Count > 0) return false;
+
+        // SQLite cannot translate ORDER BY on DateTimeOffset; materialize
+        // then sort client-side (mirrors SloppyReassignmentReconciler.cs:184
+        // and the rest of this codebase). NOT AsNoTracking — the caller
+        // SoftResetForResumeAsync mutates lastDel.Verdict / lastDel.Notes
+        // and relies on EF change tracking to persist the demotion on
+        // SaveChangesAsync. Filter first by WorkItemId so the materialized
+        // set stays bounded to this workstream's deliverables (typically
+        // 3–5 rows per qa-e2e).
+        var delivs = await db.Deliverables
+            .Where(d => d.WorkItemId == w.Id)
+            .ToListAsync(ct);
+        var lastDel = delivs
+            .OrderByDescending(d => d.Iter)
+            .ThenByDescending(d => d.CreatedAt)
+            .FirstOrDefault();
+        if (lastDel is null || !string.Equals(lastDel.Verdict, "pass", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var wi = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+
+        var report = await WorkstreamRecovery.SoftResetForResumeAsync(
+            control, db, w, wi, lastDel,
+            operatorActor: "orchestrator-auto-heal",
+            noteSuffix: $"pass-stalled-no-PR detected by orchestrator outer drive; "
+                      + $"prior stall reason: {w.StallReason ?? "(none recorded)"}",
+            ct);
+        await db.SaveChangesAsync(ct);
+        if (report.RemovedAgentUsage > 0)
+        {
+            await control.SaveChangesAsync(ct);
+        }
+
+        this.logger?.LogWarning(
+            "Auto-healed pass-stalled workstream {WsId}: priorStatus={PriorStatus} "
+            + "priorVerdict={PriorVerdict} pairAccountingReset={PairReset} "
+            + "removedAssignments={RA} removedUsage={RU}",
+            w.Id, report.PriorStatus, report.PriorVerdict, report.PairAccountingReset,
+            report.RemovedPairAssignments, report.RemovedAgentUsage);
+
+        return true;
     }
 
     /// <summary>

@@ -3870,13 +3870,32 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         var openStates = TaskQueueStates.OpenStates.ToList();
         var reconciled = 0;
 
+        // Story-spawn driven WIs (StorySpawnOrchestrator → CrewStoryArtifactStrategy → DeliverableLoop)
+        // never have a task_queue row. Without the recent-transcript-activity guard below, this
+        // sweep races DeliverableLoop.TryMarkWorkItemLiveAsync — iter 1 writes ExecutionStatus=Live
+        // but the very next 5-second tick sees `hasOpenRow=false` AND no deliverables yet
+        // (lastDeliv=null → canResume=false) and HEALS the badge to Failed (no FailureReason).
+        // The eventual SloppyVerdictException catch in StorySpawnOrchestrator then silently
+        // no-ops because its idempotent guard sees Failed, leaving the WI permanently stuck
+        // with PairAttemptCount=1 / PriorPairsJson=[]. The transcript-activity check below
+        // gives the story-spawn path a grace window to write its first deliverable before
+        // this sweep can touch it.
+        var recentActivityCutoff = DateTimeOffset.UtcNow.AddSeconds(-60);
         foreach (var wi in liveWis)
         {
             var hasOpenRow = await db.TaskQueue.AsNoTracking()
                 .AnyAsync(r => r.WorkItemId == wi.Id && openStates.Contains(r.State), ct);
             if (hasOpenRow) continue;
 
-            // No open queue row + executionStatus=live → stuck badge.
+            // Recent transcript activity ⇒ a spawn (story-spawn or otherwise) is actively
+            // driving this WI through its iteration loop. Healing now would race the writer
+            // and create the "failed-without-reason" stuck-WI bug above. Skip — the next
+            // sweep tick will retry once activity quiesces.
+            var hasRecentActivity = await db.TaskTranscriptEvents.AsNoTracking()
+                .AnyAsync(e => e.WorkItemId == wi.Id && e.At >= recentActivityCutoff, ct);
+            if (hasRecentActivity) continue;
+
+            // No open queue row + no recent transcript activity + executionStatus=live → stuck badge.
             var delivCandidates = await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi.Id)
                 .ToListAsync(ct);
