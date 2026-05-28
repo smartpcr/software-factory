@@ -2982,26 +2982,56 @@ public sealed class StorySpawnOrchestrator
             return false;
         }
 
-        var wi = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+        // Slim reset — DELIBERATELY NOT calling WorkstreamRecovery.SoftResetForResumeAsync
+        // here. That helper was designed for operator Retry on a sloppy-capped row, where
+        // the burned pair history is the problem and pair rotation is the cure. Auto-heal
+        // hits a different shape: the pair just PASSED at the evaluator's threshold; the
+        // failure was downstream (post-pass commit/PR step). Rotating the pair throws away
+        // the converged session context (agent_memory + shared iter chain) and lands the
+        // next claim on a fresh pair that may be weaker for this task — observed
+        // 2026-05-28 on code-intelligence:AST-PARSER-FOR-ADDIT stage 1.5-e2e:
+        // SoftResetForResumeAsync's PriorPairsJson wipe rotated XQ→WG as generator, and
+        // the new pair regressed from 94 to 84 across two iters before an operator Restart
+        // (Restart wipes deliverables too, so it costs a full gen↔eval cycle from iter 1).
+        //
+        // What this slim path does: un-stall + demote the latest deliverable to 'iterate'
+        // so the DeliverableLoop's seeding logic re-enters at iter+1 with the same prior
+        // chain. Crucially we keep PriorPairsJson, PairAttemptCount, and agent_usage
+        // intact so the next claim picks the SAME pair (which already converged once) and
+        // resumes against their cached agent_memory. The prior chain is the whole point.
+        var priorStatus = w.Status;
+        var priorVerdict = lastDel.Verdict;
+        var priorStallReason = w.StallReason;
+        w.Status = "active";
+        w.StallReason = null;
+        w.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        var report = await WorkstreamRecovery.SoftResetForResumeAsync(
-            control, db, w, wi, lastDel,
-            operatorActor: "orchestrator-auto-heal",
-            noteSuffix: $"pass-stalled-no-PR detected by orchestrator outer drive; "
-                      + $"prior stall reason: {w.StallReason ?? "(none recorded)"}",
-            ct);
-        await db.SaveChangesAsync(ct);
-        if (report.RemovedAgentUsage > 0)
+        lastDel.Verdict = "iterate";
+        var demoteNote = $"AUTO-HEAL (orchestrator-outer-drive) — verdict demoted from '{priorVerdict}' "
+                       + "to 'iterate' because the post-pass commit/PR step failed without opening a PR. "
+                       + $"Prior stall reason: {priorStallReason ?? "(none recorded)"}. "
+                       + "Pair preserved (no PriorPairsJson wipe, no agent_usage wipe) so the next claim "
+                       + "resumes against the same converged session.";
+        lastDel.Notes = string.IsNullOrEmpty(lastDel.Notes)
+            ? demoteNote
+            : lastDel.Notes + "\n\n" + demoteNote;
+
+        // Re-queue the work item so CrewQueueWorker claims it on the next tick.
+        // PriorPairsJson stays untouched → same pair, cached agent_memory, fast re-converge.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+        if (wi is not null)
         {
-            await control.SaveChangesAsync(ct);
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+            wi.FailureReason = null;
         }
+
+        await db.SaveChangesAsync(ct);
 
         this.logger?.LogWarning(
             "Auto-healed pass-stalled workstream {WsId}: priorStatus={PriorStatus} "
-            + "priorVerdict={PriorVerdict} pairAccountingReset={PairReset} "
-            + "removedAssignments={RA} removedUsage={RU}",
-            w.Id, report.PriorStatus, report.PriorVerdict, report.PairAccountingReset,
-            report.RemovedPairAssignments, report.RemovedAgentUsage);
+            + "priorVerdict={PriorVerdict} (slim reset; pair + agent_memory preserved)",
+            w.Id, priorStatus, priorVerdict);
 
         return true;
     }
