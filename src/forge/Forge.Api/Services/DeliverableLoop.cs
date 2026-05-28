@@ -759,6 +759,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
             }, ct);
         }
 
+        await this.TryMarkWorkItemLiveAsync(request, ct);
+
         while (iter < maxIter)
         {
             // Phase 20 — re-read per-work-item override each iteration so
@@ -1948,6 +1950,35 @@ public sealed class DeliverableLoop : IDeliverableLoop
             if (text.Length >= 25) items.Add(text);
         }
 
+        // Prose fallback (2026-05-27). When the evaluator writes a paragraph
+        // instead of a "What still needs work" checklist — the qa-e2e
+        // evaluator does exactly this — the bullet matcher above yields zero
+        // items, so DetectConvergenceLoop sees an empty latest set and never
+        // fires. A frozen-feedback qa-e2e loop then burns its whole iteration
+        // cap (observed on common-infra:HTTP-MEMORY stage 2.1-e2e: 40 iters,
+        // byte-identical evaluator feedback, score pinned at 68, ×3 pair
+        // attempts). Split the body into sentences and treat each substantive
+        // one as an item so the Jaccard-overlap machinery can still detect
+        // near-identical feedback recurring across the window. Only runs when
+        // the checkbox/bullet path found nothing, so the established
+        // checklist-format behaviour is unchanged.
+        if (items.Count == 0)
+        {
+            foreach (var raw in System.Text.RegularExpressions.Regex.Split(body, @"(?<=[.!?])\s+|\n+"))
+            {
+                var sentence = System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", " ").Trim();
+                // Skip the loop's own terminal status lines (SLOPPY:/STALLED:
+                // appended by DeliverableLoop on the final iter) — they're not
+                // evaluator content and would add noise to the overlap check.
+                if (sentence.StartsWith("SLOPPY:", StringComparison.OrdinalIgnoreCase)
+                    || sentence.StartsWith("STALLED:", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (sentence.Length >= 40) items.Add(sentence);
+            }
+        }
+
         return items;
     }
 
@@ -2107,6 +2138,83 @@ public sealed class DeliverableLoop : IDeliverableLoop
         wi.State = newState;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
         await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Marks inline deliverable loops (notably plan-doc runs, which bypass
+    /// <see cref="CrewQueueWorker"/>) as live before the first generator turn.
+    /// </summary>
+    private async Task TryMarkWorkItemLiveAsync(DeliverableLoopRequest request, CancellationToken ct)
+    {
+        var wi = await this.db.WorkItems.FirstOrDefaultAsync(w => w.Id == request.WorkItemId, ct);
+        if (wi is null) return;
+
+        var fromStatus = string.IsNullOrWhiteSpace(wi.ExecutionStatus)
+            ? ExecutionStatuses.Idle
+            : wi.ExecutionStatus;
+        if (IsParkedOrTerminalExecutionStatus(fromStatus))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var wasLive = string.Equals(fromStatus, ExecutionStatuses.Live, StringComparison.Ordinal);
+        var agentIds = new List<string> { request.GeneratorAgentId };
+        if (!string.IsNullOrWhiteSpace(request.EvaluatorAgentId)
+            && !string.Equals(request.EvaluatorAgentId, request.GeneratorAgentId, StringComparison.Ordinal))
+        {
+            agentIds.Add(request.EvaluatorAgentId);
+        }
+
+        wi.ExecutionStatus = ExecutionStatuses.Live;
+        wi.AutoDispatchedAt ??= now;
+        wi.UpdatedAt = now;
+        if (!wasLive)
+        {
+            wi.TrialCount++;
+        }
+
+        if (!wasLive || string.IsNullOrWhiteSpace(wi.AssignedAgentJson))
+        {
+            wi.AssignedAgentJson = JsonSerializer.Serialize(new
+            {
+                agents = agentIds,
+                team = (string?)null,
+                crewId = request.CrewId,
+                role = "generator",
+                assignedAt = now.ToString("O"),
+                assignedBy = "deliverable-loop",
+            });
+        }
+
+        if (!wasLive)
+        {
+            this.db.AgentAssignments.Add(new AgentAssignmentRow
+            {
+                WorkItemId = wi.Id,
+                Kind = AgentAssignmentKinds.Claimed,
+                AgentIdsJson = JsonSerializer.Serialize(agentIds),
+                Team = null,
+                CrewId = request.CrewId,
+                Role = "generator",
+                FromExecutionStatus = fromStatus,
+                ToExecutionStatus = ExecutionStatuses.Live,
+                AssignedBy = "deliverable-loop",
+                At = now,
+            });
+        }
+
+        await this.db.SaveChangesAsync(ct);
+    }
+
+    private static bool IsParkedOrTerminalExecutionStatus(string status)
+    {
+        return status is ExecutionStatuses.Completed
+            or ExecutionStatuses.Failed
+            or ExecutionStatuses.Cancelled
+            or ExecutionStatuses.CooldownBudget
+            or ExecutionStatuses.PendingReassign
+            or ExecutionStatuses.AwaitingAnswers;
     }
 
     /// <summary>

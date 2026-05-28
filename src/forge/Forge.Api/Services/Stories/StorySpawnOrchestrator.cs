@@ -1934,6 +1934,16 @@ public sealed class StorySpawnOrchestrator
             .OrderBy(w => w.Sort)
             .ToListAsync(ct);
         if (workstreams.Count == 0) return false;
+        var workstreamIds = workstreams.Select(w => w.Id).ToList();
+        var prIdsByWorkstream = (await db.Prs.AsNoTracking()
+                .Where(p => p.Workstream != null && workstreamIds.Contains(p.Workstream))
+                .Select(p => new { p.Workstream, p.Id })
+                .ToListAsync(ct))
+            .GroupBy(p => p.Workstream!, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(p => p.Id).Distinct(StringComparer.Ordinal).ToList(),
+                StringComparer.Ordinal);
 
         // Phase 49 — read deps from BOTH the FK table and each workstream's
         // DepsJson titles (resolved via same-spawn name→id, excluding
@@ -2054,6 +2064,11 @@ public sealed class StorySpawnOrchestrator
                         and not "cancelled")
                     .ToList();
                 if (blocking.Count > 0) continue;
+            }
+
+            if (await this.TryMoveExistingPrWorkstreamToReviewAsync(db, hub, spawn, w, prIdsByWorkstream, ct))
+            {
+                continue;
             }
 
             // 2026-05-07 — in-flight + failure-backoff guard. The 15s tick
@@ -2283,6 +2298,29 @@ public sealed class StorySpawnOrchestrator
                         if (sibPair.Count >= 2 && !string.IsNullOrEmpty(sibPair[1]))
                         {
                             freshBusy.Add(sibPair[1]);
+                        }
+                    }
+
+                    // Generator rotation across pair attempts (2026-05-27).
+                    // qa-e2e reassignment is re-driven HERE by the orchestrator
+                    // (the SloppyReassignmentReconciler's fresh-generator pick
+                    // lands on a task_queue row this path ignores), and the
+                    // re-pick below previously only excluded live-busy + sibling
+                    // agents — never the generators that already failed on THIS
+                    // work item. So generator JS2 ran all three pair attempts
+                    // (120 iters) on common-infra:HTTP-MEMORY stage 2.1-e2e while
+                    // DC/WG/XQ never ran. Seed the busy set with every generator
+                    // recorded in PriorPairsJson so ResolveImplPairAsync draws a
+                    // never-tried crew-qa member. Scoped to qa-e2e (workstream
+                    // id == work item id); the impl path already gets this
+                    // exclusion via CrewQueueWorker's PriorPairsJson handling.
+                    if (IsQaE2e(w))
+                    {
+                        var qaWi = await pickDb.WorkItems.AsNoTracking()
+                            .FirstOrDefaultAsync(x => x.Id == w.Id, ct);
+                        foreach (var priorGen in ExtractPriorGenerators(qaWi?.PriorPairsJson))
+                        {
+                            freshBusy.Add(priorGen);
                         }
                     }
 
@@ -3349,6 +3387,8 @@ public sealed class StorySpawnOrchestrator
         if (!prsList.Contains(prId)) prsList.Add(prId);
         freshRow.PrsJson = JsonSerializer.Serialize(prsList);
         freshRow.Status = "review";
+        freshRow.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await TryCompleteWorkItemExecutionAsync(db2, w.Id, ct);
         await db2.SaveChangesAsync(ct);
 
         await EmitChange(hub, "ws-pr-opened", spawn, ct);
@@ -3388,6 +3428,34 @@ public sealed class StorySpawnOrchestrator
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Parse the generator ids (slot 0 of each pair) out of a work item's
+    /// <see cref="WorkItemRow.PriorPairsJson"/>. Used by the qa-e2e driver to
+    /// rotate to a never-tried generator on a reassignment retry. Malformed
+    /// JSON yields an empty set (treated as "no prior attempts").
+    /// </summary>
+    internal static HashSet<string> ExtractPriorGenerators(string? priorPairsJson)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(priorPairsJson)) return result;
+        try
+        {
+            var pairs = JsonSerializer.Deserialize<List<string[]>>(priorPairsJson);
+            if (pairs is not null)
+            {
+                foreach (var p in pairs)
+                {
+                    if (p is { Length: > 0 } && !string.IsNullOrEmpty(p[0]))
+                    {
+                        result.Add(p[0]);
+                    }
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException) { /* malformed — treat as no priors */ }
+        return result;
     }
 
     /// <summary>
@@ -3699,6 +3767,7 @@ public sealed class StorySpawnOrchestrator
         liveRow.PrsJson = JsonSerializer.Serialize(prsList);
         liveRow.Status = "review";
         liveRow.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await TryCompleteWorkItemExecutionAsync(db2, w.Id, ct);
         await db2.SaveChangesAsync(ct);
         await EmitChange(hub, "ws-pr-opened", spawn, ct);
     }
@@ -5335,6 +5404,53 @@ public sealed class StorySpawnOrchestrator
         catch { return new List<string>(); }
     }
 
+    private async Task<bool> TryMoveExistingPrWorkstreamToReviewAsync(
+        ProductDbContext db,
+        IHubContext<ForgeHub>? hub,
+        StorySpawnRow spawn,
+        WorkstreamRow workstream,
+        IReadOnlyDictionary<string, List<string>> prIdsByWorkstream,
+        CancellationToken ct)
+    {
+        var prIds = ParseStringList(workstream.PrsJson);
+        if (prIdsByWorkstream.TryGetValue(workstream.Id, out var storedPrIds))
+        {
+            foreach (var prId in storedPrIds)
+            {
+                if (!prIds.Contains(prId, StringComparer.Ordinal))
+                {
+                    prIds.Add(prId);
+                }
+            }
+        }
+
+        if (prIds.Count == 0)
+        {
+            return false;
+        }
+
+        workstream.PrsJson = JsonSerializer.Serialize(prIds);
+        workstream.Status = "review";
+        workstream.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await TryCompleteWorkItemExecutionAsync(db, workstream.Id, ct);
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "ws-pr-existing", spawn, ct);
+        return true;
+    }
+
+    private static async Task<bool> TryCompleteWorkItemExecutionAsync(ProductDbContext db, string workItemId, CancellationToken ct)
+    {
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        if (wi is null || string.Equals(wi.ExecutionStatus, ExecutionStatuses.Completed, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        wi.ExecutionStatus = ExecutionStatuses.Completed;
+        wi.UpdatedAt = DateTimeOffset.UtcNow;
+        return true;
+    }
+
     /// <summary>
     /// Best-effort work item state update when a workstream completes.
     /// Tolerates missing rows — the orchestrator should never crash
@@ -5344,8 +5460,20 @@ public sealed class StorySpawnOrchestrator
     {
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workstreamId, ct);
         if (wi is null) return;
-        if (string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase)) return;
-        wi.State = "closed";
+        var changed = false;
+        if (!string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase))
+        {
+            wi.State = "closed";
+            changed = true;
+        }
+
+        if (!string.Equals(wi.ExecutionStatus, ExecutionStatuses.Completed, StringComparison.Ordinal))
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Completed;
+            changed = true;
+        }
+
+        if (!changed) return;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
     }

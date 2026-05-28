@@ -283,6 +283,122 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
     }
 
     [Fact]
+    public async Task RetryWorkstream_PoisonedProviderSessionFailure_DeletesAgentMemory()
+    {
+        const string wsId = "ws-retry-poisoned-provider-session";
+        const string siblingWsId = "ws-retry-poisoned-provider-session-sibling";
+        var now = DateTimeOffset.UtcNow;
+
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+            await db.AgentMemory.Where(m => m.WorkItemId == wsId || m.WorkItemId == siblingWsId)
+                .ExecuteDeleteAsync();
+            await db.Deliverables.Where(d => d.WorkItemId == wsId)
+                .ExecuteDeleteAsync();
+
+            var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == wsId);
+            if (ws is null)
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = wsId, Name = "retry-poisoned-provider-session",
+                    Branch = "ws/retry-poisoned-provider-session",
+                    Epic = "EPIC-RETRY", Status = "stalled",
+                    StallReason = "QA E2E producer failed after gen-eval verdict stalled.",
+                });
+            }
+            else
+            {
+                ws.Status = "stalled";
+                ws.StallReason = "QA E2E producer failed after gen-eval verdict stalled.";
+            }
+
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == wsId);
+            if (wi is null)
+            {
+                db.WorkItems.Add(new Forge.Api.Persistence.WorkItemRow
+                {
+                    Id = wsId, Type = "workstream", State = "active",
+                    Title = "retry-poisoned-provider-session",
+                    ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Live,
+                    CreatedAt = now, UpdatedAt = now,
+                });
+            }
+            else
+            {
+                wi.ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Live;
+                wi.UpdatedAt = now;
+            }
+
+            db.Deliverables.Add(new Forge.Api.Persistence.DeliverableRow
+            {
+                WorkItemId = wsId, CrewId = "crew-x", GeneratorAgentId = "gen-1",
+                EvaluatorAgentId = "eval-1", Iter = 3, Score = 0,
+                Verdict = "stalled", FailureKind = "generator-failed",
+                FailureReason = "Copilot session error: Execution failed: Error: unable to open database file",
+                Notes = "GENERATOR FAILED (generator-failed): Copilot session error: Execution failed: Error: unable to open database file",
+                CreatedAt = now,
+            });
+            db.AgentMemory.Add(new Forge.Api.Persistence.AgentMemoryRow
+            {
+                WorkItemId = wsId,
+                AgentId = "DC",
+                Role = Forge.Api.Persistence.AgentMemoryRoles.Generator,
+                Backend = "copilot",
+                InvokeMode = "sdk",
+                SessionId = "stale-copilot-session",
+                LastIter = 1,
+            });
+            db.AgentMemory.Add(new Forge.Api.Persistence.AgentMemoryRow
+            {
+                WorkItemId = wsId,
+                AgentId = "DX",
+                Role = Forge.Api.Persistence.AgentMemoryRoles.Evaluator,
+                Backend = "copilot",
+                InvokeMode = "sdk",
+                SessionId = "stale-evaluator-session",
+                LastIter = 1,
+            });
+            db.AgentMemory.Add(new Forge.Api.Persistence.AgentMemoryRow
+            {
+                WorkItemId = siblingWsId,
+                AgentId = "DC",
+                Role = Forge.Api.Persistence.AgentMemoryRoles.Generator,
+                Backend = "copilot",
+                InvokeMode = "sdk",
+                SessionId = "sibling-session",
+                LastIter = 1,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = this.factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
+
+        var resp = await client.PostAsync($"/api/workstreams/{wsId}/retry", content: null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("stalled", body.GetProperty("priorVerdict").GetString());
+        Assert.Equal("iterate", body.GetProperty("newVerdict").GetString());
+        Assert.True(body.GetProperty("demoted").GetBoolean());
+        Assert.Equal("active", body.GetProperty("status").GetString());
+        Assert.Equal(2, body.GetProperty("memoryRowsCleaned").GetInt32());
+
+        using var verifyScope = this.factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductDbContext>();
+        var targetRows = await verifyDb.AgentMemory.AsNoTracking()
+            .Where(m => m.WorkItemId == wsId)
+            .ToListAsync();
+        var siblingRows = await verifyDb.AgentMemory.AsNoTracking()
+            .Where(m => m.WorkItemId == siblingWsId)
+            .ToListAsync();
+        Assert.Empty(targetRows);
+        Assert.Single(siblingRows);
+    }
+
+    [Fact]
     public async Task RetryWorkstream_MergedPrWithSloppyLatest_ActivatesInsteadOfCompleting()
     {
         const string wsId = "ws-retry-merged-sloppy";

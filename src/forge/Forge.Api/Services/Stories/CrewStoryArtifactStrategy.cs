@@ -1148,6 +1148,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             workspace, changedFiles, resolveBaseCommand, impactedOnly: true);
                     }
                     resolveSw.Stop();
+
+                    // gap #1 (2026-05-27) — multi-project narrowing. The resolver
+                    // matched >1 impacted test project under a Traversal `.proj`
+                    // anchor; `dotnet test` takes one target, so synthesize a SCOPED
+                    // Traversal proj referencing only the impacted projects and run
+                    // THAT instead of the whole-suite build.proj. Fails safe: any
+                    // generation problem flips back to the resolver's whole-suite
+                    // command, so this never makes the gate worse than before.
+                    if (resolution.RequiresScopedTraversal
+                        && resolution.ImpactedProjects.Count > 0
+                        && !string.IsNullOrEmpty(resolution.TraversalProjPath))
+                    {
+                        var scopedRel = await this.TryWriteScopedTraversalProjAsync(
+                            workspace, resolution.TraversalProjPath!, resolution.ImpactedProjects, ct);
+                        if (!string.IsNullOrEmpty(scopedRel))
+                        {
+                            resolution = resolution with
+                            {
+                                Command = ReplaceCommandToken(resolution.Command, resolution.TraversalProjPath!, scopedRel!),
+                                Rewritten = true,
+                            };
+                            await this.taskChannel.EmitAsync(workItemId, "task.test-gate.scoped-traversal", new
+                            {
+                                stage = stagePrefix,
+                                gateStage = "test",
+                                iter,
+                                scopedProj = scopedRel,
+                                impactedProjectCount = resolution.ImpactedProjects.Count,
+                                allTestProjectCount = resolution.AllTestProjectCount,
+                            }, agentId: agentId, crewId: crewId, ct: ct);
+                        }
+                        else
+                        {
+                            // Couldn't synthesize the scoped proj — fall back to the
+                            // whole suite (the resolver's Command is the original).
+                            resolution = resolution with { WholeSuiteFallback = true };
+                        }
+                    }
+
                     // Re-merge the standing category filter onto whatever the resolver
                     // produced (narrowed command OR whole-suite fallback). ApplyTest-
                     // ExcludeFilter AND-merges with any --filter the resolver added, so
@@ -1595,6 +1634,83 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// and refuses to narrow — then re-merge the filter via
     /// <see cref="ApplyTestExcludeFilter"/>. Inverse of that merge.
     /// </summary>
+    /// <summary>
+    /// gap #1 (2026-05-27) — synthesize a SCOPED <c>Microsoft.Build.Traversal</c>
+    /// project under <c>{worktree}/.forge/</c> that references only the impacted
+    /// test projects, so a multi-project change runs just those instead of the
+    /// whole-suite <c>build.proj</c>. Clones the SDK declaration from the original
+    /// traversal proj (<paramref name="traversalProjRel"/>) so the SDK version
+    /// matches the repo. Returns the worktree-relative path of the generated proj,
+    /// or <c>null</c> on ANY problem (missing/unreadable original, non-Traversal
+    /// SDK, IO error) so the caller falls back to the whole suite — never worse
+    /// than today's behaviour. The <c>.forge/</c> dir is git-excluded so the
+    /// generated proj never leaks into a PR.
+    /// </summary>
+    private async Task<string?> TryWriteScopedTraversalProjAsync(
+        string workspace, string traversalProjRel, IReadOnlyList<string> impactedProjectsRel, CancellationToken ct)
+    {
+        try
+        {
+            var origPath = Path.Combine(workspace, traversalProjRel.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(origPath)) return null;
+            var origText = await File.ReadAllTextAsync(origPath, ct);
+            var m = Regex.Match(origText, @"<Project\b[^>]*\bSdk\s*=\s*""([^""]+)""", RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            var sdk = m.Groups[1].Value;
+            // Only the Traversal SDK runs `test` across <ProjectReference> items; for
+            // any other SDK a synthesized multi-ref proj wouldn't behave like a test
+            // host, so keep the whole-suite fallback instead.
+            if (sdk.IndexOf("Microsoft.Build.Traversal", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return null;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"<Project Sdk=\"{sdk}\">");
+            sb.AppendLine("  <!-- Auto-generated by Forge impacted-test narrowing (gap #1). Scopes `dotnet test` to the impacted test projects so a multi-project change does not run the whole suite. Regenerated per gate run; safe to delete. -->");
+            sb.AppendLine("  <ItemGroup>");
+            foreach (var rel in impactedProjectsRel)
+            {
+                var abs = Path.Combine(workspace, rel.Replace('/', Path.DirectorySeparatorChar));
+                sb.AppendLine($"    <ProjectReference Include=\"{abs}\" />");
+            }
+            sb.AppendLine("  </ItemGroup>");
+            sb.AppendLine("</Project>");
+
+            var forgeDir = Path.Combine(workspace, ".forge");
+            Directory.CreateDirectory(forgeDir);
+            await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
+            await File.WriteAllTextAsync(Path.Combine(forgeDir, "forge-impacted-tests.proj"), sb.ToString(), ct);
+            return ".forge/forge-impacted-tests.proj";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            this.logger?.LogWarning(ex,
+                "Scoped-traversal generation failed for {Workspace}; falling back to whole suite.", workspace);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Replace the single command token equal to <paramref name="oldToken"/> with
+    /// <paramref name="newToken"/> (e.g. swap the Traversal target <c>build.proj</c>
+    /// for the generated scoped proj). Token-aware so it never matches a substring;
+    /// re-quotes any token containing whitespace.
+    /// </summary>
+    internal static string ReplaceCommandToken(string command, string oldToken, string newToken)
+    {
+        var tokens = ImpactedTestResolver.ParseCommandLine(command);
+        var sb = new StringBuilder();
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            var t = string.Equals(tokens[i], oldToken, StringComparison.OrdinalIgnoreCase) ? newToken : tokens[i];
+            sb.Append(t.IndexOf(' ') >= 0 ? $"\"{t}\"" : t);
+        }
+        return sb.ToString();
+    }
+
     internal static (string Command, string? Filter) SplitStandingFilter(string testCommand)
     {
         if (string.IsNullOrWhiteSpace(testCommand)) return (testCommand, null);
@@ -4634,7 +4750,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // runnable under exactly this command, so gate + prompt stay in sync.
         var e2eTestCommand = E2eTestCommandForEcosystem(inputs.Ecosystem);
 
-        var workspace = this.PrepareWorkspace(spawn.Id, $"qa-e2e-{Slug(workstream.Id)}");
+        var workspacePhaseTag = await this.ComputeQaE2eWorkspacePhaseTagAsync(workstream, ct);
+        var workspace = this.PrepareWorkspace(spawn.Id, workspacePhaseTag);
 
         // Phase 43 (extended) — operator-uploaded attachments may name
         // the specific contracts/types the e2e test must exercise.
@@ -5627,6 +5744,39 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Neither exists -- create with the dash convention (matches existing data)
         Directory.CreateDirectory(pathDash);
         return pathDash;
+    }
+
+    internal static string QaE2eWorkspacePhaseTag(
+        WorkstreamRow workstream,
+        IReadOnlyList<WorkstreamRow> sameSpawnWorkstreams)
+    {
+        var worktreeSlug = WorkstreamWorktreeSlug.Compute(workstream, sameSpawnWorkstreams);
+        return $"qa-e2e-{worktreeSlug}";
+    }
+
+    private async Task<string> ComputeQaE2eWorkspacePhaseTagAsync(
+        WorkstreamRow workstream,
+        CancellationToken ct)
+    {
+        List<WorkstreamRow> sameSpawnWorkstreams;
+        if (string.IsNullOrWhiteSpace(workstream.StorySpawnId))
+        {
+            sameSpawnWorkstreams = new List<WorkstreamRow> { workstream };
+        }
+        else
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            sameSpawnWorkstreams = await db.Workstreams.AsNoTracking()
+                .Where(w => w.StorySpawnId == workstream.StorySpawnId)
+                .ToListAsync(ct);
+            if (sameSpawnWorkstreams.All(w => w.Id != workstream.Id))
+            {
+                sameSpawnWorkstreams.Add(workstream);
+            }
+        }
+
+        return QaE2eWorkspacePhaseTag(workstream, sameSpawnWorkstreams);
     }
 
     public async Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(

@@ -144,4 +144,24 @@ public class GateExcludeFilterTests
             "dotnet test tests/Widget.Tests.csproj --filter \"(FullyQualifiedName~MyApp.WidgetTests.Total)&(TestCategory!~CTQ)\"",
             final);
     }
+
+    // gap #1 (2026-05-27) — the caller swaps the Traversal target token
+    // (build.proj) for the generated scoped proj before re-merging the filter.
+    [Fact]
+    public void ReplaceCommandToken_SwapsTraversalTarget_TokenAware()
+    {
+        var result = CrewStoryArtifactStrategy.ReplaceCommandToken(
+            "dotnet test build.proj", "build.proj", ".forge/forge-impacted-tests.proj");
+        Assert.Equal("dotnet test .forge/forge-impacted-tests.proj", result);
+    }
+
+    [Fact]
+    public void ReplaceCommandToken_DoesNotMatchSubstrings()
+    {
+        // Only a whole-token match is replaced — "build.proj" must not hit
+        // "prebuild.proj".
+        var result = CrewStoryArtifactStrategy.ReplaceCommandToken(
+            "dotnet test prebuild.proj", "build.proj", ".forge/scoped.proj");
+        Assert.Equal("dotnet test prebuild.proj", result);
+    }
 }

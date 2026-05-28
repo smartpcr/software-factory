@@ -87,6 +87,49 @@ index 7cf201af5..f99436cd5 100644
         Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(AnalyzerWiringDiffWithAnalyzerPackageMetadata));
     }
 
+    // Verbatim common-infra stage-1.3 `src/packages.props` diff: an additive
+    // comment + a single analyzer PackageReference version pin. Central-package-
+    // version files (`packages.props` / `Directory.Packages.props`) are now
+    // global-impact (a real version bump must run the whole suite), but an
+    // analyzer-only additive pin like this is build-time-only and must be relaxed
+    // so it doesn't drag the 74-project net462 suite into a 40-min timeout.
+    private const string Stage13PackagesPropsAnalyzerPinDiff = @"diff --git a/src/packages.props b/src/packages.props
+index 0e30894a8..8e6113b47 100644
+--- a/src/packages.props
++++ b/src/packages.props
+@@ -101,6 +101,16 @@
+         <PrivateAssets>all</PrivateAssets>
+     </PackageReference>
+
++    <!--
++      Banned-API analyzer (story local:HTTP-MEMORY, Phase 1 / Stage 1.3).
++      Version pin only; the actual PackageReference Include lives in the
++      root Directory.Build.props inside a Choose/When block.
++    -->
++    <PackageReference Update=""Microsoft.CodeAnalysis.BannedApiAnalyzers"" Version=""3.3.4"" />
++
+     <!-- OpenTelemetry packages -->
+     <PackageReference Update=""OpenTelemetry"" Version=""1.15.3"" GeneratePathProperty=""true""/>";
+
+    [Fact]
+    public void Stage13PackagesPropsAnalyzerPin_IsNeutral()
+    {
+        // Regression pin for the common-infra/1.3 root cause: the central
+        // package-version file's analyzer pin must be classified analyzer-only
+        // so #3 (packages.props is global-impact) doesn't re-trip whole-suite.
+        Assert.True(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(Stage13PackagesPropsAnalyzerPinDiff));
+    }
+
+    [Fact]
+    public void NonAnalyzerPackageVersionBump_IsNotNeutral()
+    {
+        // A real dependency version bump in a central-package-version file IS
+        // compilation-affecting and must NOT be relaxed (keep → whole suite).
+        const string diff = @"@@ -101,1 +101,1 @@
++    <PackageReference Update=""OpenTelemetry"" Version=""1.16.0"" GeneratePathProperty=""true""/>";
+        Assert.False(ImpactedTestResolver.IsAnalyzerOnlyBuildPropsDiff(diff));
+    }
+
     [Fact]
     public void EmptyOrNullDiff_IsNotNeutral()
     {

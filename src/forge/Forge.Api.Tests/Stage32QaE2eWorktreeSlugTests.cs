@@ -248,4 +248,38 @@ public class Stage32QaE2eWorktreeSlugTests
         Assert.EndsWith("-e2e", qaSlug);
         Assert.Equal(implSlug + "-e2e", qaSlug);
     }
+
+    [Fact]
+    public void QaE2eWorkspacePhaseTag_Uses_Canonical_Slug_Instead_Of_Long_Workstream_Id()
+    {
+        const string LongWorkstreamId =
+            "ws-local-update-history-in-cl-phase-clusterdb-substrate-scaffolding-stage-implement-clusterdbpersistenceprovider-base-class-e2e";
+        var impl = Ws(
+            "ws-local-update-history-in-cl-phase-clusterdb-substrate-scaffolding-stage-implement-clusterdbpersistenceprovider-base-class",
+            1,
+            "phase-clusterdb-substrate-scaffolding",
+            "phase-clusterdb-substrate-scaffolding/stage-implement-clusterdbpersistenceprovider-base-class");
+        var qa = Ws(
+            LongWorkstreamId,
+            2,
+            "phase-clusterdb-substrate-scaffolding",
+            "phase-clusterdb-substrate-scaffolding/stage-implement-clusterdbpersistenceprovider-base-class/e2e",
+            category: WorkstreamCategories.QaE2e);
+        var siblings = new[] { impl, qa };
+
+        var phaseTag = CrewStoryArtifactStrategy.QaE2eWorkspacePhaseTag(qa, siblings);
+        var checkpointPath = Path.Combine(
+            "E:\\forge\\storyworkspaces\\spawn-local-UPDATE-HISTORY-IN-CL",
+            phaseTag,
+            ".forge",
+            "memory",
+            "session-state",
+            Guid.Empty.ToString(),
+            "checkpoints",
+            "index.md");
+
+        Assert.Equal("qa-e2e-stage-1.1-implement-clusterdbpersistenceprovider-base-class-e2e", phaseTag);
+        Assert.DoesNotContain(LongWorkstreamId, phaseTag);
+        Assert.True(checkpointPath.Length < 260, $"checkpoint path length={checkpointPath.Length}: {checkpointPath}");
+    }
 }

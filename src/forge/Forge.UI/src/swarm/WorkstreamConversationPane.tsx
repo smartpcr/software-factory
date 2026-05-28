@@ -75,12 +75,18 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
 
   const executionStatus = snapshot?.executionStatus ?? null;
   const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
-  const isComplete = executionStatus === 'completed';
-  // When the workstream DB row is stalled/cancelled but the task
-  // execution snapshot still says "live" (the orchestrator never
-  // updated executionStatus), treat the loop as halted so buttons
-  // become actionable.
-  const wsActuallyHalted = wsStatus === 'stalled' || wsStatus === 'cancelled' || wsStatus === 'complete';
+  // Button-gating keys off the authoritative workstream lifecycle Status,
+  // NOT the gen↔eval loop's ExecutionStatus snapshot. The two diverge once a
+  // phase AFTER the loop runs: the impl loop passes (ExecutionStatus stays
+  // 'completed') and then review/merge can fail, leaving Status='stalled'.
+  // Gating "complete" on the snapshot wrongly treated such a stalled row as
+  // done and disabled Retry/Accept/Resume/Cancel. A workstream is complete
+  // only when its Status says so (shipped: 'complete'/'historic'); 'stalled'
+  // is a recovery state, so the recovery buttons must light up.
+  const isComplete = wsStatus === 'complete' || wsStatus === 'historic';
+  // A halted workstream (terminal Status) is never "live", regardless of a
+  // stale ExecutionStatus snapshot the orchestrator never updated.
+  const wsActuallyHalted = isComplete || wsStatus === 'stalled' || wsStatus === 'cancelled';
   const isLive = (executionStatus === 'live' || executionStatus === 'queued') && !wsActuallyHalted;
   // Phase 56 -- terminal-bad verdicts must enable Retry even when
   // ExecutionStatus is stuck at "live"/"queued" (architect and

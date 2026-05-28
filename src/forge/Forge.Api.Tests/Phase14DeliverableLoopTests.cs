@@ -49,6 +49,41 @@ public class Phase14DeliverableLoopTests
     }
 
     [Fact]
+    public async Task Marks_Work_Item_Live_Before_First_Generator_Turn()
+    {
+        var (f, control, db, loop) = await SetupAsync(workItemId: "plan-doc:spawn-1:tech-spec.md");
+        try
+        {
+            var observedLive = false;
+            var req = new DeliverableLoopRequest(
+                "plan-doc:spawn-1:tech-spec.md", "crew-architect", "gen-1", "eval-1",
+                Generator: async (_, _, _) =>
+                {
+                    var wi = await db.WorkItems.AsNoTracking()
+                        .FirstAsync(w => w.Id == "plan-doc:spawn-1:tech-spec.md");
+                    Assert.Equal(ExecutionStatuses.Live, wi.ExecutionStatus);
+                    Assert.Equal(1, wi.TrialCount);
+                    Assert.Contains("deliverable-loop", wi.AssignedAgentJson);
+
+                    var assignment = await db.AgentAssignments.AsNoTracking()
+                        .SingleAsync(a => a.WorkItemId == "plan-doc:spawn-1:tech-spec.md");
+                    Assert.Equal(AgentAssignmentKinds.Claimed, assignment.Kind);
+                    Assert.Equal(ExecutionStatuses.Idle, assignment.FromExecutionStatus);
+                    Assert.Equal(ExecutionStatuses.Live, assignment.ToExecutionStatus);
+                    Assert.Equal("deliverable-loop", assignment.AssignedBy);
+                    observedLive = true;
+                    return new GeneratorRunOutput("out", 0.1m);
+                },
+                Evaluator: (_, _, _) => Task.FromResult(new EvaluatorRunOutput(EvalJson(95), 0.2m)));
+
+            await loop.RunAsync(req, CancellationToken.None);
+
+            Assert.True(observedLive);
+        }
+        finally { f.Dispose(); }
+    }
+
+    [Fact]
     public async Task Pass_On_First_Iter_Closes_Work_Item_And_Stops()
     {
         var (f, control, db, loop) = await SetupAsync(workItemId: "wi-pass");

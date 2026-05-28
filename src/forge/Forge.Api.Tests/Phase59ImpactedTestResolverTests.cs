@@ -350,6 +350,95 @@ public class Phase59ImpactedTestResolverTests
     }
 
     [Theory]
+    [InlineData("src/packages.props")]
+    [InlineData("packages.props")]
+    [InlineData("Directory.Packages.props")]
+    public void Gap3_PackagesPropsChange_ForcesWholeSuite(string changedFile)
+    {
+        // gap #3 (2026-05-27) — central-package-version files pin every
+        // project's dependency graph, so a (non-analyzer) change is
+        // genuinely compilation-affecting → whole suite. `packages.props`
+        // is the Microsoft.Build.CentralPackageVersions convention
+        // (common-infra uses src/packages.props); it must be recognized
+        // alongside Directory.Packages.props.
+        var root = BuildFixture(
+            ("src/Foo/Foo.csproj", null),
+            ("tests/Foo.Tests/Foo.Tests.csproj", new[] { "../../src/Foo/Foo.csproj" }));
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { changedFile },
+            originalCommand: "dotnet test",
+            impactedOnly: true);
+
+        Assert.True(result.WholeSuiteFallback);
+        Assert.False(result.Rewritten);
+        Assert.Contains("global-impact", result.Reason);
+    }
+
+    [Fact]
+    public void Gap1_MultiProjectUnderTraversalAnchor_ScopesTraversal_NotWholeSuite()
+    {
+        // gap #1 (2026-05-27) — when >1 test project is impacted AND the
+        // command anchors on a Traversal `.proj`, the resolver signals the
+        // caller to synthesize a SCOPED Traversal proj instead of falling
+        // back to the whole suite. (3 impacted of 4, below the 80% gate.)
+        var root = BuildFixture(
+            ("src/Common/Common.csproj", null),
+            ("src/Api/Api.csproj", new[] { "../Common/Common.csproj" }),
+            ("src/Cli/Cli.csproj", new[] { "../Common/Common.csproj" }),
+            ("src/Standalone/Standalone.csproj", null),
+            ("tests/Common.Tests/Common.Tests.csproj", new[] { "../../src/Common/Common.csproj" }),
+            ("tests/Api.Tests/Api.Tests.csproj", new[] { "../../src/Api/Api.csproj" }),
+            ("tests/Cli.Tests/Cli.Tests.csproj", new[] { "../../src/Cli/Cli.csproj" }),
+            ("tests/Standalone.Tests/Standalone.Tests.csproj", new[] { "../../src/Standalone/Standalone.csproj" }));
+
+        // A Traversal anchor the command can pivot to a scoped proj.
+        File.WriteAllText(
+            Path.Combine(root, "build.proj"),
+            "<Project Sdk=\"Microsoft.Build.Traversal/4.1.0\"><ItemGroup><ProjectFile Include=\"src/dirs.proj\" /></ItemGroup></Project>");
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Common/Helpers.cs" },
+            originalCommand: "dotnet test build.proj",
+            impactedOnly: true);
+
+        Assert.True(result.RequiresScopedTraversal);
+        Assert.False(result.WholeSuiteFallback);
+        Assert.False(result.Rewritten); // caller does the rewrite after generating the proj
+        Assert.Equal(3, result.ImpactedProjects.Count);
+        Assert.Equal("build.proj", result.TraversalProjPath);
+        Assert.DoesNotContain(result.ImpactedProjects, p => p.EndsWith("Standalone.Tests.csproj"));
+    }
+
+    [Fact]
+    public void Gap1_MultiProjectWithoutTraversalAnchor_KeepsWholeSuite()
+    {
+        // No Traversal anchor (bare `dotnet test`) — can't safely build a
+        // multi-project target, so the whole-suite fallback is preserved.
+        var root = BuildFixture(
+            ("src/Common/Common.csproj", null),
+            ("src/Api/Api.csproj", new[] { "../Common/Common.csproj" }),
+            ("src/Cli/Cli.csproj", new[] { "../Common/Common.csproj" }),
+            ("src/Standalone/Standalone.csproj", null),
+            ("tests/Common.Tests/Common.Tests.csproj", new[] { "../../src/Common/Common.csproj" }),
+            ("tests/Api.Tests/Api.Tests.csproj", new[] { "../../src/Api/Api.csproj" }),
+            ("tests/Cli.Tests/Cli.Tests.csproj", new[] { "../../src/Cli/Cli.csproj" }),
+            ("tests/Standalone.Tests/Standalone.Tests.csproj", new[] { "../../src/Standalone/Standalone.csproj" }));
+
+        var result = ImpactedTestResolver.Resolve(
+            workspace: root,
+            changedFiles: new[] { "src/Common/Helpers.cs" },
+            originalCommand: "dotnet test",
+            impactedOnly: true);
+
+        Assert.False(result.RequiresScopedTraversal);
+        Assert.True(result.WholeSuiteFallback);
+        Assert.Null(result.TraversalProjPath);
+    }
+
+    [Theory]
     [InlineData("global.json")]
     [InlineData("nuget.config")]
     [InlineData("NuGet.Config")]
@@ -872,13 +961,16 @@ public class Phase59ImpactedTestResolverTests
     }
 
     [Fact]
-    public void T8h_TraversalProj_MultipleImpactedProjects_KeepsSingleOriginalTarget()
+    public void T8h_TraversalProj_MultipleImpactedProjects_RequestsScopedTraversal()
     {
-        // Regression for update/1.3: the heuristic resolver previously
-        // emitted `dotnet test proj1.csproj proj2.csproj build.proj ...`,
-        // which MSBuild rejected because dotnet test accepts only one
-        // positional target. With multiple impacted projects, keep the
-        // Traversal target and original safe exclusion filter.
+        // Originally (update/1.3): the resolver couldn't emit
+        // `dotnet test proj1.csproj proj2.csproj` (dotnet test takes one
+        // target), so multiple impacted projects under a Traversal anchor
+        // fell back to the whole suite. gap #1 (2026-05-27): instead of
+        // whole-suite, the resolver now SIGNALS the caller to synthesize a
+        // scoped Traversal proj (RequiresScopedTraversal=true). The resolver
+        // itself does NOT rewrite — it leaves Command as the original and the
+        // caller swaps the Traversal target for the generated scoped proj.
         var root = BuildFixture(
             ("src/Foo/Foo.csproj", null),
             ("tests/Foo.UnitTest/Foo.UnitTest.csproj", new[] { "../../src/Foo/Foo.csproj" }),
@@ -896,18 +988,15 @@ public class Phase59ImpactedTestResolverTests
             originalCommand: command,
             impactedOnly: true);
 
-        Assert.False(result.Rewritten);
-        Assert.True(result.WholeSuiteFallback);
-        Assert.Equal(command, result.Command);
+        Assert.False(result.Rewritten);             // caller rewrites, not the resolver
+        Assert.False(result.WholeSuiteFallback);    // gap #1 — no longer whole-suite
+        Assert.True(result.RequiresScopedTraversal);
+        Assert.Equal("build.proj", result.TraversalProjPath);
+        Assert.Equal(command, result.Command);      // unchanged until the caller swaps the target
         Assert.Equal(2, result.ImpactedProjects.Count);
         Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.UnitTest.csproj"));
         Assert.Contains(result.ImpactedProjects, p => p.EndsWith("Foo.IntegrationTest.csproj"));
-        Assert.Contains("dotnet test accepts only one project target", result.Reason);
-
-        var projectTargets = ImpactedTestResolver.ParseCommandLine(result.Command)
-            .Where(t => t.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        Assert.Empty(projectTargets);
+        Assert.Contains("scopes a generated Traversal proj", result.Reason);
     }
 
     // ── T9 — Helper unit tests for IsFilterNarrowingSafe ────────────────

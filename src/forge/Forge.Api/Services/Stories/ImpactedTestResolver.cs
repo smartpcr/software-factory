@@ -158,6 +158,14 @@ public static class ImpactedTestResolver
         "Directory.Build.props",
         "Directory.Build.targets",
         "Directory.Packages.props",
+        // 2026-05-27 — `packages.props` is the Microsoft.Build.CentralPackageVersions
+        // SDK's central-package-version file (the convention common-infra uses, e.g.
+        // `src/packages.props`), equivalent to `Directory.Packages.props`. A version
+        // bump here changes every project's restored dependency graph, so it's
+        // genuinely compilation-affecting → whole suite. An analyzer-only ADDITIVE
+        // pin (e.g. BannedApiAnalyzers) is build-time-only and is relaxed out by
+        // FilterCompilationNeutralGlobalFilesAsync below so it doesn't whole-suite.
+        "packages.props",
     };
 
     private static readonly Regex ProjectReferenceRegex = new(
@@ -324,6 +332,27 @@ public static class ImpactedTestResolver
         var sortedRelative = SortRelative(workspace, impacted);
         if (sortedRelative.Count > 1)
         {
+            // gap #1 (2026-05-27) — multiple impacted test projects. `dotnet test`
+            // takes a single project/solution target, so we can't just list N
+            // csprojs. When the command anchored on a Traversal `.proj` (e.g.
+            // `build.proj`), signal the caller to synthesize a SCOPED Traversal proj
+            // referencing only these projects — far cheaper than the whole suite.
+            // Without a traversal anchor we can't safely build a multi-project target,
+            // so keep the whole-suite fallback (unchanged behaviour).
+            if (traversalProjIndex >= 0)
+            {
+                return new ImpactedTestResolverResult(
+                    Command: originalCommand,
+                    Rewritten: false,
+                    ImpactedProjects: sortedRelative,
+                    AllTestProjectCount: allTestProjects.Count,
+                    WholeSuiteFallback: false,
+                    Skipped: false,
+                    Reason: $"matched {impacted.Count} of {allTestProjects.Count} test projects; caller scopes a generated Traversal proj",
+                    RequiresScopedTraversal: true,
+                    TraversalProjPath: tokens[traversalProjIndex]);
+            }
+
             return new ImpactedTestResolverResult(
                 Command: originalCommand,
                 Rewritten: false,
@@ -331,7 +360,7 @@ public static class ImpactedTestResolver
                 AllTestProjectCount: allTestProjects.Count,
                 WholeSuiteFallback: true,
                 Skipped: false,
-                Reason: $"matched {impacted.Count} of {allTestProjects.Count} test projects, but dotnet test accepts only one project target; running original command");
+                Reason: $"matched {impacted.Count} of {allTestProjects.Count} test projects, but dotnet test accepts only one project target and no Traversal anchor is present; running original command");
         }
 
         var rewrittenCommand = RewriteCommand(tokens, sortedRelative, traversalProjIndex);
@@ -404,19 +433,26 @@ public static class ImpactedTestResolver
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// 2026-05-26 — drop a <c>Directory.Build.props</c> / <c>.targets</c> change
-    /// from <paramref name="changedFiles"/> when its diff is provably ANALYZER-ONLY
-    /// (build-time only — e.g. wiring a BannedApiAnalyzer + BannedSymbols.txt). Such
-    /// a change can only alter analyzer diagnostics, which the BUILD gate (whole-repo
-    /// build) already validates; it cannot change runtime test behaviour, so forcing
-    /// the entire (often flaky / multi-hour) suite via the global-impact trigger adds
-    /// no signal and strands the workstream. Removing it lets the diff's real source
-    /// files drive narrowing instead. <c>Directory.Packages.props</c> is NEVER relaxed
-    /// (it pins dependency versions = genuinely compilation-affecting). Conservative:
-    /// any uncertainty (git error, a removed/modified line, a compilation-affecting or
-    /// unrecognized element) keeps the file → whole-suite. Root cause: common-infra
-    /// stage-1.3 banned-api-analyzer wiring was forced whole-suite and failed on
-    /// unrelated flaky integration tests (WordCount / Powershell / TestJea), 2026-05-26.
+    /// 2026-05-26 — drop a global build file change from <paramref name="changedFiles"/>
+    /// when its diff is provably ANALYZER-ONLY (build-time only — e.g. wiring a
+    /// BannedApiAnalyzer + BannedSymbols.txt). Such a change can only alter analyzer
+    /// diagnostics, which the BUILD gate (whole-repo build) already validates; it
+    /// cannot change runtime test behaviour, so forcing the entire (often flaky /
+    /// multi-hour) suite via the global-impact trigger adds no signal and strands the
+    /// workstream. Removing it lets the diff's real source files drive narrowing.
+    /// Covers <c>Directory.Build.props</c> / <c>.targets</c> AND the central-package-
+    /// version files <c>Directory.Packages.props</c> / <c>packages.props</c>.
+    /// <para>2026-05-27 — extended to the package-version files: an additive analyzer
+    /// PACKAGE pin (e.g. <c>&lt;PackageReference Update="…BannedApiAnalyzers" Version="…" /&gt;</c>,
+    /// PrivateAssets=all) is build-time-only and inert until a Directory.Build.props
+    /// Choose/When attaches it, so it's safe to relax. A real (non-analyzer) version
+    /// bump is NOT relaxed — <see cref="IsAnalyzerOnlyBuildPropsDiff"/> treats a
+    /// non-analyzer <c>&lt;PackageReference&gt;</c> as an unrecognized element → keep →
+    /// whole suite. (Was: "Directory.Packages.props is NEVER relaxed".)</para>
+    /// Conservative: any uncertainty (git error, a removed/modified line, a
+    /// compilation-affecting or unrecognized element) keeps the file → whole-suite.
+    /// Root cause: common-infra stage-1.3 banned-api-analyzer wiring was forced
+    /// whole-suite and failed on unrelated flaky integration tests, 2026-05-26.
     /// </summary>
     public static async Task<IReadOnlyList<string>> FilterCompilationNeutralGlobalFilesAsync(
         string workspace, string baseRef, IReadOnlyList<string> changedFiles, CancellationToken ct = default)
@@ -435,7 +471,9 @@ public static class ImpactedTestResolver
             var name = Path.GetFileName(f);
             var relaxCandidate =
                 string.Equals(name, "Directory.Build.props", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(name, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Directory.Packages.props", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "packages.props", StringComparison.OrdinalIgnoreCase);
 
             var drop = false;
             if (relaxCandidate)
@@ -1188,7 +1226,16 @@ public sealed record ImpactedTestResolverResult(
     bool WholeSuiteFallback,
     bool Skipped,
     string Reason,
-    string Mode = "heuristic")
+    string Mode = "heuristic",
+    // 2026-05-27 (gap #1) — set when >1 test project is impacted AND the command
+    // anchored on a Traversal `.proj`. `dotnet test` takes a single project/solution
+    // target, so the caller must synthesize a SCOPED Traversal `.proj` referencing
+    // only <see cref="ImpactedProjects"/> and run that instead of the whole suite.
+    // <see cref="TraversalProjPath"/> is the original traversal target (e.g.
+    // `build.proj`) the caller replaces. The caller falls back to the whole suite if
+    // it can't generate the scoped proj, so this never makes the gate worse.
+    bool RequiresScopedTraversal = false,
+    string? TraversalProjPath = null)
 {
     /// <summary>
     /// Shorthand constructor for a pure no-op (resolver fell through to

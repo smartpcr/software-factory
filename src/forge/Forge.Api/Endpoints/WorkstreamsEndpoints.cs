@@ -1249,7 +1249,8 @@ public static class WorkstreamsEndpoints
         ControlDbContext control,
         ProductDbContext db,
         IAgentRunner runner,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        AgentMemoryStore memStore)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -1390,6 +1391,15 @@ public static class WorkstreamsEndpoints
             ct: ctx.RequestAborted);
         var priorVerdict = report.PriorVerdict;
         var demoted = report.VerdictDemoted;
+        var memoryDeleted = 0;
+        if (HasPoisonedProviderSessionFailure(lastDel))
+        {
+            // Copilot SDK can persist a provider SessionId whose on-disk
+            // SQLite store has gone missing/corrupt. A soft retry must clear
+            // that provider-session memory or the next iteration reattaches to
+            // the same broken session and stalls again.
+            memoryDeleted = await memStore.DeleteForWorkItemAsync(id, ctx.RequestAborted);
+        }
 
         ws.Status = "active";
         ws.StallReason = null;
@@ -1427,8 +1437,23 @@ public static class WorkstreamsEndpoints
             demoted,
             priorIter = lastDel.Iter,
             priorScore = lastDel.Score,
+            memoryRowsCleaned = memoryDeleted,
             status = ws.Status,
         });
+    }
+
+    internal static bool HasPoisonedProviderSessionFailure(DeliverableRow? lastDel)
+    {
+        if (lastDel is null) return false;
+
+        var reason = lastDel.FailureReason ?? string.Empty;
+        if (reason.Contains("unable to open database file", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var notes = lastDel.Notes ?? string.Empty;
+        return notes.Contains("unable to open database file", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
