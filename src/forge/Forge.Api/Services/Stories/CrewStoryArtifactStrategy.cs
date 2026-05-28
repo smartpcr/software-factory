@@ -38,6 +38,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// Maximum number of files <see cref="ProduceStageE2eAsync"/> will
+    /// accept from the QA crew's scratch workspace before failing fast.
+    /// Legitimate qa-e2e producers emit a handful of artifacts
+    /// (a `.feature` file, a few step-def classes, optionally a base
+    /// class + appsettings template). When the scratch workspace gets
+    /// polluted with the full repo (e.g. the agent shells out to
+    /// <c>git clone</c> or copies the worktree into the workspace dir),
+    /// <see cref="ReadAllFiles"/> can return hundreds of paths — every
+    /// one of which becomes a path arg to a downstream
+    /// <c>git check-ignore --</c> invocation that then blows the
+    /// Windows <c>CreateProcess</c> argv limit. The cap is intentionally
+    /// generous so legitimate edge cases stay clear; the 2026-05-28
+    /// incident emitted 825 files, an order of magnitude above the cap.
+    /// </summary>
+    internal const int QaE2eProducerFileCountCap = 50;
+
     private readonly IServiceScopeFactory scopeFactory;
     private readonly IAgentRunner runner;
     private readonly TaskChannel taskChannel;
@@ -4816,6 +4833,38 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"QA crew produced no files for qa-e2e workstream {workstream.Id}. Workspace: {workspace}");
         }
 
+        // 2026-05-28 stall guard — a legitimate qa-e2e producer emits a
+        // handful of artifacts (one `.feature`, a few step-def classes,
+        // optionally a base class + appsettings). When the scratch
+        // workspace gets polluted with the full repo contents (e.g. the
+        // agent shells out to `git clone` or copies the worktree into the
+        // workspace dir), ReadAllFiles returns hundreds of files. Every
+        // one of those files becomes a path arg to a downstream
+        // `git check-ignore --` invocation inside
+        // `EnsurePathsCommittableAsync` → on Windows the combined argv
+        // blows the 32 KB `CreateProcess` limit and surfaces as a generic
+        // `Win32Exception` that the orchestrator's targeted catch
+        // (`GitIgnoredPathException` only) does NOT match. The work item
+        // is then re-spawned on the orchestrator's next sweep, identical
+        // failure recurs, the workstream loops forever without opening a
+        // PR. Failing fast here (BEFORE the commit path) routes to the
+        // orchestrator's general catch and marks the workstream stalled
+        // with an actionable reason so operators can purge the scratch
+        // dir and Restart.
+        //
+        // The cap is intentionally generous (50× the realistic 1-10
+        // file count) so legitimate edge cases — like emitting per-language
+        // helper files alongside the deterministic templates — aren't
+        // tripped. The polluted workspace incident emitted 825 files,
+        // an order of magnitude above the cap.
+        if (files.Count > QaE2eProducerFileCountCap)
+        {
+            throw new InvalidOperationException(
+                $"qa-e2e producer emitted {files.Count} files (cap={QaE2eProducerFileCountCap}) for workstream {workstream.Id}; "
+                + "scratch workspace is likely polluted with non-deliverable content (e.g. a cloned repo copy). "
+                + $"Workspace: {workspace}. Operator: purge the scratch dir and Restart the workstream.");
+        }
+
         // docs/forge/e2e.md Stage 7.3 — fold the deterministic
         // appsettings template (per-phase) and the per-spawn E2eBase.cs
         // into the LLM output before returning. These two files are
@@ -8535,6 +8584,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             if (rel.StartsWith(".forge-attachments/", StringComparison.Ordinal)) continue;
             // Forge iteration scratch (iter-notes, conversation notes).
             if (rel.StartsWith(".forge/", StringComparison.Ordinal)) continue;
+            // Local git metadata. The producer scratch workspace
+            // (`storyworkspaces/{spawnId}/{kind}-…`) can end up with a real
+            // `.git/` directory when an agent tool runs `git init` (or any
+            // command that implicitly creates one, e.g. some `dotnet new`
+            // templates). Walking those files into the returned dict feeds
+            // them to `RealStoryGitOps.CommitFilesAsync`, which then calls
+            // `Directory.CreateDirectory($"{wtPath}\.git")` — and that throws
+            // `IOException: a file or directory with the same name already
+            // exists` because the REAL worktree's `.git` is the 97-byte
+            // git-worktree pointer FILE, not a directory. Observed
+            // code-intelligence:CLEAN-CODE stage 9.2-e2e 2026-05-28: after
+            // iter 4 passed at score 92, every post-pass spawn looped on
+            // this exception until the operator unstuck.
+            if (rel.StartsWith(".git/", StringComparison.Ordinal)) continue;
             // Build output the gate (`dotnet test` / `go test` / …) wrote into
             // the workspace — bin/, obj/, target/, node_modules/, etc. These
             // are never deliverables; without this filter a blanket

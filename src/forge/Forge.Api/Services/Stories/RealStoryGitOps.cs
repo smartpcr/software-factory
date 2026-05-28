@@ -2837,6 +2837,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <summary>
+    /// Max combined argv byte budget for a single <c>git check-ignore</c>
+    /// invocation. Windows' <c>CreateProcess</c> caps the full command line
+    /// (resolved binary path + per-arg quoting + the <c>cmd.exe</c> shim
+    /// some hosts inject) at <c>32767</c> chars; once exceeded, the
+    /// kernel returns <c>ERROR_FILENAME_EXCED_RANGE</c> which surfaces as
+    /// the generic <see cref="System.ComponentModel.Win32Exception"/>
+    /// <c>"The filename or extension is too long."</c>. The 8 KB ceiling
+    /// leaves roughly 24 KB headroom for the prefix so we never trip the
+    /// limit even for the verbose re-run (which adds <c>-v</c> and
+    /// re-emits the same path subset).
+    /// <para>
+    /// 2026-05-28 incident: a polluted qa-e2e scratch workspace for
+    /// <c>code-intelligence:AST-PARSER 1.5-e2e</c> held 825 files
+    /// (~152 KB of argv). The single-shot invocation blew CreateProcess
+    /// and bubbled a Win32Exception that the orchestrator's
+    /// <c>GitIgnoredPathException</c>-only catch missed; the workstream
+    /// looped on <c>spawn-finished{success:false}</c> every 30 minutes
+    /// for 10+ hours without opening a PR.
+    /// </para>
+    /// </summary>
+    internal const int CheckIgnoreArgvByteBudget = 8 * 1024;
+
+    /// <summary>
     /// Phase 81 preflight — throw <see cref="GitIgnoredPathException"/> when any
     /// of <paramref name="paths"/> is excluded by the worktree's <c>.gitignore</c>.
     ///
@@ -2853,6 +2876,12 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// stalling the plan phase). We therefore use the verbose form only to
     /// describe the rule for the operator, restricted to the paths the
     /// non-verbose form already confirmed are ignored.</para>
+    ///
+    /// <para>The path list is chunked into batches of at most
+    /// <see cref="CheckIgnoreArgvByteBudget"/> argv bytes so each invocation
+    /// stays under the Windows <c>CreateProcess</c> command-line cap; see
+    /// the constant's doc-comment for the 2026-05-28 incident that motivated
+    /// the chunking.</para>
     /// </summary>
     private async Task AssertPathsNotIgnoredAsync(
         string wtPath, string branch, IEnumerable<string> paths, CancellationToken ct)
@@ -2862,48 +2891,120 @@ public sealed class RealStoryGitOps : IStoryGitOps
             .ToArray();
         if (pathList.Length == 0) return;
 
-        var args = new List<string> { "check-ignore", "--" };
-        args.AddRange(pathList);
-        var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
-
-        // Exit 1 = nothing genuinely ignored (the happy path, which includes
-        // files re-included by a `!pattern` negation rule); proceed.
-        if (code == 1) return;
-
-        // Exit != 0 and != 1 means git itself failed (bad invocation, corrupt
-        // index, etc.). Don't block the commit on a tooling failure — log and
-        // let the normal add/commit flow proceed.
-        if (code != 0)
+        // Chunk the path list so each `git check-ignore --` invocation stays
+        // under the Windows CreateProcess argv limit. See
+        // <see cref="CheckIgnoreArgvByteBudget"/> for the budget rationale.
+        var ignored = new List<string>();
+        var chunkFailed = false;
+        foreach (var chunk in ChunkPathsByArgvBudget(pathList, CheckIgnoreArgvByteBudget))
         {
-            this.logger?.LogWarning(
-                "git check-ignore preflight returned exit {Code} in '{Path}' (branch {Branch}); skipping ignore guard.\nstdout: {StdOut}\nstderr: {StdErr}",
-                code, wtPath, branch, stdout, stderr);
-            return;
+            var args = new List<string>(chunk.Count + 2) { "check-ignore", "--" };
+            args.AddRange(chunk);
+            var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, args.ToArray());
+
+            // Exit 1 = nothing in this chunk is genuinely ignored (the happy
+            // path, which includes files re-included by a `!pattern` negation
+            // rule); skip to the next chunk.
+            if (code == 1) continue;
+
+            // Exit != 0 and != 1 means git itself failed (bad invocation,
+            // corrupt index, etc.). Don't block the commit on a tooling
+            // failure — log and skip this chunk. We continue with remaining
+            // chunks because the rest of the path set is still worth
+            // checking (one tooling hiccup shouldn't disable the whole
+            // ignore guard).
+            if (code != 0)
+            {
+                chunkFailed = true;
+                this.logger?.LogWarning(
+                    "git check-ignore preflight returned exit {Code} in '{Path}' (branch {Branch}) for chunk of {ChunkCount} path(s); skipping this chunk.\nstdout: {StdOut}\nstderr: {StdErr}",
+                    code, wtPath, branch, chunk.Count, stdout, stderr);
+                continue;
+            }
+
+            // Exit 0 = one or more paths in this chunk are genuinely ignored.
+            // Non-verbose stdout lists exactly those paths, one per line.
+            foreach (var line in stdout.Split('\n'))
+            {
+                var trimmed = line.TrimEnd('\r');
+                if (trimmed.Length > 0) ignored.Add(trimmed);
+            }
         }
 
-        // Exit 0 = one or more paths are genuinely ignored. The non-verbose
-        // stdout lists exactly those paths, one per line.
-        var ignored = stdout
-            .Split('\n')
-            .Select(line => line.TrimEnd('\r'))
-            .Where(line => line.Length > 0)
-            .Distinct()
-            .ToArray();
+        // Dedupe (a single path can appear at most once per chunk; this
+        // protects against unexpected duplicate output from git too).
+        var ignoredDedup = ignored.Distinct().ToArray();
 
-        // Defensive: exit 0 should always carry at least one path, but never
-        // throw an empty exclusion list.
-        if (ignored.Length == 0) return;
+        // Defensive: every-chunk-clean OR every-chunk-tooling-failed means
+        // we have nothing to throw on. If at least one chunk's tooling
+        // failed and no other chunk flagged anything, the previous behaviour
+        // was to skip the guard — preserve that.
+        if (ignoredDedup.Length == 0) return;
 
         // Re-run verbose ONLY on the confirmed-ignored subset to capture the
         // matching rule (`<source>:<linenum>:<pattern>\t<path>`) for the
         // operator-facing message. Restricting to the ignored subset keeps the
-        // detail free of misleading negation lines.
-        var verboseArgs = new List<string> { "check-ignore", "-v", "--" };
-        verboseArgs.AddRange(ignored);
-        var (_, verbose, _) = await this.RunGitCaptureAsync(wtPath, ct, verboseArgs.ToArray());
-        var detail = string.IsNullOrWhiteSpace(verbose) ? stdout : verbose;
+        // detail free of misleading negation lines, AND keeps the verbose
+        // invocation small enough that single-chunk is almost always
+        // sufficient — but we still chunk defensively for the pathological
+        // case where every input was ignored.
+        var verboseBuilder = new System.Text.StringBuilder();
+        foreach (var chunk in ChunkPathsByArgvBudget(ignoredDedup, CheckIgnoreArgvByteBudget))
+        {
+            var verboseArgs = new List<string>(chunk.Count + 3) { "check-ignore", "-v", "--" };
+            verboseArgs.AddRange(chunk);
+            var (_, verbose, _) = await this.RunGitCaptureAsync(wtPath, ct, verboseArgs.ToArray());
+            if (!string.IsNullOrEmpty(verbose))
+            {
+                if (verboseBuilder.Length > 0 && verboseBuilder[verboseBuilder.Length - 1] != '\n')
+                {
+                    verboseBuilder.Append('\n');
+                }
+                verboseBuilder.Append(verbose);
+            }
+        }
 
-        throw new GitIgnoredPathException(branch, ignored, detail);
+        var detail = verboseBuilder.Length > 0
+            ? verboseBuilder.ToString()
+            : string.Join('\n', ignoredDedup);
+        if (chunkFailed)
+        {
+            detail += "\n\n(note: at least one check-ignore chunk failed with a non-zero git exit; "
+                + "the ignored-path list above may be incomplete — see warnings in the log.)";
+        }
+
+        throw new GitIgnoredPathException(branch, ignoredDedup, detail);
+    }
+
+    /// <summary>
+    /// Partition <paramref name="paths"/> into consecutive chunks whose
+    /// combined UTF-8 byte length stays under <paramref name="budgetBytes"/>.
+    /// Each individual path always lands in its own chunk even if it
+    /// exceeds the budget (a single oversized path can still blow
+    /// CreateProcess, but we surface a meaningful git exit code in that
+    /// degenerate case instead of pre-emptively giving up). Order is
+    /// preserved so the operator-facing error mirrors input order.
+    /// </summary>
+    internal static IEnumerable<IReadOnlyList<string>> ChunkPathsByArgvBudget(
+        IReadOnlyList<string> paths, int budgetBytes)
+    {
+        if (paths.Count == 0) yield break;
+        var current = new List<string>();
+        var currentBytes = 0;
+        foreach (var p in paths)
+        {
+            // +1 for the inter-arg space the spawner inserts.
+            var pBytes = System.Text.Encoding.UTF8.GetByteCount(p) + 1;
+            if (current.Count > 0 && currentBytes + pBytes > budgetBytes)
+            {
+                yield return current;
+                current = new List<string>();
+                currentBytes = 0;
+            }
+            current.Add(p);
+            currentBytes += pBytes;
+        }
+        if (current.Count > 0) yield return current;
     }
 
     /// <summary>

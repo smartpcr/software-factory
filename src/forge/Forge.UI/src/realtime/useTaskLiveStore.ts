@@ -450,6 +450,21 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         nextStatus = 'failed';
       } else if (evt.kind === 'task.completed') {
         nextStatus = 'completed';
+      } else if (evt.kind === 'task.impl.spawn-finished') {
+        // task.impl.spawn-finished is a per-cycle marker, not a terminal
+        // lifecycle event — but when success === false the orchestrator
+        // backed off and the work item is NOT currently in motion, so we
+        // must NOT fall through to the catch-all 'live' branch (that
+        // would keep the Retry button disabled because canRetry requires
+        // !isLive when the latest verdict is not terminal-bad). Surface
+        // a "failed" badge so operators can act. When success === true
+        // leave executionStatus alone: the next event (spawn-started,
+        // iteration.started, or the snapshot refresh on pr-opened) will
+        // drive the correct next state.
+        const p = evt.payload as Record<string, unknown> | null | undefined;
+        if (p && p.success === false) {
+          nextStatus = 'failed';
+        }
       } else if (evt.kind.startsWith('task.')) {
         nextStatus = 'live';
       }
