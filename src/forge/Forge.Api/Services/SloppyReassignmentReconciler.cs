@@ -581,6 +581,67 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             await RunGitAsync(worktreePath, $"fetch origin {baseBranch}", ct);
             await RunGitAsync(worktreePath, $"reset --hard origin/{baseBranch}", ct);
             await RunGitAsync(worktreePath, "clean -fdx", ct);
+
+            // 2026-05-28 root-cause fix for "stuck workstream after pair
+            // reassignment" — the local reset above moves the work branch
+            // ref to origin/<baseBranch>, but origin/<workBranch> still
+            // carries the prior pair's commits. The new pair starts on a
+            // clean local slate, but its first push hits non-fast-forward
+            // → auto-rebase fails on add/add conflicts whenever both pairs
+            // created the same new files from scratch → spawn-finished
+            // success=false in an infinite loop. Observed on
+            // code-intelligence:CLEAN-CODE stage 9.1 (Audit WAL frame
+            // writer): SD2 pair pushed 11 sloppy commits, was rotated out
+            // for flat-plateau, E9 pair ran 4 iters at score 92 but every
+            // post-pass push hit the rebase wall; ~$4,500 burned before
+            // operator unstick.
+            //
+            // Fix: after resetting the local worktree, force-republish the
+            // work branch on origin so origin/<workBranch> = base tip.
+            // Safe because (a) sloppy verdict already condemned the prior
+            // commits, (b) no PR exists yet — PR is created post-pass at
+            // CrewQueueWorker.CreatePullRequestAsync, and sloppy never
+            // reaches pass, (c) the work branch is private to this
+            // workstream so no third party can be reading it.
+            var (branchCode, branchOut, _) = await RunGitCaptureAsync(
+                worktreePath, ct, "rev-parse", "--abbrev-ref", "HEAD");
+            var workBranch = branchOut.Trim();
+            if (branchCode == 0
+                && !string.IsNullOrEmpty(workBranch)
+                && workBranch != "HEAD"
+                && !string.Equals(workBranch, baseBranch, StringComparison.Ordinal))
+            {
+                // Fetch the work branch first so --force-with-lease has a
+                // local remote-tracking ref to lease against. A non-zero
+                // exit here is fine (the ref may not exist on origin yet
+                // for fresh workstreams); we fall through to the push
+                // regardless and let push report a real error.
+                await RunGitCaptureAsync(worktreePath, ct, "fetch", "origin", workBranch);
+
+                // --force-with-lease (not naked --force) guards against
+                // a concurrent writer racing us. Bare lease form leases
+                // against our just-fetched remote-tracking ref.
+                var (pushCode, pushOut, pushErr) = await RunGitCaptureAsync(
+                    worktreePath, ct,
+                    "push", "--force-with-lease", "origin", workBranch);
+                if (pushCode == 0)
+                {
+                    this.logger.LogInformation(
+                        "Worktree reset republished origin/{WorkBranch} at base tip for sloppy reassignment: wi={Wi}",
+                        workBranch, wi.Id);
+                }
+                else
+                {
+                    // Best-effort — log and continue. The new pair will
+                    // hit the same non-fast-forward wall, but the local
+                    // reset still gave them a clean code slate to work
+                    // from.
+                    this.logger.LogWarning(
+                        "Worktree republish push exited {Code} for sloppy reassignment: wi={Wi} branch={Branch} stdout={Out} stderr={Err}",
+                        pushCode, wi.Id, workBranch, pushOut, pushErr);
+                }
+            }
+
             this.logger.LogInformation(
                 "Worktree reset for sloppy reassignment: wi={Wi} path={Path} base={Base}",
                 wi.Id, worktreePath, baseBranch);
@@ -626,6 +687,55 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
             var err = await p.StandardError.ReadToEndAsync(ct);
             throw new InvalidOperationException($"git {args} failed ({p.ExitCode}): {err}");
         }
+    }
+
+    /// <summary>
+    /// Variant of <see cref="RunGitAsync"/> that captures stdout + stderr and
+    /// returns the exit code instead of throwing. Used for "best-effort"
+    /// git operations where we want to inspect the result and log on
+    /// failure rather than halt the reconciler. Uses ArgumentList so
+    /// each token is passed verbatim — safe for branch names with
+    /// special characters.
+    /// </summary>
+    private static async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureAsync(
+        string workingDir, CancellationToken ct, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        Forge.Api.Services.Git.GitProcessEnv.Apply(psi);
+        foreach (var a in args) psi.ArgumentList.Add(a);
+
+        using var p = Process.Start(psi)
+            ?? throw new InvalidOperationException("git failed to start");
+        using var reg = ct.Register(() =>
+        {
+            try { if (!p.HasExited) p.Kill(true); } catch { /* swallow */ }
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        // Start the stream reads without the cancellation token so they
+        // drain naturally on process exit (matches RealStoryGitOps
+        // RunGitCaptureAsync pattern).
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
+        try
+        {
+            await p.WaitForExitAsync(linked.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!p.HasExited) p.Kill(true); } catch { /* swallow */ }
+            throw;
+        }
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        return (p.ExitCode, stdout, stderr);
     }
 
     private async Task ClearWorkstreamStallAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)

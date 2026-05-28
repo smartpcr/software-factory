@@ -376,13 +376,25 @@ public sealed class RealStoryGitOps : IStoryGitOps
             catch (Exception pushEx) when (pushEx is not OperationCanceledException)
             {
                 this.logger?.LogWarning(pushEx,
-                    "CommitAllAndPushAsync: push failed on branch {Branch}; commit is local-only. The next iter's EnsureWorktreeAsync `git reset --hard origin/{Branch}` will lose it if the push isn't recovered.",
+                    "CommitAllAndPushAsync: push failed on branch {Branch}; commit is local-only and the next iter's EnsureWorktreeAsync `git reset --hard origin/{Branch}` will discard it. Reporting false so the caller does NOT emit task.iter-commit.pushed (which would lie about durability) — see Phase 52 stuck-workstream fix 2026-05-28.",
                     branch, branch);
-                // Commit succeeded but push failed — still report true so the
-                // caller knows progress was made locally. The next iter's
-                // pre-dispatch reset may lose it, but a local-only commit is
-                // strictly better than no commit at all.
-                return true;
+                // 2026-05-28: was `return true` with the rationale "still
+                // report true so the caller knows progress was made
+                // locally". That rationale was wrong — the local commit
+                // is destroyed by the next iter's `git reset --hard
+                // origin/<branch>` (see EnsureWorktreeAsync), so
+                // reporting success is actively misleading. The
+                // strategy caller at CrewStoryArtifactStrategy:7015
+                // emits task.iter-commit.pushed on the truthy return
+                // — that event has been lying about every iter where
+                // push failed, masking the divergence until the
+                // eventual non-swallowed push call dies at
+                // PushBranchAsync / MergeUpstreamIntoBranchAsync /
+                // CommitFilesAsync. Observed root cause for
+                // code-intelligence:CLEAN-CODE stage 9.1 burning
+                // ~$4,500 across SD2+E9 pair rotations before operator
+                // unstick.
+                return false;
             }
 
             return true;
@@ -2901,6 +2913,23 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// orchestrator run advanced the remote branch but the dedicated
     /// worktree's local ref didn't catch up — without this, the spawn halts
     /// and the operator has to click Retry, which fails with the same error.
+    ///
+    /// <para>2026-05-28 — when rebase fallback itself fails on conflicts
+    /// (add/add on identical files written by two consecutive pair attempts
+    /// of the same workstream — the classic
+    /// <c>SloppyReassignmentReconciler</c> aftermath), abort the rebase and
+    /// then <c>git push --force-with-lease origin {branch}</c> to overwrite
+    /// the stale remote tip with the worktree's current HEAD. Safe because
+    /// Forge work branches are written exclusively by Forge itself
+    /// (no third-party writer), and <c>--force-with-lease</c> still rejects
+    /// the push if a concurrent Forge writer raced us between the fetch
+    /// above and the push (the local remote-tracking ref we just refreshed
+    /// is the lease). This unblocks rows that fell through the
+    /// <c>SloppyReassignmentReconciler.TryResetWorktreeAsync</c> safety
+    /// net (e.g. its republish hit a network blip, or the divergence was
+    /// created before that fix landed). Root cause:
+    /// <c>code-intelligence:CLEAN-CODE</c> stage 9.1 burning ~$4,500 in
+    /// SD2 → E9 pair rotations before operator unstick.</para>
     /// </summary>
     private async Task PushWithAutoRecoverAsync(string wtPath, string branch, CancellationToken ct)
     {
@@ -2928,13 +2957,36 @@ public sealed class RealStoryGitOps : IStoryGitOps
             "rebase", $"origin/{branch}");
         if (rebaseCode != 0)
         {
-            // Real conflict — abort so the worktree is left clean, then surface
-            // the original push error with the rebase context so the operator
-            // can resolve manually.
+            // Rebase produced conflicts (typical: two pair attempts each
+            // created the same file from scratch → add/add conflict on
+            // every new file). Abort the rebase to leave the worktree
+            // clean, then force-republish — see method-level docstring
+            // for the safety argument. The lease is the remote-tracking
+            // ref we refreshed via the `fetch` two statements above, so
+            // a concurrent writer racing us still gets a clean refusal
+            // instead of a silent overwrite.
             await this.RunGitCaptureAsync(wtPath, ct, "rebase", "--abort");
-            throw new InvalidOperationException(
-                $"git push origin {branch} failed (exit {code}) in '{wtPath}' and auto-rebase onto origin/{branch} also failed.\n"
-                + $"push stderr: {stderr}\nrebase stdout: {rebaseOut}\nrebase stderr: {rebaseErr}");
+
+            this.logger?.LogWarning(
+                "Auto-rebase onto origin/{Branch} hit conflicts; force-with-lease push to overwrite stale remote tip "
+                + "(prior-pair divergence aftermath). rebase stdout: {RebaseOut} stderr: {RebaseErr}",
+                branch, rebaseOut, rebaseErr);
+
+            var (forceCode, forceOut, forceErr) = await this.RunGitCaptureAsync(
+                wtPath, ct, "push", "--force-with-lease", "origin", branch);
+            if (forceCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"git push origin {branch} failed (exit {code}) in '{wtPath}', auto-rebase onto origin/{branch} hit conflicts, "
+                    + $"and force-with-lease recovery also failed (exit {forceCode}) — likely a concurrent Forge writer raced us "
+                    + "between the fetch and the force-push. Operator intervention required.\n"
+                    + $"push stderr: {stderr}\nrebase stdout: {rebaseOut}\nrebase stderr: {rebaseErr}\n"
+                    + $"force-push stdout: {forceOut}\nforce-push stderr: {forceErr}");
+            }
+
+            this.logger?.LogInformation(
+                "Push to origin/{Branch} succeeded after rebase-conflict force-with-lease recovery.", branch);
+            return;
         }
 
         var (retryCode, retryOut, retryErr) = await this.RunGitCaptureAsync(wtPath, ct, "push", "origin", branch);
