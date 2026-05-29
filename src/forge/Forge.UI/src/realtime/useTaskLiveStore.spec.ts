@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   useTaskLiveStore,
+  __setRefetchSnapshotImplForTest,
+  __resetPendingSnapshotRefetchesForTest,
   type TaskExecutionSnapshot,
   type TaskTranscriptEvent,
   type WorktreeSnapshot,
@@ -225,5 +227,152 @@ describe('useTaskLiveStore spawn-finished status patch', () => {
 
     const snap = useTaskLiveStore.getState().entries['ws-spawn-finished'].snapshot;
     expect(snap?.executionStatus).toBe('live');
+  });
+});
+
+// 2026-05-28 — regression for the 3-way iter-count disagreement observed
+// on AST 9.3 (CLEAN-CODE 9.3 AST subprocess isolation). The top KPI chip
+// strip + bottom iter pager source from snap.deliverables which was
+// fetched once on attach and NEVER extended by appendEvent. Meanwhile
+// the "iter N of M" badge sources from snap.currentIteration which IS
+// event-patched. After running through N more iterations the chip strips
+// were N rows short of the badge. Fix: schedule a debounced snapshot
+// refetch on any iter-boundary event and merge the fetched deliverables
+// back into the snapshot.
+describe('useTaskLiveStore iter-boundary snapshot refresh', () => {
+  beforeEach(() => {
+    useTaskLiveStore.setState({ entries: {} });
+    __resetPendingSnapshotRefetchesForTest();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const baseSnapshot = (deliverables: TaskExecutionSnapshot['deliverables']): TaskExecutionSnapshot => ({
+    workItemId: 'ws-iter-refresh',
+    currentIteration: 1,
+    currentScore: 86,
+    currentVerdict: 'iterate',
+    generatorCostUsd: 0,
+    evaluatorCostUsd: 0,
+    totalCostUsd: 0,
+    generatorInputTokens: 0,
+    generatorOutputTokens: 0,
+    evaluatorInputTokens: 0,
+    evaluatorOutputTokens: 0,
+    deliverables,
+    recentTranscript: [],
+    worktree: null,
+    executionStatus: 'live',
+    transcriptTotalCount: 0,
+  });
+
+  const seed = (deliverables: TaskExecutionSnapshot['deliverables']) => {
+    const snapshot = baseSnapshot(deliverables);
+    useTaskLiveStore.setState({
+      entries: {
+        'ws-iter-refresh': {
+          snapshot,
+          transcript: [],
+          worktree: null,
+          loading: false,
+          lastEventId: 0,
+          refCount: 1,
+          transcriptTotalCount: 0,
+          loadingOlder: false,
+        },
+      },
+    });
+  };
+
+  it('schedules a debounced snapshot refetch on task.iteration.scored and extends deliverables', async () => {
+    seed([{
+      id: 1, iter: 1, score: 86, verdict: 'iterate', dims: {},
+      genCostUsd: 1, evalCostUsd: 0.5, createdAt: '2026-05-28T22:00:00Z',
+    }]);
+
+    const refetchSpy = vi.fn(async (workItemId: string) => {
+      const fresh: TaskExecutionSnapshot = baseSnapshot([
+        { id: 1, iter: 1, score: 86, verdict: 'iterate', dims: {}, genCostUsd: 1, evalCostUsd: 0.5, createdAt: '2026-05-28T22:00:00Z' },
+        { id: 2, iter: 2, score: 88, verdict: 'iterate', dims: {}, genCostUsd: 2, evalCostUsd: 1.0, createdAt: '2026-05-28T22:05:00Z' },
+      ]);
+      // Mirror the production code path — drive the merge through the
+      // exposed setter so we observe the same wiring the real refetch hits.
+      const store = useTaskLiveStore.getState();
+      const cur = store.entries[workItemId];
+      if (!cur || !cur.snapshot) return;
+      useTaskLiveStore.setState({
+        entries: {
+          ...store.entries,
+          [workItemId]: {
+            ...cur,
+            snapshot: {
+              ...cur.snapshot,
+              deliverables: fresh.deliverables,
+              currentIteration: Math.max(cur.snapshot.currentIteration ?? 0, fresh.currentIteration ?? 0),
+            },
+          },
+        },
+      });
+    });
+    const restore = __setRefetchSnapshotImplForTest(refetchSpy);
+    try {
+      const scored: TaskTranscriptEvent = {
+        id: 50,
+        workItemId: 'ws-iter-refresh',
+        kind: 'task.iteration.scored',
+        agentId: null,
+        crewId: null,
+        payload: { iter: 2, score: 88, verdict: 'iterate', totalCostUsd: 4 },
+        at: '2026-05-28T22:05:00Z',
+      };
+      useTaskLiveStore.getState().appendEvent('ws-iter-refresh', scored);
+
+      // Scalar patches fire immediately (synchronous).
+      const snapBefore = useTaskLiveStore.getState().entries['ws-iter-refresh'].snapshot;
+      expect(snapBefore?.currentIteration).toBe(2);
+      // But the chip strip was still frozen at length 1 because nothing
+      // appends to deliverables until the debounced refetch fires.
+      expect(snapBefore?.deliverables?.length).toBe(1);
+      expect(refetchSpy).not.toHaveBeenCalled();
+
+      // After the debounce window, the refetch fires and extends the array.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(refetchSpy).toHaveBeenCalledTimes(1);
+      const snapAfter = useTaskLiveStore.getState().entries['ws-iter-refresh'].snapshot;
+      expect(snapAfter?.deliverables?.length).toBe(2);
+      expect(snapAfter?.deliverables?.[1].iter).toBe(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it('coalesces a burst of iter events into a single refetch call', async () => {
+    seed([{
+      id: 1, iter: 1, score: 86, verdict: 'iterate', dims: {},
+      genCostUsd: 1, evalCostUsd: 0.5, createdAt: '2026-05-28T22:00:00Z',
+    }]);
+
+    const refetchSpy = vi.fn(async () => { /* noop */ });
+    const restore = __setRefetchSnapshotImplForTest(refetchSpy);
+    try {
+      const baseEvt = (id: number, kind: string, iter: number): TaskTranscriptEvent => ({
+        id, workItemId: 'ws-iter-refresh', kind, agentId: null, crewId: null,
+        payload: { iter, score: 88, verdict: 'iterate' },
+        at: '2026-05-28T22:05:00Z',
+      });
+
+      // Burst: scored → iterated → started (last shouldn't trigger, but
+      // the prior two should coalesce into one debounced refetch).
+      useTaskLiveStore.getState().appendEvent('ws-iter-refresh', baseEvt(60, 'task.iteration.scored', 2));
+      useTaskLiveStore.getState().appendEvent('ws-iter-refresh', baseEvt(61, 'task.iteration.iterated', 2));
+      useTaskLiveStore.getState().appendEvent('ws-iter-refresh', baseEvt(62, 'task.iteration.passed', 2));
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(refetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
   });
 });

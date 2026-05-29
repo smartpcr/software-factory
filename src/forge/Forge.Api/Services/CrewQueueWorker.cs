@@ -3891,9 +3891,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // driving this WI through its iteration loop. Healing now would race the writer
             // and create the "failed-without-reason" stuck-WI bug above. Skip — the next
             // sweep tick will retry once activity quiesces.
-            var hasRecentActivity = await db.TaskTranscriptEvents.AsNoTracking()
-                .AnyAsync(e => e.WorkItemId == wi.Id && e.At >= recentActivityCutoff, ct);
-            if (hasRecentActivity) continue;
+            //
+            // Note: SQLite EF Core cannot translate `DateTimeOffset >=` comparison in a
+            // server-side predicate (At is stored as TEXT). We project the latest event's
+            // At by ordering on Id (long, server-translatable; Ids are insertion-ordered
+            // which matches chronological order for an append-only table) and compare
+            // client-side. Default(DateTimeOffset) = MinValue when no rows exist, which is
+            // correctly < cutoff and yields hasRecentActivity=false. Matches the
+            // ORDER BY DateTimeOffset workaround pattern in SloppyReassignmentReconciler.
+            var lastEventAt = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == wi.Id)
+                .OrderByDescending(e => e.Id)
+                .Select(e => e.At)
+                .FirstOrDefaultAsync(ct);
+            if (lastEventAt >= recentActivityCutoff) continue;
 
             // No open queue row + no recent transcript activity + executionStatus=live → stuck badge.
             var delivCandidates = await db.Deliverables.AsNoTracking()

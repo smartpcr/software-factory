@@ -1354,7 +1354,32 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // priorChain[Count-1] holds iter N-1's eval notes (the chain
             // hasn't been extended with iter N's row yet at this point).
             // For iter 1 there is no prior, so the gate is a no-op.
-            if (verdict == "pass" && priorChain.Count > 0)
+            // 2026-05-28 — high-confidence pass bypass. When the current
+            // score is well above the pass threshold AND the prior iter
+            // also passed the threshold, two independent evaluators have
+            // endorsed the work — trust them over the checkbox heuristic.
+            // Without this bypass, a generator that genuinely finished
+            // early (the artifact is done, no new file changes required)
+            // gets demoted forever and the no-progress.detected event
+            // eventually stalls the workstream. Observed
+            // code-intelligence:AST-PARSER-FOR-ADDIT rusttreesitterparser
+            // implementation 2026-05-28: iters 5/6/7 all scored 94 (well
+            // above PassThreshold=90), but the prior eval's `- [ ] N.`
+            // items weren't echoed back as `- [x]` so the gate demoted
+            // all three to iterate. Iter 8 had zero file changes (the
+            // generator agreed there was nothing left to do) →
+            // task.no-progress.detected at consecutiveNoChange=3 →
+            // ws.Status='stalled' with "No progress: agent produced
+            // zero file changes in 3 consecutive iterations". Bypass
+            // requires BOTH a strong current score AND a passing prior
+            // score so a one-time spike doesn't escape; intentional
+            // skipping over multiple iters is still caught by the
+            // sloppy-attempts cap and the operator-visible iter count.
+            var highConfidencePass = verdict == "pass"
+                && priorChain.Count > 0
+                && lastScore.Score >= ScoringConstants.PassThreshold + 3
+                && priorChain[priorChain.Count - 1].Score >= ScoringConstants.PassThreshold;
+            if (verdict == "pass" && priorChain.Count > 0 && !highConfidencePass)
             {
                 var priorEval = priorChain[priorChain.Count - 1].Notes ?? string.Empty;
                 var priorUnchecked = CountCheckboxMarkers(priorEval, lookForUnchecked: true);

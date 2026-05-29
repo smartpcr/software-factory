@@ -69,7 +69,25 @@ public sealed class StorySpawnOrchestrator
         public DateTimeOffset AcquiredAt { get; set; }
     }
 
-    private const int DriveStuckMinutes = 15;
+    // 2026-05-29 — lowered 15→5. The implement-phase drive holds this gate for
+    // the full impl wall-clock because DriveImplementAsync awaits Task.WhenAll
+    // over every in-wave workstream's iterate-to-90 loop. While the gate is held,
+    // every subsequent tick is skipped ("already in flight"), so the per-spawn
+    // DriveReviewAsync (which runs first each turn, see RunOneStepAsync) only
+    // gets a fresh turn when the gate force-reenters here. At 15m, e2e/impl
+    // workstreams that PASSED and moved to Status="review" were reviewed only
+    // ONE-per-15-min-cycle and queued up behind the held gate (observed
+    // 2026-05-29: code-intelligence AST-PARSER go/c-cpp/rust e2e each waited a
+    // full 15m cycle for its reviewer). Force-reentry is the existing, safe
+    // recovery path (the orphaned drive's impl tasks keep running in the
+    // background; its eventual Release lands on the discarded gate, harmless),
+    // so reentering at 5m simply lets review drain ~3× faster. Non-implement
+    // drives finish in <60s and never reach this threshold, so they're
+    // unaffected. (The complete cure is detaching the impl wave so the gate is
+    // never held for the budget — deferred: it breaks the test seam that relies
+    // on DriveImplementAsync awaiting WhenAll for deterministic single-tick
+    // advancement.)
+    private const int DriveStuckMinutes = 5;
 
     private static readonly ConcurrentDictionary<string, DriveGate> driveLocks =
         new(StringComparer.Ordinal);
@@ -304,18 +322,37 @@ public sealed class StorySpawnOrchestrator
                 case StorySpawnPhases.Decompose:
                     advanced |= await this.DriveDecomposeAsync(control, db, hub, spawn, story, repo, ct);
                     break;
+                // 2026-05-28 — review/QA drive runs BEFORE the implement drive.
+                // `DriveImplementAsync` ends with `await Task.WhenAll(tasks)`, so
+                // it holds the per-spawn DriveGate for the FULL impl wall-clock
+                // (every workstream's iterate-to-90 loop, 10–30+ min). The
+                // scheduler orphans the call at 60 s but the DriveGate stays held
+                // until the 15-min DriveStuckMinutes force-reentry, and the next
+                // gate cycle just re-enters the impl drive first again. On a story
+                // with many parallel workstreams (e.g. AST-PARSER: 6 tree-sitter
+                // parsers + per-stage e2e) the impl wave is never idle, so a
+                // review/merge drive sequenced AFTER it was perpetually starved —
+                // a workstream that PASSED and moved to Status="review" never got
+                // its reviewer dispatched (observed: code-intelligence
+                // AST-PARSER stage c-and-cpp ctreesitterparser-e2e sat in review
+                // 24 min+ after scoring 92). Running review/QA first bounds review
+                // latency to one gate cycle (≤ DriveStuckMinutes) instead of
+                // leaving it unbounded behind the impl wave. The implement drive
+                // still runs each turn (it just yields the gate window to review
+                // first); test determinism is preserved because every orchestrator
+                // test ticks DriveAsync in a loop until a terminal phase.
                 case StorySpawnPhases.Implement:
-                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Review:
-                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Qa:
-                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     advanced |= await this.DriveReviewAsync(control, db, hub, spawn, story, repo, ct);
                     advanced |= await this.DriveQaAsync(control, db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveImplementAsync(control, db, hub, spawn, story, repo, ct);
                     break;
                 case StorySpawnPhases.Done:
                     advanced |= await this.DriveDoneAsync(control, db, hub, spawn, story, repo, ct);
@@ -1945,6 +1982,32 @@ public sealed class StorySpawnOrchestrator
                 g => g.Select(p => p.Id).Distinct(StringComparer.Ordinal).ToList(),
                 StringComparer.Ordinal);
 
+        // 2026-05-28 — build a merged-PRs-by-branch map for the
+        // already-shipped heal below. Matching by Branch (not Workstream)
+        // because PrSyncJob can overwrite a Forge-tagged PR row from the
+        // provider, which doesn't carry the local Workstream column —
+        // observed code-intelligence:AST-PARSER-FOR-ADDIT csharptree PR
+        // #152: Forge opened it with Workstream=wid, sync re-fetched and
+        // cleared Workstream to null, so the prIdsByWorkstream lookup
+        // missed it. Branch survives the sync round-trip because it's
+        // upstream-provided.
+        var wsBranches = workstreams
+            .Where(w => !string.IsNullOrEmpty(w.Branch))
+            .Select(w => w.Branch)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var mergedPrIdsByBranch = (await db.Prs.AsNoTracking()
+                .Where(p => p.Branch != null
+                         && wsBranches.Contains(p.Branch)
+                         && (p.Col == "merged" || p.Col == "Merged"))
+                .Select(p => new { p.Branch, p.Id })
+                .ToListAsync(ct))
+            .GroupBy(p => p.Branch!, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(p => p.Id).Distinct(StringComparer.Ordinal).ToList(),
+                StringComparer.Ordinal);
+
         // Phase 49 — read deps from BOTH the FK table and each workstream's
         // DepsJson titles (resolved via same-spawn name→id, excluding
         // cancelled/historic so a tombstone can't shadow a live row).
@@ -2022,6 +2085,77 @@ public sealed class StorySpawnOrchestrator
             // sat indefinitely after 1.1/1.2/1.3 completed because the
             // skip list excluded them. "stalled" stays in the skip
             // list because that IS the operator-attention state.
+            // 2026-05-28 — heal already-merged workstreams. When any of a
+            // workstream's PRs reaches Col=merged but ws.Status didn't
+            // transition to "complete" (sync gap, AutoMergeWatcher race,
+            // restart killed the in-process DriveReviewAsync mid-merge,
+            // etc.), the outer drive will happily re-enter the workstream
+            // and either burn tokens on a redundant gen↔eval or — worse —
+            // commit + MergeUpstreamIntoBranchAsync the branch with the
+            // now-merged base, producing an empty-diff branch and opening
+            // a second PR that the review crew then refuses with "branch
+            // has no diff vs {base} (empty PR)" → ws stalled despite the
+            // work being shipped. Observed code-intelligence:AST-PARSER-
+            // FOR-ADDIT stage 1.2 csharptreesitterparser-implementation
+            // 2026-05-28: PR #152 merged, ws.Status drifted back from
+            // "review", second drive opened empty PR #153, ws stalled.
+            //
+            // Heal by detecting a Col=merged PR on this workstream's
+            // branch and advancing Status="complete" + WorkItem
+            // ExecutionStatus=Completed. Branch match (not Workstream)
+            // because PrSyncJob clears the local Workstream column when
+            // re-fetching upstream — see mergedPrIdsByBranch build site.
+            if (!string.IsNullOrEmpty(w.Branch)
+                && mergedPrIdsByBranch.TryGetValue(w.Branch, out var mergedPrIds)
+                && mergedPrIds.Count > 0
+                && w.Status is not "complete" and not "cancelled" and not "historic")
+            {
+                var priorStatus = w.Status;
+                var priorPrsJson = w.PrsJson;
+
+                // Restore the merged PR id to PrsJson if the empty-PR
+                // second-drive overwrote it with just the empty PR's id
+                // (idempotent via Contains check).
+                var existing = ParseStringList(w.PrsJson);
+                var anyAdded = false;
+                foreach (var mid in mergedPrIds)
+                {
+                    if (!existing.Contains(mid))
+                    {
+                        existing.Insert(0, mid);
+                        anyAdded = true;
+                    }
+                }
+                if (anyAdded)
+                {
+                    w.PrsJson = JsonSerializer.Serialize(existing);
+                }
+
+                w.Status = "complete";
+                w.StallReason = null;
+                w.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+                await TryCloseWorkItemAsync(control, db, w.Id, ct);
+                await db.SaveChangesAsync(ct);
+
+                this.logger?.LogWarning(
+                    "Healed already-merged workstream {WsId}: priorStatus='{PriorStatus}' "
+                    + "priorPrsJson='{PriorPrs}' → Status='complete' with merged PR(s) {MergedPrs}. "
+                    + "(Prevents the empty-PR second-drive that would have stalled the row.)",
+                    w.Id, priorStatus, priorPrsJson, string.Join(",", mergedPrIds));
+                await EmitChange(hub, "ws-complete", spawn, ct);
+
+                // docs/forge/e2e.md Stage 5.2 — done-gate: if this was the
+                // last outstanding workstream, advance the spawn directly
+                // to done. Mirrors DriveReviewAsync's external-merge fast
+                // path at line ~4245.
+                if (await this.TryAdvanceToDoneAsync(db, hub, spawn, ct))
+                {
+                    return true;
+                }
+                continue;
+            }
+
             if (w.Status is "review" or "merging" or "complete" or "cancelled" or "paused") continue;
 
             // 2026-05-28 — auto-heal the "pass-stalled-no-PR" pattern.
@@ -2255,9 +2389,16 @@ public sealed class StorySpawnOrchestrator
         // Each workstream runs in its own Task so multiple agents work
         // concurrently. Each task uses a fresh DbContext scope for its final
         // status update (the original `db` context is not thread-safe).
-        // Bounded to 4 concurrent workstreams to avoid overloading agents.
+        // 2026-05-28 — bumped 4 → 8 to clear stage backlog faster on stories
+        // with many parallel impl workstreams (e.g. AST-PARSER-FOR-ADDIT has
+        // 6 tree-sitter parsers per language at the same stage and the prior
+        // cap=4 left 2 idle behind the semaphore through a full first-wave
+        // gen↔eval cycle). crew-eng has 18 members so capacity is fine; the
+        // Copilot SDK can handle 8 concurrent invocations per process; the
+        // per-agent busy filter still prevents the same agent being pulled
+        // into two workstreams at once.
         var changedFlag = 0;
-        var semaphore = new SemaphoreSlim(4);
+        var semaphore = new SemaphoreSlim(8);
         // Phase 49 follow-up — agent assignment lock. Serialises the
         // "load busy set → pick pair → save AgentsJson" critical section
         // across parallel tasks so two concurrent workstreams don't read
@@ -2977,7 +3118,19 @@ public sealed class StorySpawnOrchestrator
             .OrderByDescending(d => d.Iter)
             .ThenByDescending(d => d.CreatedAt)
             .FirstOrDefault();
-        if (lastDel is null || !string.Equals(lastDel.Verdict, "pass", StringComparison.Ordinal))
+        // Eligibility: latest verdict is `pass` OR the latest score crossed the
+        // pass threshold (covers the "checkbox-attention gate demoted an actual
+        // pass to iterate, generator then made no file changes, no-progress
+        // detector stalled" pattern — observed code-intelligence:AST-PARSER-
+        // FOR-ADDIT rusttreesitterparser-implementation 2026-05-28: iters
+        // 5/6/7 scored 94 with verdict iterate, iter 8 zero changes → stalled
+        // "No progress: …". The 2026-05-28 DeliverableLoop high-confidence
+        // bypass prevents the recurrence; this clause heals rows that were
+        // stalled BEFORE that fix landed and re-enables the loop to commit
+        // the already-good artifact.
+        if (lastDel is null
+            || (!string.Equals(lastDel.Verdict, "pass", StringComparison.Ordinal)
+                && lastDel.Score < ScoringConstants.PassThreshold))
         {
             return false;
         }

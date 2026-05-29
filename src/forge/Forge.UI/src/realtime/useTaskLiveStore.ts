@@ -22,6 +22,94 @@ export function nextSyntheticEventId(): number {
   return syntheticEventIdCounter;
 }
 
+// 2026-05-28 — debounced per-work-item snapshot refetcher. Iteration-
+// boundary SignalR events (task.iteration.scored / iterated / passed)
+// patch scalar fields on snap (currentIteration, currentScore, …) but
+// never extend `snap.deliverables`. That leaves the per-iter chip strips
+// (top KpiStrip + bottom pager) frozen at fetch-time length while the
+// "iter N of M" badge advances — the user-visible 3-way iter-count
+// disagreement reported 2026-05-28 on AST 9.3.
+//
+// We can't synthesize a DeliverableShape from the scored payload alone
+// (missing id, notes, judge fields, pairAttempt, generatorSummary, …),
+// so the only correct fix is a full snapshot re-fetch. We debounce so a
+// burst of events for the same WI collapses to one HTTP. Iterations are
+// minutes apart in practice, so the debounce window is dominated by
+// burst smoothing rather than latency.
+const SNAPSHOT_REFETCH_DEBOUNCE_MS = 400;
+const pendingSnapshotRefetches = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Lazy indirection so tests can swap forgeApi at import time without
+// having to dynamically import this module.
+let refetchSnapshotImpl: (workItemId: string) => Promise<void> = async (workItemId) => {
+  try {
+    const snap = await forgeApi.getWorkItemExecution(workItemId) as TaskExecutionSnapshot;
+    mergeRefetchedSnapshot(workItemId, snap);
+  } catch {
+    // Swallow — the next scored event will retry. Failing here would
+    // pollute the console on transient network blips and we have no
+    // user-visible error surface for "the chip strip is a few seconds
+    // stale".
+  }
+};
+
+function mergeRefetchedSnapshot(workItemId: string, fetched: TaskExecutionSnapshot): void {
+  const store = useTaskLiveStore.getState();
+  const cur = store.entries[workItemId];
+  if (!cur || !cur.snapshot) return; // pane unmounted or never attached
+  // Merge only collection-shaped fields. Scalar fields stay event-patched
+  // because the live event stream is usually a step ahead of the REST
+  // snapshot (the snapshot read can race against another iter starting).
+  const merged: TaskExecutionSnapshot = {
+    ...cur.snapshot,
+    deliverables: fetched.deliverables ?? cur.snapshot.deliverables,
+    promptGrowth: fetched.promptGrowth ?? cur.snapshot.promptGrowth,
+    // currentIteration: prefer max(event-patched, fetched) so we never
+    // appear to regress on the badge even if the REST read raced.
+    currentIteration: Math.max(
+      cur.snapshot.currentIteration ?? 0,
+      fetched.currentIteration ?? 0,
+    ),
+  };
+  useTaskLiveStore.setState({
+    entries: {
+      ...useTaskLiveStore.getState().entries,
+      [workItemId]: { ...cur, snapshot: merged },
+    },
+  });
+}
+
+function scheduleSnapshotRefetch(workItemId: string): void {
+  const prior = pendingSnapshotRefetches.get(workItemId);
+  if (prior) clearTimeout(prior);
+  const timer = setTimeout(() => {
+    pendingSnapshotRefetches.delete(workItemId);
+    void refetchSnapshotImpl(workItemId);
+  }, SNAPSHOT_REFETCH_DEBOUNCE_MS);
+  pendingSnapshotRefetches.set(workItemId, timer);
+}
+
+/**
+ * Test-only seam — replace the snapshot refetch implementation with a
+ * spyable function. Tests should restore it in afterEach.
+ */
+export function __setRefetchSnapshotImplForTest(
+  impl: (workItemId: string) => Promise<void>,
+): () => void {
+  const prior = refetchSnapshotImpl;
+  refetchSnapshotImpl = impl;
+  return () => { refetchSnapshotImpl = prior; };
+}
+
+/**
+ * Test-only seam — cancel any pending debounced refetches so tests don't
+ * leak timers across cases.
+ */
+export function __resetPendingSnapshotRefetchesForTest(): void {
+  for (const t of pendingSnapshotRefetches.values()) clearTimeout(t);
+  pendingSnapshotRefetches.clear();
+}
+
 // ─── Types (mirrors Forge.Api/Contracts/TaskExecutionSnapshot) ────────────
 
 export interface TaskTranscriptEvent {
@@ -472,7 +560,20 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         snap = { ...snap, executionStatus: nextStatus };
       }
     }
-    set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id), transcriptTotalCount: cur.transcriptTotalCount + 1 } } });
+      // 2026-05-28 — schedule a debounced snapshot refetch on any iter-
+      // boundary event. This appends the new deliverable row(s) to
+      // `snap.deliverables` (and refreshes promptGrowth) so the per-iter
+      // chip strips stay in lock-step with the "iter N of M" badge.
+      // Without this the chip strip is frozen at attach-time length.
+      if (
+        evt.kind === 'task.iteration.scored'
+        || evt.kind === 'task.iteration.passed'
+        || evt.kind === 'task.iteration.iterated'
+        || evt.kind === 'task.iteration.stalled'
+      ) {
+        scheduleSnapshotRefetch(workItemId);
+      }
+      set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id), transcriptTotalCount: cur.transcriptTotalCount + 1 } } });
   },
 
   applyWorktree: (workItemId, snap) => {

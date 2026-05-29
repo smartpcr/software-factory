@@ -3174,7 +3174,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             """;
 
         await this.InvokeAsync("Architect", spawn.Id, "decompose", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "decompose"), ct);
+            BudgetForPhase(spawn.StoryPoints, "decompose"), ct,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var yamlPath = Path.Combine(workspace, "workstreams.yaml");
         var legacyJsonPath = Path.Combine(workspace, "workstreams.json");
@@ -4098,7 +4099,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // review activity was invisible to the operator unless they
         // queried the spawn-level transcript directly.
         await this.InvokeAsync("Review", workstream.Id, $"review:{workstream.Id}:r{round}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review"), ct);
+            BudgetForPhase(spawn.StoryPoints, "review"), ct,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var diskPath = Path.Combine(workspace, ".forge", "comments.json");
         if (!File.Exists(diskPath))
@@ -4223,7 +4225,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             """;
 
         await this.InvokeAsync("Review", workstream.Id, $"merged-pr-rescore:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review"), ct);
+            BudgetForPhase(spawn.StoryPoints, "review"), ct,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var diskPath = Path.Combine(workspace, ".forge", "merged-pr-score.json");
         if (!File.Exists(diskPath))
@@ -4474,7 +4477,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? comment.AuthoringAgentId
             : assignedGen;
         await this.InvokeAsync("Engineer", workstream.Id, $"review-fix:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review-fix"), ct, agentIdOverride: fixAgentId);
+            BudgetForPhase(spawn.StoryPoints, "review-fix"), ct, agentIdOverride: fixAgentId,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         // reply.md is mandatory -- every comment needs a written response.
         var replyFile = Path.Combine(workspace, "reply.md");
@@ -4617,7 +4621,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             prompt, workspace,
             BudgetForPhase(spawn.StoryPoints, "review-fix"),
             ct,
-            agentIdOverride: engineerId);
+            agentIdOverride: engineerId,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         // Read back each conflicted file. Per-file strategy table:
         // "REGENERATE" sentinel → caller's responsibility (orchestrator
@@ -5708,7 +5713,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             """;
 
         await this.InvokeAsync("QA", spawn.Id, "qa-features", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "qa-features"), ct);
+            BudgetForPhase(spawn.StoryPoints, "qa-features"), ct,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var files = ReadAllFiles(workspace);
         if (files.Count == 0)
@@ -5751,7 +5757,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             """;
 
         await this.InvokeAsync("Engineer", spawn.Id, $"qa-steps:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "qa-steps"), ct);
+            BudgetForPhase(spawn.StoryPoints, "qa-steps"), ct,
+            maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var files = ReadAllFiles(workspace);
         if (files.Count == 0)
@@ -8137,7 +8144,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// the crew-wide default (which was a single-point-of-failure when that
     /// default agent's transport hung).
     /// </summary>
-    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct, string? agentIdOverride = null)
+    private async Task InvokeAsync(string team, string workItemId, string phaseTag, string prompt, string workspace, TimeSpan? budget, CancellationToken ct, string? agentIdOverride = null, int? maxTurns = null)
     {
         var prefix = CrewIdPrefix(team);
 
@@ -8229,7 +8236,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // sitting in the orchestrator queue indefinitely. The runner
             // cancels the SDK session at this cap; we then surface as a
             // failure that the next scheduler tick can retry.
-            WallClockBudget: budget);
+            WallClockBudget: budget,
+            // 2026-05-29 root-cause fix — workstream-scoped agents (review,
+            // review-fix, qa-steps, decompose, conflict-resolve) fell back to
+            // the dispatcher's global MaxTurns=60 because this path never set
+            // it, while the impl gen/eval path scales to points*30
+            // (ResolveAgentRunConfigAsync). A reviewer reading a large diff
+            // (git diff --stat → per-file diff → open files) blows 60 turns and
+            // the workstream stalls with "Max turns (60) reached". Callers now
+            // pass points*30 so review/qa get the same headroom as gen/eval.
+            // Null preserves the prior global-default behaviour.
+            MaxTurns: maxTurns);
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
         {

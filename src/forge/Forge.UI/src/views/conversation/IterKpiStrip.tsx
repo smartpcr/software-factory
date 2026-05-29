@@ -20,6 +20,16 @@ export interface IterKpi {
    * unchanged.
    */
   pairAttempt?: number | null;
+  /**
+   * 2026-05-28 — generator/evaluator agent ids per row. Surfaces the
+   * (pair) tuple so the divider also fires on stalled-no-convergence
+   * rotations (which open a fresh AgentPairAssignment row without
+   * burning the sloppy cap → PairAttempt stays unchanged → Phase 87
+   * divider was silent). Adjacent chips with different agent ids get an
+   * amber divider regardless of pairAttempt. Null on legacy rows.
+   */
+  generatorAgentId?: string | null;
+  evaluatorAgentId?: string | null;
   score: number;
   verdict: string;
   inputTokens: number;
@@ -153,7 +163,24 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
           const prev = idx > 0 ? iters[idx - 1] : null;
           const thisPair = it.pairAttempt ?? 1;
           const prevPair = prev != null ? prev.pairAttempt ?? 1 : thisPair;
-          const showPairDivider = idx > 0 && thisPair !== prevPair;
+          // 2026-05-28 — also flip the divider when the
+          // (generatorAgentId, evaluatorAgentId) tuple changes between
+          // adjacent chips. Catches stalled-no-convergence rotations that
+          // open a fresh AgentPairAssignment without bumping the sloppy
+          // cap (PairAttempt stays equal). Skip the check when either
+          // side's ids are null (legacy rows or back-compat) — the
+          // pair-attempt branch above still handles those.
+          const idsKnown = prev != null
+            && (prev.generatorAgentId != null || prev.evaluatorAgentId != null)
+            && (it.generatorAgentId != null || it.evaluatorAgentId != null);
+          const idsChanged = idsKnown
+            && (prev!.generatorAgentId !== it.generatorAgentId
+              || prev!.evaluatorAgentId !== it.evaluatorAgentId);
+          const pairAttemptChanged = idx > 0 && thisPair !== prevPair;
+          const showPairDivider = pairAttemptChanged || idsChanged;
+          const dividerTitle = pairAttemptChanged
+            ? `pair attempt ${prevPair} → ${thisPair}`
+            : `pair re-assigned: ${prev?.generatorAgentId ?? '?'}/${prev?.evaluatorAgentId ?? '?'} → ${it.generatorAgentId ?? '?'}/${it.evaluatorAgentId ?? '?'}`;
           return (
             <div
               key={it.createdAt || `${thisPair}.${it.iter}.${idx}`}
@@ -162,7 +189,7 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
               {showPairDivider && (
                 <div
                   aria-hidden="true"
-                  title={`pair attempt ${prevPair} → ${thisPair}`}
+                  title={dividerTitle}
                   style={{
                     width: 2,
                     background: 'var(--sc-amber, #ffb347)',

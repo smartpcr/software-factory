@@ -269,4 +269,63 @@ public class Phase87PairAttemptTests
         var iter = doc.RootElement.GetProperty("iters").EnumerateArray().First();
         Assert.Equal(System.Text.Json.JsonValueKind.Null, iter.GetProperty("pairAttempt").ValueKind);
     }
+
+    [Fact]
+    public async Task IterKpis_Projects_Generator_And_Evaluator_AgentIds_For_Each_Iter()
+    {
+        // 2026-05-28 — regression for the AST 9.3 stalled-no-convergence
+        // scenario. Both cycles have PairAttempt=1 (stalled-no-convergence
+        // doesn't burn the sloppy cap), but the (generator, evaluator)
+        // tuple changes between cycle 1's last iter and cycle 2's first
+        // iter. The UI uses these ids to flip the amber pair-divider
+        // even when pairAttempt stays unchanged — exposing the cycle
+        // boundary that was previously invisible.
+        await using var f = await BootAsync();
+        using var scope = f.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        var t0 = DateTimeOffset.UtcNow.AddHours(-1);
+        // Cycle 1: pair JI/JS, two iters.
+        for (var i = 1; i <= 2; i++)
+        {
+            db.Deliverables.Add(new DeliverableRow
+            {
+                WorkItemId = WiId + "-agents",
+                CrewId = "c", GeneratorAgentId = "JI", EvaluatorAgentId = "JS",
+                Iter = i, PairAttempt = 1, Score = 89, Verdict = "iterate",
+                DimsJson = "{}", CreatedAt = t0.AddMinutes(i),
+            });
+        }
+        // Cycle 2 (post-stalled-no-convergence rotation): pair YG2/BH,
+        // Iter resets to 1, PairAttempt stays 1 (the sloppy cap was NOT
+        // burned). Created after cycle 1 wall-clock-wise.
+        db.Deliverables.Add(new DeliverableRow
+        {
+            WorkItemId = WiId + "-agents",
+            CrewId = "c", GeneratorAgentId = "YG2", EvaluatorAgentId = "BH",
+            Iter = 1, PairAttempt = 1, Score = 86, Verdict = "iterate",
+            DimsJson = "{}", CreatedAt = t0.AddMinutes(30),
+        });
+        await db.SaveChangesAsync(); await control.SaveChangesAsync();
+
+        var payload = await ConversationInsightQueries.GetIterKpisAsync(
+            control, db, WiId + "-agents", CancellationToken.None);
+        var json = System.Text.Json.JsonSerializer.Serialize(payload);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+        var iters = doc.RootElement.GetProperty("iters").EnumerateArray().ToArray();
+        Assert.Equal(3, iters.Length);
+        Assert.Equal("JI", iters[0].GetProperty("generatorAgentId").GetString());
+        Assert.Equal("JS", iters[0].GetProperty("evaluatorAgentId").GetString());
+        Assert.Equal("JI", iters[1].GetProperty("generatorAgentId").GetString());
+        Assert.Equal("JS", iters[1].GetProperty("evaluatorAgentId").GetString());
+        Assert.Equal("YG2", iters[2].GetProperty("generatorAgentId").GetString());
+        Assert.Equal("BH", iters[2].GetProperty("evaluatorAgentId").GetString());
+
+        // PairAttempt stays unchanged across the cycle boundary — exactly
+        // the case where the pre-2026-05-28 divider was silent.
+        Assert.Equal(1, iters[1].GetProperty("pairAttempt").GetInt32());
+        Assert.Equal(1, iters[2].GetProperty("pairAttempt").GetInt32());
+    }
 }

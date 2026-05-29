@@ -224,6 +224,24 @@ public static class ConversationInsightQueries
                 // pair 1 so legacy workstreams render unchanged. Stamped
                 // by DeliverableLoop from WorkItem.PairAttemptCount.
                 pairAttempt = d.PairAttempt,
+                // 2026-05-28 — generator/evaluator agent ids per row.
+                // The Phase 87 amber pair-divider only fires when
+                // pairAttempt differs between adjacent chips, which by
+                // design only bumps on SloppyReassignmentReconciler
+                // rotations. A `stalled-no-convergence` topic-loop
+                // detector rotation also opens a fresh AgentPairAssignment
+                // (SequenceNo +1) without burning the sloppy cap, so
+                // PairAttempt stays unchanged and the divider was silent.
+                // Exposing the agent ids lets the UI also flip the
+                // divider when the (generator, evaluator) tuple changes
+                // between adjacent chips — exactly the case where the
+                // chronologically-sorted chip strip would otherwise
+                // present iters `[1..9, 1, 2, 3]` with no visible
+                // boundary between the two cycles. Observed 2026-05-28 on
+                // CLEAN-CODE 9.3 (AST subprocess isolation), agent_pair_assignment
+                // SequenceNo went 1..5 with PairAttempt=1 throughout.
+                generatorAgentId = d.GeneratorAgentId,
+                evaluatorAgentId = d.EvaluatorAgentId,
                 score = d.Score,
                 verdict = d.Verdict,
                 inputTokens = inTok,

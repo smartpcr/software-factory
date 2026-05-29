@@ -197,16 +197,46 @@ public sealed class WorkstreamMemoryContextStore
 
     private async Task AppendQuestionsAsync(StringBuilder sb, string workItemId, CancellationToken ct)
     {
+        // 2026-05-28 — pull 30 raw rows before dedup so the per-ExternalId
+        // collapse below has enough material to find the answered version
+        // of each logical question (older bug capped at 10, which couldn't
+        // surface an iter-3 answer for an iter-1 question past the cap).
         var questions = await this.db.DeliverableQuestions.AsNoTracking()
             .Where(q => q.WorkItemId == workItemId)
             .OrderByDescending(q => q.Id)
-            .Take(10)
+            .Take(30)
             .ToListAsync(ct);
         if (questions.Count == 0) return;
 
+        // 2026-05-28 — dedup by ExternalId, preferring the answered version.
+        // The agent emits the same logical question across iterations as it
+        // refines the wording (e.g. ExternalId `scan-path-wiring-stage`:
+        // iter-1 row unanswered, iter-3 row with refined text + operator's
+        // pinned answer). Without dedup, the old UNANSWERED row stays in the
+        // prompt and the evaluator treats it as a hard pass-blocker even
+        // though the same logical question already has a downstream answer.
+        // Observed code-intelligence:CLEAN-CODE 9.3 (ast-subprocess) 2026-05-28
+        // thrashing through 5 pair attempts over ~80 min, all plateauing at
+        // score 88-89 with "Open-questions hard gate is still tripped" as the
+        // only listed blocker — even though every question listed had an
+        // answered iter-3+ row that the agent had emitted to mark the older
+        // version as "duplicate-mark-closed". Strategy: group by ExternalId,
+        // pick the latest ANSWERED row (preferred) OR the latest row overall
+        // (fallback) if none are answered. Preserves question identity, hides
+        // resolved duplicates.
+        var deduped = questions
+            .GroupBy(q => q.ExternalId, StringComparer.Ordinal)
+            .Select(g => g.Where(x => !string.IsNullOrWhiteSpace(x.Answer))
+                          .OrderByDescending(x => x.Id)
+                          .FirstOrDefault()
+                      ?? g.OrderByDescending(x => x.Id).First())
+            .OrderByDescending(q => q.Id)
+            .Take(10)
+            .ToList();
+
         sb.AppendLine();
         sb.AppendLine("## Open questions and operator answers");
-        foreach (var q in questions.OrderBy(q => q.Id))
+        foreach (var q in deduped.OrderBy(q => q.Id))
         {
             sb.AppendLine($"- Q: {OneLine(q.Text, 500)}");
             sb.AppendLine($"  A: {(string.IsNullOrWhiteSpace(q.Answer) ? "UNANSWERED" : OneLine(q.Answer, 500))}");

@@ -306,6 +306,28 @@ internal static class ImplSpawnGuard
                 SyncConstants.InflightSpawnGuardMinSeconds,
                 (int)budget.TotalSeconds + SyncConstants.InflightSpawnGuardBudgetSlackSeconds);
             var sinceSkip = (now - latestFinish.At).TotalSeconds;
+
+            // 2026-05-28 — mirror Case B's Phase 71 fast-recovery check.
+            // A skipped-concurrent finish means SOME other DeliverableLoop run
+            // owned the workItemId at the moment this attempt fired. If the
+            // dispatcher confirms NO invocation is alive for this workItemId
+            // anymore, that "other run" is definitively dead (process crash,
+            // Forge.Api restart killed its in-process SDK session). Waiting
+            // the full budget+slack (~30 min for a 13-point impl) burns dead
+            // time on a workstream that's structurally ready. Allow the
+            // recovery spawn immediately. Observed 2026-05-28 on
+            // code-intelligence:AST-PARSER-FOR-ADDIT ctree/rusttree and
+            // CLEAN-CODE otel-telemetry after the 21:37 restart: all 3 had
+            // skipped-concurrent finishes at 21:27–21:29, and would have sat
+            // for ~30 min waiting on guard-expiry despite the owning
+            // invocations being dead seconds after the restart.
+            if (isInvocationActive is not null && !isInvocationActive(workstreamId))
+            {
+                return new Result(
+                    Decision.Allow,
+                    $"skipped-concurrent {sinceSkip:0}s ago AND dispatcher reports invocation NOT alive — owning run is dead (likely Forge.Api restart). Allowing recovery spawn.");
+            }
+
             if (sinceSkip < guardSeconds)
             {
                 return new Result(
