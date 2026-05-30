@@ -184,6 +184,19 @@ public static class ConversationInsightQueries
                 }
             }
 
+            // Cost fallback: agent_usage can be pruned/wiped independently of
+            // deliverables (a usage-table reset leaves the deliverable rows but
+            // no usage rows), which made the per-iter chip read $0.00 even
+            // though the deliverable recorded the real spend. The deliverable
+            // row carries the authoritative per-iter cost (GenCostUsd +
+            // EvalCostUsd), so use it when no usage rows survived this window.
+            // Token counts can't be recovered this way (deliverables don't
+            // store them), so in/out stay 0 — but cost is preserved.
+            if (cost == 0m)
+            {
+                cost = d.GenCostUsd + d.EvalCostUsd;
+            }
+
             var pathsThisIter = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (at, paths) in worktreeChanged)
             {

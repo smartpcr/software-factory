@@ -70,6 +70,16 @@ public enum AgentEventKind
     /// the same shape.
     /// </summary>
     SessionInfo,
+
+    /// <summary>
+    /// 2026-05-30 — a chunk of the model's reasoning ("thinking") stream,
+    /// from the Copilot SDK's <c>AssistantReasoningDeltaEvent</c>. Carries
+    /// the reasoning text delta in <see cref="AgentEvent.Text"/>. Fires only
+    /// for reasoning-capable, GitHub-hosted models (not BYOM Anthropic/OpenAI).
+    /// The accumulated full text also lands on the final
+    /// <see cref="Finished"/> event's <see cref="AgentEvent.ReasoningText"/>.
+    /// </summary>
+    Reasoning,
 }
 
 /// <summary>
@@ -180,7 +190,17 @@ public sealed record AgentEvent(
     /// triggers the UI Tools tab's MCP classification regardless of
     /// the tool name itself.
     /// </summary>
-    string? McpServerName = null);
+    string? McpServerName = null,
+    /// <summary>
+    /// 2026-05-30 — the model's full accumulated reasoning ("thinking")
+    /// text for the turn, assembled from the Copilot SDK's
+    /// <c>AssistantReasoningDeltaEvent</c> stream. Stamped on the final
+    /// <see cref="AgentEventKind.Finished"/> event so the gen↔eval loop
+    /// can persist it on the deliverable for the Summary tab. Null when the
+    /// model/backend didn't emit reasoning (non-reasoning model, BYOM
+    /// Anthropic/OpenAI, CLI/Claude paths).
+    /// </summary>
+    string? ReasoningText = null);
 
 /// <summary>
 /// Phase 11.1 — handle returned by <see cref="IAgentRunner.StartAsync"/>.

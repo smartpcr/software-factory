@@ -4839,8 +4839,34 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // runnable under exactly this command, so gate + prompt stay in sync.
         var e2eTestCommand = E2eTestCommandForEcosystem(inputs.Ecosystem);
 
-        var workspacePhaseTag = await this.ComputeQaE2eWorkspacePhaseTagAsync(workstream, ct);
-        var workspace = this.PrepareWorkspace(spawn.Id, workspacePhaseTag);
+        // INVARIANT (forge_context.md "Agents NEVER write outside their worktree"):
+        // the qa-e2e producer runs IN the workstream's real git worktree — NOT a
+        // `storyworkspaces` scratch — so the e2e test compiles and runs against the
+        // REAL, dependency-complete repo (its impl sibling + every upstream stage
+        // already merged into base). Mirrors ProduceWorkstreamChangesAsync /
+        // ProduceReviewCommentsAsync.
+        //
+        // Pre-2026-05-30 this used PrepareWorkspace — an EMPTY scratch with no repo
+        // packages — which forced the agent to either reimplement its dependencies
+        // locally (hollow self-contained test, capped ~78 by the evaluator) or
+        // `git clone` the repo into the scratch (1100-file pollution → stall). Both
+        // failure modes are removed by checking out the real worktree here.
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
+        var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
+        var workspace = await this.git.EnsureWorktreeAsync(
+            repo, workstream.Branch, baseBranch, ct, worktreeSlug: worktreeSlug);
+
+        // Agent scratch (.forge/) stays git-excluded so it never lands in the PR.
+        await TryAddGitInfoExcludeAsync(workspace, ".forge/", ct);
+
+        // Bring the branch up to the current base BEFORE the agent runs so the e2e
+        // sees every dependency a sibling/upstream workstream merged after this
+        // branch was cut (idempotent; the same fix the impl path applies before its
+        // agent runs — see ProduceWorkstreamChangesAsync §"Phase 49 follow-up").
+        // This is what makes `internal/cli/walk`-style impl packages present at
+        // e2e-authoring time instead of "absent in my checkout".
+        await this.git.MergeUpstreamIntoBranchAsync(repo, workstream.Branch, baseBranch, ct: ct);
 
         // Phase 43 (extended) — operator-uploaded attachments may name
         // the specific contracts/types the e2e test must exercise.
@@ -4848,7 +4874,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await CopyAttachmentsToWorktreeAsync(attachmentsJson, workspace, ct,
             excludeMode: AttachmentExcludeMode.None, stateDir: this.dbPaths.Folder);
 
-        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var wsPoints = await this.LookupWorkItemPointsAsync(
             workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
@@ -4876,9 +4901,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // runs the ecosystem's e2e test command (see e2eTestCommand)
             // against the repo so a broken test re-enters the loop with
             // the failure as evaluator feedback. Skipping the per-iter
-            // build/quality gates (the qa-e2e workspace is a scratch dir,
-            // not a checkout — there's no project to build) leaves the
-            // test gate as the sole post-pass check.
+            // build/quality gates — the e2e's contract is the e2e TEST itself
+            // (which now compiles against the real, dependency-complete worktree),
+            // not a full rebuild of the whole repo (that's the impl sibling's
+            // gate) — leaves the test gate as the sole post-pass check.
             buildCommand: null,
             qualityCommands: null,
             testCommand: e2eTestCommand,
@@ -4898,43 +4924,48 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             restoreCommand: ResolveRestoreCommand(repo),
             ct: ct);
 
-        var files = ReadAllFiles(workspace);
+        // Collect the agent's contribution as the git diff vs the merge target —
+        // NOT a full directory walk. ReadAllFiles was correct only for the old
+        // EMPTY-scratch model; in a real worktree it would return the entire repo.
+        // Mirrors ProduceWorkstreamChangesAsync: diff vs baseBranch so the captured
+        // set is exactly what this workstream adds on top of every merged
+        // dependency. This also structurally prevents the old "silent drop" of
+        // impl code — whatever the agent changed in the worktree (test artifacts
+        // AND any in-place code edits) is precisely what gets committed.
+        var changedPaths = await this.git.GetChangedFilesAsync(
+            repo, workspace, baseBranch: baseBranch, ct: ct);
+        var files = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var rel in changedPaths)
+        {
+            // Agent scratch / input context / build output — never deliverables.
+            if (rel.StartsWith(".forge/", StringComparison.Ordinal)) continue;
+            if (rel.StartsWith(".forge-attachments/", StringComparison.Ordinal)) continue;
+            if (BuildArtifactPaths.IsBuildArtifact(rel)) continue;
+            var diskPath = Path.Combine(workspace, rel.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(diskPath)) continue; // staged-but-deleted edge case
+            files[rel] = await File.ReadAllTextAsync(diskPath, ct);
+        }
         if (files.Count == 0)
         {
             throw new InvalidOperationException(
-                $"QA crew produced no files for qa-e2e workstream {workstream.Id}. Workspace: {workspace}");
+                $"qa-e2e agent produced no file changes for workstream {workstream.Id}. "
+                + $"Worktree: {workspace}, base: {baseBranch}. The agent finished without writing "
+                + "any test artifacts in place — check the transcript for tool-call activity.");
         }
 
-        // 2026-05-28 stall guard — a legitimate qa-e2e producer emits a
-        // handful of artifacts (one `.feature`, a few step-def classes,
-        // optionally a base class + appsettings). When the scratch
-        // workspace gets polluted with the full repo contents (e.g. the
-        // agent shells out to `git clone` or copies the worktree into the
-        // workspace dir), ReadAllFiles returns hundreds of files. Every
-        // one of those files becomes a path arg to a downstream
-        // `git check-ignore --` invocation inside
-        // `EnsurePathsCommittableAsync` → on Windows the combined argv
-        // blows the 32 KB `CreateProcess` limit and surfaces as a generic
-        // `Win32Exception` that the orchestrator's targeted catch
-        // (`GitIgnoredPathException` only) does NOT match. The work item
-        // is then re-spawned on the orchestrator's next sweep, identical
-        // failure recurs, the workstream loops forever without opening a
-        // PR. Failing fast here (BEFORE the commit path) routes to the
-        // orchestrator's general catch and marks the workstream stalled
-        // with an actionable reason so operators can purge the scratch
-        // dir and Restart.
-        //
-        // The cap is intentionally generous (50× the realistic 1-10
-        // file count) so legitimate edge cases — like emitting per-language
-        // helper files alongside the deterministic templates — aren't
-        // tripped. The polluted workspace incident emitted 825 files,
-        // an order of magnitude above the cap.
+        // Sanity cap — a real qa-e2e stage touches a handful of files (one
+        // `.feature`, a few step-def files, optional setup/base). A diff far
+        // beyond that is scope creep or an errant bulk edit; fail fast with an
+        // actionable reason rather than committing a sprawling PR. (The old
+        // "scratch polluted with a cloned repo copy" failure mode is gone now
+        // that we capture the git diff in a real worktree instead of walking a
+        // scratch dir — but the cap remains a cheap guard against a runaway diff.)
         if (files.Count > QaE2eProducerFileCountCap)
         {
             throw new InvalidOperationException(
-                $"qa-e2e producer emitted {files.Count} files (cap={QaE2eProducerFileCountCap}) for workstream {workstream.Id}; "
-                + "scratch workspace is likely polluted with non-deliverable content (e.g. a cloned repo copy). "
-                + $"Workspace: {workspace}. Operator: purge the scratch dir and Restart the workstream.");
+                $"qa-e2e agent changed {files.Count} files (cap={QaE2eProducerFileCountCap}) for workstream {workstream.Id} — "
+                + "far beyond the handful a single test stage should touch (likely scope creep or a bulk edit). "
+                + $"Worktree: {workspace}, base: {baseBranch}.");
         }
 
         // docs/forge/e2e.md Stage 7.3 — fold the deterministic
@@ -6747,6 +6778,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // architect / story-artifact loops report telemetry to
             // agent_usage too.
             long cacheReadTok = 0, cacheWriteTok = 0, reasoningTok = 0, conversationTokLatest = 0;
+            // 2026-05-30 — capture the model's reasoning ("thinking") text so
+            // it can be persisted on the deliverable for the Summary tab.
+            // The dispatcher stamps the full accumulated text on the Finished
+            // event; we also accumulate the live Reasoning-delta stream as a
+            // fallback for backends that only stream it.
+            string? reasoningTextFinal = null;
+            var reasoningSb = new System.Text.StringBuilder();
             // 2026-05-13 root-cause fix -- capture the dispatcher's
             // Failed-event error so DeliverableLoop can short-circuit
             // before the evaluator runs against a cap-aborted partial
@@ -6805,6 +6843,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.CacheWriteTokens is > 0) cacheWriteTok += evt.CacheWriteTokens.Value;
                 if (evt.ReasoningTokens is > 0) reasoningTok += evt.ReasoningTokens.Value;
                 if (evt.ConversationTokens is > 0) conversationTokLatest = evt.ConversationTokens.Value;
+                if (evt.Kind == AgentEventKind.Reasoning && !string.IsNullOrEmpty(evt.Text) && reasoningSb.Length < 65536) reasoningSb.Append(evt.Text);
+                if (!string.IsNullOrEmpty(evt.ReasoningText)) reasoningTextFinal = evt.ReasoningText;
                 // Phase 55 / Phase C -- capture session id surfaced by
                 // the Claude/CLI stream-json runner so the post-iter
                 // upsert can persist it for the next iter's --resume.
@@ -6865,7 +6905,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
                     ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
                     SessionId: capturedSessionId,
-                    ToolCallCount: toolCallCount);
+                    ToolCallCount: toolCallCount,
+                    ReasoningText: reasoningTextFinal ?? (reasoningSb.Length > 0 ? reasoningSb.ToString() : null));
             }
 
             // Phase 55 / Phase A.2 -- archive this iter's working
@@ -7318,7 +7359,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 ReasoningTokens: reasoningTok > 0 ? reasoningTok : null,
                 ConversationTokens: conversationTokLatest > 0 ? conversationTokLatest : null,
                 SessionId: capturedSessionId,
-                ToolCallCount: toolCallCount);
+                ToolCallCount: toolCallCount,
+                ReasoningText: reasoningTextFinal ?? (reasoningSb.Length > 0 ? reasoningSb.ToString() : null));
             }
             finally
             {

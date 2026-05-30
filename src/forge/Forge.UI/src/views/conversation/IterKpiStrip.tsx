@@ -87,7 +87,7 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
         <div
           style={{
             display: 'grid',
-            gridTemplateRows: 'repeat(5, 1fr)',
+            gridTemplateRows: 'repeat(8, 1fr)',
             gap: 1,
             alignItems: 'center',
             fontSize: 10,
@@ -96,10 +96,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
           }}
         >
           <SparkRow label="score" values={[]} stroke="var(--sc-cyan, #5eead4)" />
-          <SparkRow label="tok"   values={[]} stroke="var(--sc-amber, #ffb347)" />
+          <SparkRow label="in"    values={[]} stroke="var(--sc-amber, #ffb347)" />
+          <SparkRow label="out"   values={[]} stroke="var(--sc-orange, #fb923c)" />
+          <SparkRow label="think" values={[]} stroke="var(--sc-purple, #c4b5fd)" />
           <SparkRow label="cost"  values={[]} stroke="var(--sc-green, #6ee7b7)" />
           <SparkRow label="files" values={[]} stroke="var(--sc-purple, #c4b5fd)" />
           <SparkRow label="dur"   values={[]} stroke="var(--text-tertiary, #8d94a3)" />
+          <TextRow  label="at"    text="—" />
         </div>
       </div>
     );
@@ -110,7 +113,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
   // the score TREND, so a transient failure doesn't read as a quality collapse
   // on the sparkline. The per-iter chip below still surfaces the failure.
   const scores = useMemo(() => iters.filter((i) => !isNoDelivery(i)).map((i) => i.score), [iters]);
-  const totalTokens = useMemo(() => iters.map((i) => i.inputTokens + i.outputTokens), [iters]);
+  // Token breakdown per iter: input (prompt, incl. uncached) / output
+  // (completion) / thinking (reasoning). `think` is only surfaced when at
+  // least one iter reported reasoning tokens (Copilot SDK / thinking models)
+  // so non-thinking backends render unchanged.
+  const inputTokens = useMemo(() => iters.map((i) => i.inputTokens), [iters]);
+  const outputTokens = useMemo(() => iters.map((i) => i.outputTokens), [iters]);
+  const thinkTokens = useMemo(() => iters.map((i) => i.reasoningTokens ?? 0), [iters]);
   const costs = useMemo(() => iters.map((i) => i.costUsd), [iters]);
   const files = useMemo(() => iters.map((i) => i.filesChanged), [iters]);
   const durations = useMemo(() => iters.map((i) => i.durationMs ?? 0), [iters]);
@@ -128,7 +137,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
   // server) — now visible at a glance instead of needing a heap dump.
   const resolveMsVals = useMemo(() => iters.map((i) => i.resolveMs ?? 0), [iters]);
   const hasAnyResolveData = useMemo(() => iters.some((i) => i.resolveMs != null), [iters]);
-  const sparkRowCount = 5 + (hasAnyCacheData ? 1 : 0) + (hasAnyResolveData ? 1 : 0);
+  // score + in + out + think + cost + files + dur + at = 8 base rows; cache /
+  // resolve are each appended only when their data is present. `think` and
+  // `at` are always shown so the breakdown is unambiguous.
+  const sparkRowCount = 8 + (hasAnyCacheData ? 1 : 0) + (hasAnyResolveData ? 1 : 0);
+  // Chip mirrors the same rows minus the resolve sparkline (trend-only):
+  // score + in + out + think + cost + files + dur + cache + at.
+  const chipRowCount = 9;
 
   return (
     <div
@@ -204,7 +219,7 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                 title={buildChipTitle(it)}
                 style={{
                   display: 'grid',
-                  gridTemplateRows: 'repeat(6, 1fr)',
+                  gridTemplateRows: `repeat(${chipRowCount}, 1fr)`,
                   gap: 1,
                   padding: '4px 6px',
                   minWidth: 56,
@@ -233,8 +248,21 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                 >
                   {isNoDelivery(it) ? '✗' : it.score}
                 </div>
-                <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
-                  {formatTokens(it.inputTokens + it.outputTokens)}
+                {/* Token breakdown: ↓ input (prompt) · ↑ output (completion)
+                    · ⊹ thinking (reasoning, only when the backend reports it).
+                    The glyphs disambiguate the rows since the chip has no
+                    per-row labels (the sparkline column on the right does). */}
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }} title="input (prompt) tokens">
+                  ↓{formatTokens(it.inputTokens)}
+                </div>
+                <div style={{ color: 'var(--text-secondary, #8d94a3)' }} title="output (completion) tokens">
+                  ↑{formatTokens(it.outputTokens)}
+                </div>
+                <div
+                  style={{ color: (it.reasoningTokens ?? 0) > 0 ? 'var(--sc-purple, #c4b5fd)' : 'var(--text-tertiary, #8d94a3)' }}
+                  title="thinking / reasoning tokens (Copilot reports these; 0 when the model didn't think this iter)"
+                >
+                  {(it.reasoningTokens ?? 0) > 0 ? `*${formatTokens(it.reasoningTokens ?? 0)}` : '*—'}
                 </div>
                 <div style={{ color: 'var(--text-secondary, #8d94a3)' }}>
                   ${it.costUsd.toFixed(2)}
@@ -256,6 +284,11 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                     ? (convTok != null ? `${formatTokens(convTok)}ctx` : '—')
                     : `${cachePct}%${convTok != null ? ` ${formatTokens(convTok)}ctx` : ''}`}
                 </div>
+                {/* `at` — wall-clock time this iteration's deliverable was
+                    recorded (HH:MM local). Full date is in the chip tooltip. */}
+                <div style={{ color: 'var(--text-tertiary, #8d94a3)' }} title={`recorded ${formatDateTime(it.createdAt)}`}>
+                  {formatClock(it.createdAt)}
+                </div>
               </button>
             </div>
           );
@@ -275,7 +308,9 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
         }}
       >
         <SparkRow label="score" values={scores} format={(v) => `${v}`} stroke="var(--sc-cyan, #5eead4)" />
-        <SparkRow label="tok"   values={totalTokens} format={formatTokens} stroke="var(--sc-amber, #ffb347)" />
+        <SparkRow label="in"    values={inputTokens}  format={formatTokens} stroke="var(--sc-amber, #ffb347)" />
+        <SparkRow label="out"   values={outputTokens} format={formatTokens} stroke="var(--sc-orange, #fb923c)" />
+        <SparkRow label="think" values={thinkTokens}  format={formatTokens} stroke="var(--sc-purple, #c4b5fd)" />
         <SparkRow label="cost"  values={costs}       format={(v) => `$${v.toFixed(2)}`} stroke="var(--sc-green, #6ee7b7)" />
         <SparkRow label="files" values={files}       format={(v) => `${v}f`} stroke="var(--sc-purple, #c4b5fd)" />
         <SparkRow label="dur"   values={durations}   format={formatDurationMs} stroke="var(--text-tertiary, #8d94a3)" />
@@ -285,6 +320,10 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
         {hasAnyCacheData && (
           <SparkRow label="cache" values={cachePcts} format={(v) => `${Math.round(v)}%`} stroke="var(--sc-blue, #60a5fa)" />
         )}
+        {/* `at` is a timestamp, not a numeric trend — render it as a
+            text row (latest iteration's date · time) so it aligns with the
+            chip's `at` row instead of drawing a meaningless sparkline. */}
+        <TextRow label="at" text={iters.length > 0 ? formatDateTime(iters[iters.length - 1].createdAt) : '—'} />
       </div>
     </div>
   );
@@ -301,10 +340,42 @@ function SparkRow({
   );
 }
 
+/** A label + plain-text value row for the sparkline column, used for
+ *  signals that aren't a numeric trend (e.g. the `at` timestamp). Matches
+ *  SparkRow's label layout so the rows line up. */
+function TextRow({ label, text }: { label: string; text: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <span style={{ minWidth: 32, textAlign: 'left', letterSpacing: '0.04em' }}>{label}</span>
+      <span style={{ flex: 1, textAlign: 'right', color: 'var(--text-secondary, #8d94a3)' }}>{text}</span>
+    </div>
+  );
+}
+
 function formatTokens(v: number): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(0)}K`;
   return `${v}`;
+}
+
+/** Compact local clock (HH:MM) for the per-iter chip `at` row. Returns
+ *  `'—'` for an unparseable / missing timestamp. */
+function formatClock(iso: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/** Short local date + time (M/D HH:MM) for the chip tooltip + the `at`
+ *  text row in the sparkline column. */
+function formatDateTime(iso: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = d.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${date} ${time}`;
 }
 
 function formatDuration(ms: number | null): string {
@@ -394,6 +465,7 @@ function buildChipTitle(it: IterKpi): string {
   if (isNoDelivery(it)) {
     lines.push('⚠ no changes delivered — generator produced 0 files (likely timed out); auto-retried');
   }
+  lines.push(`at: ${formatDateTime(it.createdAt)}`);
   lines.push(`cost: $${it.costUsd.toFixed(3)} · ${it.filesChanged} files · ${formatDuration(it.durationMs)}`);
   if (it.resolveMs != null) {
     lines.push(`impacted-test resolve: ${formatDuration(it.resolveMs)}`);

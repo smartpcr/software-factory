@@ -185,7 +185,7 @@
     "vendor": "copilot",
     "family": "gpt-5",
     "displayName": "GPT-5.5",
-    "contextWindow": 128000,
+    "contextWindow": 400000,
     "inputPricePerMTok": 15.0,
     "outputPricePerMTok": 75.0,
     "supportsTools": true,

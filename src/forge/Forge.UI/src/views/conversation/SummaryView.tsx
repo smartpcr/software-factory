@@ -3,6 +3,13 @@
 import ReactMarkdown from 'react-markdown';
 import type { DeliverableShape } from '@/realtime/useTaskLiveStore';
 
+/** Compact token formatter (mirrors IterKpiStrip). */
+function formatTok(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return `${v}`;
+}
+
 export function SummaryView(props: {
   deliverable: DeliverableShape | null;
   loading: boolean;
@@ -17,8 +24,17 @@ export function SummaryView(props: {
    * where the archive isn't available (e.g. plan-doc spawns).
    */
   notesByIter?: Record<number, { content: string; truncated?: boolean }>;
+  /**
+   * Reasoning ("thinking") tokens the model spent on THIS iteration, from
+   * the iter-kpis rollup. Copilot only exposes the reasoning token COUNT,
+   * not the chain-of-thought text — so this renders as a header stat next
+   * to the score, not as a prose section like the generator/evaluator
+   * summaries (there is no reasoning text to render). Null/undefined or 0
+   * → the stat is omitted (backend didn't report reasoning this iter).
+   */
+  reasoningTokens?: number | null;
 }): JSX.Element {
-  const { deliverable, loading, dispatched, notesByIter } = props;
+  const { deliverable, loading, dispatched, notesByIter, reasoningTokens } = props;
   if (!deliverable) {
     return (
       <div className="live-exec__empty">
@@ -44,6 +60,14 @@ export function SummaryView(props: {
       <div className="live-exec__summary-iter__header">
         <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
         <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
+        {!!(reasoningTokens && reasoningTokens > 0) && (
+          <span
+            style={{ color: 'var(--sc-purple, #c4b5fd)', fontSize: 11 }}
+            title="Thinking / reasoning tokens spent on this iteration. Copilot exposes the count only — the chain-of-thought text is not returned by the provider."
+          >
+            🧠 {formatTok(reasoningTokens)} reasoning
+          </span>
+        )}
         <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{new Date(d.createdAt).toLocaleString()}</span>
       </div>
       <section className="live-exec__summary-section" data-role="generator">

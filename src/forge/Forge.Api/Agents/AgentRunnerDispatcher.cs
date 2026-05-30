@@ -1263,6 +1263,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
 
         var contentBuilder = new StringBuilder();
+        // 2026-05-30 — accumulate the model's reasoning ("thinking") stream
+        // separately from the visible answer so it can be persisted on the
+        // deliverable + streamed to the Reasoning view. Capped to keep a
+        // pathological multi-MB chain-of-thought from bloating the DB row.
+        var reasoningBuilder = new StringBuilder();
+        const int ReasoningCharCap = 64 * 1024;
         long inputTokens = 0;
         long outputTokens = 0;
         // 2026-05-16 — Phase 72 token telemetry. Accumulated across every
@@ -1636,6 +1642,24 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                 contentBuilder.Append(content);
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: content));
                                 EnforceOutputCeiling();
+                            }
+                            break;
+
+                        case AssistantReasoningDeltaEvent reason:
+                            // 2026-05-30 — the model's reasoning/thinking
+                            // stream (GitHub-hosted reasoning models only).
+                            // Accumulate for persistence + stream live as a
+                            // Reasoning event so the UI can show it as it
+                            // happens. Counts as activity for the watchdog.
+                            var rChunk = reason.Data.DeltaContent;
+                            if (!string.IsNullOrEmpty(rChunk))
+                            {
+                                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
+                                if (reasoningBuilder.Length < ReasoningCharCap)
+                                {
+                                    reasoningBuilder.Append(rChunk);
+                                }
+                                queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Reasoning, DateTimeOffset.UtcNow, Text: rChunk));
                             }
                             break;
 
@@ -2054,7 +2078,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             CacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : null,
             CacheWriteTokens: cacheWriteTokens > 0 ? cacheWriteTokens : null,
             ReasoningTokens: reasoningTokens > 0 ? reasoningTokens : null,
-            ConversationTokens: conversationTokensLatest > 0 ? conversationTokensLatest : null);
+            ConversationTokens: conversationTokensLatest > 0 ? conversationTokensLatest : null,
+            ReasoningText: reasoningBuilder.Length > 0 ? reasoningBuilder.ToString() : null);
     }
 
     /// <summary>

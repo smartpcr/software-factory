@@ -294,6 +294,14 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(89, PhaseMigrationKind.Control,
             ControlTables: new[] { "agent_level_history" },
             ProductTables: Array.Empty<string>()),
+        // Phase 90 — deliverables.ReasoningText (the generator model's
+        // reasoning/"thinking" text per iteration, from the Copilot SDK's
+        // AssistantReasoningDeltaEvent). Product-only, additive nullable
+        // column; fans out per {slug}.db. Surfaced per-iteration in the
+        // Conversation Summary tab.
+        new PhaseMigrationSpec(90, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "deliverables" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

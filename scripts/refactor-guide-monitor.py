@@ -123,6 +123,7 @@ def watch(interval=150, heartbeat=600):
     prev_live = None
     prev_counts = None
     last_beat = 0.0
+    prev_alerts = set()
     while True:
         try:
             prev = load_prev()
@@ -134,7 +135,14 @@ def watch(interval=150, heartbeat=600):
         cur_live = live_set(snapshot)
         ev = now().isoformat(timespec="seconds")
         summary = " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-        for a in alerts:
+        # Suppress duplicate alerts: only emit one whose exact text wasn't
+        # emitted last tick. Persistent stalled/blocked lines are identical
+        # tick-over-tick (same reason) so they fire ONCE; slow alerts carry a
+        # changing age so they still re-emit while genuinely slow. A cleared-
+        # then-recurring alert re-emits because it dropped out of the set.
+        new_alerts = [a for a in alerts if a not in prev_alerts]
+        prev_alerts = set(alerts)
+        for a in new_alerts:
             print(f"[ALERT {ev}] {a}", flush=True)
         if prev_live is not None and cur_live != prev_live:
             done = prev_live - cur_live

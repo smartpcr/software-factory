@@ -638,6 +638,9 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
             loading={live?.loading === true}
             dispatched={transcript.length > 0 || summaryIters.length > 0}
             notesByIter={notesByIter}
+            reasoningTokens={activeSummary
+              ? iterKpis.find((k) => k.iter === activeSummary.iter)?.reasoningTokens ?? null
+              : null}
           />
         ) : (
           <>

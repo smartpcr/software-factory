@@ -2774,6 +2774,11 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.GitAsync(cloneRoot, ct, "fetch", "origin", branch);
             await this.GitAsync(cloneRoot, ct, "worktree", "add", wtPath, $"origin/{branch}");
             await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
+            // The branch on origin may have been cut BEFORE an upstream/dependent
+            // workstream merged into the base. Bring it up to the current base so
+            // the picked-up worktree is a fresh view of all merged dependencies
+            // (see MergeBaseIntoFreshWorktreeAsync).
+            await this.MergeBaseIntoFreshWorktreeAsync(wtPath, branch, baseBranch, ct);
         }
         else
         {
@@ -2788,12 +2793,81 @@ public sealed class RealStoryGitOps : IStoryGitOps
             if (localCode == 0)
             {
                 await this.GitAsync(cloneRoot, ct, "worktree", "add", wtPath, branch);
+                // Existing local branch ref — may predate upstream merges into
+                // the base. Sync it to the current base (see 4a comment).
+                await this.MergeBaseIntoFreshWorktreeAsync(wtPath, branch, baseBranch, ct);
             }
             else
             {
+                // Brand-new branch cut straight off the current base tip — it is
+                // already a fresh view of every merged dependency, so no base
+                // sync is needed here.
                 await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
             }
         }
+    }
+
+    /// <summary>
+    /// Bring a freshly-added worktree's EXISTING branch up to the current base
+    /// by merging <c>origin/{baseBranch}</c> into it. Enforces the invariant
+    /// that a picked-up workstream's worktree is a fresh view of the current
+    /// base: upstream/dependent workstreams that merged into the base AFTER
+    /// this branch was first cut flow in here, so a workstream never runs (and
+    /// its qa-e2e never compiles) against a stale base missing a dependency it
+    /// was DAG-gated on.
+    /// <para>
+    /// Root cause of the 2026-05-30 <c>repo-walker-e2e</c> base-staleness stall:
+    /// the e2e branch existed on origin from before its impl sibling merged into
+    /// <c>feature/clean-code</c>, and <see cref="EnsureWorktreeAsync(string,string,string,string,CancellationToken)"/>
+    /// checked it out as-is (Step 4a) — never re-merging the base — so the
+    /// merged <c>internal/cli/walk</c> package was absent and every iteration
+    /// failed the e2e test gate identically until the 4-iter cap stalled it.
+    /// </para>
+    /// <para>
+    /// MERGE (not rebase) mirrors the P79c conflict-recovery choice so reviewer
+    /// comments stay anchored to reachable SHAs. The caller has just
+    /// <c>worktree add</c>-ed a clean working tree, so a clean merge never
+    /// disturbs in-flight agent work. On conflict (or any non-clean merge) we
+    /// <c>merge --abort</c> and leave the branch as-is — degrading to the prior
+    /// behaviour rather than wedging pickup; genuine conflicts are resolved at
+    /// delivery time by <see cref="MergeBaseIntoBranchAndDetectConflictsAsync"/>
+    /// (P79c) with an agent. Routine non-conflicting upstream merges — the
+    /// common case this fixes — flow in cleanly.
+    /// </para>
+    /// </summary>
+    private async Task MergeBaseIntoFreshWorktreeAsync(string wtPath, string branch, string baseBranch, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(baseBranch)) return;
+
+        var (fetchCode, _, fetchErr) = await this.RunGitCaptureAsync(wtPath, ct, "fetch", "origin", baseBranch);
+        if (fetchCode != 0)
+        {
+            this.logger?.LogWarning(
+                "EnsureWorktree base-sync: `fetch origin {Base}` failed in {WtPath} (exit {Code}: {Err}); "
+                + "branch {Branch} may run against a stale base.",
+                baseBranch, wtPath, fetchCode, Trim(fetchErr, 200), branch);
+            return;
+        }
+
+        var (mergeCode, mergeOut, mergeErr) = await this.RunGitCaptureAsync(
+            wtPath, ct, "merge", "--no-edit", $"origin/{baseBranch}");
+        if (mergeCode == 0)
+        {
+            this.logger?.LogInformation(
+                "EnsureWorktree base-sync: merged origin/{Base} into {Branch}; worktree is now a fresh view of the current base.",
+                baseBranch, branch);
+            return;
+        }
+
+        // Conflict / non-clean merge — abort so the worktree is left clean and
+        // checked out, then degrade to prior behaviour. Delivery-time P79c
+        // resolves real conflicts with an agent; pickup must not wedge on them.
+        await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+        this.logger?.LogWarning(
+            "EnsureWorktree base-sync: merge of origin/{Base} into {Branch} did not apply cleanly "
+            + "(exit {Code}: {Out} {Err}); aborted and left branch as-is. Upstream/base changes are NOT "
+            + "in this worktree; conflicts will be resolved at delivery via the P79c merge path.",
+            baseBranch, branch, mergeCode, Trim(mergeOut, 150), Trim(mergeErr, 150));
     }
 
     /// <summary>

@@ -1066,6 +1066,9 @@ public class DeliverableRow
     /// <summary>Generator's iteration summary — extracted from the explicit `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading the agent emits per prompt instructions; falls back to the response tail when the heading is missing. Capped at 4000 chars.</summary>
     public string GeneratorSummary { get; set; } = string.Empty;
 
+    /// <summary>2026-05-30 — the generator model's reasoning ("thinking") text for this iteration, from the Copilot SDK's <c>AssistantReasoningDeltaEvent</c> stream (capped ~64 KB upstream). Null when the model/backend emitted no reasoning (non-reasoning model, BYOM Anthropic/OpenAI, CLI/Claude paths). Surfaced per-iteration in the Conversation Summary tab.</summary>
+    public string? ReasoningText { get; set; }
+
     public decimal GenCostUsd { get; set; }
 
     public decimal EvalCostUsd { get; set; }

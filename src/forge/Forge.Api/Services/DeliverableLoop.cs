@@ -201,7 +201,16 @@ public sealed record GeneratorRunOutput(
     /// triggers <see cref="SloppyReasons.AgentRefusal"/> in
     /// <see cref="DeliverableLoop"/>.
     /// </summary>
-    long? ToolCallCount = null);
+    long? ToolCallCount = null,
+    /// <summary>
+    /// 2026-05-30 — the generator model's reasoning ("thinking") text for
+    /// this iteration, accumulated from the Copilot SDK's
+    /// <c>AssistantReasoningDeltaEvent</c> stream. Persisted on the
+    /// deliverable so the Summary tab can show per-iteration reasoning next
+    /// to the generator/evaluator summaries. Null when the model/backend
+    /// didn't emit reasoning.
+    /// </summary>
+    string? ReasoningText = null);
 
 /// <summary>
 /// Phase 65 — per-iter commit snapshot captured by the producer right
@@ -864,6 +873,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     Verdict = failVerdict,
                     Notes = failNote,
                     GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
+                    ReasoningText = gen.ReasoningText,
                     GenCostUsd = gen.CostUsd,
                     EvalCostUsd = 0m,
                     FailureKind = failKind,
@@ -964,6 +974,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     Verdict = "sloppy",
                     Notes = refusalNote,
                     GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
+                    ReasoningText = gen.ReasoningText,
                     GenCostUsd = gen.CostUsd,
                     EvalCostUsd = 0m,
                     CreatedAt = DateTimeOffset.UtcNow,
@@ -1149,6 +1160,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 Verdict = lastScore.Verdict,
                 Notes = lastScore.Notes,
                 GeneratorSummary = genSummary,
+                ReasoningText = gen.ReasoningText,
                 GenCostUsd = gen.CostUsd,
                 EvalCostUsd = eval.CostUsd,
                 CreatedAt = DateTimeOffset.UtcNow,

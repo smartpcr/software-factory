@@ -1,8 +1,14 @@
 {
-  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-repo-walker": {
-    "total": 384,
-    "last_at": "2026-05-30T13:33:03.1202841+00:00",
-    "status": "review",
+  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-parse-and-recipe-fanout": {
+    "total": 101,
+    "last_at": "2026-05-30T22:19:40.8397929+00:00",
+    "status": "active",
+    "product": "code-intelligence"
+  },
+  "ws-code-intelligence-repo-scanner-phase-identity-and-ancestry-refactor-stage-worker-adopts-ancestrywriter-e2e": {
+    "total": 123,
+    "last_at": "2026-05-30T22:19:41.2109571+00:00",
+    "status": "active",
     "product": "code-intelligence"
   }
 }
