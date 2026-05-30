@@ -312,6 +312,25 @@
   font-weight: 600;
 }
 .scorecard-table thead th.left { text-align: left; }
+
+/* Phase 89 — sortable column headers. Trail-20 is a sparkline and stays
+   non-interactive. */
+.scorecard-table thead th[data-sortable="true"] {
+  cursor: pointer;
+  user-select: none;
+  transition: color 100ms, background 100ms;
+}
+.scorecard-table thead th[data-sortable="true"]:hover {
+  color: var(--text-primary);
+  background: var(--bg-sunken);
+}
+.scorecard-table thead th[data-sortable="true"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.scorecard-table thead th[data-sort-active="true"] {
+  color: var(--accent);
+}
 .scorecard-table tbody td {
   padding: 10px 10px;
   border-bottom: 1px solid var(--border);
@@ -394,6 +413,40 @@
 .scorecard-table .verdict.watch        { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-border); }
 .scorecard-table .verdict.demote       { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
 .scorecard-table .verdict.lead-pending { color: var(--accent); background: var(--accent-bg); border-color: var(--border-accent); }
+/* Phase 89 — `watch` / `lead-pending` are read-only (no operator verb).
+   A `help` cursor + tooltip signals "informational, not a button" so a
+   click that does nothing reads as intentional rather than broken. */
+.scorecard-table .verdict.verdict-static { cursor: help; }
+
+/* Phase 89 — clickable verdict pill (promote/demote/hold). Reuses the same
+   pill colours; adds button affordances + hover lift so operators see the
+   row pill IS the action target. */
+.scorecard-table button.verdict.verdict-action {
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  transition: filter 100ms, transform 100ms, box-shadow 100ms;
+}
+.scorecard-table button.verdict.verdict-action:hover:not(:disabled) {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.scorecard-table button.verdict.verdict-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.scorecard-table button.verdict.verdict-action:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.scorecard-table button.verdict.verdict-action[aria-busy="true"] {
+  cursor: progress;
+}
 .scorecard-table .delta-up   { color: var(--success); font-weight: 600; }
 .scorecard-table .delta-down { color: var(--danger);  font-weight: 600; }
 .scorecard-table .spark { width: 80px; }

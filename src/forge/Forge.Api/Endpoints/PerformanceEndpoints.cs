@@ -231,10 +231,12 @@ public static class PerformanceEndpoints
             // Monthly averages (last 6 months)
             var (monthlyAvg, monthlyMonths) = ComputeMonthlyAvg(agentFinals, nowUtc);
 
-            // Promotion decision via the real policy
+            // Promotion decision via the real policy. Phase 89: count
+            // operator-promote rows alongside nightly-job rows so a manual
+            // override holds the same cooldown clock.
             var lastPromoAt = promoHistory.TryGetValue(agent.Id, out var hist)
                 ? hist
-                    .Where(h => h.Reason == PromotionPolicy.ReasonPromote)
+                    .Where(h => PromotionPolicy.PromotionCountingReasons.Contains(h.Reason))
                     .OrderByDescending(h => h.CreatedAt)
                     .Select(h => (DateTimeOffset?)h.CreatedAt)
                     .FirstOrDefault()
@@ -261,7 +263,7 @@ public static class PerformanceEndpoints
                 promotionEta = tier.Window - policyWindow.Count;
 
             var lastPromotedAt = promoHistory.TryGetValue(agent.Id, out var ph)
-                ? ph.Where(h => h.Reason == PromotionPolicy.ReasonPromote)
+                ? ph.Where(h => PromotionPolicy.PromotionCountingReasons.Contains(h.Reason))
                      .OrderByDescending(h => h.CreatedAt)
                      .Select(h => h.CreatedAt.ToString("yyyy-MM-dd"))
                      .FirstOrDefault()
@@ -272,16 +274,71 @@ public static class PerformanceEndpoints
                 ? cooldownEnd.Value.ToString("yyyy-MM-dd")
                 : "now";
 
+            // Phase 89 — surface the gate(s) that block promotion on the
+            // roster scorecard so the verdict pill's tooltip + the Promo ETA
+            // column can show "almost there" detail. Three gates from
+            // PromotionPolicy.Evaluate can fire simultaneously: cooldown,
+            // window-avg below threshold, and rejects in window. We list
+            // them all (most actionable first) so operators stop wondering
+            // why a 90%-pass agent reads HOLD.
+            var cooldownDaysRemaining = lastPromoAt.HasValue
+                ? Math.Max(0, tier.CooldownDays - (int)(nowUtc - lastPromoAt.Value).TotalDays)
+                : 0;
+            var holdReasons = new List<string>();
+            if (verdict == "hold")
+            {
+                if (cooldownDaysRemaining > 0)
+                {
+                    holdReasons.Add($"Cooldown: {cooldownDaysRemaining} d remaining (next eligible {nextEligibleAt})");
+                }
+                if (decision.HasRejectInWindow)
+                {
+                    holdReasons.Add($"Has reject in trailing {tier.Window} ({tier.Name} tier)");
+                }
+                if (decision.RollingAvg < tier.PromoteAvgMin)
+                {
+                    var gap = tier.PromoteAvgMin - decision.RollingAvg;
+                    holdReasons.Add($"Window-{tier.Window} avg {decision.RollingAvg:F1} < {tier.PromoteAvgMin} ({tier.Name} tier) — short by {gap:F1}");
+                }
+                if (agent.Level >= ScoringConstants.MaxLevel)
+                {
+                    holdReasons.Add($"Already at level cap (L{ScoringConstants.MaxLevel})");
+                }
+            }
+
             var verdictNote = verdict switch
             {
                 "promote" => $"Avg {decision.RollingAvg:F1} ≥ {tier.PromoteAvgMin} ({tier.Name} tier), 0 rejects, cooldown clear.",
                 "demote" => $"Avg {decision.RollingAvg:F1} < {ScoringConstants.DemoteAvgMax}. Immediate demotion.",
-                "hold" => $"Avg {decision.RollingAvg:F1} — close to {tier.Name}-tier promo threshold ({tier.PromoteAvgMin}). Hold for next window.",
+                "hold" => holdReasons.Count > 0
+                    ? string.Join(" · ", holdReasons)
+                    : $"Avg {decision.RollingAvg:F1} — close to {tier.Name}-tier promo threshold ({tier.PromoteAvgMin}). Hold for next window.",
                 "watch" => policyWindow.Count < tier.Window
                     ? $"Only {policyWindow.Count}/{tier.Window} deliverables ({tier.Name} tier). Needs more data."
                     : $"Avg {decision.RollingAvg:F1}. Stable — no action.",
                 _ => "",
             };
+
+            // Last ACTUAL level change (promotion OR demotion, either direction
+            // and whether algorithmic or operator-override). Surfaced as a
+            // roster column so an operator can see at a glance who was recently
+            // moved — a recent promotion is exactly why a qualifying agent reads
+            // `hold` (still inside its tier cooldown) rather than `promote`.
+            var lastChange = promoHistory.TryGetValue(agent.Id, out var lch)
+                ? lch.Where(h => h.Reason == PromotionPolicy.ReasonPromote
+                              || h.Reason == PromotionPolicy.ReasonOperatorPromote
+                              || h.Reason == PromotionPolicy.ReasonDemote
+                              || h.Reason == PromotionPolicy.ReasonOperatorDemote)
+                     .OrderByDescending(h => h.CreatedAt)
+                     .FirstOrDefault()
+                : null;
+            var lastChangeAt = lastChange?.CreatedAt.ToString("yyyy-MM-dd");
+            var lastChangeKind = lastChange is null
+                ? null
+                : (lastChange.Reason == PromotionPolicy.ReasonPromote
+                   || lastChange.Reason == PromotionPolicy.ReasonOperatorPromote)
+                    ? "promote"
+                    : "demote";
 
             scorecards.Add(new
             {
@@ -306,11 +363,15 @@ public static class PerformanceEndpoints
                 scoreSpark,
                 dims,
                 promotionEta,
+                cooldownDaysRemaining,
                 demotionRisk,
                 verdict,
                 verdictNote,
+                holdReasons,
                 lastPromotedAt,
                 nextEligibleAt,
+                lastChangeAt,
+                lastChangeKind,
                 tier = new
                 {
                     name = tier.Name,
@@ -342,10 +403,6 @@ public static class PerformanceEndpoints
                     : verdict == "demote" ? agent.Level - 1
                     : agent.Level;
 
-                var cooldownDays = lastPromoAt.HasValue
-                    ? Math.Max(0, tier.CooldownDays - (int)(nowUtc - lastPromoAt.Value).TotalDays)
-                    : 0;
-
                 var rationale = new List<string>();
                 var risks = new List<string>();
                 if (verdict == "promote")
@@ -364,7 +421,17 @@ public static class PerformanceEndpoints
                 }
                 else
                 {
-                    rationale.Add($"Rolling avg {decision.RollingAvg:F1} — approaching threshold");
+                    // Phase 89 — itemise each failing gate so the operator
+                    // sees "why HOLD" without having to guess. Reuses
+                    // holdReasons computed once per agent above.
+                    if (holdReasons.Count > 0)
+                    {
+                        foreach (var r in holdReasons) rationale.Add(r);
+                    }
+                    else
+                    {
+                        rationale.Add($"Rolling avg {decision.RollingAvg:F1} — approaching threshold");
+                    }
                 }
 
                 promotionDecisions.Add(new
@@ -380,11 +447,14 @@ public static class PerformanceEndpoints
                     windowSize = policyWindow.Count,
                     rejectsInWindow = decision.HasRejectInWindow ? windowRows.Count(d =>
                         string.Equals(d.Verdict, "reject", StringComparison.OrdinalIgnoreCase)) : 0,
-                    cooldownDaysRemaining = cooldownDays,
+                    cooldownDaysRemaining,
                     signedOff = false,
                     signedOffBy = (string?)null,
                     rationale,
                     risks,
+                    // Phase 89 — Send the server-computed verdict so the UI
+                    // doesn't re-derive (and get it wrong for non-standard tiers).
+                    verdict,
                     nominatedAt = nowUtc.ToString("yyyy-MM-dd"),
                 });
             }

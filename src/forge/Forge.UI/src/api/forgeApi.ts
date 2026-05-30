@@ -582,11 +582,36 @@ export interface AgentScorecard {
   scoreSpark: number[];
   dims: ScoreDims;
   promotionEta: number | null;
+  /**
+   * Phase 89 — when verdict is `hold` and the only thing blocking promotion
+   * is the tier cooldown, this is the number of days until the agent is
+   * eligible again. 0 means cooldown is clear (or the agent has never been
+   * promoted). The roster scorecard's Promo ETA column renders this as
+   * "+{n} d" so operators stop wondering why a 100%-pass agent reads HOLD.
+   */
+  cooldownDaysRemaining: number;
   demotionRisk: boolean;
   verdict: PromotionVerdict;
+  /**
+   * Phase 89 — human-readable rationale for the verdict. For `hold`, this
+   * lists every failing gate (cooldown, window-avg below threshold, rejects
+   * in window) joined with ` · `. Used as the verdict pill's tooltip.
+   */
   verdictNote: string;
+  /**
+   * Phase 89 — itemised hold reasons (same data as verdictNote, split for
+   * rich rendering). Empty for non-hold verdicts.
+   */
+  holdReasons: string[];
   lastPromotedAt: string | null;
   nextEligibleAt: string;
+  /** Phase 89 — date (yyyy-MM-dd) of the last ACTUAL level change
+   *  (promotion or demotion, algorithmic or operator), or null if the
+   *  agent has never moved. Drives the roster "Last change" column. */
+  lastChangeAt: string | null;
+  /** Direction of {@link lastChangeAt}: `'promote'` ▲ / `'demote'` ▼, or
+   *  null when there has been no level change. */
+  lastChangeKind: 'promote' | 'demote' | null;
   monthlyAvg: number[];
   monthlyMonths: string[];
   repos: string[];
@@ -609,6 +634,13 @@ export interface PromotionDecision {
   signedOffBy: string | null;
   rationale: string[];
   risks: string[];
+  /**
+   * Phase 89 — server-derived verdict (tier-aware). The UI must trust this
+   * instead of re-deriving from `windowAvg`, because the promotion threshold
+   * varies by current level (88 for L0-L2 easy tier, 92 for L3-L6 standard,
+   * higher for L7+ hard tier). Set by PerformanceEndpoints.cs.
+   */
+  verdict: PromotionVerdict;
   nominatedAt: string;
 }
 
@@ -637,6 +669,22 @@ export interface PerformanceScorecardsResponse {
   promotionDecisions: PromotionDecision[];
   monthlySnapshots: MonthlySnapshot[];
   filterOptions: PerformanceFilterOptions;
+}
+
+/**
+ * Phase 89 — response from the per-agent PO override endpoints
+ * (`POST /api/agents/{id}/promote|demote|hold`). Also the payload pushed
+ * over SignalR on `agent.level.changed` (promote/demote) and
+ * `agent.promotion.acknowledged` (hold). For hold, `oldLevel === newLevel`.
+ */
+export interface OperatorDecisionResult {
+  agentId: string;
+  oldLevel: number;
+  newLevel: number;
+  hourlyUsd: number;
+  reason: 'operator-promote' | 'operator-demote' | 'operator-hold';
+  actor: string | null;
+  at: string;
 }
 
 // Phase 82.1 — persisted iteration prompt audit row. Field order
@@ -2108,6 +2156,45 @@ export const forgeApi = {
     });
   },
 
+  /**
+   * Phase 89 — per-agent PO override: bump level by +1. Pass the level the UI
+   * currently displays for the agent; the server returns 409 if it no longer
+   * matches (stale page). Optional `windowAvg` is recorded into the audit row.
+   */
+  async promoteAgent(agentId: string, expectedFromLevel: number, windowAvg?: number): Promise<OperatorDecisionResult> {
+    return fetchJson<OperatorDecisionResult>(`/api/agents/${encodeURIComponent(agentId)}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedFromLevel, windowAvg: windowAvg ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * Phase 89 — per-agent PO override: drop level by 1. Refuses with
+   * `crew.lead.level_too_low` (409) if the agent leads a crew and would
+   * fall below the lead floor (L7).
+   */
+  async demoteAgent(agentId: string, expectedFromLevel: number, windowAvg?: number): Promise<OperatorDecisionResult> {
+    return fetchJson<OperatorDecisionResult>(`/api/agents/${encodeURIComponent(agentId)}/demote`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedFromLevel, windowAvg: windowAvg ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * Phase 89 — per-agent PO override: <b>audit-only</b> hold. Records the
+   * operator's acknowledgement in the level history without changing the
+   * agent's level. Does NOT suppress the next nightly promotion tick at v0.1.
+   */
+  async holdAgent(agentId: string, windowAvg?: number): Promise<OperatorDecisionResult> {
+    return fetchJson<OperatorDecisionResult>(`/api/agents/${encodeURIComponent(agentId)}/hold`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedFromLevel: 0, windowAvg: windowAvg ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   // ----- Phase 13 — crew management & task orchestration ----------------
 
   /** PATCH /api/crews/{id} — covers backend, invokeMode, parent, quotas, etc. */
@@ -2773,6 +2860,35 @@ export const forgeApi = {
       body: JSON.stringify(body),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /**
+   * Drag-to-reconcile on the Exec board. POSTs the operator's desired target
+   * execution status; the server validates against an inspector that computes
+   * the *authoritative* status from runner + queue + workstream + deliverable.
+   *
+   * On match → 200 with `{ previous, current, reason }`.
+   * On mismatch → throws `ForgeApiError` with `status === 409` and
+   *   `problem = { error: 'execution_status_mismatch', requested,
+   *   authoritative, reason, current }` so the caller can show a toast.
+   * On invalid target → throws with `status === 400`.
+   * On missing WI → throws with `status === 404`.
+   *
+   * This is drift-correction, NOT a runtime action — does not cancel agents,
+   * enqueue work, or open PRs.
+   */
+  async reconcileExecutionStatus(
+    workItemId: string,
+    targetStatus: string,
+  ): Promise<{ id: string; previous: string; current: string; reason: string }> {
+    return fetchJson<{ id: string; previous: string; current: string; reason: string }>(
+      `/api/work-items/${encodeURIComponent(workItemId)}/execution-status`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ targetStatus }),
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
   },
 
   // Authoritative commit list for a work item's worktree branch — runs

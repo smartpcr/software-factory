@@ -57,6 +57,30 @@ public static class PromotionPolicy
     public const string ReasonInsufficientData = "insufficient-data";
 
     /// <summary>
+    /// Phase 89 — PO override reasons emitted by
+    /// <see cref="Forge.Api.Endpoints.PromotionEndpoints"/> when an operator
+    /// presses an action button on the Performance view's
+    /// <c>DecisionCard</c>. <c>operator-promote</c> counts toward the
+    /// promotion cooldown alongside <see cref="ReasonPromote"/> so a manual
+    /// override cannot be followed the next morning by an algorithm re-promote
+    /// on the same evidence. <c>operator-hold</c> is an audit-only marker
+    /// that does NOT suppress the next nightly tick at v0.1 — extending the
+    /// runner to honor hold suppression is a follow-up.
+    /// </summary>
+    public const string ReasonOperatorPromote = "operator-promote";
+    public const string ReasonOperatorDemote  = "operator-demote";
+    public const string ReasonOperatorHold    = "operator-hold";
+
+    /// <summary>
+    /// All reason values that should count toward the promotion cooldown
+    /// gate. The nightly runner and the performance scorecard's
+    /// last-promoted-at lookup both use this set so manual and automatic
+    /// promotions share the same cooldown clock.
+    /// </summary>
+    public static readonly IReadOnlySet<string> PromotionCountingReasons =
+        new HashSet<string>(StringComparer.Ordinal) { ReasonPromote, ReasonOperatorPromote };
+
+    /// <summary>
     /// Decide whether the agent should be promoted, demoted, or left alone.
     /// </summary>
     public static Decision Evaluate(

@@ -14,6 +14,7 @@ import { BulkActionBar } from '@/workitems/BulkActionBar';
 import { SyncDialog } from '@/workitems/SyncDialog';
 import { NewStoryModal } from '@/board/NewStoryModal';
 import { NewWorkItemModal } from '@/workitems/NewWorkItemModal';
+import { Toaster } from '@/board/Toaster';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
 import '@/styles/work-items.css';
@@ -164,6 +165,7 @@ export function WorkItemsView() {
       <SyncDialog open={syncOpen} onClose={() => setSyncOpen(false)} />
       <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />
       <NewWorkItemModal open={newItemOpen} onClose={() => setNewItemOpen(false)} />
+      <Toaster />
     </section>
   );
 }

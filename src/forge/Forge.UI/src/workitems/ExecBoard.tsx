@@ -1,9 +1,27 @@
-// Phase 25 — Agent execution status board. Read-only board with six columns
-// corresponding to the execution lifecycle: idle, queued, live, completed,
-// failed, cancelled. Each card shows type mark, ID, title, assignee, exec
-// badge, and a PR status badge when a linked PR exists.
+// Phase 25 — Agent execution status board. Drag-to-reconcile (added
+// 2026-05-30): each card carries a draggable handle; columns are drop
+// targets. On drag-end the UI POSTs the target column to
+// /api/work-items/{id}/execution-status, which validates the request
+// against the authoritative status computed by
+// WorkItemExecutionStatusInspector (live runner + open queue rows +
+// linked workstream + latest deliverable). On match the WI's stored
+// execution_status is reconciled to the truth value; on mismatch the
+// server returns 409 with the authoritative value + a short reason and
+// the UI surfaces an informative toast. This is drift-correction —
+// dragging never cancels live agents or enqueues work.
 
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core';
 import type { WorkItem } from './workItemTypes';
 import { EXEC_STATUSES, type ExecStatus } from './workItemTypes';
 import { TypeMark } from './TypeMark';
@@ -12,6 +30,8 @@ import { PrStatusBadge } from './PrStatusBadge';
 import { useWitStore } from './useWitStore';
 import { useBoardStore, type BoardGroupBy } from '@/state/useBoardStore';
 import { useExecGroupCollapseStore } from '@/state/useExecGroupCollapseStore';
+import { forgeApi, ForgeApiError } from '@/api/forgeApi';
+import { useToastStore } from '@/state/useToastStore';
 
 interface Props {
   items: WorkItem[];
@@ -81,54 +101,209 @@ function computeExecGroups(items: WorkItem[], groupBy: BoardGroupBy): ExecGroup[
   });
 }
 
+// Drag context. The droppable id pattern is `${groupKey}::${status}` so we
+// can reject cross-group drops cheaply in onDragEnd by comparing the
+// `over.id` prefix to the `active.id`'s group prefix.
+const DRAG_SEPARATOR = '::';
+
+interface DraggableData { groupKey: string; itemId: string; sourceStatus: ExecStatus; }
+
+function dragId(groupKey: string, itemId: string): string {
+  return `card${DRAG_SEPARATOR}${groupKey}${DRAG_SEPARATOR}${itemId}`;
+}
+
+function dropId(groupKey: string, status: ExecStatus): string {
+  return `col${DRAG_SEPARATOR}${groupKey}${DRAG_SEPARATOR}${status}`;
+}
+
+function parseDropId(id: string): { groupKey: string; status: ExecStatus } | null {
+  const parts = id.split(DRAG_SEPARATOR);
+  if (parts.length < 3 || parts[0] !== 'col') return null;
+  // groupKey may itself contain '::' so rejoin the middle parts; status is last.
+  const status = parts[parts.length - 1] as ExecStatus;
+  const groupKey = parts.slice(1, -1).join(DRAG_SEPARATOR);
+  if (!EXEC_STATUSES.includes(status)) return null;
+  return { groupKey, status };
+}
+
+// Test-only exports. The leading double-underscore matches the convention
+// used by useTaskLiveStore for unit-testable internals that aren't part of
+// the public component surface.
+export const __testing = {
+  dragId,
+  dropId,
+  parseDropId,
+  reconcileExecutionStatusFromDrag,
+};
+
 export function ExecBoard({ items, onOpen }: Props) {
   const groupBy = useBoardStore((s) => s.groupBy);
   const groups = useMemo(() => computeExecGroups(items, groupBy), [items, groupBy]);
   const collapsedMap = useExecGroupCollapseStore((s) => s.collapsed);
   const toggleCollapsed = useExecGroupCollapseStore((s) => s.toggle);
 
+  // 8-pixel activation distance matches WorkItemBoard — far enough to
+  // avoid accidental drags on a sticky-trackpad click (so card click still
+  // opens the detail panel), close enough that a deliberate move starts
+  // the drag immediately.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
+  const [, setDraggingId] = useState<string | null>(null);
+  const [draggingItem, setDraggingItem] = useState<WorkItem | null>(null);
+  const [draggingGroupKey, setDraggingGroupKey] = useState<string | null>(null);
+
+  // Suppresses the post-drag onClick that would otherwise fire on the card
+  // and open the detail panel (synthetic click follows pointerup even after
+  // a successful drag). Cleared on the next pointerdown by useDraggable.
+  const justDraggedRef = useRef(false);
+
+  function onDragStart(e: DragStartEvent) {
+    const data = e.active.data.current as DraggableData | undefined;
+    if (!data) return;
+    setDraggingId(String(e.active.id));
+    setDraggingItem(items.find((i) => i.id === data.itemId) ?? null);
+    setDraggingGroupKey(data.groupKey);
+  }
+
+  function clearDragState() {
+    setDraggingId(null);
+    setDraggingItem(null);
+    setDraggingGroupKey(null);
+  }
+
+  function onDragCancel() {
+    clearDragState();
+  }
+
+  function onDragEnd(e: DragEndEvent) {
+    const data = e.active.data.current as DraggableData | undefined;
+    const item = data ? items.find((i) => i.id === data.itemId) ?? null : null;
+    clearDragState();
+    justDraggedRef.current = true;
+    // Clear the click-suppression on the next tick so a fresh click after
+    // the drag still works as expected.
+    window.setTimeout(() => { justDraggedRef.current = false; }, 0);
+
+    if (!data || !item || !e.over) return;
+    const drop = parseDropId(String(e.over.id));
+    if (!drop) return;
+    // Cross-group drag rejected — exec status is per-item but the operator's
+    // mental model groups by story/epic/phase; allowing cross-group drops
+    // would silently mis-route an unrelated card.
+    if (drop.groupKey !== data.groupKey) return;
+    // Same-column drop — no-op, no API call, no toast.
+    if (drop.status === data.sourceStatus) return;
+
+    void reconcileExecutionStatusFromDrag(item, drop.status);
+  }
+
   return (
-    <div className="wit-exec-groups">
-      {groups.map((g) => {
-        const pts = g.items.reduce((n, i) => n + i.points, 0);
-        const collapsed = collapsedMap[`${groupBy}:${g.key}`] === true;
-        const onToggle = () => toggleCollapsed(groupBy, g.key);
-        return (
-          <section
-            className={`wit-exec-group${collapsed ? ' collapsed' : ''}`}
-            key={g.key}
-          >
-            <header
-              className="wit-exec-group-head"
-              role="button"
-              tabIndex={0}
-              aria-expanded={!collapsed}
-              aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${GROUP_LABEL[groupBy]} ${g.label}`}
-              onClick={onToggle}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onToggle();
-                }
-              }}
+    <DndContext
+      sensors={sensors}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
+    >
+      <div className="wit-exec-groups">
+        {groups.map((g) => {
+          const pts = g.items.reduce((n, i) => n + i.points, 0);
+          const collapsed = collapsedMap[`${groupBy}:${g.key}`] === true;
+          const onToggle = () => toggleCollapsed(groupBy, g.key);
+          return (
+            <section
+              className={`wit-exec-group${collapsed ? ' collapsed' : ''}`}
+              key={g.key}
             >
-              <span className="wit-exec-group-chevron" aria-hidden>{collapsed ? '▸' : '▾'}</span>
-              <span className="wit-exec-group-kind">{GROUP_LABEL[groupBy]}</span>
-              <h3 className="wit-exec-group-name">{g.label}</h3>
-              <span className="wit-exec-group-meta">
-                <span className="num">{g.items.length}</span> items · <span className="num">{pts}</span> pts
-              </span>
-            </header>
-            {!collapsed && <ExecBoardGrid items={g.items} onOpen={onOpen} />}
-          </section>
-        );
-      })}
-    </div>
+              <header
+                className="wit-exec-group-head"
+                role="button"
+                tabIndex={0}
+                aria-expanded={!collapsed}
+                aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${GROUP_LABEL[groupBy]} ${g.label}`}
+                onClick={onToggle}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onToggle();
+                  }
+                }}
+              >
+                <span className="wit-exec-group-chevron" aria-hidden>{collapsed ? '▸' : '▾'}</span>
+                <span className="wit-exec-group-kind">{GROUP_LABEL[groupBy]}</span>
+                <h3 className="wit-exec-group-name">{g.label}</h3>
+                <span className="wit-exec-group-meta">
+                  <span className="num">{g.items.length}</span> items · <span className="num">{pts}</span> pts
+                </span>
+              </header>
+              {!collapsed && (
+                <ExecBoardGrid
+                  items={g.items}
+                  onOpen={onOpen}
+                  groupKey={g.key}
+                  draggingGroupKey={draggingGroupKey}
+                  draggingSourceStatus={draggingItem?.executionStatus as ExecStatus | undefined}
+                  justDraggedRef={justDraggedRef}
+                />
+              )}
+            </section>
+          );
+        })}
+      </div>
+      <DragOverlay dropAnimation={null}>
+        {draggingItem ? <ExecCard item={draggingItem} dragging /> : null}
+      </DragOverlay>
+    </DndContext>
   );
 }
 
+async function reconcileExecutionStatusFromDrag(item: WorkItem, target: ExecStatus): Promise<void> {
+  const toast = useToastStore.getState();
+  try {
+    const result = await forgeApi.reconcileExecutionStatus(item.id, target);
+    if (result.previous === result.current) {
+      // Server treated it as a no-op (stored value already matched target).
+      toast.show(`${item.id} already ${target}`, 'success');
+    } else {
+      toast.show(`${item.id} reconciled: ${result.previous} → ${result.current}`, 'success');
+    }
+  } catch (err) {
+    if (err instanceof ForgeApiError && err.status === 409) {
+      const problem = (err.problem ?? {}) as {
+        authoritative?: string;
+        reason?: string;
+        requested?: string;
+      };
+      const actual = problem.authoritative ?? 'unknown';
+      const reason = problem.reason ?? 'state does not match';
+      toast.show(
+        `Can't move ${item.id} to ${target}: actual status is ${actual} — ${reason}`,
+        'danger',
+      );
+    } else {
+      const msg = err instanceof Error ? err.message : 'Reconcile failed';
+      toast.show(`Reconcile failed: ${msg}`, 'danger');
+    }
+  }
+}
+
+interface ExecBoardGridProps {
+  items: WorkItem[];
+  onOpen?: (id: string) => void;
+  groupKey: string;
+  draggingGroupKey: string | null;
+  draggingSourceStatus: ExecStatus | undefined;
+  justDraggedRef: React.MutableRefObject<boolean>;
+}
+
 // The flat six-column execution-status grid, scoped to one group's items.
-function ExecBoardGrid({ items, onOpen }: Props) {
+function ExecBoardGrid({
+  items,
+  onOpen,
+  groupKey,
+  draggingGroupKey,
+  draggingSourceStatus,
+  justDraggedRef,
+}: ExecBoardGridProps) {
   const buckets: Record<ExecStatus, WorkItem[]> = {
     idle: [], queued: [], live: [], completed: [], failed: [], cancelled: [],
   };
@@ -141,6 +316,10 @@ function ExecBoardGrid({ items, onOpen }: Props) {
     buckets[k].sort((a, b) => a.title.localeCompare(b.title));
   }
 
+  // Only the dragging-source group's columns should glow as drop targets,
+  // and only for statuses that aren't the source column itself.
+  const isThisGroupDragging = draggingGroupKey === groupKey;
+
   return (
     <div className="wit-exec-board">
       {EXEC_STATUSES.map((status) => (
@@ -150,6 +329,9 @@ function ExecBoardGrid({ items, onOpen }: Props) {
           items={buckets[status]}
           total={items.length}
           onOpen={onOpen}
+          groupKey={groupKey}
+          isDropTarget={isThisGroupDragging && draggingSourceStatus !== status}
+          justDraggedRef={justDraggedRef}
         />
       ))}
     </div>
@@ -161,17 +343,31 @@ function ExecColumn({
   items,
   total,
   onOpen,
+  groupKey,
+  isDropTarget,
+  justDraggedRef,
 }: {
   status: ExecStatus;
   items: WorkItem[];
   total: number;
   onOpen?: (id: string) => void;
+  groupKey: string;
+  isDropTarget: boolean;
+  justDraggedRef: React.MutableRefObject<boolean>;
 }) {
   const copy = EXEC_COPY[status];
   const points = items.reduce((n, i) => n + i.points, 0);
+  const { isOver, setNodeRef } = useDroppable({ id: dropId(groupKey, status) });
+
+  const className = [
+    'wit-board-col',
+    `wit-exec-col-${status}`,
+    isOver && 'over',
+    isDropTarget && 'drop-target',
+  ].filter(Boolean).join(' ');
 
   return (
-    <section className={`wit-board-col wit-exec-col-${status}`} aria-label={copy.label}>
+    <section ref={setNodeRef} className={className} aria-label={copy.label}>
       <header className="wit-board-col-head">
         <div className="wit-board-col-title">
           <ExecBadge status={status} size="sm" />
@@ -188,9 +384,20 @@ function ExecColumn({
       <div className="wit-board-col-body">
         {items.length === 0 && <ExecEmptyColumn />}
         {items.map((item) => (
-          <ExecCard key={item.id} item={item} onOpen={onOpen} />
+          <DraggableExecCard
+            key={item.id}
+            item={item}
+            groupKey={groupKey}
+            onOpen={onOpen}
+            justDraggedRef={justDraggedRef}
+          />
         ))}
       </div>
+      {isDropTarget && (
+        <div className={`wit-board-col-dropzone${isOver ? ' over' : ''}`} aria-hidden>
+          <span>drop to mark <strong>{copy.label.toLowerCase()}</strong></span>
+        </div>
+      )}
     </section>
   );
 }
@@ -204,7 +411,46 @@ function ExecEmptyColumn() {
   );
 }
 
-function ExecCard({ item, onOpen }: { item: WorkItem; onOpen?: (id: string) => void }) {
+function DraggableExecCard({
+  item,
+  groupKey,
+  onOpen,
+  justDraggedRef,
+}: {
+  item: WorkItem;
+  groupKey: string;
+  onOpen?: (id: string) => void;
+  justDraggedRef: React.MutableRefObject<boolean>;
+}) {
+  const sourceStatus = ((item.executionStatus as ExecStatus) || 'idle');
+  const data: DraggableData = { groupKey, itemId: item.id, sourceStatus };
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: dragId(groupKey, item.id),
+    data,
+  });
+
+  const style: React.CSSProperties = transform
+    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: isDragging ? 0.4 : 1 }
+    : { opacity: isDragging ? 0.4 : 1 };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <ExecCard item={item} onOpen={onOpen} justDraggedRef={justDraggedRef} />
+    </div>
+  );
+}
+
+function ExecCard({
+  item,
+  onOpen,
+  dragging,
+  justDraggedRef,
+}: {
+  item: WorkItem;
+  onOpen?: (id: string) => void;
+  dragging?: boolean;
+  justDraggedRef?: React.MutableRefObject<boolean>;
+}) {
   const focusedId = useWitStore((s) => s.focusedId);
   const selection = useWitStore((s) => s.selection);
   const tagSlice = item.tags.slice(0, 2);
@@ -219,15 +465,23 @@ function ExecCard({ item, onOpen }: { item: WorkItem; onOpen?: (id: string) => v
     focused && 'focused',
     selected && 'selected',
     item.blocked && 'blocked',
+    dragging && 'dragging',
   ].filter(Boolean).join(' ');
+
+  const handleClick = () => {
+    // Suppress the synthetic click that follows a successful drag — without
+    // this, every drop would also open the detail panel.
+    if (justDraggedRef?.current) return;
+    onOpen?.(item.id);
+  };
 
   return (
     <article
       className={className}
-      onClick={() => onOpen?.(item.id)}
+      onClick={handleClick}
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter') onOpen?.(item.id); }}
-      style={{ cursor: 'pointer' }}
+      style={{ cursor: dragging ? 'grabbing' : 'pointer' }}
     >
       <div className="wit-board-card-row">
         <TypeMark type={item.type} size={20} />

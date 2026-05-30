@@ -98,9 +98,12 @@ public sealed class PromotionRunner : IPromotionRunner
             // history. A demotion does NOT reset the cooldown clock per
             // spec §4 (the cooldown gates promotion only). SQLite can't
             // sort DateTimeOffset at the SQL layer, so we pull + sort
-            // client-side.
+            // client-side. Phase 89: operator-promote rows count toward
+            // the cooldown alongside nightly-job rows.
             var promotions = await this.control.AgentLevelHistory.AsNoTracking()
-                .Where(h => h.AgentId == agent.Id && h.Reason == PromotionPolicy.ReasonPromote)
+                .Where(h => h.AgentId == agent.Id
+                            && (h.Reason == PromotionPolicy.ReasonPromote
+                                || h.Reason == PromotionPolicy.ReasonOperatorPromote))
                 .Select(h => h.CreatedAt)
                 .ToListAsync(ct);
             DateTimeOffset? lastPromotion = promotions.Count == 0

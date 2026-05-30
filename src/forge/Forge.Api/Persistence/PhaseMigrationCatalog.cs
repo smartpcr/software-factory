@@ -288,6 +288,12 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(88, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "prs" }),
+        // Phase 89 — agent_level_history.Actor for per-agent PO override
+        // actions (promote / demote / hold) from the Performance view's
+        // DecisionCard. Control-only, additive nullable column.
+        new PhaseMigrationSpec(89, PhaseMigrationKind.Control,
+            ControlTables: new[] { "agent_level_history" },
+            ProductTables: Array.Empty<string>()),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

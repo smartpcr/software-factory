@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { avatarFor } from '@/agentAvatar';
 import {
   forgeApi,
@@ -59,8 +59,17 @@ export function PerformanceView() {
   const [snapshots, setSnapshots] = useState<MonthlySnapshot[]>([]);
   const [filterOpts, setFilterOpts] = useState<PerformanceFilterOptions | null>(null);
   const [loading, setLoading] = useState(true);
+  // Phase 89 — distinct from `loading`: true only while a post-action
+  // refetch is in flight. We keep the existing table visible during a
+  // refetch (no spinner swap) so the operator's scroll position survives a
+  // PROMOTE / DEMOTE / HOLD click — collapsing the page to a one-line
+  // spinner forced the browser to clamp scrollTop and jumped them back to
+  // the top of the view.
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string>('');
+  // Phase 89 — bumped after a successful PO override so the load effect re-fires.
+  const [reloadCounter, setReloadCounter] = useState(0);
 
   // Filter state
   const [teamFilter, setTeamFilter] = useState('all');
@@ -69,8 +78,13 @@ export function PerformanceView() {
 
   useEffect(() => {
     let cancelled = false;
+    // Initial load (no data yet OR window switched) shows the full-page
+    // spinner. Operator-triggered refreshes flip `refreshing` instead and
+    // keep the table mounted so scroll position survives.
+    const isRefetch = reloadCounter > 0 && allScorecards.length > 0;
     async function load() {
-      setLoading(true);
+      if (isRefetch) setRefreshing(true);
+      else setLoading(true);
       setError(null);
       try {
         const r = await forgeApi.getPerformanceScorecards(windowKey);
@@ -85,12 +99,23 @@ export function PerformanceView() {
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load scorecards');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        if (isRefetch) setRefreshing(false);
+        else setLoading(false);
       }
     }
     void load();
     return () => { cancelled = true; };
-  }, [windowKey]);
+    // selected is intentionally NOT a dep — we read it inside but only to
+    // seed it; the effect must not re-fire when the operator picks a row.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowKey, reloadCounter]);
+
+  // Phase 89 — invoked by DecisionCard / VerdictPill after a successful PO
+  // override (promote / demote / hold). Bumping the counter re-fires the
+  // load effect, which now sets `refreshing` (not `loading`) so the table
+  // stays mounted and the operator's scroll position is preserved.
+  const reload = () => setReloadCounter((n) => n + 1);
 
   // Apply client-side filters
   const scorecards = useMemo(() => {
@@ -146,6 +171,12 @@ export function PerformanceView() {
             <span>{scorecards.length} agents · {new Set(scorecards.map((c) => c.team)).size} teams</span>
             <span className="sep">/</span>
             <span><span className="live-dot" />nightly job @ 02:00 PT</span>
+            {refreshing && (
+              <>
+                <span className="sep">/</span>
+                <span style={{ color: 'var(--accent)', fontStyle: 'italic' }}>refreshing…</span>
+              </>
+            )}
           </div>
           <h1 className="page-title">
             <span className="mark" />
@@ -254,7 +285,7 @@ export function PerformanceView() {
                   <div className="title">Roster scorecard — Q14.9 KPIs</div>
                   <div className="sub">click a row to inspect · {WINDOW_LABELS[windowKey]} · showing {activeCards.length} agents with data</div>
                 </div>
-                <ScorecardTable agents={activeCards} selectedId={selected} onSelect={setSelected} />
+                <ScorecardTable agents={activeCards} selectedId={selected} onSelect={setSelected} onActionComplete={reload} />
                 {selectedAgent && <ScorecardDrawer agent={selectedAgent} />}
               </div>
 
@@ -266,7 +297,7 @@ export function PerformanceView() {
                   </div>
                   <div className="decisions">
                     {decisions.map((d) => (
-                      <DecisionCard key={d.agentId} d={d} />
+                      <DecisionCard key={d.agentId} d={d} onActionComplete={reload} />
                     ))}
                   </div>
                 </>
@@ -504,30 +535,270 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
 // Scorecard table
 // ════════════════════════════════════════════════════════════════════
 
-function ScorecardTable({ agents, selectedId, onSelect }: {
+/**
+ * Sortable columns on the roster scorecard. `null` means "use the order the
+ * server returned" (which is implicitly the active card filter's natural
+ * order). The Trail-20 column is intentionally excluded — it's a sparkline,
+ * not a comparable value.
+ */
+export type ScorecardSortKey =
+  | 'name'
+  | 'level'
+  | 'avgScore'
+  | 'passRate'
+  | 'throughput'
+  | 'iter'
+  | 'rejectRate'
+  | 'costPerPass'
+  | 'promotionEta'
+  | 'lastChange'
+  | 'verdict';
+
+export type ScorecardSortDir = 'asc' | 'desc';
+
+/**
+ * Default sort direction the first time a column is clicked. Numeric
+ * "higher is better" columns start descending so the operator sees top
+ * performers first; "lower is better" columns (iter depth, reject rate,
+ * cost/pass, promo ETA) start ascending; identifier/text columns start
+ * ascending.
+ */
+function defaultDirFor(key: ScorecardSortKey): ScorecardSortDir {
+  switch (key) {
+    case 'avgScore':
+    case 'passRate':
+    case 'throughput':
+    case 'level':
+      return 'desc';
+    case 'lastChange':
+      // Most recent level change first — surfaces who was just moved
+      // (and is therefore in cooldown) at the top.
+      return 'desc';
+    case 'iter':
+    case 'rejectRate':
+    case 'costPerPass':
+    case 'promotionEta':
+    case 'name':
+    case 'verdict':
+      return 'asc';
+  }
+}
+
+/**
+ * Pure comparator for the roster scorecard sort. Exported so the spec can
+ * lock the behaviour (null-handling, tie-breakers, dir flips) without
+ * spinning up a DOM. Stable: ties fall back to <c>agentId</c> ascending so
+ * the same input order always produces the same output order. Nulls on
+ * <c>promotionEta</c> always sort last regardless of direction (typical
+ * "N/A goes to the bottom" UX).
+ */
+export function compareAgentsBySort(
+  a: AgentScorecard,
+  b: AgentScorecard,
+  key: ScorecardSortKey,
+  dir: ScorecardSortDir,
+): number {
+  const sign = dir === 'asc' ? 1 : -1;
+
+  // promotionEta nulls always last, regardless of direction.
+  if (key === 'promotionEta') {
+    const an = a.promotionEta;
+    const bn = b.promotionEta;
+    if (an === null && bn === null) return a.agentId.localeCompare(b.agentId);
+    if (an === null) return 1;
+    if (bn === null) return -1;
+    if (an !== bn) return (an - bn) * sign;
+    return a.agentId.localeCompare(b.agentId);
+  }
+
+  // lastChange: agents that never moved (null) always sort last. Dates are
+  // yyyy-MM-dd so a lexicographic compare is chronological.
+  if (key === 'lastChange') {
+    const ad = a.lastChangeAt;
+    const bd = b.lastChangeAt;
+    if (!ad && !bd) return a.agentId.localeCompare(b.agentId);
+    if (!ad) return 1;
+    if (!bd) return -1;
+    if (ad !== bd) return ad.localeCompare(bd) * sign;
+    return a.agentId.localeCompare(b.agentId);
+  }
+
+  let cmp = 0;
+  switch (key) {
+    case 'name':
+      cmp = a.name.localeCompare(b.name);
+      break;
+    case 'level':
+      cmp = a.level - b.level;
+      // Secondary tiebreaker: avgScore (higher is better)
+      // ALSO flipped by the same direction so a desc sort puts the
+      // highest avgScore first within the same level.
+      if (cmp === 0) cmp = a.avgScore - b.avgScore;
+      break;
+    case 'avgScore':
+      cmp = a.avgScore - b.avgScore;
+      break;
+    case 'passRate':
+      cmp = a.passRate - b.passRate;
+      break;
+    case 'throughput':
+      cmp = a.throughput - b.throughput;
+      break;
+    case 'iter':
+      // Primary on P50, tiebreaker on P90.
+      cmp = a.iterP50 - b.iterP50;
+      if (cmp === 0) cmp = a.iterP90 - b.iterP90;
+      break;
+    case 'rejectRate':
+      cmp = a.rejectRate - b.rejectRate;
+      break;
+    case 'costPerPass':
+      cmp = a.costPerPass - b.costPerPass;
+      break;
+    case 'verdict':
+      cmp = a.verdict.localeCompare(b.verdict);
+      break;
+  }
+  if (cmp !== 0) return cmp * sign;
+  // Stable tiebreaker so the order is deterministic regardless of input.
+  return a.agentId.localeCompare(b.agentId);
+}
+
+const SORT_STORAGE_KEY = 'forge.performance.scorecardSort';
+
+interface ScorecardSortState {
+  key: ScorecardSortKey;
+  dir: ScorecardSortDir;
+}
+
+function loadSortState(): ScorecardSortState | null {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ScorecardSortState;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof parsed.key !== 'string' || (parsed.dir !== 'asc' && parsed.dir !== 'desc')) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveSortState(s: ScorecardSortState | null): void {
+  try {
+    if (s === null) localStorage.removeItem(SORT_STORAGE_KEY);
+    else localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(s));
+  } catch { /* localStorage unavailable; ignore */ }
+}
+
+function ScorecardTable({ agents, selectedId, onSelect, onActionComplete }: {
   agents: AgentScorecard[];
   selectedId: string;
   onSelect: (id: string) => void;
+  // Phase 89 — fires after a successful PO override on a row pill so the
+  // parent can re-fetch the scorecards. Optional so the table still works
+  // as a pure read view when no parent supplies the callback.
+  onActionComplete?: () => void;
 }) {
+  const [sort, setSort] = useState<ScorecardSortState | null>(() => loadSortState());
+  // Phase 89 — per-row override state. `busy` disables every actionable pill
+  // (single in-flight slot — operators should react to one outcome at a time)
+  // and `error` is keyed by agent so an inline message appears in the right
+  // row without bleeding to the rest of the table.
+  const [busyAgent, setBusyAgent] = useState<string | null>(null);
+  const [pillError, setPillError] = useState<{ agentId: string; message: string } | null>(null);
+
+  const sortedAgents = useMemo(() => {
+    if (!sort) return agents;
+    // Slice so the input array (held by the parent) isn't mutated.
+    return [...agents].sort((a, b) => compareAgentsBySort(a, b, sort.key, sort.dir));
+  }, [agents, sort]);
+
+  function onHeaderClick(key: ScorecardSortKey) {
+    setSort((cur) => {
+      // Same column: flip direction. New column: pick the column's default.
+      const next: ScorecardSortState = cur && cur.key === key
+        ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: defaultDirFor(key) };
+      saveSortState(next);
+      return next;
+    });
+  }
+
+  async function runRowAction(
+    a: AgentScorecard,
+    kind: 'promote' | 'demote' | 'hold',
+    e: React.MouseEvent,
+  ) {
+    e.stopPropagation(); // don't open the drawer when clicking the pill
+    if (busyAgent) return;
+    // Demote is destructive — require explicit confirmation since the
+    // pill click is a single gesture (the DecisionCard's "Confirm demotion"
+    // button is one indirection away, this isn't).
+    if (kind === 'demote') {
+      const ok = typeof window !== 'undefined'
+        && window.confirm(`Demote ${a.name} from L${a.level} to L${a.level - 1}?`);
+      if (!ok) return;
+    }
+    setBusyAgent(a.agentId);
+    setPillError(null);
+    try {
+      if (kind === 'promote') await forgeApi.promoteAgent(a.agentId, a.level, a.avgScore);
+      else if (kind === 'demote') await forgeApi.demoteAgent(a.agentId, a.level, a.avgScore);
+      else await forgeApi.holdAgent(a.agentId, a.avgScore);
+      onActionComplete?.();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Action failed';
+      setPillError({ agentId: a.agentId, message: msg });
+    } finally {
+      setBusyAgent(null);
+    }
+  }
+
+  function indicator(key: ScorecardSortKey): string {
+    if (!sort || sort.key !== key) return '';
+    return sort.dir === 'asc' ? ' ▲' : ' ▼';
+  }
+
+  function headerProps(key: ScorecardSortKey) {
+    const active = sort?.key === key;
+    return {
+      role: 'button',
+      tabIndex: 0,
+      'aria-sort': (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') as 'ascending' | 'descending' | 'none',
+      'data-sortable': true,
+      'data-sort-active': active || undefined,
+      onClick: () => onHeaderClick(key),
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onHeaderClick(key);
+        }
+      },
+    } as const;
+  }
+
   return (
     <table className="scorecard-table" aria-label="Roster scorecard">
       <thead>
         <tr>
-          <th className="left">Agent</th>
-          <th className="left">Level</th>
-          <th>Avg</th>
-          <th>Pass</th>
-          <th>Throughput</th>
-          <th>Iter P50/P90</th>
-          <th>Reject</th>
-          <th>Cost / pass</th>
+          <th className="left" {...headerProps('name')}>Agent{indicator('name')}</th>
+          <th className="left" {...headerProps('level')}>Level{indicator('level')}</th>
+          <th {...headerProps('avgScore')}>Avg{indicator('avgScore')}</th>
+          <th {...headerProps('passRate')}>Pass{indicator('passRate')}</th>
+          <th {...headerProps('throughput')}>Throughput{indicator('throughput')}</th>
+          <th {...headerProps('iter')}>Iter P50/P90{indicator('iter')}</th>
+          <th {...headerProps('rejectRate')}>Reject{indicator('rejectRate')}</th>
+          <th {...headerProps('costPerPass')}>Cost / pass{indicator('costPerPass')}</th>
+          {/* Trail-20 is a sparkline — not sortable */}
           <th>Trail-20</th>
-          <th>Promo ETA</th>
-          <th className="left">Verdict</th>
+          <th {...headerProps('promotionEta')}>Promo ETA{indicator('promotionEta')}</th>
+          <th className="left" {...headerProps('lastChange')}>Last change{indicator('lastChange')}</th>
+          <th className="left" {...headerProps('verdict')}>Verdict{indicator('verdict')}</th>
         </tr>
       </thead>
       <tbody>
-        {agents.map((a) => {
+        {sortedAgents.map((a) => {
           const sel = a.agentId === selectedId;
           return (
             <tr
@@ -576,18 +847,143 @@ function ScorecardTable({ agents, selectedId, onSelect }: {
                 <Spark values={a.scoreSpark} />
               </td>
               <td>
-                {a.promotionEta === null ? '—'
-                  : a.promotionEta === 0 ? <span className="delta-up">ready</span>
-                  : `+${a.promotionEta}`}
+                {/* Phase 89 — surface cooldown countdown so HOLD-on-cooldown
+                    reads "+2 d" instead of "—". Order of precedence:
+                    deliverable-count ETA (set by server when promote-ready or
+                    short of window) → cooldown days remaining → "—". */}
+                {a.promotionEta === 0 ? <span className="delta-up">ready</span>
+                  : a.promotionEta !== null ? `+${a.promotionEta}`
+                  : a.verdict === 'hold' && a.cooldownDaysRemaining > 0 ? (
+                    <span
+                      style={{ color: 'var(--warning)' }}
+                      title={`Promotion blocked by cooldown · next eligible ${a.nextEligibleAt}`}
+                    >
+                      +{a.cooldownDaysRemaining}&nbsp;d
+                    </span>
+                  ) : '—'}
               </td>
               <td className="left">
-                <span className={`verdict ${a.verdict}`}>{verdictLabel(a.verdict)}</span>
+                {a.lastChangeAt ? (
+                  <span
+                    className={a.lastChangeKind === 'demote' ? 'delta-down' : 'delta-up'}
+                    title={`Last ${a.lastChangeKind === 'demote' ? 'demoted' : 'promoted'} ${a.lastChangeAt}`
+                      + (a.nextEligibleAt && a.nextEligibleAt !== 'now'
+                        ? ` · next promo-eligible ${a.nextEligibleAt}`
+                        : ' · promo-eligible now')}
+                  >
+                    {a.lastChangeKind === 'demote' ? '▼' : '▲'} {a.lastChangeAt}
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--text-tertiary)' }} title="No level change on record">—</span>
+                )}
+              </td>
+              <td className="left">
+                <VerdictPill
+                  agent={a}
+                  busy={busyAgent === a.agentId}
+                  anyBusy={busyAgent !== null}
+                  error={pillError?.agentId === a.agentId ? pillError.message : null}
+                  onAction={onActionComplete ? runRowAction : undefined}
+                  onDismissError={() => setPillError(null)}
+                />
               </td>
             </tr>
           );
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * Phase 89 — the verdict cell. `promote` / `demote` / `hold` render as
+ * `<button>`s that call the corresponding PO override API; `watch` and
+ * `lead-pending` stay as read-only labels (no backend yet). Clicking a
+ * pill stops propagation so the row's "open drawer" handler doesn't fire.
+ * When `onAction` is omitted the cell is a pure label (parent didn't opt
+ * into write-through).
+ */
+function VerdictPill({
+  agent, busy, anyBusy, error, onAction, onDismissError,
+}: {
+  agent: AgentScorecard;
+  busy: boolean;
+  anyBusy: boolean;
+  error: string | null;
+  onAction?: (a: AgentScorecard, kind: 'promote' | 'demote' | 'hold', e: React.MouseEvent) => void;
+  onDismissError: () => void;
+}) {
+  const actionable = onAction !== undefined
+    && (agent.verdict === 'promote' || agent.verdict === 'demote' || agent.verdict === 'hold');
+
+  if (!actionable) {
+    // `watch` / `lead-pending` are informational, not operator actions —
+    // there's no backend verb for them (watch = stable / not enough data;
+    // lead-pending = lead-floor case). Render a read-only pill, but surface
+    // WHY on hover so a click that "does nothing" is self-explanatory
+    // instead of feeling broken.
+    const why = agent.verdict === 'watch'
+      ? (agent.verdictNote || 'No action — agent is stable or has too few deliverables to evaluate.')
+      : agent.verdict === 'lead-pending'
+        ? (agent.verdictNote || 'Lead promotion is reviewed separately — no row action.')
+        : agent.verdictNote;
+    return (
+      <span
+        className={`verdict ${agent.verdict} verdict-static`}
+        title={why || undefined}
+        aria-label={why ? `${verdictLabel(agent.verdict)} — ${why}` : undefined}
+      >
+        {verdictLabel(agent.verdict)}
+      </span>
+    );
+  }
+
+  const kind = agent.verdict as 'promote' | 'demote' | 'hold';
+  // Phase 89 — title = action verb + verdictNote so hovering the active
+  // pill shows BOTH what clicking does and the policy reasoning. For
+  // hold-with-cooldown the operator now sees e.g.
+  // "Promote Bei Hai L1 → L2 · Cooldown: 2 d remaining (next eligible 2026-05-31)"
+  // before deciding whether to override.
+  const actionVerb = kind === 'promote' ? `Promote ${agent.name} L${agent.level} → L${agent.level + 1}`
+                   : kind === 'demote'  ? `Demote ${agent.name} L${agent.level} → L${agent.level - 1}`
+                   : `Acknowledge ${agent.name} (audit-only hold)`;
+  const title = agent.verdictNote
+    ? `${actionVerb} · ${agent.verdictNote}`
+    : actionVerb;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`verdict ${kind} verdict-action`}
+        title={title}
+        disabled={anyBusy}
+        aria-busy={busy}
+        onClick={(e) => onAction!(agent, kind, e)}
+      >
+        {busy ? '…' : verdictLabel(kind)}
+      </button>
+      {error && (
+        <span
+          role="alert"
+          onClick={(e) => { e.stopPropagation(); onDismissError(); }}
+          style={{
+            marginLeft: 6,
+            padding: '1px 6px',
+            fontSize: 9,
+            background: 'var(--danger-bg)',
+            color: 'var(--danger)',
+            border: '1px solid var(--danger-border)',
+            borderRadius: 3,
+            cursor: 'pointer',
+            fontFamily: 'var(--font-mono)',
+          }}
+          title={`${error} — click to dismiss`}
+        >
+          ⚠ failed
+        </span>
+      )}
+    </>
   );
 }
 
@@ -658,15 +1054,47 @@ function ScorecardDrawer({ agent }: { agent: AgentScorecard }) {
 // Promotion decision card
 // ════════════════════════════════════════════════════════════════════
 
-function DecisionCard({ d }: { d: PromotionDecision }) {
+function DecisionCard({ d, onActionComplete }: {
+  d: PromotionDecision;
+  onActionComplete: () => void;
+}) {
   const direction = d.toLevel > d.fromLevel ? 'up'
                   : d.toLevel < d.fromLevel ? 'down' : 'flat';
-  const kind: PromotionVerdict =
-    direction === 'up' && d.windowAvg >= 92 && d.rejectsInWindow === 0 && d.cooldownDaysRemaining === 0 ? 'promote'
-    : direction === 'down' ? 'demote'
-    : direction === 'up' && d.windowAvg < 92 ? 'hold'
-    : d.toLevel >= 7 && d.windowAvg < 75 ? 'lead-pending'
-    : 'watch';
+  // Phase 89 — trust the server-derived verdict (tier-aware). The previous
+  // client-side derivation hardcoded `>= 92` and so rendered easy-tier
+  // (L0-L2, threshold 88) promotions as 'hold'.
+  const kind: PromotionVerdict = d.verdict;
+
+  // Phase 89 — operator override state. `busy` disables buttons while an
+  // override request is in flight; `error` surfaces 409 (stale page) or
+  // 400 (at floor/cap) so the operator knows to refresh and retry.
+  const [busy, setBusy] = useState<'promote' | 'demote' | 'hold' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function runAction(
+    action: 'promote' | 'demote' | 'hold',
+    call: () => Promise<unknown>,
+  ) {
+    if (busy) return;
+    setBusy(action);
+    setError(null);
+    try {
+      await call();
+      onActionComplete();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Action failed';
+      setError(msg);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const promote = () => runAction('promote',
+    () => forgeApi.promoteAgent(d.agentId, d.fromLevel, d.windowAvg));
+  const demote  = () => runAction('demote',
+    () => forgeApi.demoteAgent(d.agentId, d.fromLevel, d.windowAvg));
+  const hold    = () => runAction('hold',
+    () => forgeApi.holdAgent(d.agentId, d.windowAvg));
 
   return (
     <article className="decision" data-kind={kind}>
@@ -728,13 +1156,73 @@ function DecisionCard({ d }: { d: PromotionDecision }) {
         </div>
       )}
 
+      {error && (
+        <div
+          role="alert"
+          style={{
+            marginTop: 8,
+            padding: '6px 10px',
+            borderRadius: 4,
+            background: 'var(--danger-bg)',
+            color: 'var(--danger)',
+            border: '1px solid var(--danger-border)',
+            fontSize: 11.5,
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{error}</span>
+          <button
+            type="button"
+            onClick={onActionComplete}
+            style={{ background: 'transparent', border: 0, color: 'inherit', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+          >
+            refresh
+          </button>
+        </div>
+      )}
+
       <div className="actions">
-        {kind === 'promote' && <button className="primary">Approve & ship</button>}
-        {kind === 'demote' && <button className="primary" style={{ background: 'var(--danger)', borderColor: 'var(--danger)' }}>Confirm demotion</button>}
-        {kind === 'hold' && <button>Hold for next window</button>}
-        {kind === 'watch' && <button>Add to watchlist</button>}
-        {kind === 'lead-pending' && <button>Open lead nomination</button>}
-        <button>Open file</button>
+        {kind === 'promote' && (
+          <button
+            type="button"
+            className="primary"
+            onClick={promote}
+            disabled={busy !== null}
+            aria-busy={busy === 'promote'}
+          >
+            {busy === 'promote' ? 'Promoting…' : 'Approve & ship'}
+          </button>
+        )}
+        {kind === 'demote' && (
+          <button
+            type="button"
+            className="primary"
+            style={{ background: 'var(--danger)', borderColor: 'var(--danger)' }}
+            onClick={demote}
+            disabled={busy !== null}
+            aria-busy={busy === 'demote'}
+          >
+            {busy === 'demote' ? 'Demoting…' : 'Confirm demotion'}
+          </button>
+        )}
+        {kind === 'hold' && (
+          <button
+            type="button"
+            onClick={hold}
+            disabled={busy !== null}
+            aria-busy={busy === 'hold'}
+            title="Records operator acknowledgement in the level-history audit log. Does not suppress the next nightly job at v0.1."
+          >
+            {busy === 'hold' ? 'Logging…' : 'Hold for next window'}
+          </button>
+        )}
+        {/* TODO Phase 89+ — wire watch/lead-pending once backend lands.
+            Watchlist is a UI-only TODO; lead nomination is Q14.5 follow-up. */}
+        {kind === 'watch' && <button type="button" disabled>Add to watchlist</button>}
+        {kind === 'lead-pending' && <button type="button" disabled>Open lead nomination</button>}
+        <button type="button" disabled>Open file</button>
         {d.signedOff && d.signedOffBy && (
           <span className="signed">✓ signed by {d.signedOffBy}</span>
         )}

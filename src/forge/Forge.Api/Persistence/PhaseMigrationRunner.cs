@@ -88,6 +88,10 @@ public sealed class PhaseMigrationRunner
         87,
         // Phase 88 — prs merge metadata for already-merged PR evaluation fallback.
         88,
+        // Phase 89 — agent_level_history.Actor for per-agent PO override
+        // actions (promote / demote / hold). Control-only, additive nullable
+        // column; no ordering dependency.
+        89,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

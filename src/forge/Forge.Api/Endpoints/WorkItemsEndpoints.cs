@@ -40,6 +40,7 @@ public static class WorkItemsEndpoints
         grp.MapPost("/sync/{repoId}", Sync).WithName("SyncWorkItems");
         grp.MapPost("/{id}/resync", Resync).WithName("ResyncWorkItem");
         grp.MapPost("/{id}/create-pr", CreatePr).WithName("CreateWorkItemPr");
+        grp.MapPost("/{id}/execution-status", ReconcileExecutionStatus).WithName("ReconcileWorkItemExecutionStatus");
         grp.MapGet("/{id}/workstream-link", GetWorkstreamLink).WithName("GetWorkItemWorkstreamLink");
 
         return app;
@@ -899,6 +900,145 @@ public static class WorkItemsEndpoints
 
         Forge.Api.Services.SystemNotify.PrCreated(id, pr.Id);
         return Results.Ok(new { prId = pr.Id, prTitle = pr.Title });
+    }
+
+    // ----- Drag-to-reconcile (Exec board) --------------------------------
+
+    /// <summary>Request body for <c>POST /api/work-items/{id}/execution-status</c>.</summary>
+    public sealed record ReconcileExecutionStatusRequest(string TargetStatus);
+
+    /// <summary>
+    /// Drag-to-reconcile endpoint for the Exec board (UI: ExecBoard.tsx). The
+    /// operator drags a card from its current execution-status column to a
+    /// different column; the UI POSTs <c>{ targetStatus }</c> here. The server
+    /// computes the *authoritative* execution status from
+    /// <see cref="WorkItemExecutionStatusInspector"/> (which inspects the live
+    /// agent runner, open task_queue rows, the linked workstream, and the
+    /// latest deliverable) and commits the operator's target only when it
+    /// matches authority. Mismatches return 409 with the authoritative value
+    /// + a short reason so the UI can show an informative toast.
+    ///
+    /// <para>This is a drift-correction mechanism, NOT a runtime control —
+    /// it does not cancel agents, enqueue work, or open PRs. To stop a live
+    /// agent or re-dispatch a failed item, use the explicit detail-panel
+    /// actions (Cancel / Re-queue / Dispatch).</para>
+    ///
+    /// <para>Per-write audit row in <c>agent_assignments</c> with
+    /// <c>Kind = "operator-reconciled"</c>; <c>workitem.changed</c> broadcast
+    /// with <c>kind = "execution-status-reconciled"</c> so connected clients
+    /// refresh the card.</para>
+    /// </summary>
+    private static async Task<IResult> ReconcileExecutionStatus(
+        HttpContext ctx,
+        string id,
+        [FromBody] ReconcileExecutionStatusRequest req,
+        ControlDbContext control,
+        ProductDbContext db,
+        Forge.Api.Services.WorkItemExecutionStatusInspector inspector,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.TargetStatus))
+        {
+            return Results.Problem(
+                title: "targetStatus is required",
+                statusCode: 400);
+        }
+
+        var target = req.TargetStatus.Trim().ToLowerInvariant();
+        var allowedTargets = new HashSet<string>(StringComparer.Ordinal)
+        {
+            ExecutionStatuses.Idle,
+            ExecutionStatuses.Queued,
+            ExecutionStatuses.Live,
+            ExecutionStatuses.Completed,
+            ExecutionStatuses.Failed,
+            ExecutionStatuses.Cancelled,
+        };
+        if (!allowedTargets.Contains(target))
+        {
+            return Results.Problem(
+                title: $"Unknown or non-draggable target status '{req.TargetStatus}'. " +
+                       $"Valid targets: {string.Join(", ", allowedTargets)}.",
+                statusCode: 400);
+        }
+
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null)
+        {
+            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        }
+
+        var authoritative = await inspector.ComputeAuthoritativeAsync(id, ct);
+        if (authoritative is null)
+        {
+            // Defensive — shouldn't happen because we just fetched the row,
+            // but the inspector re-queries on its own DbContext snapshot.
+            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        }
+
+        if (!string.Equals(authoritative.Status, target, StringComparison.Ordinal))
+        {
+            return Results.Json(
+                new
+                {
+                    error = "execution_status_mismatch",
+                    requested = target,
+                    authoritative = authoritative.Status,
+                    reason = authoritative.Reason,
+                    current = row.ExecutionStatus,
+                },
+                statusCode: 409);
+        }
+
+        // Target matches authoritative — commit. Skip the no-op write so a
+        // drag-to-current-column is fast and quiet (still returns 200).
+        var previous = row.ExecutionStatus;
+        if (!string.Equals(previous, target, StringComparison.Ordinal))
+        {
+            row.ExecutionStatus = target;
+            row.UpdatedAt = DateTimeOffset.UtcNow;
+
+            db.Set<AgentAssignmentRow>().Add(new AgentAssignmentRow
+            {
+                WorkItemId = id,
+                Kind = AgentAssignmentKinds.OperatorReconciled,
+                AgentIdsJson = JsonSerializer.Serialize(ParseAgentIds(row.AssignedAgentJson), JsonOpts),
+                FromExecutionStatus = previous,
+                ToExecutionStatus = target,
+                AssignedBy = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u)
+                    ? u.ToString()
+                    : "operator",
+                Reason = authoritative.Reason,
+                At = DateTimeOffset.UtcNow,
+            });
+
+            await db.SaveChangesAsync(ct);
+
+            var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
+            await hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new
+                {
+                    kind = "execution-status-reconciled",
+                    workItem = MapWorkItem(row, prId, prCol),
+                    from = previous,
+                    to = target,
+                    reason = authoritative.Reason,
+                },
+                ct);
+        }
+
+        return Results.Ok(new
+        {
+            id,
+            previous,
+            current = row.ExecutionStatus,
+            reason = authoritative.Reason,
+        });
     }
 
     // ----- helpers --------------------------------------------------------

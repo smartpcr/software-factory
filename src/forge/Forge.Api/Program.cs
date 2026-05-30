@@ -429,6 +429,12 @@ builder.Services.AddSingleton<Forge.Api.Services.LeadAutoDispatcher>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.LeadAutoDispatcher>());
 // Phase 17.2 — task queue service. Scoped so it shares the request's DbContext.
 builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Services.TaskQueueService>();
+// Drag-to-reconcile inspector for the Exec board. Computes the authoritative
+// execution status from runner + queue + workstream + deliverable; the
+// /api/work-items/{id}/execution-status endpoint accepts the operator's
+// drag-move only when target == authoritative. Scoped — shares the
+// request's ProductDbContext.
+builder.Services.AddScoped<Forge.Api.Services.WorkItemExecutionStatusInspector>();
 // Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());

@@ -1381,8 +1381,20 @@ public class AgentLevelHistoryRow
     /// <summary>Trailing-window average score that triggered the change.</summary>
     public decimal WindowAvg { get; set; }
 
-    /// <summary>One of: <c>promote | demote | grandfathered</c>.</summary>
+    /// <summary>
+    /// One of: <c>promote | demote | grandfathered</c> from the nightly
+    /// <c>PromotionJob</c>, or <c>operator-promote | operator-demote |
+    /// operator-hold</c> (Phase 89) when a Product-Owner pressed an action
+    /// button on the Performance view's <c>DecisionCard</c>.
+    /// </summary>
     public string Reason { get; set; } = "promote";
+
+    /// <summary>
+    /// Phase 89 — caller identity for operator-initiated rows. Captured from
+    /// the <c>X-Forge-User</c> header on the override endpoints. NULL for the
+    /// nightly job's rows (whose authority is the algorithm itself).
+    /// </summary>
+    public string? Actor { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -2400,10 +2412,21 @@ public static class AgentAssignmentKinds
     public const string Completed = "completed";
     public const string Backfill = "backfill";
 
+    /// <summary>
+    /// Operator-initiated drift-correction via drag-to-reconcile on the
+    /// Exec board (<c>POST /api/work-items/{id}/execution-status</c>). The
+    /// transition flips <see cref="WorkItemRow.ExecutionStatus"/> to the
+    /// inspector-computed authoritative value; agent IDs are NOT changed.
+    /// <see cref="AgentAssignmentRow.Reason"/> carries the inspector's
+    /// human-readable explanation; <see cref="AgentAssignmentRow.AssignedBy"/>
+    /// carries the operator id from the <c>X-Forge-User</c> header.
+    /// </summary>
+    public const string OperatorReconciled = "operator-reconciled";
+
     public static readonly HashSet<string> All = new(StringComparer.OrdinalIgnoreCase)
     {
         Claimed, Reassigned, ClearedRestart, ClearedManual,
-        PrOpened, ReviewerAssigned, Completed, Backfill,
+        PrOpened, ReviewerAssigned, Completed, Backfill, OperatorReconciled,
     };
 }
 
