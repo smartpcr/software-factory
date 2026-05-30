@@ -99,7 +99,12 @@ public static class StoryBuildRunner
         // Stable suffix appended to the per-iter TRX copy dir so a
         // re-run of the same iter doesn't collide with the prior attempt
         // (the caller typically uses iter + ticks).
-        string? trxScopeTag = null)
+        string? trxScopeTag = null,
+        // When true, the log file is OPENED FOR APPEND instead of being
+        // truncated. Used by RunGoWorkspaceAsync to stream several
+        // per-module runs (each with its own header) into one combined
+        // gate log. Default false preserves the single-run truncate.
+        bool appendLog = false)
     {
         if (string.IsNullOrEmpty(workspace) || !Directory.Exists(workspace))
         {
@@ -275,7 +280,7 @@ public static class StoryBuildRunner
                 var dir = Path.GetDirectoryName(logFilePath);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 logWriter = new StreamWriter(
-                    new FileStream(logFilePath!, FileMode.Create, FileAccess.Write, FileShare.Read),
+                    new FileStream(logFilePath!, appendLog ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read),
                     System.Text.Encoding.UTF8);
                 logWriter.AutoFlush = false; // batch per-line flushes via the pump
                 effectiveLogPath = logFilePath;
@@ -632,6 +637,122 @@ public static class StoryBuildRunner
         return result.ToArray();
     }
 
+    /// <summary>
+    /// Runs a root-scoped Go gate command (e.g. <c>go test ./...</c> /
+    /// <c>go build ./...</c>) once per workspace module and aggregates the
+    /// results into a single <see cref="StoryBuildResult"/>. This is the
+    /// multi-module (<c>go.work</c>) path: <c>./...</c> doesn't cross module
+    /// boundaries, so the gate must descend into each module's directory
+    /// (see <see cref="GoWorkspaceGate"/> for the why + module selection).
+    ///
+    /// <para><paramref name="moduleRelDirs"/> are workspace-relative module
+    /// directories (root is <c>"."</c>); <paramref name="scopedCommand"/> is
+    /// the command already rewritten to that module's <c>./...</c> via
+    /// <see cref="GoWorkspaceGate.ScopeCommandToModule"/>. Each module's
+    /// output is streamed into <paramref name="logFilePath"/> under a
+    /// <c>==== module &lt;rel&gt; ====</c> header so the combined gate log
+    /// reads top-to-bottom. The aggregate is a failure if ANY module fails;
+    /// the wall-clock budget is shared across modules (a module that would
+    /// start past the budget is not run and the aggregate is marked timed
+    /// out).</para>
+    /// </summary>
+    public static async Task<StoryBuildResult> RunGoWorkspaceAsync(
+        string workspace,
+        IReadOnlyList<string> moduleRelDirs,
+        string scopedCommand,
+        CancellationToken ct,
+        TimeSpan? timeout = null,
+        string? logFilePath = null,
+        string? logRelPath = null,
+        IReadOnlyList<string>? sessionSetupCommands = null,
+        bool collectTestFailures = false,
+        string? trxScopeTag = null)
+    {
+        var budget = timeout ?? DefaultTimeout;
+        var swAll = Stopwatch.StartNew();
+        var combinedSuccess = true;
+        var firstNonZeroExit = 0;
+        var totalErrors = 0;
+        var totalWarnings = 0;
+        var anyTimedOut = false;
+        var summaries = new List<string>();
+        var trx = new List<string>();
+
+        for (var i = 0; i < moduleRelDirs.Count; i++)
+        {
+            var rel = moduleRelDirs[i];
+            string moduleDir;
+            try { moduleDir = Path.GetFullPath(Path.Combine(workspace, rel)); }
+            catch { moduleDir = workspace; }
+
+            // Header so the combined log shows which module each block is.
+            if (!string.IsNullOrWhiteSpace(logFilePath))
+            {
+                try
+                {
+                    var dir = Path.GetDirectoryName(logFilePath);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    using var hw = new StreamWriter(
+                        new FileStream(logFilePath!, i == 0 ? FileMode.Create : FileMode.Append, FileAccess.Write, FileShare.Read),
+                        System.Text.Encoding.UTF8);
+                    hw.WriteLine($"==== module {rel} :: {scopedCommand} ====");
+                }
+                catch { /* best-effort; the run still proceeds without a header */ }
+            }
+
+            var remaining = budget - swAll.Elapsed;
+            if (remaining <= TimeSpan.FromSeconds(5))
+            {
+                anyTimedOut = true;
+                combinedSuccess = false;
+                summaries.Add($"[module {rel}] skipped — workspace gate wall-clock budget ({budget.TotalMinutes:0.0}min) exhausted before this module ran.");
+                if (firstNonZeroExit == 0) firstNonZeroExit = -1;
+                continue;
+            }
+
+            var r = await RunBuildAsync(
+                moduleDir,
+                ct,
+                remaining,
+                buildCommand: scopedCommand,
+                logFilePath: logFilePath,
+                logRelPath: logRelPath,
+                sessionSetupCommands: sessionSetupCommands,
+                collectTestFailures: collectTestFailures,
+                trxScopeTag: trxScopeTag is null ? null : $"{trxScopeTag}-{i}",
+                // Append so every module's output lands in ONE combined log
+                // (the i==0 header already truncated the file above).
+                appendLog: true);
+
+            totalErrors += r.ErrorCount;
+            totalWarnings += r.WarningCount;
+            anyTimedOut |= r.TimedOut;
+            if (r.TrxRelPaths is { Count: > 0 }) trx.AddRange(r.TrxRelPaths);
+            if (!r.Success)
+            {
+                combinedSuccess = false;
+                if (firstNonZeroExit == 0) firstNonZeroExit = r.ExitCode;
+                var head = string.IsNullOrWhiteSpace(r.ErrorSummary) ? "(no parsed error lines)" : r.ErrorSummary;
+                summaries.Add($"[module {rel}] {head}");
+            }
+        }
+
+        swAll.Stop();
+        var summary = string.Join("\n\n", summaries);
+        if (summary.Length > ErrorSummaryMaxChars) summary = summary[..ErrorSummaryMaxChars];
+
+        return new StoryBuildResult(
+            Success: combinedSuccess,
+            ExitCode: combinedSuccess ? 0 : firstNonZeroExit,
+            ErrorCount: totalErrors,
+            WarningCount: totalWarnings,
+            ErrorSummary: summary,
+            Duration: swAll.Elapsed,
+            TimedOut: anyTimedOut,
+            LogPath: logFilePath,
+            LogRelPath: logRelPath,
+            TrxRelPaths: trx.Count > 0 ? trx : null);
+    }
 }
 
 /// <summary>Phase 47e — outcome of a single <see cref="StoryBuildRunner.RunBuildAsync"/> call.</summary>

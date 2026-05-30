@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { CANONICAL_PHASES, isLegacyPhase, LEGACY_PHASE_TOOLTIP } from '@/swarm/storyPhaseBadge';
+import { computeStoryProgressPct } from '@/swarm/storyProgress';
 
 interface Props {
   storyId: string;
@@ -80,7 +81,15 @@ export function StoryCard({ storyId, defaultExpanded = false }: Props) {
 
   const { spawn, workstreams } = detail;
   const phaseIdx = PHASES.indexOf(spawn.phase);
-  const progressPct = Math.round(((phaseIdx + 1) / PHASES.length) * 100);
+  // Progress percentage tracks real workstream completion within the
+  // implement→review band, not the coarse phase index (which made every
+  // implementing story read a flat 60%). The "N/5 phases" label keeps the
+  // phase-index view alongside it.
+  const progressPct = computeStoryProgressPct({
+    phase: spawn.phase,
+    wsCount: workstreams.length,
+    completeCount: workstreams.filter((w) => w.status === 'complete').length,
+  });
 
   // The lifecycle is fully agent-driven (architect → engineer → reviewer →
   // QA). The UI shows status only — never offers manual "merge / approve /

@@ -1,32 +1,8 @@
 {
-  "ws-code-intelligence-clean-code-phase-linked-mode-integration-and-rollout-stage-optional-agent-memory-linked-mode-adapter-e2e": {
-    "total": 657,
-    "last_at": "2026-05-29T07:40:00.5196144+00:00",
-    "status": "review",
-    "product": "code-intelligence"
-  },
-  "ws-code-intelligence-ast-parser-for-addit-phase-go-parser-stage-go-fixture-test": {
-    "total": 4260,
-    "last_at": "2026-05-29T07:40:13.2018394+00:00",
+  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-repo-walker": {
+    "total": 4,
+    "last_at": "2026-05-30T10:56:47.2136449+00:00",
     "status": "active",
-    "product": "code-intelligence"
-  },
-  "ws-code-intelligence-ast-parser-for-addit-phase-c-and-cpp-parsers-stage-cpp-fixture-test": {
-    "total": 365,
-    "last_at": "2026-05-29T06:38:34.199045+00:00",
-    "status": "active",
-    "product": "code-intelligence"
-  },
-  "ws-code-intelligence-ast-parser-for-addit-phase-rust-parser-stage-rust-fixture-test-including-pass-2d-overrides-e2e": {
-    "total": 494,
-    "last_at": "2026-05-29T07:41:12.9484508+00:00",
-    "status": "active",
-    "product": "code-intelligence"
-  },
-  "ws-code-intelligence-ast-parser-for-addit-phase-powershell-parser-stage-powershell-fixture-test-e2e": {
-    "total": 544,
-    "last_at": "2026-05-29T07:41:13.7369287+00:00",
-    "status": "review",
     "product": "code-intelligence"
   }
 }

@@ -922,12 +922,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             StoryBuildResult? build = null;
             try
             {
-                build = await StoryBuildRunner.RunBuildAsync(
-                    workspace, ct, buildTimeout ?? StoryBuildRunner.DefaultTimeout,
-                    buildCommand: buildCommand,
-                    logFilePath: buildLogPath,
-                    logRelPath: buildLogRel,
-                    sessionSetupCommands: sessionSetup);
+                if (GoWorkspaceGate.IsGoCommand(buildCommand)
+                    && GoWorkspaceGate.TryReadWorkspaceModules(workspace) is { Count: > 0 } goBuildModules)
+                {
+                    // go.work multi-module repo: build runs in EVERY module
+                    // (a clean compile is module-independent, so no fail-open
+                    // risk — unlike the test stage, which scopes to impacted
+                    // modules). `go build ./...` from the root would otherwise
+                    // compile only the root module. See GoWorkspaceGate.
+                    build = await StoryBuildRunner.RunGoWorkspaceAsync(
+                        workspace, goBuildModules,
+                        GoWorkspaceGate.ScopeCommandToModule(buildCommand!), ct,
+                        timeout: buildTimeout ?? StoryBuildRunner.DefaultTimeout,
+                        logFilePath: buildLogPath,
+                        logRelPath: buildLogRel,
+                        sessionSetupCommands: sessionSetup);
+                }
+                else
+                {
+                    build = await StoryBuildRunner.RunBuildAsync(
+                        workspace, ct, buildTimeout ?? StoryBuildRunner.DefaultTimeout,
+                        buildCommand: buildCommand,
+                        logFilePath: buildLogPath,
+                        logRelPath: buildLogRel,
+                        sessionSetupCommands: sessionSetup);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1103,7 +1122,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var impactedRewritten = false;
             var allTestProjectCount = 0;
             var impactedMode = "heuristic";
-            if (testImpactedOnly && !string.IsNullOrWhiteSpace(testBaseRef))
+            // A multi-module (go.work) `go test` command is scoped by the
+            // go.work branch at the run site below — skip the .NET-shaped
+            // resolver chain for it (the chain can't narrow a cross-module
+            // `go test ./...` and may report "no impacted projects" → wrongly
+            // skip the whole gate). Single-module Go still flows through the
+            // resolver so its gopls (LSP) narrowing is preserved.
+            var isGoWorkspaceCommand = GoWorkspaceGate.IsGoCommand(testCommand)
+                && GoWorkspaceGate.TryReadWorkspaceModules(workspace) is not null;
+            if (testImpactedOnly && !string.IsNullOrWhiteSpace(testBaseRef)
+                && !isGoWorkspaceCommand)
             {
                 // Time the impacted-test resolution and bracket it with telemetry.
                 // The resolver chain bounds each provider with a wall-clock budget
@@ -1329,6 +1357,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             CollectTestFailures: true,
                             TrxScopeTag: testTrxTag),
                         ct);
+                }
+                else if (GoWorkspaceGate.IsGoCommand(effectiveTestCommand)
+                    && GoWorkspaceGate.TryReadWorkspaceModules(workspace) is { Count: > 0 } goTestModules)
+                {
+                    // go.work multi-module repo: `go test ./...` from the
+                    // worktree root matches ZERO packages (./... doesn't cross
+                    // module boundaries), so run it inside each module the diff
+                    // touched. Scoping to impacted modules avoids fail-opening
+                    // onto a sibling module's pre-existing test breakage. See
+                    // GoWorkspaceGate. This is the in-Forge replacement for the
+                    // tools/forge_gate_proxy shim agents were hand-rolling.
+                    IReadOnlyList<string> goChanged = Array.Empty<string>();
+                    if (!string.IsNullOrWhiteSpace(testBaseRef))
+                    {
+                        try { goChanged = await ImpactedTestResolver.DiscoverChangedFilesAsync(workspace, testBaseRef!, ct); }
+                        catch { goChanged = Array.Empty<string>(); }
+                    }
+                    var goModules = GoWorkspaceGate.SelectImpactedModules(goTestModules, goChanged);
+                    var scopedGoCmd = GoWorkspaceGate.ScopeCommandToModule(effectiveTestCommand!);
+                    effectiveTestCommand = scopedGoCmd;
+                    impactedMode = "go-workspace";
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.resolved", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        impactedMode,
+                        goModules,
+                        changedFileCount = goChanged.Count,
+                        scopedCommand = scopedGoCmd,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    t = await StoryBuildRunner.RunGoWorkspaceAsync(
+                        workspace, goModules, scopedGoCmd, ct,
+                        timeout: testTimeout ?? StoryBuildRunner.DefaultTimeout,
+                        logFilePath: testLogPath,
+                        logRelPath: testLogRel,
+                        sessionSetupCommands: sessionSetup,
+                        collectTestFailures: true,
+                        trxScopeTag: testTrxTag);
                 }
                 else
                 {

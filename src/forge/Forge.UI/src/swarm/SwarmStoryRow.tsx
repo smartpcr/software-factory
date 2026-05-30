@@ -6,6 +6,7 @@ import { useConfirmStore } from '@/state/useConfirmStore';
 import { useToastStore } from '@/state/useToastStore';
 import { StoryDeliveryStrip } from './StoryDeliveryStrip';
 import { CANONICAL_PHASES, phaseBadgeProps } from './storyPhaseBadge';
+import { computeStoryProgressPct } from './storyProgress';
 
 interface Props {
   spawn: StorySpawn;
@@ -52,12 +53,20 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
   }, [spawn.storyId, tick]);
 
   const phaseIdx = PHASES.indexOf(spawn.phase);
-  const pct = Math.round(((phaseIdx + 1) / PHASES.length) * 100);
   const ws = detail?.workstreams ?? [];
   const wsCount = ws.length;
   const blockedCount = ws.filter((w) => w.status === 'blocked').length;
   const mergingCount = ws.filter((w) => w.status === 'merging').length;
   const completeCount = ws.filter((w) => w.status === 'complete').length;
+  // Progress bar/percentage tracks REAL completion (workstreams done within
+  // the implement→review band), not the coarse phase index — a 46/50 story
+  // in `implement` reads ~91%, not a flat 60%. The "N/5 phases" label below
+  // keeps the phase-index view. Until the detail payload (and thus the
+  // workstream counts) loads, fall back to the coarse phase estimate so the
+  // bar doesn't briefly collapse to the execution-band floor.
+  const pct = detail
+    ? computeStoryProgressPct({ phase: spawn.phase, wsCount, completeCount })
+    : Math.round(((phaseIdx + 1) / PHASES.length) * 100);
 
   // Score is not yet wired into the spawn contract; surface a neutral "—".
   // Once `WorkItemRow.score` (Phase 28 EX work) lands, swap in a real value.
