@@ -117,6 +117,74 @@ function Get-UIProcesses {
 }
 
 # ── Stop processes (filtered by -UIOnly / -ServerOnly) ───────────────────
+# Collect the full descendant PID set of a root process by walking
+# Win32_Process.ParentProcessId breadth-first. Used to reap the copilot.exe
+# server tree the in-process Copilot SDK spawns under Forge.Api.
+function Get-DescendantPids {
+    param([int]$RootPid)
+    # Snapshot the whole process table once (ParentProcessId is only on the
+    # CIM/WMI view, not Get-Process).
+    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Select-Object ProcessId, ParentProcessId, Name
+    if (-not $all) { return @() }
+    $byParent = @{}
+    foreach ($p in $all) {
+        if (-not $byParent.ContainsKey([int]$p.ParentProcessId)) {
+            $byParent[[int]$p.ParentProcessId] = New-Object System.Collections.Generic.List[object]
+        }
+        $byParent[[int]$p.ParentProcessId].Add($p)
+    }
+    $result = New-Object System.Collections.Generic.List[int]
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    $queue.Enqueue($RootPid)
+    while ($queue.Count -gt 0) {
+        $cur = $queue.Dequeue()
+        if ($byParent.ContainsKey($cur)) {
+            foreach ($child in $byParent[$cur]) {
+                $cpid = [int]$child.ProcessId
+                if ($cpid -ne 0 -and -not $result.Contains($cpid)) {
+                    $result.Add($cpid)
+                    $queue.Enqueue($cpid)
+                }
+            }
+        }
+    }
+    return $result
+}
+
+# Reap the copilot.exe server tree spawned by the in-process Copilot SDK.
+#
+# WHY: Forge.Api runs ONE shared copilot.exe server (CopilotServerManager) and
+# binds each agent session's ConfigDir to `{worktree}/.forge/memory`, so the
+# server keeps that worktree's `session-store.db` open. Forge's own cleanup of
+# this tree only runs on a GRACEFUL exit (IHostedService.StopAsync / the
+# ProcessExit panic handler) or via a Windows JobObject that silently no-ops
+# when self-assign is denied (Forge.Api launched inside a non-nestable parent
+# job). This launcher hard-kills Forge.Api with Stop-Process, which fires NONE
+# of those — so the copilot.exe tree orphans and pins `session-store.db`,
+# breaking the NEXT run's worktree reset ("could not be removed … locked by
+# another process … session-store.db"). We reap the descendant tree HERE,
+# while Forge.Api is still alive and its ParentProcessId links are intact.
+function Stop-ForgeChildTree {
+    $servers = @(Get-ServerProcesses)
+    if ($servers.Count -eq 0) { return }
+    $descendants = @()
+    foreach ($s in $servers) { $descendants += Get-DescendantPids -RootPid $s.Id }
+    $descendants = $descendants | Sort-Object -Unique
+    # Note: $PID is a read-only automatic variable (this process's id), so the
+    # loop variable must NOT be named $pid.
+    foreach ($childPid in $descendants) {
+        $proc = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
+        # Target the Copilot SDK server tree specifically; other transient
+        # children (git, dotnet) exit on their own once the parent dies.
+        if ($proc.ProcessName -match 'copilot' -or $proc.ProcessName -eq 'node') {
+            Write-Host "  Reaping Copilot child (PID $childPid — $($proc.ProcessName))..." -ForegroundColor Gray
+            Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Stop-TargetProcesses {
     param([switch]$IncludeServer, [switch]$IncludeUI)
 
@@ -157,6 +225,11 @@ function Stop-TargetProcesses {
                 }
             }
         }
+        # Reap the copilot.exe server tree BEFORE hard-killing Forge.Api —
+        # while its ParentProcessId links are still intact. After the parent
+        # is gone the descendants are orphaned and can no longer be traced to
+        # us, leaving them to pin `session-store.db` in the worktrees.
+        Stop-ForgeChildTree
         Get-ServerProcesses | ForEach-Object {
             Write-Host "  Stopping server (PID $($_.Id))..." -ForegroundColor Gray
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue

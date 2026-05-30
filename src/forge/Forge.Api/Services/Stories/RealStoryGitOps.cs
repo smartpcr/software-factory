@@ -2823,14 +2823,33 @@ public sealed class RealStoryGitOps : IStoryGitOps
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                // After the first transient retry didn't clear it, the lock is
+                // not transient — a process holds a handle inside the worktree
+                // (almost always the shared copilot.exe server pinning
+                // `.forge/memory/session-store.db`, which has the SAME lifespan
+                // as this workstream and MUST go when the worktree is cleared;
+                // or an orphaned testhost/dotnet from a timed-out test gate).
+                // Restart Manager names the exact holders; kill the agent-infra
+                // ones, then keep retrying. (2026-05-30 directive.)
+                if (attempt >= 2)
+                {
+                    var killed = WorktreeLockBreaker.BreakLocks(wtPath, this.logger);
+                    if (killed > 0)
+                    {
+                        this.logger?.LogWarning(
+                            "Broke {Killed} lock-holder(s) on worktree {Path} (attempt {Attempt}/6) so it can be cleared.",
+                            killed, wtPath, attempt);
+                    }
+                }
+
                 if (attempt == 6)
                 {
                     throw new InvalidOperationException(
                         $"Worktree directory '{wtPath}' could not be removed after {attempt} attempts — it is locked by "
-                        + "another process. The usual cause is an orphaned `testhost`/`dotnet` process from a timed-out "
-                        + "test gate that kept this directory as its working directory, or an editor (e.g. Visual Studio) "
-                        + "holding it open. Kill stray testhost/dotnet processes whose CWD is this path (and close any "
-                        + $"editor pointed at it), then Restart the workstream. Underlying error: {ex.Message}", ex);
+                        + "another process that the Restart Manager lock-breaker could not release (e.g. an editor such as "
+                        + "Visual Studio holding it open, or an elevated process a non-elevated Forge.Api cannot kill). "
+                        + "Close any editor pointed at this path, then Restart the workstream. "
+                        + $"Underlying error: {ex.Message}", ex);
                 }
                 this.logger?.LogWarning(
                     "Worktree dir {Path} still locked (attempt {Attempt}/6): {Err} — retrying.", wtPath, attempt, ex.Message);

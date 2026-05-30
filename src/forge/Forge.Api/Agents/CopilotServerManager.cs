@@ -43,6 +43,17 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     private readonly SemaphoreSlim startLock = new(1, 1);
 
     /// <summary>
+    /// File under the Forge state folder recording the PID of the shared
+    /// copilot.exe server this process spawned. Read once at startup to reap
+    /// a server orphaned by a PRIOR Forge.Api that died without running its
+    /// graceful teardown (hard <c>taskkill</c> from the launcher, a crash, an
+    /// IDE stop where the JobObject self-assign was denied). An orphaned
+    /// server keeps each worktree's <c>.forge/memory/session-store.db</c> open,
+    /// which then breaks the next run's worktree reset. See <see cref="ReapStaleServerFromPriorRun"/>.
+    /// </summary>
+    private readonly string pidFilePath;
+
+    /// <summary>
     /// 2026-05-20 — disposal-cascade hysteresis. After a fast-path ping
     /// fails on the shared <see cref="serverClient"/>, the lock-acquired
     /// re-ping waits this long before its single retry. Anything below
@@ -73,10 +84,14 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     public CopilotServerManager(
         IOptions<AgentRunnerOptions> options,
         ILogger<CopilotServerManager> log,
-        IEnumerable<IAuthService> authServices)
+        IEnumerable<IAuthService> authServices,
+        // Optional so the existing unit-test constructions keep working; in
+        // the DI container it is always resolved to the real singleton.
+        Forge.Api.Persistence.IForgeDbPaths? dbPaths = null)
     {
         this.options = options;
         this.log = log;
+        this.pidFilePath = Path.Combine(dbPaths?.Folder ?? Path.GetTempPath(), "forge-copilot-server.pid");
         // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires CLI-level
         // authentication via env var (COPILOT_GITHUB_TOKEN). The 0.3.0
         // SDK accepted SessionConfig.GitHubToken at per-session
@@ -170,7 +185,82 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     /// No-op — startup is lazy so Forge.Api boots even if copilot.exe is
     /// unavailable. The server starts on first <see cref="GetClientOptionsAsync"/>.
     /// </summary>
-    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        // Reap a shared copilot.exe server orphaned by a PRIOR Forge.Api that
+        // didn't run its graceful teardown. Never throws — boot must proceed
+        // even if reaping fails.
+        this.ReapStaleServerFromPriorRun();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Reads <see cref="pidFilePath"/> and, if it names a still-running
+    /// <c>copilot</c>-process from a prior Forge.Api run, kills its entire
+    /// tree, then deletes the file. PID-reuse safe: the recorded PID is only
+    /// killed when the live process's name still matches a Copilot binary, so
+    /// a recycled PID now owned by an unrelated process is left alone.
+    /// </summary>
+    private void ReapStaleServerFromPriorRun()
+    {
+        try
+        {
+            if (!File.Exists(this.pidFilePath)) return;
+            var raw = File.ReadAllText(this.pidFilePath).Trim();
+            File.Delete(this.pidFilePath);
+            if (!int.TryParse(raw, out var pid) || pid <= 0) return;
+            if (pid == Environment.ProcessId) return;
+
+            Process proc;
+            try { proc = Process.GetProcessById(pid); }
+            catch (ArgumentException) { return; } // already gone
+
+            using (proc)
+            {
+                // PID-reuse guard: only reap if this is actually a Copilot
+                // process (the recorded PID could have been recycled).
+                string name;
+                try { name = proc.ProcessName; }
+                catch { return; }
+                if (name.IndexOf("copilot", StringComparison.OrdinalIgnoreCase) < 0) return;
+                if (proc.HasExited) return;
+
+                proc.Kill(entireProcessTree: true);
+                this.log.LogWarning(
+                    "Reaped orphaned shared Copilot server PID {Pid} ('{Name}') left by a prior Forge.Api run "
+                    + "(it would have pinned worktree session-store.db files).",
+                    pid, name);
+            }
+        }
+        catch (Exception ex)
+        {
+            this.log.LogDebug(ex, "ReapStaleServerFromPriorRun failed (non-fatal).");
+        }
+    }
+
+    /// <summary>Persists the spawned shared-server PID so a future run can
+    /// reap it if this process dies without graceful teardown.</summary>
+    private void RecordServerPid(int pid)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(this.pidFilePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(this.pidFilePath, pid.ToString());
+        }
+        catch (Exception ex)
+        {
+            this.log.LogDebug(ex, "Failed to record Copilot server PID to {Path}", this.pidFilePath);
+        }
+    }
+
+    /// <summary>Clears the recorded PID after we've torn the server down
+    /// ourselves, so the next run's reaper has nothing stale to act on.</summary>
+    private void ClearRecordedPid()
+    {
+        try { if (File.Exists(this.pidFilePath)) File.Delete(this.pidFilePath); }
+        catch (Exception ex) { this.log.LogDebug(ex, "Failed to clear Copilot server PID file {Path}", this.pidFilePath); }
+    }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
@@ -440,6 +530,7 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
             {
                 Interlocked.Exchange(ref LastSpawnedPid, this.serverProcess.Id);
                 ChildProcessTracker.AddProcess(this.serverProcess);
+                this.RecordServerPid(this.serverProcess.Id);
                 this.log.LogInformation(
                     "Shared Copilot server started on port {Port} as PID {Pid} (job-tracked={JobActive}).",
                     this.resolvedPort, this.serverProcess.Id, ChildProcessTracker.IsActive);
@@ -560,6 +651,9 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         this.serverProcess = null;
         this.resolvedPort = 0;
         Interlocked.Exchange(ref LastSpawnedPid, 0);
+        // We're tearing the server down ourselves — drop the recorded PID so
+        // the next run's startup reaper has nothing stale to act on.
+        this.ClearRecordedPid();
 
         if (client is not null)
         {
