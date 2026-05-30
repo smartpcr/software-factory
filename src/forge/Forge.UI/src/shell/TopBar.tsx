@@ -6,6 +6,7 @@ import { useCurrentUser, useCurrentUserStore, useHasRole } from '@/state/useCurr
 import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
+import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
 import { forgeApi } from '@/api/forgeApi';
 import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
 import { useOperatorAvatarUrl } from '@/state/useOperatorAvatarStore';
@@ -174,15 +175,12 @@ export function TopBar({ section, current }: TopBarProps) {
           </span>
         )}
         <div className="topbar-spacer" />
-        <button
-          type="button"
-          className="chrome-collapse-btn chrome-collapse-btn--icon"
+        <ChromeCollapseButton
+          collapsed
           title="Expand topbar"
-          aria-label="Expand topbar"
+          ariaLabel="Expand topbar"
           onClick={() => toggleCollapsed('topbar')}
-        >
-          <span className="chrome-collapse-glyph">▾</span>
-        </button>
+        />
       </header>
     );
   }
@@ -368,15 +366,12 @@ export function TopBar({ section, current }: TopBarProps) {
         <span className="badge-dot"></span>
       </button>
 
-      <button
-        type="button"
-        className="chrome-collapse-btn chrome-collapse-btn--icon"
+      <ChromeCollapseButton
+        collapsed={false}
         title="Collapse topbar to save vertical space"
-        aria-label="Collapse topbar"
+        ariaLabel="Collapse topbar"
         onClick={() => toggleCollapsed('topbar')}
-      >
-        <span className="chrome-collapse-glyph">▴</span>
-      </button>
+      />
 
       <div
         ref={avatarRef}

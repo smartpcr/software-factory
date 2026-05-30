@@ -378,6 +378,21 @@ public static class ConversationInsightQueries
             .Where(m => m.WorkItemId == workItemId)
             .ToListAsync(ct);
 
+        // 2026-05-30 — live per-role context size: the latest
+        // agent_usage.ConversationTokens for each cost-category (generator /
+        // evaluator). The compactor's ApproxInputTokens estimate stays 0 for
+        // Copilot SDK sessions (the SDK owns the context window), so the
+        // context-usage bar prefers this real figure. Materialize then sort
+        // in-memory (EF SQLite can't ORDER BY the DateTimeOffset column).
+        var liveContextByRole = (await control.AgentUsage.AsNoTracking()
+                .Where(u => u.TaskId == workItemId && u.ConversationTokens != null && u.ConversationTokens > 0)
+                .ToListAsync(ct))
+            .GroupBy(u => u.CostCategory, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(u => u.Id).First().ConversationTokens,
+                StringComparer.OrdinalIgnoreCase);
+
         // Resolve the crew for THIS work item by walking the most recent
         // deliverable row (same shape works for engineer workstreams + plan-doc
         // synthetic work items). The generator crew is on the row directly;
@@ -453,6 +468,7 @@ public static class ConversationInsightQueries
                 hasMessagesHistory = !string.IsNullOrEmpty(row.MessagesJson),
                 turnCount,
                 approxInputTokens = row.ApproxInputTokens,
+                liveContextTokens = liveContextByRole.TryGetValue(row.Role, out var lct) ? lct : null,
                 effectiveThreshold = detail.EffectiveThreshold,
                 contextWindowTokens = detail.ContextWindowTokens,
                 contextWindowRatio = detail.ContextWindowRatio,

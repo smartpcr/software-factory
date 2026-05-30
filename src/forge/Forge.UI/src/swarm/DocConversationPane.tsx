@@ -64,9 +64,9 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const key = useMemo(() => (docId.startsWith('doc:') ? docId.slice(4) : docId), [docId]);
   // Persisted collapse toggle for the conversation KPI band (iter strip
   // + memory roles). Shared key with WorkstreamConversationPane so the
-  // operator's preference applies regardless of pane variant.
+  // operator's preference applies regardless of pane variant. Toggle
+  // button lives in SwarmDetailPanel's tab-header row (Phase 25).
   const kpiCollapsed = useChromeCollapseStore((s) => s.conversationKpi);
-  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
 
   // Iterations + workItemId from the per-doc deliverables endpoint. Used as
   // the source for Summary mode AND to discover the workItemId so we can
@@ -463,15 +463,6 @@ export function DocConversationPane({ storyId, docId }: Props) {
             ) : null;
           })()}
           <div className="conv-kpi-collapsed-spacer" />
-          <button
-            type="button"
-            className="chrome-collapse-btn"
-            title="Expand conversation KPI strip"
-            aria-label="Expand conversation KPI strip"
-            onClick={() => toggleChrome('conversationKpi')}
-          >
-            ▾
-          </button>
         </div>
       ) : (
         <div className="conv-kpi-band">
@@ -481,15 +472,6 @@ export function DocConversationPane({ storyId, docId }: Props) {
             onSelectIter={handleSelectKpiIter}
           />
           <ContextUsageBar roles={memoryRoles} />
-          <button
-            type="button"
-            className="chrome-collapse-btn chrome-collapse-btn--abs"
-            title="Collapse conversation KPI strip"
-            aria-label="Collapse conversation KPI strip"
-            onClick={() => toggleChrome('conversationKpi')}
-          >
-            ▴
-          </button>
         </div>
       )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>

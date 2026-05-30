@@ -23,6 +23,8 @@ import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveSto
 import { useToastStore } from '@/state/useToastStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
+import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
+import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
 import { PairSide } from '@/views/conversation';
 
 export type DetailTab =
@@ -50,6 +52,12 @@ const TAB_LABELS: { key: DetailTab; label: string }[] = [
 ];
 
 export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTab }: Props) {
+  // Conversation KPI strip is collapsible (Phase 25). The toggle lives in
+  // this component's tab-header row when the Conversation tab is active so
+  // it sits at the same level as Overview / PR / Worktree / etc. — the
+  // affordance the operator scans first.
+  const kpiCollapsed = useChromeCollapseStore((s) => s.conversationKpi);
+  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
   // Resolve workItemId for question polling + Overview data.
   // For workstream selections: workItemId = selection.id.
   // For doc selections: fetched from the artifact iterations endpoint.
@@ -146,6 +154,17 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
             )}
           </button>
         ))}
+        {/* KPI-strip toggle sits at the right end of the tab-header row
+            when the Conversation tab is active. Chevron rotates to
+            indicate whether the strip is collapsed (▾) or expanded (▴). */}
+        {tab === 'conv' && (
+          <ChromeCollapseButton
+            collapsed={kpiCollapsed}
+            title={kpiCollapsed ? 'Expand conversation KPI strip' : 'Collapse conversation KPI strip'}
+            onClick={() => toggleChrome('conversationKpi')}
+            style={{ marginLeft: 'auto' }}
+          />
+        )}
       </div>
       <div className="tab-body">
         <div className={`tab-pane${tab === 'overview' ? ' active' : ''}`}>

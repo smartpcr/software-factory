@@ -52,6 +52,7 @@ export function SummaryView(props: {
   const d = deliverable;
   const hasGen  = !!(d.generatorSummary && d.generatorSummary.trim());
   const hasEval = !!(d.notes && d.notes.trim());
+  const hasReasoning = !!(d.reasoningText && d.reasoningText.trim());
   const iterNote = notesByIter?.[d.iter];
   const hasIterNote = !!(iterNote && iterNote.content && iterNote.content.trim());
 
@@ -78,6 +79,16 @@ export function SummaryView(props: {
             : <em>(not provided this iteration)</em>}
         </div>
       </section>
+      {hasReasoning && (
+        <section className="live-exec__summary-section" data-role="reasoning">
+          <div className="live-exec__summary-section__label" style={{ color: 'var(--sc-purple, #c4b5fd)' }}>
+            Reasoning (thinking)
+          </div>
+          <div className="live-exec__summary-section__body markdown-body">
+            <ReactMarkdown>{d.reasoningText ?? ''}</ReactMarkdown>
+          </div>
+        </section>
+      )}
       {hasIterNote && (
         <section className="live-exec__summary-section" data-role="working-notes">
           <div className="live-exec__summary-section__label">

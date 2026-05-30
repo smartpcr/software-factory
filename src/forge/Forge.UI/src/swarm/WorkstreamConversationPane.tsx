@@ -54,8 +54,8 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   // Vertical-space saver: lets the operator collapse the KPI strip +
   // context-usage bar (the tallest band in the conversation pane) so
   // more transcript fits in the viewport. Persisted in localStorage.
+  // Toggle button lives in SwarmDetailPanel's tab-header row (Phase 25).
   const kpiCollapsed = useChromeCollapseStore((s) => s.conversationKpi);
-  const toggleChrome = useChromeCollapseStore((s) => s.toggle);
 
   const [filter, setFilter] = useState<FilterKey>('summary');
   // Phase 59 Stage B — "Has logs" overlay toggle. Applies on top of
@@ -424,7 +424,8 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
       )}
       {/* Always render KPI strip — shows placeholder row when no
        * iterations exist yet, so the visual structure matches the
-       * active-workstream layout from day one. */}
+       * active-workstream layout from day one. Toggle lives in
+       * SwarmDetailPanel's tab-header row (Phase 25). */}
       {kpiCollapsed ? (
         <div className="conv-kpi-collapsed">
           <span className="conv-kpi-collapsed-label">CONVERSATION KPI</span>
@@ -438,15 +439,6 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
             ) : null;
           })()}
           <div className="conv-kpi-collapsed-spacer" />
-          <button
-            type="button"
-            className="chrome-collapse-btn"
-            title="Expand conversation KPI strip"
-            aria-label="Expand conversation KPI strip"
-            onClick={() => toggleChrome('conversationKpi')}
-          >
-            ▾
-          </button>
         </div>
       ) : (
         <div className="conv-kpi-band">
@@ -456,15 +448,6 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
             onSelectIter={handleSelectKpiIter}
           />
           <ContextUsageBar roles={memoryRoles} />
-          <button
-            type="button"
-            className="chrome-collapse-btn chrome-collapse-btn--abs"
-            title="Collapse conversation KPI strip"
-            aria-label="Collapse conversation KPI strip"
-            onClick={() => toggleChrome('conversationKpi')}
-          >
-            ▴
-          </button>
         </div>
       )}
       <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>

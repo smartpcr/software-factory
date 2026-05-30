@@ -65,52 +65,37 @@
 }
 .topbar-spacer { flex: 1 1 auto; }
 
-/* Shared collapse-chevron button — used by topbar, spawn header, and
- * conversation KPI strip. Borderless, slightly bigger; reads as a
- * pill-shaped affordance via subtle background tint + accent color. */
+/* Shared collapse-chevron button — used by topbar, spawn header,
+ * conversation KPI strip, and other chrome regions. Matches the
+ * sidebar-collapse-btn style for a single consistent affordance across
+ * the app: 28×28px square, transparent until hover, single SVG chevron
+ * that rotates 180° via the `--rotated` modifier when its target is
+ * collapsed (so collapsed state visually mirrors expanded state). */
 .chrome-collapse-btn {
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 6px;
+  justify-content: center;
+  padding: 0;
   border: none;
-  background: rgba(86, 156, 214, 0.10);
-  color: var(--accent, #569cd6);
-  font-family: var(--font-display, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  line-height: 1;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
   cursor: pointer;
-  white-space: nowrap;
-  transition: color 120ms, background 120ms, box-shadow 120ms;
+  transition: color 120ms, background 120ms, transform 240ms;
+  flex-shrink: 0;
 }
 .chrome-collapse-btn:hover {
-  color: var(--text, #e6edf6);
-  background: rgba(86, 156, 214, 0.22);
-  box-shadow: 0 0 8px rgba(86, 156, 214, 0.30);
+  color: var(--text-primary);
+  background: var(--bg-surface);
 }
-.chrome-collapse-btn .chrome-collapse-glyph {
-  font-size: 13px;
-  line-height: 1;
+.chrome-collapse-btn svg {
+  display: block;
+  transition: transform 240ms ease;
 }
-/* Icon-only compact variant for tight UIs (e.g. inside the topbar
- * where horizontal space matters). */
-.chrome-collapse-btn--icon {
-  width: 26px;
-  padding: 0;
-  justify-content: center;
-}
-/* Absolutely-positioned variant — anchors the chevron to the top-right
- * corner of a relatively-positioned chrome region (spawn header /
- * conversation KPI band). Sits above neighboring content via z-index. */
-.chrome-collapse-btn--abs {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  z-index: 5;
+.chrome-collapse-btn--rotated svg {
+  transform: rotate(180deg);
 }
 
 .brand {

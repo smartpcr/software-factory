@@ -10,6 +10,7 @@ import { SwarmNavBar } from './SwarmNavBar';
 import { type SwarmMode } from './SwarmPipelineStrip';
 import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
 import { SwarmDetailPanel, type DetailTab } from './SwarmDetailPanel';
+import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
 import { Toaster } from '@/board/Toaster';
 
 /** Map the StorySpawn lifecycle phase to one of the three swarm-control modes. */
@@ -240,15 +241,12 @@ export function SwarmStoryView() {
               {detail.spawn.phase.toUpperCase()} · {detail.workstreams.length} ws
             </div>
             <div className="swarm-header-collapsed-spacer" />
-            <button
-              type="button"
-              className="chrome-collapse-btn"
+            <ChromeCollapseButton
+              collapsed
               title="Expand spawn header"
-              aria-label="Expand spawn header"
+              ariaLabel="Expand spawn header"
               onClick={() => toggleChrome('spawnHeader')}
-            >
-              ▾
-            </button>
+            />
           </div>
         ) : (
         <div className="swarm-header-expanded">
@@ -347,15 +345,13 @@ export function SwarmStoryView() {
               </div>
             );
           })()}
-          <button
-            type="button"
-            className="chrome-collapse-btn chrome-collapse-btn--abs"
+          <ChromeCollapseButton
+            collapsed={false}
             title="Collapse spawn header"
-            aria-label="Collapse spawn header"
+            ariaLabel="Collapse spawn header"
             onClick={() => toggleChrome('spawnHeader')}
-          >
-            ▴
-          </button>
+            style={{ marginLeft: 12, alignSelf: 'flex-start' }}
+          />
         </div>
         <SwarmNavBar
           crumbs={[

@@ -92,6 +92,10 @@ public sealed class PhaseMigrationRunner
         // actions (promote / demote / hold). Control-only, additive nullable
         // column; no ordering dependency.
         89,
+        // Phase 90 — deliverables.ReasoningText (generator reasoning/thinking
+        // text per iteration). Product-only, fans out per {slug}.db. Additive
+        // nullable column; no ordering dependency.
+        90,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

@@ -4087,6 +4087,7 @@ public static class StoriesEndpoints
             generatorAgentId = d.GeneratorAgentId,
             evaluatorAgentId = d.EvaluatorAgentId,
             generatorSummary = d.GeneratorSummary,
+            reasoningText = d.ReasoningText,
             notes = d.Notes,
             genCostUsd = d.GenCostUsd,
             evalCostUsd = d.EvalCostUsd,

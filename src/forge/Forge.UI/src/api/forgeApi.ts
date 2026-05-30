@@ -1648,6 +1648,7 @@ export const forgeApi = {
       generatorAgentId: string;
       evaluatorAgentId: string;
       generatorSummary: string;
+      reasoningText?: string | null;
       notes: string;
       genCostUsd: number;
       evalCostUsd: number;

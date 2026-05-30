@@ -147,6 +147,10 @@ export interface DeliverableShape {
   verdict: string;
   notes?: string;
   generatorSummary?: string;
+  /** 2026-05-30 — the generator model's reasoning ("thinking") text for this
+   *  iteration (Copilot AssistantReasoningDeltaEvent). Null/absent when the
+   *  model emitted no reasoning. Rendered in the Conversation Summary tab. */
+  reasoningText?: string | null;
   dims: Record<string, number>;
   genCostUsd: number;
   evalCostUsd: number;
