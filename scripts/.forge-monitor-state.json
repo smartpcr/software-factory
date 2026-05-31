@@ -1,14 +1,20 @@
 {
-  "ws-code-intelligence-refactor-guide-phase-p0-reports-and-delivery-stage-markdown-report-renderer-e2e": {
-    "total": 68,
-    "last_at": "2026-05-31T03:10:43.2754398+00:00",
+  "ws-code-intelligence-refactor-guide-phase-p0-reports-and-delivery-stage-analyze-end-to-end-wiring-e2e": {
+    "total": 1441,
+    "last_at": "2026-05-31T05:42:32.1007479+00:00",
     "status": "active",
     "product": "code-intelligence"
   },
-  "ws-code-intelligence-repo-scanner-phase-identity-and-ancestry-refactor-stage-worker-adopts-ancestrywriter-e2e": {
-    "total": -1,
-    "last_at": null,
-    "status": "stalled",
+  "ws-code-intelligence-repo-scanner-phase-graphsink-storage-abstraction-stage-postgres-sink-adapter": {
+    "total": 2160,
+    "last_at": "2026-05-31T05:43:02.7573091+00:00",
+    "status": "active",
+    "product": "code-intelligence"
+  },
+  "ws-code-intelligence-repo-scanner-phase-graphsink-storage-abstraction-stage-sqlite-sink-backend": {
+    "total": 5322,
+    "last_at": "2026-05-31T05:43:17.8300546+00:00",
+    "status": "review",
     "product": "code-intelligence"
   }
 }

@@ -55,17 +55,33 @@ export function qaE2eByImplId(
 
   for (const w of workstreams) {
     if (isQaE2e(w)) continue;
-    if (w.planAnchor) implByAnchor.set(w.planAnchor, w);
+    if (w.planAnchor) implByAnchor.set(baseAnchor(w.planAnchor), w);
   }
 
   for (const w of workstreams) {
     if (!isQaE2e(w)) continue;
     if (!w.planAnchor || !w.planAnchor.endsWith(QA_E2E_ANCHOR_SUFFIX)) continue;
-    const implAnchor = w.planAnchor.slice(0, -QA_E2E_ANCHOR_SUFFIX.length);
+    const implAnchor = baseAnchor(w.planAnchor.slice(0, -QA_E2E_ANCHOR_SUFFIX.length));
     const impl = implByAnchor.get(implAnchor);
     if (impl) result.set(impl.id, w);
   }
   return result;
+}
+
+/**
+ * Strip a trailing reconciler delta-suffix (`@{contentHash}`) from an
+ * impl anchor before pairing. When a SHIPPED stage's plan content changes,
+ * `PlanReconciler` "splits for delta": it re-anchors the merged impl row to
+ * `{stage.Anchor}@{hash}` (see `PlanReconciler.cs` split-for-delta). Its
+ * qa-e2e companion keeps the bare `{stage.Anchor}/e2e`, so an exact-equality
+ * match would orphan the e2e (it then renders neither standalone nor stacked
+ * → invisible in the phase board). Matching on the base anchor keeps the pair
+ * intact across a delta-split. Anchors carry no literal `@` otherwise, so the
+ * last-`@` split is safe.
+ */
+function baseAnchor(anchor: string): string {
+  const at = anchor.lastIndexOf('@');
+  return at > 0 ? anchor.slice(0, at) : anchor;
 }
 
 /** docs/forge/e2e.md Stage 8.1 — predicate. Treats `null` /

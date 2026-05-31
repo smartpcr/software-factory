@@ -609,7 +609,7 @@ public sealed class StorySpawnOrchestrator
                 var reviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
                 try
                 {
-                    await this.ApproveAndMergeAsync(db, entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
+                    await this.ApproveAndMergeAsync(control, db, entry.PrId!, entry.Branch!, reviewer, repo, baseBranch, ct);
                     var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                     await ClearLastErrorAsync(control, db, sRow, ct);
                     await db.SaveChangesAsync(ct);
@@ -1097,7 +1097,7 @@ public sealed class StorySpawnOrchestrator
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
-                await this.ApproveAndMergeAsync(db, spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(control, db, spawn.PlanPrId, planBranch, reviewer, repo, baseBranch, ct);
                 var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
                 await ClearLastErrorAsync(control, db, spawnRow, ct);
                 await db.SaveChangesAsync(ct);
@@ -4436,7 +4436,7 @@ public sealed class StorySpawnOrchestrator
                     // down all 21 workstreams).
                     try
                     {
-                        await this.ApproveAndMergeAsync(db, prId, w.Branch, reviewer, repo, baseBranch, ct);
+                        await this.ApproveAndMergeAsync(control, db, prId, w.Branch, reviewer, repo, baseBranch, ct);
                         w.Status = "merging";
                         await db.SaveChangesAsync(ct);
                         changed = true;
@@ -4484,7 +4484,7 @@ public sealed class StorySpawnOrchestrator
             var approveReviewer = this.allocation.ForTeam("Review").FirstOrDefault()?.Id ?? "rev-default";
             try
             {
-                await this.ApproveAndMergeAsync(db, prId, w.Branch, approveReviewer, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(control, db, prId, w.Branch, approveReviewer, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
                 changed = true;
@@ -5124,7 +5124,7 @@ public sealed class StorySpawnOrchestrator
             // 4. Push succeeded → retry the upstream PR merge.
             try
             {
-                await this.ApproveAndMergeAsync(db, prId, w.Branch, reviewerAgentId, repo, baseBranch, ct);
+                await this.ApproveAndMergeAsync(control, db, prId, w.Branch, reviewerAgentId, repo, baseBranch, ct);
                 w.Status = "merging";
                 await db.SaveChangesAsync(ct);
                 await this.EmitSpawnEventAsync(w.Id, "task.merge-conflict-resolved", new
@@ -5271,7 +5271,7 @@ public sealed class StorySpawnOrchestrator
 
             // Auto-merge the QA PR (review of QA artifacts is implicit in the deterministic flow).
             var qaReviewer = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(db, prId, qaBranch, qaReviewer, repo, baseBranch, ct);
+            await this.ApproveAndMergeAsync(control, db, prId, qaBranch, qaReviewer, repo, baseBranch, ct);
             await EmitChange(hub, "qa-pr-merged", spawnRow, ct);
             return true;
         }
@@ -5319,7 +5319,7 @@ public sealed class StorySpawnOrchestrator
 
             // Approve + merge.
             var qaId = this.allocation.ForTeam("QA").FirstOrDefault()?.Id ?? "qa-default";
-            await this.ApproveAndMergeAsync(db, prId, stepBranch, qaId, repo, baseBranch, ct);
+            await this.ApproveAndMergeAsync(control, db, prId, stepBranch, qaId, repo, baseBranch, ct);
 
             // Stash on workstream PrsJson so artifacts endpoint surfaces it.
             var prsList = ParseStringList(w.PrsJson);
@@ -5452,6 +5452,7 @@ public sealed class StorySpawnOrchestrator
     }
 
     private async Task ApproveAndMergeAsync(
+        ControlDbContext control,
         ProductDbContext db,
         string prId, string branch, string reviewerAgentId,
         RepoRow? repo, string baseBranch, CancellationToken ct)
@@ -5484,6 +5485,7 @@ public sealed class StorySpawnOrchestrator
                     localPr.Col = "merged";
                     localPr.IsActive = false;
                     localPr.LastSyncAt = DateTimeOffset.UtcNow.ToString("O");
+                    await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId, ct);
                     await db.SaveChangesAsync(ct);
                 }
                 this.logger?.LogInformation(

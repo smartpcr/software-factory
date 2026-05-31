@@ -787,12 +787,27 @@ using (var scope = app.Services.CreateScope())
     // Repair pass: any workstream stuck on review/merging whose PR is
     // already merged gets snapped to "complete". Backfills rows merged
     // before WorkstreamMergeAdvancer was wired into the merge paths.
+    // Phase 80 split-db follow-up: run this over EVERY product DB, not just
+    // the current/default ProductDbContext. Otherwise a code-intelligence row
+    // can have PrRow.Col="merged" while WorkstreamRow.Status stays "review"
+    // forever because terminal PRs have IsActive=false and PrSyncJob will not
+    // revisit them.
     {
-        var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(control, db);
-        if (advanced > 0)
+        var fanout = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ProductFanout>();
+        var log = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("WorkstreamMergeAdvancer");
+        var advancedTotal = 0;
+        await fanout.ForEachProductAsync(async (fanoutControl, productDb, slug, ct) =>
         {
-            scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("WorkstreamMergeAdvancer")
-                .LogInformation("Boot backfill advanced {Count} workstream(s) to complete on already-merged PRs.", advanced);
+            var advanced = await Forge.Api.Services.Stories.WorkstreamMergeAdvancer.BackfillAsync(fanoutControl, productDb, ct);
+            if (advanced > 0)
+            {
+                System.Threading.Interlocked.Add(ref advancedTotal, advanced);
+                log?.LogInformation("Boot backfill advanced {Count} workstream(s) to complete on already-merged PRs in product {ProductSlug}.", advanced, slug);
+            }
+        });
+        if (advancedTotal > 0)
+        {
+            log?.LogInformation("Boot backfill advanced {Count} workstream(s) to complete on already-merged PRs across product DBs.", advancedTotal);
         }
     }
     // Repair pass: any active PR whose parent story spawn has AutoMerge=true

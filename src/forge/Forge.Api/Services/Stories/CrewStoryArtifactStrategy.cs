@@ -5231,7 +5231,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine(inputs.StoryTitle)
             .AppendLine()
             .AppendLine("## Story description")
-            .AppendLine(NonEmpty(inputs.StoryDescription, "_(no story description)_"))
+            // Cap the operator's story doc the way ImplDiff is capped: a per-stage
+            // qa-e2e task is driven by its acceptance scenarios + setup + impl diff,
+            // not the whole multi-phase plan. The full doc (often 15-20 KB) is
+            // re-sent on every agentic turn and dilutes signal; the stage scenarios
+            // below carry the precise contract. ~4 KB keeps the goals/intro context.
+            .AppendLine(Trim(NonEmpty(inputs.StoryDescription, "_(no story description)_"), 4_000))
             .AppendLine()
             .AppendLine("## Workstream")
             .AppendLine($"**{inputs.WorkstreamName}** — Stage `{inputs.StageSlug}` of Phase `{inputs.PhaseSlug}`.")

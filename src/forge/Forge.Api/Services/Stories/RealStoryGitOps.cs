@@ -2767,41 +2767,69 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
 
         // Step 4: now add the worktree fresh.
+        //
+        // 4a — branch reportedly on origin → fetch it into the LOCAL tracking
+        // ref and check it out. A bare `fetch origin {branch}` only advances
+        // FETCH_HEAD, leaving `origin/{branch}` unresolvable for `worktree add`,
+        // so fetch with an explicit refspec. If the add STILL fails — `ls-remote`
+        // saw the branch but it vanished before the add (a Restart's
+        // `push origin --delete` racing the re-drive), or the tracking ref can't
+        // be materialised — DO NOT hard-fail the producer: clean any partial
+        // worktree and fall through to creating the branch from base (4b). This
+        // is the robustness fix for the "fatal: invalid reference: origin/{branch}"
+        // stall observed on code-intelligence:REPO-SCANNER 2.4-e2e (2026-05-31).
+        var addedFromOrigin = false;
         var (existsCode, existsOut, _) = await this.RunGitCaptureAsync(cloneRoot, ct, "ls-remote", "--heads", "origin", branch);
         if (existsCode == 0 && !string.IsNullOrWhiteSpace(existsOut))
         {
-            // Branch already on origin → check it out into the worktree.
-            await this.GitAsync(cloneRoot, ct, "fetch", "origin", branch);
-            await this.GitAsync(cloneRoot, ct, "worktree", "add", wtPath, $"origin/{branch}");
-            await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
-            // The branch on origin may have been cut BEFORE an upstream/dependent
-            // workstream merged into the base. Bring it up to the current base so
-            // the picked-up worktree is a fresh view of all merged dependencies
-            // (see MergeBaseIntoFreshWorktreeAsync).
-            await this.MergeBaseIntoFreshWorktreeAsync(wtPath, branch, baseBranch, ct);
+            await this.RunGitCaptureAsync(cloneRoot, ct, "fetch", "origin", $"{branch}:refs/remotes/origin/{branch}");
+            var (addCode, _, addErr) = await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "add", wtPath, $"origin/{branch}");
+            if (addCode == 0)
+            {
+                await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
+                // The branch on origin may have been cut BEFORE an upstream/dependent
+                // workstream merged into the base. Bring it up to the current base so
+                // the picked-up worktree is a fresh view of all merged dependencies
+                // (see MergeBaseIntoFreshWorktreeAsync).
+                await this.MergeBaseIntoFreshWorktreeAsync(wtPath, branch, baseBranch, ct);
+                addedFromOrigin = true;
+            }
+            else
+            {
+                this.logger?.LogWarning(
+                    "EnsureWorktree: ls-remote reported origin/{Branch} but `worktree add origin/{Branch}` failed "
+                    + "({Err}); falling back to creating {Branch} from base {Base}.",
+                    branch, branch, Trim(addErr, 200), baseBranch);
+                // Clean any partial worktree dir/registration the failed add left
+                // so the from-base add below doesn't trip "already exists".
+                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", wtPath);
+                await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "prune");
+                if (Directory.Exists(wtPath))
+                {
+                    try { Directory.Delete(wtPath, recursive: true); }
+                    catch { /* locked — `worktree prune` reclaims it on a later tick */ }
+                }
+            }
         }
-        else
+
+        // 4b — branch absent on origin (or 4a fell through): create it. A prior
+        // drive may have left a LOCAL branch ref (step 3 cleans the worktree dir
+        // + registration, not the branch ref). Probe with rev-parse and attach to
+        // the existing ref instead of failing "a branch named '…' already exists"
+        // (mirrors CrewQueueWorker.cs:1006-1011). Otherwise cut a brand-new branch
+        // straight off the current base tip — already a fresh view of every merged
+        // dependency, so no base sync is needed.
+        if (!addedFromOrigin)
         {
-            // New branch off baseBranch — but a prior drive may have already
-            // created the local branch ref (step 3 cleans the worktree dir
-            // and registration, not the branch). Probe with rev-parse and
-            // attach the worktree to the existing ref instead of failing
-            // with "fatal: a branch named '…' already exists". Mirrors the
-            // pattern at CrewQueueWorker.cs:1006-1011.
             await this.GitAsync(cloneRoot, ct, "fetch", "origin", baseBranch);
             var (localCode, _, _) = await this.RunGitCaptureAsync(cloneRoot, ct, "rev-parse", "--verify", $"refs/heads/{branch}");
             if (localCode == 0)
             {
                 await this.GitAsync(cloneRoot, ct, "worktree", "add", wtPath, branch);
-                // Existing local branch ref — may predate upstream merges into
-                // the base. Sync it to the current base (see 4a comment).
                 await this.MergeBaseIntoFreshWorktreeAsync(wtPath, branch, baseBranch, ct);
             }
             else
             {
-                // Brand-new branch cut straight off the current base tip — it is
-                // already a fresh view of every merged dependency, so no base
-                // sync is needed here.
                 await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
             }
         }

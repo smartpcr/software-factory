@@ -212,10 +212,18 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
         pr.Col = "merged";
         pr.IsActive = false;
         pr.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+        var advancedWorkstreamIds = await WorkstreamMergeAdvancer.AdvanceForMergedPrAsync(control, db, prId, ct);
         await db.SaveChangesAsync(ct);
         if (hub is not null)
         {
             await hub.Clients.All.SendAsync("pr.changed", new { kind = "merged", id = prId }, ct);
+            if (advancedWorkstreamIds.Count > 0)
+            {
+                await hub.Clients.All.SendAsync(
+                    "story-spawn.changed",
+                    new { kind = "ws-completed", prId, workstreamIds = advancedWorkstreamIds },
+                    ct);
+            }
         }
         this.logger?.LogInformation("Story PR merged via {Kind}: {PrId}", pr.Provider, prId);
 

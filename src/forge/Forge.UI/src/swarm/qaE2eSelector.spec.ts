@@ -44,6 +44,28 @@ describe('qaE2eByImplId', () => {
     expect(map.get(impl.id)).toBe(qa);
   });
 
+  it('pairs a delta-split impl (anchor carries `@{hash}`) with its bare-anchor qa-e2e', () => {
+    // Regression: editing a SHIPPED stage's plan content makes
+    // PlanReconciler "split for delta" — it re-anchors the merged impl
+    // row to `{anchor}@{hash}` while the qa-e2e keeps the bare anchor.
+    // Exact-equality matching orphaned the e2e (rendered neither
+    // standalone nor stacked → vanished from the phase board). The
+    // selector must match on the base anchor so the pair survives.
+    const impl = ws('ws-identity-worker-adopts', {
+      category: 'impl',
+      planAnchor: 'phase-identity/stage-worker-adopts@005e8f66',
+    });
+    const qa = ws('ws-identity-worker-adopts-e2e', {
+      category: QA_E2E_CATEGORY,
+      planAnchor: 'phase-identity/stage-worker-adopts' + QA_E2E_ANCHOR_SUFFIX,
+    });
+
+    const map = qaE2eByImplId([impl, qa]);
+
+    expect(map.size).toBe(1);
+    expect(map.get(impl.id)).toBe(qa);
+  });
+
   it('skips qa-e2e rows whose planAnchor is missing OR lacks the /e2e suffix (orphan guard)', () => {
     // Reconciler-side bug or in-flight legacy data — the selector
     // refuses to pair, leaving the impl row unaccompanied (avoids a
