@@ -1,13 +1,19 @@
 {
-  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-parse-and-recipe-fanout-e2e": {
-    "total": 732,
-    "last_at": "2026-05-31T00:00:21.0103146+00:00",
+  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-rule-engine-wiring": {
+    "total": 795,
+    "last_at": "2026-05-31T00:28:52.3969229+00:00",
+    "status": "active",
+    "product": "code-intelligence"
+  },
+  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-dark-metric-diagnostics": {
+    "total": 806,
+    "last_at": "2026-05-31T00:28:54.8094153+00:00",
     "status": "active",
     "product": "code-intelligence"
   },
   "ws-code-intelligence-repo-scanner-phase-identity-and-ancestry-refactor-stage-worker-adopts-ancestrywriter-e2e": {
-    "total": 7574,
-    "last_at": "2026-05-31T00:00:20.7916659+00:00",
+    "total": 10119,
+    "last_at": "2026-05-31T00:28:50.2300868+00:00",
     "status": "active",
     "product": "code-intelligence"
   }

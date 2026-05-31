@@ -388,6 +388,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                   - **CI runner**: <runner pool / labels / hosted image>
                   - **Secrets**: <none | KeyVault path | GH environment + secret names>
                   - **Pre-test bootstrap**: <command(s), or "none">
+                  - **Gate provisioning**: for `inline`/`compose`, how the test
+                    suite stands its dependencies up IN-PROCESS when the
+                    connection env-var is unset (embedded/ephemeral service, no
+                    docker) so required scenarios run in Forge's gate instead of
+                    skipping; `compose` keeps the CI stack as the env-var-set path.
 
                   ### Scenarios
                   - **Scenario:** ...
@@ -415,6 +420,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                   AND a GitHub environment (Forge supports both providers).
                 - Connection strings are referenced as env-var names, never literal
                   hostnames or credentials.
+                - For `inline`/`compose`, required scenarios MUST run without docker
+                  or a pre-provisioned service (self-provision in-test); a skip for a
+                  missing dependency is allowed only for `lab-*`.
                 """,
                 $"{docDir}/e2e-scenarios.md"),
         };
@@ -5167,6 +5175,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 Pass requires score >= 90 AND every acceptance scenario
                 covered by at least one Gherkin scenario in the `.feature`
                 file. Step-def file must implement every binding referenced.
+                A required scenario that SKIPS or no-ops because a backing
+                service was unavailable is NOT covered — for `inline` /
+                `compose` setups the suite must self-provision its dependency
+                (embedded / ephemeral) so the scenario actually runs in the
+                gate; treat a dependency-driven skip as an unmet scenario and
+                do not pass. (A `Skip` is acceptable only for `lab-*` setups.)
                 For `compose` / `lab-*` setup types the pipeline YAML stubs
                 must also be present and reference the declared secret /
                 runner-pool names.
@@ -5195,6 +5209,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine()
             .AppendLine("## Setup")
             .AppendLine(setupSection)
+            .AppendLine()
+            .AppendLine("## Dependency provisioning (required-scenario rule)")
+            .AppendLine(
+                "A REQUIRED acceptance scenario must actually EXECUTE in Forge's gate — "
+                + "it must NOT `Skip`/no-op when a backing service (PostgreSQL, etc.) is "
+                + "absent. A skipped acceptance scenario does not prove acceptance and is "
+                + "scored as UNMET. Forge runs the gate on a host with NO docker and NO "
+                + "pre-provisioned services, so the suite's own setup must stand the "
+                + "dependency up in-process: when the conventional connection env-var is "
+                + "SET, use it (the CI / compose path); when UNSET, start an embedded, "
+                + "ephemeral instance (no docker), apply migrations, export the DSN for the "
+                + "suite, and tear it down on exit. `Skip` is acceptable ONLY for `lab-*` "
+                + "setups that are genuinely unreproducible off the lab — never for "
+                + "`inline` or `compose`.")
             .AppendLine();
 
         if (!string.IsNullOrWhiteSpace(inputs.AttachmentPromptSection))
@@ -5294,13 +5322,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  `godog.TestSuite` with `ScenarioInitializer:` set to that
                  initializer and `Options: &godog.Options{Format: "pretty", Paths: []string{"{{goPhase}}_{{goStage}}.feature"}, TestingT: t}`.
                  Use these UNIQUE per-stage function names so sibling stages
-                 sharing the `e2e` package don't collide. For any required
-                 env-var, define a small package-local helper
-                 `func requireEnv(t *testing.T, name string) string` that
-                 calls `t.Skip` when the var is unset (one copy per package).
-                 Add `github.com/cucumber/godog` to the module
+                 sharing the `e2e` package don't collide. Add
+                 `github.com/cucumber/godog` to the module
                  (`go get github.com/cucumber/godog` then `go mod tidy` IN
                  `<MOD>`) and commit the updated `go.mod` / `go.sum`.
+
+                 BACKING SERVICES — provision, do NOT skip. A required
+                 scenario must run in the gate even though the host has no
+                 docker and no running service. In `TestMain` (package `e2e`):
+                 if the conventional DSN env-var (e.g. `AGENT_MEMORY_PG_URL`)
+                 is SET, use it (CI / compose stack); if UNSET, start an
+                 embedded ephemeral PostgreSQL on an OS-assigned port — e.g.
+                 `github.com/fergusstrange/embedded-postgres` (pure Go, no
+                 docker) — apply the repo's migrations against it, `os.Setenv`
+                 the DSN so the suite picks it up, and stop it in a deferred
+                 teardown. Commit the added `go.mod`/`go.sum` entries. Reserve
+                 `t.Skip` for `lab-*`-only setups; never skip an `inline` /
+                 `compose` acceptance scenario for a missing service.
               3. When setup type is `compose` or `lab-*`, ALSO write
                  `<MOD>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
                  `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
