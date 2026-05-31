@@ -106,10 +106,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         return memoryStorePath;
     }
 
+    /// <summary>
+    /// 2026-05-30 — parse the reasoning-effort suffix off a Forge model id
+    /// (e.g. <c>claude-opus-4.7-xhigh</c> → <c>xhigh</c>). The Copilot SDK
+    /// only DELIVERS reasoning (<c>AssistantReasoning[Delta]Event</c>) when
+    /// <c>SessionConfig.ReasoningEffort</c> is set (+ Streaming), so we lift
+    /// the effort the model id already encodes into the dedicated field.
+    /// Returns null when no recognized suffix is present.
+    /// </summary>
+    internal static string? ParseReasoningEffort(string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return null;
+        foreach (var e in new[] { "xhigh", "high", "medium", "low" })
+        {
+            if (model.EndsWith("-" + e, StringComparison.OrdinalIgnoreCase)) return e;
+        }
+        return null;
+    }
+
     internal static (SessionConfig SessionConfig, ResumeSessionConfig ResumeConfig, string? MemorySessionId, bool ShouldResumeSession) CreateCopilotSessionConfigs(
         AgentContext context,
         string? ghToken)
     {
+        // Reasoning effort the model id encodes (xhigh/high/medium/low). When
+        // set, the SDK surfaces the model's chain-of-thought as
+        // AssistantReasoning[Delta]Event — which Forge persists per-iteration
+        // for the Summary tab. Streaming must also be on to receive it.
+        var reasoningEffort = ParseReasoningEffort(context.Model);
         var memoryStorePath = PrepareCopilotMemoryStore(context);
         var memorySessionId = context.Memory?.SessionId;
         var shouldResumeSession = context.Memory?.ResumeSession == true
@@ -121,7 +144,13 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             Model = context.Model,
             OnPermissionRequest = PermissionHandler.ApproveAll,
             GitHubToken = ghToken,
+            // Stream chunks (incl. reasoning) as they're generated.
+            Streaming = true,
         };
+        if (!string.IsNullOrEmpty(reasoningEffort))
+        {
+            sessionConfig.ReasoningEffort = reasoningEffort;
+        }
         if (!string.IsNullOrEmpty(memoryStorePath))
         {
             sessionConfig.ConfigDir = memoryStorePath;
@@ -144,7 +173,12 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             Model = context.Model,
             OnPermissionRequest = PermissionHandler.ApproveAll,
             GitHubToken = ghToken,
+            Streaming = true,
         };
+        if (!string.IsNullOrEmpty(reasoningEffort))
+        {
+            resumeConfig.ReasoningEffort = reasoningEffort;
+        }
         if (!string.IsNullOrEmpty(memoryStorePath))
         {
             resumeConfig.ConfigDir = memoryStorePath;
@@ -1647,7 +1681,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
                         case AssistantReasoningDeltaEvent reason:
                             // 2026-05-30 — the model's reasoning/thinking
-                            // stream (GitHub-hosted reasoning models only).
+                            // stream. Requires SessionConfig.ReasoningEffort +
+                            // Streaming=true (set in CreateCopilotSessionConfigs).
                             // Accumulate for persistence + stream live as a
                             // Reasoning event so the UI can show it as it
                             // happens. Counts as activity for the watchdog.
@@ -1660,6 +1695,23 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                     reasoningBuilder.Append(rChunk);
                                 }
                                 queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Reasoning, DateTimeOffset.UtcNow, Text: rChunk));
+                            }
+                            break;
+
+                        case AssistantReasoningEvent reasonFinal:
+                            // 2026-05-30 — the FINAL reasoning content event
+                            // (some models emit this instead of / in addition
+                            // to the delta stream). Use it to seed the
+                            // accumulated text when no deltas arrived.
+                            var rFull = reasonFinal.Data.Content;
+                            if (!string.IsNullOrEmpty(rFull))
+                            {
+                                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
+                                if (reasoningBuilder.Length == 0)
+                                {
+                                    reasoningBuilder.Append(rFull.Length > ReasoningCharCap ? rFull[..ReasoningCharCap] : rFull);
+                                    queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Reasoning, DateTimeOffset.UtcNow, Text: rFull));
+                                }
                             }
                             break;
 

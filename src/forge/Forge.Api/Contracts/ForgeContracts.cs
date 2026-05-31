@@ -864,7 +864,35 @@ public sealed record ModelInfo(
     decimal OutputPricePerMTok,
     bool SupportsTools,
     bool SupportsStreaming,
-    string Status);
+    string Status)
+{
+    /// <summary>
+    /// 2026-05-30 — authoritative reasoning-support flag from the live Copilot
+    /// catalog (<c>capabilities.supports.reasoningEffort</c>), applied by
+    /// <see cref="Forge.Api.Services.ModelCatalogEnrichmentService"/>. Null
+    /// until enrichment runs (or when the model isn't in the live catalog),
+    /// in which case <see cref="SupportsReasoning"/> falls back to the
+    /// id-derived heuristic.
+    /// </summary>
+    public bool? ReasoningOverride { get; init; }
+
+    /// <summary>
+    /// 2026-05-30 — whether the model produces a reasoning ("thinking")
+    /// stream. Prefers the authoritative <see cref="ReasoningOverride"/> from
+    /// the live catalog; falls back to an id-derived heuristic (effort suffix
+    /// <c>-low/-medium/-high/-xhigh</c> or the <c>gpt-5.x</c> family). Serialized
+    /// to <c>/api/models</c> so the Crews → Pair model picker can show a
+    /// "reasoning" indicator. NOTE: emitting reasoning TEXT to the Summary tab
+    /// additionally requires the provider to expose it (Claude effort variants
+    /// do; OpenAI gpt-5.x report the count but redact the text).
+    /// </summary>
+    public bool SupportsReasoning => ReasoningOverride ??
+        (Id.EndsWith("-xhigh", StringComparison.OrdinalIgnoreCase)
+        || Id.EndsWith("-high", StringComparison.OrdinalIgnoreCase)
+        || Id.EndsWith("-medium", StringComparison.OrdinalIgnoreCase)
+        || Id.EndsWith("-low", StringComparison.OrdinalIgnoreCase)
+        || Id.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>
 /// Phase 14 — one row per (work-item × iteration). Score + verdict are

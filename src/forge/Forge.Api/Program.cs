@@ -606,6 +606,12 @@ builder.Services.AddSingleton<CopilotServerManager>();
 // HasExited check that crashes the test host. The dispose path runs whether
 // or not the CLI server was ever started, so the test gate doesn't apply.
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
+// 2026-05-30 — overlays the authoritative Copilot model catalog (context
+// windows + reasoning support) onto the JSON-seeded IModelRegistry at boot +
+// every 6h, so the registry stops drifting from reality (hand-maintained
+// models.json windows were repeatedly wrong). Best-effort; JSON values stand
+// if the catalog is unreachable.
+builder.Services.AddHostedService<Forge.Api.Services.ModelCatalogEnrichmentService>();
 // Phase 55 / Phase E (docs/forge/sloppy_guard.md) -- Copilot SDK
 // session pool, keyed by (workItemId, agentId). Singleton so live
 // sessions span the gen-eval loop's iterations; disposed per-work-item

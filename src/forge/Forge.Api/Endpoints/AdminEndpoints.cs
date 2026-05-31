@@ -809,6 +809,177 @@ public static class AdminEndpoints
             });
         }).WithTags("Admin").WithName("AdminUnblockStaleWorkstreams");
 
+        // 2026-05-30 — authoritative Copilot model catalog. Exchanges Forge's
+        // GitHub token (which has Copilot access — it's what spawns the CLI)
+        // for a Copilot token, then queries api.githubcopilot.com/models for
+        // the REAL per-model capabilities: context window, output cap,
+        // reasoning support, tool/streaming support, premium flag + billing
+        // multiplier. This is the source of truth for the values we otherwise
+        // hand-maintain (and repeatedly got wrong) in agents/Models/models.json.
+        // Read-only; surfaces a `mismatches` block comparing the live catalog
+        // to the local registry so drift is obvious.
+        app.MapGet("/api/admin/copilot-models", async (
+            HttpContext ctx,
+            IEnumerable<IAuthService> authServices,
+            IHttpClientFactory httpFactory,
+            Forge.Api.Agents.IModelRegistry registry,
+            Forge.Api.Agents.CopilotServerManager copilotServer,
+            CancellationToken ct) =>
+        {
+            if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+
+            // Preferred path: the SDK's already-authenticated client lists
+            // models + capabilities WITHOUT the editor-only
+            // copilot_internal/v2/token exchange (which 404s for OAuth-app /
+            // PAT tokens — both gh's gho_ and Forge's GitHub token). Returns
+            // the raw SDK model objects (serialized by runtime type) alongside
+            // the local registry's window/reasoning for side-by-side drift.
+            try
+            {
+                var sdkModels = await copilotServer.ListModelsAsync(ct);
+                if (sdkModels is { Count: > 0 })
+                {
+                    return Results.Ok(new
+                    {
+                        source = "copilot-sdk:ListModelsAsync",
+                        count = sdkModels.Count,
+                        models = sdkModels,
+                        registry = registry.All
+                            .Select(r => new { r.Id, r.ContextWindow, r.SupportsReasoning, r.InputPricePerMTok, r.OutputPricePerMTok })
+                            .ToList(),
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fall through to the REST exchange attempt (which likely
+                // 404s, but its error message is still informative).
+                ctx.Items["copilot-sdk-list-error"] = ex.Message;
+            }
+
+            var gh = authServices.FirstOrDefault(a => a.Kind == "github");
+            var ghToken = gh is null ? null : await gh.GetAccessTokenAsync(ct);
+            if (string.IsNullOrEmpty(ghToken))
+            {
+                return Results.Problem(title: "No GitHub token", detail: "Forge has no signed-in GitHub account to authorize the Copilot models API.", statusCode: 400);
+            }
+
+            var http = httpFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(30);
+
+            // 1. Exchange the GitHub token for a short-lived Copilot token.
+            string? copilotToken;
+            try
+            {
+                using var exReq = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/copilot_internal/v2/token");
+                exReq.Headers.TryAddWithoutValidation("Authorization", $"token {ghToken}");
+                exReq.Headers.TryAddWithoutValidation("Editor-Version", "vscode/1.99.0");
+                exReq.Headers.TryAddWithoutValidation("User-Agent", "GithubCopilot/1.99.0");
+                using var exResp = await http.SendAsync(exReq, ct);
+                var exBody = await exResp.Content.ReadAsStringAsync(ct);
+                if (!exResp.IsSuccessStatusCode)
+                {
+                    return Results.Problem(title: "Copilot token exchange failed",
+                        detail: $"{(int)exResp.StatusCode} {exResp.StatusCode}: {exBody[..Math.Min(300, exBody.Length)]}", statusCode: 502);
+                }
+                using var exDoc = System.Text.Json.JsonDocument.Parse(exBody);
+                copilotToken = exDoc.RootElement.TryGetProperty("token", out var tEl) ? tEl.GetString() : null;
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Copilot token exchange error", detail: ex.Message, statusCode: 502);
+            }
+            if (string.IsNullOrEmpty(copilotToken))
+            {
+                return Results.Problem(title: "Copilot token exchange returned no token", statusCode: 502);
+            }
+
+            // 2. Query the models endpoint with editor headers.
+            string modelsBody;
+            try
+            {
+                using var mReq = new HttpRequestMessage(HttpMethod.Get, "https://api.githubcopilot.com/models");
+                mReq.Headers.TryAddWithoutValidation("Authorization", $"Bearer {copilotToken}");
+                mReq.Headers.TryAddWithoutValidation("Copilot-Integration-Id", "vscode-chat");
+                mReq.Headers.TryAddWithoutValidation("Editor-Version", "vscode/1.99.0");
+                using var mResp = await http.SendAsync(mReq, ct);
+                modelsBody = await mResp.Content.ReadAsStringAsync(ct);
+                if (!mResp.IsSuccessStatusCode)
+                {
+                    return Results.Problem(title: "Copilot models query failed",
+                        detail: $"{(int)mResp.StatusCode} {mResp.StatusCode}: {modelsBody[..Math.Min(300, modelsBody.Length)]}", statusCode: 502);
+                }
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Copilot models query error", detail: ex.Message, statusCode: 502);
+            }
+
+            // 3. Parse capabilities into a flat per-model shape.
+            var models = new List<object>();
+            var liveById = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(modelsBody);
+                var root = doc.RootElement;
+                var data = root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("data", out var dEl)
+                    ? dEl : root;
+                if (data.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var m in data.EnumerateArray())
+                    {
+                        string? id = m.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                        if (string.IsNullOrEmpty(id)) continue;
+                        var caps = m.TryGetProperty("capabilities", out var cEl) ? cEl : default;
+                        var limits = caps.ValueKind == System.Text.Json.JsonValueKind.Object && caps.TryGetProperty("limits", out var lEl) ? lEl : default;
+                        var supports = caps.ValueKind == System.Text.Json.JsonValueKind.Object && caps.TryGetProperty("supports", out var sEl) ? sEl : default;
+                        var billing = m.TryGetProperty("billing", out var bEl) ? bEl : default;
+
+                        int? GetInt(System.Text.Json.JsonElement parent, string name)
+                            => parent.ValueKind == System.Text.Json.JsonValueKind.Object && parent.TryGetProperty(name, out var v)
+                               && v.ValueKind == System.Text.Json.JsonValueKind.Number ? v.GetInt32() : (int?)null;
+                        bool? GetBool(System.Text.Json.JsonElement parent, string name)
+                            => parent.ValueKind == System.Text.Json.JsonValueKind.Object && parent.TryGetProperty(name, out var v)
+                               && (v.ValueKind == System.Text.Json.JsonValueKind.True || v.ValueKind == System.Text.Json.JsonValueKind.False) ? v.GetBoolean() : (bool?)null;
+
+                        var ctxWin = GetInt(limits, "max_context_window_tokens");
+                        if (ctxWin is int cw) liveById[id] = cw;
+                        models.Add(new
+                        {
+                            id,
+                            name = m.TryGetProperty("name", out var nEl) ? nEl.GetString() : null,
+                            vendor = m.TryGetProperty("vendor", out var vEl) ? vEl.GetString() : null,
+                            ctx = ctxWin,
+                            maxInput = GetInt(limits, "max_prompt_tokens"),
+                            maxOutput = GetInt(limits, "max_output_tokens"),
+                            reasoning = GetBool(supports, "reasoning_effort") ?? GetBool(supports, "thinking"),
+                            streaming = GetBool(supports, "streaming"),
+                            tools = GetBool(supports, "tool_calls"),
+                            isPremium = GetBool(billing, "is_premium"),
+                            multiplier = billing.ValueKind == System.Text.Json.JsonValueKind.Object && billing.TryGetProperty("multiplier", out var mlEl) && mlEl.ValueKind == System.Text.Json.JsonValueKind.Number ? (double?)mlEl.GetDouble() : null,
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Copilot models parse error", detail: ex.Message, statusCode: 502);
+            }
+
+            // 4. Drift report — where the local registry's contextWindow differs
+            // from the live catalog (the source of the bugs we keep hitting).
+            var mismatches = new List<object>();
+            foreach (var local in registry.All)
+            {
+                if (liveById.TryGetValue(local.Id, out var liveCtx) && liveCtx != local.ContextWindow)
+                {
+                    mismatches.Add(new { id = local.Id, registryContextWindow = local.ContextWindow, liveContextWindow = liveCtx });
+                }
+            }
+
+            return Results.Ok(new { count = models.Count, models, registryMismatches = mismatches });
+        }).WithTags("Admin").WithName("AdminCopilotModels");
+
         return app;
     }
 

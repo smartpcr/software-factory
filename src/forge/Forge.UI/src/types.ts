@@ -699,6 +699,9 @@ export interface ModelInfo {
   outputPricePerMTok: number;
   supportsTools: boolean;
   supportsStreaming: boolean;
+  /** 2026-05-30 — model produces a reasoning/thinking stream (effort-suffixed
+   *  ids + gpt-5.x). Computed server-side. */
+  supportsReasoning?: boolean;
   status: string;
 }
 

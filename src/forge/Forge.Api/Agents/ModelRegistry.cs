@@ -20,18 +20,55 @@ public sealed class ModelRegistry : IModelRegistry
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    private readonly Lazy<IReadOnlyList<ModelInfo>> models;
+    private readonly Lazy<IReadOnlyList<ModelInfo>> baseModels;
+
+    // The catalog overlay (from the live Copilot catalog) is applied on top of
+    // the JSON base. `effective` is swapped atomically by ApplyCatalogOverlay
+    // so concurrent readers never see a torn list. Null until first read or
+    // first overlay → falls back to the JSON base.
+    private volatile IReadOnlyList<ModelInfo>? effective;
+    private readonly object overlayLock = new();
 
     public ModelRegistry(IHostEnvironment env)
     {
         var contentRoot = env?.ContentRootPath ?? AppContext.BaseDirectory;
-        this.models = new Lazy<IReadOnlyList<ModelInfo>>(() => Load(contentRoot));
+        this.baseModels = new Lazy<IReadOnlyList<ModelInfo>>(() => Load(contentRoot));
     }
 
-    public IReadOnlyList<ModelInfo> All => this.models.Value;
+    public IReadOnlyList<ModelInfo> All => this.effective ?? this.baseModels.Value;
+
+    public bool CatalogEnriched { get; private set; }
 
     public ModelInfo? Find(string id)
-        => this.models.Value.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+        => this.All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    public void ApplyCatalogOverlay(IReadOnlyDictionary<string, ModelCatalogOverlay> overlay)
+    {
+        if (overlay is null || overlay.Count == 0) return;
+        lock (this.overlayLock)
+        {
+            // Always rebuild from the immutable JSON base so repeated overlays
+            // (refresh cadence) are idempotent rather than compounding.
+            var rebuilt = new List<ModelInfo>(this.baseModels.Value.Count);
+            foreach (var m in this.baseModels.Value)
+            {
+                if (overlay.TryGetValue(m.Id, out var ov))
+                {
+                    rebuilt.Add(m with
+                    {
+                        ContextWindow = ov.ContextWindow ?? m.ContextWindow,
+                        ReasoningOverride = ov.SupportsReasoning ?? m.ReasoningOverride,
+                    });
+                }
+                else
+                {
+                    rebuilt.Add(m);
+                }
+            }
+            this.effective = rebuilt;
+            this.CatalogEnriched = true;
+        }
+    }
 
     private static IReadOnlyList<ModelInfo> Load(string contentRoot)
     {

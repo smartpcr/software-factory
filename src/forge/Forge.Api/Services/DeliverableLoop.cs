@@ -1939,7 +1939,23 @@ public sealed class DeliverableLoop : IDeliverableLoop
             }
         }
 
-        var looping = recurring.Count >= MinRecurringItems;
+        // Score-trend guard (2026-05-30) — the topic-recurrence signal above is
+        // SCORE-BLIND, and on its own it fires on a CLIMBING score. Observed on
+        // repo-scanner worker-adopts-ancestrywriter-e2e: score went 55→78→82→85
+        // (5 pts from pass, monotonic) yet stalled `no-convergence` at iter 4
+        // (of maxIters=50) because the evaluator kept naming the shrinking
+        // remainder in "What still needs work" — which is what improving-but-
+        // not-done work looks like, NOT a loop. A loop "going in circles" has a
+        // FLAT or declining score; a rising score means the agent IS resolving
+        // the recurring topics. So only treat recurring topics as a stuck loop
+        // when the score is NOT materially improving across the window. (Flat
+        // 85→85→85 or bouncing 88→85→90→85 still trip it; a genuine climb does
+        // not.) This complements the score-plateau sloppy guard, which owns the
+        // flat-score case.
+        const int MinScoreGain = 2;
+        var scoreImproving = window.Count >= 2
+            && (window[^1].Score - window[0].Score) >= MinScoreGain;
+        var looping = recurring.Count >= MinRecurringItems && !scoreImproving;
         return (looping, recurring);
     }
 

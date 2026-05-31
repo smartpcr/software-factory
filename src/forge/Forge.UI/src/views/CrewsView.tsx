@@ -8,6 +8,28 @@ import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { AGENT_ALLOCATION, type Team } from '@/agentAllocation';
 
+// Compact context-window label (e.g. 256000 → "256K", 1000000 → "1M").
+function formatCtx(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return `${tokens}`;
+}
+
+// One-line model spec for the Pair/Runtime model pickers: price + context
+// window + reasoning indicator. `reasoning` is the SDK-derived capability;
+// the title clarifies that emitting reasoning TEXT also needs provider support.
+function ModelSpecLine({ m }: { m: ModelInfo }) {
+  return (
+    <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, fontFamily: 'var(--font-mono, monospace)' }}>
+      ${m.inputPricePerMTok.toFixed(2)}/MTok in · ${m.outputPricePerMTok.toFixed(2)}/MTok out
+      {' · '}<span title="Model context window (as served via Copilot)">{formatCtx(m.contextWindow)} ctx</span>
+      {m.supportsReasoning
+        ? <span title="Model does chain-of-thought reasoning. Reasoning TEXT shows in the Summary tab only when the provider exposes it (Claude effort variants do; gpt-5.x report the count but redact the text)." style={{ color: 'var(--sc-purple, #c4b5fd)' }}>{' · '}🧠 reasoning</span>
+        : null}
+    </div>
+  );
+}
+
 // Resolve the `Team` (Architect / Engineer / Review / QA) for an agent id.
 // Falls back to deriving from role-prefix when the allocation manifest
 // doesn't list the agent (e.g. legacy seeds that haven't been re-imported).
@@ -923,11 +945,7 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
           </option>
         ))}
       </select>
-      {selected && (
-        <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, fontFamily: 'var(--font-mono, monospace)' }}>
-          ${selected.inputPricePerMTok.toFixed(2)}/MTok in · ${selected.outputPricePerMTok.toFixed(2)}/MTok out
-        </div>
-      )}
+      {selected && <ModelSpecLine m={selected} />}
       <div style={hintStyle}>{hint}</div>
     </div>
   );
@@ -1103,11 +1121,7 @@ function RuntimeTab({ crew, models, canEdit, onChange, onError }: {
             </option>
           ))}
         </select>
-        {(() => { const sel = models.find((m) => m.id === crew.model); return sel ? (
-          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, fontFamily: 'var(--font-mono, monospace)' }}>
-            ${sel.inputPricePerMTok.toFixed(2)}/MTok in · ${sel.outputPricePerMTok.toFixed(2)}/MTok out
-          </div>
-        ) : null; })()}
+        {(() => { const sel = models.find((m) => m.id === crew.model); return sel ? <ModelSpecLine m={sel} /> : null; })()}
         <div style={hintStyle}>
           Switching models writes a <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>crew_history(kind=model)</code> row and
           forces a new prompt cache. Pricing carries over from the registry.

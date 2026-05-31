@@ -161,6 +161,35 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
+    /// 2026-05-30 — lists the models the authenticated Copilot session can
+    /// use, with their capabilities (context window, reasoning support, etc.).
+    /// Uses the shared, already-authenticated client so it works without the
+    /// editor `ghu_` token the raw <c>copilot_internal/v2/token</c> exchange
+    /// requires. Returns the SDK's model objects boxed as <see cref="object"/>
+    /// so the admin endpoint can serialize them verbatim. Null when the
+    /// server isn't running.
+    /// </summary>
+    public async Task<IReadOnlyList<System.Text.Json.JsonElement>?> ListModelsAsync(CancellationToken ct)
+    {
+        await this.EnsureRunningAsync(ct);
+        var snapshot = this.serverClient;
+        if (snapshot is null) return null;
+        var models = await snapshot.ListModelsAsync(ct);
+        if (models is null) return null;
+        // Serialize by RUNTIME type — boxing the SDK model objects as
+        // `object` would make System.Text.Json emit empty {} (it serializes
+        // by declared type). SerializeToElement(m, m.GetType()) captures the
+        // model's real capability fields verbatim.
+        var list = new List<System.Text.Json.JsonElement>();
+        foreach (var m in models)
+        {
+            if (m is null) continue;
+            list.Add(System.Text.Json.JsonSerializer.SerializeToElement(m, m.GetType()));
+        }
+        return list;
+    }
+
+    /// <summary>
     /// Resumes a provider-persisted session on the shared, authenticated
     /// <see cref="CopilotClient"/>. Mirrors <see cref="CreateSessionAsync"/>
     /// so callers do not create unauthenticated clients against the shared
