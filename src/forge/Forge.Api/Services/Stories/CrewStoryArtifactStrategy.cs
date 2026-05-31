@@ -306,7 +306,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"{docDir}/tech-spec.md"),
 
             ["architecture"] = ("architecture.md",
-                "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
+                """
+                Components and their responsibilities, data model (entities + key fields),
+                interfaces between components, end-to-end sequence flows for the primary scenarios.
+
+                ALSO include a `## Test & Environment Contract` section that, for each primary
+                acceptance area, pins the PROOF STRATEGY and its DEPENDENCY + how the gate provides
+                it (the gate host has NO docker and NO pre-provisioned services):
+                - `in-process` — pure unit/logic test, zero external I/O.
+                - `golden` — committed snapshot for preservation/equality proofs ("byte-identical",
+                  "unchanged after the refactor"); the only honest option when the pre-change code
+                  no longer exists in the tree.
+                - `service:<name>` — needs a live backing service; NAME it and state how the gate
+                  provides it (embedded/ephemeral ONLY if the schema needs no non-bundled extension
+                  an embedded build lacks; otherwise a provided DSN). Such a criterion can NEVER be `inline`.
+                - `lab` — physical/hardware lab only.
+                Downstream docs (implementation-plan, e2e-scenarios) MUST honor this contract.
+                """,
                 $"{docDir}/architecture.md"),
 
             ["implementation-plan"] = ("implementation-plan.md",
@@ -336,7 +352,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 - _none -- start stage_
 
                 ### Test Scenarios
-                - [ ] Scenario: {name} -- Given {context}, When {action}, Then {expected outcome}
+                - [ ] Scenario: {name} -- Given {context}, When {action}, Then {expected outcome} [proof: in-process|golden|service:<name>|lab; deps: none|<service + how the gate provides it>]
                 - [ ] Scenario: {name} -- …
 
                 ## Stage 1.2: {stage name}
@@ -372,6 +388,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 - Every Test Scenario is a checkbox `- [ ]` and is verifiable pass/fail (not subjective).
                 - Include at least 2 test scenarios per Stage.
                 - Each Implementation Step must be small enough for a single agent iteration to complete.
+                - Every Test Scenario carries a `[proof: …; deps: …]` tag whose proof kind is one of
+                  `in-process | golden | service:<name> | lab`, consistent with architecture.md's
+                  `## Test & Environment Contract`. A scenario asserting PERSISTED or external state
+                  (a live DB, a DSN env-var, "byte-identical"/"same rows" of persisted data) MUST use
+                  `golden` or `service:<name>` — NEVER `in-process` — and name the service + how the
+                  gate provides it.
                 """,
                 $"{docDir}/implementation-plan.md"),
 
@@ -2664,6 +2686,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               the "Sequential plan-doc mode" section above — read it
               and apply ONLY the upstream-doc check, never a downstream
               one.
+            - PROOF & ENVIRONMENT CONTRACT — refuse pass when:
+              (a) `architecture.md` has no `## Test & Environment Contract`, or it omits an
+              acceptance area that asserts persisted/external state; (b) an
+              `implementation-plan.md` Test Scenario asserting persisted/external state
+              ("byte-identical", "same rows", a live DB, a DSN env-var) lacks a
+              `[proof: …; deps: …]` tag, tags it `in-process`, or contradicts architecture's
+              contract; (c) an `e2e-scenarios.md` phase's Setup `Type` contradicts the
+              proof/deps the UPSTREAM `implementation-plan.md` declared for the same scenario
+              (e.g. `inline` for a scenario the plan marked `service:postgres`). Apply the
+              e2e check ONLY against upstream docs.
 
             ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS -- REQUIRED FOR ITER ≥ 2
             DO NOT TRUST the generator's `### Prior feedback resolution`
@@ -5212,17 +5244,26 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .AppendLine()
             .AppendLine("## Dependency provisioning (required-scenario rule)")
             .AppendLine(
-                "A REQUIRED acceptance scenario must actually EXECUTE in Forge's gate — "
-                + "it must NOT `Skip`/no-op when a backing service (PostgreSQL, etc.) is "
-                + "absent. A skipped acceptance scenario does not prove acceptance and is "
-                + "scored as UNMET. Forge runs the gate on a host with NO docker and NO "
-                + "pre-provisioned services, so the suite's own setup must stand the "
-                + "dependency up in-process: when the conventional connection env-var is "
-                + "SET, use it (the CI / compose path); when UNSET, start an embedded, "
-                + "ephemeral instance (no docker), apply migrations, export the DSN for the "
-                + "suite, and tear it down on exit. `Skip` is acceptable ONLY for `lab-*` "
-                + "setups that are genuinely unreproducible off the lab — never for "
-                + "`inline` or `compose`.")
+                "A REQUIRED acceptance scenario must actually EXECUTE and ASSERT in Forge's gate — "
+                + "never `Skip`/no-op because a backing service is absent. A skipped scenario does not "
+                + "prove acceptance and is scored as UNMET. THE SCENARIO'S REAL DATA DEPENDENCY IS "
+                + "AUTHORITATIVE, NOT the `### Setup` `Type` label: if a scenario needs a backing service "
+                + "(a connection/DSN env-var, a live database, or equality/byte-identity of PERSISTED state), "
+                + "you MUST make it run even when the declared Setup says `inline` / 'no external services'. "
+                + "Forge's gate host has NO docker and NO pre-provisioned services, so honor the proof "
+                + "strategy the plan declares for the scenario (its `[proof: …]` tag / architecture's "
+                + "`Test & Environment Contract`) and pick the lightest option that genuinely proves it:")
+            .AppendLine(
+                "(1) GOLDEN SNAPSHOT — for preservation/equality assertions (\"byte-identical\", "
+                + "\"unchanged after the refactor\", \"same rows\"): commit the expected output as a fixture "
+                + "and assert the run reproduces it. No live service, and the only honest option when the "
+                + "pre-change 'before' state no longer exists in the tree. "
+                + "(2) PROVIDED INSTANCE — when the connection env-var is SET, use it (CI / compose stack). "
+                + "(3) EMBEDDED / EPHEMERAL — when a real service is genuinely required and unset, start one "
+                + "in-process (no docker), apply migrations, export the connection string, tear it down on "
+                + "exit — but ONLY when the schema needs no non-bundled extension an embedded build lacks; "
+                + "otherwise fall back to (1) or (2). `Skip` is acceptable ONLY for `lab-*` setups genuinely "
+                + "unreproducible off the lab.")
             .AppendLine();
 
         if (!string.IsNullOrWhiteSpace(inputs.AttachmentPromptSection))
@@ -5327,18 +5368,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  (`go get github.com/cucumber/godog` then `go mod tidy` IN
                  `<MOD>`) and commit the updated `go.mod` / `go.sum`.
 
-                 BACKING SERVICES — provision, do NOT skip. A required
-                 scenario must run in the gate even though the host has no
-                 docker and no running service. In `TestMain` (package `e2e`):
-                 if the conventional DSN env-var (e.g. `AGENT_MEMORY_PG_URL`)
-                 is SET, use it (CI / compose stack); if UNSET, start an
-                 embedded ephemeral PostgreSQL on an OS-assigned port — e.g.
-                 `github.com/fergusstrange/embedded-postgres` (pure Go, no
-                 docker) — apply the repo's migrations against it, `os.Setenv`
-                 the DSN so the suite picks it up, and stop it in a deferred
-                 teardown. Commit the added `go.mod`/`go.sum` entries. Reserve
-                 `t.Skip` for `lab-*`-only setups; never skip an `inline` /
-                 `compose` acceptance scenario for a missing service.
+                 BACKING SERVICES — if a scenario needs one, honor the proof
+                 strategy the plan declares for it (its `[proof: …]` tag):
+                 `golden` -> assert against a committed fixture; `service:<name>`
+                 -> use the provided DSN when set, else stand up an ephemeral
+                 in-process instance (no docker) and apply migrations. Never
+                 `t.Skip` a required scenario for a missing service (only
+                 `lab-*` setups may skip). See the dependency-provisioning rule
+                 above.
               3. When setup type is `compose` or `lab-*`, ALSO write
                  `<MOD>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
                  `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
@@ -6064,10 +6101,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "qa-steps" => 0.8,
             // docs/forge/e2e.md Stage 4.3 — per-stage qa-e2e bundles
             // feature + step-defs + (optional) pipeline YAML into one
-            // workspace. 1.2x impl-style budget because the agent both
-            // authors test code AND iterates against the post-pass
-            // dotnet-test gate.
-            "qa-e2e" => 1.2,
+            // workspace. 2026-05-31: bumped 1.2 → 3.0 (= impl) because
+            // qa-e2e now runs in the REAL git worktree and compiles/tests
+            // against the actual repo (the worktree fix), so it pays the
+            // same build cost as impl — a cgo-heavy repo (go-tree-sitter)
+            // exhausted the old 1.2× budget (≈25min @ 21pts) on the build
+            // alone → repeated `generator-timeout` with score 0 (observed
+            // repo-scanner worker-adopts-ancestrywriter-e2e 2026-05-31).
+            // The 1.2× was calibrated for the pre-fix EMPTY-scratch model
+            // where the agent built nothing; that no longer holds.
+            "qa-e2e" => 3.0,
             _ => 1.0,
         };
         var seconds = baseSeconds * multiplier;

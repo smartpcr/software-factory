@@ -22,6 +22,15 @@ using System.Text.RegularExpressions;
 /// <item><c>e2e.lab_secrets_incomplete</c> — a <c>lab-*</c> Type's
 ///   Secrets bullet lacks BOTH a KeyVault entry AND a GitHub
 ///   environment ref.</item>
+/// <item><c>e2e.inline_requires_service</c> — a phase declares
+///   <c>Type: inline</c> (no external service) yet its scenarios
+///   reference a backing service (a DSN env-var like
+///   <c>AGENT_MEMORY_PG_URL</c>, a live Postgres/DB instance, or
+///   persisted-row assertions). The setup type contradicts the
+///   scenario's real data dependency — it must be <c>compose</c>.
+///   Catches the contradiction at plan-authoring time so a qa-e2e
+///   agent is never handed a scenario it can only prove with a
+///   service the declared setup forbids.</item>
 /// </list>
 ///
 /// <para>The linter is also surfaced as evaluator prompt text via
@@ -62,7 +71,25 @@ public static class E2eScenariosLinter
         public const string SetupMissing = "e2e.setup_missing";
         public const string SetupTypeInvalid = "e2e.setup_type_invalid";
         public const string LabSecretsIncomplete = "e2e.lab_secrets_incomplete";
+        public const string InlineRequiresService = "e2e.inline_requires_service";
     }
+
+    /// <summary>
+    /// Strong signals that a phase's scenarios need a real backing service
+    /// (so an <c>inline</c> / "no external services" setup type is wrong and
+    /// it should be <c>compose</c>): a DSN env-var, a live Postgres/DB
+    /// instance, or persisted node/edge-row assertions. Deliberately
+    /// specific — a passing mention of "the Postgres adapter" won't match;
+    /// "a Postgres test instance" / "live database" / a `*_PG_URL` env-var
+    /// will.
+    /// </summary>
+    private static readonly Regex BackingServiceSignal = new(
+        @"AGENT_MEMORY_PG_URL"
+        + @"|\b[A-Z][A-Z0-9_]*_(?:PG_URL|DB_URL|DATABASE_URL|DSN)\b"
+        + @"|\blive\s+(?:postgres(?:ql)?|database|db)\b"
+        + @"|\bpostgres(?:ql)?\s+(?:test\s+|live\s+)?instance\b"
+        + @"|\bpersisted\s+(?:node|edge)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>
     /// One linter violation. <see cref="PhaseName"/> identifies the
@@ -128,10 +155,29 @@ public static class E2eScenariosLinter
                 continue;
             }
 
+            // `inline` (no external service) is incompatible with a scenario
+            // that needs a real backing service. Detecting it here forces the
+            // architect to declare `compose` so the qa-e2e agent can
+            // self-provision the dependency instead of being handed a
+            // self-contradictory plan (inline + "prove byte-identity of
+            // persisted Postgres rows") it can only satisfy by skipping.
+            var setupType = E2eScenariosSetupReader.Parse(phase.TypeValue);
+            if (E2eScenariosSetupReader.TypeNames.Inline.Equals(phase.TypeValue, StringComparison.OrdinalIgnoreCase)
+                && BackingServiceSignal.IsMatch(phase.Body))
+            {
+                var signal = BackingServiceSignal.Match(phase.Body).Value;
+                errors.Add(new LintError(
+                    ErrorCodes.InlineRequiresService,
+                    phase.Name,
+                    $"Phase `{phase.Name}` declares `Type: inline` (no external service) but its scenarios "
+                    + $"reference a backing service (matched: \"{signal}\"). A scenario that needs a live "
+                    + "database / DSN / persisted-row proof cannot run under `inline`; change the Setup "
+                    + "`Type` to `compose` so the suite can self-provision the dependency in the gate."));
+            }
+
             // lab-* types need BOTH a KeyVault reference AND a GitHub
             // environment reference in the Secrets bullet so the
             // pipeline-YAML emitter has both providers to fill in.
-            var setupType = E2eScenariosSetupReader.Parse(phase.TypeValue);
             if (E2eScenariosSetupReader.RequiresLabSecrets(setupType))
             {
                 var secretsBody = phase.SecretsBody ?? string.Empty;
@@ -183,6 +229,12 @@ public static class E2eScenariosLinter
         sb.AppendLine("  BOTH a Key Vault entry (e.g. `forge-lab-kv`) AND a GitHub environment (e.g. ");
         sb.AppendLine("  `lab-wsfc` / `lab-hw`). Forge supports both providers; either alone is incomplete.");
         sb.AppendLine("  Violation → `" + ErrorCodes.LabSecretsIncomplete + "`.");
+        sb.AppendLine("- A phase whose scenarios need a real backing service (a DSN env-var such as");
+        sb.AppendLine("  `AGENT_MEMORY_PG_URL`, a live Postgres/DB instance, or persisted node/edge-row");
+        sb.AppendLine("  assertions) MUST NOT declare `Type: inline` — inline means no external service,");
+        sb.AppendLine("  so the qa-e2e agent could only satisfy it by skipping. Declare `Type: compose`");
+        sb.AppendLine("  (the suite self-provisions the dependency in the gate). Violation → `"
+            + ErrorCodes.InlineRequiresService + "`.");
         sb.AppendLine();
         sb.AppendLine("You MUST return `verdict: \"iterate\"` (or `reject` if iter ≥ 3) when ANY of these");
         sb.AppendLine("hard requirements is violated, regardless of how good the doc looks on other");
@@ -201,7 +253,7 @@ public static class E2eScenariosLinter
 
     // ── internal scan ────────────────────────────────────────────────────
 
-    private sealed record PhaseScan(string Name, bool HasSetupHeading, string? TypeValue, string? SecretsBody);
+    private sealed record PhaseScan(string Name, bool HasSetupHeading, string? TypeValue, string? SecretsBody, string Body);
 
     private static IReadOnlyList<PhaseScan> ScanPhases(string[] lines)
     {
@@ -211,11 +263,12 @@ public static class E2eScenariosLinter
         string? typeValue = null;
         string? secretsBody = null;
         var inSetup = false;
+        var body = new StringBuilder();
 
         void Flush()
         {
             if (currentName is null) return;
-            phases.Add(new PhaseScan(currentName, hasSetup, typeValue, secretsBody));
+            phases.Add(new PhaseScan(currentName, hasSetup, typeValue, secretsBody, body.ToString()));
         }
 
         for (var i = 0; i < lines.Length; i++)
@@ -230,10 +283,16 @@ public static class E2eScenariosLinter
                 typeValue = null;
                 secretsBody = null;
                 inSetup = false;
+                body.Clear();
                 continue;
             }
 
             if (currentName is null) continue;
+
+            // Accumulate the full phase body (everything after the Phase H1
+            // until the next one) so the inline-requires-service check can
+            // scan the scenarios for backing-service signals.
+            body.Append(line).Append('\n');
 
             if (SetupH3.IsMatch(line))
             {

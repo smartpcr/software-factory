@@ -18,6 +18,9 @@ using Xunit;
 ///   closed set.</item>
 /// <item><c>e2e.lab_secrets_incomplete</c> when a <c>lab-*</c> Type's
 ///   <c>Secrets</c> bullet lacks both Key Vault + GitHub environment.</item>
+/// <item><c>e2e.inline_requires_service</c> when a phase declares
+///   <c>Type: inline</c> yet its scenarios need a real backing
+///   service (DSN env-var / live Postgres / persisted-row proof).</item>
 /// </list>
 ///
 /// <para>Plus one integration scenario that pins the wire-up: the
@@ -164,6 +167,75 @@ public class Stage62E2eScenariosLinterTests
         Assert.True(E2eScenariosLinter.Validate(composeMd).IsClean);
     }
 
+    // ── 3b. [unit] inline + backing-service scenario → e2e.inline_requires_service ──
+
+    [Fact]
+    public void Linter_Reports_InlineRequiresService_When_Inline_Phase_Needs_A_Service()
+    {
+        // The code-intelligence REPO-SCANNER Phase 2 regression: an `inline`
+        // setup ("no external services") whose scenario requires a live
+        // Postgres instance to prove byte-identity of persisted rows. The
+        // contradiction must be caught at plan-authoring time.
+        var md = """
+            # Phase 2: Identity and ancestry refactor
+
+            ### Setup
+            - **Type**: inline
+            - **Local**: go test ./...; no external services
+            - **CI runner**: ubuntu-latest
+            - **Secrets**: none
+
+            ### Scenarios
+            - **Scenario:** worker-graph-byte-identical
+              - **Given** a Postgres test instance populated by the pre-refactor worker.
+              - **When** the post-refactor worker.runFull runs against the same fixture.
+              - **Then** every node row matches the pre-refactor run byte-for-byte.
+            """;
+
+        var result = E2eScenariosLinter.Validate(md);
+
+        var err = Assert.Single(result.Errors);
+        Assert.Equal(E2eScenariosLinter.ErrorCodes.InlineRequiresService, err.Code);
+        Assert.Equal("Identity and ancestry refactor", err.PhaseName);
+        Assert.Contains("compose", err.Detail);
+
+        // Flipping the Type to `compose` clears the violation — the suite can
+        // then self-provision the dependency in the gate.
+        var composeMd = md.Replace("**Type**: inline", "**Type**: compose");
+        Assert.True(E2eScenariosLinter.Validate(composeMd).IsClean);
+
+        // A DSN env-var reference also trips it under inline.
+        var dsnMd = """
+            # Phase 1: Foundation
+
+            ### Setup
+            - **Type**: inline
+            - **Local**: go test ./...
+            - **CI runner**: ubuntu-latest
+            - **Secrets**: none
+
+            ### Scenarios
+            - **Scenario:** reads from AGENT_MEMORY_PG_URL and asserts a row exists
+            """;
+        Assert.Equal(E2eScenariosLinter.ErrorCodes.InlineRequiresService,
+            Assert.Single(E2eScenariosLinter.Validate(dsnMd).Errors).Code);
+
+        // A genuinely in-process inline phase (sqlmock, no live service) stays clean.
+        var pureInlineMd = """
+            # Phase 1: Foundation
+
+            ### Setup
+            - **Type**: inline
+            - **Local**: go test ./...; sqlmock covers the writer
+            - **CI runner**: ubuntu-latest
+            - **Secrets**: none
+
+            ### Scenarios
+            - **Scenario:** RepoIDFromURL is deterministic for the same url
+            """;
+        Assert.True(E2eScenariosLinter.Validate(pureInlineMd).IsClean);
+    }
+
     // ── 4. [unit] Valid `compose` setup → no errors ──────────────────────
 
     [Fact]
@@ -227,6 +299,7 @@ public class Stage62E2eScenariosLinterTests
         Assert.Contains(E2eScenariosLinter.ErrorCodes.SetupMissing, section);
         Assert.Contains(E2eScenariosLinter.ErrorCodes.SetupTypeInvalid, section);
         Assert.Contains(E2eScenariosLinter.ErrorCodes.LabSecretsIncomplete, section);
+        Assert.Contains(E2eScenariosLinter.ErrorCodes.InlineRequiresService, section);
 
         // Closed-set Type names appear so the LLM doesn't need to look
         // them up elsewhere.

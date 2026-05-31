@@ -419,6 +419,13 @@ builder.Services.AddScoped<Forge.Api.Services.MemoryCompactor>();
 // whose UpdatedAt crossed Forge:Memory:RetentionDays.
 builder.Services.AddSingleton<Forge.Api.Services.AgentMemoryReaper>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.AgentMemoryReaper>());
+// Periodic reaper for stale per-workstream git worktrees. Removes worktrees
+// for {planning, cancelled, historic, complete} workstreams plus per-WS
+// orphans whose branch matches no live row — the only event-driven cleanup
+// (orchestrator merge transition) misses workstreams that reach complete via
+// any other path, so worktrees otherwise accumulate without bound.
+builder.Services.AddSingleton<Forge.Api.Services.WorktreeReaper>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorktreeReaper>());
 // Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).

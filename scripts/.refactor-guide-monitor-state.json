@@ -1,12 +1,7 @@
 {
-  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-rule-engine-wiring": {
-    "total": 908,
-    "last_at": "2026-05-31T00:31:21.1359812+00:00",
-    "status": "active"
-  },
-  "ws-code-intelligence-refactor-guide-phase-pipeline-stage-dark-metric-diagnostics": {
-    "total": 869,
-    "last_at": "2026-05-31T00:31:21.1951187+00:00",
+  "ws-code-intelligence-refactor-guide-phase-p0-reports-and-delivery-stage-markdown-report-renderer-e2e": {
+    "total": 248,
+    "last_at": "2026-05-31T03:13:55.1798073+00:00",
     "status": "active"
   }
 }

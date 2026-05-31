@@ -716,6 +716,7 @@ public static class WorkstreamsEndpoints
         IForgeDbPaths paths,
         IEnumerable<IForgeProvider> providers,
         StorySpawnOrchestrator orchestrator,
+        Forge.Api.Services.Stories.PlanReconciler reconciler,
         AgentMemoryStore memStore,
         IterationPromptStore promptStore,
         CopilotSessionPool copilotPool)
@@ -1056,9 +1057,34 @@ public static class WorkstreamsEndpoints
             /* best-effort — never block restart on memory cleanup */
         }
 
-        // ── 8. Re-drive the story orchestrator ──────────────────────────
+        // ── 8. Force a plan reconcile, THEN re-drive the orchestrator ────
+        // Restart re-runs against whatever DescriptionMd the WorkItem already
+        // holds (step 5's refresh deliberately SKIPS qa-e2e, and copies the
+        // story description rather than the plan). So a Restart taken after a
+        // plan-doc edit would re-run the STALE spec. Reconcile first: it is the
+        // only path that regenerates a qa-e2e row's `## Test Scenarios` block
+        // from the current implementation-plan (PlanReconciler.QaE2eStageDescription)
+        // and refreshes every workstream's DescriptionMd / deps. Awaited (not
+        // fire-and-forget) so the fresh spec is committed BEFORE the orchestrator
+        // re-drive and before the queue worker can re-claim the now-Queued row.
+        // It runs on the reconciler's own DbContext scope as the last writer, so
+        // it sees this handler's committed resets. The scheduler's periodic
+        // reconcile is only a backstop — it does not run for an idle / terminal
+        // spawn, which is exactly the state a just-failed workstream is in.
+        var planReconciled = 0;
         if (!string.IsNullOrEmpty(ws.StorySpawnId))
         {
+            try
+            {
+                var rec = await reconciler.ReconcileAsync(ws.StorySpawnId, ctx.RequestAborted);
+                planReconciled = rec?.Updated ?? 0;
+            }
+            catch
+            {
+                /* best-effort — never block a restart on reconcile; the
+                   scheduler's periodic pass remains the backstop. */
+            }
+
             var spawn = await db.StorySpawns.AsNoTracking()
                 .FirstOrDefaultAsync(s => s.Id == ws.StorySpawnId);
             if (spawn is not null)
@@ -1080,6 +1106,7 @@ public static class WorkstreamsEndpoints
             iterationPromptsCleaned = iterationPromptsDeleted,
             memoryRowsCleaned = memoryDeleted,
             gateLogsPruned,
+            planReconciled,
         });
     }
 
