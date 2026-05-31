@@ -409,6 +409,30 @@ public static class GeneratorFailureKinds
         {
             return CliExit;
         }
+        // 2026-05-31 — Copilot CAPI transient model-endpoint failure. The
+        // Copilot SDK wraps an upstream model timeout/5xx after exhausting
+        // its OWN retry budget as
+        //   "Failed to get response from the AI model; retried N times
+        //    (total retry wait time: …) Last error: CAPIError: Request timed out."
+        // This is an upstream blip, not a broken generator — it must be
+        // classified as transient so DeliverableLoop's failure short-circuit
+        // routes it to verdict=iterate (auto-retry next iter) instead of
+        // falling through to Other → terminal stall. The "retried N times"
+        // wrapper only appears for retryable errors, so it is reliably
+        // transient; the bare-CAPI clause is gated on "timed out" to avoid
+        // over-matching CAPI 4xx/auth errors (which are NOT retryable). The
+        // Phase-61/67 sloppy detectors (ConsecutiveScoreZero / NoProgress)
+        // still cap genuinely-persistent CAPI outages at ≤3 retries.
+        // Symptom: code-intelligence:REPO-SCANNER react-and-neo4j-nvl-web-ui
+        // stage-vite-and-typescript-scaffold-e2e (2026-05-31) — a single CAPI
+        // request timeout at iter 3 stalled the workstream and blocked the
+        // entire react-ui phase + 18 downstream workstreams behind it.
+        if (error.Contains("Failed to get response from the AI model", StringComparison.OrdinalIgnoreCase)
+            || (error.Contains("CAPIError", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("timed out", StringComparison.OrdinalIgnoreCase)))
+        {
+            return Timeout;
+        }
         if (error.StartsWith("Anthropic ", StringComparison.OrdinalIgnoreCase)
             || error.Contains("HTTP", StringComparison.OrdinalIgnoreCase) && error.Contains("status", StringComparison.OrdinalIgnoreCase))
         {

@@ -4924,7 +4924,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var assignedGen = assignedAgents.Count > 0 ? assignedAgents[0] : null;
         var assignedEval = assignedAgents.Count > 1 ? assignedAgents[1] : null;
 
-        await this.RunGenEvalLoopAsync(
+        var skippedConcurrent = await this.RunGenEvalLoopAsync(
             team: "QA",
             workItemId: workstream.Id,
             phaseTag: $"qa-e2e:{workstream.Id}",
@@ -4963,6 +4963,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             initCommand: ResolveInitCommand(repo),
             restoreCommand: ResolveRestoreCommand(repo),
             ct: ct);
+
+        // Phase 74 follow-up — DeliverableLoop fast-failed because another qa-e2e
+        // run already owns this work item. Do NOT collect the (now-empty) diff or
+        // trip the empty-diff guard below, which would mark this workstream stalled
+        // and clobber the winning in-flight run's committed e2e. Observed 2026-05-31
+        // on code-intelligence:REPO-SCANNER diagram-projector stage-buildmodulediagram-e2e
+        // + stage-buildcallchain-bfs-e2e: both had VALID committed e2e tests
+        // ([e2e] commits ahead of base, builds clean) but the losing concurrent run
+        // reached GetChangedFilesAsync against a tree the winner hadn't committed yet,
+        // saw 0 files, and threw "qa-e2e agent produced no file changes" → stalled.
+        // The auto-heal only recovers pass-stalled rows (priorVerdict=pass); a loser
+        // that throws BEFORE a pass deliverable is recorded escapes it → permanent stall.
+        // Mirror the impl path (ProduceWorkstreamChangesAsync, line ~4062): yield to the
+        // in-flight owner via WorkstreamInFlightException, which the orchestrator treats
+        // as a transient no-op (NOT a failed attempt, NOT a stall).
+        if (skippedConcurrent)
+        {
+            throw new WorkstreamInFlightException(workstream.Id);
+        }
 
         // Collect the agent's contribution as the git diff vs the merge target —
         // NOT a full directory walk. ReadAllFiles was correct only for the old
