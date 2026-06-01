@@ -711,6 +711,21 @@ public static class TaskExecutionEndpoints
             "task.iteration.started", "task.iteration.scored",
             "task.iteration.passed", "task.iteration.rejected",
             "task.iteration.iterated", "task.iteration.stalled",
+            // 2026-06-01 — pin build/test gate events too. These are the
+            // authoritative pass/fail rows the Build tab (BuildPane.tsx,
+            // FORGE_BUILD_EVENT_KINDS in filters.ts) renders, and they are
+            // SPARSE — typically a handful per iteration. Without pinning,
+            // once the transcript grows past the recent-500 window the gate
+            // events from earlier iterations fall out of recentTranscript and
+            // the Build tab silently drops them (observed 2026-06-01 on
+            // repo-scanner docs-and-shipping-stage-context-refresh: iter-2
+            // `task.test-gate.failed` existed in the full transcript but the
+            // Build tab only showed iter-1's gates because iter-2/3 had
+            // scrolled past the window). Payloads are small (no bulky text)
+            // so pinning every gate across all iters is cheap.
+            "task.build-gate.passed", "task.build-gate.failed", "task.build-gate.skipped",
+            "task.build-failed.detected", "task.build-failed.aborted",
+            "task.test-gate.passed", "task.test-gate.failed", "task.test-gate.skipped",
         };
         var pinnedIds = new HashSet<long>(transcriptRows.Select(r => r.Id));
         var pinnedRows = await db.TaskTranscriptEvents.AsNoTracking()

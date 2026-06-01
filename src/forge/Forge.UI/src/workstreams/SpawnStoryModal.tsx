@@ -155,7 +155,10 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         className={`modal${open ? ' show' : ''}`}
         role="dialog"
         aria-modal="true"
-        style={{ maxWidth: 760, width: '90%' }}
+        // maxHeight + scroll: a long architect prompt (the story description)
+        // must not push the dialog past the viewport — it scrolls inside.
+        // overflowX hidden so no child can spill outside the popup container.
+        style={{ maxWidth: 760, width: '90%', maxHeight: '85vh', overflowY: 'auto', overflowX: 'hidden' }}
       >
         <h3 className="modal-title">
           {step === 'select'
@@ -238,7 +241,10 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         )}
 
         {step === 'confirm' && selected && (
-          <div style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
+          // minWidth:0 lets the single-column grid tracks shrink below their
+          // content's intrinsic min-width, so a long unbreakable token can't
+          // blow the grid (and the fields inside it) wider than the dialog.
+          <div style={{ display: 'grid', gap: 10, marginBottom: 18, minWidth: 0 }}>
             <Field label="Story id"><span style={{ fontFamily: 'var(--font-mono)' }}>{selected.id}</span></Field>
             <Field label="Title">{selected.name}</Field>
             <Field label="Points">{selected.points}</Field>
@@ -305,7 +311,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                 )}
               </div>
             </Field>
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', overflowWrap: 'anywhere', minWidth: 0 }}>
               Branches and worktrees are derived automatically. The architect crew starts on
               {' '}<code>story/{selected.id}/plan</code> using the description above as its user prompt.
             </div>
@@ -337,7 +343,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-secondary)' }}>
+    // minWidth:0 so the field never forces its grid track wider than the dialog.
+    <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-secondary)', minWidth: 0 }}>
       <span>{label}</span>
       <span
         style={{
@@ -348,6 +355,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
           background: 'var(--bg-surface)',
           color: 'var(--text-primary)',
           fontSize: 12,
+          // Long unbreakable values (story ids, repo GUIDs, branch names) wrap
+          // inside the box instead of spilling outside the popup container.
+          overflowWrap: 'anywhere',
+          minWidth: 0,
         }}
       >
         {children}

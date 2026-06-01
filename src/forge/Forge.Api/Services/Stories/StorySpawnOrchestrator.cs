@@ -3886,6 +3886,35 @@ public sealed class StorySpawnOrchestrator
             await EmitChange(hub, "ws-stalled", spawn, ct);
             return;
         }
+        catch (WorkstreamInFlightException ifEx)
+        {
+            // Phase 74 follow-up (2026-05-31) — ProduceStageE2eAsync yields with
+            // WorkstreamInFlightException when DeliverableLoop's per-workItemId
+            // mutex proved another qa-e2e run already owns this workstream. This
+            // is a transient no-op, NOT a producer failure: the winning in-flight
+            // run produces + commits the e2e and owns the real verdict. Mirror the
+            // impl path's dedicated handler (DriveImplementAsync ~line 2539) — emit
+            // a skipped-concurrent finish and return WITHOUT marking stalled. The
+            // generic catch below MUST NOT see this exception, or it records
+            // "qa-e2e producer failed: WorkstreamInFlightException" and clobbers
+            // the live run's status to stalled (observed 2026-05-31 on
+            // react-and-neo4j-nvl-web-ui stage-vite-and-typescript-scaffold-e2e
+            // right after the ProduceStageE2eAsync skipped-concurrent fix deployed:
+            // the e2e producer correctly yielded, but this call site stalled it).
+            this.logger?.LogInformation(
+                "Workstream {WsId} qa-e2e skipped because another run is in-flight: {Message}",
+                w.Id, ifEx.Message);
+            await this.EmitSpawnEventAsync(w.Id, ImplSpawnGuard.SpawnFinishedKind, new
+            {
+                wsId = w.Id,
+                spawnId = spawn.Id,
+                success = false,
+                skippedConcurrent = true,
+                exceptionType = nameof(WorkstreamInFlightException),
+                message = ifEx.Message,
+            }, CancellationToken.None);
+            return;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Transient agent-transport failures (Copilot SDK pipe drop /
