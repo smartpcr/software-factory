@@ -78,6 +78,8 @@ const STATUS_TO_PHASE_CLASS: Record<string, string> = {
   historic: 'done',
   blocked:  'blocked',
   stalled:  'stalled',
+  // Phase 63 operator-induced pause — gray neutral, mirrors `planning`.
+  paused:   'queued',
 };
 
 const STATUS_TO_BADGE: Record<string, string> = {
@@ -89,6 +91,7 @@ const STATUS_TO_BADGE: Record<string, string> = {
   historic: 'done',
   blocked:  'blocked',
   stalled:  'stalled',
+  paused:   'blocked',
 };
 
 const STATUS_PROGRESS: Record<string, number> = {
@@ -100,6 +103,7 @@ const STATUS_PROGRESS: Record<string, number> = {
   historic: 100,
   blocked:  0,
   stalled:  35,
+  paused:   50,
 };
 
 export function SwarmMasterPanel(props: Props) {
