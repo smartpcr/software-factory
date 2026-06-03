@@ -33,6 +33,23 @@ public static class StoryBuildRunner
     /// <summary>Hard cap on the summary's character length.</summary>
     public const int ErrorSummaryMaxChars = 2400;
 
+    /// <summary>
+    /// Max Go-failure lines retained from the stream (bounds memory). Go's
+    /// `--- FAIL:` / `panic:` / `*.go:line:` detail doesn't match the
+    /// compiler-oriented <see cref="ErrorLineRegex"/> and the trailing wall of
+    /// `ok` package-summary lines pushes it out of the bounded tail ring — so
+    /// we capture it into a dedicated buffer as it streams.
+    /// </summary>
+    private const int GoFailCaptureLimit = 120;
+
+    // Go test failure-shaped lines: per-test header, panic, package-level
+    // FAIL, build-error package header (`# pkg`), and `file.go:line:` detail.
+    // Only consulted when the invoked command is `go …` (see goFailLines below)
+    // so dotnet/cargo/npm output can't be misclassified.
+    private static readonly Regex GoFailLineRegex = new(
+        @"^\s*--- FAIL:|^panic:|^FAIL\s|^# \S|\.go:\d+:",
+        RegexOptions.Compiled);
+
     private static readonly Regex ErrorLineRegex = new(
         @"\):\s+error\s+\w+:",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -300,6 +317,14 @@ public static class StoryBuildRunner
         var samples = new List<string>(ErrorSampleLimit);
         // Tail ring for the no-parsed-errors fallback (last ~1200 chars).
         var tail = new TailRing(1200);
+        // Go-only failure capture: the compiler-oriented ErrorLineRegex never
+        // matches Go's `--- FAIL:` / `panic:` / `*.go:line:` output, and the
+        // trailing `ok pkg` summary wall pushes the real failure out of the
+        // 1200-char tail ring. Capture failure-shaped lines into a bounded
+        // buffer ONLY when the invoked command is `go …`, so dotnet/cargo/npm
+        // output can never be misclassified as Go failures.
+        var isGoCmd = GoWorkspaceGate.IsGoCommand(buildCommand);
+        var goFailLines = isGoCmd ? new List<string>(GoFailCaptureLimit) : null;
         var lockObj = new object();
 
         async Task PumpAsync(StreamReader reader)
@@ -317,6 +342,12 @@ public static class StoryBuildRunner
                     else if (WarningLineRegex.IsMatch(line))
                     {
                         warningCount++;
+                    }
+                    if (goFailLines is not null
+                        && goFailLines.Count < GoFailCaptureLimit
+                        && GoFailLineRegex.IsMatch(line))
+                    {
+                        goFailLines.Add(line.TrimEnd());
                     }
                     tail.Append(line);
                     if (logWriter is not null)
@@ -417,8 +448,23 @@ public static class StoryBuildRunner
             // to stdout, so the earlier stderr-only tail missed
             // everything for `dotnet build`; cargo fmt --check writes
             // its diff to stdout too. Combined tail is the safe
-            // universal default.
-            summary = "(no parsed error lines; raw output tail below)\n" + tail.Snapshot().Trim();
+            // universal default. For a Go command, prefer the captured
+            // failure-shaped lines (the `ok pkg` summary wall would
+            // otherwise crowd the real `--- FAIL:` / `panic:` out of the
+            // bounded tail ring).
+            if (goFailLines is { Count: > 0 })
+            {
+                var goBlock = string.Join("\n", goFailLines);
+                if (goBlock.Length > ErrorSummaryMaxChars)
+                {
+                    goBlock = goBlock[..ErrorSummaryMaxChars] + "…(truncated; full log at the chip link)";
+                }
+                summary = "(go test/build failures captured from stream)\n" + goBlock;
+            }
+            else
+            {
+                summary = "(no parsed error lines; raw output tail below)\n" + tail.Snapshot().Trim();
+            }
         }
 
         // 2026-05-25 — test-gate path: scan for new TRX, parse failed
@@ -466,11 +512,21 @@ public static class StoryBuildRunner
             // Fallback: scrape regex from the buffered tail + the samples
             // we already captured. We don't have full stdout here (line
             // streaming bounded by TailRing), so the tail is the best
-            // available source for failure name extraction.
+            // available source for failure name extraction. For a Go
+            // command, parse the dedicated failure buffer first (it retains
+            // `--- FAIL:` / `panic:` / `FAIL pkg [build failed]` that the
+            // tail ring drops under the trailing `ok` summary).
             if (trxFailures.Count == 0)
             {
-                var tailText = tail.Snapshot();
-                trxFailures.AddRange(GateLogPaths.ParseDotnetTestFailuresFromText(tailText));
+                if (goFailLines is { Count: > 0 })
+                {
+                    trxFailures.AddRange(GateLogPaths.ParseGoTestFailuresFromText(string.Join("\n", goFailLines)));
+                }
+                if (trxFailures.Count == 0)
+                {
+                    var tailText = tail.Snapshot();
+                    trxFailures.AddRange(GateLogPaths.ParseDotnetTestFailuresFromText(tailText));
+                }
             }
 
             if (trxFailures.Count > 0)
@@ -666,7 +722,14 @@ public static class StoryBuildRunner
         string? logRelPath = null,
         IReadOnlyList<string>? sessionSetupCommands = null,
         bool collectTestFailures = false,
-        string? trxScopeTag = null)
+        string? trxScopeTag = null,
+        // Optional per-module command override, indexed parallel to
+        // moduleRelDirs. When provided (test stage, where each module is
+        // narrowed to its own changed packages via
+        // GoWorkspaceGate.ScopeTestCommandToPackages), the command for module
+        // i is perModuleCommands[i]; otherwise scopedCommand is used for every
+        // module (build stage, where the same `go build ./...` runs in each).
+        IReadOnlyList<string>? perModuleCommands = null)
     {
         var budget = timeout ?? DefaultTimeout;
         var swAll = Stopwatch.StartNew();
@@ -681,6 +744,9 @@ public static class StoryBuildRunner
         for (var i = 0; i < moduleRelDirs.Count; i++)
         {
             var rel = moduleRelDirs[i];
+            var moduleCommand = perModuleCommands is { } pmc && i < pmc.Count && !string.IsNullOrWhiteSpace(pmc[i])
+                ? pmc[i]
+                : scopedCommand;
             string moduleDir;
             try { moduleDir = Path.GetFullPath(Path.Combine(workspace, rel)); }
             catch { moduleDir = workspace; }
@@ -695,7 +761,7 @@ public static class StoryBuildRunner
                     using var hw = new StreamWriter(
                         new FileStream(logFilePath!, i == 0 ? FileMode.Create : FileMode.Append, FileAccess.Write, FileShare.Read),
                         System.Text.Encoding.UTF8);
-                    hw.WriteLine($"==== module {rel} :: {scopedCommand} ====");
+                    hw.WriteLine($"==== module {rel} :: {moduleCommand} ====");
                 }
                 catch { /* best-effort; the run still proceeds without a header */ }
             }
@@ -714,7 +780,7 @@ public static class StoryBuildRunner
                 moduleDir,
                 ct,
                 remaining,
-                buildCommand: scopedCommand,
+                buildCommand: moduleCommand,
                 logFilePath: logFilePath,
                 logRelPath: logRelPath,
                 sessionSetupCommands: sessionSetupCommands,

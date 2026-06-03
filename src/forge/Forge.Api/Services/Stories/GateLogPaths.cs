@@ -447,6 +447,101 @@ public static class GateLogPaths
         RegexOptions.Compiled);
 
     /// <summary>
+    /// Regex-based parser for <c>go test</c> output, mirroring
+    /// <see cref="ParseDotnetTestFailuresFromText"/> for the Go ecosystem.
+    /// The compiler-oriented error regex in <c>StoryBuildRunner</c> never
+    /// matches Go's <c>--- FAIL:</c> / <c>panic:</c> / <c>FAIL pkg [build
+    /// failed]</c> lines, so for a Go repo the test-gate ErrorSummary was a
+    /// useless list of trailing <c>ok</c> lines (the bounded tail ring drops
+    /// the real failure under the package summary). This recovers the failing
+    /// test/package names so the next-iter generator prompt and the evaluator
+    /// see actionable detail. Best-effort: never throws; capped at 50 entries.
+    /// (2026-06-02: code-intelligence PR-INGESTER stage 5.3 stalled ~1 day on a
+    /// flaky go-test failure whose name was lost to the ok-line tail.)
+    /// </summary>
+    public static IReadOnlyList<TrxFailure> ParseGoTestFailuresFromText(string text)
+    {
+        var results = new List<TrxFailure>();
+        if (string.IsNullOrWhiteSpace(text)) return results;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (var i = 0; i < lines.Length && results.Count < 50; i++)
+        {
+            // `--- FAIL: TestName (0.12s)` — the per-test failure header
+            // (optionally indented for subtests like `--- FAIL: TestX/case`).
+            var fail = GoTestFailedLine.Match(lines[i]);
+            if (fail.Success)
+            {
+                var name = fail.Groups[1].Value.Trim();
+                if (string.IsNullOrEmpty(name) || !seen.Add(name)) continue;
+                string? message = null;
+                // The first `file.go:NN: …` detail line under the header is the
+                // most actionable assertion message; stop at the next FAIL header.
+                for (var j = i + 1; j < Math.Min(i + 8, lines.Length); j++)
+                {
+                    if (GoTestFailedLine.IsMatch(lines[j])) break;
+                    if (GoSourceLocationLine.IsMatch(lines[j])) { message = lines[j].Trim(); break; }
+                }
+                results.Add(new TrxFailure(name, "Failed", ParseGoDuration(fail.Groups[2].Value), message, null));
+                continue;
+            }
+
+            // `FAIL\tgithub.com/x/y [build failed]` (or `[setup failed]`, etc.) —
+            // a package-level compile/setup failure with no per-test header.
+            var build = GoPackageFailedLine.Match(lines[i]);
+            if (build.Success)
+            {
+                var pkg = build.Groups[1].Value.Trim();
+                var reason = build.Groups[2].Value.Trim();
+                if (!string.IsNullOrEmpty(pkg) && seen.Add(pkg))
+                {
+                    results.Add(new TrxFailure(pkg, "Failed", 0d, reason, null));
+                }
+                continue;
+            }
+
+            // `panic: …` — an unrecovered panic aborts the package run.
+            if (lines[i].StartsWith("panic:", StringComparison.Ordinal))
+            {
+                var msg = lines[i].Trim();
+                if (seen.Add(msg))
+                {
+                    results.Add(new TrxFailure("panic", "Failed", 0d, msg.Length > 240 ? msg[..240] + "…" : msg, null));
+                }
+            }
+        }
+        return results;
+    }
+
+    // `--- FAIL: TestName (0.00s)` — Go per-test failure header. Group 1 is the
+    // test name (incl. `Parent/Sub` subtest paths), group 2 the duration body.
+    private static readonly Regex GoTestFailedLine = new(
+        @"^\s*--- FAIL:\s+(\S+)\s+\(([^)]*)\)\s*$",
+        RegexOptions.Compiled);
+
+    // `FAIL\tgithub.com/x/y [build failed]` — package-level failure with reason.
+    private static readonly Regex GoPackageFailedLine = new(
+        @"^FAIL\s+(\S+)\s+\[([^\]]+)\]\s*$",
+        RegexOptions.Compiled);
+
+    // `foo_test.go:123: want X got Y` — Go source-location detail line.
+    private static readonly Regex GoSourceLocationLine = new(
+        @"\.go:\d+:",
+        RegexOptions.Compiled);
+
+    private static double ParseGoDuration(string? duration)
+    {
+        if (string.IsNullOrWhiteSpace(duration)) return 0d;
+        var d = duration.Trim();
+        if (d.EndsWith("s", StringComparison.Ordinal)) d = d[..^1];
+        return double.TryParse(
+            d,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var v) ? v : 0d;
+    }
+
+    /// <summary>
     /// Render a failed-test list as a compact prompt-friendly block. Caller
     /// is responsible for capping the final length; this method caps each
     /// message line at 240 chars so a single ugly assertion message can't

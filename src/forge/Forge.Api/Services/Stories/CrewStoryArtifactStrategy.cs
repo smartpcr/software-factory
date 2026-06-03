@@ -1363,51 +1363,59 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // so a re-run of the same iter doesn't collide with the prior
             // attempt's captured TRX.
             var testTrxTag = $"test-{iter}-{DateTime.UtcNow.Ticks}";
-            StoryBuildResult? t = null;
-            try
+
+            // 2026-06-02 — hoist the go.work module resolution OUT of the test
+            // run so it executes exactly once (it does a git diff + emits
+            // task.test-gate.resolved), then run the test through a per-attempt
+            // local function so a single flaky failure can be retried. Root
+            // cause (code-intelligence PR-INGESTER stage 5.3, stuck ~1 day): a
+            // module-wide `go test` flaked intermittently under heavy concurrent
+            // load (postgres advisory locks / ports / CPU); each independent
+            // flake counted toward BuildFailThreshold=3 → permanent stall, and a
+            // failed test gate injects "correctness=0 minimum" into the
+            // evaluator prompt → the SAME commit oscillated 88→35→88. One
+            // bounded retry distinguishes a real regression (fails twice) from a
+            // flake (passes on retry) without masking genuine breakage.
+            var isGoWorkspaceRun = false;
+            IReadOnlyList<string> goModulesResolved = Array.Empty<string>();
+            var scopedGoCmd = effectiveTestCommand;
+            var perModuleGoCmds = new List<string>();
+            var goResolutionFailed = false;
+            if (!runTestsElevated
+                && GoWorkspaceGate.IsGoCommand(effectiveTestCommand)
+                && GoWorkspaceGate.TryReadWorkspaceModules(workspace) is { Count: > 0 } goTestModules)
             {
-                if (runTestsElevated)
+                // go.work multi-module repo: `go test ./...` from the worktree
+                // root matches ZERO packages (./... doesn't cross module
+                // boundaries), so run it inside each module the diff touched.
+                // Guarded: a git/IO failure here must mirror the original
+                // generic-catch behaviour (emit skipped, skip the test stage)
+                // rather than throwing into the orchestrator's generic stall.
+                // OperationCanceledException still propagates (real shutdown).
+                try
                 {
-                    // RunTestsElevated repo: the test command (its tests write
-                    // HKLM / bind HttpListener) must run as admin, but Forge.Api
-                    // itself is non-elevated. Marshal JUST this command to the
-                    // elevated broker. Broker-unreachable throws
-                    // ElevatedBrokerUnavailableException, which we deliberately
-                    // do NOT swallow below — it propagates so the workstream
-                    // stalls (a RunTestsElevated repo must never silently run
-                    // its tests non-elevated).
-                    t = await Forge.Api.Agents.ElevatedCommandBroker.RunBuildAsync(
-                        new Forge.Api.Agents.ElevatedBuildRequest(
-                            Workspace: workspace,
-                            TimeoutMs: (long)(testTimeout ?? StoryBuildRunner.DefaultTimeout).TotalMilliseconds,
-                            BuildCommand: effectiveTestCommand,
-                            LogFilePath: testLogPath,
-                            LogRelPath: testLogRel,
-                            SessionSetupCommands: sessionSetup,
-                            CollectTestFailures: true,
-                            TrxScopeTag: testTrxTag),
-                        ct);
-                }
-                else if (GoWorkspaceGate.IsGoCommand(effectiveTestCommand)
-                    && GoWorkspaceGate.TryReadWorkspaceModules(workspace) is { Count: > 0 } goTestModules)
-                {
-                    // go.work multi-module repo: `go test ./...` from the
-                    // worktree root matches ZERO packages (./... doesn't cross
-                    // module boundaries), so run it inside each module the diff
-                    // touched. Scoping to impacted modules avoids fail-opening
-                    // onto a sibling module's pre-existing test breakage. See
-                    // GoWorkspaceGate. This is the in-Forge replacement for the
-                    // tools/forge_gate_proxy shim agents were hand-rolling.
                     IReadOnlyList<string> goChanged = Array.Empty<string>();
                     if (!string.IsNullOrWhiteSpace(testBaseRef))
                     {
                         try { goChanged = await ImpactedTestResolver.DiscoverChangedFilesAsync(workspace, testBaseRef!, ct); }
+                        catch (OperationCanceledException) { throw; }
                         catch { goChanged = Array.Empty<string>(); }
                     }
                     var goModules = GoWorkspaceGate.SelectImpactedModules(goTestModules, goChanged);
-                    var scopedGoCmd = GoWorkspaceGate.ScopeCommandToModule(effectiveTestCommand!);
+                    scopedGoCmd = GoWorkspaceGate.ScopeCommandToModule(effectiveTestCommand!);
+                    // Narrow the TEST stage one level below the module: run only
+                    // the packages the diff actually touched, per module. This
+                    // keeps an impacted module's slow/flaky unrelated packages
+                    // (e.g. agent-memory's ~19 embedded-postgres integration
+                    // packages) out of the per-iter gate, where their failures
+                    // would be blamed on a diff that never touched them.
+                    perModuleGoCmds = goModules
+                        .Select(m => GoWorkspaceGate.ScopeTestCommandToPackages(effectiveTestCommand!, m, goTestModules, goChanged))
+                        .ToList();
+                    goModulesResolved = goModules;
                     effectiveTestCommand = scopedGoCmd;
                     impactedMode = "go-workspace";
+                    isGoWorkspaceRun = true;
                     await this.taskChannel.EmitAsync(workItemId, "task.test-gate.resolved", new
                     {
                         stage = stagePrefix,
@@ -1417,23 +1425,75 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         goModules,
                         changedFileCount = goChanged.Count,
                         scopedCommand = scopedGoCmd,
+                        scopedByModule = goModules
+                            .Select((m, idx) => new { module = m, command = perModuleGoCmds[idx] })
+                            .ToList(),
                     }, agentId: agentId, crewId: crewId, ct: ct);
-                    t = await StoryBuildRunner.RunGoWorkspaceAsync(
-                        workspace, goModules, scopedGoCmd, ct,
-                        timeout: testTimeout ?? StoryBuildRunner.DefaultTimeout,
-                        logFilePath: testLogPath,
-                        logRelPath: testLogRel,
-                        sessionSetupCommands: sessionSetup,
-                        collectTestFailures: true,
-                        trxScopeTag: testTrxTag);
                 }
-                else
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    t = await StoryBuildRunner.RunBuildAsync(
+                    this.logger?.LogWarning(ex,
+                        "{Prefix} go.work test resolution threw for {Workspace}; skipping.",
+                        stagePrefix, workspace);
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        reason = $"go.work resolution threw: {ex.GetType().Name}: {ex.Message}",
+                        testCommand,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    goResolutionFailed = true;
+                }
+            }
+
+            // Runs one test attempt against the supplied (per-attempt) log path
+            // and TRX tag. Returns null when the run threw a non-fatal error
+            // (skipped). The elevated-broker-unavailable case rethrows as
+            // BuildFailedException (a RunTestsElevated repo must never silently
+            // run its tests non-elevated) and is therefore never retried.
+            async Task<StoryBuildResult?> ExecTestAttemptAsync(string logPath, string logRel, string trxTag)
+            {
+                try
+                {
+                    if (runTestsElevated)
+                    {
+                        // RunTestsElevated repo: the test command (its tests write
+                        // HKLM / bind HttpListener) must run as admin, but Forge.Api
+                        // itself is non-elevated. Marshal JUST this command to the
+                        // elevated broker.
+                        return await Forge.Api.Agents.ElevatedCommandBroker.RunBuildAsync(
+                            new Forge.Api.Agents.ElevatedBuildRequest(
+                                Workspace: workspace,
+                                TimeoutMs: (long)(testTimeout ?? StoryBuildRunner.DefaultTimeout).TotalMilliseconds,
+                                BuildCommand: effectiveTestCommand,
+                                LogFilePath: logPath,
+                                LogRelPath: logRel,
+                                SessionSetupCommands: sessionSetup,
+                                CollectTestFailures: true,
+                                TrxScopeTag: trxTag),
+                            ct);
+                    }
+
+                    if (isGoWorkspaceRun)
+                    {
+                        return await StoryBuildRunner.RunGoWorkspaceAsync(
+                            workspace, goModulesResolved, scopedGoCmd!, ct,
+                            timeout: testTimeout ?? StoryBuildRunner.DefaultTimeout,
+                            logFilePath: logPath,
+                            logRelPath: logRel,
+                            sessionSetupCommands: sessionSetup,
+                            collectTestFailures: true,
+                            trxScopeTag: trxTag,
+                            perModuleCommands: perModuleGoCmds);
+                    }
+
+                    return await StoryBuildRunner.RunBuildAsync(
                         workspace, ct, testTimeout ?? StoryBuildRunner.DefaultTimeout,
                         buildCommand: effectiveTestCommand,
-                        logFilePath: testLogPath,
-                        logRelPath: testLogRel,
+                        logFilePath: logPath,
+                        logRelPath: logRel,
                         sessionSetupCommands: sessionSetup,
                         // Test gate ONLY: scan for *.trx files written during
                         // the run, copy them under .forge/logs/trx/, and
@@ -1443,50 +1503,127 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         // 5611 ("TEST FAILURE FROM PRIOR ITERATION") for
                         // where this lands in the prompt.
                         collectTestFailures: true,
-                        trxScopeTag: testTrxTag);
+                        trxScopeTag: trxTag);
+                }
+                catch (Forge.Api.Agents.ElevatedBrokerUnavailableException ex)
+                {
+                    // Operator's chosen fallback: STALL the workstream. Convert to
+                    // the BuildFailedException the orchestrator already routes to a
+                    // stall (DriveImplementAsync → ws.Status=stalled). Do NOT
+                    // downgrade to a skipped/iterate gate — a RunTestsElevated repo
+                    // must never run its tests non-elevated.
+                    await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        reason = "elevated-test-broker-unavailable",
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+
+                    throw new BuildFailedException(
+                        "Elevated test runner unavailable — this repo is flagged RunTestsElevated, but the "
+                        + "elevated test broker could not be reached. Start it via scripts\\run-forge-ui.ps1 "
+                        + $"(it launches the broker elevated). {ex.Message}")
+                    {
+                        Stage = "test",
+                        Command = effectiveTestCommand ?? testCommand ?? string.Empty,
+                        ErrorSummary = ex.Message,
+                        ExitCode = -1,
+                        LastIteration = iter,
+                    };
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "{Prefix} test check threw for {Workspace}; skipping.",
+                        stagePrefix, workspace);
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        reason = $"test runner threw: {ex.GetType().Name}: {ex.Message}",
+                        testCommand,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    return null;
                 }
             }
-            catch (Forge.Api.Agents.ElevatedBrokerUnavailableException ex)
-            {
-                // Operator's chosen fallback: STALL the workstream. Convert to
-                // the BuildFailedException the orchestrator already routes to a
-                // stall (DriveImplementAsync → ws.Status=stalled). Do NOT
-                // downgrade to a skipped/iterate gate — a RunTestsElevated repo
-                // must never run its tests non-elevated.
-                await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
-                {
-                    stage = stagePrefix,
-                    gateStage = "test",
-                    iter,
-                    reason = "elevated-test-broker-unavailable",
-                }, agentId: agentId, crewId: crewId, ct: ct);
 
-                throw new BuildFailedException(
-                    "Elevated test runner unavailable — this repo is flagged RunTestsElevated, but the "
-                    + "elevated test broker could not be reached. Start it via scripts\\run-forge-ui.ps1 "
-                    + $"(it launches the broker elevated). {ex.Message}")
-                {
-                    Stage = "test",
-                    Command = effectiveTestCommand ?? testCommand ?? string.Empty,
-                    ErrorSummary = ex.Message,
-                    ExitCode = -1,
-                    LastIteration = iter,
-                };
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            StoryBuildResult? t = null;
+            if (!goResolutionFailed)
             {
-                this.logger?.LogWarning(ex,
-                    "{Prefix} test check threw for {Workspace}; skipping.",
-                    stagePrefix, workspace);
-                await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                t = await ExecTestAttemptAsync(testLogPath, testLogRel, testTrxTag);
+
+                // Single flake-retry: only when attempt 1 produced a concrete
+                // NON-timeout failure AND it failed FAST. A timeout is not
+                // retried (the budget is already generous; a second full run
+                // risks doubling a genuinely slow suite's wall-clock). A failure
+                // that already burned more than half the test budget is also not
+                // retried, so a slow deterministic failure (likely a real break)
+                // can't double per-iter wall-clock and create NEW budget-pressure
+                // stalls across workstreams. A null result (runner threw →
+                // skipped) is not retried either. Attempt 2 writes to a FRESH log
+                // path + TRX tag so attempt 1's evidence is preserved.
+                var retryBudgetCeiling = TimeSpan.FromTicks(
+                    (testTimeout ?? StoryBuildRunner.DefaultTimeout).Ticks / 2);
+                if (t is { Success: false, TimedOut: false } && t.Duration < retryBudgetCeiling)
                 {
-                    stage = stagePrefix,
-                    gateStage = "test",
-                    iter,
-                    reason = $"test runner threw: {ex.GetType().Name}: {ex.Message}",
-                    testCommand,
-                    workspace,
-                }, agentId: agentId, crewId: crewId, ct: ct);
+                    var (retryLogPath, retryLogRel) = GateLogPaths.For(workspace, "test-retry", iter);
+                    var retryLogUrl = BuildLogUrl(workItemId, retryLogRel);
+                    var retryTrxTag = $"test-retry-{iter}-{DateTime.UtcNow.Ticks}";
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.flake-retry", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        reason = "attempt-1 failed; running one retry to distinguish flake from regression",
+                        attempt1ExitCode = t.ExitCode,
+                        attempt1DurationSec = t.Duration.TotalSeconds,
+                        attempt1ErrorSummary = t.ErrorSummary,
+                        attempt1LogUrl = testLogUrl,
+                        attempt1LogRelPath = t.LogRelPath,
+                        attempt1TrxRelPaths = t.TrxRelPaths,
+                        effectiveTestCommand,
+                        impactedMode,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+
+                    var t2 = await ExecTestAttemptAsync(retryLogPath, retryLogRel, retryTrxTag);
+                    if (t2 is not null)
+                    {
+                        if (t2.Success)
+                        {
+                            // Recovered: attempt 2 passed where attempt 1 failed —
+                            // a flake. Surface BOTH logs so operators can confirm
+                            // the failure was non-deterministic (and find the
+                            // flaky package). The gate proceeds as a pass.
+                            await this.taskChannel.EmitAsync(workItemId, "task.test-gate.flake-recovered", new
+                            {
+                                stage = stagePrefix,
+                                gateStage = "test",
+                                iter,
+                                attempt1LogUrl = testLogUrl,
+                                attempt1ErrorSummary = t.ErrorSummary,
+                                attempt2LogUrl = retryLogUrl,
+                                attempt2DurationSec = t2.Duration.TotalSeconds,
+                                effectiveTestCommand,
+                                impactedMode,
+                                workspace,
+                            }, agentId: agentId, crewId: crewId, ct: ct);
+                        }
+
+                        // Attempt 2 is authoritative (pass OR a confirmed
+                        // second failure). Point the pass/fail emission below at
+                        // attempt 2's log + result. When attempt 2 itself threw
+                        // (t2 == null), keep attempt 1's failure so the gate
+                        // still fails rather than masking a real break.
+                        testLogPath = retryLogPath;
+                        testLogRel = retryLogRel;
+                        testLogUrl = retryLogUrl;
+                        t = t2;
+                    }
+                }
             }
 
             if (t is not null)

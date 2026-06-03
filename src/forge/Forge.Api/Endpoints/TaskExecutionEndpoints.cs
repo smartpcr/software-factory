@@ -816,7 +816,21 @@ public static class TaskExecutionEndpoints
                     // agree with what /commits computes.
                     var execBase = await Forge.Api.Services.Stories.WorkItemBaseBranchResolver
                         .ResolveAsync(control, db, id, ct);
-                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, execBase, ct);
+
+                    // Perf — do NOT run ~5 sequential git subprocesses on the
+                    // request thread. The WorktreeChangeFeed hosted loop already
+                    // refreshes every subscribed worktree ~1×/s and keeps the
+                    // snapshot in-memory; reading it is free. Subscribe (idempotent)
+                    // so the loop keeps this path warm, then prefer the cached
+                    // snapshot. Only fall back to a synchronous (timeout-bounded)
+                    // sample when the cache is cold — e.g. right after a restart
+                    // that dropped in-memory subscriptions — which then warms it
+                    // for every subsequent open. Without this, loading the
+                    // conversation of an active task blocked ~10–60s on git
+                    // (the live transcript itself loads in ~50ms).
+                    worktreeFeed.Subscribe(id, string.Empty, wtPath, execBase);
+                    var diskSnap = worktreeFeed.GetLatest(wtPath)
+                        ?? await worktreeFeed.SampleAsync(wtPath, execBase, ct);
                     if (diskSnap is not null)
                     {
                         worktree = new WorktreeSnapshot(
@@ -830,9 +844,6 @@ public static class TaskExecutionEndpoints
                                 diskSnap.BranchDiffAdded ?? Array.Empty<string>(),
                                 diskSnap.BranchDiffModified ?? Array.Empty<string>(),
                                 diskSnap.BranchDiffDeleted ?? Array.Empty<string>()));
-
-                        // Re-subscribe the feed so future ticks are emitted.
-                        worktreeFeed.Subscribe(id, string.Empty, wtPath, execBase);
                     }
                 }
                 catch { /* best-effort */ }

@@ -376,11 +376,13 @@ public static class ImpactedTestResolver
 
     /// <summary>
     /// Discover the set of changed files in <paramref name="workspace"/>
-    /// vs. <paramref name="baseRef"/> by invoking <c>git</c>. Combines
-    /// committed deltas (<c>git diff --name-only {baseRef}</c>) with
-    /// untracked files (<c>git ls-files --others --exclude-standard</c>)
-    /// so the impacted set reflects the engineer agent's WIP, not just
-    /// what's been committed so far.
+    /// vs. <paramref name="baseRef"/> by invoking <c>git</c>. Combines this
+    /// workstream's own committed delta (<c>git diff --name-only {baseRef}...HEAD</c>
+    /// — three-dot/merge-base, so sibling changes that advanced the shared base
+    /// after this worktree was cut are excluded), uncommitted WIP
+    /// (<c>git diff --name-only HEAD</c>), and untracked files
+    /// (<c>git ls-files --others --exclude-standard</c>), so the impacted set
+    /// reflects the engineer agent's WIP, not just what's been committed.
     /// </summary>
     public static async Task<IReadOnlyList<string>> DiscoverChangedFilesAsync(
         string workspace,
@@ -398,12 +400,27 @@ public static class ImpactedTestResolver
 
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Committed + uncommitted tracked changes vs. base — the two-
-        // dot form gives "what would land in a merge of HEAD into base"
-        // which matches operator intent ("what did THIS WORKSTREAM
-        // change?") even after a rebase / merge from base.
+        // This workstream's OWN committed contribution — the THREE-dot form
+        // `git diff base...HEAD` diffs from the merge-base of base and HEAD to
+        // HEAD, i.e. ONLY the commits unique to this worktree since it diverged
+        // from base. This is the correct "what did THIS WORKSTREAM change?"
+        // semantics and is robust to base advancement: when sibling workstreams
+        // merge into the shared base AFTER this worktree was cut (and it hasn't
+        // re-synced), a TWO-dot `git diff base` would report every
+        // sibling-changed file the worktree lacks as a "change" — observed
+        // inflating one stage's set to 73 files, which then (a) widened the
+        // per-package gate back onto unowned/flaky packages, (b) bloated the
+        // generator prompt with a phantom scope, and (c) drove the evaluator to
+        // score correctness=0 on a "scope mismatch" it could never resolve →
+        // no-convergence stall loop. Three-dot excludes base-only changes.
+        // Uncommitted WIP is still captured by the `git diff HEAD` below, so no
+        // coverage is lost. (Deliberately NOT falling back to two-dot on an
+        // empty result: an empty three-dot diff is a VALID outcome — a WIP-only
+        // iteration with no own commits yet — and falling back would re-inflate
+        // exactly the case this fixes. A worktree cut from base always shares
+        // history, so the merge-base resolves.)
         var diffOut = await RunGitCaptureAsync(
-            workspace, ct, "diff", "--name-only", "-z", baseRef);
+            workspace, ct, "diff", "--name-only", "-z", $"{baseRef}...HEAD");
         AddNonEmptyTokens(paths, diffOut, '\0');
 
         // Uncommitted unstaged + staged WIP vs. HEAD — the engineer

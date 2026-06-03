@@ -30,6 +30,16 @@ using Microsoft.Extensions.Hosting;
 public sealed class WorktreeChangeFeed : IHostedService, IDisposable
 {
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Hard ceiling on any single git subprocess. Without it a git call that
+    /// blocks on a contended <c>index.lock</c> (the active agent committing in
+    /// the same worktree) or the shared <c>~/.gitconfig</c> lock hangs for as
+    /// long as the caller lives — which turned a ~10s sample into the ~60s
+    /// conversation-load stall the operator hit. On timeout the process tree is
+    /// killed and the call returns null (best-effort, same as a non-zero exit).
+    /// </summary>
+    private static readonly TimeSpan GitCallTimeout = TimeSpan.FromSeconds(10);
     private const int MaxPathsPerCategory = 200;
 
     private readonly TaskChannel channel;
@@ -370,9 +380,21 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
             using var p = Process.Start(psi);
             if (p is null) return null;
-            var stdout = await p.StandardOutput.ReadToEndAsync(ct);
-            await p.WaitForExitAsync(ct);
-            return p.ExitCode == 0 ? stdout : null;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(GitCallTimeout);
+            try
+            {
+                var stdout = await p.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+                await p.WaitForExitAsync(timeoutCts.Token);
+                return p.ExitCode == 0 ? stdout : null;
+            }
+            catch (OperationCanceledException)
+            {
+                // Timed out (or caller cancelled) — kill the (possibly hung)
+                // git process tree so it can't outlive the request and pile up.
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* race: already gone */ }
+                return null;
+            }
         }
         catch
         {

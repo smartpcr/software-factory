@@ -238,4 +238,136 @@ public static class GoWorkspaceGate
         if (token.EndsWith("\\...", StringComparison.Ordinal)) return true;
         return false;
     }
+
+    /// <summary>
+    /// Narrows a module-scoped <c>go test</c> command to ONLY the packages a
+    /// workstream's diff actually touched, within a single workspace module.
+    ///
+    /// <para><b>Why.</b> <see cref="ScopeCommandToModule"/> already keeps the
+    /// gate from fail-opening onto a sibling <i>module</i>'s pre-existing
+    /// breakage. But a module can itself hold dozens of packages — e.g.
+    /// <c>services/agent-memory</c> bundles ~19 <c>embedded-postgres</c>
+    /// integration packages that are slow (each spins up a real Postgres) and
+    /// flaky under the concurrency of a multi-stage spawn (many worktrees
+    /// racing to <c>initdb</c>/bind a port at once). Running the whole module's
+    /// <c>./...</c> for a 6-file config change drags those unrelated packages
+    /// into the per-iter gate, where their flaky/slow failures (exit 1, often
+    /// &gt;600s) are blamed on a diff that never touched them — the workstream
+    /// can't fix code it didn't write, so it stalls. Scoping the TEST stage to
+    /// the changed packages extends the existing module-scoping philosophy one
+    /// level down: don't fail-open onto an unrelated <i>package</i>'s breakage.</para>
+    ///
+    /// <para><b>How.</b> Derives one <c>./&lt;dir&gt;/...</c> target per distinct
+    /// directory of a changed <c>.go</c> file that lives under
+    /// <paramref name="moduleRel"/> (module-relative), preserving every flag and
+    /// dropping the old package spec. The <c>/...</c> suffix still includes the
+    /// changed package's sub-packages. Conservative fall-backs return the whole
+    /// module (<see cref="ScopeCommandToModule"/>) so coverage is never silently
+    /// dropped: no changed-file info; a changed <c>.go</c> file at the module
+    /// root (e.g. <c>main.go</c> — a root-package change can affect everything);
+    /// a <c>go.mod</c>/<c>go.sum</c>/<c>go.work</c> change (dependency-graph
+    /// shift); or no <c>.go</c> file resolvable inside this module. A non-Go
+    /// command is returned unchanged.</para>
+    ///
+    /// <para><b>Tradeoff.</b> Like the module-level scoping, this runs the
+    /// changed packages' OWN tests, not the tests of unrelated packages that
+    /// import them. That mirrors the established gate behaviour and the
+    /// evaluator still reviews the full diff; the per-iter gate's job is to
+    /// catch regressions in the changed code's own tests. Pure — exposed for
+    /// unit testing without touching the filesystem.</para>
+    ///
+    /// <para><b>Module ownership (<paramref name="allModules"/>).</b> A file is
+    /// claimed by this module ONLY if its longest-matching workspace module is
+    /// <paramref name="moduleRel"/>. Without this, the root <c>.</c> module
+    /// (whose empty prefix matches everything) would emit targets pointing INTO
+    /// a nested module — e.g. <c>go test ./services/agent-memory/...</c> — which
+    /// in <c>go.work</c> workspace mode actually EXECUTES the nested module's
+    /// packages (re-dragging the flaky embedded-PG suite back in under the root
+    /// module) and was observed to re-stall a workstream with a broad diff
+    /// (<c>[module .]</c> exit 1). Passing every workspace module lets each
+    /// module claim only its own files; nested-module files are left to that
+    /// module's own scoped command.</para>
+    /// </summary>
+    public static string ScopeTestCommandToPackages(
+        string command,
+        string moduleRel,
+        IReadOnlyList<string> allModules,
+        IReadOnlyList<string>? changedFiles)
+    {
+        if (!IsGoCommand(command)) return command;
+
+        // No diff info → safest is the whole module (caller already picked it).
+        if (changedFiles is null || changedFiles.Count == 0) return ScopeCommandToModule(command);
+
+        var modNorm = moduleRel == "." || string.IsNullOrEmpty(moduleRel)
+            ? string.Empty
+            : moduleRel.Replace('\\', '/').TrimEnd('/') + "/";
+
+        // Longest module prefix first — used to decide which module OWNS a
+        // changed file (the most specific match), mirroring SelectImpactedModules.
+        var ranked = (allModules ?? Array.Empty<string>())
+            .Select(m => (mod: m, norm: m == "." || string.IsNullOrEmpty(m) ? string.Empty : m.Replace('\\', '/').TrimEnd('/') + "/"))
+            .OrderByDescending(x => x.norm.Length)
+            .ToList();
+
+        var targets = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in changedFiles)
+        {
+            var nf = f.Replace('\\', '/').TrimStart('/');
+
+            // Attribute the file to its longest-prefix module; skip if another
+            // (deeper) module owns it — that module's own command covers it.
+            if (ranked.Count > 0)
+            {
+                var owner = ranked.FirstOrDefault(r => r.norm.Length == 0 || nf.StartsWith(r.norm, StringComparison.OrdinalIgnoreCase));
+                if (!string.Equals(owner.mod ?? ".", moduleRel, StringComparison.OrdinalIgnoreCase)) continue;
+            }
+
+            string relToMod;
+            if (modNorm.Length == 0)
+            {
+                relToMod = nf;
+            }
+            else
+            {
+                if (!nf.StartsWith(modNorm, StringComparison.OrdinalIgnoreCase)) continue;
+                relToMod = nf[modNorm.Length..];
+            }
+            if (relToMod.Length == 0) continue;
+
+            var slash = relToMod.LastIndexOf('/');
+            var name = slash < 0 ? relToMod : relToMod[(slash + 1)..];
+
+            // A module manifest change can shift the whole dependency graph —
+            // test the whole module rather than guess which packages moved.
+            if (name is "go.mod" or "go.sum" or "go.work") return ScopeCommandToModule(command);
+
+            // Only .go files identify a Go package directory; non-Go changes
+            // (docs, testdata, configs) don't widen the scope on their own.
+            if (!name.EndsWith(".go", StringComparison.OrdinalIgnoreCase)) continue;
+
+            // A .go file at the module root is a root-package change (e.g.
+            // main.go) that can affect everything → whole module.
+            if (slash < 0) return ScopeCommandToModule(command);
+
+            var dir = relToMod[..slash];
+            var target = "./" + dir + "/...";
+            if (seen.Add(target)) targets.Add(target);
+        }
+
+        // No .go package resolvable inside this module (e.g. only sibling-module
+        // or non-Go files touched) → fall back to the module's ./... .
+        if (targets.Count == 0) return ScopeCommandToModule(command);
+
+        var tokens = command.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        var kept = new List<string>(tokens.Length + targets.Count);
+        foreach (var tok in tokens)
+        {
+            if (LooksLikePackageSpec(tok)) continue;
+            kept.Add(tok);
+        }
+        kept.AddRange(targets);
+        return string.Join(' ', kept);
+    }
 }

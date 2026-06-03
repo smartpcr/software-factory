@@ -4912,6 +4912,35 @@ public sealed class StorySpawnOrchestrator
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkstreamRow w, string prId, Exception ex, CancellationToken ct)
     {
+        // 2026-06-03 — a "Concurrent dispatch refused" here is NOT a reviewer
+        // convergence failure: it's the Phase-74 per-workItemId mutex rejecting
+        // the review dispatch because the impl/generator DeliverableLoop for the
+        // SAME workItemId re-activated (e.g. an auto-retry iteration) in the
+        // TOCTOU window between DriveReviewAsync's IsTaskActive defer-guard
+        // (~line 4260) and the actual reviewer dispatch. Stalling here would
+        // clobber a workstream whose impl already PASSED to review. Treat it as
+        // a benign defer: leave the row in "review" so the next tick
+        // re-evaluates — the impl loop terminates eventually (pass / iter-cap /
+        // stall), after which IsTaskActive is false and the review proceeds.
+        // Mirrors the impl/qa-e2e WorkstreamInFlightException no-op handling.
+        // Observed: code-intelligence:PR-INGESTER mgmt-verb-read-co-change-clusters
+        // stalled "Review failed for PR #396: Concurrent dispatch refused".
+        if (FlattenMessage(ex).Contains("Concurrent dispatch refused", StringComparison.OrdinalIgnoreCase))
+        {
+            this.logger?.LogInformation(
+                "DriveReviewAsync: deferring ws {WsId} review this tick — concurrent-dispatch refused "
+                + "(impl loop re-activated in the IsTaskActive TOCTOU window); will retry next tick.",
+                w.Id);
+            await this.EmitSpawnEventAsync(w.Id, "task.review-deferred", new
+            {
+                wsId = w.Id,
+                prId,
+                spawnId = spawn.Id,
+                reason = "concurrent-dispatch-refused",
+            }, ct);
+            return;
+        }
+
         this.logger?.LogWarning(ex,
             "DriveReviewAsync: ProduceReviewCommentsAsync failed for ws {WsId} PR {PrId}. "
             + "Marking stalled; spawn continues with remaining workstreams.",

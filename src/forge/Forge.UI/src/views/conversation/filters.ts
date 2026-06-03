@@ -76,6 +76,12 @@ const FORGE_BUILD_EVENT_KINDS = new Set<string>([
   'task.test-gate.passed',
   'task.test-gate.failed',
   'task.test-gate.skipped',
+  // Go go.work module-scoping + the single flake-retry recovery path. Surface
+  // these so operators can see that a per-iter test gate was retried (attempt 1
+  // failed) and recovered as a flake, rather than only seeing the final pass.
+  'task.test-gate.resolved',
+  'task.test-gate.flake-retry',
+  'task.test-gate.flake-recovered',
 ]);
 
 // Phase 49 follow-up — detect agent-issued build/test commands so the
