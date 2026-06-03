@@ -195,6 +195,106 @@ public class Phase49RebaseOnClaimTests : IAsyncLifetime
     // ── helpers ────────────────────────────────────────────────────────
 
     /// <summary>
+    /// 2026-06-03 — pin the pass-time base-refresh contract that
+    /// <see cref="CrewStoryArtifactStrategy"/> now relies on (the
+    /// <c>refreshBaseBeforePostPassGate</c> hook threaded into
+    /// <c>RunGenEvalLoopAsync</c>'s <c>OnPassValidate</c>). Reproduces the
+    /// code-intelligence:PR-INGESTER stage 5.3 stall: two sibling
+    /// workstreams each declare the SAME symbol in DIFFERENT files (no
+    /// textual merge conflict, but the Go package won't compile). The
+    /// <c>force:false</c> merge MUST succeed cleanly and bring the sibling's
+    /// file into the worktree so the post-pass build gate compiles the union
+    /// and catches the duplicate-symbol break — instead of the stale-base
+    /// per-iter gate greenlighting a diff that breaks the base after merge.
+    /// </summary>
+    [Fact]
+    public async Task MergeUpstreamIntoBranch_ForceFalse_CleanMerge_BringsInSiblingFile_SoGateSeesCrossFileCollision()
+    {
+        if (!GitAvailable()) return;
+
+        // T0 — ws branch off main.
+        var wsBranch = "ws/test/stage-5-3";
+        await this.git.EnsureBranchAsync(this.repo, wsBranch, "main");
+
+        // T1 — the engineer's own committed+pushed work on the ws branch:
+        // read_pr_records.go declares `const RoutePRRecords`. Mirrors the
+        // per-iter CommitAllAndPushAsync that lands the agent's edits on
+        // origin BEFORE the post-pass gate runs (so the merge's internal
+        // reset --hard origin/{branch} loses nothing).
+        var workspace = await this.git.EnsureWorktreeAsync(
+            this.repo, wsBranch, "main", worktreeSlug: "stage-5-3-test");
+        var readFile = Path.Combine(workspace, "mgmtapi", "read_pr_records.go");
+        Directory.CreateDirectory(Path.GetDirectoryName(readFile)!);
+        await File.WriteAllTextAsync(readFile,
+            "package mgmtapi\n\nconst RoutePRRecords = \"/v1/pr_records\"\n");
+        await RunAsync(workspace, "git", "add", ".");
+        await RunAsync(workspace, "git", "commit", "-m", "ws: add read_pr_records route const");
+        await RunAsync(workspace, "git", "push", "-u", "origin", wsBranch);
+
+        // T2 — a SIBLING workstream squash-merges into main mid-drive,
+        // adding feedback_pr_record.go that ALSO declares the same const.
+        // Different file => NO textual merge conflict, but the package now
+        // has a duplicate const => won't compile.
+        await SimulateBaseAdvanceAsync("main", "sibling-feedback",
+            "mgmtapi/feedback_pr_record.go",
+            "package mgmtapi\n\nconst RoutePRRecords = \"/v1/pr_records\"\n");
+
+        // T3 — pass-time base refresh (force:false).
+        var merged = await this.git.MergeUpstreamIntoBranchAsync(
+            this.repo, wsBranch, "main", force: false);
+
+        Assert.True(merged,
+            "force:false clean merge of a non-conflicting sibling file must succeed.");
+        Assert.True(File.Exists(readFile),
+            "The ws branch's own file must survive the merge.");
+        Assert.True(File.Exists(Path.Combine(workspace, "mgmtapi", "feedback_pr_record.go")),
+            "The sibling's file must be present after the merge so the post-pass "
+            + "build gate sees BOTH declarations and rejects the pass.");
+    }
+
+    /// <summary>
+    /// 2026-06-03 — the companion guard: when the base advance REALLY
+    /// conflicts textually with the ws branch's edits (same file, same
+    /// region), <c>force:false</c> must surface that as <c>merged=false</c>
+    /// (merge aborted) WITHOUT silently auto-resolving via <c>-X ours</c> —
+    /// which would discard the base's change and let a broken pass through.
+    /// The ws branch's own content stays intact (no committed conflict
+    /// markers, no base-side overwrite); the orchestrator's real
+    /// provider-merge step handles genuine conflicts later.
+    /// </summary>
+    [Fact]
+    public async Task MergeUpstreamIntoBranch_ForceFalse_ReturnsFalse_OnRealTextualConflict_WithoutXOurs()
+    {
+        if (!GitAvailable()) return;
+
+        var wsBranch = "ws/test/conflict";
+        await this.git.EnsureBranchAsync(this.repo, wsBranch, "main");
+
+        var workspace = await this.git.EnsureWorktreeAsync(
+            this.repo, wsBranch, "main", worktreeSlug: "ws-conflict");
+        var shared = Path.Combine(workspace, "shared.go");
+        await File.WriteAllTextAsync(shared, "package m\n\nconst V = \"ws-side\"\n");
+        await RunAsync(workspace, "git", "add", ".");
+        await RunAsync(workspace, "git", "commit", "-m", "ws edit shared");
+        await RunAsync(workspace, "git", "push", "-u", "origin", wsBranch);
+
+        // Base edits the SAME line differently => real textual conflict.
+        await SimulateBaseAdvanceAsync("main", "base-conflict", "shared.go",
+            "package m\n\nconst V = \"base-side\"\n");
+
+        var merged = await this.git.MergeUpstreamIntoBranchAsync(
+            this.repo, wsBranch, "main", force: false);
+
+        Assert.False(merged,
+            "force:false must surface a real textual conflict as merged=false (NO -X ours).");
+
+        var content = await File.ReadAllTextAsync(shared);
+        Assert.Contains("ws-side", content);
+        Assert.DoesNotContain("<<<<<<<", content);
+        Assert.DoesNotContain("base-side", content);
+    }
+
+    /// <summary>
     /// Advance a base branch by N commits. Uses a SEPARATE throwaway
     /// clone (sibling of the primary) so we don't fight git's
     /// "branch already checked out" guard against the main checkout

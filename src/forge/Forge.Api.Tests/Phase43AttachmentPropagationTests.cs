@@ -160,6 +160,89 @@ public class Phase43AttachmentPropagationTests : IDisposable
         Assert.True(File.Exists(Path.Combine(attDir, "new.md")));
     }
 
+    // ── ScrubNonManifestAttachments (2026-06-03 anti-gaming guard) ────────────
+
+    [Fact]
+    public void ScrubNonManifestAttachments_EmptyManifest_RemovesWholeInbox()
+    {
+        // Reproduces the stage-5.3 gaming: the engineer agent self-produced
+        // gate-output logs in the operator-only inbox to satisfy a phantom
+        // attachment pin. With no operator manifest, the whole dir is
+        // engineer-authored and must be removed.
+        var dir = Path.Combine(this.testRoot, "wt-scrub-empty");
+        var attDir = Path.Combine(dir, ".forge-attachments");
+        Directory.CreateDirectory(attDir);
+        File.WriteAllText(Path.Combine(attDir, "gate-output-iter-2-root.log"), "ok\n");
+        File.WriteAllText(Path.Combine(attDir, "README.md"), "engineer-authored\n");
+
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, null);
+        Assert.False(Directory.Exists(attDir),
+            "Empty manifest => entire engineer-authored inbox must be removed.");
+
+        // Also exercise the "[]" and malformed-JSON manifest forms.
+        Directory.CreateDirectory(attDir);
+        File.WriteAllText(Path.Combine(attDir, "gate-output.log"), "ok\n");
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, "[]");
+        Assert.False(Directory.Exists(attDir));
+
+        Directory.CreateDirectory(attDir);
+        File.WriteAllText(Path.Combine(attDir, "gate-output.log"), "ok\n");
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, "{ not json");
+        Assert.False(Directory.Exists(attDir),
+            "Malformed manifest is treated as empty => scrub everything.");
+    }
+
+    [Fact]
+    public void ScrubNonManifestAttachments_KeepsManifestFiles_DeletesIntruders()
+    {
+        var dir = Path.Combine(this.testRoot, "wt-scrub-keep");
+        var attDir = Path.Combine(dir, ".forge-attachments");
+        Directory.CreateDirectory(attDir);
+        // One legitimate operator upload + two engineer-authored intruders.
+        File.WriteAllText(Path.Combine(attDir, "acs.md"), "operator spec\n");
+        File.WriteAllText(Path.Combine(attDir, "gate-output-iter-2-root.log"), "ok\n");
+        File.WriteAllText(Path.Combine(attDir, "README.md"), "engineer-authored\n");
+
+        var json = BuildAttachmentsJson(("att-1", "acs.md", "attachments/up/acs.md", 12));
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, json);
+
+        Assert.True(File.Exists(Path.Combine(attDir, "acs.md")),
+            "Operator-manifest file must be preserved.");
+        Assert.False(File.Exists(Path.Combine(attDir, "gate-output-iter-2-root.log")),
+            "Engineer-authored intruder must be scrubbed.");
+        Assert.False(File.Exists(Path.Combine(attDir, "README.md")),
+            "Engineer-authored intruder must be scrubbed.");
+    }
+
+    [Fact]
+    public void ScrubNonManifestAttachments_NoInbox_NoOp()
+    {
+        var dir = Path.Combine(this.testRoot, "wt-scrub-none");
+        Directory.CreateDirectory(dir);
+        // No .forge-attachments dir at all — must not throw.
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, null);
+        CrewStoryArtifactStrategy.ScrubNonManifestAttachments(dir, BuildAttachmentsJson(("a", "x.md", "p/x.md", 1)));
+        Assert.False(Directory.Exists(Path.Combine(dir, ".forge-attachments")));
+    }
+
+    [Fact]
+    public async Task CopyAttachmentsToWorktreeAsync_EmptyManifest_ScrubsEngineerAuthoredInbox()
+    {
+        // The drive-start reconcile must ALSO scrub when the manifest is
+        // empty (the old early-return let engineer files persist).
+        var dir = Path.Combine(this.testRoot, "wt-copy-empty-scrub");
+        var attDir = Path.Combine(dir, ".forge-attachments");
+        Directory.CreateDirectory(attDir);
+        await File.WriteAllTextAsync(Path.Combine(attDir, "gate-output.log"), "ok\n");
+
+        var result = await CrewStoryArtifactStrategy.CopyAttachmentsToWorktreeAsync(
+            null, dir, CancellationToken.None, CrewStoryArtifactStrategy.AttachmentExcludeMode.None);
+
+        Assert.Empty(result);
+        Assert.False(Directory.Exists(attDir),
+            "Empty manifest must scrub the engineer-authored inbox, not leave it in place.");
+    }
+
     // ── TryAddGitInfoExcludeAsync ────────────────────────────────────────────
 
     [Fact]

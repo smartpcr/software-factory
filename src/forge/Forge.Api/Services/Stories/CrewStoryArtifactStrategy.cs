@@ -4198,6 +4198,43 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // `.forge-attachments/` inbox before each evaluator turn (blocks
             // the self-produced gate-output evidence-gaming loop).
             operatorAttachmentsJson: attachmentsJson,
+            // 2026-06-03 — merge the CURRENT origin/{baseBranch} into the
+            // workstream branch at pass-time, before the post-pass gate runs.
+            // Fixes the stale-base blind spot: a sibling workstream that
+            // squash-merges mid-drive (e.g. #401 adding feedback_pr_record.go
+            // with `const RoutePRRecords` while THIS drive's #408 adds the
+            // same const in read_pr_records.go) produces NO textual conflict
+            // but a compile break the per-iter gate — claimed against the old
+            // base snapshot — never sees. Merging here makes the post-pass
+            // build gate compile the union and demote pass→iterate so the
+            // agent fixes the collision before the PR merges. force:false =>
+            // clean merge only; a real textual conflict aborts (NO -X ours)
+            // and is reported via task.gate.base-refresh{merged:false}, then
+            // the gate proceeds on the pre-merge tree (unchanged behavior —
+            // genuine conflicts are still resolved at provider-merge time).
+            // Safe re: WIP because the engineer's edits are committed+pushed
+            // per-iter (CommitAllAndPushAsync at the iter loop), so the
+            // merge's internal reset --hard origin/{branch} loses nothing.
+            refreshBaseBeforePostPassGate: async (validIter, refreshCt) =>
+            {
+                if (repo is null
+                    || string.IsNullOrWhiteSpace(workstream.Branch)
+                    || string.IsNullOrWhiteSpace(baseBranch))
+                {
+                    return;
+                }
+
+                var merged = await this.git.MergeUpstreamIntoBranchAsync(
+                    repo, workstream.Branch, baseBranch, force: false, refreshCt);
+
+                await this.taskChannel.EmitAsync(workstream.Id, "task.gate.base-refresh", new
+                {
+                    iter = validIter,
+                    branch = workstream.Branch,
+                    baseBranch,
+                    merged,
+                }, ct: refreshCt);
+            },
             ct: ct);
 
         // Phase 74 follow-up — DeliverableLoop fast-failed because another
@@ -6420,6 +6457,30 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // cannot be read by the evaluator as a genuine operator artifact and
         // bait the score. Null (plan-doc / qa / review-fix callers) = no scrub.
         string? operatorAttachmentsJson = null,
+        // 2026-06-03 — pass-time base refresh. Invoked at the START of the
+        // OnPassValidate hook (before the post-pass gate chain runs) so the
+        // worktree is merged up to the CURRENT origin/{baseBranch} before the
+        // build/quality/test gates score it. Without this, a long-running
+        // impl drive validates against the base snapshot it claimed against:
+        // sibling workstreams that squash-merge mid-drive never re-enter the
+        // gate, so a CROSS-FILE collision (two siblings each declaring the
+        // same symbol in different files — no textual merge conflict, but the
+        // compiler rejects the union) slips past every per-iter gate and the
+        // post-pass gate, then breaks the base branch build after merge.
+        // Observed 2026-06-03 on code-intelligence:PR-INGESTER stage 5.3:
+        // #408 (read_pr_records.go) and #401 (feedback_pr_record.go) both
+        // declared `const RoutePRRecords`; #408's worktree branched before
+        // #401 landed, so its go-build gate never saw both. The callback
+        // (engineer impl path only) merges origin/{baseBranch} into the
+        // worktree branch with force=false (clean merge only; textual
+        // conflicts abort with NO -X ours and are surfaced via event, then
+        // the gate proceeds on the pre-merge tree — no regression, real
+        // conflicts are still caught at provider-merge time). Safe because
+        // the engineer's WIP is already committed+pushed per-iter
+        // (CommitAllAndPushAsync), so the merge's internal reset --hard
+        // origin/{branch} is a no-op data-wise. Null (plan-doc / qa /
+        // review-fix callers) = no base refresh.
+        Func<int, CancellationToken, Task>? refreshBaseBeforePostPassGate = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -8220,6 +8281,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {
                 onPassValidate = async (validIter, validCt) =>
                 {
+                    // 2026-06-03 — refresh the worktree to the CURRENT
+                    // origin/{baseBranch} before the post-pass gate scores
+                    // it, so a sibling workstream that squash-merged mid-drive
+                    // is incorporated and cross-file symbol collisions are
+                    // caught here (pass→iterate) instead of breaking the base
+                    // build after merge. Best-effort: a throw here must not
+                    // sink the pass — log and gate the pre-merge tree (no
+                    // regression vs the pre-2026-06-03 behavior).
+                    if (refreshBaseBeforePostPassGate is not null)
+                    {
+                        try
+                        {
+                            await refreshBaseBeforePostPassGate(validIter, validCt);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            this.logger?.LogWarning(ex,
+                                "Pass-time base refresh threw for wi={Wi} iter={Iter}; "
+                                + "proceeding with post-pass gate on the current worktree.",
+                                workItemId, validIter);
+                        }
+                    }
+
                     var failure = await this.RunGateChainAsync(
                         workItemId,
                         workspace,
