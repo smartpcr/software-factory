@@ -1637,7 +1637,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// <list type="number">
     /// <item><c>git status --porcelain -z</c> — files the agent edited
     /// but didn't commit (the expected/intended path).</item>
-    /// <item><c>git diff --name-only origin/{ref}..HEAD</c> — files
+    /// <item><c>git diff --name-only origin/{ref}...HEAD</c> — files
     /// touched by commits the agent made itself via its <c>bash</c> /
     /// <c>run_command</c> tool but that haven't been pushed yet.
     /// Observed 2026-05-05 when the engineer prompt mentioned
@@ -1730,6 +1730,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // baseBranch is null/empty, fall back to origin/{HEAD branch}
         // for per-iter no-progress detection where we want the counter
         // to track delta-since-last-publish, not cumulative-since-base.
+        //
+        // 2026-06-03 — use the THREE-DOT range `{ref}...HEAD` (== diff
+        // from merge-base(ref, HEAD) to HEAD), NOT the two-dot `{ref}..HEAD`.
+        // For `git diff`, two-dot `A..B` is identical to `git diff A B`,
+        // which reports EVERY difference between the tips — including the
+        // inverse of any commits that landed on the base AFTER this
+        // worktree branched. On a story where many sibling workstreams
+        // merge concurrently into a shared base (e.g. feature/PR-Ingester),
+        // those sibling files contaminate the changed-file set, inflating
+        // it from the engineer's real contribution to a superset spanning
+        // the whole story. The evaluator then scores against phantom files
+        // it can't attribute (scope mismatch) and caps just under pass.
+        // Observed 2026-06-03 on code-intelligence:PR-INGESTER stage 5.3 /
+        // 5.7: two-dot reported 115 files, three-dot 16 (the true diff).
+        // Three-dot matches what GitHub's PR "Files changed" view shows
+        // (`base...head`), so it is the correct frame for BOTH the
+        // evaluator ground-truth and the post-pass commit decision. When
+        // the base hasn't advanced since branching, merge-base == base, so
+        // three-dot collapses to two-dot and nothing changes for the common
+        // case.
         string refToDiffAgainst;
         if (!string.IsNullOrWhiteSpace(baseBranch))
         {
@@ -1750,7 +1770,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
         if (refCode != 0) return ordered; // reference ref missing — nothing to diff against
 
         var (diffCode, diffOut, _) = await this.RunGitCaptureAsync(
-            worktreePath, ct, "diff", "--name-only", "-z", $"{refToDiffAgainst}..HEAD");
+            worktreePath, ct, "diff", "--name-only", "-z", $"{refToDiffAgainst}...HEAD");
         if (diffCode != 0 || string.IsNullOrEmpty(diffOut)) return ordered;
 
         foreach (var entry in diffOut.Split('\0'))
@@ -2748,6 +2768,16 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     preReset.HeadSha, preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
                     branch, branch, branch);
 
+                // A spawn that crashed mid-merge/rebase (or left a stale
+                // index.lock) wedges the worktree: the plain `checkout` above
+                // fails with "you need to resolve your current index first" /
+                // "index.lock: File exists", and the forced `checkout -B`
+                // would fail the SAME way — throwing out of GitAsync so the
+                // producer never starts and the workstream silently stops
+                // progressing (observed 2026-06-03 on three PR-INGESTER
+                // stage-5 worktrees stuck 6–10h). Make the worktree pristine
+                // first so the forced checkout can always proceed.
+                await this.ResetWorktreeToPristineAsync(wtPath, ct);
                 await this.GitAsync(wtPath, ct, "checkout", "-B", branch, $"origin/{branch}");
             }
             return;
@@ -3251,6 +3281,62 @@ public sealed class RealStoryGitOps : IStoryGitOps
 
         this.logger?.LogInformation(
             "Push to origin/{Branch} succeeded after auto-rebase recover.", branch);
+    }
+
+    /// <summary>
+    /// Make a linked worktree pristine so a forced <c>checkout -B</c> can't be
+    /// blocked by leftover git state. A spawn that crashed mid-merge/rebase
+    /// (or left a stale <c>index.lock</c>) wedges the worktree: every
+    /// subsequent <c>git checkout</c> fails with "you need to resolve your
+    /// current index first" / "index.lock: File exists", so the producer
+    /// never starts an iteration and the workstream silently stops
+    /// progressing (observed 2026-06-03 on three PR-INGESTER stage-5
+    /// worktrees stuck 6–10h). Clears the stale lock FIRST (so the aborts
+    /// and reset below can take the index lock), then best-effort aborts any
+    /// in-progress merge/rebase/cherry-pick/revert, then hard-resets to drop
+    /// any residual unmerged index entries. Best-effort throughout: a no-op
+    /// abort exits non-zero and is ignored. Only called on the destructive
+    /// <c>checkout -B</c> fallback path, where discarding uncommitted work is
+    /// already the documented behaviour.
+    /// </summary>
+    private async Task ResetWorktreeToPristineAsync(string wtPath, CancellationToken ct)
+    {
+        // Resolve and remove a stale index.lock via the per-worktree git dir.
+        // `rev-parse --git-path` needs no index lock, so it works even while
+        // the tree is wedged. Removing the lock first is required — otherwise
+        // the aborts and reset below can't acquire the index lock either.
+        var (lockCode, lockOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "--git-path", "index.lock");
+        if (lockCode == 0 && !string.IsNullOrWhiteSpace(lockOut))
+        {
+            var lockPath = lockOut.Trim();
+            if (!Path.IsPathRooted(lockPath))
+            {
+                lockPath = Path.Combine(wtPath, lockPath);
+            }
+            try
+            {
+                if (File.Exists(lockPath))
+                {
+                    File.Delete(lockPath);
+                    this.logger?.LogWarning("ResetWorktreeToPristine removed stale index.lock at {Path} in {WtPath}.", lockPath, wtPath);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                this.logger?.LogWarning(ex, "ResetWorktreeToPristine could not delete index.lock at {Path}; continuing.", lockPath);
+            }
+        }
+
+        // Abort any in-progress sequencer operation. Each is best-effort:
+        // when there is nothing to abort git exits non-zero, which we ignore.
+        await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+        await this.RunGitCaptureAsync(wtPath, ct, "rebase", "--abort");
+        await this.RunGitCaptureAsync(wtPath, ct, "cherry-pick", "--abort");
+        await this.RunGitCaptureAsync(wtPath, ct, "revert", "--abort");
+
+        // Final safety net — drop any residual unmerged/staged entries so the
+        // subsequent `checkout -B` starts from a clean index.
+        await this.RunGitCaptureAsync(wtPath, ct, "reset", "--hard");
     }
 
     /// <summary>Run git, throwing on non-zero exit. Use <see cref="RunGitCaptureAsync"/> when you want to inspect the result.</summary>

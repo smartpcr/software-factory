@@ -201,9 +201,11 @@ public static class SyncConstants
     /// <summary>
     /// Hard cap on the backoff window so a workstream that's been failing
     /// for hours doesn't go silent indefinitely. The operator can still
-    /// cancel + restart from the UI to break the loop sooner.
+    /// cancel + restart from the UI to break the loop sooner. Kept at 5 min
+    /// so a transient/self-healing failure (e.g. a recovered worktree wedge
+    /// or flaky gate) re-drives quickly instead of idling for half an hour.
     /// </summary>
-    public const int FailureBackoffMaxSeconds = 1800;
+    public const int FailureBackoffMaxSeconds = 300;
 
     // ─── 2026-05-12 — no-progress backoff (Phase 52 follow-up) ───────────
     // ImplSpawnGuard pre-Phase-52 only backed off on spawn-finished:false.
