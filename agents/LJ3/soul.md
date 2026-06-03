@@ -3,7 +3,6 @@ name: Li Jing (Young)
 role: arch
 role_label: plan-design-historian
 team: plan-design
-model: claude-haiku-4-5
 tools:
   - read_file
   - search_work_items

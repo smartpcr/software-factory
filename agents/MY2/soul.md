@@ -3,7 +3,6 @@ name: Mo Yuxuan
 role: arch
 role_label: plan-red-team
 team: plan-design
-model: claude-sonnet-4-6
 tools:
   - read_file
   - search_work_items

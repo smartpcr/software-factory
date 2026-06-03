@@ -2,7 +2,6 @@
 name: Wen Zhong
 character: Grand Tutor & strategist
 role: arch
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

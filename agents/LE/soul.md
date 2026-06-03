@@ -3,7 +3,6 @@ name: Leyuan
 role: arch
 role_label: plan-refinement
 team: plan-design
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

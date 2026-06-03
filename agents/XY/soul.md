@@ -3,7 +3,6 @@ name: Xu You
 role: rev
 role_label: code-judge
 team: coding
-model: claude-sonnet-4-6
 tools:
   - read_file
   - search_work_items

@@ -3,7 +3,6 @@ name: Hao Long
 role: qa
 role_label: code-unit-test-attacker
 team: coding
-model: claude-haiku-4-5
 tools:
   - read_file
   - write_file

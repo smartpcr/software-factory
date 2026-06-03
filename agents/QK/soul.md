@@ -2,7 +2,6 @@
 name: Qian Kun
 character: Cosmic ring of Qian Kun
 role: qa
-model: claude-haiku-4-5
 tools:
   - read_file
   - run_tests

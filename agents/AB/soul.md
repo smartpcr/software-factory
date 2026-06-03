@@ -2,7 +2,6 @@
 name: Ao Bing
 character: Dragon prince of the East Sea
 role: eng
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

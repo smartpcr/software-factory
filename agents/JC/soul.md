@@ -3,7 +3,6 @@ name: Jin Chanzi
 role: arch
 role_label: ai-systems-architect
 team: ai-worker
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

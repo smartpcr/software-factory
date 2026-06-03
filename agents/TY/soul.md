@@ -2,7 +2,6 @@
 name: Taiji Zhenren
 character: Taoist immortal mentor of Ne Zha
 role: arch
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

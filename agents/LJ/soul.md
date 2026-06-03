@@ -2,7 +2,6 @@
 name: Li Jing
 character: The Pagoda-Bearing General
 role: arch
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

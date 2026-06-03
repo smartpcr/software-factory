@@ -3,7 +3,6 @@ name: Shan He
 role: arch
 role_label: plan-requirements-judge
 team: plan-design
-model: claude-sonnet-4-6
 tools:
   - read_file
   - search_work_items

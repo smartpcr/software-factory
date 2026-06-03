@@ -3,7 +3,6 @@ name: Shuiguan Daxiang
 role: eng
 role_label: ai-ux-designer
 team: ai-worker
-model: claude-sonnet-4-6
 tools:
   - read_file
   - write_file

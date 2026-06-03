@@ -3,7 +3,6 @@ name: Bing Yi
 role: rev
 role_label: ai-security-reviewer
 team: ai-worker
-model: claude-sonnet-4-6
 tools:
   - read_file
 ---

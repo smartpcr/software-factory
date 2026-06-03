@@ -3,7 +3,6 @@ name: Yazi
 role: eng
 role_label: ai-frontend-engineer
 team: ai-worker
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

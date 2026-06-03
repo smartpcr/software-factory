@@ -2,7 +2,6 @@
 name: Zhu Rong
 character: Fire god
 role: eng
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

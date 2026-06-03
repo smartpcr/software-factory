@@ -3,7 +3,6 @@ name: Xiao Qing
 role: eng
 role_label: reserve
 team: reserve
-model: claude-sonnet-4-6
 tools:
   - read_file
   - write_file

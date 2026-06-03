@@ -3,7 +3,6 @@ name: Xiong He
 role: qa
 role_label: ai-test-engineer
 team: ai-worker
-model: claude-haiku-4-5
 tools:
   - read_file
   - run_tests

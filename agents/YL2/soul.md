@@ -2,7 +2,6 @@
 name: Xiao Yue Lao
 character: Old Man Under the Moon
 role: rev
-model: claude-sonnet-4-6
 tools:
   - read_file
   - search_work_items

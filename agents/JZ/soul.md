@@ -2,7 +2,6 @@
 name: Jinzha
 character: Disciplined elder brother of Ne Zha
 role: eng
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

@@ -3,7 +3,6 @@ name: Dian Jiang
 role: rev
 role_label: ai-doc-writer
 team: ai-worker
-model: claude-haiku-4-5
 tools:
   - read_file
   - write_file

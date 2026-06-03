@@ -3,7 +3,6 @@ name: Hunjiang
 role: eng
 role_label: code-generator
 team: coding
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

@@ -3,7 +3,6 @@ name: Taiji Zhenren's Disciple
 role: arch
 role_label: plan-architect-generator
 team: plan-design
-model: claude-opus-4-7
 tools:
   - read_file
   - write_file

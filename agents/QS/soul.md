@@ -3,7 +3,6 @@ name: Qiu Shuang
 role: rev
 role_label: ai-code-reviewer
 team: ai-worker
-model: claude-sonnet-4-6
 tools:
   - read_file
 ---

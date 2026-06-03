@@ -3,7 +3,6 @@ name: A Lang
 role: rev
 role_label: ai-customer-support
 team: ai-worker
-model: claude-haiku-4-5
 tools:
   - read_file
   - search_work_items

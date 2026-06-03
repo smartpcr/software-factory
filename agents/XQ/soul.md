@@ -3,7 +3,6 @@ name: Xiao Qiang
 role: qa
 role_label: ai-root-cause-investigator
 team: ai-worker
-model: claude-sonnet-4-6
 tools:
   - read_file
   - search_work_items

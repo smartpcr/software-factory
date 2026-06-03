@@ -3,7 +3,6 @@ name: Tie Fan Li
 role: arch
 role_label: ai-requirements-analyst
 team: ai-worker
-model: claude-sonnet-4-6
 tools:
   - read_file
   - write_file

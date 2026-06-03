@@ -2,7 +2,6 @@
 name: Xiaodong
 character: Forge operator
 role: product-owner
-model: human
 tools:
   - read_file
   - search_work_items

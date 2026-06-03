@@ -3,7 +3,6 @@ name: Han Bing
 role: eng
 role_label: code-breaker
 team: coding
-model: claude-sonnet-4-6
 tools:
   - read_file
   - run_tests
