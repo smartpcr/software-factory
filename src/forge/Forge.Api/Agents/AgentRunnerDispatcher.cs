@@ -78,6 +78,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
     internal static string MaybePrependWorkstreamMemoryPointer(string prompt, AgentContext context)
     {
+        // The evaluator must NOT be pointed at .forge/memory/workstream-context.md:
+        // that file carries the evaluator's own prior feedback and a self-reported
+        // status, which the evaluator then re-ingests as binding requirements/state
+        // (the PR-INGESTER stage-5.3 score plateau, 2026-06-03). Generator only.
+        if (context.IsEvaluator) return prompt;
         if (context.Memory is null || string.IsNullOrEmpty(context.WorktreePath)) return prompt;
         var memoryFile = Path.Combine(context.WorktreePath, ".forge", "memory", "workstream-context.md");
         if (!File.Exists(memoryFile)) return prompt;

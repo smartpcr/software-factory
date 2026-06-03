@@ -339,6 +339,10 @@ public class AgentSalaryAndLedgerTests
 
         public Forge.Api.Contracts.ModelInfo? Find(string id)
             => this.models.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
+
+        public bool CatalogEnriched => false;
     }
 
     private sealed class InlineHttpFactory : IHttpClientFactory

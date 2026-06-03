@@ -109,6 +109,30 @@ public sealed class SoulService : ISoulService
         var body = string.Join("\n", lines.Skip(endIdx + 1)).TrimStart();
         return (body, caps);
     }
+
+    /// <summary>
+    /// True when the soul front-matter declares a <c>model:</c> key. Such a key
+    /// is FORBIDDEN: the runtime model is always resolved from the crew/agent DB
+    /// settings (<c>CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync</c> →
+    /// <c>agent.EvaluatorModel/GeneratorModel ?? crew.EvaluatorModel/Model</c>),
+    /// never from the soul file, which is injected verbatim only as persona
+    /// text. A stale soul <c>model:</c> (e.g. a Sonnet header on a gpt-5.5
+    /// evaluator) is silently ignored and only invites misdiagnosis, so souls
+    /// must not carry it. Enforced by <c>SoulModelFrontmatterTests</c>.
+    /// </summary>
+    public static bool DeclaresModel(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return false;
+        var lines = raw.Replace("\r\n", "\n").Split('\n');
+        if (lines.Length == 0 || lines[0].Trim() != "---") return false;
+        for (var i = 1; i < lines.Length; i++)
+        {
+            var trim = lines[i].Trim();
+            if (trim == "---") return false;
+            if (trim.StartsWith("model:", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
 }
 
 /// <summary>Bound from <c>Forge:Agents:SoulRoot</c>.</summary>

@@ -165,5 +165,7 @@ public class Phase74ConcurrentDispatchGuardTests
     {
         public IReadOnlyList<ModelInfo> All => Array.Empty<ModelInfo>();
         public ModelInfo? Find(string id) => null;
+        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
+        public bool CatalogEnriched => false;
     }
 }

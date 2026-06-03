@@ -2043,7 +2043,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk,
                     WallClockBudget: taskBudget,
-                    MaxTurns: taskMaxTurns);
+                    MaxTurns: taskMaxTurns,
+                    IsEvaluator: true);
                 var evalMemoryEnabled = (evalAgent?.AgentMemoryOverride ?? evalCrew.EnableAgentMemory)
                     && evalBackend == AgentBackend.Copilot;
 

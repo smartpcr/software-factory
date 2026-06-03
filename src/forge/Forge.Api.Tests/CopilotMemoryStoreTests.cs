@@ -503,5 +503,9 @@ public class CopilotMemoryStoreTests
 
         public ModelInfo? Find(string id)
             => this.All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
+
+        public bool CatalogEnriched => false;
     }
 }

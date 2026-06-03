@@ -270,7 +270,19 @@ public sealed record AgentContext(
     /// <c>AgentMemoryStore</c> is the producer; the runner is the
     /// consumer.
     /// </summary>
-    AgentMemoryHandle? Memory = null);
+    AgentMemoryHandle? Memory = null,
+    /// <summary>
+    /// 2026-06-03 — true when this context drives the EVALUATOR half of the
+    /// generator↔evaluator loop. The dispatcher uses it to suppress the
+    /// workstream-memory pointer (see
+    /// <c>AgentRunnerDispatcher.MaybePrependWorkstreamMemoryPointer</c>) so the
+    /// evaluator is never instructed to read
+    /// <c>.forge/memory/workstream-context.md</c> and re-ingest its own prior
+    /// feedback or self-reported "state: failed" as binding requirements/state.
+    /// That self-referential leak capped scores just under the pass threshold
+    /// (PR-INGESTER stage-5.3, 2026-06-03). Default false = generator runs.
+    /// </summary>
+    bool IsEvaluator = false);
 
 /// <summary>
 /// Phase 55 — cross-iteration memory handed to a runner invocation. The

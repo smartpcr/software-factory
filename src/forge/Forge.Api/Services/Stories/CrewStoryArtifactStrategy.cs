@@ -3988,10 +3988,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             - Coverage of the workstream's stated goals + acceptance criteria.
             - Internal consistency with the story description and the merged
               planning artifacts on `main` (architecture.md / implementation-plan.md).
-            - Internal consistency with any operator-uploaded attachments under
-              `.forge-attachments/` (read them; flag any divergence between the
-              implementation and the operator's reference docs).
             - Obvious bugs, missing error paths, untested edge cases.
+
+            The `.forge/` directory (`iter-notes.md`, `memory/*`) and an empty
+            `.forge-attachments/` are private iteration scratch -- NOT
+            requirements, deliverables, operator artifacts, or workstream state.
+            Never raise a missing-file, missing-artifact, or "state failed"
+            finding from them. Score only the changed source and test files.
 
             ## VERIFY THE GENERATOR'S `[x] FIXED` CLAIMS -- REQUIRED FOR ITER ≥ 2
             DO NOT TRUST the generator's `### Prior feedback resolution`
@@ -4190,6 +4193,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // elevated broker (Forge.Api is non-elevated). Broker unreachable
             // => the gate throws BuildFailedException => workstream stalls.
             runTestsElevated: repo?.RunTestsElevated == true,
+            // 2026-06-03 — pass the operator attachment manifest so the loop
+            // can scrub engineer-authored files from the operator-only
+            // `.forge-attachments/` inbox before each evaluator turn (blocks
+            // the self-produced gate-output evidence-gaming loop).
+            operatorAttachmentsJson: attachmentsJson,
             ct: ct);
 
         // Phase 74 follow-up — DeliverableLoop fast-failed because another
@@ -6405,6 +6413,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // 2026-05-26 — repo.RunTestsElevated: route the TEST stage of both
         // gate chains to the elevated broker (Forge.Api runs non-elevated).
         bool runTestsElevated = false,
+        // 2026-06-03 — operator attachment manifest (StorySpawnRow.AttachmentsJson)
+        // for this drive. When set, the loop scrubs any engineer-authored
+        // file from the worktree's operator-only `.forge-attachments/` inbox
+        // BEFORE each evaluator turn, so a self-produced "gate-output" log
+        // cannot be read by the evaluator as a genuine operator artifact and
+        // bait the score. Null (plan-doc / qa / review-fix callers) = no scrub.
+        string? operatorAttachmentsJson = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -6491,7 +6506,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     control, db, evalCrew, useEvaluatorRole: true, workspace, budget, ct,
                     maxTurns: storyPoints > 0 ? storyPoints * 30 : null);
                 evalAgentId = eId;
-                evalContext = eCtx;
+                evalContext = eCtx with { IsEvaluator = true };
                 evalCrewId = evalCrew.Id;
                 if (disallowedTools is { Count: > 0 })
                 {
@@ -7844,6 +7859,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
             }
 
+            // 2026-06-03 — deterministic anti-gaming guard. The generator may
+            // have self-produced files in the operator-only
+            // `.forge-attachments/` inbox THIS iter (e.g. an
+            // engineer-written "gate-output-*.log" to clear a phantom
+            // attachment pin). Scrub anything that isn't an operator upload
+            // BEFORE the evaluator reads the worktree, so it can never score
+            // fabricated "operator artifacts" as genuine evidence.
+            ScrubNonManifestAttachments(workspace, operatorAttachmentsJson);
+
             // Phase 56 — prepend the ground-truth diff header to the
             // evaluator's user prompt for THIS iter. The base evaluatorPrompt
             // (workstream brief + rubric + instructions) stays unchanged so
@@ -7852,7 +7876,6 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var iterEvaluatorPrompt = diffHeader is null
                 ? evaluatorPrompt
                 : diffHeader + "\n" + evaluatorPrompt;
-
             await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
             {
                 agentId = evalAgentId,
@@ -9071,19 +9094,45 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string? stateDir = null)
     {
         var paths = new List<string>();
-        if (string.IsNullOrEmpty(attachmentsJson)) return paths;
 
-        List<AttachmentEntry>? entries;
-        try { entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentEntry>>(attachmentsJson, CamelCase); }
-        catch { return paths; }
-        if (entries is null || entries.Count == 0) return paths;
+        List<AttachmentEntry>? entries = null;
+        if (!string.IsNullOrEmpty(attachmentsJson))
+        {
+            try { entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentEntry>>(attachmentsJson, CamelCase); }
+            catch { entries = null; }
+        }
 
+        // 2026-06-03 — ALWAYS reconcile the operator inbox to exactly the
+        // operator manifest. `.forge-attachments/` is operator-write-only by
+        // contract; the orchestrator is the only legitimate writer (it copies
+        // operator-uploaded reference docs here). Any OTHER file in this dir
+        // was authored by the engineer agent -- e.g. a self-produced
+        // "gate-output-*.log" written to satisfy a phantom attachment pin --
+        // and MUST be scrubbed so the evaluator can never read a fabricated
+        // "operator artifact". Deleting the dir up front (even when the
+        // manifest is empty) guarantees the inbox holds EXACTLY the
+        // operator-uploaded files, or nothing at all. The previous
+        // early-return-on-empty path skipped this scrub, which let the
+        // engineer's self-made files persist and accumulate across iters.
         var targetDir = Path.Combine(worktreePath, ".forge-attachments");
         if (Directory.Exists(targetDir))
         {
             try { Directory.Delete(targetDir, recursive: true); }
             catch { /* best-effort */ }
         }
+
+        if (entries is null || entries.Count == 0)
+        {
+            // No operator attachments. Still register the git exclude so a dir
+            // the agent re-creates mid-iter can't pollute the PR diff, then
+            // leave the inbox absent.
+            if (excludeMode == AttachmentExcludeMode.GitInfoExclude)
+            {
+                await TryAddGitInfoExcludeAsync(worktreePath, ".forge-attachments/", ct);
+            }
+            return paths;
+        }
+
         Directory.CreateDirectory(targetDir);
 
         // Per-worktree local exclude. Avoids modifying the tracked
@@ -9126,7 +9175,69 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
-    /// Phase 55 / Phase A.2 (docs/forge/sloppy_guard.md) -- read the
+    /// 2026-06-03 — parses the operator attachment manifest JSON into the
+    /// set of expected file names: the ONLY files allowed to exist under
+    /// the worktree's <c>.forge-attachments/</c> operator inbox. Returns an
+    /// empty set when the manifest is null / blank / malformed (which the
+    /// scrub treats as "operator attached nothing -> remove everything").
+    /// </summary>
+    internal static HashSet<string> ParseAttachmentManifestFileNames(string? attachmentsJson)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(attachmentsJson)) return names;
+        try
+        {
+            var entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentEntry>>(attachmentsJson, CamelCase);
+            if (entries is not null)
+            {
+                foreach (var e in entries)
+                {
+                    if (!string.IsNullOrEmpty(e.FileName)) names.Add(e.FileName);
+                }
+            }
+        }
+        catch { /* malformed -> empty manifest -> scrub everything */ }
+        return names;
+    }
+
+    /// <summary>
+    /// 2026-06-03 — deterministically removes any file under the worktree's
+    /// <c>.forge-attachments/</c> operator inbox that is NOT part of the
+    /// operator upload manifest. The inbox is operator-write-only by
+    /// contract; any other file there was authored by the engineer agent
+    /// (e.g. a self-produced <c>gate-output-*.log</c> written to satisfy a
+    /// phantom attachment pin) and must never be visible to the evaluator
+    /// as an "operator artifact". Run immediately before the evaluator reads
+    /// the worktree so a SAME-iter fabrication cannot bait the score. When
+    /// the manifest is empty the whole inbox is engineer-authored, so the
+    /// directory is removed wholesale. Best-effort: file-system races/locks
+    /// are swallowed.
+    /// </summary>
+    internal static void ScrubNonManifestAttachments(string worktreePath, string? attachmentsJson)
+    {
+        if (string.IsNullOrEmpty(worktreePath)) return;
+        var targetDir = Path.Combine(worktreePath, ".forge-attachments");
+        if (!Directory.Exists(targetDir)) return;
+
+        var manifest = ParseAttachmentManifestFileNames(attachmentsJson);
+        if (manifest.Count == 0)
+        {
+            try { Directory.Delete(targetDir, recursive: true); }
+            catch { /* best-effort */ }
+            return;
+        }
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(targetDir, "*", SearchOption.AllDirectories))
+            {
+                if (manifest.Contains(Path.GetFileName(file))) continue;
+                try { File.Delete(file); }
+                catch { /* best-effort */ }
+            }
+        }
+        catch { /* enumeration race -- best-effort */ }
+    }
     /// archived working-notes history so the next iter's prompt sees
     /// every prior iter's reflection, not just the last one. Scans
     /// <c>.forge/notes/iter-*.md</c>, sorts by iter descending (newest
