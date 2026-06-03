@@ -18,6 +18,20 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      onwarn(warning, defaultHandler) {
+        // @microsoft/signalr v10 ships /*#__PURE__*/ annotations in positions
+        // Rollup can't interpret; the comments are dropped but tree-shaking
+        // still works. Silence the noise so it doesn't look like a failure.
+        if (
+          warning.code === 'INVALID_ANNOTATION' &&
+          warning.id?.includes('@microsoft/signalr')
+        ) {
+          return;
+        }
+        defaultHandler(warning);
+      },
+    },
   },
   plugins: [
     (monacoEditorPlugin as unknown as { default: typeof monacoEditorPlugin }).default({
