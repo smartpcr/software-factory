@@ -20,6 +20,7 @@ export const PHASE_STATUS_FILTER_KEYS = [
   'planning',
   'blocked',
   'stalled',
+  'paused',
   'complete',
   'cancelled',
 ] as const;
@@ -162,6 +163,22 @@ export const useWorkstreamsStore = create<WorkstreamsState>()(
       // the API on every mount. Persisting them would defeat the empty-init
       // change and re-introduce stale data on reload.
       partialize: (state) => ({ phaseStatusFilter: state.phaseStatusFilter }),
+      // v1 added `paused` to the key set. Users who had every prior key
+      // selected ("all-mode") get the new key folded in so they stay in
+      // all-mode; narrower selections are left alone (the operator
+      // explicitly opted out of those buckets, so we don't second-guess).
+      version: 1,
+      migrate: (persisted, fromVersion) => {
+        const state = (persisted ?? {}) as { phaseStatusFilter?: PhaseStatusFilterKey[] };
+        if (fromVersion < 1 && Array.isArray(state.phaseStatusFilter)) {
+          const v0Keys: PhaseStatusFilterKey[] = ['active', 'review', 'merging', 'planning', 'blocked', 'stalled', 'complete', 'cancelled'];
+          const hadAll = v0Keys.every((k) => state.phaseStatusFilter!.includes(k));
+          if (hadAll && !state.phaseStatusFilter.includes('paused')) {
+            state.phaseStatusFilter = [...PHASE_STATUS_FILTER_KEYS];
+          }
+        }
+        return state as WorkstreamsState;
+      },
     },
   ),
 );

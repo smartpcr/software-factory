@@ -251,6 +251,7 @@
 .swarm-ctrl .phase-status-chip.status-complete.active .count { color: var(--sc-green); }
 .swarm-ctrl .phase-status-chip.status-cancelled.active,
 .swarm-ctrl .phase-status-chip.status-blocked.active,
+.swarm-ctrl .phase-status-chip.status-paused.active,
 .swarm-ctrl .phase-status-chip.status-planning.active { border-color: var(--sc-muted); background: rgba(255,255,255,0.04); }
 
 /* ─── TOPBAR (scoped class to avoid collision with shell.css `.topbar`) ── */
