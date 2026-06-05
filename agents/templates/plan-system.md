@@ -40,6 +40,56 @@ Same for stages → steps.
 - A step's `expectedFileChanges` is honest, not aspirational. The coding
   pipeline soft-fails the PR if the actual file count exceeds it.
 
+## Explicit constraints and cross-stage invariants
+
+An **explicit constraint** is any quantified / bounded statement an upstream
+stage makes that a downstream stage relies on. Examples (the list is
+illustrative, not exhaustive):
+
+- Migration range pins: `0001..0034`, `migrations through 0034`.
+- Closed-set assertions: `pr_ingest_mode = {backfill, delta}`,
+  `pri_run_status = {claimed, running, succeeded, failed, aborted}`.
+- Numeric caps: `default 600 seconds`, `max limit 200`.
+- Enumerations: "every `pri_*` knob", "all `TestIntegration*` under
+  `internal/pringester/...`", "all four ENUMs added by stage 1.4".
+
+Every explicit constraint creates an **obligation on every downstream stage
+that adds an item inside the constraint's referent set**. If Stage 4.3
+introduces a feature that needs a new migration, Stage 1.x's "migrations
+0001..0034" pin AND Stage 6.x's gate pin BOTH go stale and BOTH must be
+updated in the same iteration — or the consumer stage will reference a stale
+set and either fail-open (silent skip) or fail-closed (drift the gate from
+reality).
+
+**Rules you MUST follow when authoring a plan:**
+
+1. **Anchor every constraint to its producers.** When a stage declares a
+   range / closed-set / cap / enumeration, identify which stage(s) populate
+   the set. If the set has no producer in this plan (i.e. it's all baseline
+   from the repo as of the plan's start), say so explicitly with the phrase
+   "baseline only — no producer stages in this plan".
+2. **When you add a new producer downstream, update upstream constraints.**
+   A new migration file added by Stage 4.x means the gate pin in Stage 6.x
+   must be raised. A new ENUM value added by Stage 5.x means Stage 1.4's
+   closed-set assertion must be expanded. Don't leave it for the
+   implementing engineer to "interpret" — the plan is the contract.
+3. **Pin numbers must be 4-digit, well-formed, and consistent.** A pin
+   `0001..0034` in Stage 1.4 and a pin `0001..0030` in Stage 6.4 of the
+   same plan is a contradiction. Either align them or document the
+   intentional divergence in prose immediately adjacent to the lower pin.
+4. **Migration files are introduced via explicit `migrations/NNNN_<name>.sql`
+   steps.** A stage that needs a schema change MUST include a step adding
+   the migration file — never imply it from prose like "compute the
+   deterministic `cluster_id_within_run`" without an accompanying step
+   that adds the migration that defines the column. The server-side
+   `PlanConstraintLinter` flags pin upper bounds that fall below any
+   explicitly-added migration file in the same plan.
+
+The doc-evaluator runs `PlanConstraintLinter.Validate` against your draft
+every iteration; the evaluator prompt embeds the linter's REFUSAL CRITERIA
+verbatim. A constraint violation holds the score below pass until you fix
+the producer/consumer alignment.
+
 ## Tools available
 
 `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`,

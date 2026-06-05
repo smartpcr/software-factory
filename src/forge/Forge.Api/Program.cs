@@ -426,6 +426,17 @@ if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredServ
 // any other path, so worktrees otherwise accumulate without bound.
 builder.Services.AddSingleton<Forge.Api.Services.WorktreeReaper>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorktreeReaper>());
+// 2026-06-04 — workstream silent-stall detector. Periodically scans for
+// workstreams in Status=active + ExecutionStatus=idle for >IdleThreshold with
+// no open queue row, no live runner, no recent transcript/deliverable, and
+// no unmet upstream dep. Flips to stalled with a structured StallReason so
+// the operator can recover via the existing /restart endpoint. Detection-
+// only in v1 — auto-restart deferred until an idempotent EnqueueAsync path
+// is proven. See WorkstreamLivenessMonitor.cs for the rationale (two real
+// incidents on 2026-06-04: pri-postgres 4h26m undetected idle,
+// end-to-end-backfill-scenario ~3 days undetected idle).
+builder.Services.AddSingleton<Forge.Api.Services.WorkstreamLivenessMonitor>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorkstreamLivenessMonitor>());
 // Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
 builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
 // Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).

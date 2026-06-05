@@ -101,6 +101,16 @@ public class RepoCloneService : IRepoCloneService
             };
             GitProcessEnv.ApplyFailFast(psi);
             psi.ArgumentList.Add("clone");
+            // Windows MAX_PATH guard. As a `git clone` option (not a global
+            // `git -c …`), this both lifts the 260-char limit during the
+            // initial checkout AND persists `core.longpaths=true` into the
+            // new repo's config, so deeply-nested/long-named files (e.g. the
+            // long e2e `.feature`/`_test.go` names that stalled PR-INGESTER
+            // stage 6.6 at a 261-char worktree path) check out cleanly here
+            // and on every later operation. RealStoryGitOps also injects this
+            // per-invocation as belt-and-suspenders for already-cloned repos.
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("core.longpaths=true");
             psi.ArgumentList.Add("--progress");
             psi.ArgumentList.Add(authedUrl);
             psi.ArgumentList.Add(repo.CloneRoot);

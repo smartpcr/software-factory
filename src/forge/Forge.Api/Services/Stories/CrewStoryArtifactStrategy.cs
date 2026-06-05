@@ -2789,10 +2789,41 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 ? "\n" + E2eScenariosLinter.BuildEvaluatorRulesSection() + "\n"
                 : string.Empty;
 
+        // 2026-06-04 — cross-stage explicit-constraint check for
+        // implementation-plan.md. Same pattern as the e2e linter
+        // injection above. v1 covers migration range pins (the
+        // pri-postgres incident class); for iter ≥ 2 the linter is
+        // invoked against the actual committed draft on disk so its
+        // "Current violations" sub-section surfaces the live blockers
+        // in-prompt. Best-effort: on first iter (no file yet) we still
+        // inject the rules block so the generator sees the criteria
+        // before authoring.
+        var planConstraintLinterRules = string.Empty;
+        if (string.Equals(spec.FileName, "implementation-plan.md", StringComparison.OrdinalIgnoreCase))
+        {
+            PlanConstraintLinter.LintResult? planLintResult = null;
+            try
+            {
+                var docOnDisk = System.IO.Path.Combine(worktreePath, spec.RepoPath);
+                if (System.IO.File.Exists(docOnDisk))
+                {
+                    var docText = await System.IO.File.ReadAllTextAsync(docOnDisk, ct);
+                    planLintResult = PlanConstraintLinter.Validate(docText, workspacePath: worktreePath);
+                }
+            }
+            catch
+            {
+                // best-effort: read/parse failure falls back to
+                // rules-only injection rather than aborting prompt build.
+            }
+            planConstraintLinterRules = "\n" + PlanConstraintLinter.BuildEvaluatorRulesSection(planLintResult) + "\n";
+        }
+
         var evaluatorPrompt = $$"""
             You are the Architect-reviewer scoring another architect's draft of
             `{{spec.RepoPath}}` for story `{{spawn.StoryId}}`.
             {{e2eScenariosLinterRules}}
+            {{planConstraintLinterRules}}
 
             ## Story title
             {{story.Title}}
@@ -2823,6 +2854,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
               the "Sequential plan-doc mode" section above — read it
               and apply ONLY the upstream-doc check, never a downstream
               one.
+            - CROSS-STAGE EXPLICIT CONSTRAINTS — apply the
+              "CROSS-STAGE CONSTRAINT CHECK — REFUSAL CRITERIA
+              (PlanConstraintLinter)" rules section injected at the
+              top of this prompt. Walk every range pin in the doc and
+              verify against (a) every other pin in the doc, (b) every
+              `migrations/NNNN_<name>.sql` step in the doc, and (c) the
+              `services/**/migrations/NNNN_*.sql` files on disk under
+              your worktree. The "Current violations" sub-section of
+              that rules block (when present) lists the live failures
+              the mechanical linter found — every one MUST appear as a
+              checkbox in "What still needs work" with the violating
+              pin quoted verbatim. Generator did NOT see the live
+              violations; you are the only safety net before the doc
+              hits the engineer.
             - PROOF & ENVIRONMENT CONTRACT — refuse pass when:
               (a) `architecture.md` has no `## Test & Environment Contract`, or it omits an
               acceptance area that asserts persisted/external state; (b) an
@@ -4027,6 +4072,74 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             them yet, you MUST score below pass and return verdict `iterate`.
             Server-side gate enforces this regardless; your verdict needs to
             match so the iteration history reads correctly.
+
+            ## CONSTRAINT FRESHNESS CHECK BEFORE FLAGGING DRIFT
+            Before flagging the impl as "drifts from the plan / spec /
+            requirements", verify the **plan constraint is still consistent
+            with the workspace's current reality**. The plan is a SNAPSHOT
+            in time; sibling stages of the same story may have moved the
+            ground truth past it (new migrations, new ENUM values, new
+            tables) without the plan being updated. When that happens, the
+            engineer cannot satisfy both "honor the literal pin" AND "make
+            real tests pass" — and the right escalation is to stop the
+            iteration and ask the operator, not to keep iterating against
+            a broken contract.
+
+            Apply this check for every plan-derived constraint you would
+            cite as a "Still needs improvement" item:
+
+            1. **Identify the plan constraint.** Quote it verbatim from
+               the plan doc (e.g. *"`implementation-plan.md` Stage 6.4
+               step 2 — `applies migrations 0001..0034`"*).
+            2. **Verify against workspace reality.** Use your read-only
+               tools to check the actual state. For migration pins:
+               `ls services/*/migrations/ | sort | tail -5` (or the
+               repo-appropriate equivalent). For closed sets / ENUM
+               assertions: grep the actual ENUM declarations. For
+               enumerations ("every `pri_*` knob"): list the actual set
+               in code.
+            3. **If reality EXCEEDS the plan constraint** (e.g. disk has
+               migration `0038` but the pin says `0001..0034`; ENUM has
+               a value the plan's closed-set doesn't list; the actual
+               `pri_*` knob set is larger than the plan enumerates), the
+               constraint is **STALE**. DO NOT add the resulting impl
+               deviation to "Still needs improvement" as if it were the
+               engineer's bug. Instead emit a structured open question
+               so the orchestrator routes it to the operator:
+
+               ```json open-questions
+               { "openQuestions": [
+                   {
+                     "id": "stale-plan-constraint-<short-slug>",
+                     "text": "Plan constraint `<verbatim pin>` in `<doc>` <section> appears stale: workspace evidence shows <counter-evidence with file path>. Should the plan be updated (operator-approved) to <proposed new value>, OR should the impl narrow its scope to honor the original pin?",
+                     "type": "choice",
+                     "choices": ["Update the plan to <proposed value>", "Keep the original pin; narrow the impl"]
+                   }
+               ] }
+               ```
+
+               Your verdict in this iteration MUST be `iterate` (not
+               `reject`) and `score` MUST stay ≥ 50 — the engineer is
+               correctly blocked on an external decision and shouldn't
+               be penalised as if they wrote bad code. Once the operator
+               answers, a future iter sees the resolved question and
+               proceeds.
+            4. **If reality MATCHES the plan constraint**, then the impl
+               IS drifting from a valid pin — keep the "Still needs
+               improvement" item and score normally. The engineer is at
+               fault.
+
+            This check exists because of the 2026-06-04 pri-postgres
+            stall: `implementation-plan.md` Stage 6.4 pinned migrations
+            at `0001..0034`, but sibling stages of the same story had
+            already added migrations `0035..0038` to the worktree before
+            this workstream started. The engineer extended the gate to
+            head (correct against reality) and the evaluator looped for
+            5+ iterations flagging "contract drift" — which was real
+            against the literal plan text but unsatisfiable because the
+            plan text was stale. With this check, the evaluator would
+            have escalated on iter 1 instead of burning the workstream's
+            budget.
 
             ## Output
 

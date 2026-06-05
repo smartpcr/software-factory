@@ -133,4 +133,68 @@ public static class ChildProcessEnv
             psi.Environment.Remove(d);
         }
     }
+
+    /// <summary>
+    /// Refresh <c>Path</c> and <c>PSModulePath</c> on a <see cref="ProcessStartInfo"/>
+    /// by composing them from the live Machine + User registry environment —
+    /// the same way Windows builds them for a NEW interactive logon shell.
+    /// Use AFTER <see cref="Apply(ProcessStartInfo)"/> when the child must be
+    /// able to resolve tools that were installed (or whose PATH entries were
+    /// added) AFTER Forge.Api started — e.g. a fresh <c>go</c> install in
+    /// <c>C:\Program Files\Go\bin</c> when Forge.Api was launched from a shell
+    /// that hadn't yet picked up that Machine PATH entry.
+    ///
+    /// <para>Symptom this fixes: the per-iter gate subprocess emits
+    /// <c>'go' is not recognized as an internal or external command</c> and
+    /// the workstream loops forever even though <c>go</c> is installed and
+    /// the operator's own shell finds it. Cause: the baseline captured by
+    /// <see cref="CaptureBaseline"/> is the launching shell's PATH at
+    /// Forge.Api start; if that shell was stale (predates a toolchain
+    /// install, or was launched without the install's PATH entry), every
+    /// child inherits the stale PATH for the lifetime of the Forge.Api
+    /// process.</para>
+    ///
+    /// <para>Same pattern as
+    /// <c>BuildValidationWorker.ApplyInteractiveEnvironment</c> — extracted
+    /// here so the gate path (<c>StoryBuildRunner</c>) and the validate path
+    /// share one implementation. <c>Path</c> and <c>PSModulePath</c> are
+    /// rebuilt as <c>Machine</c> then <c>User</c> concatenated (the logon-
+    /// session order); REG_EXPAND_SZ values are expanded. Best-effort: a
+    /// registry read failure leaves the existing (baseline-captured) value
+    /// in place rather than throwing.</para>
+    /// </summary>
+    public static void OverlayLiveRegistryPath(ProcessStartInfo psi)
+    {
+        var path = ReadRegistryComposed("Path");
+        if (!string.IsNullOrEmpty(path)) psi.Environment["Path"] = path;
+        var psModulePath = ReadRegistryComposed("PSModulePath");
+        if (!string.IsNullOrEmpty(psModulePath)) psi.Environment["PSModulePath"] = psModulePath;
+    }
+
+    private static string? ReadRegistryComposed(string name)
+    {
+        var machine = ReadRegistryOne(EnvironmentVariableTarget.Machine, name);
+        var user = ReadRegistryOne(EnvironmentVariableTarget.User, name);
+        return (machine, user) switch
+        {
+            (null, null) => null,
+            (string m, null) => m,
+            (null, string u) => u,
+            (string m, string u) => m.TrimEnd(';') + ";" + u,
+        };
+    }
+
+    private static string? ReadRegistryOne(EnvironmentVariableTarget target, string name)
+    {
+        try
+        {
+            var raw = Environment.GetEnvironmentVariable(name, target);
+            if (string.IsNullOrEmpty(raw)) return null;
+            return Environment.ExpandEnvironmentVariables(raw);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

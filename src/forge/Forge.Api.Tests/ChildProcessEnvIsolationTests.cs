@@ -108,4 +108,83 @@ public class ChildProcessEnvIsolationTests
             Environment.SetEnvironmentVariable("MSBuildSDKsPath", null);
         }
     }
+
+    /// <summary>
+    /// Regression for the 2026-06-04 PR-INGESTER gate stall:
+    /// <c>go build ./...</c> failed with <c>'go' is not recognized as an
+    /// internal or external command</c> on every per-iter build because
+    /// Forge.Api had been launched from a shell whose PATH predated a
+    /// <c>C:\Program Files\Go\bin</c> install — <see cref="ChildProcessEnv.CaptureBaseline"/>
+    /// snapshotted that stale PATH, so every gate subprocess inherited a
+    /// PATH without <c>go</c> for the entire lifetime of the host process.
+    /// <see cref="ChildProcessEnv.OverlayLiveRegistryPath"/> fixes this by
+    /// composing PATH/PSModulePath from the LIVE Machine+User registry on
+    /// each child launch — the same way a NEW interactive shell would.
+    /// </summary>
+    [Fact]
+    public void OverlayLiveRegistryPath_replaces_stale_psi_path_with_live_machine_plus_user()
+    {
+        var machine = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine);
+        if (string.IsNullOrEmpty(machine))
+        {
+            // No Machine PATH visible on this host (extremely unusual; e.g. a
+            // container with the registry hive stripped). Skip rather than
+            // assert against an empty ground truth.
+            return;
+        }
+
+        var psi = new ProcessStartInfo("dotnet");
+        psi.Environment.Clear();
+        psi.Environment["Path"] = @"C:\stale\baseline\path";
+
+        ChildProcessEnv.OverlayLiveRegistryPath(psi);
+
+        Assert.True(psi.Environment.TryGetValue("Path", out var path));
+        Assert.False(string.IsNullOrEmpty(path));
+
+        // The stale baseline value must have been replaced (not appended to).
+        Assert.DoesNotContain(@"C:\stale\baseline\path", path!, StringComparison.OrdinalIgnoreCase);
+
+        // The first segment of the live Machine PATH (after %SystemRoot%
+        // expansion) must be present — proves we sourced from the live
+        // registry, not the captured baseline.
+        var firstMachineSegment = Environment.ExpandEnvironmentVariables(machine)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .First();
+        Assert.Contains(firstMachineSegment, path!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OverlayLiveRegistryPath_composes_machine_then_user_in_logon_order()
+    {
+        var machine = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine);
+        var user = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
+        if (string.IsNullOrEmpty(machine) || string.IsNullOrEmpty(user))
+        {
+            // Need both halves to verify ordering; skip on hosts that lack one.
+            return;
+        }
+
+        var psi = new ProcessStartInfo("dotnet");
+        psi.Environment.Clear();
+
+        ChildProcessEnv.OverlayLiveRegistryPath(psi);
+
+        Assert.True(psi.Environment.TryGetValue("Path", out var path));
+        var expected = Environment.ExpandEnvironmentVariables(machine).TrimEnd(';')
+            + ";" + Environment.ExpandEnvironmentVariables(user);
+        Assert.Equal(expected, path);
+    }
+
+    [Fact]
+    public void OverlayLiveRegistryPath_is_idempotent_and_never_throws()
+    {
+        var psi = new ProcessStartInfo("dotnet");
+
+        var ex1 = Record.Exception(() => ChildProcessEnv.OverlayLiveRegistryPath(psi));
+        var ex2 = Record.Exception(() => ChildProcessEnv.OverlayLiveRegistryPath(psi));
+
+        Assert.Null(ex1);
+        Assert.Null(ex2);
+    }
 }

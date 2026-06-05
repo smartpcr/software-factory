@@ -229,6 +229,19 @@ public static class StoryBuildRunner
         // worktree. See ChildProcessEnv. Re-assert the build-tuning vars AFTER
         // the clean rebuild so they survive.
         ChildProcessEnv.Apply(psi);
+
+        // Devbox parity for non-.NET ecosystems (go / cargo / npm / mvn …):
+        // refresh PATH from the live Machine + User registry on top of the
+        // pristine baseline, the same way a NEW interactive shell would
+        // compose it. Without this, a Forge.Api launched from a stale shell
+        // (one whose PATH predates a `go` install at C:\Program Files\Go\bin)
+        // permanently fails every per-iter gate with
+        // `'go' is not recognized as an internal or external command` for the
+        // lifetime of the Forge.Api process — even though the toolchain is
+        // installed and the operator's own shell finds it. Matches the
+        // BuildValidationWorker.ApplyInteractiveEnvironment pattern.
+        ChildProcessEnv.OverlayLiveRegistryPath(psi);
+
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 

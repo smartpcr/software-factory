@@ -276,13 +276,131 @@ public partial class GitHubAuthService : IAuthService
         return null;
     }
 
-    private static bool IsGhInstalled()
+    // Resolved absolute path to gh.exe (or "gh" if process PATH already finds
+    // it). Cached for the process lifetime — the install location of gh isn't
+    // expected to change while Forge.Api is running, and re-probing every
+    // status call slows the Settings page down. `null` means "not installed".
+    //
+    // Sentinel "" is used to distinguish "not yet resolved" from "resolved =
+    // null" because Volatile<T?> can't carry that information directly.
+    private static volatile string? resolvedGhPath = "";
+
+    private static bool IsGhInstalled() => ResolveGhExecutable() is not null;
+
+    /// <summary>
+    /// Finds <c>gh.exe</c> robustly across the ways it ends up installed on a
+    /// developer box:
+    /// <list type="bullet">
+    ///   <item>process PATH (the normal case when Forge.Api is launched from a fresh shell);</item>
+    ///   <item>well-known install locations (winget / installer / portable);</item>
+    ///   <item>Machine and User PATH from the environment registry (covers the
+    ///       case where Forge.Api was launched from a curated shell — e.g. a
+    ///       VS Code integrated terminal — whose PATH was scrubbed of common
+    ///       system entries).</item>
+    /// </list>
+    /// Returns <c>null</c> when gh genuinely isn't installed.
+    /// </summary>
+    internal static string? ResolveGhExecutable()
+    {
+        var cached = resolvedGhPath;
+        if (cached != "")
+        {
+            return cached;
+        }
+
+        var resolved = ProbeGhExecutable();
+        resolvedGhPath = resolved;
+        return resolved;
+    }
+
+    /// <summary>Test seam — clears the static resolver cache.</summary>
+    internal static void ResetGhResolverCacheForTests() => resolvedGhPath = "";
+
+    private static string? ProbeGhExecutable()
+    {
+        // 1) Process PATH — bare "gh" works in CI and most desktops.
+        if (TryRunGhVersion("gh"))
+        {
+            return "gh";
+        }
+
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // On non-Windows, fall back to common Unix install paths.
+            foreach (var p in new[] { "/usr/local/bin/gh", "/usr/bin/gh", "/opt/homebrew/bin/gh" })
+            {
+                if (File.Exists(p) && TryRunGhVersion(p))
+                {
+                    return p;
+                }
+            }
+            return null;
+        }
+
+        // 2) Well-known Windows install locations.
+        var candidates = new List<string>
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "GitHub CLI", "gh.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "GitHub CLI", "gh.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "GitHub CLI", "gh.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Links", "gh.exe"),
+        };
+        foreach (var c in candidates)
+        {
+            if (!string.IsNullOrEmpty(c) && File.Exists(c) && TryRunGhVersion(c))
+            {
+                return c;
+            }
+        }
+
+        // 3) Machine / User PATH from the environment registry. .NET's
+        // Process.Start uses the process-effective PATH only — when Forge.Api
+        // was launched from a shell that scrubbed PATH (e.g. some VS Code
+        // integrated terminals), gh is invisible even though it's installed
+        // and reachable from a fresh cmd.exe. Walk the broader PATH manually.
+        foreach (var target in new[] { EnvironmentVariableTarget.Machine, EnvironmentVariableTarget.User })
+        {
+            string? path;
+            try
+            {
+                path = Environment.GetEnvironmentVariable("PATH", target);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(path)) continue;
+            foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var trimmed = dir.Trim().Trim('"');
+                if (trimmed.Length == 0) continue;
+                string candidate;
+                try
+                {
+                    candidate = Path.Combine(trimmed, "gh.exe");
+                }
+                catch
+                {
+                    continue;
+                }
+                if (File.Exists(candidate) && TryRunGhVersion(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryRunGhVersion(string fileName)
     {
         try
         {
             var psi = new ProcessStartInfo
             {
-                FileName = "gh",
+                FileName = fileName,
                 Arguments = "--version",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -305,7 +423,7 @@ public partial class GitHubAuthService : IAuthService
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "gh",
+            FileName = ResolveGhExecutable() ?? "gh",
             Arguments = arguments,
             RedirectStandardOutput = captureOutput,
             RedirectStandardError = captureOutput,

@@ -462,20 +462,16 @@ public sealed class BuildValidationWorker : BackgroundService
     /// encoding checks, module-manifest updates) to resolve different modules and
     /// fail spuriously.
     ///
-    /// <para><c>PATH</c> and <c>PSModulePath</c> are rebuilt as Machine + User
-    /// (concatenated, the logon-session order); all other registry vars take the
-    /// User value over Machine. Volatile session vars already on the process
+    /// <para><c>PATH</c> and <c>PSModulePath</c> are rebuilt via
+    /// <see cref="ChildProcessEnv.OverlayLiveRegistryPath"/> (Machine + User
+    /// concat, the logon-session order); all OTHER registry vars take the User
+    /// value over Machine. Volatile session vars already on the process
     /// (USERNAME / USERPROFILE / APPDATA / TEMP / SystemRoot / ComSpec / …) are
     /// preserved unless a registry value overrides them. REG_EXPAND_SZ values are
     /// expanded. Best-effort: a registry read failure leaves the inherited env.</para>
     /// </summary>
     private static void ApplyInteractiveEnvironment(System.Diagnostics.ProcessStartInfo psi)
     {
-        // Rebuild the two search-path vars from scratch so the Machine+User
-        // concat doesn't pile onto the already-composed inherited value.
-        psi.Environment.Remove("Path");
-        psi.Environment.Remove("PSModulePath");
-
         // Strip the MSBuild SDK-resolver vars that MSBuildLocator.RegisterDefaults()
         // (Program.cs, for Roslyn's MSBuildWorkspace) injects into THIS process,
         // pinned to the net8.0 SDK Forge.Api runs on (e.g. 8.0.421). They are
@@ -484,10 +480,16 @@ public sealed class BuildValidationWorker : BackgroundService
         // lacks Microsoft.Build.Traversal (the repo's build.proj SDK), so the build
         // dies during evaluation with MSB4276 in ~4s ("Build FAILED. 0 Error(s)").
         // A fresh devbox shell never has these set, so the operator's manual build
-        // succeeds. This path rebuilds PATH from the registry above (interactive
-        // devbox simulation), so we only need to strip the SDK-resolver denylist
-        // here — centralised in ChildProcessEnv so the list has one home.
+        // succeeds. The OverlayLiveRegistryPath call below rebuilds PATH from the
+        // registry (interactive devbox simulation), so we only need to strip the
+        // SDK-resolver denylist here — centralised in ChildProcessEnv so the list
+        // has one home.
         ChildProcessEnv.StripDenied(psi);
+
+        // PATH + PSModulePath: live Machine + User registry, the same as a fresh
+        // interactive shell. Centralised in ChildProcessEnv so the gate path
+        // (StoryBuildRunner) and this validate path share one implementation.
+        ChildProcessEnv.OverlayLiveRegistryPath(psi);
 
         void Overlay(EnvironmentVariableTarget target)
         {
@@ -499,17 +501,16 @@ public sealed class BuildValidationWorker : BackgroundService
                 var key = (string)e.Key;
                 var raw = (string?)e.Value;
                 if (string.IsNullOrEmpty(raw)) continue;
-                var val = Environment.ExpandEnvironmentVariables(raw);
+                // PATH + PSModulePath are owned by OverlayLiveRegistryPath above —
+                // skip them here so we don't double-append the registry values
+                // onto the freshly-composed Machine+User result.
                 if (string.Equals(key, "Path", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(key, "PSModulePath", StringComparison.OrdinalIgnoreCase))
                 {
-                    psi.Environment.TryGetValue(key, out var cur);
-                    psi.Environment[key] = string.IsNullOrEmpty(cur) ? val : cur.TrimEnd(';') + ";" + val;
+                    continue;
                 }
-                else
-                {
-                    psi.Environment[key] = val;
-                }
+                var val = Environment.ExpandEnvironmentVariables(raw);
+                psi.Environment[key] = val;
             }
         }
 

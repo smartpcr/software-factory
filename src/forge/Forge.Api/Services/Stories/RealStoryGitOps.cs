@@ -2829,7 +2829,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
                 this.logger?.LogWarning(
                     "EnsureWorktree: ls-remote reported origin/{Branch} but `worktree add origin/{Branch}` failed "
                     + "({Err}); falling back to creating {Branch} from base {Base}.",
-                    branch, branch, Trim(addErr, 200), baseBranch);
+                    branch, branch, Trim(addErr, 200), branch, baseBranch);
                 // Clean any partial worktree dir/registration the failed add left
                 // so the from-base add below doesn't trip "already exists".
                 await this.RunGitCaptureAsync(cloneRoot, ct, "worktree", "remove", "--force", wtPath);
@@ -3402,6 +3402,23 @@ public sealed class RealStoryGitOps : IStoryGitOps
             CreateNoWindow = true,
         };
         Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
+
+        // Windows MAX_PATH guard (durable). Worktrees live under
+        // `{cloneRoot}\.worktree\{slug}\…`, and a base branch can carry
+        // deeply-nested, long-named files (observed: code-intelligence
+        // PR-INGESTER stage 6.6, whose checkout path hit 261 chars — one
+        // over the 260 limit — because the base tree held AST-PARSER e2e
+        // `.feature`/`_test.go` files named after long feature titles).
+        // `git worktree add` then died with "Filename too long" / "Could
+        // not reset index file to revision 'HEAD'", which (before the
+        // RealStoryGitOps.cs:2829 log fix) was masked by a logging
+        // FormatException and stalled the workstream indefinitely.
+        // `-c core.longpaths=true` makes git use the `\\?\` extended-length
+        // prefix for its own file ops, lifting the 260-char ceiling for
+        // EVERY git invocation here (existing + freshly-cloned repos),
+        // without depending on a one-time `git config` write per clone.
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("core.longpaths=true");
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)
