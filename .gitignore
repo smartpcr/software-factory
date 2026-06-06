@@ -200,6 +200,9 @@ UpgradeLog*.htm
 **/web/aci.yml
 **/Api/aci.yml
 
+# TypeScript incremental build cache — machine-specific, must not be tracked
+*.tsbuildinfo
+
 # allow claude
 !CLAUDE.md
 !.claude/client/tsconfig.tsbuildinfo
