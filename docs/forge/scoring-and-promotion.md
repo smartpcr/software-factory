@@ -125,6 +125,22 @@ The promotion job runs nightly at 02:00 per timezone, writes
 `agent-promoted` / `agent-demoted` rows, and emits SignalR
 `agent.level.changed`.
 
+**Nightly auto-promotion gate (Phase 91).** The hosted nightly scheduler
+(`PromotionScheduler`, 02:00 in `Forge:Promotion:Scheduler:Timezone`, default
+America/Los_Angeles — "02:00 PT") is **promotion-only** and layers an extra
+evidence gate on top of the tier verdict above: an agent is auto-promoted only
+when the tier rule already says promote (avg ≥ tier threshold, zero rejects,
+cooldown clear — i.e. Promo-ETA reads `ready`) **AND** its trailing-window
+average is strictly **> `ScoringConstants.AutoPromoteMinAvg` (90)** **AND** its
+throughput (trailing-window final-deliverable count) is **≥
+`ScoringConstants.AutoPromoteMinThroughput` (5)**. These two gate numbers are
+operational safety limits — they do **not** change the displayed verdict /
+Promo-ETA on the Performance scoreboard, and they do **not** participate in the
+spec-consistency check (they are not part of the locked tier table). The nightly
+job does **not** auto-demote; demotions and manual operator overrides
+(`POST /api/admin/promotion/run`, the per-agent promote/demote/hold buttons)
+ignore the gate.
+
 > OPEN — do you want demotion at all, or only "no promotion"? Default:
 > demotion enabled. A non-improving agent should leak budget less.
 

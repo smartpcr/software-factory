@@ -497,7 +497,10 @@ Review|QA`), **Pod** (`leadership|plan-design|coding|ai-worker|reserve`), **Role
   parse-fail → safe `iterate` with `score=0`.
 - **Promotion** (`PromotionPolicy` + `PromotionRunner`): trailing-20 deliverables → promote at
   ≥92 + zero rejects + 30-day cooldown; demote at <75 (or sloppy-rate >0.15, P52.7). Lead floor
-  level ≥7. Nightly scheduler + monthly `agent_monthly_review` snapshot are **`[ ]` (14.7/14.15)**.
+  level ≥7. **Nightly scheduler is live (Phase 91):** `PromotionScheduler` (02:00 PT) runs the
+  runner in `NightlyAuto` mode — promotion-only, gated by `AutoPromoteMinAvg` (avg>90) +
+  `AutoPromoteMinThroughput` (throughput≥5) on top of the tier verdict, broadcasting
+  `agent.level.changed`. Monthly `agent_monthly_review` snapshot + per-TZ timers are still **`[ ]` (14.15)**.
 - **Payroll vs spend (Q14.7):** `CrewSpend` = token cost (existing); `CrewPayroll` =
   `hourly × on-shift hours` (`PayrollCalculator`, TZ-aware, lead 168 h/wk vs member ≤72 h/wk).
   TopBar shows both chips.

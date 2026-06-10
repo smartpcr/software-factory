@@ -394,6 +394,15 @@ builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
         sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
+// Phase 91 — nightly auto-promotion scheduler (02:00 PT). Promotion-only,
+// gated by avg > AutoPromoteMinAvg + throughput >= AutoPromoteMinThroughput
+// on top of the tier verdict. Singleton so tests can resolve it and drive
+// RunOnceAsync deterministically; the AddHostedService wrapper is gated so it
+// doesn't auto-fire in test mode.
+builder.Services.Configure<Forge.Api.Services.PromotionSchedulerOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.PromotionSchedulerOptions.SectionName));
+builder.Services.AddSingleton<Forge.Api.Services.PromotionScheduler>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PromotionScheduler>());
 // Phase 55 (docs/forge/sloppy_guard.md) — cross-iteration memory store.
 // Scoped so it shares the caller's DbContext / transaction; producer for
 // the Memory handle on AgentContext consumed by the runner cells in

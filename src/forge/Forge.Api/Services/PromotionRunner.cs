@@ -20,7 +20,50 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public interface IPromotionRunner
 {
+    /// <summary>
+    /// Runs with <see cref="PromotionRunOptions.Manual"/> — tier policy only,
+    /// promotions and demotions applied, no extra gate. This is the
+    /// behaviour the admin <c>POST /api/admin/promotion/run</c> endpoint and
+    /// the existing tests expect.
+    /// </summary>
     Task<PromotionRunResult> RunAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Phase 91 — runs with explicit options. The nightly scheduler passes
+    /// <see cref="PromotionRunOptions.NightlyAuto"/> (promotion-only, with the
+    /// avg &gt; <see cref="ScoringConstants.AutoPromoteMinAvg"/> + throughput
+    /// &ge; <see cref="ScoringConstants.AutoPromoteMinThroughput"/> gate).
+    /// </summary>
+    Task<PromotionRunResult> RunAsync(PromotionRunOptions options, CancellationToken ct);
+}
+
+/// <summary>
+/// Phase 91 — knobs that select how a promotion run behaves. The displayed
+/// tier verdict / Promo-ETA on the Performance scoreboard are unaffected by
+/// these — they only govern which decisions the runner actually <i>applies</i>.
+/// </summary>
+/// <param name="RequireAutoPromotionGate">
+/// When true, a <see cref="PromotionPolicy.ReasonPromote"/> verdict is applied
+/// only if the trailing-window average is strictly &gt;
+/// <see cref="ScoringConstants.AutoPromoteMinAvg"/> AND the window holds at
+/// least <see cref="ScoringConstants.AutoPromoteMinThroughput"/> deliverables.
+/// Otherwise the decision is recorded as
+/// <see cref="PromotionPolicy.ReasonPromoteGated"/> and no level change occurs.
+/// </param>
+/// <param name="ApplyDemotions">
+/// When false, <see cref="PromotionPolicy.ReasonDemote"/> verdicts are recorded
+/// as <see cref="PromotionPolicy.ReasonDemoteSkipped"/> but not applied — the
+/// nightly auto path is promotion-only.
+/// </param>
+public sealed record PromotionRunOptions(bool RequireAutoPromotionGate, bool ApplyDemotions)
+{
+    /// <summary>Admin / on-demand: tier policy only, promotions + demotions, no gate.</summary>
+    public static readonly PromotionRunOptions Manual =
+        new(RequireAutoPromotionGate: false, ApplyDemotions: true);
+
+    /// <summary>Nightly scheduler: promotion-only, with the avg/throughput gate.</summary>
+    public static readonly PromotionRunOptions NightlyAuto =
+        new(RequireAutoPromotionGate: true, ApplyDemotions: false);
 }
 
 /// <summary>One agent's promotion decision + outcome.</summary>
@@ -68,8 +111,13 @@ public sealed class PromotionRunner : IPromotionRunner
         this.log = log;
     }
 
-    public async Task<PromotionRunResult> RunAsync(CancellationToken ct)
+    public Task<PromotionRunResult> RunAsync(CancellationToken ct)
+        => this.RunAsync(PromotionRunOptions.Manual, ct);
+
+    public async Task<PromotionRunResult> RunAsync(PromotionRunOptions options, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         var now = DateTimeOffset.UtcNow;
         var agents = await this.control.Agents.AsNoTracking().ToListAsync(ct);
 
@@ -112,37 +160,75 @@ public sealed class PromotionRunner : IPromotionRunner
 
             var decision = PromotionPolicy.Evaluate(agent.Level, lastPromotion, window, now);
 
-            decisions.Add(new PromotionAgentResult(
-                agent.Id, decision.OldLevel, decision.NewLevel, decision.RollingAvg,
-                decision.Reason, decision.WindowSize));
+            // Default: nothing applied — NewLevel mirrors OldLevel unless we
+            // actually move the agent below. Reason starts at the policy
+            // verdict and is rewritten to a *-gated / *-skipped marker when an
+            // options gate suppresses the change.
+            var appliedNewLevel = decision.OldLevel;
+            var effectiveReason = decision.Reason;
 
             if (decision.Reason == PromotionPolicy.ReasonPromote)
             {
-                await ApplyLevelChangeAsync(agent.Id, decision, now, ct);
-                promoted++;
+                // Phase 91 — nightly safety gate. RollingAvg and WindowSize are
+                // the trailing-window average + final-deliverable count, i.e.
+                // exactly the AVG and THROUGHPUT columns the operator reads on
+                // the Performance scoreboard.
+                var gatePass = !options.RequireAutoPromotionGate
+                    || (decision.RollingAvg > ScoringConstants.AutoPromoteMinAvg
+                        && decision.WindowSize >= ScoringConstants.AutoPromoteMinThroughput);
+
+                if (gatePass)
+                {
+                    await ApplyLevelChangeAsync(agent.Id, decision, now, ct);
+                    appliedNewLevel = decision.NewLevel;
+                    promoted++;
+                }
+                else
+                {
+                    effectiveReason = PromotionPolicy.ReasonPromoteGated;
+                }
             }
             else if (decision.Reason == PromotionPolicy.ReasonDemote)
             {
-                await ApplyLevelChangeAsync(agent.Id, decision, now, ct);
-                demoted++;
-                // Q14.5 — demoting a current crew lead below 7 should fire
-                // crew.lead-vacated. Logged here; full lead-pending state
-                // machine lands in a follow-up batch (no schema field for
-                // LeadPendingSince yet).
-                if (decision.NewLevel < ScoringConstants.LeadMinLevel)
+                if (options.ApplyDemotions)
                 {
-                    var crewLed = await this.control.Crews
-                        .Where(c => c.Lead == agent.Id)
-                        .Select(c => c.Id)
-                        .FirstOrDefaultAsync(ct);
-                    if (crewLed is not null)
+                    await ApplyLevelChangeAsync(agent.Id, decision, now, ct);
+                    appliedNewLevel = decision.NewLevel;
+                    demoted++;
+                    // Q14.5 — demoting a current crew lead below 7 should fire
+                    // crew.lead-vacated. Logged here; full lead-pending state
+                    // machine lands in a follow-up batch (no schema field for
+                    // LeadPendingSince yet).
+                    if (decision.NewLevel < ScoringConstants.LeadMinLevel)
                     {
-                        this.log.LogWarning(
-                            "Crew {CrewId} lead {AgentId} demoted to L{Level} (< {Floor}) — manual replacement required.",
-                            crewLed, agent.Id, decision.NewLevel, ScoringConstants.LeadMinLevel);
+                        var crewLed = await this.control.Crews
+                            .Where(c => c.Lead == agent.Id)
+                            .Select(c => c.Id)
+                            .FirstOrDefaultAsync(ct);
+                        if (crewLed is not null)
+                        {
+                            this.log.LogWarning(
+                                "Crew {CrewId} lead {AgentId} demoted to L{Level} (< {Floor}) — manual replacement required.",
+                                crewLed, agent.Id, decision.NewLevel, ScoringConstants.LeadMinLevel);
+                        }
                     }
                 }
+                else
+                {
+                    // Nightly auto path is promotion-only — surface the
+                    // demote intent in the decisions list but do not apply it.
+                    effectiveReason = PromotionPolicy.ReasonDemoteSkipped;
+                }
             }
+            else
+            {
+                // noop / insufficient-data — NewLevel already equals OldLevel.
+                appliedNewLevel = decision.NewLevel;
+            }
+
+            decisions.Add(new PromotionAgentResult(
+                agent.Id, decision.OldLevel, appliedNewLevel, decision.RollingAvg,
+                effectiveReason, decision.WindowSize));
         }
 
         return new PromotionRunResult(agents.Count, promoted, demoted, decisions, now);

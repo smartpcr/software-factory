@@ -72,6 +72,26 @@ public static class PromotionPolicy
     public const string ReasonOperatorHold    = "operator-hold";
 
     /// <summary>
+    /// Phase 91 — emitted by <see cref="Forge.Api.Services.PromotionRunner"/>
+    /// (NOT by <see cref="Evaluate"/>) when an agent's tier verdict is
+    /// <see cref="ReasonPromote"/> but the nightly auto-promotion safety gate
+    /// (<see cref="ScoringConstants.AutoPromoteMinAvg"/> /
+    /// <see cref="ScoringConstants.AutoPromoteMinThroughput"/>) holds it back.
+    /// Informational only — it is never written to
+    /// <see cref="AgentLevelHistoryRow"/> because no level change occurred.
+    /// </summary>
+    public const string ReasonPromoteGated = "promote-gated";
+
+    /// <summary>
+    /// Phase 91 — emitted by <see cref="Forge.Api.Services.PromotionRunner"/>
+    /// when an agent's tier verdict is <see cref="ReasonDemote"/> but the run
+    /// is promotion-only (the nightly auto path —
+    /// <see cref="Forge.Api.Services.PromotionRunOptions.NightlyAuto"/> — does
+    /// not auto-demote). Informational only; never persisted.
+    /// </summary>
+    public const string ReasonDemoteSkipped = "demote-skipped";
+
+    /// <summary>
     /// All reason values that should count toward the promotion cooldown
     /// gate. The nightly runner and the performance scorecard's
     /// last-promoted-at lookup both use this set so manual and automatic

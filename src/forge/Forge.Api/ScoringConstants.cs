@@ -155,6 +155,41 @@ public static class ScoringConstants
     /// <summary>Canonical "standard" tier cooldown (days).</summary>
     public const int PromotionCooldownDays = 30;     // standard tier cooldown
 
+    // ── Phase 91 — nightly auto-promotion safety gate ───────────────────
+
+    /// <summary>
+    /// Phase 91 — extra evidence gate the <b>nightly auto-promotion
+    /// scheduler</b> (<see cref="Forge.Api.Services.PromotionScheduler"/>)
+    /// applies <i>on top of</i> the tier-based <see cref="Services.PromotionPolicy"/>
+    /// verdict. An agent is auto-promoted only when, in addition to the policy
+    /// returning <see cref="Services.PromotionPolicy.ReasonPromote"/> (tier avg
+    /// + zero rejects + cooldown clear), its trailing-window average score is
+    /// <b>strictly greater than</b> this value AND it has at least
+    /// <see cref="AutoPromoteMinThroughput"/> final deliverables in the window.
+    /// <para>
+    /// These gates do NOT change the displayed verdict / Promo-ETA on the
+    /// Performance scoreboard — they only gate the automatic level mutation so
+    /// a thin-evidence easy-tier agent (policy promote at avg 88 over a 3-row
+    /// window) is not auto-promoted overnight. Operators can still promote such
+    /// an agent manually via the per-agent PO override (Phase 89) or the admin
+    /// <c>POST /api/admin/promotion/run</c> endpoint, both of which bypass this
+    /// gate.
+    /// </para>
+    /// <para>
+    /// Mirrors the Performance scoreboard columns the operator reads: the
+    /// runner's <c>RollingAvg</c> is the trailing-window average (= AVG column)
+    /// and <c>WindowSize</c> is the trailing-window final-deliverable count
+    /// (= THROUGHPUT column).
+    /// </para>
+    /// </summary>
+    public const decimal AutoPromoteMinAvg = 90m;
+
+    /// <summary>
+    /// Phase 91 — minimum trailing-window final-deliverable count (throughput)
+    /// for the nightly auto-promotion gate. See <see cref="AutoPromoteMinAvg"/>.
+    /// </summary>
+    public const int AutoPromoteMinThroughput = 5;
+
     // ── Lead floor (Q14.5) ──────────────────────────────────────────────
     public const int LeadMinLevel = 7;
 
