@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services;
 
+using System;
 using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
@@ -176,6 +177,28 @@ public sealed class AgentMemoryStore
 
         await this.db.SaveChangesAsync(ct);
         return (sessionId, false);
+    }
+
+    /// <summary>
+    /// True when an agent's failure reason indicates the provider session
+    /// could not be resumed because it no longer exists on the provider
+    /// (Copilot SDK "Session not found" / "session.resume failed", Claude
+    /// CLI <c>--resume</c> miss). The provider echoes a live session id on
+    /// every successful iteration, so when an iter fails for this reason no
+    /// new id is captured and the post-iter persist would otherwise re-write
+    /// the stale id — making the NEXT iter resume the same dead session and
+    /// fail identically. Callers persist <c>sessionId: null</c> on this so
+    /// <see cref="EnsureSessionIdAsync"/> mints a fresh session next iter
+    /// instead of resuming a corpse. (Observed 2026-06-22 on
+    /// code-intelligence:ENABLE-MCP architecture.md: 40/40 iters
+    /// generator-inactive, all "Session not found", until an operator
+    /// Restart cleared the row.)
+    /// </summary>
+    public static bool IsStaleSessionResumeFailure(string? failureReason)
+    {
+        if (string.IsNullOrEmpty(failureReason)) return false;
+        return failureReason.Contains("session not found", StringComparison.OrdinalIgnoreCase)
+            || failureReason.Contains("session.resume failed", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

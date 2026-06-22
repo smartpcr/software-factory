@@ -1802,10 +1802,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                 if (genMemoryEnabled)
                 {
-                    var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
-                        ? capturedSessionId
-                        : genMemoryHandle?.SessionId;
-                    if (!string.IsNullOrEmpty(sessionIdToPersist))
+                    // 2026-06-22 self-heal — when this iter failed because the
+                    // Copilot/CLI session could not be resumed ("Session not
+                    // found"), capturedSessionId is null and the old fallback
+                    // would re-persist the stale id, so the next iter resumes
+                    // the same dead session and fails identically for the whole
+                    // iter cap. Persist null instead so EnsureSessionIdAsync
+                    // mints a fresh session next iter.
+                    var staleResume = AgentMemoryStore.IsStaleSessionResumeFailure(failureReason);
+                    var sessionIdToPersist = staleResume
+                        ? null
+                        : !string.IsNullOrEmpty(capturedSessionId)
+                            ? capturedSessionId
+                            : genMemoryHandle?.SessionId;
+                    if (staleResume || !string.IsNullOrEmpty(sessionIdToPersist))
                     {
                         try
                         {
@@ -2196,6 +2206,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // separate evaluator agent_usage row.
                 long evalCacheRead = 0, evalCacheWrite = 0, evalReasoning = 0, evalConversationLatest = 0;
                 string? evalSessionId = null;
+                string? evalFailureReason = null;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -2243,14 +2254,25 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (evt.ReasoningTokens is > 0) evalReasoning += evt.ReasoningTokens.Value;
                     if (evt.ConversationTokens is > 0) evalConversationLatest = evt.ConversationTokens.Value;
                     if (!string.IsNullOrEmpty(evt.SessionId)) evalSessionId = evt.SessionId;
+                    if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
+                    {
+                        evalFailureReason = evt.Error;
+                    }
                 }
 
                 if (evalMemoryEnabled)
                 {
-                    var sessionIdToPersist = !string.IsNullOrEmpty(evalSessionId)
-                        ? evalSessionId
-                        : evalMemoryHandle?.SessionId;
-                    if (!string.IsNullOrEmpty(sessionIdToPersist))
+                    // 2026-06-22 self-heal — see the generator block above. A
+                    // dead evaluator session ("Session not found") that can't
+                    // be resumed would otherwise be re-persisted and retried
+                    // every iter. Persist null so the next iter mints fresh.
+                    var staleResume = AgentMemoryStore.IsStaleSessionResumeFailure(evalFailureReason);
+                    var sessionIdToPersist = staleResume
+                        ? null
+                        : !string.IsNullOrEmpty(evalSessionId)
+                            ? evalSessionId
+                            : evalMemoryHandle?.SessionId;
+                    if (staleResume || !string.IsNullOrEmpty(sessionIdToPersist))
                     {
                         try
                         {

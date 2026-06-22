@@ -7435,10 +7435,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             else if (genMemoryEnabled)
             {
-                var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
-                    ? capturedSessionId
-                    : genContextForIter.Memory?.SessionId;
-                if (!string.IsNullOrEmpty(sessionIdToPersist))
+                // 2026-06-22 self-heal — when this iter failed because the
+                // Copilot/CLI session could not be resumed ("Session not
+                // found"), capturedSessionId is null and the old fallback
+                // would re-persist the stale id from Memory, so the next
+                // iter resumes the same dead session and fails identically
+                // for the whole iter cap. Persist null instead so
+                // EnsureSessionIdAsync mints a fresh session next iter.
+                var staleResume = AgentMemoryStore.IsStaleSessionResumeFailure(failureReason);
+                var sessionIdToPersist = staleResume
+                    ? null
+                    : !string.IsNullOrEmpty(capturedSessionId)
+                        ? capturedSessionId
+                        : genContextForIter.Memory?.SessionId;
+                if (staleResume || !string.IsNullOrEmpty(sessionIdToPersist))
                 {
                     try
                     {
@@ -8179,6 +8189,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             decimal cost = 0m;
             long inTok = 0, outTok = 0;
             string? capturedSessionId = null;
+            string? evalFailureReason = null;
             // 2026-05-16 Phase 72 — cache / reasoning / conversation
             // accumulation mirrored from the generator delegate so the
             // evaluator's agent_usage row carries the same telemetry.
@@ -8226,6 +8237,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.ReasoningTokens is > 0) evalReasoning += evt.ReasoningTokens.Value;
                 if (evt.ConversationTokens is > 0) evalConversationLatest = evt.ConversationTokens.Value;
                 if (!string.IsNullOrEmpty(evt.SessionId)) capturedSessionId = evt.SessionId;
+                if (evt.Kind == AgentEventKind.Failed && !string.IsNullOrEmpty(evt.Error))
+                {
+                    evalFailureReason = evt.Error;
+                }
                 if (evt.InputTokens is > 0 || evt.OutputTokens is > 0)
                 {
                     turnIndex++;
@@ -8307,10 +8322,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             else if (evalMemoryEnabled)
             {
-                var sessionIdToPersist = !string.IsNullOrEmpty(capturedSessionId)
-                    ? capturedSessionId
-                    : evalContextForIter.Memory?.SessionId;
-                if (!string.IsNullOrEmpty(sessionIdToPersist))
+                // 2026-06-22 self-heal — see the generator delegate above. A
+                // dead evaluator session ("Session not found") that can't be
+                // resumed would otherwise be re-persisted and retried every
+                // iter. Persist null so the next iter mints a fresh session.
+                var staleResume = AgentMemoryStore.IsStaleSessionResumeFailure(evalFailureReason);
+                var sessionIdToPersist = staleResume
+                    ? null
+                    : !string.IsNullOrEmpty(capturedSessionId)
+                        ? capturedSessionId
+                        : evalContextForIter.Memory?.SessionId;
+                if (staleResume || !string.IsNullOrEmpty(sessionIdToPersist))
                 {
                     try
                     {

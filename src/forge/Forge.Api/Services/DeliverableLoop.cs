@@ -1687,7 +1687,15 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var lastId = rowIds[rowIds.Count - 1];
         var lastRow = await this.db.Deliverables.FirstAsync(d => d.Id == lastId, ct);
         lastRow.Verdict = verdict;
-        var iterCapNote = $"SLOPPY: iteration cap reached — {iter} iters consumed without a pass (best score {priorChain.Max(c => c.Score)}). Reassigning to a fresh pair on the next reconciler tick.";
+        // priorChain only gains an entry after a generator iteration reaches
+        // the evaluator. When every iteration is a transient generator failure
+        // (e.g. a dead Copilot session that keeps failing to resume), each one
+        // hits the `continue` above before appending, so the chain is empty at
+        // the cap. A seed-less Max() on it throws "Sequence contains no
+        // elements", which escapes up to StorySpawnOrchestrator and halts the
+        // whole plan-doc pipeline. Guard the empty case — "best score 0".
+        var bestPriorScore = priorChain.Count > 0 ? priorChain.Max(c => c.Score) : 0;
+        var iterCapNote = $"SLOPPY: iteration cap reached — {iter} iters consumed without a pass (best score {bestPriorScore}). Reassigning to a fresh pair on the next reconciler tick.";
         lastRow.Notes = string.IsNullOrEmpty(lastRow.Notes) ? iterCapNote : lastRow.Notes + "\n\n" + iterCapNote;
         await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
 
