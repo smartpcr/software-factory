@@ -824,9 +824,49 @@ public static class AdminEndpoints
             IHttpClientFactory httpFactory,
             Forge.Api.Agents.IModelRegistry registry,
             Forge.Api.Agents.CopilotServerManager copilotServer,
+            Forge.Api.Persistence.IForgeDbPaths paths,
+            [FromQuery] bool? refresh,
             CancellationToken ct) =>
         {
             if (ForgeUser.RequireWriter(ctx) is { } unauth) return unauth;
+
+            // 2026-06-18 — day-cached catalog. The live fetch spins the SDK
+            // client / hits the Copilot models API, so cache the result to a
+            // file under the writable data folder and serve it while it's < 1
+            // day old. This is a runtime CACHE, deliberately NOT the checked-in
+            // seed at Agents/Models/models.json (that holds hand-curated pricing
+            // and is the registry's immutable base). `?refresh=true` forces a
+            // re-fetch and rewrite.
+            var cacheFile = Path.Combine(paths.Folder, "models.json");
+            var maxAge = TimeSpan.FromDays(1);
+            if (refresh != true && File.Exists(cacheFile))
+            {
+                var age = DateTimeOffset.UtcNow - new FileInfo(cacheFile).LastWriteTimeUtc;
+                if (age < maxAge)
+                {
+                    var cachedJson = await File.ReadAllTextAsync(cacheFile, ct);
+                    return Results.Content(cachedJson, "application/json");
+                }
+            }
+
+            // Write-through helper: persist a freshly-built (successful) catalog
+            // payload, then return it. Best-effort — a cache-write failure never
+            // fails the request. Only successful catalogs reach here; Problem
+            // responses below bypass it, so we never cache an error body.
+            async Task<IResult> FreshAsync(object payload)
+            {
+                try
+                {
+                    Directory.CreateDirectory(paths.Folder);
+                    var json = System.Text.Json.JsonSerializer.Serialize(payload);
+                    await File.WriteAllTextAsync(cacheFile, json, ct);
+                }
+                catch (Exception ex)
+                {
+                    ctx.Items["copilot-models-cache-write-error"] = ex.Message;
+                }
+                return Results.Ok(payload);
+            }
 
             // Preferred path: the SDK's already-authenticated client lists
             // models + capabilities WITHOUT the editor-only
@@ -839,9 +879,10 @@ public static class AdminEndpoints
                 var sdkModels = await copilotServer.ListModelsAsync(ct);
                 if (sdkModels is { Count: > 0 })
                 {
-                    return Results.Ok(new
+                    return await FreshAsync(new
                     {
                         source = "copilot-sdk:ListModelsAsync",
+                        cachedAtUtc = DateTimeOffset.UtcNow,
                         count = sdkModels.Count,
                         models = sdkModels,
                         registry = registry.All
@@ -977,7 +1018,14 @@ public static class AdminEndpoints
                 }
             }
 
-            return Results.Ok(new { count = models.Count, models, registryMismatches = mismatches });
+            return await FreshAsync(new
+            {
+                source = "copilot-rest:api.githubcopilot.com/models",
+                cachedAtUtc = DateTimeOffset.UtcNow,
+                count = models.Count,
+                models,
+                registryMismatches = mismatches,
+            });
         }).WithTags("Admin").WithName("AdminCopilotModels");
 
         return app;
