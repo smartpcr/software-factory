@@ -42,13 +42,65 @@ public static class StoryBuildRunner
     /// </summary>
     private const int GoFailCaptureLimit = 120;
 
-    // Go test failure-shaped lines: per-test header, panic, package-level
-    // FAIL, build-error package header (`# pkg`), and `file.go:line:` detail.
+    // Go failure capture is verdict-aware. A `file.go:NN:` (or `file.go:NN:CC:`)
+    // detail line is byte-identical whether it belongs to a real `--- FAIL`
+    // assertion, a `# pkg` build error, OR a `t.Log` / `t.Skip` message under a
+    // passing/skipped test. A naive `\.go:\d+:` capture therefore drowns the one
+    // real failure under a wall of skip/log detail from the *passing* packages
+    // that ran first, and with the bounded GoFailCaptureLimit the real
+    // `--- FAIL:` / `panic:` / `# pkg … undefined: X` lines fall off the end and
+    // never reach the operator (observed: code-intelligence stage 1.2, where an
+    // `internal/mcp/backend [build failed]` was masked by clean-code `t.Skip`
+    // noise). So we split the patterns:
+    //
+    //   * ALWAYS-capture markers — unambiguous failure signals that never appear
+    //     under a passing test: per-test FAIL header, panic, package-level
+    //     `FAIL`, and the `# pkg` build-error header. These flip the capture
+    //     into "fail context".
+    //   * Block terminators — `=== RUN/PAUSE/CONT/NAME`, `--- PASS:`, `--- SKIP:`,
+    //     and the trailing `ok `/`? ` package-summary lines end fail context.
+    //   * Detail lines (`file.go:NN:`) are captured ONLY while in fail context,
+    //     so skip/log detail under PASS/SKIP is dropped.
+    //
     // Only consulted when the invoked command is `go …` (see goFailLines below)
     // so dotnet/cargo/npm output can't be misclassified.
-    private static readonly Regex GoFailLineRegex = new(
-        @"^\s*--- FAIL:|^panic:|^FAIL\s|^# \S|\.go:\d+:",
+    private static readonly Regex GoFailHeaderRegex = new(
+        @"^\s*--- FAIL:|^panic:|^FAIL\b|^# \S",
         RegexOptions.Compiled);
+
+    private static readonly Regex GoBlockTerminatorRegex = new(
+        @"^\s*--- (PASS|SKIP):|^\s*=== (RUN|PAUSE|CONT|NAME)\b|^(ok|PASS|\?)\s",
+        RegexOptions.Compiled);
+
+    private static readonly Regex GoSourceDetailRegex = new(
+        @"\.go:\d+:",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// Decide whether a streamed Go output line should be captured into the
+    /// bounded failure buffer, threading <paramref name="inFailContext"/> as a
+    /// per-stream verdict-block flag. Unambiguous failure markers are always
+    /// captured (and open a fail context so their following `file.go:NN:` detail
+    /// is kept); `--- PASS:`/`--- SKIP:`/`=== RUN`/`ok ` close it; ambiguous
+    /// source-detail lines are captured only inside a fail context. See
+    /// <see cref="GoFailHeaderRegex"/> for the masking bug this prevents.
+    /// </summary>
+    internal static bool ShouldCaptureGoFailLine(string line, ref bool inFailContext)
+    {
+        if (GoFailHeaderRegex.IsMatch(line))
+        {
+            inFailContext = true;
+            return true;
+        }
+
+        if (GoBlockTerminatorRegex.IsMatch(line))
+        {
+            inFailContext = false;
+            return false;
+        }
+
+        return inFailContext && GoSourceDetailRegex.IsMatch(line);
+    }
 
     private static readonly Regex ErrorLineRegex = new(
         @"\):\s+error\s+\w+:",
@@ -342,6 +394,10 @@ public static class StoryBuildRunner
 
         async Task PumpAsync(StreamReader reader)
         {
+            // Per-stream verdict-block flag for the Go failure capture. Local to
+            // each pump so stdout (test verdicts) and stderr (build errors)
+            // track their own `--- FAIL`/`# pkg` context without interleaving.
+            var goInFailContext = false;
             string? line;
             while ((line = await reader.ReadLineAsync(effectiveCt).ConfigureAwait(false)) is not null)
             {
@@ -357,8 +413,8 @@ public static class StoryBuildRunner
                         warningCount++;
                     }
                     if (goFailLines is not null
-                        && goFailLines.Count < GoFailCaptureLimit
-                        && GoFailLineRegex.IsMatch(line))
+                        && ShouldCaptureGoFailLine(line, ref goInFailContext)
+                        && goFailLines.Count < GoFailCaptureLimit)
                     {
                         goFailLines.Add(line.TrimEnd());
                     }

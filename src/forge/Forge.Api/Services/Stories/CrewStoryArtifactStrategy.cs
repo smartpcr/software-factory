@@ -4639,7 +4639,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // review activity was invisible to the operator unless they
         // queried the spawn-level transcript directly.
         await this.InvokeAsync("Review", workstream.Id, $"review:{workstream.Id}:r{round}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review"), ct,
+            BudgetForPhase(spawn.StoryPoints, "review", workstream.Category), ct,
             maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var diskPath = Path.Combine(workspace, ".forge", "comments.json");
@@ -4765,7 +4765,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             """;
 
         await this.InvokeAsync("Review", workstream.Id, $"merged-pr-rescore:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review"), ct,
+            BudgetForPhase(spawn.StoryPoints, "review", workstream.Category), ct,
             maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         var diskPath = Path.Combine(workspace, ".forge", "merged-pr-score.json");
@@ -5017,7 +5017,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? comment.AuthoringAgentId
             : assignedGen;
         await this.InvokeAsync("Engineer", workstream.Id, $"review-fix:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review-fix"), ct, agentIdOverride: fixAgentId,
+            BudgetForPhase(spawn.StoryPoints, "review-fix", workstream.Category), ct, agentIdOverride: fixAgentId,
             maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
 
         // reply.md is mandatory -- every comment needs a written response.
@@ -5159,7 +5159,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         await this.InvokeAsync(
             "Engineer", workstream.Id, $"conflict-resolve:{workstream.Id}",
             prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "review-fix"),
+            BudgetForPhase(spawn.StoryPoints, "review-fix", workstream.Category),
             ct,
             agentIdOverride: engineerId,
             maxTurns: spawn.StoryPoints > 0 ? spawn.StoryPoints * 30 : null);
@@ -6541,8 +6541,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// points so a 1-pt change isn't given the same window as a 13-pt epic.
     /// Formula: <c>base = max(180s, points * 60s)</c>; per-phase
     /// multiplier on top.
+    ///
+    /// <para><paramref name="workstreamCategory"/> (optional) lets the
+    /// <c>review</c> / <c>review-fix</c> phases inherit the qa-e2e 3.0× tier
+    /// when they operate on a <see cref="WorkstreamCategories.QaE2e"/> PR.
+    /// Rationale: the qa-e2e <em>generation</em> phase was bumped to 3.0×
+    /// (24min @ 8pts) because it builds/tests against the real worktree, but
+    /// the REVIEW of those e2e PRs was left at the 1.0× default (8min @ 8pts)
+    /// — only a third of the time that produced the PR. A reviewer can't read
+    /// a build-compiling structural PR (new nested go.mod / go.work / suite
+    /// reorg) in 8min, so it hits the Copilot SDK hard timeout, posts zero
+    /// comments, and the workstream stalls (observed code-intelligence
+    /// ENABLE-MCP transport-wrapper-e2e PR #434, 2026-06-23:
+    /// "Copilot SDK hard timeout: exceeded 8m budget"). Matching the review
+    /// budget to the generation budget closes that gap.</para>
     /// </summary>
-    internal static TimeSpan BudgetForPhase(int points, string phaseTag)
+    internal static TimeSpan BudgetForPhase(int points, string phaseTag, string? workstreamCategory = null)
     {
         // Base budget scales with story points: 60s per point, floor 180s.
         var baseSeconds = Math.Max(180.0, points * 60.0);
@@ -6570,6 +6584,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "qa-e2e" => 3.0,
             _ => 1.0,
         };
+
+        // Reviewing / fixing a qa-e2e PR pays the same build cost as
+        // generating it (real-worktree compile + go test), so the review
+        // phases inherit the qa-e2e 3.0× tier instead of the 1.0× default.
+        // Without this the reviewer gets a third of the generation budget and
+        // hard-times-out on the structural PRs e2e produces (see remarks).
+        if ((prefix == "review" || prefix == "review-fix")
+            && workstreamCategory == WorkstreamCategories.QaE2e)
+        {
+            multiplier = 3.0;
+        }
+
         var seconds = baseSeconds * multiplier;
         // Plan docs need a higher floor -- the architect must read repo
         // context + siblings + write a large markdown file. 3 minutes

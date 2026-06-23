@@ -274,6 +274,36 @@ public sealed class Phase60PlanDocPointsFloorTests
         Assert.Equal(expectedSeconds, budget.TotalSeconds);
     }
 
+    // ── qa-e2e review/review-fix inherit the 3.0× generation tier ─────────
+    // The qa-e2e *generation* phase is 3.0× (real-worktree build cost), but
+    // reviewing/fixing those PRs was left at the 1.0× default — a third of the
+    // budget that produced the PR — so the reviewer hard-timed-out and stalled
+    // the workstream (code-intelligence ENABLE-MCP transport-wrapper-e2e #434:
+    // "Copilot SDK hard timeout: exceeded 8m budget"). The review phases now
+    // inherit 3.0× when the workstream category is qa-e2e.
+    [Theory]
+    [InlineData("review", 8, 1440.0)]      // 8pt qa-e2e review: 8*60 * 3.0 = 24min (was 8min)
+    [InlineData("review-fix", 8, 1440.0)]  // 8pt qa-e2e review-fix: same
+    [InlineData("review:ws-x:r0", 8, 1440.0)] // suffix-tagged review still parsed by prefix
+    public void BudgetForPhase_QaE2eReviewPhases_InheritGenerationTier(string phaseTag, int points, double expectedSeconds)
+    {
+        var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, WorkstreamCategories.QaE2e);
+        Assert.Equal(expectedSeconds, budget.TotalSeconds);
+    }
+
+    [Theory]
+    [InlineData("review", 8, 480.0)]       // impl-category review stays 1.0× = 8min
+    [InlineData("review-fix", 8, 480.0)]   // impl-category review-fix stays 1.0×
+    [InlineData("impl", 8, 1440.0)]        // qa-e2e category must NOT change non-review phases
+    public void BudgetForPhase_NonQaE2eOrNonReview_UnaffectedByCategory(string phaseTag, int points, double expectedSeconds)
+    {
+        // impl-category review keeps the 1.0× default; and passing the qa-e2e
+        // category does not perturb non-review phases (impl is already 3.0×).
+        var category = phaseTag == "impl" ? WorkstreamCategories.QaE2e : WorkstreamCategories.Impl;
+        var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, category);
+        Assert.Equal(expectedSeconds, budget.TotalSeconds);
+    }
+
     // ── EnsurePlanDocWorkItemsAsync live-create respects the floor ───────
 
     [Fact]
