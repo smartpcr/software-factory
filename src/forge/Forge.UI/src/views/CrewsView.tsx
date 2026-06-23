@@ -925,6 +925,9 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
   hint: string;
 }) {
   const selected = options.find((m) => m.id === value);
+  const valueMissing = value !== '' && !selected;
+  const valueUnsupported = !!selected && selected.available === false;
+  const warn = valueMissing || valueUnsupported;
   return (
     <div>
       <SectionHead label={label} />
@@ -932,19 +935,26 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
         value={value}
         disabled={!canEdit}
         onChange={(e) => onChange(e.target.value)}
-        style={{ ...selectStyle, width: '100%' }}
+        style={{ ...selectStyle, width: '100%', ...(warn ? { borderColor: '#e5534b' } : {}) }}
       >
         {allowEmpty && <option value="">— inherit generator —</option>}
-        {!options.some((m) => m.id === value) && value !== '' && (
-          <option value={value}>{value} (not in registry)</option>
+        {valueMissing && (
+          <option value={value}>{value} — not in catalog (retired?)</option>
         )}
         {options.map((m) => (
-          <option key={m.id} value={m.id} disabled={m.id === excludes}>
+          <option key={m.id} value={m.id} disabled={m.id === excludes || m.available === false}>
             {m.vendor} · {m.displayName}
-            {m.id === excludes ? ' — already in pair' : ''}
+            {m.id === excludes ? ' — already in pair' : m.available === false ? ' — unsupported' : ''}
           </option>
         ))}
       </select>
+      {warn && (
+        <div style={{ fontSize: 11, color: '#e5534b', marginTop: 4 }}>
+          {valueMissing
+            ? `'${value}' is not in the model catalog (likely retired). The runner will reject it — pick a supported model.`
+            : `'${value}' is not in the live Copilot catalog; the runner will reject it at session.create — pick a supported model.`}
+        </div>
+      )}
       {selected && <ModelSpecLine m={selected} />}
       <div style={hintStyle}>{hint}</div>
     </div>
@@ -1113,11 +1123,11 @@ function RuntimeTab({ crew, models, canEdit, onChange, onError }: {
           onChange={(e) => void patch({ model: e.target.value })}
           style={{ ...selectStyle, width: '100%' }}
         >
-          {!models.some((m) => m.id === crew.model) && <option value={crew.model}>{crew.model} (not in registry)</option>}
+          {!models.some((m) => m.id === crew.model) && <option value={crew.model}>{crew.model} — not in catalog (retired?)</option>}
           {models.map((m) => (
-            <option key={m.id} value={m.id}>
+            <option key={m.id} value={m.id} disabled={m.available === false}>
               {m.vendor} · {m.displayName}
-              {m.status !== 'live' ? ` (${m.status})` : ''}
+              {m.available === false ? ' — unsupported' : m.status !== 'live' ? ` (${m.status})` : ''}
             </option>
           ))}
         </select>

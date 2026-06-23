@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Endpoints;
 
+using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
@@ -289,6 +290,7 @@ public static class CrewsEndpoints
         [FromBody] CreateCrewRequest req,
         ControlDbContext control,
         ProductDbContext db,
+        IModelRegistry registry,
         CancellationToken ct)
     {
         // Crew mutations require global PO (crews are not product-scoped).
@@ -302,6 +304,18 @@ public static class CrewsEndpoints
         if (await control.Crews.AnyAsync(c => c.Id == req.Id, ct))
         {
             return Results.Problem(title: $"Crew {req.Id} already exists", statusCode: 409);
+        }
+
+        // 2026-06-22 — refuse a model the runner can't serve (retired/removed
+        // or absent from the live Copilot catalog) so it never reaches
+        // session.create and loops the deliverable to its iter cap.
+        if (registry.ValidateAssignable(req.Model) is { } modelErr)
+        {
+            return Results.Problem(
+                type: "crew.model_unavailable",
+                title: "Model not assignable",
+                detail: modelErr,
+                statusCode: 400);
         }
 
         // Phase 13.1 — depth = parent.Depth + 1, capped at 2 (Org → Team → Squad).
@@ -383,6 +397,7 @@ public static class CrewsEndpoints
         [FromBody] PatchCrewRequest req,
         ControlDbContext control,
         ProductDbContext db,
+        IModelRegistry registry,
         CancellationToken ct)
     {
         var row = await control.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -393,6 +408,24 @@ public static class CrewsEndpoints
         if (gate is not null) return gate;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+
+        // 2026-06-22 — block re-pinning to a model the runner can't serve.
+        if (registry.ValidateAssignable(req.Model) is { } modelErr)
+        {
+            return Results.Problem(
+                type: "crew.model_unavailable",
+                title: "Model not assignable",
+                detail: modelErr,
+                statusCode: 400);
+        }
+        if (registry.ValidateAssignable(req.EvaluatorModel) is { } evalErr)
+        {
+            return Results.Problem(
+                type: "crew.model_unavailable",
+                title: "Evaluator model not assignable",
+                detail: evalErr,
+                statusCode: 400);
+        }
 
         if (req.Name is not null) row.Name = req.Name;
         if (req.Summary is not null) row.Summary = req.Summary;

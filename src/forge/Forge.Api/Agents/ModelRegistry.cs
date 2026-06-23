@@ -29,6 +29,12 @@ public sealed class ModelRegistry : IModelRegistry
     private volatile IReadOnlyList<ModelInfo>? effective;
     private readonly object overlayLock = new();
 
+    // 2026-06-22 — the live Copilot catalog id set (recorded by
+    // ModelCatalogEnrichmentService). Swapped atomically; a HashSet so
+    // ValidateAssignable's membership test is O(1). Empty = "not fetched yet"
+    // (fail-open), never "nothing available".
+    private volatile HashSet<string> liveCatalog = new(StringComparer.OrdinalIgnoreCase);
+
     public ModelRegistry(IHostEnvironment env)
     {
         var contentRoot = env?.ContentRootPath ?? AppContext.BaseDirectory;
@@ -38,6 +44,47 @@ public sealed class ModelRegistry : IModelRegistry
     public IReadOnlyList<ModelInfo> All => this.effective ?? this.baseModels.Value;
 
     public bool CatalogEnriched { get; private set; }
+
+    public IReadOnlyCollection<string> LiveCatalogIds => this.liveCatalog;
+
+    public void RecordLiveCatalog(IReadOnlyCollection<string> liveModelIds)
+    {
+        if (liveModelIds is null) return;
+        this.liveCatalog = new HashSet<string>(liveModelIds, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public string? ValidateAssignable(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId)) return null;
+        var id = modelId.Trim();
+
+        var model = this.Find(id);
+        if (model is null)
+        {
+            return $"Model '{id}' is not in the Forge model catalog (it may have been retired/removed). "
+                + "Pick a model from the catalog.";
+        }
+
+        if (!string.Equals(model.Status, "live", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Model '{id}' is '{model.Status}', not live — it can no longer be assigned.";
+        }
+
+        // Only Copilot-vendor models route through the live Copilot catalog;
+        // anthropic (Claude SDK) and forge (local-stub) models use other
+        // backends and are exempt. Fail OPEN when the live catalog hasn't been
+        // fetched yet.
+        var live = this.liveCatalog;
+        if (string.Equals(model.Vendor, "copilot", StringComparison.OrdinalIgnoreCase)
+            && live.Count > 0
+            && !live.Contains(id))
+        {
+            return $"Model '{id}' is not in the live Copilot catalog and would be rejected by the "
+                + "runner at session.create. Pick an available model.";
+        }
+
+        return null;
+    }
 
     public ModelInfo? Find(string id)
         => this.All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));

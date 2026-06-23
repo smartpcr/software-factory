@@ -34,6 +34,32 @@ public interface IModelRegistry
 
     /// <summary>True once <see cref="ApplyCatalogOverlay"/> has run at least once.</summary>
     bool CatalogEnriched { get; }
+
+    /// <summary>
+    /// 2026-06-22 — the set of model ids the live Copilot catalog
+    /// (<see cref="Forge.Api.Agents.CopilotServerManager.ListModelsAsync"/>)
+    /// currently returns, recorded by
+    /// <see cref="Forge.Api.Services.ModelCatalogEnrichmentService"/>. Empty
+    /// until the first successful fetch; callers MUST treat empty as "unknown"
+    /// (fail-open), not "nothing available".
+    /// </summary>
+    IReadOnlyCollection<string> LiveCatalogIds { get; }
+
+    /// <summary>Record the live Copilot catalog ids (case-insensitive). Idempotent.</summary>
+    void RecordLiveCatalog(IReadOnlyCollection<string> liveModelIds);
+
+    /// <summary>
+    /// 2026-06-22 — returns a human-readable reason when <paramref name="modelId"/>
+    /// must NOT be assigned to a crew/agent, else <c>null</c>. Blocks: an id not
+    /// in the catalog (retired/removed), a non-<c>live</c> status, and a
+    /// Copilot-vendor model the live catalog no longer serves (the runner would
+    /// reject it at <c>session.create</c> with "Model is not available", looping
+    /// the deliverable to its iter cap). Null/blank id = inherit = allowed.
+    /// Fails OPEN for Copilot models when the live catalog hasn't been fetched
+    /// yet (<see cref="LiveCatalogIds"/> empty) so a transient catalog outage
+    /// never blocks a legitimate assignment.
+    /// </summary>
+    string? ValidateAssignable(string? modelId);
 }
 
 /// <summary>

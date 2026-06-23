@@ -18,13 +18,15 @@ public static class ModelsEndpoints
     public static WebApplication MapModelsEndpoints(this WebApplication app)
     {
         var grp = app.MapGroup("/api/models").WithTags("Models");
-        grp.MapGet("/", (IModelRegistry reg) => Results.Ok(reg.All)).WithName("ListModels");
+        grp.MapGet("/", (IModelRegistry reg) =>
+            Results.Ok(reg.All.Select(m => m with { Available = reg.ValidateAssignable(m.Id) is null })))
+            .WithName("ListModels");
         grp.MapGet("/{id}", (string id, IModelRegistry reg) =>
         {
             var model = reg.Find(id);
             return model is null
                 ? Results.Problem(title: $"Model {id} not found", statusCode: 404)
-                : Results.Ok(model);
+                : Results.Ok(model with { Available = reg.ValidateAssignable(model.Id) is null });
         }).WithName("GetModel");
         return app;
     }

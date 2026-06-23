@@ -101,6 +101,7 @@ public static class AgentsEndpoints
         HttpContext ctx,
         [FromBody] CreateAgentRequest req,
         ControlDbContext control,
+        IModelRegistry registry,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -135,6 +136,11 @@ public static class AgentsEndpoints
         }
         var generatorModel = string.IsNullOrWhiteSpace(req.GeneratorModel) ? null : req.GeneratorModel.Trim();
         var evaluatorModel = string.IsNullOrWhiteSpace(req.EvaluatorModel) ? null : req.EvaluatorModel.Trim();
+        // 2026-06-22 — refuse a per-agent model the runner can't serve.
+        if (registry.ValidateAssignable(generatorModel) is { } genModelErr)
+            return Results.Problem(type: "agent.model_unavailable", title: "Generator model not assignable", detail: genModelErr, statusCode: 400);
+        if (registry.ValidateAssignable(evaluatorModel) is { } evalModelErr)
+            return Results.Problem(type: "agent.model_unavailable", title: "Evaluator model not assignable", detail: evalModelErr, statusCode: 400);
         if (!string.IsNullOrEmpty(generatorModel) && generatorModel == evaluatorModel)
         {
             return Results.Problem(
@@ -257,6 +263,7 @@ public static class AgentsEndpoints
         string agentId,
         [FromBody] Forge.Api.Contracts.PatchAgentRequest req,
         ControlDbContext control,
+        IModelRegistry registry,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -264,6 +271,12 @@ public static class AgentsEndpoints
 
         var row = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
+
+        // 2026-06-22 — refuse a per-agent model the runner can't serve.
+        if (registry.ValidateAssignable(req.GeneratorModel) is { } genModelErr)
+            return Results.Problem(type: "agent.model_unavailable", title: "Generator model not assignable", detail: genModelErr, statusCode: 400);
+        if (registry.ValidateAssignable(req.EvaluatorModel) is { } evalModelErr)
+            return Results.Problem(type: "agent.model_unavailable", title: "Evaluator model not assignable", detail: evalModelErr, statusCode: 400);
 
         if (!string.IsNullOrWhiteSpace(req.Name)) row.Name = req.Name.Trim();
         if (!string.IsNullOrWhiteSpace(req.Role)) row.Role = req.Role.Trim();

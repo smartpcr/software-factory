@@ -84,12 +84,14 @@ public sealed class ModelCatalogEnrichmentService : BackgroundService
             }
 
             var overlay = new Dictionary<string, ModelCatalogOverlay>(StringComparer.OrdinalIgnoreCase);
+            var liveIds = new List<string>(models.Count);
             foreach (var m in models)
             {
                 if (m.ValueKind != JsonValueKind.Object) continue;
                 if (!m.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String) continue;
                 var id = idEl.GetString();
                 if (string.IsNullOrEmpty(id)) continue;
+                liveIds.Add(id);
 
                 int? ctx = null;
                 bool? reasoning = null;
@@ -116,9 +118,15 @@ public sealed class ModelCatalogEnrichmentService : BackgroundService
                 }
             }
 
+            // 2026-06-22 — record the live catalog id set so crew/agent model
+            // assignment (IModelRegistry.ValidateAssignable) can reject a model
+            // the runner would later refuse at session.create. Recorded even
+            // when no capability overlay was usable (ids alone are enough).
+            this.registry.RecordLiveCatalog(liveIds);
+
             if (overlay.Count == 0)
             {
-                this.log.LogInformation("Model-catalog enrichment: catalog had no usable capability data; registry unchanged.");
+                this.log.LogInformation("Model-catalog enrichment: catalog had no usable capability data; registry unchanged. Recorded {Count} live model ids.", liveIds.Count);
                 return;
             }
 

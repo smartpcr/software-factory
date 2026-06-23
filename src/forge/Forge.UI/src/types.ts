@@ -703,6 +703,10 @@ export interface ModelInfo {
    *  ids + gpt-5.x). Computed server-side. */
   supportsReasoning?: boolean;
   status: string;
+  /** 2026-06-22 — assignable to a crew/agent right now: false when the id is
+   *  not in the live Copilot catalog (the runner would reject it at
+   *  session.create). Computed server-side per request. */
+  available?: boolean;
 }
 
 /** Phase 13.1 — crew_history audit row. */

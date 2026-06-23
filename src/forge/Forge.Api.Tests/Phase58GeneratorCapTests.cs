@@ -94,6 +94,12 @@ public sealed class Phase58GeneratorCapTests
     // -xhigh phantom variant on code-intelligence:ENABLE-MCP.
     [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: Request session.create failed with message: Model \"claude-opus-4.7-1m-internal\" is not available.", GeneratorFailureKinds.ModelUnavailable)]
     [InlineData("Request session.create failed with message: Model \"claude-opus-4.6-1m\" is not available.", GeneratorFailureKinds.ModelUnavailable)]
+    // 2026-06-22 — the exact code-intelligence:ENABLE-MCP screenshot case
+    // (crew pinned to the now-removed -xhigh internal variant).
+    [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: Request session.create failed with message: Model \"claude-opus-4.7-xhigh\" is not available.", GeneratorFailureKinds.ModelUnavailable)]
+    // 2026-06-22 — an unauthenticated CLI is also NON-retryable; the
+    // AUTHENTICATION_FAILED clause runs before "session acquire failed" → Inactive.
+    [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: RemoteRpcException AUTHENTICATION_FAILED.", GeneratorFailureKinds.AuthFailed)]
     public void GeneratorFailureKinds_Classify_Recognizes_Dispatcher_Errors(string error, string expected)
     {
         Assert.Equal(expected, GeneratorFailureKinds.Classify(error));

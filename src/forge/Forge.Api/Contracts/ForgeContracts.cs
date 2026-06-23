@@ -877,6 +877,17 @@ public sealed record ModelInfo(
     public bool? ReasoningOverride { get; init; }
 
     /// <summary>
+    /// 2026-06-22 — whether this model can currently be assigned to a crew/agent
+    /// (i.e., <see cref="Forge.Api.Agents.IModelRegistry.ValidateAssignable"/>
+    /// returns null for it). Projected onto the <c>/api/models</c> response so
+    /// the Crews → Pair model picker can disable unsupported options and warn on
+    /// a stale current value. Defaults to <c>true</c> (the registry seed only
+    /// ships assignable models); the models endpoint overrides it per request
+    /// using the live catalog.
+    /// </summary>
+    public bool Available { get; init; } = true;
+
+    /// <summary>
     /// 2026-05-30 — whether the model produces a reasoning ("thinking")
     /// stream. Prefers the authoritative <see cref="ReasoningOverride"/> from
     /// the live catalog; falls back to an id-derived heuristic (effort suffix

@@ -310,6 +310,15 @@ public static class GeneratorFailureKinds
     public const string ConcurrentDispatch = "generator-concurrent-dispatch";
 
     /// <summary>
+    /// 2026-06-22 — the runner's session acquire failed authentication
+    /// (<c>AUTHENTICATION_FAILED</c>). NON-transient: the spawned Copilot CLI
+    /// has no valid credentials, so retrying won't self-heal. Recovery: re-run
+    /// <c>gh auth login</c> / <c>copilot login</c> for the operator account,
+    /// then Resume.
+    /// </summary>
+    public const string AuthFailed = "generator-auth-failed";
+
+    /// <summary>
     /// 2026-06-23 — the crew's configured model id is not available on the
     /// provider (e.g. a phantom Copilot variant like <c>claude-opus-4.7-1m-internal</c>
     /// the CLI no longer offers). The server rejects <c>session.create</c> with
@@ -340,6 +349,17 @@ public static class GeneratorFailureKinds
                 StringComparison.OrdinalIgnoreCase))
         {
             return ConcurrentDispatch;
+        }
+        // 2026-06-22 — an unauthenticated CLI is a NON-retryable config error
+        // (the spawned Copilot CLI has no credentials). Wrapped by the acquire
+        // path as "...session acquire failed: ...AUTHENTICATION_FAILED", so it
+        // MUST be checked before the generic "session acquire failed" → Inactive
+        // clause below, which would otherwise burn the full iter cap retrying.
+        // (The model-unavailable counterpart is handled just below, next to the
+        // session-acquire clause.)
+        if (error.Contains("AUTHENTICATION_FAILED", StringComparison.OrdinalIgnoreCase))
+        {
+            return AuthFailed;
         }
         // Copilot SDK / CrewQueueWorker max-turn loop emits
         // "Max turns ({n}) reached" verbatim (CrewQueueWorker.cs ~1450,
@@ -904,9 +924,20 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     + "known-broken generator output. "
                     + (isTransient
                         ? "Auto-retrying on next iteration (transient failure)."
-                        : "Resume after fixing root cause "
-                          + "(e.g., bump WorkItem.Points or TaskQueue.MaxIterOverride for "
-                          + $"`{GeneratorFailureKinds.MaxTurns}`).");
+                        : failKind switch
+                        {
+                            GeneratorFailureKinds.ModelUnavailable =>
+                                "The crew/agent is pinned to a model the Copilot backend will not serve "
+                                + "(retired or not in the live catalog). Repoint crew.Model / "
+                                + "agent.GeneratorModel to a live model (GET /api/models), then Resume.",
+                            GeneratorFailureKinds.AuthFailed =>
+                                "The spawned Copilot CLI is unauthenticated. Re-run `gh auth login` "
+                                + "(or `copilot login`) for the operator account, then Resume.",
+                            _ =>
+                                "Resume after fixing root cause "
+                                + "(e.g., bump WorkItem.Points or TaskQueue.MaxIterOverride for "
+                                + $"`{GeneratorFailureKinds.MaxTurns}`).",
+                        });
                 if (!string.IsNullOrEmpty(notesForNext))
                 {
                     failNote += "\n\n---\n\n" + notesForNext;
