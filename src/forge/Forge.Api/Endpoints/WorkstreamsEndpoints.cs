@@ -473,6 +473,18 @@ public static class WorkstreamsEndpoints
         db.TaskTranscriptEvents.RemoveRange(transcript);
         counts["transcriptEvents"] = transcript.Count;
 
+        // 2026-06-22 — Phase 55 agent_memory rows. Each carries the agent's
+        // provider session id (Copilot/SDK) and/or replay turns (Claude/SDK).
+        // Deleting the workstream WITHOUT reaping these orphans the session
+        // row: a re-decomposed workstream with the same slug (or a re-spawn)
+        // re-uses the deterministic work-item id, EnsureSessionIdAsync finds
+        // the stale SessionId and resumes a provider session the server has
+        // long since evicted ("Session not found"). The restart path already
+        // reaps via DeleteForWorkItemAsync; the delete path did not until now.
+        var agentMemory = await db.AgentMemory.Where(m => m.WorkItemId == id).ToListAsync(ct);
+        db.AgentMemory.RemoveRange(agentMemory);
+        counts["agentMemory"] = agentMemory.Count;
+
         var queueRows = await db.TaskQueue.Where(q => q.WorkItemId == id).ToListAsync(ct);
         var queueIds = queueRows.Select(q => q.Id).ToList();
         var queueHistory = await db.TaskQueueHistory.Where(h => queueIds.Contains(h.QueueId)).ToListAsync(ct);

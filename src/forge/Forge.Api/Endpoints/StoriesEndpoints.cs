@@ -1167,6 +1167,17 @@ public static class StoriesEndpoints
             db.TaskTranscriptEvents.RemoveRange(transcript);
             counts["synthetic.transcriptEvents"] = transcript.Count;
 
+            // 2026-06-22 — Phase 55 agent_memory for synthetic plan-doc /
+            // spawn-id work items (e.g. plan-doc:{spawn.Id}:architecture.md).
+            // Without this, deleting a spawn leaves the architect's Copilot/SDK
+            // session row behind; the deterministic re-spawn re-uses the same
+            // work-item id, EnsureSessionIdAsync resumes the evicted session and
+            // every iter fails "Session not found" until the cap. (Workstream
+            // sessions are reaped inside CascadeDeleteWorkstreamAsync.)
+            var agentMemory = await db.AgentMemory.Where(m => ids.Contains(m.WorkItemId)).ToListAsync(ctx.RequestAborted);
+            db.AgentMemory.RemoveRange(agentMemory);
+            counts["synthetic.agentMemory"] = agentMemory.Count;
+
             var queueRows = await db.TaskQueue.Where(q => ids.Contains(q.WorkItemId)).ToListAsync(ctx.RequestAborted);
             var queueRowIds = queueRows.Select(q => q.Id).ToList();
             if (queueRowIds.Count > 0)

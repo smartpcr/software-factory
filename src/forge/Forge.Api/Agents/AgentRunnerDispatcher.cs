@@ -1445,46 +1445,49 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             async Task<CopilotSession> CreateOrResumeSessionAsync(CancellationToken factoryCt)
             {
                 EnsureWorkingDirectoryAccessible(sessionConfig);
-                if (shouldResumeSession)
+                try
                 {
-                    try
+                    if (shouldResumeSession)
                     {
                         return await this.copilotServer.ResumeSessionAsync(memorySessionId!, resumeConfig, factoryCt)
                             ?? throw new InvalidOperationException(
                                 "CopilotServerManager.ResumeSessionAsync returned null — shared server is not running.");
                     }
-                    catch (Exception ex) when (!factoryCt.IsCancellationRequested && IsCopilotSessionNotFound(ex))
-                    {
-                        // 2026-06-22 ROOT-CAUSE FIX — the saved provider session no
-                        // longer exists on the Copilot server (the shared copilot.exe
-                        // restarts and loses in-memory sessions; the id also expires).
-                        // Resuming it fails "Session not found" on EVERY iteration
-                        // until the cap — the generator never even runs (observed
-                        // 40/40 iters, ~50ms each, generator-inactive on
-                        // code-intelligence:ENABLE-MCP architecture.md, sessions
-                        // 9a91…, 8e84…, 7082… each burning a full $1.8 cap). Recover
-                        // IN-CALL by creating a FRESH session with a NEW id — exactly
-                        // what the first iteration does successfully. The new id flows
-                        // back via the SessionInfo event and is persisted, so every
-                        // subsequent iter resumes the live session. A DB-level "clear
-                        // the stale id" approach was tried and failed: the per-iter
-                        // memory scope and the loop's DB context race under SQLite
-                        // write contention during the rapid-fail burst, so the clear
-                        // didn't survive. Fixing it here, where the resume actually
-                        // fails, is contention-free and recovers the SAME iteration.
-                        this.log.LogWarning(ex,
-                            "Copilot resume of session {Sid} failed (session not found); creating a fresh session in-place.",
-                            memorySessionId);
-                        sessionConfig.SessionId = Guid.NewGuid().ToString("D");
-                        return await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
-                            ?? throw new InvalidOperationException(
-                                "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
-                    }
-                }
 
-                return await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
-                    ?? throw new InvalidOperationException(
-                        "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                    return await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
+                        ?? throw new InvalidOperationException(
+                            "CopilotServerManager.CreateSessionAsync returned null — shared server is not running.");
+                }
+                catch (Exception ex) when (!factoryCt.IsCancellationRequested)
+                {
+                    // 2026-06-22 ROOT-CAUSE FIX (+ diagnostic). The saved provider
+                    // session no longer exists on the shared copilot.exe server (it
+                    // restarts and loses in-memory sessions; ids also expire), so the
+                    // resume — OR a create whose pre-assigned SessionId the SDK
+                    // treats as a resume — fails "Session not found" EVERY iter until
+                    // the cap (40/40 generator-inactive on
+                    // code-intelligence:ENABLE-MCP architecture.md). Log the EXACT
+                    // exception unconditionally so we stop guessing at its shape, then
+                    // recover in-call by creating a genuinely fresh session (new id),
+                    // which is what the first iteration does successfully.
+                    var staleSession = IsCopilotSessionNotFound(ex);
+                    this.log.LogWarning(ex,
+                        "Copilot session acquire failed (sid={Sid}, resume={Resume}): {Type}: {Msg} — staleSession={Stale}.",
+                        memorySessionId, shouldResumeSession, ex.GetType().FullName, ex.Message, staleSession);
+                    if (!staleSession)
+                    {
+                        throw;
+                    }
+
+                    var freshId = Guid.NewGuid().ToString("D");
+                    sessionConfig.SessionId = freshId;
+                    this.log.LogWarning(
+                        "Copilot stale session {Sid} → creating a FRESH session {New} in-place.",
+                        memorySessionId, freshId);
+                    return await this.copilotServer.CreateSessionAsync(sessionConfig, factoryCt)
+                        ?? throw new InvalidOperationException(
+                            "CopilotServerManager.CreateSessionAsync (fresh) returned null — shared server is not running.");
+                }
             }
 
             // 2026-05-20 — Phase 75c: wrap session acquire in a catch so a

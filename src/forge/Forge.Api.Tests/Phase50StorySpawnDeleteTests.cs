@@ -281,6 +281,22 @@ public class Phase50StorySpawnDeleteTests
                 ClaimedAt = DateTimeOffset.UtcNow,
                 ReleasedAt = null,
             });
+
+            // Phase 55 agent_memory — carries the Copilot/SDK provider session
+            // id. Deleting the workstream must reap it, else a re-spawn resumes
+            // an evicted session ("Session not found").
+            db.AgentMemory.Add(new AgentMemoryRow
+            {
+                WorkItemId = wsId,
+                AgentId = $"agent-{i + 1}",
+                Role = "generator",
+                Backend = "copilot",
+                InvokeMode = "sdk",
+                SessionId = $"ws-session-{i + 1}",
+                MessagesJson = null,
+                LastIter = 1,
+                ApproxInputTokens = 0,
+            });
         }
 
         // Synthetic plan-doc rows (rubber-duck blind spot #2 — these are
@@ -303,6 +319,20 @@ public class Phase50StorySpawnDeleteTests
             Kind = "task.token",
             PayloadJson = "{\"text\":\"test event\"}",
             At = DateTimeOffset.UtcNow,
+        });
+        // Synthetic plan-doc agent_memory — the architect's Copilot/SDK session
+        // (the exact row that caused the ENABLE-MCP "Session not found" burn).
+        db.AgentMemory.Add(new AgentMemoryRow
+        {
+            WorkItemId = planDocId,
+            AgentId = "agent-arch",
+            Role = "generator",
+            Backend = "copilot",
+            InvokeMode = "sdk",
+            SessionId = "plandoc-session-stale",
+            MessagesJson = null,
+            LastIter = 3,
+            ApproxInputTokens = 0,
         });
 
         // Synthetic spawn-id agent claim (covers the decompose / qa-features
@@ -486,6 +516,10 @@ public class Phase50StorySpawnDeleteTests
             Assert.False(await verifyDb.Workstreams.AnyAsync(w => w.Id == wsId));
             Assert.False(await verifyDb.Deliverables.AnyAsync(d => d.WorkItemId == wsId));
             Assert.False(await verifyDb.WorkItems.AnyAsync(w => w.Id == wsId));
+            // 2026-06-22 — the workstream's Copilot/SDK agent_memory session
+            // must be reaped so a re-spawn doesn't resume an evicted session.
+            Assert.False(await verifyDb.AgentMemory.AnyAsync(m => m.WorkItemId == wsId),
+                $"agent_memory for workstream {wsId} should have been reaped");
         }
 
         // Rubber-duck blind spot #2 — plan-doc synthetic rows must also
@@ -494,6 +528,10 @@ public class Phase50StorySpawnDeleteTests
         var planDocId = $"plan-doc:{spawnId}:architecture.md";
         Assert.False(await verifyDb.Deliverables.AnyAsync(d => d.WorkItemId == planDocId));
         Assert.False(await verifyDb.TaskTranscriptEvents.AnyAsync(e => e.WorkItemId == planDocId));
+        // 2026-06-22 — the plan-doc architect session (the ENABLE-MCP
+        // "Session not found" row) must be reaped on spawn delete.
+        Assert.False(await verifyDb.AgentMemory.AnyAsync(m => m.WorkItemId == planDocId),
+            $"agent_memory for plan-doc {planDocId} should have been reaped");
 
         // Phase 50 follow-up (2026-05-12) — operator reported re-spawned
         // story showed ~$1300-$2000 per plan-doc card BEFORE any LLM ran.
