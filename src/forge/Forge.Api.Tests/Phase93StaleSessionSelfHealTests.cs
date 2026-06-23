@@ -14,38 +14,38 @@ using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>
-/// 2026-06-22 — regression coverage for the two linked failures observed on
-/// code-intelligence:ENABLE-MCP architecture.md:
+/// 2026-06-22 — coverage for the two fixes to the Copilot "Session not found"
+/// 40-iter burn observed on code-intelligence:ENABLE-MCP architecture.md:
 ///
 /// <list type="number">
-///   <item><b>Root cause</b> — the generator kept trying to <c>session.resume</c>
-///     a Copilot SDK session that no longer existed ("Session not found"),
-///     and the post-iter memory persist re-wrote the stale id every iter, so
-///     all 40 iters failed identically (generator-inactive) until an operator
-///     Restart. The fix self-heals by persisting <c>sessionId: null</c> on a
-///     stale-resume failure so <see cref="AgentMemoryStore.EnsureSessionIdAsync"/>
-///     mints a fresh session next iter.</item>
-///   <item><b>The crash it triggered</b> — with zero successful iterations the
-///     <c>priorChain</c> is empty at the iteration cap, and the seed-less
-///     <c>priorChain.Max(...)</c> in <see cref="DeliverableLoop"/> threw
-///     "Sequence contains no elements", which propagated up to the
-///     StorySpawnOrchestrator and halted the whole plan-doc pipeline. The fix
-///     guards the empty case.</item>
+///   <item><b>Crash guard</b> — when EVERY iteration is a transient generator
+///     failure (a dead session that keeps failing to resume), no iter reaches
+///     the evaluator, so <c>priorChain</c> is empty at the iteration cap. The
+///     seed-less <c>priorChain.Max(...)</c> threw "Sequence contains no
+///     elements" and halted the orchestrator; the guard ends cleanly with
+///     verdict=sloppy instead.</item>
+///   <item><b>Stale-session matcher</b> —
+///     <see cref="AgentMemoryStore.IsStaleSessionResumeFailure"/> classifies the
+///     Copilot CLI error. The dispatcher uses it (via its private
+///     <c>IsCopilotSessionNotFound</c>) to fall back from a failed
+///     <c>session.resume</c> to creating a FRESH session in the same call — the
+///     real root-cause fix. The matcher must hit the exact production strings
+///     and not over-match unrelated transient failures.</item>
 /// </list>
 /// </summary>
 public class Phase93StaleSessionSelfHealTests
 {
     [Theory]
-    // The exact shape observed in the incident (matches both substrings).
+    // The exact shape the Copilot CLI emits (matches both substrings).
     [InlineData(
         "Copilot SDK session acquire failed: Communication error with Copilot CLI: "
-        + "Request session.resume failed with message: Session not found: 9a912448-7b5b-4edd-afa8-0bf04d5a6d1d",
+        + "Request session.resume failed with message: Session not found: 70824a7b-c200-4edd-b5d5-f925905e2bf5",
         true)]
     [InlineData("Request session.resume failed with message: blah", true)]
     [InlineData("Session not found: abc", true)]
     // Case-insensitive.
     [InlineData("SESSION NOT FOUND", true)]
-    // Unrelated failures must NOT be treated as stale-session.
+    // Unrelated failures must NOT be treated as stale-session (no needless reset).
     [InlineData("copilot.exe hard timeout: exceeded 30m budget", false)]
     [InlineData("generator-max-turns cap reached", false)]
     [InlineData("", false)]
@@ -53,50 +53,6 @@ public class Phase93StaleSessionSelfHealTests
     public void IsStaleSessionResumeFailure_ClassifiesOnlyResumeMisses(string? failureReason, bool expected)
     {
         Assert.Equal(expected, AgentMemoryStore.IsStaleSessionResumeFailure(failureReason));
-    }
-
-    /// <summary>
-    /// The self-heal mechanism end-to-end at the store level: once a prior iter
-    /// has a resumable session (ShouldResume=true), persisting <c>sessionId: null</c>
-    /// (what the gen/eval delegates now do on a stale-resume failure) forces the
-    /// NEXT <see cref="AgentMemoryStore.EnsureSessionIdAsync"/> to mint a brand-new
-    /// session with ShouldResume=false — i.e. create, not resume-a-corpse.
-    /// </summary>
-    [Fact]
-    public async Task PersistingNullSessionId_ForcesFreshSessionNextIter()
-    {
-        using var factory = new ForgeWebApplicationFactory();
-        using var scope = factory.Services.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<AgentMemoryStore>();
-
-        const string wi = "wi-stale-heal";
-        const string agent = "agent-stale-heal";
-
-        // Iter 1: mint a session (create). Iter 2: same id, now resumable.
-        var first = await store.EnsureSessionIdAsync(
-            wi, agent, AgentMemoryRoles.Generator, backend: "copilot", invokeMode: "sdk");
-        var beforeHeal = await store.EnsureSessionIdAsync(
-            wi, agent, AgentMemoryRoles.Generator, backend: "copilot", invokeMode: "sdk");
-        Assert.False(first.ShouldResume);
-        Assert.True(beforeHeal.ShouldResume);
-        Assert.Equal(first.SessionId, beforeHeal.SessionId);
-
-        // Self-heal: the gen/eval delegate persists null after a stale-resume failure.
-        await store.UpsertAsync(
-            wi, agent, AgentMemoryRoles.Generator, backend: "copilot", invokeMode: "sdk",
-            sessionId: null, messagesJson: null, lastIter: 5, approxInputTokens: 0);
-
-        // The cleared row has no session and no turns, so GetHandleAsync
-        // reports "no resumable memory" (null) — the runner starts fresh.
-        var handle = await store.GetHandleAsync(wi, agent, AgentMemoryRoles.Generator);
-        Assert.Null(handle);
-
-        // Next iter mints a fresh session and does NOT resume the dead one.
-        var afterHeal = await store.EnsureSessionIdAsync(
-            wi, agent, AgentMemoryRoles.Generator, backend: "copilot", invokeMode: "sdk");
-        Assert.False(afterHeal.ShouldResume);
-        Assert.NotEqual(first.SessionId, afterHeal.SessionId);
-        Assert.True(Guid.TryParse(afterHeal.SessionId, out _));
     }
 
     /// <summary>
@@ -138,7 +94,7 @@ public class Phase93StaleSessionSelfHealTests
                     OutputText: string.Empty,
                     CostUsd: 0.05m,
                     FailureReason: "Copilot SDK session acquire failed: Request session.resume failed "
-                        + "with message: Session not found: 9a912448-7b5b-4edd-afa8-0bf04d5a6d1d",
+                        + "with message: Session not found: 70824a7b-c200-4edd-b5d5-f925905e2bf5",
                     FailureKind: GeneratorFailureKinds.Inactive));
             },
             Evaluator: (_, _, _) =>
@@ -157,7 +113,6 @@ public class Phase93StaleSessionSelfHealTests
         Assert.Equal(0, evaluatorCalls); // evaluator skipped against a broken generator
         Assert.Equal(0, result.FinalScore);
 
-        // Every iter landed as an "iterate" deliverable row; the last flips to sloppy.
         var rows = await db.Deliverables.Where(d => d.WorkItemId == wi).OrderBy(d => d.Iter).ToListAsync();
         Assert.Equal(2, rows.Count);
         Assert.Equal("sloppy", rows[^1].Verdict);
