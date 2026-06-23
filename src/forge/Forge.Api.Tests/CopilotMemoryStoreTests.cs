@@ -507,5 +507,11 @@ public class CopilotMemoryStoreTests
         public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
 
         public bool CatalogEnriched => false;
+
+        public System.Collections.Generic.IReadOnlyCollection<string> LiveCatalogIds => System.Array.Empty<string>();
+
+        public void RecordLiveCatalog(System.Collections.Generic.IReadOnlyCollection<string> liveModelIds) { }
+
+        public string? ValidateAssignable(string? modelId) => null;
     }
 }
