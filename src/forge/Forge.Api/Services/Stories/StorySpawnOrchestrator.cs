@@ -3292,7 +3292,7 @@ public sealed class StorySpawnOrchestrator
                 passClass == PassGateClassification.OperatorAccepted ? "operator-accept" : "natural-pass");
             files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
         }
-        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy" or "stalled-questions")
+        else if (lastDel is not null && lastDel.Verdict is "stalled" or "stalled-budget" or "reject" or "sloppy" or "stalled-questions" or "stalled-no-convergence")
         {
             // Phase 47 — non-pass terminal verdicts route to a triage state
             // instead of re-spawning the gen↔eval loop.
