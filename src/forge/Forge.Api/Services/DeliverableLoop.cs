@@ -310,6 +310,19 @@ public static class GeneratorFailureKinds
     public const string ConcurrentDispatch = "generator-concurrent-dispatch";
 
     /// <summary>
+    /// 2026-06-23 — the crew's configured model id is not available on the
+    /// provider (e.g. a phantom Copilot variant like <c>claude-opus-4.7-1m-internal</c>
+    /// the CLI no longer offers). The server rejects <c>session.create</c> with
+    /// "Model \"X\" is not available." This is a CONFIG error, not a transient
+    /// transport blip — recovery is "fix the crew's model", so it must NOT
+    /// auto-retry. Treated as non-transient so the loop stalls after one iter
+    /// with a clear reason instead of burning the full iteration cap (observed:
+    /// 40/40 generator-inactive iters per crew with a phantom model on
+    /// code-intelligence:ENABLE-MCP — arch, eng, rev, qa, and all night crews).
+    /// </summary>
+    public const string ModelUnavailable = "generator-model-unavailable";
+
+    /// <summary>
     /// Classify a free-form Failed-event error message into one of the
     /// kinds above. Pattern-matching is conservative: we look for the
     /// exact phrases the dispatcher emits (see
@@ -388,6 +401,20 @@ public static class GeneratorFailureKinds
         // connection even though the dispatcher had already disposed
         // the bad pool entry and the next iter would have started
         // cleanly.
+        // 2026-06-23 — an unavailable model id is a CONFIG error, not a
+        // transient blip. The Copilot server rejects session.create with
+        // "Model \"X\" is not available."; wrapped by the acquire path it reads
+        // "...session acquire failed: ...session.create failed with message:
+        // Model \"X\" is not available." MUST be checked BEFORE the generic
+        // "session acquire failed" → Inactive clause below, which otherwise
+        // marks it transient and burns the full iter cap (every crew with a
+        // phantom model variant did exactly this). Fail fast so the operator
+        // fixes the crew's model.
+        if (error.Contains("is not available", StringComparison.OrdinalIgnoreCase)
+            && error.Contains("Model", StringComparison.OrdinalIgnoreCase))
+        {
+            return ModelUnavailable;
+        }
         if (error.Contains("session acquire failed", StringComparison.OrdinalIgnoreCase))
         {
             return Inactive;

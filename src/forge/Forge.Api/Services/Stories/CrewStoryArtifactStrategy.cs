@@ -2252,8 +2252,130 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// per-workItemId mutex, which only guards the gen-eval loop body — this
     /// also covers the cleanup + worktree steps that run before it.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PlanDocProductionLocks =
+    /// <summary>
+    /// 2026-06-23 — per-doc production lock with a progress heartbeat. The
+    /// holder refreshes <see cref="HeartbeatTicks"/> at the start of every
+    /// gen-eval iteration (see <see cref="RefreshPlanDocLockHeartbeat"/>), so a
+    /// contending drive can tell a HEALTHY long run (heartbeat fresh) from a
+    /// HUNG one (heartbeat stale) and force-recover the latter instead of
+    /// skipping "in-flight" forever.
+    /// </summary>
+    internal sealed class PlanDocLock
+    {
+        public readonly SemaphoreSlim Sem = new(1, 1);
+        public long HeartbeatTicks;
+
+        // 2026-06-23 — the holder's drive cancellation. Linked to the launch ct,
+        // bounded by MaxPlanDocDriveWallClock, and Cancel()'d when a contender
+        // force-recovers (steals) this lock — so a HUNG holder actually STOPS
+        // (its awaits throw, the drive exits, the SDK session tears down)
+        // instead of running on after it has been bypassed.
+        public CancellationTokenSource? Cts;
+    }
+
+    private static readonly ConcurrentDictionary<string, PlanDocLock> PlanDocProductionLocks =
         new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 2026-06-23 — absolute wall-clock backstop for a single plan-doc drive.
+    /// The PRIMARY stop mechanism is steal-cancellation (a contender that
+    /// force-recovers a stale lock <c>Cancel()</c>s the hung holder's CTS, which
+    /// the orchestrator's normal re-ticks trigger within
+    /// <see cref="PlanDocLockStaleAfter"/> of a hang). This is the last resort
+    /// for a drive that somehow never gets contended (e.g. the spawn is paused).
+    /// Set far above any healthy drive so it never false-kills live work.
+    /// </summary>
+    private static readonly TimeSpan MaxPlanDocDriveWallClock = TimeSpan.FromHours(4);
+
+    /// <summary>
+    /// 2026-06-23 — staleness threshold for <see cref="PlanDocProductionLocks"/>.
+    /// Because the heartbeat refreshes EACH iteration, a healthy multi-iter
+    /// drive keeps it fresh; only a hung iteration (no progress for this long)
+    /// trips recovery. Set well above any single healthy iteration's wall-clock
+    /// so a live drive is never stolen from. Without this, a hung drive (e.g. a
+    /// runaway Copilot child the inactivity watchdog can't see, on a background
+    /// drive launched with <c>CancellationToken.None</c>) held the lock until a
+    /// manual server restart — every orchestrator tick logged "skipped
+    /// (in-flight)" and the doc never re-dispatched (observed 2026-06-23 on
+    /// code-intelligence:ENABLE-MCP architecture.md).
+    /// </summary>
+    private static readonly TimeSpan PlanDocLockStaleAfter = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Proof-of-progress for a held plan-doc production lock: refreshes the
+    /// holder's heartbeat so a contending drive doesn't mistake a long-but-
+    /// healthy run for a hang. Called at the start of each gen-eval iteration.
+    /// No-op for non-plan-doc work items (the key is absent).
+    /// </summary>
+    internal static void RefreshPlanDocLockHeartbeat(string workItemId)
+    {
+        if (!string.IsNullOrEmpty(workItemId)
+            && PlanDocProductionLocks.TryGetValue(workItemId, out var held))
+        {
+            Interlocked.Exchange(ref held.HeartbeatTicks, DateTimeOffset.UtcNow.Ticks);
+        }
+    }
+
+    /// <summary>
+    /// 2026-06-23 — single-producer guard for a plan-doc with hung-holder
+    /// recovery. Returns the held lock entry (caller wraps it in a
+    /// <see cref="PlanDocLockReleaser"/>). Throws
+    /// <see cref="PlanDocInFlightException"/> when a LIVE drive owns it (fresh
+    /// heartbeat, or just-acquired with no heartbeat yet). When the current
+    /// holder's heartbeat is stale beyond <paramref name="staleAfter"/> the
+    /// prior drive is presumed hung: the entry is replaced with a fresh lock and
+    /// taken, so the orchestrator can re-drive instead of skipping "in-flight"
+    /// forever. The hung drive's eventual <c>Release</c> lands on the orphaned
+    /// semaphore (harmless — <see cref="PlanDocLockReleaser"/> swallows it).
+    /// </summary>
+    internal static async Task<PlanDocLock> AcquirePlanDocProductionLockAsync(
+        string docWorkItemId,
+        string repoPathForError,
+        TimeSpan staleAfter,
+        TimeSpan maxDriveWallClock,
+        ILogger? logger,
+        CancellationToken ct)
+    {
+        var lockEntry = PlanDocProductionLocks.GetOrAdd(docWorkItemId, _ => new PlanDocLock());
+        if (!await lockEntry.Sem.WaitAsync(TimeSpan.Zero, ct))
+        {
+            var hb = Interlocked.Read(ref lockEntry.HeartbeatTicks);
+            var sinceBeat = hb == 0
+                ? TimeSpan.Zero
+                : DateTimeOffset.UtcNow - new DateTimeOffset(hb, TimeSpan.Zero);
+            if (hb == 0 || sinceBeat < staleAfter)
+            {
+                throw new PlanDocInFlightException(repoPathForError, docWorkItemId);
+            }
+
+            logger?.LogWarning(
+                "Plan doc '{Doc}' production lock stale — no progress for {Since:g} (> {Max:g}); "
+                + "presuming the prior drive hung — cancelling it and replacing the lock so the "
+                + "orchestrator can re-drive.",
+                docWorkItemId, sinceBeat, staleAfter);
+
+            // Cancel the hung holder's drive so it actually STOPS (its awaits
+            // throw, ProducePlanFileAsync exits, the SDK session tears down)
+            // rather than running on after we bypass it.
+            try { lockEntry.Cts?.Cancel(); }
+            catch (ObjectDisposedException) { /* holder already finished */ }
+
+            var fresh = new PlanDocLock();
+            await fresh.Sem.WaitAsync(ct);  // we now own the fresh lock
+            PlanDocProductionLocks[docWorkItemId] = fresh;
+            lockEntry = fresh;
+        }
+
+        // Bound this drive: linked to the launch ct, with a wall-clock backstop.
+        // The caller threads lockEntry.Cts.Token through the whole drive.
+        lockEntry.Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lockEntry.Cts.CancelAfter(maxDriveWallClock);
+        Interlocked.Exchange(ref lockEntry.HeartbeatTicks, DateTimeOffset.UtcNow.Ticks);
+        return lockEntry;
+    }
+
+    /// <summary>Test hook — drop all production locks so a test starts clean.</summary>
+    internal static void ResetPlanDocProductionLocksForTesting() => PlanDocProductionLocks.Clear();
 
     /// <summary>
     /// Releases a held plan-doc production lock on dispose, so
@@ -2264,13 +2386,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly struct PlanDocLockReleaser : IDisposable
     {
         private readonly SemaphoreSlim semaphore;
+        private readonly CancellationTokenSource? cts;
 
-        public PlanDocLockReleaser(SemaphoreSlim semaphore) => this.semaphore = semaphore;
+        // Captures THIS drive's semaphore + CTS at construction (not the live
+        // dictionary entry, which a stale-recovery may replace) so dispose acts
+        // on its own lock, never a successor's.
+        public PlanDocLockReleaser(PlanDocLock entry)
+        {
+            this.semaphore = entry.Sem;
+            this.cts = entry.Cts;
+        }
 
         public void Dispose()
         {
             try { this.semaphore.Release(); }
             catch (SemaphoreFullException) { /* already released — defensive */ }
+            catch (ObjectDisposedException) { /* lock was replaced after a stale-recovery — defensive */ }
+            try { this.cts?.Dispose(); }
+            catch { /* best-effort */ }
         }
     }
 
@@ -2304,12 +2437,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // signal — without touching the file, worktree, or DB — so the
         // in-flight winner produces the doc and the orchestrator retries on
         // its next tick. Held for the whole method via `using var`.
-        var productionLock = PlanDocProductionLocks.GetOrAdd(docWorkItemId, _ => new SemaphoreSlim(1, 1));
-        if (!await productionLock.WaitAsync(TimeSpan.Zero, ct))
-        {
-            throw new PlanDocInFlightException(spec.RepoPath, docWorkItemId);
-        }
-        using var productionLockHold = new PlanDocLockReleaser(productionLock);
+        var lockEntry = await AcquirePlanDocProductionLockAsync(
+            docWorkItemId, spec.RepoPath, PlanDocLockStaleAfter, MaxPlanDocDriveWallClock, this.logger, ct);
+        using var productionLockHold = new PlanDocLockReleaser(lockEntry);
+
+        // Thread this drive's bounded cancellation through the rest of the
+        // method (RunGenEvalLoopAsync + its per-iter closures) so a hung drive
+        // that has its lock stolen — or that simply outlives
+        // MaxPlanDocDriveWallClock — actually STOPS rather than leaking the lock
+        // and a runaway Copilot child. Linked to the original ct, so caller
+        // cancellation still propagates.
+        ct = lockEntry.Cts!.Token;
 
         // Phase 45 follow-up -- pass-verdict guard. If the latest deliverable
         // for this doc already evaluated to `pass`, do NOT spin up another
@@ -6808,6 +6946,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
         {
+            // 2026-06-23 — prove iter-to-iter progress to any contending drive so
+            // a long-but-healthy multi-iter plan-doc run isn't mistaken for a
+            // hang and force-recovered. No-op for non-plan-doc work items.
+            RefreshPlanDocLockHeartbeat(workItemId);
+
             // Phase 49 follow-up -- assemble the iter prompt from up to
             // THREE layered sections so the generator sees the most
             // actionable feedback first:

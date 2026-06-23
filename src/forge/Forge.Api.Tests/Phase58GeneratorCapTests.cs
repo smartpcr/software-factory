@@ -86,6 +86,14 @@ public sealed class Phase58GeneratorCapTests
     [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: The JSON-RPC connection was lost.", GeneratorFailureKinds.Inactive)]
     [InlineData("Copilot SDK session acquire failed: Failed to create Copilot session after 3 attempts; non-pooled path exhausted retries.", GeneratorFailureKinds.Inactive)]
     [InlineData("Copilot SDK session acquire failed: Failed to create Copilot session after 3 attempts; pool factory exhausted retries.", GeneratorFailureKinds.Inactive)]
+    // 2026-06-23 — a phantom/unavailable model id is a CONFIG error, NOT a
+    // transient blip. Even though the message is wrapped in "session acquire
+    // failed:" (which would otherwise → Inactive → 40-iter burn), the
+    // model-unavailable clause runs first → ModelUnavailable (non-transient,
+    // stalls fast). Observed across every crew with a -1m / -1m-internal /
+    // -xhigh phantom variant on code-intelligence:ENABLE-MCP.
+    [InlineData("Copilot SDK session acquire failed: Communication error with Copilot CLI: Request session.create failed with message: Model \"claude-opus-4.7-1m-internal\" is not available.", GeneratorFailureKinds.ModelUnavailable)]
+    [InlineData("Request session.create failed with message: Model \"claude-opus-4.6-1m\" is not available.", GeneratorFailureKinds.ModelUnavailable)]
     public void GeneratorFailureKinds_Classify_Recognizes_Dispatcher_Errors(string error, string expected)
     {
         Assert.Equal(expected, GeneratorFailureKinds.Classify(error));
