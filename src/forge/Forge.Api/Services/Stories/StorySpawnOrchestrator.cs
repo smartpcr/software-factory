@@ -400,8 +400,18 @@ public sealed class StorySpawnOrchestrator
             this.logger?.LogError(ex,
                 "Orchestrator phase '{Phase}' failed for spawn {SpawnId} ({StoryId}).",
                 spawn.Phase, spawn.Id, spawn.StoryId);
-            await PersistLastErrorAsync(control, db, spawn.Id,
-                $"{spawn.Phase} failed: {FlattenMessage(ex)}", hub, ct);
+            // A git-CLI credential failure (push/fetch couldn't authenticate)
+            // is NOT a code error — surface the real remedy instead of the raw
+            // "fatal: User cancelled dialog … terminal prompts disabled" that
+            // halted the spawn with no actionable guidance (observed
+            // code-intelligence:ENABLE-MCP base-branch push, 2026-06-24).
+            var haltMessage = IsGitCredentialError(ex)
+                ? $"{spawn.Phase} failed: git could not authenticate to the remote — {FlattenMessage(ex)}. "
+                    + "This is a git-CLI credential problem, NOT a code or merge-conflict error. "
+                    + "For GitHub, make sure `gh auth login` is signed in (Forge injects that token into "
+                    + "pushes); for ADO, re-authenticate the provider in Forge. Then DISMISS this error to retry."
+                : $"{spawn.Phase} failed: {FlattenMessage(ex)}";
+            await PersistLastErrorAsync(control, db, spawn.Id, haltMessage, hub, ct);
         }
         return advanced;
     }
@@ -4975,6 +4985,27 @@ public sealed class StorySpawnOrchestrator
     // message. Parenthesis-anchored so it never matches a TFxxxxxx error code.
     private static readonly System.Text.RegularExpressions.Regex AuthHttpStatusToken =
         new(@"\(40[13]\)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// True when the failure is a git-CLI credential/authentication problem
+    /// (a push/fetch that couldn't authenticate to the remote) rather than a
+    /// code, merge-conflict, or provider-API error. Distinct from
+    /// <see cref="IsAuthError"/>, which inspects provider REST-API merge
+    /// failures; this matches the git CLI's own credential wording so the
+    /// spawn-halt banner can point the operator at the real remedy
+    /// (re-authenticate the git credential) instead of surfacing the cryptic
+    /// "fatal: User cancelled dialog" line.
+    /// </summary>
+    internal static bool IsGitCredentialError(Exception ex)
+    {
+        if (ex is null) return false;
+        var msg = ex.Message ?? string.Empty;
+        return msg.Contains("could not read Username", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("could not read Password", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Authentication failed", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("User cancelled dialog", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("terminal prompts disabled", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Route a failure of the reviewer-agent invocation

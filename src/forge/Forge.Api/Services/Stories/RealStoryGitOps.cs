@@ -31,6 +31,21 @@ public sealed class RealStoryGitOps : IStoryGitOps
 {
     private readonly ILogger<RealStoryGitOps>? logger;
 
+    // GitHub auth service (gh-CLI backed). Used to inject a non-interactive
+    // credential into GitHub network ops (push/fetch/…) — Forge has a silent
+    // path for ADO (GCM_AZREPOS_CREDENTIALTYPE=oauth) but, before this, none
+    // for GitHub: pushes fell back to GCM's interactive dialog, which on an
+    // unattended/locked desktop hangs (180s timeout) or is cancelled
+    // ("could not read Username … terminal prompts disabled", exit 128) and
+    // HALTED the whole spawn. Observed code-intelligence:ENABLE-MCP base-branch
+    // push to github.com/smartpcr/code-intelligence, 2026-06-24.
+    private readonly Forge.Api.Auth.IAuthService? githubAuth;
+
+    private readonly SemaphoreSlim ghTokenGate = new(1, 1);
+    private string? cachedGhToken;
+    private DateTimeOffset ghTokenCachedAt = DateTimeOffset.MinValue;
+    private static readonly TimeSpan GhTokenTtl = TimeSpan.FromMinutes(4);
+
     /// <summary>
     /// Phase 42 — per-branch git lock. Concurrent architect agents share one
     /// worktree (git refuses two worktrees on one branch); this serialises
@@ -38,9 +53,69 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// </summary>
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> branchLocks = new();
 
-    public RealStoryGitOps(ILogger<RealStoryGitOps>? logger = null)
+    public RealStoryGitOps(
+        ILogger<RealStoryGitOps>? logger = null,
+        IEnumerable<Forge.Api.Auth.IAuthService>? authServices = null)
     {
         this.logger = logger;
+        Forge.Api.Auth.IAuthService? gh = null;
+        if (authServices is not null)
+        {
+            foreach (var a in authServices)
+            {
+                if (a.Kind == "github") { gh = a; break; }
+            }
+        }
+        this.githubAuth = gh;
+    }
+
+    /// <summary>
+    /// True when <paramref name="args"/> is a git subcommand that makes a
+    /// network request to the remote — the only ops that need a credential.
+    /// Local ops (commit/status/reset/config/…) are skipped so we don't pay a
+    /// token lookup or attach an unused header to them.
+    /// </summary>
+    private static bool IsNetworkGitOp(string[] args)
+        => args.Length > 0 && args[0] is "push" or "fetch" or "pull" or "clone" or "ls-remote";
+
+    /// <summary>
+    /// Resolves the current GitHub access token (gh-CLI) with a short in-memory
+    /// TTL so a burst of network ops doesn't shell out to <c>gh</c> each time
+    /// (the underlying <see cref="Forge.Api.Auth.IAuthService"/> also caches).
+    /// Returns null when no GitHub auth service is wired or no token is
+    /// available — callers then fall back to the prior GCM behaviour.
+    /// </summary>
+    private async Task<string?> ResolveGitHubTokenAsync(CancellationToken ct)
+    {
+        if (this.githubAuth is null) return null;
+        if (this.cachedGhToken is not null && DateTimeOffset.UtcNow - this.ghTokenCachedAt < GhTokenTtl)
+        {
+            return this.cachedGhToken;
+        }
+        await this.ghTokenGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (this.cachedGhToken is not null && DateTimeOffset.UtcNow - this.ghTokenCachedAt < GhTokenTtl)
+            {
+                return this.cachedGhToken;
+            }
+            var token = await this.githubAuth.GetAccessTokenAsync(ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(token))
+            {
+                this.cachedGhToken = token;
+                this.ghTokenCachedAt = DateTimeOffset.UtcNow;
+            }
+            return token;
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex, "ResolveGitHubTokenAsync failed; GitHub network ops fall back to GCM.");
+            return null;
+        }
+        finally
+        {
+            this.ghTokenGate.Release();
+        }
     }
 
     public async Task EnsureBranchAsync(RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
@@ -3419,6 +3494,26 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // without depending on a one-time `git config` write per clone.
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add("core.longpaths=true");
+
+        // Non-interactive GitHub credential. The extraheader is HOST-SCOPED to
+        // https://github.com/, so git only sends it on github.com requests —
+        // it is a transparent no-op for ADO remotes (which keep using the
+        // GCM_AZREPOS_CREDENTIALTYPE=oauth path) and for local ops. Added to
+        // ArgumentList ONLY — never to `args` — so the token never reaches the
+        // Debug/transient-lock log lines that print string.Join(' ', args).
+        // Mirrors the clone-time injection in RepoCloneService.InjectPat.
+        if (IsNetworkGitOp(args))
+        {
+            var ghToken = await this.ResolveGitHubTokenAsync(ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(ghToken))
+            {
+                var basic = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes($"x-access-token:{ghToken}"));
+                psi.ArgumentList.Add("-c");
+                psi.ArgumentList.Add($"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}");
+            }
+        }
+
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi)
