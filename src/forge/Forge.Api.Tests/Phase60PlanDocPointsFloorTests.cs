@@ -274,33 +274,37 @@ public sealed class Phase60PlanDocPointsFloorTests
         Assert.Equal(expectedSeconds, budget.TotalSeconds);
     }
 
-    // ── qa-e2e review/review-fix inherit the 3.0× generation tier ─────────
-    // The qa-e2e *generation* phase is 3.0× (real-worktree build cost), but
-    // reviewing/fixing those PRs was left at the 1.0× default — a third of the
-    // budget that produced the PR — so the reviewer hard-timed-out and stalled
-    // the workstream (code-intelligence ENABLE-MCP transport-wrapper-e2e #434:
-    // "Copilot SDK hard timeout: exceeded 8m budget"). The review phases now
-    // inherit 3.0× when the workstream category is qa-e2e.
+    // ── review/review-fix inherit the 3.0× generation tier (ALL categories) ─
+    // The *generation* phases (impl 3.0×, qa-e2e 3.0×) far outscale the 1.0×
+    // default a review used to get — a third of the budget that produced the
+    // PR — so the reviewer hard-timed-out and stalled the workstream:
+    //   - qa-e2e transport-wrapper-e2e #434 ("exceeded 8m budget");
+    //   - impl dynamic-dispatch-synthesizer #453 + secondary-tool-set #454
+    //     ("exceeded 8m budget" twice on 8-pt PRs, 2026-06-24).
+    // Every review/review-fix now inherits 3.0×, regardless of category.
     [Theory]
-    [InlineData("review", 8, 1440.0)]      // 8pt qa-e2e review: 8*60 * 3.0 = 24min (was 8min)
-    [InlineData("review-fix", 8, 1440.0)]  // 8pt qa-e2e review-fix: same
+    [InlineData("review", 8, 1440.0)]         // 8pt review: 8*60 * 3.0 = 24min (was 8min)
+    [InlineData("review-fix", 8, 1440.0)]     // 8pt review-fix: same
     [InlineData("review:ws-x:r0", 8, 1440.0)] // suffix-tagged review still parsed by prefix
-    public void BudgetForPhase_QaE2eReviewPhases_InheritGenerationTier(string phaseTag, int points, double expectedSeconds)
+    [InlineData("review", 3, 540.0)]          // 3pt review: 180-floor * 3.0 = 9min
+    public void BudgetForPhase_ReviewPhases_InheritGenerationTier_AllCategories(string phaseTag, int points, double expectedSeconds)
     {
-        var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, WorkstreamCategories.QaE2e);
-        Assert.Equal(expectedSeconds, budget.TotalSeconds);
+        // Both impl-category and qa-e2e-category reviews get 3.0× — the budget
+        // that produced the PR — so the reviewer can read the full diff.
+        foreach (var category in new[] { WorkstreamCategories.Impl, WorkstreamCategories.QaE2e })
+        {
+            var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, category);
+            Assert.Equal(expectedSeconds, budget.TotalSeconds);
+        }
     }
 
     [Theory]
-    [InlineData("review", 8, 480.0)]       // impl-category review stays 1.0× = 8min
-    [InlineData("review-fix", 8, 480.0)]   // impl-category review-fix stays 1.0×
     [InlineData("impl", 8, 1440.0)]        // qa-e2e category must NOT change non-review phases
-    public void BudgetForPhase_NonQaE2eOrNonReview_UnaffectedByCategory(string phaseTag, int points, double expectedSeconds)
+    [InlineData("qa-steps", 8, 384.0)]     // 0.8× tier unaffected by category
+    public void BudgetForPhase_NonReviewPhases_UnaffectedByCategory(string phaseTag, int points, double expectedSeconds)
     {
-        // impl-category review keeps the 1.0× default; and passing the qa-e2e
-        // category does not perturb non-review phases (impl is already 3.0×).
-        var category = phaseTag == "impl" ? WorkstreamCategories.QaE2e : WorkstreamCategories.Impl;
-        var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, category);
+        // Passing the qa-e2e category does not perturb non-review phases.
+        var budget = CrewStoryArtifactStrategy.BudgetForPhase(points, phaseTag, WorkstreamCategories.QaE2e);
         Assert.Equal(expectedSeconds, budget.TotalSeconds);
     }
 

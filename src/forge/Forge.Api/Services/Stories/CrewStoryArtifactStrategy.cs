@@ -1127,6 +1127,55 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         else
         {
+            // Docs-only short-circuit (2026-06-24): a change that touches
+            // ONLY documentation / non-compilable asset files can't affect
+            // any test outcome, so skip the (often very slow) test suite.
+            // Runs before, and independently of, the impacted-test
+            // resolver below, because that resolver is bypassed entirely
+            // when a repo sets TestImpactedOnly=false (e.g. the `update`
+            // repo), which made the docs-only stage-1.1 audit run the full
+            // net472 integration suite on every per-iter gate, post-pass,
+            // and flake-retry (local:UPDATE-NET10-MIGRATI, 2026-06-24). It
+            // needs a base ref to diff; when absent (or on a git hiccup) it
+            // falls through to the normal gate (never skips on uncertainty).
+            if (!string.IsNullOrWhiteSpace(testBaseRef))
+            {
+                IReadOnlyList<string> docOnlyCheckFiles;
+                try
+                {
+                    docOnlyCheckFiles = await ImpactedTestResolver.DiscoverChangedFilesAsync(
+                        workspace, testBaseRef!, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    docOnlyCheckFiles = Array.Empty<string>();
+                }
+
+                if (docOnlyCheckFiles.Count > 0
+                    && ImpactedTestResolver.IsDocumentationOnlyChange(docOnlyCheckFiles))
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.test-gate.skipped", new
+                    {
+                        stage = stagePrefix,
+                        gateStage = "test",
+                        iter,
+                        reason = "documentation-only change (no compilable source touched)",
+                        changedFileCount = docOnlyCheckFiles.Count,
+                        impactedMode = "docs-only",
+                        testCommand,
+                        workspace,
+                    }, agentId: agentId, crewId: crewId, ct: ct);
+                    this.logger?.LogInformation(
+                        "{Prefix} test gate skipped: documentation-only change ({Count} file(s)) (iter {Iter}).",
+                        stagePrefix, docOnlyCheckFiles.Count, iter);
+                    return null;
+                }
+            }
+
             // Phase 59 Stage A — when impacted-test selection is enabled
             // and we have a base ref to diff against, narrow `dotnet
             // test` to the test projects whose code (or transitive
@@ -6585,13 +6634,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             _ => 1.0,
         };
 
-        // Reviewing / fixing a qa-e2e PR pays the same build cost as
-        // generating it (real-worktree compile + go test), so the review
-        // phases inherit the qa-e2e 3.0× tier instead of the 1.0× default.
-        // Without this the reviewer gets a third of the generation budget and
-        // hard-times-out on the structural PRs e2e produces (see remarks).
-        if ((prefix == "review" || prefix == "review-fix")
-            && workstreamCategory == WorkstreamCategories.QaE2e)
+        // Reviewing / fixing a PR pays roughly the same cost as GENERATING it
+        // — the reviewer reads the full diff and reasons about build/test
+        // impact. Both impl (3.0×) and qa-e2e (3.0×) generation run at the
+        // 3.0× tier, so EVERY review / review-fix inherits 3.0× instead of the
+        // 1.0× default. Without this the reviewer gets only a THIRD of the
+        // budget that produced the PR and hard-times-out on large PRs:
+        //   - qa-e2e transport-wrapper-e2e #434 ("exceeded 8m budget");
+        //   - impl dynamic-dispatch-synthesizer #453 + secondary-tool-set #454
+        //     ("exceeded 8m budget" twice on 8-pt PRs, 2026-06-24) — the
+        //     reviewer can't read an 8-pt impl diff in the 8m a 1.0× tier
+        //     allots when the generator had 24m at 3.0×.
+        // (workstreamCategory is retained for call-site compatibility and
+        // future per-category tuning; today both generation tiers are 3.0×.)
+        if (prefix == "review" || prefix == "review-fix")
         {
             multiplier = 3.0;
         }

@@ -173,6 +173,98 @@ public static class ImpactedTestResolver
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
+    /// File extensions that are documentation / non-compilable assets.
+    /// A change whose every file matches one of these (or
+    /// <see cref="DocumentationOnlyFileNames"/>) cannot alter any test
+    /// outcome, so the gate can skip the (often very slow) test suite
+    /// (see <see cref="IsDocumentationOnlyChange"/>). Matched on the file's
+    /// extension, case-insensitive.
+    /// </summary>
+    private static readonly IReadOnlyCollection<string> DocumentationOnlyExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // Prose / markup.
+        ".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".asciidoc",
+        // Images / static assets that only ever live in docs.
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".ico", ".webp", ".pdf",
+    };
+
+    /// <summary>
+    /// Extensionless basenames that are documentation by convention
+    /// (e.g. a top-level <c>README</c> / <c>LICENSE</c>). Case-insensitive,
+    /// basename match. Kept deliberately small; anything not here with no
+    /// extension is treated as code (the safe default).
+    /// </summary>
+    private static readonly IReadOnlyCollection<string> DocumentationOnlyFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "README", "LICENSE", "LICENCE", "CHANGELOG", "NOTICE", "CONTRIBUTING", "AUTHORS", "COPYING",
+    };
+
+    /// <summary>
+    /// True when <paramref name="changedFiles"/> is non-empty and EVERY
+    /// entry is a documentation / non-compilable asset file (extension in
+    /// <see cref="DocumentationOnlyExtensions"/>, or extensionless basename
+    /// in <see cref="DocumentationOnlyFileNames"/>). Such a change cannot
+    /// affect any test result, so the test gate can be skipped regardless
+    /// of the repo's <c>TestImpactedOnly</c> setting.
+    ///
+    /// <para>Deliberately conservative: ANY entry the predicate can't
+    /// positively classify as documentation (a <c>.cs</c>, a
+    /// <c>.json</c>/<c>.yaml</c>/<c>.csv</c> that might be test data or
+    /// config, an extensionless file not on the allow-list, or a
+    /// null/blank entry) makes it return false so the gate runs normally.
+    /// A false negative just costs the usual test run; a false positive
+    /// would skip real coverage, so the allow-list stays narrow.</para>
+    ///
+    /// <para>This is the same "no compilable source touched" case the
+    /// reverse-graph in <see cref="Resolve"/> already reports as
+    /// <see cref="ImpactedTestResolverResult.Skipped"/>, lifted into a
+    /// standalone predicate so the gate can apply it even when impacted-
+    /// test narrowing is disabled (<c>repo.TestImpactedOnly=false</c>).
+    /// That bypass is what made a docs-only workstream run the full
+    /// net472 integration suite on every per-iter gate + post-pass +
+    /// flake-retry (local:UPDATE-NET10-MIGRATI stage-1.1, 2026-06-24).</para>
+    /// </summary>
+    /// <param name="changedFiles">Worktree-relative paths of changed files
+    /// (forward or back slashes both accepted).</param>
+    public static bool IsDocumentationOnlyChange(IReadOnlyList<string> changedFiles)
+    {
+        if (changedFiles is null || changedFiles.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var file in changedFiles)
+        {
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                // Unknown entry: never skip on uncertainty.
+                return false;
+            }
+
+            var name = Path.GetFileName(file.Trim());
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            var ext = Path.GetExtension(name);
+            if (!string.IsNullOrEmpty(ext))
+            {
+                if (!DocumentationOnlyExtensions.Contains(ext))
+                {
+                    return false;
+                }
+            }
+            else if (!DocumentationOnlyFileNames.Contains(name))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Resolve the impacted-test rewrite for a <c>dotnet test</c>
     /// command against a worktree with a known set of changed files.
     /// Pure — does not invoke git, does not touch the network. Test

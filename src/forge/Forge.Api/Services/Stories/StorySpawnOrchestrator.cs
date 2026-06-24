@@ -4424,6 +4424,64 @@ public sealed class StorySpawnOrchestrator
                 continue;
             }
 
+            // Abandoned-PR guard (2026-06-24). A PR whose source (or target)
+            // branch was deleted upstream is mapped to Col=="abandoned" /
+            // IsActive==false — NOT "merged", so the fast-path above misses it.
+            // Attempting ApproveAndMergeAsync on it makes ADO return 400
+            // TF401398 ("the pull request cannot be activated because the
+            // source and/or the target branch no longer exists"), which the
+            // merge-failure classifier then MISLABELS as a provider-auth failure
+            // — the operator re-authenticates in vain. The PR is terminal and
+            // unmergeable as-is, so stall this row with an accurate,
+            // recreate-on-Restart reason instead of attempting an impossible
+            // merge. Observed local:NET10-MIGRATION stage-1.2
+            // persistence-and-http-client-compatibility-spike PR #16210445 on
+            // repo download.
+            if (prRowAtReview is not null
+                && (string.Equals(prRowAtReview.Col, "abandoned", StringComparison.OrdinalIgnoreCase)
+                    || (!prRowAtReview.IsActive
+                        && !string.Equals(prRowAtReview.Col, "merged", StringComparison.OrdinalIgnoreCase))))
+            {
+                if (w.Status is not "cancelled" and not "paused" and not "complete")
+                {
+                    w.Status = WorkstreamStatuses.Stalled;
+                    // Deliberately free of the tokens the UI's isAuthStall
+                    // heuristic keys on (401 / unauthorized / authentication /
+                    // "not a merge conflict") so this renders as a generic
+                    // "PR MERGE BLOCKED", not the auth banner.
+                    w.StallReason =
+                        $"PR {prId} was abandoned upstream and its source branch no longer exists, so it "
+                        + "can no longer be merged. Restart this workstream to recreate the branch and PR "
+                        + "from the current base.";
+                    try
+                    {
+                        await db.SaveChangesAsync(ct);
+                    }
+                    catch (Exception saveEx)
+                    {
+                        this.logger?.LogWarning(saveEx,
+                            "DriveReviewAsync: failed to persist abandoned-PR stall for ws {WsId}; "
+                            + "next tick will re-enter and retry the transition.", w.Id);
+                    }
+                    this.logger?.LogWarning(
+                        "Workstream {WsId} PR {PrId} is abandoned upstream (Col={Col}, IsActive={Active}); "
+                        + "stalled with recreate-on-Restart guidance instead of attempting an unmergeable merge.",
+                        w.Id, prId, prRowAtReview.Col, prRowAtReview.IsActive);
+                    await EmitChange(hub, "ws-stalled", spawn, ct);
+                    await this.EmitSpawnEventAsync(w.Id, "task.merge-failed", new
+                    {
+                        wsId = w.Id,
+                        prId,
+                        spawnId = spawn.Id,
+                        message = $"PR {prId} abandoned upstream (source branch deleted).",
+                        exceptionType = "AbandonedPr",
+                        kind = "abandoned",
+                    }, ct);
+                    changed = true;
+                }
+                continue;
+            }
+
             // Step 1 — first visit: no comments yet → run the reviewer to
             // post the initial round. ProduceReviewCommentsAsync emits its
             // transcript events under workstream.Id (Phase 49), so the
@@ -4881,13 +4939,42 @@ public sealed class StorySpawnOrchestrator
     internal static bool IsAuthError(Exception ex)
     {
         if (ex is null) return false;
+
+        // Prefer the typed HTTP status when the provider populated it. The
+        // GitHub merge path throws HttpRequestException(statusCode: …), so a
+        // real 401/403 there is unambiguous and needs no message sniffing.
+        if (ex is System.Net.Http.HttpRequestException hre
+            && hre.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                or System.Net.HttpStatusCode.Forbidden)
+        {
+            return true;
+        }
+
         var msg = ex.Message ?? string.Empty;
-        return msg.Contains("401", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase)
+
+        // Provider auth phrases (GitHub 401 bodies + the ADO identity-denied code).
+        if (msg.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("Requires authentication", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase)
-            || msg.Contains("TF400813", StringComparison.OrdinalIgnoreCase); // ADO: identity not authorized
+            || msg.Contains("TF400813", StringComparison.OrdinalIgnoreCase)) // ADO: identity not authorized
+        {
+            return true;
+        }
+
+        // HTTP 401/403 rendered as a parenthesised status token, e.g.
+        // AdoProvider's "ADO PR merge failed (401) at …". Anchored on the
+        // "(NNN)" form so it CANNOT match the "401" buried in unrelated ADO
+        // error CODES like TF401398 ("PR cannot be activated — source/target
+        // branch gone", which is a 400) or TF401019. A bare Contains("401")
+        // matched TF401398 and sent operators on fruitless re-auths (observed
+        // local:NET10-MIGRATION PR #16210445 on repo download, 2026-06-24).
+        return AuthHttpStatusToken.IsMatch(msg);
     }
+
+    // "(401)" / "(403)" as the providers render an HTTP status inside a thrown
+    // message. Parenthesis-anchored so it never matches a TFxxxxxx error code.
+    private static readonly System.Text.RegularExpressions.Regex AuthHttpStatusToken =
+        new(@"\(40[13]\)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>
     /// Route a failure of the reviewer-agent invocation

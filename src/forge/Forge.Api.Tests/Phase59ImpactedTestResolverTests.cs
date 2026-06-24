@@ -1042,4 +1042,100 @@ public class Phase59ImpactedTestResolverTests
         Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, ""));
         Assert.False(ImpactedTestResolver.IsTraversalProjFile(root, "   "));
     }
+
+    // ── IsDocumentationOnlyChange: docs-only test-gate skip ──────────────
+    // Pure predicate (no git/IO) that lets the gate skip the test suite
+    // when a diff touches ONLY documentation / non-compilable assets,
+    // independent of repo.TestImpactedOnly. Root cause it fixes:
+    // local:UPDATE-NET10-MIGRATI stage-1.1 (docs-only, TestImpactedOnly=false)
+    // ran the full net472 integration suite on every gate (2026-06-24).
+
+    [Fact]
+    public void DocOnly_MarkdownOnly_IsTrue()
+    {
+        Assert.True(ImpactedTestResolver.IsDocumentationOnlyChange(new[]
+        {
+            "docs/stories/local-UPDATE-NET10-MIGRATI/audit/capability-inventory.md",
+            "docs/stories/local-UPDATE-NET10-MIGRATI/e2e-scenarios.md",
+        }));
+    }
+
+    [Theory]
+    [InlineData("README.md")]
+    [InlineData("notes.markdown")]
+    [InlineData("guide.mdx")]
+    [InlineData("CHANGES.txt")]
+    [InlineData("spec.rst")]
+    [InlineData("page.adoc")]
+    [InlineData("docs/architecture/diagram.svg")]
+    [InlineData("assets/logo.png")]
+    [InlineData("manual.pdf")]
+    public void DocOnly_SingleDocFile_IsTrue(string path)
+    {
+        Assert.True(ImpactedTestResolver.IsDocumentationOnlyChange(new[] { path }));
+    }
+
+    [Theory]
+    [InlineData("README")]
+    [InlineData("LICENSE")]
+    [InlineData("docs/CONTRIBUTING")]
+    [InlineData("CHANGELOG")]
+    public void DocOnly_ExtensionlessConventionalDocNames_IsTrue(string path)
+    {
+        Assert.True(ImpactedTestResolver.IsDocumentationOnlyChange(new[] { path }));
+    }
+
+    [Fact]
+    public void DocOnly_BackslashPaths_AreHandled()
+    {
+        Assert.True(ImpactedTestResolver.IsDocumentationOnlyChange(new[]
+        {
+            @"docs\stories\audit\capability-inventory.md",
+        }));
+    }
+
+    [Fact]
+    public void DocOnly_AnyCodeFile_IsFalse()
+    {
+        // One real source file among the docs → must run the gate.
+        Assert.False(ImpactedTestResolver.IsDocumentationOnlyChange(new[]
+        {
+            "docs/audit/capability-inventory.md",
+            "src/UpdateResourceProvider/Foo.cs",
+        }));
+    }
+
+    [Theory]
+    [InlineData("appsettings.json")]      // config / could be test data
+    [InlineData("pipeline.yaml")]          // CI / build config
+    [InlineData("data/fixtures.csv")]      // possible test data
+    [InlineData("build.proj")]             // MSBuild target
+    [InlineData("Directory.Build.props")]  // compilation-affecting
+    [InlineData("script.ps1")]             // executable script
+    [InlineData("Makefile")]               // extensionless, not a doc name
+    public void DocOnly_NonDocFile_IsFalse(string path)
+    {
+        Assert.False(ImpactedTestResolver.IsDocumentationOnlyChange(new[] { path }));
+    }
+
+    [Fact]
+    public void DocOnly_EmptyOrNull_IsFalse()
+    {
+        // No changed files → can't prove docs-only → never skip.
+        Assert.False(ImpactedTestResolver.IsDocumentationOnlyChange(System.Array.Empty<string>()));
+        Assert.False(ImpactedTestResolver.IsDocumentationOnlyChange(null!));
+    }
+
+    [Fact]
+    public void DocOnly_BlankEntry_IsFalse()
+    {
+        // A blank/whitespace path is "unknown", so be safe and run the gate.
+        Assert.False(ImpactedTestResolver.IsDocumentationOnlyChange(new[] { "docs/a.md", "   " }));
+    }
+
+    [Fact]
+    public void DocOnly_IsCaseInsensitive()
+    {
+        Assert.True(ImpactedTestResolver.IsDocumentationOnlyChange(new[] { "docs/NOTES.MD", "Readme" }));
+    }
 }

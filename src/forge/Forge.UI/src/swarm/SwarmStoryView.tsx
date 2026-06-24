@@ -604,7 +604,11 @@ function MergeConflictBanner(props: {
     return s.includes('authentication failed')
       || s.includes('re-authenticate')
       || s.includes('not a merge conflict')
-      || s.includes('401')
+      // Match an HTTP status rendered as "(401)"/"(403)" — NOT a bare "401",
+      // which also appears inside unrelated ADO error codes like TF401398
+      // ("PR cannot be activated — source/target branch gone"), a 400 that is
+      // not an auth failure. Mirrors the backend IsAuthError fix (2026-06-24).
+      || /\(40[13]\)/.test(s)
       || s.includes('unauthorized');
   };
   const allAuth = workstreams.length > 0 && workstreams.every((w) => isAuthStall(w.stallReason));
