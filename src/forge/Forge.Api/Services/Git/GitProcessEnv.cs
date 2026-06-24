@@ -6,7 +6,11 @@
 
 namespace Forge.Api.Services.Git;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
 /// Policy-driven environment variables applied to EVERY <c>git</c>
@@ -87,79 +91,143 @@ internal static class GitProcessEnv
     /// </summary>
     public static void ApplyExplicit(ProcessStartInfo psi, GitPromptPolicy policy) => ApplyInternal(psi, policy);
 
-    private static readonly object ConfigLock = new();
-    private static string? forgeGitHomePath;
-    private static bool forgeGitHomeResolved;
+    /// <summary>Fallback home key for git subprocesses with no resolvable
+    /// working directory (e.g. the initial <c>git clone</c>, whose target dir
+    /// does not exist yet).</summary>
+    private const string DefaultHomeKey = "_default";
+
+    // One private HOME PER CLONE-ROOT (keyed by the same clone-root key the
+    // SharedRepoGitGate serializes on — see EnsureForgeGitHome). Cached for the
+    // process lifetime via a Lazy so the copy/refresh runs exactly once per key
+    // even under concurrent first-use.
+    private static readonly ConcurrentDictionary<string, Lazy<string?>> HomeByCloneRoot =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Resolve (and lazily create) a Forge-private HOME containing a copy of
-    /// the operator's global git config at
-    /// <c>%LOCALAPPDATA%\Forge\git-home\.gitconfig</c>, refreshed when the
-    /// source is newer. Forge's git subprocesses point <c>HOME</c> here so
-    /// Git for Windows resolves <c>~/.gitconfig</c> to Forge's private copy
-    /// instead of the shared operator file (see <see cref="ApplyInternal"/>).
+    /// the operator's global git config, keyed by the <b>clone-root</b> of
+    /// <paramref name="cwd"/> at
+    /// <c>%LOCALAPPDATA%\Forge\git-home\{cloneRoot}\.gitconfig</c>, refreshed
+    /// when the source is newer. Forge's git subprocesses point <c>HOME</c>
+    /// here so Git for Windows resolves <c>~/.gitconfig</c> to a Forge-private
+    /// copy instead of the shared operator file (see <see cref="ApplyInternal"/>).
+    ///
+    /// <para><b>Why per clone-root, not one shared copy.</b> A single shared
+    /// Forge copy removed contention with the operator's <c>~/.gitconfig</c>
+    /// but NOT Forge-vs-Forge contention: Git Credential Manager rewrites the
+    /// global config (atomic <c>.lock</c> + rename) on EVERY azure-repos op to
+    /// re-persist its <c>credential.azrepos:org/*</c> username/authority hints
+    /// — verified to fire even when the value is unchanged. With ~30 workstreams
+    /// fetching in parallel across multiple repos, all reading that one file,
+    /// a reader lands in a writer's rename window and git reports
+    /// <c>"unable to access '…/.gitconfig': Permission denied" /
+    /// "unknown error occurred while reading the configuration files"</c>
+    /// (exit 128) — a Windows ERROR_SHARING_VIOLATION, not an ACL problem.
+    /// Sharding the copy per clone-root makes each repo's git read/write its
+    /// OWN file: cross-repo ops never share a file, and same-repo ops are
+    /// already serialized by <see cref="SharedRepoGitGate"/> (same clone-root
+    /// key), so no reader and writer ever collide. The operator's real
+    /// <c>~/.gitconfig</c> is only ever the COPY SOURCE — never written by
+    /// Forge.</para>
     ///
     /// <para>Returns <c>null</c> on any failure (e.g. the source genuinely
     /// can't be read), in which case the caller leaves <c>HOME</c> unchanged
     /// and git falls back to its default <c>~/.gitconfig</c> resolution — i.e.
     /// the prior behaviour, so this can never make git worse than before.</para>
     /// </summary>
-    private static string? EnsureForgeGitHome()
+    private static string? EnsureForgeGitHome(string? cwd)
     {
-        if (forgeGitHomeResolved) return forgeGitHomePath;
-        lock (ConfigLock)
+        var key = ResolveHomeKey(cwd);
+        return HomeByCloneRoot
+            .GetOrAdd(key, k => new Lazy<string?>(() => CreateHomeForKey(k), LazyThreadSafetyMode.ExecutionAndPublication))
+            .Value;
+    }
+
+    /// <summary>Map a working directory to its clone-root home key, collapsing
+    /// every worktree of a clone onto one key (matching the SharedRepoGitGate
+    /// serialization granularity). Empty / unresolvable → the shared default.</summary>
+    private static string ResolveHomeKey(string? cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd)) return DefaultHomeKey;
+        try
         {
-            if (forgeGitHomeResolved) return forgeGitHomePath;
-            try
-            {
-                var root = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Forge");
-                Directory.CreateDirectory(root);
-                var home = Path.Combine(root, "git-home");
-                Directory.CreateDirectory(home);
-                var dest = Path.Combine(home, ".gitconfig");
-
-                // Source = the operator's global config (USERPROFILE\.gitconfig,
-                // matching git's resolution when HOME is unset on Windows).
-                var profile = Environment.GetEnvironmentVariable("USERPROFILE");
-                var src = string.IsNullOrEmpty(profile) ? null : Path.Combine(profile, ".gitconfig");
-
-                if (src is not null && File.Exists(src))
-                {
-                    // Copy on first use or when the operator's config changed
-                    // (e.g. a re-auth updated credential settings). Forge's own
-                    // git writes go to the copy; refreshing from a newer source
-                    // is the intended source-of-truth direction.
-                    if (!File.Exists(dest)
-                        || File.GetLastWriteTimeUtc(src) > File.GetLastWriteTimeUtc(dest))
-                    {
-                        File.Copy(src, dest, overwrite: true);
-                    }
-                }
-                else if (!File.Exists(dest))
-                {
-                    // No operator config to copy — start with an empty private
-                    // HOME rather than leaving git on the shared file.
-                    File.WriteAllText(dest, string.Empty);
-                }
-
-                forgeGitHomePath = home;
-            }
-            catch
-            {
-                // Safe fallback: leave HOME unchanged so git uses its
-                // default ~/.gitconfig (prior behaviour). Never throw from a
-                // process-launch hook.
-                forgeGitHomePath = null;
-            }
-            finally
-            {
-                forgeGitHomeResolved = true;
-            }
-
-            return forgeGitHomePath;
+            var cloneRoot = SharedRepoGitGate.ResolveCloneRootKey(cwd);
+            return string.IsNullOrWhiteSpace(cloneRoot) ? DefaultHomeKey : cloneRoot;
         }
+        catch
+        {
+            return DefaultHomeKey;
+        }
+    }
+
+    private static string? CreateHomeForKey(string key)
+    {
+        try
+        {
+            var root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Forge",
+                "git-home");
+            Directory.CreateDirectory(root);
+
+            var sub = key == DefaultHomeKey ? DefaultHomeKey : FolderNameForCloneRoot(key);
+            var home = Path.Combine(root, sub);
+            Directory.CreateDirectory(home);
+            var dest = Path.Combine(home, ".gitconfig");
+
+            // Source = the operator's global config (USERPROFILE\.gitconfig,
+            // matching git's resolution when HOME is unset on Windows).
+            var profile = Environment.GetEnvironmentVariable("USERPROFILE");
+            var src = string.IsNullOrEmpty(profile) ? null : Path.Combine(profile, ".gitconfig");
+
+            if (src is not null && File.Exists(src))
+            {
+                // Copy on first use or when the operator's config changed
+                // (e.g. a re-auth updated credential settings). GCM's hint
+                // writes go to this per-clone copy; refreshing from a newer
+                // source is the intended source-of-truth direction. (The copy's
+                // mtime is bumped by those writes, so it stays >= src and we do
+                // not fight GCM after first use.)
+                if (!File.Exists(dest)
+                    || File.GetLastWriteTimeUtc(src) > File.GetLastWriteTimeUtc(dest))
+                {
+                    File.Copy(src, dest, overwrite: true);
+                }
+            }
+            else if (!File.Exists(dest))
+            {
+                // No operator config to copy — start with an empty private
+                // HOME rather than leaving git on the shared file.
+                File.WriteAllText(dest, string.Empty);
+            }
+
+            return home;
+        }
+        catch
+        {
+            // Safe fallback: leave HOME unchanged so git uses its default
+            // ~/.gitconfig (prior behaviour). Never throw from a process-launch
+            // hook.
+            return null;
+        }
+    }
+
+    /// <summary>Deterministic, filesystem-safe folder name for a clone-root
+    /// key: a readable leaf segment plus a short stable hash so distinct clone
+    /// roots that share a leaf name (or carry path-illegal chars) never
+    /// collide.</summary>
+    private static string FolderNameForCloneRoot(string cloneRootKey)
+    {
+        var trimmed = cloneRootKey.TrimEnd('/', '\\');
+        var slash = trimmed.LastIndexOfAny(new[] { '/', '\\' });
+        var leaf = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+        var safe = new string(leaf.Where(c => char.IsLetterOrDigit(c) || c is '-' or '_').ToArray());
+        if (safe.Length > 24) safe = safe[..24];
+
+        var hash = Convert.ToHexString(
+            SHA1.HashData(Encoding.UTF8.GetBytes(cloneRootKey)))[..12].ToLowerInvariant();
+
+        return string.IsNullOrEmpty(safe) ? hash : $"{safe}-{hash}";
     }
 
     private static void ApplyInternal(ProcessStartInfo psi, GitPromptPolicy policy)
@@ -184,7 +252,15 @@ internal static class GitProcessEnv
         // GIT_CONFIG_GLOBAL (verified with 2.31.0.vfs.0.1). The copy preserves
         // the user's identity + credential settings, so GCM/wincred auth (which
         // reads the Windows Credential vault, not this file) is unaffected.
-        var forgeGitHome = EnsureForgeGitHome();
+        //
+        // The copy is sharded PER CLONE-ROOT (keyed off the working directory)
+        // because a single shared copy still self-contended: GCM rewrites the
+        // global config on every azure-repos op to re-persist its azrepos
+        // credential hints, so ~30 parallel cross-repo fetches reading one file
+        // still raced on the .lock+rename and died exit 128. Per-clone-root
+        // files + the per-clone-root SharedRepoGitGate serialization mean no
+        // reader and writer ever share a file. See EnsureForgeGitHome.
+        var forgeGitHome = EnsureForgeGitHome(psi.WorkingDirectory);
         if (forgeGitHome is not null)
         {
             psi.Environment["HOME"] = forgeGitHome;
