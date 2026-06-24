@@ -229,6 +229,134 @@ public class Stage21CrossStageE2eDepsTests
         Assert.Contains("phase-platform/stage-mobile", ex.Message);
     }
 
+    // ── 3b. [unit] Dotted-token slug mismatch resolves via dash-collapse ──
+
+    [Fact]
+    public void Resolver_CrossStage_Dotted_Token_Slug_Resolves_Via_DashCollapse()
+    {
+        // Reproduces the real UPDATE-NET10-MIGRATION halt: the stage heading
+        // "ASP.NET Core controller port" slugs to `asp-net-core-controller-port`
+        // (the Slug regex turns the "." into a dash), but the architect wrote
+        // the cross-stage dep anchor as `aspnet-core-controller-port` (dropping
+        // the dot). Dash-collapsed matching must resolve it instead of throwing
+        // plan.dep_unresolved.
+        var md = """
+            ---
+            title: "dotted token fixture"
+            storyId: "WI-dotted"
+            ---
+
+            # Phase 1: Web API and OData port
+
+            ## Dependencies
+            - _none — start phase_
+
+            ## Stage 1.1: ASP.NET Core controller port
+
+            ### Implementation Steps
+            - [ ] port controllers
+
+            ### Dependencies
+            - _none — start stage_
+
+            ### Test Scenarios
+            - [ ] controllers respond
+
+            ## Stage 1.2: Kestrel self-host and integration tests
+
+            ### Implementation Steps
+            - [ ] self-host
+
+            ### Dependencies
+            - _none — start stage_
+
+            ### Test Scenarios
+            - [ ] integration green
+
+            ### Cross-Stage Dependencies
+            - phase-web-api-and-odata-port/stage-aspnet-core-controller-port
+            """;
+
+        var plan = PlanParser.Parse(md);
+        Assert.Empty(plan.ParseErrors);
+
+        // The real stage anchor carries the dash; the dep ref does not.
+        var aspnet = plan.AllStages().Single(s => s.Name == "ASP.NET Core controller port");
+        Assert.Equal("phase-web-api-and-odata-port/stage-asp-net-core-controller-port", aspnet.Anchor);
+
+        // Must NOT throw — the dash-collapsed fallback resolves the ref.
+        var resolved = DecompositionDepsResolver.ResolveAll(plan);
+
+        var kestrel = plan.AllStages().Single(s => s.Name == "Kestrel self-host and integration tests");
+        Assert.Contains("ASP.NET Core controller port", resolved[kestrel.Anchor].CrossStageE2eDeps);
+    }
+
+    // ── 3c. [unit] Ambiguous dash-collapse stays fatal (no silent wrong pick) ──
+
+    [Fact]
+    public void Resolver_CrossStage_Ambiguous_DashCollapse_Still_Throws()
+    {
+        // Two distinct stages whose anchors collapse to the SAME dashless form
+        // ("A B C" → a-b-c, "AB C" → ab-c, both → "abc"). A dep that collapses
+        // to that key is ambiguous, so the fallback must NOT guess — it stays
+        // unresolved and (being a cross-stage e2e dep) fatal.
+        var md = """
+            ---
+            title: "ambiguous fixture"
+            storyId: "WI-ambig"
+            ---
+
+            # Phase 1: P
+
+            ## Dependencies
+            - _none — start phase_
+
+            ## Stage 1.1: A B C
+
+            ### Implementation Steps
+            - [ ] x
+
+            ### Dependencies
+            - _none — start stage_
+
+            ### Test Scenarios
+            - [ ] x ok
+
+            ## Stage 1.2: AB C
+
+            ### Implementation Steps
+            - [ ] y
+
+            ### Dependencies
+            - _none — start stage_
+
+            ### Test Scenarios
+            - [ ] y ok
+
+            ## Stage 1.3: Consumer
+
+            ### Implementation Steps
+            - [ ] z
+
+            ### Dependencies
+            - _none — start stage_
+
+            ### Test Scenarios
+            - [ ] z ok
+
+            ### Cross-Stage Dependencies
+            - phase-p/stage-abc
+            """;
+
+        var plan = PlanParser.Parse(md);
+        Assert.Empty(plan.ParseErrors);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => DecompositionDepsResolver.ResolveAll(plan));
+        Assert.StartsWith(PlanParser.ErrorCodes.DepUnresolved, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("phase-p/stage-abc", ex.Message);
+    }
+
     // ── 4. [unit] Cycle via cross-stage deps fires plan.dep_cycle ──
 
     [Fact]

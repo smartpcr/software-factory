@@ -152,10 +152,26 @@ internal static class DecompositionDepsResolver
         var stagesByPhase = new Dictionary<string, List<PlanParser.CanonicalStage>>(StringComparer.OrdinalIgnoreCase);
         var phasesByAnchor = new Dictionary<string, PlanParser.CanonicalPhase>(StringComparer.OrdinalIgnoreCase);
 
+        // Dash-collapsed fallback lookups (docs/forge/e2e.md slug sharp-edge).
+        // PlanParser.Slug turns every non-alphanumeric RUN into a single dash,
+        // so a dotted token like "ASP.NET" becomes "asp-net" — but the
+        // architect naturally writes the dep anchor as "aspnet", dropping the
+        // dot. Indexing by the anchor with ALL dashes removed lets
+        // "aspnet-core-controller-port" resolve to the real
+        // "asp-net-core-controller-port". A collapsed key that two DISTINCT
+        // anchors share is excluded (tracked in the ambiguous set) so the
+        // fallback never silently picks the wrong stage/phase; those fall
+        // through to the existing unresolved/title handling.
+        var stagesByCollapsedAnchor = new Dictionary<string, PlanParser.CanonicalStage>(StringComparer.OrdinalIgnoreCase);
+        var ambiguousStageCollapsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var phasesByCollapsedAnchor = new Dictionary<string, PlanParser.CanonicalPhase>(StringComparer.OrdinalIgnoreCase);
+        var ambiguousPhaseCollapsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var phase in plan.Phases)
         {
             phasesByAnchor[phase.Anchor] = phase;
             stagesByPhase[phase.Anchor] = phase.Stages.ToList();
+            IndexCollapsed(phasesByCollapsedAnchor, ambiguousPhaseCollapsed, phase.Anchor, phase);
             foreach (var stage in phase.Stages)
             {
                 stagesByAnchor[stage.Anchor] = stage;
@@ -163,6 +179,7 @@ internal static class DecompositionDepsResolver
                 // Keep the first-seen stage so downstream resolution is
                 // stable; a future polish pass could namespace by phase.
                 stagesByTitle.TryAdd(stage.Name, stage);
+                IndexCollapsed(stagesByCollapsedAnchor, ambiguousStageCollapsed, stage.Anchor, stage);
             }
         }
 
@@ -183,7 +200,7 @@ internal static class DecompositionDepsResolver
             var phaseUnresolved = new List<string>();
             foreach (var phaseDepRef in phase.Dependencies)
             {
-                if (TryResolvePhaseAnchor(phaseDepRef, phasesByAnchor, out var upstreamPhase))
+                if (TryResolvePhaseAnchor(phaseDepRef, phasesByAnchor, phasesByCollapsedAnchor, ambiguousPhaseCollapsed, out var upstreamPhase))
                 {
                     foreach (var upstreamStage in upstreamPhase.Stages)
                     {
@@ -213,12 +230,12 @@ internal static class DecompositionDepsResolver
                 // Explicit stage deps. Try stage-anchor → phase-anchor → title.
                 foreach (var depRef in stage.Dependencies)
                 {
-                    if (TryResolveStageAnchor(depRef, stagesByAnchor, out var upStage))
+                    if (TryResolveStageAnchor(depRef, stagesByAnchor, stagesByCollapsedAnchor, ambiguousStageCollapsed, out var upStage))
                     {
                         anchors.Add(upStage.Anchor);
                         continue;
                     }
-                    if (TryResolvePhaseAnchor(depRef, phasesByAnchor, out var upPhase))
+                    if (TryResolvePhaseAnchor(depRef, phasesByAnchor, phasesByCollapsedAnchor, ambiguousPhaseCollapsed, out var upPhase))
                     {
                         foreach (var upStage2 in upPhase.Stages)
                         {
@@ -245,13 +262,13 @@ internal static class DecompositionDepsResolver
                 var crossStageAnchors = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var depRef in stage.CrossStageE2eDeps ?? Array.Empty<string>())
                 {
-                    if (TryResolveStageAnchor(depRef, stagesByAnchor, out var upStage))
+                    if (TryResolveStageAnchor(depRef, stagesByAnchor, stagesByCollapsedAnchor, ambiguousStageCollapsed, out var upStage))
                     {
                         crossStageAnchors.Add(upStage.Anchor);
                         anchors.Add(upStage.Anchor);
                         continue;
                     }
-                    if (TryResolvePhaseAnchor(depRef, phasesByAnchor, out var upPhase))
+                    if (TryResolvePhaseAnchor(depRef, phasesByAnchor, phasesByCollapsedAnchor, ambiguousPhaseCollapsed, out var upPhase))
                     {
                         foreach (var upStage2 in upPhase.Stages)
                         {
@@ -312,14 +329,29 @@ internal static class DecompositionDepsResolver
     private static bool TryResolveStageAnchor(
         string depRef,
         IReadOnlyDictionary<string, PlanParser.CanonicalStage> stagesByAnchor,
+        IReadOnlyDictionary<string, PlanParser.CanonicalStage> stagesByCollapsedAnchor,
+        IReadOnlySet<string> ambiguousCollapsed,
         out PlanParser.CanonicalStage stage)
     {
         // A stage anchor always contains a slash (phase/stage separator).
         // Cheap pre-check avoids fanning out to phase + title lookups.
-        if (depRef.Contains('/') && stagesByAnchor.TryGetValue(depRef, out var s))
+        if (depRef.Contains('/'))
         {
-            stage = s;
-            return true;
+            if (stagesByAnchor.TryGetValue(depRef, out var s))
+            {
+                stage = s;
+                return true;
+            }
+
+            // Dash-collapsed fallback: "aspnet-core-..." → "asp-net-core-...".
+            // Skipped when the collapsed key is ambiguous (two anchors share it).
+            var collapsed = CollapseDashes(depRef);
+            if (!ambiguousCollapsed.Contains(collapsed)
+                && stagesByCollapsedAnchor.TryGetValue(collapsed, out var s2))
+            {
+                stage = s2;
+                return true;
+            }
         }
         stage = null!;
         return false;
@@ -328,15 +360,58 @@ internal static class DecompositionDepsResolver
     private static bool TryResolvePhaseAnchor(
         string depRef,
         IReadOnlyDictionary<string, PlanParser.CanonicalPhase> phasesByAnchor,
+        IReadOnlyDictionary<string, PlanParser.CanonicalPhase> phasesByCollapsedAnchor,
+        IReadOnlySet<string> ambiguousCollapsed,
         out PlanParser.CanonicalPhase phase)
     {
-        if (!depRef.Contains('/') && phasesByAnchor.TryGetValue(depRef, out var p))
+        if (!depRef.Contains('/'))
         {
-            phase = p;
-            return true;
+            if (phasesByAnchor.TryGetValue(depRef, out var p))
+            {
+                phase = p;
+                return true;
+            }
+
+            // Dash-collapsed fallback (same slug sharp-edge as stages).
+            var collapsed = CollapseDashes(depRef);
+            if (!ambiguousCollapsed.Contains(collapsed)
+                && phasesByCollapsedAnchor.TryGetValue(collapsed, out var p2))
+            {
+                phase = p2;
+                return true;
+            }
         }
         phase = null!;
         return false;
+    }
+
+    /// <summary>Anchor with every dash removed, so dotted-token slug variants
+    /// (the Slug() regex renders "ASP.NET" as "asp-net" while the architect
+    /// writes "aspnet") collapse to one canonical form. The phase/stage
+    /// <c>/</c> separator is preserved so stage and phase anchors stay
+    /// distinguishable.</summary>
+    private static string CollapseDashes(string anchor) => anchor.Replace("-", string.Empty);
+
+    /// <summary>Index <paramref name="value"/> by its dash-collapsed anchor,
+    /// demoting the key to <paramref name="ambiguous"/> (and removing it from
+    /// the index) if a DISTINCT anchor already collapsed to the same form — so
+    /// the fuzzy fallback never guesses between two real anchors.</summary>
+    private static void IndexCollapsed<T>(
+        Dictionary<string, T> byCollapsed,
+        HashSet<string> ambiguous,
+        string anchor,
+        T value)
+    {
+        var key = CollapseDashes(anchor);
+        if (ambiguous.Contains(key))
+        {
+            return;
+        }
+        if (!byCollapsed.TryAdd(key, value))
+        {
+            byCollapsed.Remove(key);
+            ambiguous.Add(key);
+        }
     }
 
     private static void DetectCycle(
