@@ -3,7 +3,10 @@
   Launches, stops, or checks the status of the Forge UI and Forge.Api server.
 
 .PARAMETER Rebuild
-  When set, runs a clean build of both the .NET server and the UI before starting.
+  When set, deletes prior build artifacts first (server bin\ + obj\, UI dist\),
+  then runs a clean build of both the .NET server and the UI before starting.
+  Fails loudly if an artifact is still file-locked by a running process so a
+  stale binary can never silently survive the rebuild.
 
 .PARAMETER UIOnly
   When set, only targets the Vite UI dev server (no .NET backend).
@@ -68,10 +71,29 @@ $ApiPort = 5180
 $UiPort  = 5181
 
 # ── Resolve the built Forge.Api apphost (single source of truth) ──────────
-# Don't hard-code the TFM/RID subdir (e.g. net8.0\win-x64) — that's a csproj
-# fact a framework/RID change would silently break. Glob under bin\Debug for
-# the apphost, newest first. Returns $null when it hasn't been built yet.
+# Ask MSBuild where it ACTUALLY writes the apphost (the `RunCommand` property)
+# instead of assuming bin\Debug. The output dir is not ours to assume: a
+# csproj RID/TFM change, a custom OutDir, or an `OutputPath` *environment
+# variable* (MSBuild reads env vars as global properties) all relocate it.
+#
+# 2026-06-23 incident this fixes: an env var `OutputPath=…\common\infra2\out`
+# redirected every build to `…\out\net8.0\win-x64\`, but this function globbed
+# the hard-coded bin\Debug and kept returning a two-week-old fossil exe left
+# there from before the redirect. So `-Rebuild` compiled the current code to
+# the real out dir, then this launched the stale fossil — the running server
+# was never the rebuilt one, and committed fixes silently never deployed.
+# Resolving via MSBuild makes the launcher follow the build wherever it goes.
+#
+# Falls back to the legacy bin\Debug glob if the MSBuild probe yields nothing
+# (e.g. project not yet restored). Returns $null when nothing is found.
 function Get-ServerExe {
+    $runCommand = & dotnet msbuild $ServerProj '-nologo' '-p:Configuration=Debug' '-getProperty:RunCommand' 2>$null |
+        Where-Object { $_ -match '\.exe\s*$' } |
+        Select-Object -First 1
+    if ($runCommand) {
+        $runCommand = $runCommand.Trim()
+        if (Test-Path $runCommand) { return $runCommand }
+    }
     Get-ChildItem -Path $ServerBinDir -Recurse -Filter 'Forge.Api.exe' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1 -ExpandProperty FullName
@@ -294,13 +316,56 @@ Write-Host "🧹 Stopping existing processes..." -ForegroundColor Yellow
 Stop-TargetProcesses -IncludeServer:$targetServer -IncludeUI:$targetUI
 
 # ── Rebuild ──────────────────────────────────────────────────────────────
+# A clean rebuild removes prior build artifacts FIRST so a stale or
+# file-locked output can never survive into the new run.
+#
+# 2026-06-23 — two real failures this guards against:
+#  1. A Forge.Api that outlived a -Stop kept a write lock on its output DLL,
+#     so a plain incremental `dotnet build` could not overwrite it and a
+#     two-week-old binary kept serving :5180.
+#  2. An `OutputPath` env var redirected the build OUT of bin\Debug to a
+#     shared out dir, leaving a fossil exe in bin\Debug that the launcher
+#     kept starting. Committed fixes silently never deployed either way.
+# So: `dotnet clean` the project at its REAL (possibly redirected) output
+# (project-scoped — it won't touch sibling projects sharing the out dir),
+# then force-remove the project-local obj\ and the legacy bin\ fossil dir.
+# Removal FAILS LOUDLY when a file is still locked — turning the silent
+# stale-binary trap into an actionable error.
 if ($Rebuild) {
     if ($targetServer) {
+        $serverProjDir = Split-Path -Parent $ServerProj
+        Write-Host "`n🧹 Cleaning Forge.Api build artifacts..." -ForegroundColor Cyan
+        dotnet clean $ServerProj -c Debug --nologo | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Server clean failed — an output file is likely locked by a running Forge.Api; kill whatever owns port $ApiPort (Get-NetTCPConnection -LocalPort $ApiPort -State Listen) and retry." }
+        foreach ($sub in @('bin', 'obj')) {
+            $artifactDir = Join-Path $serverProjDir $sub
+            if (Test-Path $artifactDir) {
+                try {
+                    Remove-Item -Recurse -Force -Path $artifactDir -ErrorAction Stop
+                    Write-Host "  Removed $artifactDir" -ForegroundColor Gray
+                } catch {
+                    throw "Could not delete $artifactDir — a process is still holding a build output " +
+                        "(usually a Forge.Api that survived -Stop). Kill whatever owns port $ApiPort " +
+                        "(Get-NetTCPConnection -LocalPort $ApiPort -State Listen) and rerun -Rebuild. " +
+                        "Underlying error: $($_.Exception.Message)"
+                }
+            }
+        }
         Write-Host "`n🔨 Building Forge.Api..." -ForegroundColor Cyan
         dotnet build $ServerProj -c Debug --nologo
         if ($LASTEXITCODE -ne 0) { throw "Server build failed" }
     }
     if ($targetUI) {
+        $uiDist = Join-Path $UIDir 'dist'
+        if (Test-Path $uiDist) {
+            Write-Host "`n🧹 Cleaning Forge.UI build artifacts ($uiDist)..." -ForegroundColor Cyan
+            try {
+                Remove-Item -Recurse -Force -Path $uiDist -ErrorAction Stop
+                Write-Host "  Removed $uiDist" -ForegroundColor Gray
+            } catch {
+                throw "Could not delete $uiDist. Underlying error: $($_.Exception.Message)"
+            }
+        }
         Write-Host "`n🔨 Building Forge.UI..." -ForegroundColor Cyan
         Push-Location $UIDir
         try {
