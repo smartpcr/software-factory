@@ -7,7 +7,9 @@
 namespace Forge.Api.Endpoints;
 
 using System.IO;
+using System.Text;
 using System.Text.Json;
+using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
@@ -57,6 +59,10 @@ public static class TaskExecutionEndpoints
         grp.MapGet("/{id}/questions", GetQuestions).WithName("GetWorkItemQuestions");
         grp.MapPost("/{id}/questions/answer", AnswerQuestions).WithName("AnswerWorkItemQuestions");
         grp.MapPost("/{id}/questions/dismiss", DismissQuestions).WithName("DismissWorkItemQuestions");
+        // Phase 91 — on-demand explanation generation (LLM) for a question
+        // that lacks an agent-authored explanation (legacy rows). Idempotent:
+        // returns the cached explanation when one already exists.
+        grp.MapPost("/{id}/questions/{externalId}/explain", ExplainQuestion).WithName("ExplainWorkItemQuestion");
         return app;
     }
 
@@ -112,9 +118,15 @@ public static class TaskExecutionEndpoints
             answer = q.Answer,
             answeredAt = q.AnsweredAt,
             answeredBy = q.AnsweredBy,
+            // Parsed operator-facing rationale (terms / per-choice logic /
+            // recommendation) — null until agent-authored or generated.
+            explanation = string.IsNullOrEmpty(q.ExplanationJson)
+                ? (JsonElement?)null
+                : JsonSerializer.Deserialize<JsonElement>(q.ExplanationJson),
         }).ToList();
         var unansweredCount = items.Count(i => string.IsNullOrEmpty(i.answer));
-        return Results.Ok(new { workItemId = id, items, unansweredCount });
+        var answeredCount = items.Count - unansweredCount;
+        return Results.Ok(new { workItemId = id, items, unansweredCount, answeredCount, totalCount = items.Count });
     }
 
     /// <summary>
@@ -170,11 +182,288 @@ public static class TaskExecutionEndpoints
                 Text = q.Text,
                 Kind = q.Kind,
                 ChoicesJson = q.Choices is { Count: > 0 } ? JsonSerializer.Serialize(q.Choices) : null,
+                ExplanationJson = q.ExplanationJson,
                 Answer = null,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
         }
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Phase 91 — generate an operator-facing explanation (terms, per-choice
+    /// logic, recommendation) on demand for a question that has none stored.
+    /// Idempotent: when <see cref="DeliverableQuestionRow.ExplanationJson"/> is
+    /// already populated (agent-authored or previously generated) it returns
+    /// that without spending a model call. Otherwise it runs a single bounded
+    /// text-only LLM invocation, parses the JSON, stamps <c>generated:true</c>,
+    /// caches it, and returns it. The fallback path for questions emitted
+    /// before agents carried explanations.
+    /// </summary>
+    private static async Task<IResult> ExplainQuestion(
+        HttpContext ctx,
+        string id,
+        string externalId,
+        ControlDbContext control,
+        ProductDbContext db,
+        IAgentRunner runner,
+        IModelRegistry models,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var rows = await db.DeliverableQuestions
+            .Where(q => q.WorkItemId == id && q.ExternalId == externalId)
+            .ToListAsync(ct);
+        var q = rows.OrderByDescending(r => r.Iter).ThenByDescending(r => r.Id).FirstOrDefault();
+        if (q is null)
+        {
+            return Results.Problem(title: $"No question '{externalId}' for work item '{id}'", statusCode: 404);
+        }
+
+        // `?force=true` re-generates even when an explanation already exists —
+        // used by the popup's Regenerate button so an operator can refresh a
+        // thin / stale explanation.
+        var force = ctx.Request.Query.TryGetValue("force", out var fv)
+            && (fv.ToString() == "1" || string.Equals(fv.ToString(), "true", StringComparison.OrdinalIgnoreCase));
+
+        // Idempotent by default — agent-authored (or previously generated)
+        // explanation wins and costs no model call.
+        if (!force && !string.IsNullOrEmpty(q.ExplanationJson))
+        {
+            return Results.Ok(new
+            {
+                workItemId = id,
+                externalId,
+                explanation = JsonSerializer.Deserialize<JsonElement>(q.ExplanationJson),
+                cached = true,
+            });
+        }
+
+        var choices = string.IsNullOrEmpty(q.ChoicesJson)
+            ? Array.Empty<string>()
+            : JsonSerializer.Deserialize<string[]>(q.ChoicesJson) ?? Array.Empty<string>();
+
+        // Resolve a real text-capable model: pick the first crew whose model is
+        // registered and is NOT the deterministic local-stub (crew ids vary —
+        // e.g. `crew-eng` — so don't hard-code one). Fall back to local-stub
+        // only when nothing better exists (offline / test).
+        var modelId = "local-stub";
+        var crewId = "question-explainer";
+        var crewCandidates = await control.Crews
+            .Where(c => c.Model != null && c.Model != "" && c.Model != "local-stub")
+            .Select(c => new { c.Id, c.Model })
+            .ToListAsync(ct);
+        foreach (var c in crewCandidates)
+        {
+            if (models.Find(c.Model!) is not null) { modelId = c.Model!; crewId = c.Id; break; }
+        }
+
+        var context = new AgentContext(
+            CrewId: crewId,
+            Model: modelId,
+            SoulMd: string.Empty,
+            WorktreePath: string.Empty,            // text-only: no worktree to index
+            AllowedTools: Array.Empty<string>(),   // no tools — pure completion
+            MaxTaskBudgetUsd: null);
+
+        string text;
+        try
+        {
+            using var genCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            genCts.CancelAfter(TimeSpan.FromMinutes(2));
+            var inv = await runner.StartAsync(
+                $"explain:{id}:{externalId}", "question-explainer",
+                BuildExplainPrompt(q.Text, q.Kind, choices), context, genCts.Token);
+            var sb = new StringBuilder();
+            await foreach (var ev in inv.Events.WithCancellation(genCts.Token))
+            {
+                if (ev.Kind == AgentEventKind.Token && ev.Text is { Length: > 0 } t) sb.Append(t);
+                else if (ev.Kind == AgentEventKind.Finished) break;
+                else if (ev.Kind == AgentEventKind.Failed)
+                {
+                    return Results.Problem(title: "Explanation generation failed", detail: ev.Error, statusCode: 502);
+                }
+            }
+            text = sb.ToString();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return Results.Problem(title: "Request cancelled", statusCode: 499);
+        }
+        catch (OperationCanceledException)
+        {
+            return Results.Problem(title: "Explanation generation timed out", statusCode: 504);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(title: "Explanation generation failed", detail: ex.Message, statusCode: 502);
+        }
+
+        var explanationJson = NormalizeGeneratedExplanation(text);
+        if (explanationJson is null)
+        {
+            return Results.Problem(title: "The model returned no usable explanation", statusCode: 502);
+        }
+
+        q.ExplanationJson = explanationJson;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new
+        {
+            workItemId = id,
+            externalId,
+            explanation = JsonSerializer.Deserialize<JsonElement>(explanationJson),
+            cached = false,
+        });
+    }
+
+    private static string BuildExplainPrompt(string questionText, string kind, IReadOnlyList<string> choices)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("An automated engineering agent raised the decision question below for a human operator to answer. Help the operator decide, concisely.");
+        sb.AppendLine();
+        sb.AppendLine($"QUESTION: {questionText}");
+        if (kind == "choice" && choices.Count > 0)
+        {
+            sb.AppendLine("OPTIONS:");
+            foreach (var c in choices) sb.AppendLine($"  - {c}");
+        }
+        else
+        {
+            sb.AppendLine("(This is a free-form question — there are no fixed options.)");
+        }
+        sb.AppendLine();
+        sb.AppendLine("Return ONLY a single minified JSON object — no prose before or after, no markdown code fences. Shape:");
+        sb.AppendLine("{");
+        sb.AppendLine("  \"explanation\": \"2-4 sentence plain-language explanation of the question and any domain terms/acronyms. Be brief.\",");
+        if (kind == "choice" && choices.Count > 0)
+        {
+            sb.AppendLine("  \"choiceAnalysis\": [");
+            sb.AppendLine("    { \"choice\": \"<option text VERBATIM>\", \"pros\": [\"<short pro>\", \"...\"], \"cons\": [\"<short con>\", \"...\"] }");
+            sb.AppendLine("    // exactly one entry per option, in the same order");
+            sb.AppendLine("  ],");
+        }
+        sb.AppendLine("  \"recommendation\": \"the option text VERBATIM you recommend (or a concrete suggested answer for a free-form question)\",");
+        sb.AppendLine("  \"recommendationRationale\": \"1-3 sentences.\"");
+        sb.AppendLine("}");
+        sb.AppendLine("Keep each pro and con to one short phrase. Do NOT echo this prompt.");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Pull a JSON explanation object out of raw model output and normalise it
+    /// to the stored shape with <c>generated:true</c>. Tolerant of code fences
+    /// and surrounding prose. Falls back to wrapping the raw text as the
+    /// <c>explanation</c> field when no parseable JSON object is present (so a
+    /// model that ignored the format still yields something useful). Returns
+    /// null only when the model produced nothing at all.
+    /// </summary>
+    private static string? NormalizeGeneratedExplanation(string? modelText)
+    {
+        if (string.IsNullOrWhiteSpace(modelText)) return null;
+        var json = ExtractJsonObject(modelText);
+        if (json is null) return null; // No JSON object — caller surfaces a clean error (never dump the raw prompt).
+
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            if (root.TryGetProperty("explanation", out var e) && e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()))
+                payload["explanation"] = e.GetString()!.Trim();
+
+            // Preferred per-choice structure: choiceAnalysis [{ choice, pros[], cons[] }].
+            if (root.TryGetProperty("choiceAnalysis", out var ca) && ca.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<object>();
+                foreach (var item in ca.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) continue;
+                    var choice = item.TryGetProperty("choice", out var ch) && ch.ValueKind == JsonValueKind.String ? ch.GetString()?.Trim() : null;
+                    if (string.IsNullOrWhiteSpace(choice)) continue;
+                    list.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["choice"] = choice,
+                        ["pros"] = ReadStringArray(item, "pros"),
+                        ["cons"] = ReadStringArray(item, "cons"),
+                    });
+                }
+                if (list.Count > 0) payload["choiceAnalysis"] = list;
+            }
+
+            // Back-compat: accept a flat choiceExplanations map too.
+            if (root.TryGetProperty("choiceExplanations", out var ce) && ce.ValueKind == JsonValueKind.Object)
+            {
+                var map = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var p in ce.EnumerateObject())
+                    if (p.Value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(p.Value.GetString()))
+                        map[p.Name] = p.Value.GetString()!.Trim();
+                if (map.Count > 0) payload["choiceExplanations"] = map;
+            }
+
+            if (root.TryGetProperty("recommendation", out var r) && r.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(r.GetString()))
+                payload["recommendation"] = r.GetString()!.Trim();
+            if (root.TryGetProperty("recommendationRationale", out var rr) && rr.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(rr.GetString()))
+                payload["recommendationRationale"] = rr.GetString()!.Trim();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        // Require at least one substantive field — otherwise treat as a miss.
+        if (!payload.ContainsKey("explanation") && !payload.ContainsKey("choiceAnalysis") && !payload.ContainsKey("recommendation"))
+        {
+            return null;
+        }
+
+        payload["generated"] = true;
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private static List<string> ReadStringArray(JsonElement obj, string name)
+    {
+        var result = new List<string>();
+        if (obj.TryGetProperty(name, out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var v in arr.EnumerateArray())
+                if (v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
+                    result.Add(v.GetString()!.Trim());
+        }
+        return result;
+    }
+
+    /// <summary>Extract the first balanced JSON object from text that may wrap
+    /// it in <c>```json</c> fences or prose. Returns null when none is found.</summary>
+    private static string? ExtractJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        if (start < 0) return null;
+        var depth = 0;
+        var inStr = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (inStr)
+            {
+                if (escaped) escaped = false;
+                else if (ch == '\\') escaped = true;
+                else if (ch == '"') inStr = false;
+                continue;
+            }
+            if (ch == '"') inStr = true;
+            else if (ch == '{') depth++;
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0) return text[start..(i + 1)];
+            }
+        }
+        return null;
     }
 
     public sealed record AnswerQuestionsRequest(IReadOnlyList<AnswerEntry> Answers);

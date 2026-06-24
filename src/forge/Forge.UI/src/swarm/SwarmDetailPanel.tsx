@@ -77,15 +77,22 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
 
   const effectiveWorkItemId = selection.kind === 'phase' ? (selection.id ?? null) : docWorkItemId;
 
-  // Unanswered question count — polled above tab content for badge rendering.
+  // Question counts — polled above tab content for tab visibility + badge.
+  // Track BOTH unanswered (drives the badge colour) and total (keeps the tab
+  // visible after every question is answered, so the operator can revisit the
+  // decisions + their Explain rationale).
   const [questionCount, setQuestionCount] = useState(0);
+  const [questionTotal, setQuestionTotal] = useState(0);
   useEffect(() => {
-    if (!effectiveWorkItemId) { setQuestionCount(0); return; }
+    if (!effectiveWorkItemId) { setQuestionCount(0); setQuestionTotal(0); return; }
     let cancelled = false;
     async function poll() {
       try {
         const r = await forgeApi.listQuestions(effectiveWorkItemId!);
-        if (!cancelled) setQuestionCount(r.unansweredCount);
+        if (!cancelled) {
+          setQuestionCount(r.unansweredCount);
+          setQuestionTotal(r.totalCount ?? r.items.length);
+        }
       } catch { /* silent */ }
     }
     void poll();
@@ -93,7 +100,7 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
     return () => { cancelled = true; clearInterval(id); };
   }, [effectiveWorkItemId]);
 
-  const tabsAvailable = useMemo(() => availableTabs(mode, selection, detail, questionCount), [mode, selection, detail, questionCount]);
+  const tabsAvailable = useMemo(() => availableTabs(mode, selection, detail, questionTotal), [mode, selection, detail, questionTotal]);
 
   // If the current tab isn't available for this selection, jump to the first available.
   useEffect(() => {
@@ -134,13 +141,17 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
             type="button"
           >
             {t.label}
-            {t.key === 'questions' && questionCount > 0 && (
+            {t.key === 'questions' && questionTotal > 0 && (
               <span
                 className="ct ct--badge"
-                style={{ background: '#f44747', color: '#fff' }}
-                title={`${questionCount} unanswered question(s) blocking progress`}
+                style={questionCount > 0
+                  ? { background: '#f44747', color: '#fff' }
+                  : { background: '#3aa675', color: '#fff' }}
+                title={questionCount > 0
+                  ? `${questionCount} unanswered question(s) blocking progress`
+                  : `all ${questionTotal} question(s) answered`}
               >
-                {questionCount}
+                {questionCount > 0 ? questionCount : `✓ ${questionTotal}`}
               </span>
             )}
             {t.key === 'document' && questionCount > 0 && (
@@ -237,7 +248,7 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
 
 /* ─── TAB AVAILABILITY ───────────────────────────────────────────────── */
 
-function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail, questionCount: number): DetailTab[] {
+function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail, questionTotal: number): DetailTab[] {
   // Decomposition gets no tabs — it renders a full-width diagram instead.
   if (sel.kind === 'doc' && sel.id === 'doc:decomposition') {
     return [];
@@ -253,7 +264,7 @@ function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail
     );
     if (hasDocPr || detail.spawn.planPrId) tabs.push('pr');
     tabs.push('worktree');
-    if (questionCount > 0) tabs.push('questions');
+    if (questionTotal > 0) tabs.push('questions');
     return tabs;
   }
   // Workstream (phase) selection — always show PR tab so the operator
@@ -261,7 +272,7 @@ function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail
   if (sel.kind === 'phase') {
     const tabs: DetailTab[] = ['overview', 'conv', 'pr'];
     tabs.push('worktree');
-    if (questionCount > 0) tabs.push('questions');
+    if (questionTotal > 0) tabs.push('questions');
     if (mode === 'impl') tabs.push('qa', 'trace');
     return tabs;
   }

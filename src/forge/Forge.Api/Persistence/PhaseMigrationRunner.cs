@@ -96,6 +96,10 @@ public sealed class PhaseMigrationRunner
         // text per iteration). Product-only, fans out per {slug}.db. Additive
         // nullable column; no ordering dependency.
         90,
+        // Phase 91 — deliverable_questions.ExplanationJson (Questions-tab
+        // Explain popup rationale). Product-only, fans out per {slug}.db.
+        // Additive nullable column; no ordering dependency.
+        91,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

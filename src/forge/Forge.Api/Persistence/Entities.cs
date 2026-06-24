@@ -1355,6 +1355,18 @@ public class DeliverableQuestionRow
     /// <summary>JSON array of options when <see cref="Kind"/>=choice. Null/empty for open questions.</summary>
     public string? ChoicesJson { get; set; }
 
+    /// <summary>
+    /// Operator-facing rationale for the question, as a JSON object:
+    /// <c>{ "explanation": string, "choiceExplanations": { choice: string },
+    /// "recommendation": string, "recommendationRationale": string,
+    /// "generated": bool }</c>. Primarily agent-authored (parsed from the
+    /// open-questions block); the <c>/questions/{externalId}/explain</c>
+    /// endpoint back-fills it on demand (LLM) for legacy questions emitted
+    /// before agents carried it, stamping <c>"generated": true</c>. Null until
+    /// populated; the wizard's Explain button triggers generation when null.
+    /// </summary>
+    public string? ExplanationJson { get; set; }
+
     /// <summary>Operator-supplied answer. Null = still unanswered (blocks pass verdict).</summary>
     public string? Answer { get; set; }
 

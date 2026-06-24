@@ -302,6 +302,12 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(90, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "deliverables" }),
+        // Phase 91 — deliverable_questions.ExplanationJson (agent-authored +
+        // on-demand operator-facing rationale for the Questions-tab Explain
+        // popup). Product-only; additive nullable column; fans out per {slug}.db.
+        new PhaseMigrationSpec(91, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "deliverable_questions" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

@@ -4,8 +4,8 @@
 // pager; when the operator submits answers, the orchestrator's next
 // iteration prepends a `## Operator answers` block and the evaluator's
 // pass-verdict gate releases.
-import { useEffect, useState } from 'react';
-import { forgeApi } from '@/api/forgeApi';
+import { useEffect, useRef, useState } from 'react';
+import { forgeApi, type QuestionExplanation } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 
 interface QuestionItem {
@@ -18,6 +18,7 @@ interface QuestionItem {
   answer: string | null;
   answeredAt: string | null;
   answeredBy: string | null;
+  explanation: QuestionExplanation | null;
 }
 
 interface Props {
@@ -37,6 +38,66 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
   const [submitting, setSubmitting] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const showToast = useToastStore((s) => s.show);
+
+  // Explain popup state. `explainFor` is the externalId whose popup is open;
+  // `explainData` caches resolved explanations (agent-authored or generated);
+  // `explainLoading` is the externalId currently generating on demand.
+  const [explainFor, setExplainFor] = useState<string | null>(null);
+  const [explainData, setExplainData] = useState<Record<string, QuestionExplanation>>({});
+  const [explainLoading, setExplainLoading] = useState<string | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  // Tracks externalIds we've already kicked off pre-generation for, so the
+  // poll loop doesn't re-fire generation every tick.
+  const pregenAttempted = useRef<Set<string>>(new Set());
+
+  // Pre-generate explanations eagerly as soon as the questions load so the
+  // popup opens instantly with content (no wait-on-open). Only questions that
+  // LACK an explanation are generated; agent-authored ones are already instant.
+  // Runs when the Questions tab is open (this component is mounted), bounding
+  // the cost to when the operator is actually looking at the questions.
+  useEffect(() => {
+    let cancelled = false;
+    async function pregen() {
+      for (const q of items) {
+        if (cancelled) break;
+        if (q.explanation) continue;                       // agent-authored — instant
+        if (explainData[q.externalId]) continue;           // already resolved this session
+        if (pregenAttempted.current.has(q.externalId)) continue;
+        pregenAttempted.current.add(q.externalId);
+        try {
+          const r = await forgeApi.explainQuestion(workItemId, q.externalId);
+          if (!cancelled) setExplainData((d) => ({ ...d, [q.externalId]: r.explanation }));
+        } catch {
+          // Leave it — the on-open path will surface the error if the operator opens it.
+        }
+      }
+    }
+    void pregen();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, workItemId]);
+
+  async function openExplain(q: QuestionItem, force = false) {
+    setExplainFor(q.externalId);
+    setExplainError(null);
+    // Prefer the explanation already on the row (agent-authored) or one we
+    // resolved earlier this session — unless the operator forced a regenerate.
+    const existing = q.explanation ?? explainData[q.externalId];
+    if (existing && !force) {
+      setExplainData((d) => ({ ...d, [q.externalId]: existing }));
+      return;
+    }
+    // None yet (or forced) — generate on demand.
+    setExplainLoading(q.externalId);
+    try {
+      const r = await forgeApi.explainQuestion(workItemId, q.externalId, force);
+      setExplainData((d) => ({ ...d, [q.externalId]: r.explanation }));
+    } catch (e) {
+      setExplainError(e instanceof Error ? e.message : 'Could not generate an explanation.');
+    } finally {
+      setExplainLoading(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +196,14 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                     <span className="oq-wizard__q-iter">iter {q.iter}</span>
                     <button
                       type="button"
+                      className="oq-wizard__q-explain"
+                      title="Explain this question — terms, the logic behind each choice, and the agent's recommendation"
+                      onClick={() => void openExplain(q)}
+                    >
+                      ⓘ explain
+                    </button>
+                    <button
+                      type="button"
                       className="oq-wizard__q-dismiss"
                       title="Dismiss this question — useful for legacy / unanswerable prose"
                       disabled={submitting}
@@ -146,8 +215,11 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                   <div className="oq-wizard__q-text">{q.text}</div>
                   {q.kind === 'choice' && q.choices.length > 0 ? (
                     <div className="oq-wizard__q-choices">
-                      {q.choices.map((c) => (
-                        <label key={c} className="oq-wizard__q-choice">
+                      {q.choices.map((c) => {
+                        const rec = (q.explanation ?? explainData[q.externalId])?.recommendation;
+                        const isRec = rec != null && rec === c;
+                        return (
+                        <label key={c} className={`oq-wizard__q-choice${isRec ? ' oq-wizard__q-choice--recommended' : ''}`}>
                           <input
                             type="radio"
                             name={`q-${q.externalId}`}
@@ -156,8 +228,12 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                             onChange={() => setDrafts((d) => ({ ...d, [q.externalId]: c }))}
                           />
                           <span>{c}</span>
+                          {isRec && (
+                            <span className="oq-wizard__q-rec-tag" title="Agent's recommendation">★ recommended</span>
+                          )}
                         </label>
-                      ))}
+                        );
+                      })}
                       <label className="oq-wizard__q-choice oq-wizard__q-choice--other">
                         <input
                           type="radio"
@@ -220,6 +296,14 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                     <div className="oq-wizard__q-meta">
                       <span className="oq-wizard__q-id">{q.externalId}</span>
                       <span className="oq-wizard__q-iter">iter {q.iter}</span>
+                      <button
+                        type="button"
+                        className="oq-wizard__q-explain"
+                        title="Explain this question — terms, the logic behind each choice, and the agent's recommendation"
+                        onClick={() => void openExplain(q)}
+                      >
+                        ⓘ explain
+                      </button>
                     </div>
                     <div className="oq-wizard__q-text">{q.text}</div>
                     <div className="oq-wizard__q-answer">→ {q.answer}</div>
@@ -230,6 +314,121 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
           )}
         </div>
       )}
+      {explainFor !== null && (() => {
+        const q = items.find((it) => it.externalId === explainFor);
+        const expl = explainData[explainFor];
+        const loading = explainLoading === explainFor;
+        // Normalise per-choice analysis: prefer the rich pros/cons table; fall
+        // back to the legacy flat map (cons-less) so older data still renders.
+        const rows: Array<{ choice: string; pros: string[]; cons: string[] }> =
+          expl?.choiceAnalysis && expl.choiceAnalysis.length > 0
+            ? expl.choiceAnalysis
+            : expl?.choiceExplanations
+              ? Object.entries(expl.choiceExplanations).map(([choice, logic]) => ({ choice, pros: [logic], cons: [] }))
+              : [];
+        return (
+          <div
+            className="oq-explain__overlay"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setExplainFor(null)}
+          >
+            <div className="oq-explain__modal" onClick={(e) => e.stopPropagation()}>
+              <header className="oq-explain__hd">
+                <span className="oq-explain__title">▌ EXPLAIN · {explainFor}</span>
+                {q && (
+                  <button
+                    type="button"
+                    className="oq-explain__regen"
+                    title="Regenerate the explanation"
+                    disabled={loading}
+                    onClick={() => void openExplain(q, true)}
+                  >
+                    ↻ regenerate
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="oq-explain__close"
+                  title="Close"
+                  onClick={() => setExplainFor(null)}
+                >
+                  ✕
+                </button>
+              </header>
+              {q && <div className="oq-explain__question">{q.text}</div>}
+              <div className="oq-explain__body">
+                {loading && <div className="oq-explain__loading">⏳ Generating explanation…</div>}
+                {!loading && explainError && (
+                  <div className="oq-explain__error">{explainError}</div>
+                )}
+                {!loading && !explainError && expl && (
+                  <>
+                    {expl.explanation && (
+                      <section className="oq-explain__section">
+                        <h4>What this means</h4>
+                        <p>{expl.explanation}</p>
+                      </section>
+                    )}
+                    {rows.length > 0 && (
+                      <section className="oq-explain__section">
+                        <h4>Options — pros &amp; cons</h4>
+                        <table className="oq-explain__table">
+                          <thead>
+                            <tr>
+                              <th>Option</th>
+                              <th>Pros</th>
+                              <th>Cons</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((r) => {
+                              const isRec = expl.recommendation != null && expl.recommendation === r.choice;
+                              return (
+                                <tr key={r.choice} className={isRec ? 'oq-explain__row--recommended' : undefined}>
+                                  <td className="oq-explain__opt">
+                                    {r.choice}
+                                    {isRec && <span className="oq-explain__rec-tag"> ★</span>}
+                                  </td>
+                                  <td>
+                                    <ul className="oq-explain__pros">
+                                      {r.pros.length > 0 ? r.pros.map((p, i) => <li key={i}>{p}</li>) : <li className="oq-explain__muted">—</li>}
+                                    </ul>
+                                  </td>
+                                  <td>
+                                    <ul className="oq-explain__cons">
+                                      {r.cons.length > 0 ? r.cons.map((c, i) => <li key={i}>{c}</li>) : <li className="oq-explain__muted">—</li>}
+                                    </ul>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </section>
+                    )}
+                    {expl.recommendation && (
+                      <section className="oq-explain__section oq-explain__recommendation">
+                        <h4>Agent's recommendation</h4>
+                        <p><strong>{expl.recommendation}</strong></p>
+                        {expl.recommendationRationale && <p>{expl.recommendationRationale}</p>}
+                      </section>
+                    )}
+                    {expl.generated && (
+                      <div className="oq-explain__generated-note">
+                        ⓘ Generated on demand — not authored by the original agent.
+                      </div>
+                    )}
+                  </>
+                )}
+                {!loading && !explainError && !expl && (
+                  <div className="oq-explain__loading">No explanation available.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </section>
   );
 }

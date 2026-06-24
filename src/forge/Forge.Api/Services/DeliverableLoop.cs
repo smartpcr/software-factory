@@ -1352,6 +1352,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                         Text = q.Text,
                         Kind = q.Kind,
                         ChoicesJson = q.Choices is { Count: > 0 } ? JsonSerializer.Serialize(q.Choices) : null,
+                        ExplanationJson = q.ExplanationJson,
                         Answer = inheritedAnswer?.Answer,
                         AnsweredAt = inheritedAnswer?.AnsweredAt,
                         AnsweredBy = inheritedAnswer?.AnsweredBy,

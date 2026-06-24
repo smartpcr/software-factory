@@ -2947,10 +2947,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ```json open-questions
             { "openQuestions": [
-                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
-                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"],
+                  "explanation": "<2-4 sentence plain-language explanation of the question + any domain terms/acronyms>",
+                  "choiceAnalysis": [
+                    { "choice": "A", "pros": ["<short pro>", "..."], "cons": ["<short con>", "..."] },
+                    { "choice": "B", "pros": ["..."], "cons": ["..."] },
+                    { "choice": "C", "pros": ["..."], "cons": ["..."] }
+                  ],
+                  "recommendation": "A",
+                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" },
+                { "id": "<other-slug>", "text": "<question>", "type": "open",
+                  "explanation": "<plain-language explanation + terms>",
+                  "recommendation": "<your suggested answer>",
+                  "recommendationRationale": "<why, 1-3 sentences>" }
             ] }
             ```
+            For EVERY question ALSO include `explanation` (define the terms — the
+            operator may lack your context), `recommendation` (your best call),
+            and `recommendationRationale`. For `choice` questions add
+            `choiceAnalysis` — ONE entry per option with concise `pros` and `cons`
+            arrays (one short phrase each, not paragraphs). These power the
+            operator's "Explain" popup (rendered as a pros/cons table), so make
+            them self-contained — do not assume the operator has read the diff.
 
             Rules:
             - Use `type: "choice"` with explicit `choices` whenever you have
@@ -4182,10 +4200,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ```json open-questions
             { "openQuestions": [
-                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
-                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"],
+                  "explanation": "<2-4 sentence plain-language explanation of the question + any domain terms/acronyms>",
+                  "choiceAnalysis": [
+                    { "choice": "A", "pros": ["<short pro>", "..."], "cons": ["<short con>", "..."] },
+                    { "choice": "B", "pros": ["..."], "cons": ["..."] },
+                    { "choice": "C", "pros": ["..."], "cons": ["..."] }
+                  ],
+                  "recommendation": "A",
+                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" },
+                { "id": "<other-slug>", "text": "<question>", "type": "open",
+                  "explanation": "<plain-language explanation + terms>",
+                  "recommendation": "<your suggested answer>",
+                  "recommendationRationale": "<why, 1-3 sentences>" }
             ] }
             ```
+            For EVERY question ALSO include `explanation` (define the terms — the
+            operator may lack your context), `recommendation` (your best call),
+            and `recommendationRationale`. For `choice` questions add
+            `choiceAnalysis` — ONE entry per option with concise `pros` and `cons`
+            arrays (one short phrase each, not paragraphs). These power the
+            operator's "Explain" popup (rendered as a pros/cons table), so make
+            them self-contained — do not assume the operator has read the diff.
 
             Use `type: "choice"` with explicit options whenever 2-5 sensible
             answers exist; use `type: "open"` only for free-form. The
@@ -4300,7 +4336,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                      "id": "stale-plan-constraint-<short-slug>",
                      "text": "Plan constraint `<verbatim pin>` in `<doc>` <section> appears stale: workspace evidence shows <counter-evidence with file path>. Should the plan be updated (operator-approved) to <proposed new value>, OR should the impl narrow its scope to honor the original pin?",
                      "type": "choice",
-                     "choices": ["Update the plan to <proposed value>", "Keep the original pin; narrow the impl"]
+                     "choices": ["Update the plan to <proposed value>", "Keep the original pin; narrow the impl"],
+                     "explanation": "<explain the stale pin, the counter-evidence, and what each option means — define any terms the operator may not know>",
+                     "choiceAnalysis": [
+                       { "choice": "Update the plan to <proposed value>", "pros": ["<short pro>"], "cons": ["<short con>"] },
+                       { "choice": "Keep the original pin; narrow the impl", "pros": ["<short pro>"], "cons": ["<short con>"] }
+                     ],
+                     "recommendation": "<the option you recommend, verbatim>",
+                     "recommendationRationale": "<why, citing the evidence>"
                    }
                ] }
                ```

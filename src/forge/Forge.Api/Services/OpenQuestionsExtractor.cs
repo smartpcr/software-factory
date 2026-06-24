@@ -28,8 +28,13 @@ using System.Text.RegularExpressions;
 /// </summary>
 public static class OpenQuestionsExtractor
 {
-    /// <summary>One parsed question entry.</summary>
-    public sealed record OpenQuestion(string ExternalId, string Text, string Kind, IReadOnlyList<string>? Choices);
+    /// <summary>One parsed question entry. <paramref name="ExplanationJson"/>
+    /// is the serialized operator-facing rationale object (terms, per-choice
+    /// logic, recommendation) when the agent supplied any of those fields;
+    /// null otherwise. It maps straight onto
+    /// <see cref="Forge.Api.Persistence.DeliverableQuestionRow.ExplanationJson"/>.</summary>
+    public sealed record OpenQuestion(
+        string ExternalId, string Text, string Kind, IReadOnlyList<string>? Choices, string? ExplanationJson = null);
 
     /// <summary>Match a fenced JSON block whose body contains an "openQuestions" key.</summary>
     private static readonly Regex JsonFence = new Regex(
@@ -120,7 +125,8 @@ public static class OpenQuestionsExtractor
                     }
                 }
 
-                result.Add(new OpenQuestion(id, text.Trim(), kind, choices));
+                var explanationJson = BuildExplanationJson(item);
+                result.Add(new OpenQuestion(id, text.Trim(), kind, choices, explanationJson));
                 ix++;
             }
             return result;
@@ -132,6 +138,90 @@ public static class OpenQuestionsExtractor
             // correctly on the next round.
             return Array.Empty<OpenQuestion>();
         }
+    }
+
+    /// <summary>
+    /// Build the serialized operator-facing rationale object from an agent's
+    /// open-question JSON entry. Reads <c>explanation</c> (string),
+    /// <c>choiceExplanations</c> (object: choice → rationale),
+    /// <c>recommendation</c> (string), and <c>recommendationRationale</c>
+    /// (string). Returns null when the agent supplied none of them (the
+    /// Explain button then offers on-demand generation). The shape mirrors
+    /// what <c>OpenQuestionsWizard</c> renders and what the
+    /// <c>/questions/{externalId}/explain</c> endpoint writes.
+    /// </summary>
+    private static string? BuildExplanationJson(JsonElement item)
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
+
+        if (item.TryGetProperty("explanation", out var expl) && expl.ValueKind == JsonValueKind.String)
+        {
+            var s = expl.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) payload["explanation"] = s.Trim();
+        }
+
+        // Preferred per-choice structure: choiceAnalysis [{ choice, pros[], cons[] }].
+        if (item.TryGetProperty("choiceAnalysis", out var ca) && ca.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<object>();
+            foreach (var entry in ca.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object) continue;
+                var choice = entry.TryGetProperty("choice", out var ch) && ch.ValueKind == JsonValueKind.String
+                    ? ch.GetString()?.Trim() : null;
+                if (string.IsNullOrWhiteSpace(choice)) continue;
+                list.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["choice"] = choice,
+                    ["pros"] = ReadStringArray(entry, "pros"),
+                    ["cons"] = ReadStringArray(entry, "cons"),
+                });
+            }
+            if (list.Count > 0) payload["choiceAnalysis"] = list;
+        }
+
+        // Back-compat: accept a flat choiceExplanations map too.
+        if (item.TryGetProperty("choiceExplanations", out var ce) && ce.ValueKind == JsonValueKind.Object)
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var prop in ce.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    var v = prop.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(v)) map[prop.Name] = v.Trim();
+                }
+            }
+            if (map.Count > 0) payload["choiceExplanations"] = map;
+        }
+
+        if (item.TryGetProperty("recommendation", out var rec) && rec.ValueKind == JsonValueKind.String)
+        {
+            var s = rec.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) payload["recommendation"] = s.Trim();
+        }
+
+        if (item.TryGetProperty("recommendationRationale", out var rr) && rr.ValueKind == JsonValueKind.String)
+        {
+            var s = rr.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) payload["recommendationRationale"] = s.Trim();
+        }
+
+        if (payload.Count == 0) return null;
+        payload["generated"] = false; // agent-authored
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private static List<string> ReadStringArray(JsonElement obj, string name)
+    {
+        var result = new List<string>();
+        if (obj.TryGetProperty(name, out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var v in arr.EnumerateArray())
+                if (v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
+                    result.Add(v.GetString()!.Trim());
+        }
+        return result;
     }
 
     /// <summary>

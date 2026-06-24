@@ -54,6 +54,34 @@ import type {
   WorkItemType,
 } from '@/workitems/workItemTypes';
 
+// Phase 91 — operator-facing rationale for an open question, shown in the
+// Questions-tab "Explain" popup. Agent-authored (parsed from the open-questions
+// block) or generated on demand. All fields optional — older / partial sources
+// may carry only some.
+export interface QuestionChoiceAnalysis {
+  /** The option text (verbatim). */
+  choice: string;
+  /** Concise reasons for picking this option. */
+  pros: string[];
+  /** Concise reasons against picking this option. */
+  cons: string[];
+}
+
+export interface QuestionExplanation {
+  /** Plain-language explanation of the question + any domain terms. */
+  explanation?: string;
+  /** Preferred per-choice pros/cons (rendered as a table). */
+  choiceAnalysis?: QuestionChoiceAnalysis[];
+  /** Legacy per-choice logic, keyed by the choice text (back-compat). */
+  choiceExplanations?: Record<string, string>;
+  /** The agent's recommended choice (verbatim) or suggested free-form answer. */
+  recommendation?: string;
+  /** Why the recommendation. */
+  recommendationRationale?: string;
+  /** True when produced by on-demand generation rather than the authoring agent. */
+  generated?: boolean;
+}
+
 // forge_implementation.md Phase 28 — story spawn types.
 export type StorySpawnPhase = 'plan' | 'decompose' | 'implement' | 'review' | 'qa' | 'done' | 'paused';
 
@@ -2966,10 +2994,31 @@ export const forgeApi = {
       answer: string | null;
       answeredAt: string | null;
       answeredBy: string | null;
+      /** Operator-facing rationale (terms / per-choice logic / recommendation);
+       *  null until agent-authored or generated via explainQuestion. */
+      explanation: QuestionExplanation | null;
     }>;
     unansweredCount: number;
+    answeredCount: number;
+    totalCount: number;
   }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions`);
+  },
+
+  /** POST /api/work-items/{id}/questions/{externalId}/explain — return the
+   *  question's explanation, generating + caching one (LLM) when none exists.
+   *  Idempotent: agent-authored / previously-generated explanations win and
+   *  cost no model call (cached=true). Powers the Questions-tab Explain popup. */
+  async explainQuestion(
+    workItemId: string,
+    externalId: string,
+    force = false,
+  ): Promise<{ workItemId: string; externalId: string; explanation: QuestionExplanation; cached: boolean }> {
+    const qs = force ? '?force=true' : '';
+    return fetchJson(
+      `/api/work-items/${encodeURIComponent(workItemId)}/questions/${encodeURIComponent(externalId)}/explain${qs}`,
+      { method: 'POST', headers: { 'X-Forge-User': writerHeader() } },
+    );
   },
 
   /** POST /api/work-items/{id}/questions/answer — submit operator answers.
