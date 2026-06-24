@@ -7093,7 +7093,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             {
                                 "  1. Read the error output above. The compiler tells you the exact file, line, and reason.",
                                 "  2. Open the file at the line indicated and make the targeted fix.",
-                                "  3. If the error is in a file OUTSIDE your workstream's target list, it's still your responsibility to make the workspace build -- edit it (don't delete it) or raise it as an Open Question if the fix is genuinely out of scope.",
+                                "  3. If the error is in a file OUTSIDE your workstream's target list, it is STILL your responsibility to make the workspace build. NEVER raise an Open Question for a compile/build break -- fix it yourself.",
+                                "  3a. If it is your own code (or a shared file you legitimately own), edit it (don't delete it) and fix it properly. If it is a SIBLING test/file owned by ANOTHER workstream that references a symbol a later impl removed or renamed (a stale contract), do NOT fabricate a stub of the missing symbol -- quarantine that file with a top-of-file `//go:build ignore` plus a comment naming the owning workstream that must re-author it, so the shared package compiles and sibling stages can run.",
+                                "  3b. Open Questions are ONLY for genuine design/scope DECISIONS an operator must make (e.g. 'absorb a future stage's feature here vs defer it'), never for unblocking a build.",
                                 $"  4. Run `{gf.Command}` yourself before responding to confirm exit 0.",
                             }),
                     };

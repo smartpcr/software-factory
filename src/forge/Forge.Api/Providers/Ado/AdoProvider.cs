@@ -105,7 +105,9 @@ public class AdoProvider : IForgeProvider
             var wiqlResp = await client.SendAsync(wiqlReq, ct);
             this.health.RecordResponse(wiqlResp);
             wiqlResp.EnsureSuccessStatusCode();
-            using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
+            var wiqlBodyText = await wiqlResp.Content.ReadAsStringAsync(ct);
+            EnsureJsonResponse(wiqlResp, wiqlBodyText, "ADO WIQL");
+            using var wiqlDoc = JsonDocument.Parse(wiqlBodyText);
             var ids = wiqlDoc.RootElement.GetProperty("workItems")
                 .EnumerateArray()
                 .Select(w => w.GetProperty("id").GetInt64().ToString())
@@ -120,7 +122,9 @@ public class AdoProvider : IForgeProvider
                 $"_apis/wit/workitems?ids={idList}&fields={fields}&api-version=7.1", ct);
             this.health.RecordResponse(resp);
             resp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var hydrateBody = await resp.Content.ReadAsStringAsync(ct);
+            EnsureJsonResponse(resp, hydrateBody, "ADO work item hydrate");
+            using var doc = JsonDocument.Parse(hydrateBody);
             var cards = new List<Card>();
             foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
             {
@@ -353,6 +357,23 @@ public class AdoProvider : IForgeProvider
         var responseBody = await resp.Content.ReadAsStringAsync(ct);
         if (resp.IsSuccessStatusCode)
         {
+            // Azure DevOps answers an UNAUTHENTICATED request with HTTP 200 and
+            // an HTML sign-in / federated-auth redirect page (a bounce to
+            // login.microsoftonline.com) instead of a 401 + JSON. IsSuccessStatusCode
+            // is therefore true, but the body is HTML — JsonDocument.Parse then dies
+            // with the cryptic "'<' is an invalid start of a value. LineNumber: 2",
+            // which the orchestrator surfaces as "plan doc '…' failed" and HALTS the
+            // spawn (observed local:UPDATE-NET10-MIGRATION ASZ-UpdateService 2026-06-23).
+            // Detect the HTML body and raise an actionable auth error instead.
+            if (IsHtmlAuthBody(responseBody))
+            {
+                throw new HttpRequestException(
+                    $"ADO PR creation returned HTTP {(int)resp.StatusCode} with an HTML body "
+                    + "instead of JSON — Azure DevOps served a sign-in/redirect page, which means "
+                    + "the request was not authenticated (expired PAT or interactive sign-in "
+                    + "required). Re-authenticate the ADO credential, then retry the spawn.");
+            }
+
             using var ok = JsonDocument.Parse(responseBody);
             return AdoMapper.ToPr(ok.RootElement, this.EffectiveProject);
         }
@@ -382,6 +403,25 @@ public class AdoProvider : IForgeProvider
         // instead of the generic "400 (Bad Request)" from EnsureSuccessStatusCode.
         throw new HttpRequestException(
             $"ADO PR creation failed ({(int)resp.StatusCode}): {responseBody}");
+    }
+
+    /// <summary>
+    /// True when an HTTP response body is HTML/XML rather than JSON — the
+    /// signature of Azure DevOps serving a sign-in / redirect page on an
+    /// unauthenticated request (which it returns with HTTP 200, not 401).
+    /// Used to convert the cryptic <c>JsonDocument.Parse</c> "'&lt;' is an
+    /// invalid start of a value" into an actionable authentication error.
+    /// Any body whose first non-whitespace (BOM-stripped) character is
+    /// <c>&lt;</c> is treated as non-JSON.
+    /// </summary>
+    private static bool IsHtmlAuthBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return false;
+        var s = body.TrimStart();
+        // BOM (U+FEFF) and zero-width space (U+200B) are NOT Unicode whitespace,
+        // so TrimStart() leaves them; strip a leading one before the '<' probe.
+        if (s.Length > 0 && (s[0] == '\uFEFF' || s[0] == '\u200B')) s = s.Substring(1).TrimStart();
+        return s.StartsWith("<", StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -866,7 +906,9 @@ public class AdoProvider : IForgeProvider
                     inner: null,
                     statusCode: wiqlResp.StatusCode);
             }
-            using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
+            var wiqlBodyText = await wiqlResp.Content.ReadAsStringAsync(ct);
+            EnsureJsonResponse(wiqlResp, wiqlBodyText, "ADO WIQL");
+            using var wiqlDoc = JsonDocument.Parse(wiqlBodyText);
             var allIds = wiqlDoc.RootElement.GetProperty("workItems")
                 .EnumerateArray()
                 .Select(w => w.GetProperty("id").GetInt64().ToString())
@@ -911,7 +953,9 @@ public class AdoProvider : IForgeProvider
                             (int)resp.StatusCode, batchIdx, Trunc(errBody, 800));
                         resp.EnsureSuccessStatusCode();
                     }
-                    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    var hydrateBody = await resp.Content.ReadAsStringAsync(ct);
+                    EnsureJsonResponse(resp, hydrateBody, "ADO work item hydrate");
+                    using var doc = JsonDocument.Parse(hydrateBody);
                     var items = new List<WorkItem>(ids.Length);
                     foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
                     {
@@ -1063,12 +1107,29 @@ public class AdoProvider : IForgeProvider
         }
         try
         {
-            var client = this.NewClient();
+            // Health probe — silent only. A status poll must never pop a
+            // sign-in browser; an expired token surfaces as a non-Ok snapshot.
+            var client = await this.NewClientAsync(ct, allowInteractive: false);
             var resp = await client.GetAsync($"_apis/projects/{this.EffectiveProject}?api-version=7.1", ct);
             this.health.RecordResponse(resp);
-            return resp.IsSuccessStatusCode
-                ? this.health.Snapshot(true, $"connected to {this.EffectiveOrgUrl} / {this.EffectiveProject}")
-                : this.health.Snapshot(false, $"HTTP {(int)resp.StatusCode}");
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return this.health.Snapshot(false, $"HTTP {(int)resp.StatusCode}");
+            }
+
+            try
+            {
+                EnsureJsonResponse(resp, body, "ADO project probe");
+                using var _ = JsonDocument.Parse(body);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+            {
+                this.health.RecordError(ex);
+                return this.health.Snapshot(false, ex.Message);
+            }
+
+            return this.health.Snapshot(true, $"connected to {this.EffectiveOrgUrl} / {this.EffectiveProject}");
         }
         catch (Exception ex)
         {
@@ -1085,7 +1146,7 @@ public class AdoProvider : IForgeProvider
         return this.NewClientAsync(CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    private async Task<HttpClient> NewClientAsync(CancellationToken ct)
+    private async Task<HttpClient> NewClientAsync(CancellationToken ct, bool allowInteractive = true)
     {
         var client = this.clientFactory.CreateClient(ClientName);
         // Phase 10 — base URL follows the resolved config (user settings → appsettings).
@@ -1098,11 +1159,15 @@ public class AdoProvider : IForgeProvider
         }
 
         // Phase 9 — MSAL bearer first, PAT only as fallback for headless runs.
+        // Work paths pass allowInteractive: true so an expired cached token
+        // triggers a browser re-auth instead of silently failing the request
+        // with an HTML sign-in page (see EnsureJsonResponse). Health probes pass
+        // false so a status poll never hijacks the operator's screen.
         string? bearer = null;
         if (this.authService is not null)
         {
-            try { bearer = await this.authService.GetAccessTokenAsync(ct); }
-            catch (Exception ex) { this.logger.LogDebug(ex, "MSAL silent token failed; falling back to PAT"); }
+            try { bearer = await this.authService.GetAccessTokenAsync(allowInteractive, ct); }
+            catch (Exception ex) { this.logger.LogDebug(ex, "MSAL token acquisition failed; falling back to PAT"); }
         }
 
         if (bearer is not null)
@@ -1115,10 +1180,48 @@ public class AdoProvider : IForgeProvider
             var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{this.options.Pat}"));
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
         }
+        else if (this.authService is not null)
+        {
+            throw new InvalidOperationException(
+                "No Azure DevOps access token is available to Forge. Sign in to Azure DevOps from Forge so the background sync worker can use the Forge token cache.");
+        }
 
         client.DefaultRequestHeaders.Accept.Clear();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return client;
+    }
+
+    private static void EnsureJsonResponse(HttpResponseMessage response, string body, string operation)
+    {
+        if (LooksLikeJson(response, body))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(BuildNonJsonResponseMessage(operation, response, body));
+    }
+
+    private static bool LooksLikeJson(HttpResponseMessage response, string body)
+    {
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        if (!string.IsNullOrWhiteSpace(mediaType)
+            && mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var trimmed = body.TrimStart();
+        return trimmed.StartsWith("{", StringComparison.Ordinal)
+            || trimmed.StartsWith("[", StringComparison.Ordinal);
+    }
+
+    private static string BuildNonJsonResponseMessage(string operation, HttpResponseMessage response, string body)
+    {
+        var mediaType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+        var hint = body.TrimStart().StartsWith("<", StringComparison.Ordinal)
+            ? "Azure DevOps returned an HTML sign-in page, so Forge does not have a valid Azure DevOps token for this process."
+            : "Azure DevOps did not return JSON.";
+        return $"{operation} returned non-JSON response (HTTP {(int)response.StatusCode} {response.ReasonPhrase}, Content-Type {mediaType}). {hint}";
     }
 }
 

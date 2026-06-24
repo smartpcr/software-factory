@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Tests.Providers;
 
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using Forge.Api.Auth;
@@ -147,5 +148,93 @@ public class AdoWorkItemSyncTests
         Assert.Equal("WI-24", task.ParentId);
         Assert.Equal(2, task.Points);
         Assert.Equal("5", epic.RemoteRevision);
+    }
+
+    [Fact]
+    public async Task StreamWorkItemBatchesAsync_Rejects_AdoHtmlSignIn_Response()
+    {
+        var (provider, stub) = NewProvider();
+        stub.When(
+            req => req.Method == HttpMethod.Post &&
+                   req.RequestUri!.AbsolutePath.EndsWith("/_apis/wit/wiql"),
+            _ => new HttpResponseMessage(HttpStatusCode.NonAuthoritativeInformation)
+            {
+                Content = new StringContent(
+                    "\r\n\r\n<!DOCTYPE html><html><body>Sign in</body></html>",
+                    Encoding.UTF8,
+                    "text/html"),
+            });
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var _ in provider.StreamWorkItemBatchesAsync(new WorkItemSyncFilters(), default))
+            {
+            }
+        });
+
+        Assert.Contains("HTML sign-in page", ex.Message);
+        Assert.Contains("Forge does not have a valid Azure DevOps token", ex.Message);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_Rejects_AdoHtmlSignIn_Response()
+    {
+        var (provider, stub) = NewProvider();
+        stub.When(
+            req => req.Method == HttpMethod.Get &&
+                   req.RequestUri!.AbsolutePath.EndsWith("/_apis/projects/Atlas"),
+            _ => new HttpResponseMessage(HttpStatusCode.NonAuthoritativeInformation)
+            {
+                Content = new StringContent(
+                    "\r\n\r\n<!DOCTYPE html><html><body>Sign in</body></html>",
+                    Encoding.UTF8,
+                    "text/html"),
+            });
+
+        var health = await provider.TestConnectionAsync(default);
+
+        Assert.False(health.Ok);
+        Assert.Contains("HTML sign-in page", health.Message);
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_Requires_ForgeAdoToken_When_AuthService_Has_No_Token()
+    {
+        var stub = new StubHttpMessageHandler();
+        var factory = new SingleNamedHttpClientFactory(AdoProvider.ClientName, stub);
+        var opts = Options.Create(new AdoOptions
+        {
+            OrgUrl = "https://dev.azure.test/contoso",
+            Project = "Atlas",
+            Repository = "atlas-platform",
+        });
+        var provider = new AdoProvider(
+            factory,
+            opts,
+            NullLogger<AdoProvider>.Instance,
+            new IAuthService[] { new NullTokenAuthService() });
+
+        var health = await provider.TestConnectionAsync(default);
+
+        Assert.False(health.Ok);
+        Assert.Contains("No Azure DevOps access token is available to Forge", health.Message);
+        Assert.Empty(stub.Requests);
+    }
+
+    private sealed class NullTokenAuthService : IAuthService
+    {
+        public string Kind => "ado";
+
+        public Task<AuthStatus> StatusAsync(CancellationToken ct = default) =>
+            Task.FromResult(new AuthStatus(this.Kind, false, null, null, null));
+
+        public Task<AuthStatus> SignInAsync(CancellationToken ct = default) =>
+            Task.FromResult(new AuthStatus(this.Kind, false, null, null, null));
+
+        public Task SignOutAsync(CancellationToken ct = default) =>
+            Task.CompletedTask;
+
+        public Task<string?> GetAccessTokenAsync(CancellationToken ct = default) =>
+            Task.FromResult<string?>(null);
     }
 }

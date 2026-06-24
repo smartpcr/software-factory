@@ -54,10 +54,22 @@ public class AdoAuthService : IAuthService
 
     private const string CacheFileName = "msal-cache.bin";
 
+    // Serializes interactive re-auth so concurrent token requests (background
+    // sync sweeps, the queue worker, story orchestrator) coalesce onto a single
+    // browser prompt instead of stacking a window per caller.
+    private static readonly TimeSpan InteractiveRenewCooldown = TimeSpan.FromMinutes(2);
+
+    // Upper bound on how long an unattended interactive prompt may block a
+    // caller thread — matches the GitHub sign-in cap. After this the renew
+    // gives up and returns null so the work path can fail fast / retry later.
+    private static readonly TimeSpan InteractiveRenewTimeout = TimeSpan.FromMinutes(5);
+
     private readonly ForgeAuthOptions options;
     private readonly IServiceScopeFactory scopeFactory;
     private readonly ILogger<AdoAuthService> logger;
     private readonly Lazy<Task<IPublicClientApplication>> appFactory;
+    private readonly SemaphoreSlim interactiveGate = new(1, 1);
+    private DateTimeOffset lastInteractiveRenewUtc = DateTimeOffset.MinValue;
 
     public AdoAuthService(IOptions<ForgeAuthOptions> options, IServiceScopeFactory scopeFactory, ILogger<AdoAuthService> logger)
     {
@@ -174,26 +186,124 @@ public class AdoAuthService : IAuthService
         }
     }
 
-    public async Task<string?> GetAccessTokenAsync(CancellationToken ct = default)
+    public Task<string?> GetAccessTokenAsync(CancellationToken ct = default) =>
+        this.GetAccessTokenAsync(allowInteractive: false, ct);
+
+    public async Task<string?> GetAccessTokenAsync(bool allowInteractive, CancellationToken ct = default)
     {
         try
         {
             var app = await this.appFactory.Value;
             var preferred = await this.GetPreferredAccountAsync(ct);
             var account = await this.PickAccountAsync(app, preferred);
-            if (account is null) return null;
-            var result = await app.AcquireTokenSilent(DefaultScopes, account).ExecuteAsync(ct);
-            return result.AccessToken;
-        }
-        catch (MsalUiRequiredException)
-        {
-            // Caller decides whether to prompt — surface null so AdoProvider can fall back to PAT.
-            return null;
+
+            if (account is not null)
+            {
+                try
+                {
+                    var result = await app.AcquireTokenSilent(DefaultScopes, account).ExecuteAsync(ct);
+                    return result.AccessToken;
+                }
+                catch (MsalUiRequiredException)
+                {
+                    // Account is cached but the refresh token expired. When the
+                    // caller can't tolerate a prompt, surface null so AdoProvider
+                    // falls back to PAT (or fails fast on a health probe).
+                    if (!allowInteractive) return null;
+                }
+            }
+            else if (!allowInteractive)
+            {
+                return null;
+            }
+
+            // allowInteractive == true and we have no usable silent token —
+            // renew via an interactive system-browser sign-in (Q7: browser, not
+            // device-code). Serialized + rate-limited inside RenewInteractiveAsync.
+            return await this.RenewInteractiveAsync(app, preferred, ct);
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "GetAccessTokenAsync silent failure");
+            this.logger.LogDebug(ex, "GetAccessTokenAsync failure");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Renews the ADO access token via an interactive system-browser sign-in
+    /// when the silent path reports the cached refresh token has expired.
+    /// Serialized through <see cref="interactiveGate"/> and rate-limited by
+    /// <see cref="InteractiveRenewCooldown"/> so a burst of background callers
+    /// produces at most one browser prompt; bounded by
+    /// <see cref="InteractiveRenewTimeout"/> so an ignored prompt can't pin a
+    /// worker thread indefinitely. Returns null (never throws) on
+    /// cancel / timeout / MSAL failure so the work path degrades gracefully.
+    /// </summary>
+    private async Task<string?> RenewInteractiveAsync(IPublicClientApplication app, string? preferred, CancellationToken ct)
+    {
+        await this.interactiveGate.WaitAsync(ct);
+        try
+        {
+            // A caller ahead of us on the gate may have just refreshed the
+            // cache — re-probe silently before opening another browser window.
+            var account = await this.PickAccountAsync(app, preferred);
+            if (account is not null)
+            {
+                try
+                {
+                    var silent = await app.AcquireTokenSilent(DefaultScopes, account).ExecuteAsync(ct);
+                    return silent.AccessToken;
+                }
+                catch (MsalUiRequiredException)
+                {
+                    // Still needs UI — fall through to the interactive prompt.
+                }
+            }
+
+            // Cooldown — if the operator dismissed a recent prompt, don't keep
+            // popping the browser on every queued caller; let it lapse first.
+            var now = DateTimeOffset.UtcNow;
+            if (now - this.lastInteractiveRenewUtc < InteractiveRenewCooldown)
+            {
+                this.logger.LogDebug(
+                    "ADO interactive re-auth suppressed — cooldown active (last attempt {Last:o})",
+                    this.lastInteractiveRenewUtc);
+                return null;
+            }
+            this.lastInteractiveRenewUtc = now;
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(InteractiveRenewTimeout);
+            try
+            {
+                var builder = app
+                    .AcquireTokenInteractive(DefaultScopes)
+                    .WithUseEmbeddedWebView(false);
+                if (!string.IsNullOrEmpty(preferred))
+                {
+                    builder = builder.WithLoginHint(preferred);
+                }
+                this.logger.LogInformation(
+                    "ADO access token expired — launching interactive re-auth (system browser){Hint}…",
+                    string.IsNullOrEmpty(preferred) ? string.Empty : $" with login_hint={preferred}");
+                var result = await builder.ExecuteAsync(timeoutCts.Token);
+                this.logger.LogInformation("ADO interactive re-auth succeeded as {User}", result.Account.Username);
+                return result.AccessToken;
+            }
+            catch (OperationCanceledException)
+            {
+                this.logger.LogWarning("ADO interactive re-auth cancelled or timed out after {Timeout}", InteractiveRenewTimeout);
+                return null;
+            }
+            catch (MsalException ex)
+            {
+                this.logger.LogWarning(ex, "ADO interactive re-auth failed ({ErrorCode})", ex.ErrorCode);
+                return null;
+            }
+        }
+        finally
+        {
+            this.interactiveGate.Release();
         }
     }
 

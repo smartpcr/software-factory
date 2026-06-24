@@ -31,10 +31,28 @@ public interface IAuthService
     Task SignOutAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Returns a fresh access token (silent if possible, prompting only if
-    /// the refresh token expired). Returns null when no account is signed in.
+    /// Returns a fresh access token acquired silently from the cached account.
+    /// Returns null when no account is signed in OR the cached refresh token
+    /// has expired (UI required) — callers that can tolerate a sign-in prompt
+    /// should use <see cref="GetAccessTokenAsync(bool, CancellationToken)"/>
+    /// with <c>allowInteractive: true</c> instead.
     /// </summary>
     Task<string?> GetAccessTokenAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns a fresh access token. When <paramref name="allowInteractive"/>
+    /// is <c>true</c> and the cached refresh token has expired (or no account
+    /// is cached), providers that support browser sign-in (ADO via MSAL) launch
+    /// an interactive system-browser re-authentication to renew the token
+    /// rather than returning null. Interactive renewal is serialized and
+    /// rate-limited per provider so a busy background worker cannot stack
+    /// sign-in prompts. The default implementation ignores the flag and behaves
+    /// exactly like the silent <see cref="GetAccessTokenAsync(CancellationToken)"/>
+    /// (used by providers — e.g. GitHub via <c>gh</c> — whose interactive flow
+    /// lives in <see cref="SignInAsync"/>).
+    /// </summary>
+    Task<string?> GetAccessTokenAsync(bool allowInteractive, CancellationToken ct = default)
+        => this.GetAccessTokenAsync(ct);
 }
 
 /// <summary>Snapshot of the current sign-in state, surfaced on /api/auth/{kind}/status.</summary>
