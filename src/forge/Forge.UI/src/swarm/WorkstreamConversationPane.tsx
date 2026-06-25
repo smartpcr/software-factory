@@ -23,6 +23,7 @@ import {
 import { WorktreePane } from './WorktreePane';
 import { BuildPane } from './BuildPane';
 import { ToolsPane } from './ToolsPane';
+import { OperatorPane } from './OperatorPane';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -240,11 +241,12 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
   const isBuildMode = filter === 'build';
   const isPromptMode = filter === 'prompt';
   const isToolsMode = filter === 'tools';
+  const isOperatorMode = filter === 'operator';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode && !isOperatorMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode && !isBuildMode && !isPromptMode && !isToolsMode && !isOperatorMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -552,7 +554,7 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
         </button>
       </nav>
 
-      {totalIters > 0 && !isPromptMode && (
+      {totalIters > 0 && !isPromptMode && !isOperatorMode && (
         <nav className="live-exec__iter-pager" aria-label="Iteration pager">
           <button
             type="button"
@@ -609,6 +611,8 @@ export function WorkstreamConversationPane({ workstreamId, wsStatus }: Props) {
           <BuildPane workItemId={workstreamId} />
         ) : isToolsMode ? (
           <ToolsPane workItemId={workstreamId} />
+        ) : isOperatorMode ? (
+          <OperatorPane workItemId={workstreamId} />
         ) : isPromptMode ? (
           <PromptView
             events={transcript}

@@ -107,6 +107,12 @@ public sealed class PhaseMigrationRunner
         // Explain popup rationale). Product-only, fans out per {slug}.db.
         // Additive nullable column; no ordering dependency.
         91,
+        // Phase 93 — operator_prompts table (per-workstream human operator
+        // steering prompts). Product-only, fans out per {slug}.db. New table;
+        // no ordering dependency. (Renumbered from 92 on merge — local's
+        // build/test-gate migration already holds 92, placed at the head of the
+        // chain above for its WorkstreamRow EF-model ordering dependency.)
+        93,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

@@ -1867,6 +1867,34 @@ public class IterationPromptRow
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Phase 92 — a human operator's steering / follow-up prompt for a single
+/// workstream. Surfaced + authored from the conversation pane's Operator
+/// subtab. Every ACTIVE (non-dismissed) prompt is injected into BOTH the
+/// generator and the evaluator prompt on every iteration of
+/// <see cref="Services.Stories.CrewStoryArtifactStrategy.RunGenEvalLoopAsync"/>
+/// (persistent + cumulative) until the operator dismisses it. Lives in the
+/// per-product DB so it survives transcript retention.
+/// </summary>
+public class OperatorPromptRow
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>The workstream this steering prompt is scoped to (matches <see cref="WorkstreamRow.Id"/> / <see cref="DeliverableRow.WorkItemId"/>).</summary>
+    public string WorkstreamId { get; set; } = string.Empty;
+
+    /// <summary>The operator's free-text steering / follow-up directive.</summary>
+    public string Body { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Display name / id of the operator who authored it. Nullable.</summary>
+    public string? CreatedBy { get; set; }
+
+    /// <summary>When set, the prompt is no longer injected. Null = active.</summary>
+    public DateTimeOffset? DismissedAt { get; set; }
+}
 /// <see cref="RemoteUrl"/> is unique across ALL products (Q5: a remote belongs to exactly one product).
 /// <see cref="CloneRoot"/> is unique across ALL products (Q2: two products can't share a worktree root).
 /// </summary>

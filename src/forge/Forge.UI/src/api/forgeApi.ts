@@ -85,6 +85,16 @@ export interface QuestionExplanation {
 // forge_implementation.md Phase 28 — story spawn types.
 export type StorySpawnPhase = 'plan' | 'decompose' | 'implement' | 'review' | 'qa' | 'done' | 'paused';
 
+// Phase 92 — human operator steering prompt for a workstream.
+export interface OperatorPrompt {
+  id: string;
+  workstreamId: string;
+  body: string;
+  createdAt: string;
+  createdBy: string | null;
+  dismissedAt: string | null;
+}
+
 export interface StorySpawn {
   id: string;
   storyId: string;
@@ -1252,6 +1262,33 @@ export const forgeApi = {
     } | undefined>;
   }> {
     return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/memory`);
+  },
+
+  /**
+   * Phase 92 — human operator steering. GET lists all operator prompts for a
+   * workstream (active + dismissed), newest first. POST adds an active prompt
+   * that is injected into BOTH the generator and the evaluator each iteration
+   * until dismissed. POST .../dismiss deactivates one.
+   */
+  async fetchOperatorPrompts(id: string): Promise<OperatorPrompt[]> {
+    return fetchJson<OperatorPrompt[]>(`/api/workstreams/${encodeURIComponent(id)}/operator-prompts`);
+  },
+
+  async addOperatorPrompt(id: string, body: string): Promise<OperatorPrompt> {
+    return fetchJson<OperatorPrompt>(`/api/workstreams/${encodeURIComponent(id)}/operator-prompts`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async dismissOperatorPrompt(id: string, promptId: string): Promise<OperatorPrompt> {
+    return fetchJson<OperatorPrompt>(
+      `/api/workstreams/${encodeURIComponent(id)}/operator-prompts/${encodeURIComponent(promptId)}/dismiss`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      });
   },
 
   /** GET /api/audit. */

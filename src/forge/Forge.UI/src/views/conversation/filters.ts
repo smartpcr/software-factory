@@ -39,7 +39,7 @@ import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
  * has review activity, so unstarted / pre-review workstreams don't
  * surface an empty tab.
  */
-export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'build' | 'review' | 'summary' | 'prompt';
+export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'build' | 'review' | 'summary' | 'prompt' | 'operator';
 
 export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -50,6 +50,7 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'build',     label: 'Build' },
   { key: 'review',    label: 'Review' },
   { key: 'prompt',    label: 'Prompt' },
+  { key: 'operator',  label: 'Operator' },
   { key: 'summary',   label: 'Summary' },
 ];
 
@@ -219,6 +220,10 @@ export function filterEvents(
   // returning [] here prevents the transcript list from rendering anything
   // when the caller forgets to branch.
   if (f === 'worktree') return [];
+  // `operator` is rendered specially by OperatorPane (Phase 92) which fetches
+  // operator-prompts from its own REST endpoint; the transcript list shows
+  // nothing for this tab.
+  if (f === 'operator') return [];
   // `prompt` is rendered by PromptView (Insight I.4) which walks the
   // full transcript itself; return the unfiltered list so the view has
   // every task.prompt event and can group by iter on its own.
@@ -341,6 +346,9 @@ export function availableTabs(
   set.add('summary');
   set.add('worktree');
   set.add('build');
+  // Phase 92 — Operator steering is always available so an operator can post
+  // a directive at any point in the workstream's life, even pre-loop.
+  set.add('operator');
 
   // Walk transcript once, mark each tab as it sees a matching event.
   // Bail early once everything's on (cheap fixed-size set).

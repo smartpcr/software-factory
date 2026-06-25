@@ -315,6 +315,14 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(92, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "workstreams" }),
+        // Phase 93 — operator_prompts (per-workstream human operator steering
+        // prompts injected into both generator + evaluator). Product-only,
+        // fans out per {slug}.db. New table; no ordering dependency. (Renumbered
+        // from 92 on merge — origin's operator_prompts and local's build/test-gate
+        // migration both claimed 92; see Phase92Migration / Phase93Migration.)
+        new PhaseMigrationSpec(93, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "operator_prompts" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

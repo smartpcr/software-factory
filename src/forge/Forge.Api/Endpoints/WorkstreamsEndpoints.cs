@@ -48,6 +48,12 @@ public static class WorkstreamsEndpoints
         grp.MapGet("/{id}/memory", GetMemory).WithName("GetWorkstreamMemory");
         grp.MapGet("/{id}/iter-notes", GetIterNotes).WithName("GetWorkstreamIterNotes");
         grp.MapGet("/{id}/iter-kpis", GetIterKpis).WithName("GetWorkstreamIterKpis");
+        // Phase 92 — human operator steering. The conversation Operator subtab
+        // posts a free-text directive that is injected into BOTH the generator
+        // and the evaluator on every iteration until dismissed.
+        grp.MapGet("/{id}/operator-prompts", GetOperatorPrompts).WithName("GetWorkstreamOperatorPrompts");
+        grp.MapPost("/{id}/operator-prompts", AddOperatorPrompt).WithName("AddWorkstreamOperatorPrompt");
+        grp.MapPost("/{id}/operator-prompts/{promptId}/dismiss", DismissOperatorPrompt).WithName("DismissWorkstreamOperatorPrompt");
         // Phase 59 Stage B — gate-log streaming. Reads a per-attempt
         // log file under {worktree}/.forge/logs/ and streams it as
         // text/plain with Range support. Path-traversal guard
@@ -150,6 +156,110 @@ public static class WorkstreamsEndpoints
         var payload = await Forge.Api.Services.ConversationInsightQueries
             .GetMemoryAsync(control, db, copilotPool, compactor, id, ct);
         return Results.Ok(payload);
+    }
+
+    // ── Phase 92: human operator steering ──────────────────────────────────
+    // Persistent + cumulative directives injected into BOTH generator and
+    // evaluator each iter (see CrewStoryArtifactStrategy.BuildOperatorSteeringBlockAsync).
+
+    public sealed record OperatorPromptDto(
+        string Id, string WorkstreamId, string Body,
+        string CreatedAt, string? CreatedBy, string? DismissedAt);
+
+    public sealed record AddOperatorPromptRequest(string Body);
+
+    // GET /api/workstreams/{id}/operator-prompts — list all (active + dismissed),
+    // newest first, so the Operator subtab can render a history with state.
+    private static async Task<IResult> GetOperatorPrompts(
+        string id,
+        ProductDbContext db,
+        CancellationToken ct)
+    {
+        var rows = await db.OperatorPrompts.AsNoTracking()
+            .Where(p => p.WorkstreamId == id)
+            .ToListAsync(ct);
+        var dtos = rows
+            .OrderByDescending(p => p.CreatedAt)
+            .Select(p => new OperatorPromptDto(
+                p.Id, p.WorkstreamId, p.Body,
+                p.CreatedAt.ToString("o"), p.CreatedBy, p.DismissedAt?.ToString("o")))
+            .ToList();
+        return Results.Ok(dtos);
+    }
+
+    // POST /api/workstreams/{id}/operator-prompts {Body} — add an active prompt.
+    private static async Task<IResult> AddOperatorPrompt(
+        HttpContext ctx,
+        string id,
+        [FromBody] AddOperatorPromptRequest req,
+        ProductDbContext db,
+        TaskChannel taskChannel,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.Body))
+            return Results.Problem(title: "Operator prompt body is required", statusCode: 400);
+
+        var createdBy = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var v) && v.Count > 0
+            ? v[0]
+            : null;
+
+        var row = new OperatorPromptRow
+        {
+            Id = Guid.NewGuid().ToString("n"),
+            WorkstreamId = id,
+            Body = req.Body.Trim(),
+            CreatedAt = DateTimeOffset.UtcNow,
+            CreatedBy = createdBy,
+            DismissedAt = null,
+        };
+        db.OperatorPrompts.Add(row);
+        await db.SaveChangesAsync(ct);
+
+        // Surface in the live 'all' transcript so operators see their own steer.
+        await taskChannel.EmitAsync(id, "task.operator.steer", new
+        {
+            promptId = row.Id,
+            body = row.Body,
+            createdBy = row.CreatedBy,
+        }, ct: ct);
+
+        var dto = new OperatorPromptDto(
+            row.Id, row.WorkstreamId, row.Body,
+            row.CreatedAt.ToString("o"), row.CreatedBy, null);
+        return Results.Created($"/api/workstreams/{id}/operator-prompts/{row.Id}", dto);
+    }
+
+    // POST /api/workstreams/{id}/operator-prompts/{promptId}/dismiss — deactivate.
+    private static async Task<IResult> DismissOperatorPrompt(
+        HttpContext ctx,
+        string id,
+        string promptId,
+        ProductDbContext db,
+        TaskChannel taskChannel,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.OperatorPrompts
+            .FirstOrDefaultAsync(p => p.Id == promptId && p.WorkstreamId == id, ct);
+        if (row is null)
+            return Results.Problem(title: $"Operator prompt {promptId} not found", statusCode: 404);
+
+        if (row.DismissedAt is null)
+        {
+            row.DismissedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            await taskChannel.EmitAsync(id, "task.operator.steer-dismissed", new { promptId = row.Id }, ct: ct);
+        }
+
+        var dto = new OperatorPromptDto(
+            row.Id, row.WorkstreamId, row.Body,
+            row.CreatedAt.ToString("o"), row.CreatedBy, row.DismissedAt?.ToString("o"));
+        return Results.Ok(dto);
     }
 
     // POST /api/workstreams/{id}/pr — Phase 6.4. Opens a PR via the named
