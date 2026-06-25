@@ -495,20 +495,44 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
       </div>
       {hasRun && (
         <div className="phase-metrics">
-          <div className="doc-agents">
-            <PhaseAgentAvatar id={ws.latestGenAgentId} role="generator" />
-            <span className="doc-agents-link">⇄</span>
-            <PhaseAgentAvatar id={ws.latestEvalAgentId} role="evaluator" />
+          {/* Line 1: gen↔eval avatars + run start time. */}
+          <div className="phase-metrics-row">
+            <div className="doc-agents">
+              <PhaseAgentAvatar id={ws.latestGenAgentId} role="generator" />
+              <span className="doc-agents-link">⇄</span>
+              <PhaseAgentAvatar id={ws.latestEvalAgentId} role="evaluator" />
+            </div>
+            {ws.startedAt && (
+              <span className="m-cell"><span className="k">START</span><span className="v">{new Date(ws.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
+            )}
           </div>
-          {iter > 0 && (
-            <span className="m-cell"><span className="k">ITER</span><span className="v">{iter}</span></span>
-          )}
-          {ws.latestScore != null && (
-            <span className={`m-cell score ${scoreTone}`}><span className="k">SCORE</span><span className="v">{ws.latestScore}</span></span>
-          )}
-          {cost > 0 && (
-            <span className="m-cell cost"><span className="k">COST</span><span className="v">${cost.toFixed(2)}</span></span>
-          )}
+          {/* Line 2: run metrics — iter / score / cost. */}
+          <div className="phase-metrics-row">
+            {iter > 0 && (
+              <span className="m-cell"><span className="k">ITER</span><span className="v">{iter}</span></span>
+            )}
+            {ws.latestScore != null && (
+              <span className={`m-cell score ${scoreTone}`}><span className="k">SCORE</span><span className="v">{ws.latestScore}</span></span>
+            )}
+            {cost > 0 && (
+              <span className="m-cell cost"><span className="k">COST</span><span className="v">${cost.toFixed(2)}</span></span>
+            )}
+            {ws.buildGate && gateTone(ws.buildGate) !== 'neutral' && (
+              <span className={`m-cell build ${gateTone(ws.buildGate)}`} title={`build gate: ${ws.buildGate}`}>
+                <span className="k">BUILD</span><span className="v">{gateGlyph(ws.buildGate)}</span>
+              </span>
+            )}
+            {ws.testGate && gateTone(ws.testGate) !== 'neutral' && (
+              <span className={`m-cell build ${gateTone(ws.testGate)}`} title={`test gate: ${ws.testGate}`}>
+                <span className="k">TEST</span><span className="v">{gateGlyph(ws.testGate)}</span>
+              </span>
+            )}
+            {(ws.questionCount ?? 0) > 0 && (
+              <span className="m-cell q" title={`${ws.questionCount} question${ws.questionCount === 1 ? '' : 's'} raised on this workstream`}>
+                <span className="k">Q</span><span className="v">{ws.questionCount}</span>
+              </span>
+            )}
+          </div>
         </div>
       )}
       <div className="phase-bd">
@@ -826,6 +850,29 @@ function verdictTone(verdict: string): 'pass' | 'iterate' | 'reject' | 'neutral'
   if (v.startsWith('reject') || v.startsWith('stalled')) return 'reject';
   if (!v) return 'neutral';
   return 'iterate';
+}
+
+// Local build/test gate outcome (passed | failed | skipped | resolving |
+// resolved) → the shared green/amber/red tone palette the score cell uses.
+// `skipped` maps to neutral so the badge is hidden (the gate didn't run).
+function gateTone(outcome: string): 'pass' | 'iterate' | 'reject' | 'neutral' {
+  switch ((outcome || '').toLowerCase()) {
+    case 'passed':
+    case 'resolved': return 'pass';
+    case 'failed': return 'reject';
+    case 'resolving': return 'iterate';
+    default: return 'neutral'; // skipped / unknown — badge hidden
+  }
+}
+
+function gateGlyph(outcome: string): string {
+  switch ((outcome || '').toLowerCase()) {
+    case 'passed':
+    case 'resolved': return '✓';
+    case 'failed': return '✗';
+    case 'resolving': return '⟳';
+    default: return '–';
+  }
 }
 
 interface DocAgentStripProps {

@@ -278,6 +278,20 @@ public class WorkstreamRow
     /// using this column.
     /// </summary>
     public string Category { get; set; } = "impl";
+
+    /// <summary>
+    /// Phase 92 — most recent build / test gate outcome
+    /// (<c>passed</c> | <c>failed</c>) from the gen↔eval gate chain
+    /// (<c>CrewStoryArtifactStrategy.PersistGateOutcomeAsync</c>). Durable
+    /// mirror of the per-iter <c>task.{build,test}-gate.*</c> transcript events,
+    /// which get pruned for older/completed workstreams — so the swarm
+    /// phase-board BUILD / TEST badges keep showing after eviction. Null until
+    /// the corresponding gate first runs (or when no build/test command is
+    /// configured for the repo).
+    /// </summary>
+    public string? LastBuildGate { get; set; }
+
+    public string? LastTestGate { get; set; }
 }
 
 public class WsEventRow

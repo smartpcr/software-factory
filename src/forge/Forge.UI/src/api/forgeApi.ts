@@ -151,12 +151,25 @@ export interface StorySpawnWorkstreamSummary {
   latestGenAgentId?: string | null;
   latestEvalAgentId?: string | null;
   lastActiveAt?: string | null;
+  /** Phase 28+ — ISO timestamp of the workstream's first deliverable (when the
+   *  gen↔eval loop started). Null until the first iteration runs. Surfaced in
+   *  the swarm phase-board metrics row alongside iter / score / cost. */
+  startedAt?: string | null;
   costUsd?: number;
+  /** Local per-iteration build / test gate outcomes (`passed` | `failed` |
+   *  `skipped` | `resolving` | `resolved`) from the workstream's most recent
+   *  gate events — the same gate the Conversation Build tab shows. Null/absent
+   *  until the gate runs. Drive the BUILD / TEST badges in the metrics row. */
+  buildGate?: string | null;
+  testGate?: string | null;
   commits?: number;
   ahead?: number;
   behind?: number;
   /** Unanswered open questions blocking pass — 0 when no questions exist. */
   unansweredQuestionCount?: number;
+  /** Total questions raised on the workstream (answered + unanswered), deduped
+   *  by ExternalId. Drives the neutral questions badge; 0 when none raised. */
+  questionCount?: number;
   /**
    * Phase 49 — when {@link status} is `'stalled'`, the operator-facing
    * description of the failure that landed the row in triage (build

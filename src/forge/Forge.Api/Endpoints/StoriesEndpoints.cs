@@ -1640,6 +1640,17 @@ public static class StoriesEndpoints
                       .Select(eg => eg.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
                       .Count(q => string.IsNullOrEmpty(q.Answer)),
                 StringComparer.OrdinalIgnoreCase);
+        // Total distinct questions per workstream (answered + unanswered),
+        // deduped by ExternalId the same way as the unanswered count. Drives
+        // the neutral "questions" badge, distinct from the red unanswered-Q
+        // warning badge which only fires when answers are still blocking pass.
+        var questionCountByWs = allQuestions
+            .GroupBy(q => q.WorkItemId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase).Count(),
+                StringComparer.OrdinalIgnoreCase);
+
 
         // Detect "loop is re-running right now" so the stalled override
         // below can clear when an iteration is in flight. Two signals,
@@ -1801,11 +1812,27 @@ public static class StoriesEndpoints
                 latestGenAgentId = latest?.GeneratorAgentId,
                 latestEvalAgentId = latest?.EvaluatorAgentId,
                 lastActiveAt = latest?.CreatedAt.ToString("O"),
+                // Start of the gen↔eval loop for this workstream: the earliest
+                // deliverable's timestamp. deliverablesByWs is ordered latest-first
+                // (OrderByDescending(CreatedAt)), so the first deliverable is
+                // LastOrDefault. Null until the first iteration produces a
+                // deliverable. Surfaced in the swarm phase-board metrics row.
+                startedAt = wsDeliverables.LastOrDefault()?.CreatedAt.ToString("O"),
                 costUsd = (double)wsCost,
+                // Local build / test gate outcomes (passed | failed) — durable
+                // mirror written by CrewStoryArtifactStrategy.PersistGateOutcomeAsync,
+                // so the BUILD / TEST badges survive transcript-event eviction for
+                // older / completed workstreams. Null until the gate first runs.
+                buildGate = w.LastBuildGate,
+                testGate = w.LastTestGate,
                 commits = w.Commits,
                 ahead = w.Ahead,
                 behind = w.Behind,
                 unansweredQuestionCount = wsUnanswered,
+                // Total questions raised on this workstream (answered + unanswered),
+                // deduped by ExternalId. Drives the neutral questions badge in the
+                // metrics row; 0 when the workstream has raised no questions.
+                questionCount = questionCountByWs.TryGetValue(w.Id, out var wsQ) ? wsQ : 0,
                 // Phase 49 — surface the stall reason so the swarm-control
                 // tooltip can show why the stage entered triage (build
                 // gate, no-progress, non-pass verdict) without the

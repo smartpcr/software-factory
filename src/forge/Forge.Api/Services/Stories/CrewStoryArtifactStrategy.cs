@@ -1736,6 +1736,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 92 — persist the latest build / test gate outcome onto the durable
+    /// <see cref="WorkstreamRow.LastBuildGate"/> / <see cref="WorkstreamRow.LastTestGate"/>
+    /// columns so the swarm phase-board BUILD / TEST badges survive transcript-event
+    /// eviction (the per-iter <c>task.{build,test}-gate.*</c> events are pruned for
+    /// older / completed workstreams). Outcomes derive from the gate chain's
+    /// <paramref name="failure"/> (null ⇒ the chain ran clean; <c>.Stage</c> names the
+    /// failing stage). A stage whose command is empty, or that the chain never reached
+    /// (an earlier stage failed first), is left unchanged so a skipped gate never
+    /// clobbers a real prior result.
+    /// </summary>
+    private async Task PersistGateOutcomeAsync(
+        string workItemId, string? buildCommand, string? testCommand, GateFailure? failure, CancellationToken ct)
+    {
+        string? build = string.IsNullOrWhiteSpace(buildCommand)
+            ? null
+            : failure?.Stage == "build" ? "failed" : "passed";
+        // The test stage only ran if the chain reached it — i.e. build + quality
+        // both passed. A build/quality failure short-circuits before test, so we
+        // leave LastTestGate untouched rather than record a result that never ran.
+        string? test = string.IsNullOrWhiteSpace(testCommand)
+            ? null
+            : failure is null ? "passed"
+            : failure.Stage == "test" ? "failed"
+            : null;
+        if (build is null && test is null) return;
+
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            if (ws is null) return;
+            if (build is not null) ws.LastBuildGate = build;
+            if (test is not null) ws.LastTestGate = test;
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger?.LogDebug(ex, "PersistGateOutcomeAsync failed for wi={Wi} (non-fatal).", workItemId);
+        }
+    }
+
+    /// <summary>
     /// Phase 56 — per-iter wrapper around <see cref="RunGateChainAsync"/>
     /// with <c>stagePrefix="per-iter"</c>. Kept as a thin shim so the
     /// GeneratorDelegate call site reads cleanly.
@@ -7935,6 +7978,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         restoreCommand: restoreCommand,
                         runTestsElevated: runTestsElevated);
 
+                    // Phase 92 — durable mirror of this iter's gate result onto the
+                    // workstream row so the phase-board BUILD/TEST badges survive
+                    // transcript-event eviction.
+                    await this.PersistGateOutcomeAsync(workItemId, buildCommand, testCommand, perIterFailure, iterCt);
+
                     if (perIterFailure is not null)
                     {
                         consecutiveGateFailure++;
@@ -8709,6 +8757,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         initCommand: initCommand,
                         restoreCommand: restoreCommand,
                         runTestsElevated: runTestsElevated);
+
+                    // Phase 92 — durable mirror of the post-pass gate result onto the
+                    // workstream row. This is the gate a completing workstream ends on,
+                    // so its BUILD/TEST badges stay correct after the workstream finishes
+                    // and its transcript gate events are pruned.
+                    await this.PersistGateOutcomeAsync(workItemId, buildCommand, testCommand, failure, validCt);
 
                     if (failure is null)
                     {

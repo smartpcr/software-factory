@@ -308,6 +308,13 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(91, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "deliverable_questions" }),
+        // Phase 92 — workstreams.LastBuildGate / LastTestGate (durable mirror of
+        // the latest build/test gate outcome so the phase-board BUILD/TEST badges
+        // survive transcript-event eviction). Product-only; additive nullable
+        // columns; fans out per {slug}.db.
+        new PhaseMigrationSpec(92, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "workstreams" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

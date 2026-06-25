@@ -53,6 +53,13 @@ public sealed class PhaseMigrationRunner
     /// </summary>
     public static readonly IReadOnlyList<int> ExecutionOrder = new[]
     {
+        // Phase 92 — workstreams.LastBuildGate / LastTestGate. Runs FIRST: the
+        // columns are now in the WorkstreamRow EF model, so any later migration
+        // that materializes WorkstreamRow (e.g. Phase38's full-entity query)
+        // would hit "no such column" if the ALTER ran after it. Additive
+        // nullable columns, table-existence guarded, no ordering dependency —
+        // safe at the head of the chain.
+        92,
         42, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
         30, 31, 32, 33, 34, 35, 36, 37,
         43, 45, 46, 47, 49, 50, 51, 52, 53, 54, 55,

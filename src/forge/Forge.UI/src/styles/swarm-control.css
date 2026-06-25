@@ -3412,8 +3412,11 @@
 /* Phase-card runtime metrics row (mirrors .doc-card__metrics) — gen↔eval
  * avatars + iter / score / cost on a second line under the title+state. */
 .swarm-ctrl .phase-metrics {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
   padding: 6px 10px 0 14px;
+}
+.swarm-ctrl .phase-metrics .phase-metrics-row {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
 .swarm-ctrl .phase-metrics .m-cell { display: inline-flex; flex-direction: column; gap: 1px; line-height: 1; }
 .swarm-ctrl .phase-metrics .m-cell .k {
@@ -3428,6 +3431,12 @@
 .swarm-ctrl .phase-metrics .m-cell.score.reject  .v { color: var(--sc-red); }
 .swarm-ctrl .phase-metrics .m-cell.score.neutral .v { color: var(--sc-text); }
 .swarm-ctrl .phase-metrics .m-cell.cost          .v { color: var(--sc-cyan); }
+.swarm-ctrl .phase-metrics .m-cell.build.pass    .v { color: var(--sc-green); }
+.swarm-ctrl .phase-metrics .m-cell.build.iterate .v { color: var(--sc-amber); }
+.swarm-ctrl .phase-metrics .m-cell.build.reject  .v { color: var(--sc-red); }
+.swarm-ctrl .phase-metrics .m-cell.build.neutral .v { color: var(--sc-muted); }
+.swarm-ctrl .phase-metrics .m-cell.q             .k { color: var(--sc-blue); }
+.swarm-ctrl .phase-metrics .m-cell.q             .v { color: var(--sc-blue); font-weight: 700; }
 .swarm-ctrl .phase-metrics .doc-agents { display: inline-flex; align-items: center; gap: 4px; }
 .swarm-ctrl .phase-metrics .doc-agents-link { font-size: 10px; opacity: 0.6; margin: 0 2px; }
 .swarm-ctrl .phase-metrics .doc-agent {
