@@ -247,4 +247,98 @@ public class SharedRepoGitGateTests
             semA.Release();
         }
     }
+
+    // ── RunWithNetworkTimeoutRetryAsync (network timeout self-heal) ────────
+
+    [Fact]
+    public async Task NetworkTimeoutRetry_Succeeds_On_First_Try_No_Retry()
+    {
+        var calls = 0;
+        var retries = 0;
+        var result = await SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync(
+            () => { calls++; return Task.FromResult(42); },
+            maxExtraRetries: 2,
+            delayMs: 0,
+            ct: CancellationToken.None,
+            onRetry: (_, _) => retries++);
+
+        Assert.Equal(42, result);
+        Assert.Equal(1, calls);
+        Assert.Equal(0, retries);
+    }
+
+    [Fact]
+    public async Task NetworkTimeoutRetry_Recovers_After_Transient_Timeouts()
+    {
+        // Models the reported halt: the first attempt(s) trip the 180s
+        // timeout (TimeoutException), a retry reconnects in seconds.
+        var calls = 0;
+        var retries = 0;
+        var result = await SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync<string>(
+            () =>
+            {
+                calls++;
+                if (calls < 3) throw new TimeoutException("git fetch timed out after 180s");
+                return Task.FromResult("ok");
+            },
+            maxExtraRetries: 2,
+            delayMs: 0,
+            ct: CancellationToken.None,
+            onRetry: (_, _) => retries++);
+
+        Assert.Equal("ok", result);
+        Assert.Equal(3, calls);   // 1 original + 2 retries
+        Assert.Equal(2, retries);
+    }
+
+    [Fact]
+    public async Task NetworkTimeoutRetry_Rethrows_After_Budget_Exhausted()
+    {
+        // A sustained outage exhausts the budget and rethrows the final
+        // TimeoutException so the caller's existing halt path runs.
+        var calls = 0;
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync<int>(
+                () => { calls++; throw new TimeoutException("still stuck"); },
+                maxExtraRetries: 2,
+                delayMs: 0,
+                ct: CancellationToken.None));
+
+        Assert.Equal(3, calls);   // 1 original + 2 retries, then rethrow
+    }
+
+    [Fact]
+    public async Task NetworkTimeoutRetry_Does_Not_Retry_NonTimeout_Exception()
+    {
+        // Lock-race / auth / branch-not-found failures are returned as
+        // non-zero results, not thrown; a thrown non-timeout exception
+        // (e.g. a real bug) must surface immediately without retry.
+        var calls = 0;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync<int>(
+                () => { calls++; throw new InvalidOperationException("boom"); },
+                maxExtraRetries: 2,
+                delayMs: 0,
+                ct: CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task NetworkTimeoutRetry_Stops_Retrying_When_Cancelled()
+    {
+        // A cancelled token must short-circuit the retry guard so a
+        // shutting-down worker isn't pinned re-attempting a doomed op.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var calls = 0;
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync<int>(
+                () => { calls++; throw new TimeoutException("timed out"); },
+                maxExtraRetries: 2,
+                delayMs: 0,
+                ct: cts.Token));
+
+        Assert.Equal(1, calls);   // guard `!ct.IsCancellationRequested` blocks retry
+    }
 }

@@ -6,7 +6,10 @@
 
 namespace Forge.Api.Services.Git;
 
+using System;
 using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
 
 /// <summary>
 /// Process-wide serialization gate + transient-lock retry policy for git
@@ -165,5 +168,53 @@ internal static class SharedRepoGitGate
             if (ms >= MaxBackoffMs) return MaxBackoffMs;
         }
         return ms;
+    }
+
+    /// <summary>
+    /// Extra retries granted to a network git op (fetch/push/clone/ls-remote)
+    /// whose per-call timeout is THROWN as <see cref="TimeoutException"/> rather
+    /// than returned. Without a retry that exception escapes the lock-race loop
+    /// and HALTS the whole orchestrator on a one-off broker / DNS stall
+    /// (observed 2026-06-24: a single `git fetch origin &lt;branch&gt;` stalled
+    /// 180s in C:\forge\asz-common and halted the workstream, yet a manual
+    /// retry reconnected in ~15s). Kept tiny because each attempt can cost up
+    /// to FORGE_GIT_NETWORK_TIMEOUT_SECONDS.
+    /// </summary>
+    internal const int NetworkTimeoutRetryAttempts = 2;
+
+    /// <summary>Backoff before re-attempting after a network timeout.</summary>
+    internal const int NetworkTimeoutRetryDelayMs = 1500;
+
+    /// <summary>
+    /// Runs <paramref name="body"/>, retrying it up to
+    /// <paramref name="maxExtraRetries"/> additional times when it throws a
+    /// <see cref="TimeoutException"/>. A non-timeout exception, a cancelled
+    /// token, or success short-circuits immediately. After the budget is spent
+    /// the final <see cref="TimeoutException"/> is rethrown so the caller's
+    /// existing halt path runs unchanged. Extracted as a pure helper so the
+    /// retry policy is unit-testable without spawning a real git process.
+    /// </summary>
+    internal static async Task<T> RunWithNetworkTimeoutRetryAsync<T>(
+        Func<Task<T>> body,
+        int maxExtraRetries,
+        int delayMs,
+        CancellationToken ct,
+        Action<TimeoutException, int>? onRetry = null)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await body().ConfigureAwait(false);
+            }
+            catch (TimeoutException tex) when (attempt < maxExtraRetries && !ct.IsCancellationRequested)
+            {
+                onRetry?.Invoke(tex, attempt);
+                if (delayMs > 0)
+                {
+                    await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                }
+            }
+        }
     }
 }

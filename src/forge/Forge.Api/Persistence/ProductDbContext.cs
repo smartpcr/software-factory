@@ -96,6 +96,9 @@ public class ProductDbContext : DbContext
 
     public DbSet<IterationPromptRow> IterationPrompts => this.Set<IterationPromptRow>();
 
+    /// <summary>Phase 92 — per-workstream human operator steering / follow-up prompts.</summary>
+    public DbSet<OperatorPromptRow> OperatorPrompts => this.Set<OperatorPromptRow>();
+
     public DbSet<TaskQueueRow> TaskQueue => this.Set<TaskQueueRow>();
 
     public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();

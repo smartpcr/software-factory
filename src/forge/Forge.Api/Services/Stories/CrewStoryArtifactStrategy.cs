@@ -718,6 +718,55 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 92 — build the human-operator steering block for a workstream.
+    /// Returns every ACTIVE (non-dismissed) <c>operator_prompts</c> row for the
+    /// workstream, formatted as a binding directive block, in chronological
+    /// order. Injected into BOTH the generator and the evaluator prompt on
+    /// every iteration of <see cref="RunGenEvalLoopAsync"/> (refreshed per iter
+    /// so a freshly-added prompt takes effect on the next turn, and a dismissed
+    /// one drops out immediately). Returns empty string when there are none.
+    /// </summary>
+    internal static async Task<string> BuildOperatorSteeringBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return string.Empty;
+
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+
+        // SQLite/EF cannot translate a DateTimeOffset comparison in Where, so
+        // filter the (cheap) WorkstreamId server-side and drop dismissed rows
+        // in memory. A workstream accrues only a handful of operator prompts.
+        var rows = await db.OperatorPrompts.AsNoTracking()
+            .Where(p => p.WorkstreamId == workItemId)
+            .ToListAsync(ct);
+        var active = rows
+            .Where(p => p.DismissedAt is null && !string.IsNullOrWhiteSpace(p.Body))
+            .OrderBy(p => p.CreatedAt)
+            .ToList();
+        if (active.Count == 0) return string.Empty;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
+        sb.AppendLine("║  HUMAN OPERATOR STEERING -- BINDING, MUST FOLLOW         ║");
+        sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
+        sb.AppendLine();
+        sb.AppendLine("A human operator is supervising this workstream and has entered");
+        sb.AppendLine("the following steering / follow-up directives. BOTH the generator");
+        sb.AppendLine("and the evaluator MUST respect them. Treat each as a non-negotiable");
+        sb.AppendLine("instruction that overrides sibling-doc text and prior chain context;");
+        sb.AppendLine("if you are the evaluator, score against these directives being");
+        sb.AppendLine("honoured. If a directive conflicts with the brief, follow the");
+        sb.AppendLine("operator directive.");
+        sb.AppendLine();
+        for (var i = 0; i < active.Count; i++)
+        {
+            sb.AppendLine($"{i + 1}. {active[i].Body.Trim()}");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Phase 49 follow-up -- resolve the build command the build gates
     /// (per-iter and post-pass) should run for this workstream. The
     /// gates were originally hard-coded to <c>dotnet build</c> at the
@@ -7256,6 +7305,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 iterPrompt = sb.ToString();
             }
 
+            // Phase 92 -- prepend the human operator's steering directives so
+            // BOTH the generator (here) and the evaluator (below) honour them.
+            // Refreshed each iter: a freshly-added prompt takes effect on the
+            // next turn; a dismissed one drops out. Goes ABOVE everything else
+            // (decision pins / gate feedback / brief) because it is the live
+            // human supervisor's binding instruction.
+            var operatorSteeringBlock = await BuildOperatorSteeringBlockAsync(this.scopeFactory, workItemId, iterCt);
+            if (!string.IsNullOrEmpty(operatorSteeringBlock))
+            {
+                iterPrompt = operatorSteeringBlock
+                    + "────────────────────────────────────────────────────────────\n\n"
+                    + iterPrompt;
+            }
+
             // Phase 41 -- snapshot the protected file before invoking the
             // generator so an agent that deletes it mid-turn (observed:
             // architect ran `Remove-Item tech-spec.md` then forgot to write
@@ -8277,6 +8340,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var iterEvaluatorPrompt = diffHeader is null
                 ? evaluatorPrompt
                 : diffHeader + "\n" + evaluatorPrompt;
+
+            // Phase 92 -- the evaluator must score against the same human
+            // operator steering directives the generator was given. Refreshed
+            // each iter (same source as the generator block above).
+            var evalOperatorSteeringBlock = await BuildOperatorSteeringBlockAsync(this.scopeFactory, workItemId, iterCt);
+            if (!string.IsNullOrEmpty(evalOperatorSteeringBlock))
+            {
+                iterEvaluatorPrompt = evalOperatorSteeringBlock
+                    + "────────────────────────────────────────────────────────────\n\n"
+                    + iterEvaluatorPrompt;
+            }
+
             await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
             {
                 agentId = evalAgentId,

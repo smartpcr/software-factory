@@ -96,6 +96,10 @@ public sealed class PhaseMigrationRunner
         // text per iteration). Product-only, fans out per {slug}.db. Additive
         // nullable column; no ordering dependency.
         90,
+        // Phase 92 — operator_prompts table (per-workstream human operator
+        // steering prompts). Product-only, fans out per {slug}.db. New table;
+        // no ordering dependency. Phase 91 is a non-migration code-phase number.
+        92,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

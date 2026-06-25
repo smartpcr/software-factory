@@ -162,6 +162,12 @@ public static class DbModelProduct
             .HasIndex(x => new { x.WorkItemId, x.Iter })
             .HasDatabaseName("IX_iteration_prompt_wi_iter");
 
+        // Phase 92 — per-workstream human operator steering prompts.
+        mb.Entity<OperatorPromptRow>().ToTable("operator_prompts").HasKey(x => x.Id);
+        mb.Entity<OperatorPromptRow>()
+            .HasIndex(x => new { x.WorkstreamId, x.DismissedAt })
+            .HasDatabaseName("IX_operator_prompts_ws_dismissed");
+
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);
         mb.Entity<TaskQueueRow>().HasIndex(x => new { x.TargetKind, x.TargetId, x.State, x.PriorityRank, x.EnqueuedAt });

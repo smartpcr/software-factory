@@ -182,6 +182,9 @@ public static class DbBoundary
         // ── Product DB — via WorkstreamId chain ──────────────────────────
         new DbTableSpec("workstream_deps", DbKind.Product, PartitionStrategy.ViaWorkstreamId, "WorkstreamId"),
         new DbTableSpec("ws_events", DbKind.Product, PartitionStrategy.ViaWorkstreamId, "Ws"),
+        // Phase 92 — human operator steering prompts, one row per directive,
+        // scoped to a single workstream (WorkstreamId == workstream/work-item id).
+        new DbTableSpec("operator_prompts", DbKind.Product, PartitionStrategy.ViaWorkstreamId, "WorkstreamId"),
 
         // ── Product DB — via PrId chain ──────────────────────────────────
         new DbTableSpec("pr_comments", DbKind.Product, PartitionStrategy.ViaPrId, "PrId"),

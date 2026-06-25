@@ -3350,7 +3350,39 @@ public sealed class RealStoryGitOps : IStoryGitOps
         }
     }
 
+    /// <summary>
+    /// Extra retries granted to a network git op (fetch/push/clone/ls-remote)
+    /// that trips the per-call timeout in <see cref="RunGitCaptureOnceAsync"/>.
+    /// A timeout there is THROWN (not returned), so without this it escapes the
+    /// lock-race retry loop and HALTS the whole orchestrator. A broker / DNS
+    /// stall is transient — a retry typically reconnects within seconds — so we
+    /// give the timeout its own small budget. Kept tiny and separate from
+    /// <see cref="Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts"/>
+    /// because each attempt can cost up to FORGE_GIT_NETWORK_TIMEOUT_SECONDS.
+    /// </summary>
     private async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureAsync(string cwd, CancellationToken ct, params string[] args)
+    {
+        // A transient credential-broker / DNS stall can trip the per-call
+        // timeout in RunGitCaptureOnceAsync, which throws TimeoutException.
+        // That escapes the lock-race retry loop below and would HALT the
+        // orchestrator on a one-off hiccup (observed 2026-06-24: a single
+        // `git fetch origin <branch>` stalled 180s in C:\forge\asz-common and
+        // halted the workstream, yet a manual retry reconnected in ~15s).
+        // Give the timeout a small retry budget so it self-heals; only a
+        // sustained outage exhausts it and rethrows to the existing halt path.
+        return await Forge.Api.Services.Git.SharedRepoGitGate.RunWithNetworkTimeoutRetryAsync(
+            () => this.RunGitCaptureWithLockRetryAsync(cwd, ct, args),
+            Forge.Api.Services.Git.SharedRepoGitGate.NetworkTimeoutRetryAttempts,
+            Forge.Api.Services.Git.SharedRepoGitGate.NetworkTimeoutRetryDelayMs,
+            ct,
+            (tex, attempt) => this.logger?.LogWarning(
+                tex,
+                "git {Args} timed out (network attempt {Attempt}/{Max}) in '{Cwd}'; retrying.",
+                string.Join(' ', args), attempt + 1, Forge.Api.Services.Git.SharedRepoGitGate.NetworkTimeoutRetryAttempts + 1, cwd))
+            .ConfigureAwait(false);
+    }
+
+    private async Task<(int Code, string StdOut, string StdErr)> RunGitCaptureWithLockRetryAsync(string cwd, CancellationToken ct, params string[] args)
     {
         // Per-clone-root serialization + transient-lock retry. Solves the
         // Windows packed-refs / index.lock race that halted two spawn

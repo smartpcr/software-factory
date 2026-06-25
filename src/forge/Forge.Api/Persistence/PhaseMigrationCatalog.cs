@@ -302,6 +302,13 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(90, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "deliverables" }),
+        // Phase 92 — operator_prompts (per-workstream human operator steering
+        // prompts injected into both generator + evaluator). Product-only,
+        // fans out per {slug}.db. New table; no ordering dependency. (Phase 91
+        // is a non-migration code-phase number for the promotion scheduler.)
+        new PhaseMigrationSpec(92, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "operator_prompts" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>
