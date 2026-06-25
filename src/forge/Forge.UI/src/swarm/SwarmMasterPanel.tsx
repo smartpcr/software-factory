@@ -426,6 +426,13 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
   const isObsolete = ws.status === 'historic';
   const lifecycleLabel = isObsolete ? 'complete' : ws.status;
   const variantCls = variant === 'qae2e' ? ' phase--qae2e' : '';
+  // Phase 28+ runtime metrics (mirrors the doc-card metrics row): show the
+  // gen↔eval avatars + iter / cost / score on a second line so the long stage
+  // title keeps the first line to itself. Only when the workstream has run.
+  const iter = ws.iter ?? 0;
+  const cost = ws.costUsd ?? 0;
+  const hasRun = iter > 0 || cost > 0 || !!ws.latestGenAgentId || !!ws.latestEvalAgentId;
+  const scoreTone = verdictTone(ws.latestVerdict ?? '');
 
   return (
     <div
@@ -443,9 +450,6 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
       <div className="phase-hd">
         <span className="phase-no"><b>{stageNum}</b></span>
         <span className="phase-title">{ws.name}</span>
-        <span className="score-pill">
-          {ws.latestScore != null ? ws.latestScore : '—'}
-        </span>
         <span
           className={`badge ${badgeCls}`}
           title={ws.status === 'stalled' && ws.stallReason ? ws.stallReason : undefined}
@@ -489,6 +493,24 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
           </span>
         )}
       </div>
+      {hasRun && (
+        <div className="phase-metrics">
+          <div className="doc-agents">
+            <PhaseAgentAvatar id={ws.latestGenAgentId} role="generator" />
+            <span className="doc-agents-link">⇄</span>
+            <PhaseAgentAvatar id={ws.latestEvalAgentId} role="evaluator" />
+          </div>
+          {iter > 0 && (
+            <span className="m-cell"><span className="k">ITER</span><span className="v">{iter}</span></span>
+          )}
+          {ws.latestScore != null && (
+            <span className={`m-cell score ${scoreTone}`}><span className="k">SCORE</span><span className="v">{ws.latestScore}</span></span>
+          )}
+          {cost > 0 && (
+            <span className="m-cell cost"><span className="k">COST</span><span className="v">${cost.toFixed(2)}</span></span>
+          )}
+        </div>
+      )}
       <div className="phase-bd">
         <div className={`progress ${phaseCls === 'done' ? 'done' : phaseCls === 'review' ? 'review' : ''}`}>
           <div className="bar" style={{ width: `${pct}%` }} />
@@ -818,6 +840,24 @@ function DocAgentStrip({ generator, evaluator }: DocAgentStripProps) {
       <span className="doc-agents-link">⇄</span>
       <DocAgentAvatar info={evaluator} role="evaluator" />
     </div>
+  );
+}
+
+// Phase-card variant — the workstream summary only carries agent ids (no
+// name/model), so this is a slimmer twin of DocAgentAvatar driven by id alone.
+function PhaseAgentAvatar({ id, role }: { id: string | null | undefined; role: 'generator' | 'evaluator' }) {
+  if (!id) {
+    return <span className={`doc-agent doc-agent--${role} doc-agent--empty`} title={`no ${role} yet`}>—</span>;
+  }
+  const url = avatarFor(id);
+  return (
+    <span className={`doc-agent doc-agent--${role}`} title={`${id} · ${role}`}>
+      {url ? (
+        <img src={url} alt={id} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+      ) : (
+        <span className="doc-agent-mono">{role === 'generator' ? 'G' : 'E'}</span>
+      )}
+    </span>
   );
 }
 

@@ -3409,6 +3409,44 @@
 .swarm-ctrl .doc-card .doc-card__metrics .doc-agent { width: 22px; height: 22px; }
 .swarm-ctrl .doc-card .doc-card__metrics .doc-agents-link { font-size: 10px; opacity: 0.6; margin: 0 2px; }
 
+/* Phase-card runtime metrics row (mirrors .doc-card__metrics) — gen↔eval
+ * avatars + iter / score / cost on a second line under the title+state. */
+.swarm-ctrl .phase-metrics {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 6px 10px 0 14px;
+}
+.swarm-ctrl .phase-metrics .m-cell { display: inline-flex; flex-direction: column; gap: 1px; line-height: 1; }
+.swarm-ctrl .phase-metrics .m-cell .k {
+  font-family: var(--sc-font-display); font-size: 7.5px; letter-spacing: 0.22em;
+  color: var(--sc-muted); text-transform: uppercase;
+}
+.swarm-ctrl .phase-metrics .m-cell .v {
+  font-family: var(--sc-font-mono); font-size: 12px; font-weight: 600; color: var(--sc-text);
+}
+.swarm-ctrl .phase-metrics .m-cell.score.pass    .v { color: var(--sc-green); }
+.swarm-ctrl .phase-metrics .m-cell.score.iterate .v { color: var(--sc-amber); }
+.swarm-ctrl .phase-metrics .m-cell.score.reject  .v { color: var(--sc-red); }
+.swarm-ctrl .phase-metrics .m-cell.score.neutral .v { color: var(--sc-text); }
+.swarm-ctrl .phase-metrics .m-cell.cost          .v { color: var(--sc-cyan); }
+.swarm-ctrl .phase-metrics .doc-agents { display: inline-flex; align-items: center; gap: 4px; }
+.swarm-ctrl .phase-metrics .doc-agents-link { font-size: 10px; opacity: 0.6; margin: 0 2px; }
+.swarm-ctrl .phase-metrics .doc-agent {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  border: 1px solid var(--sc-border-2); border-radius: 50%;
+  background: var(--sc-bg-2); overflow: hidden;
+}
+.swarm-ctrl .phase-metrics .doc-agent img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.swarm-ctrl .phase-metrics .doc-agent-mono {
+  font-family: var(--sc-font-display); font-size: 9px; color: var(--sc-text-dim);
+}
+.swarm-ctrl .phase-metrics .doc-agent--generator { border-color: var(--sc-cyan-d, var(--sc-border-2)); }
+.swarm-ctrl .phase-metrics .doc-agent--evaluator { border-color: var(--sc-magenta-d, var(--sc-border-2)); }
+.swarm-ctrl .phase-metrics .doc-agent--empty {
+  width: auto; padding: 0 6px; height: 20px;
+  font-family: var(--sc-font-display); font-size: 9px; color: var(--sc-text-dim);
+}
+
 /* CONVERSATION PAIR-BAR ── two-column flex with hairline separator, no box. */
 .swarm-ctrl .doc-conv--quiet .doc-conv-pair-bar {
   display: flex;
