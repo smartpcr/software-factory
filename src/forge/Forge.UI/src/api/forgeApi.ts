@@ -1222,6 +1222,13 @@ export const forgeApi = {
       durationMs: number | null;
       filesChanged: number;
       createdAt: string;
+      // Per-iter generator/evaluator agent ids (backend already projects these
+      // from the deliverable rows). Drive the iteration-strip agent label +
+      // the amber "agent switched" divider so a mid-run agent rotation —
+      // e.g. a transport-death recovery that re-picks a fresh agent — is visible
+      // on the iteration it happened, not silent.
+      generatorAgentId?: string | null;
+      evaluatorAgentId?: string | null;
       // 2026-05-16 Phase 72 — cache / reasoning / conversation token
       // telemetry. Null when the iter ran on a backend (Claude SDK,
       // Copilot CLI) or pre-Phase-72 row that doesn't report them.
@@ -1774,6 +1781,13 @@ export const forgeApi = {
       durationMs: number | null;
       filesChanged: number;
       createdAt: string;
+      // Per-iter generator/evaluator agent ids (backend already projects these
+      // from the deliverable rows). Drive the iteration-strip agent label +
+      // the amber "agent switched" divider so a mid-run agent rotation —
+      // e.g. a transport-death recovery that re-picks a fresh agent — is visible
+      // on the iteration it happened, not silent.
+      generatorAgentId?: string | null;
+      evaluatorAgentId?: string | null;
       // 2026-05-16 Phase 72 — see fetchWorkstreamIterKpis above.
       cacheReadTokens?: number | null;
       cacheWriteTokens?: number | null;

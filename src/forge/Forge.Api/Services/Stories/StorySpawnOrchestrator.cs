@@ -2499,7 +2499,24 @@ public sealed class StorySpawnOrchestrator
                         }
                     }
 
-                    var assignedPair = await ResolveImplPairAsync(
+                    // #1 — transport-death recovery: prefer RESUMING the incumbent
+                    // pair over rotating to a fresh agent. On a recovery re-drive the
+                    // workstream stays status=active, so AgentsJson still holds the pair
+                    // that was driving when the Copilot transport went silent (see the
+                    // status!=active reset above). Re-picking here cold-starts a NEW
+                    // agent with a NEW session, discarding the incumbent's live session
+                    // context (still on disk under .forge/memory) and any uncommitted
+                    // in-flight work — which regresses a PROGRESSING workstream (observed
+                    // BEYOND-AST 3.1: ZC@88 → YS4@78 → YL3@78 across two 7-min transport
+                    // stalls). Resume the SAME pair so ResumeSessionAsync reattaches its
+                    // session. Cap: at most RecoveryResumeCap resumes since the last
+                    // scored iteration (a scored iter = real progress, which resets the
+                    // cap); a chronically-dying incumbent then rotates to a fresh pick.
+                    const int RecoveryResumeCap = 2;
+                    const string ScoredKind = "task.iteration.scored";
+                    const string ResumedKind = "task.recovery.resumed";
+
+                    async Task<string[]> RotateAsync() => await ResolveImplPairAsync(
                         pickControl, pickDb, this.allocation, freshBusy, w.Sort,
                         // Phase 88 — qa-e2e workstreams must draw from crew-qa
                         // (test-attackers + memory + ai-test-engineer), not
@@ -2507,6 +2524,52 @@ public sealed class StorySpawnOrchestrator
                         // defenders that self-veto "write more tests" tasks).
                         WorkstreamCategories.IsValid(w.Category) ? w.Category! : WorkstreamCategories.Impl,
                         ct);
+
+                    string[] assignedPair;
+                    var incumbentPair = ParseStringList(w.AgentsJson);
+                    var hasIncumbent = !IsQaE2e(w)
+                        && incumbentPair.Count >= 2
+                        && !string.IsNullOrEmpty(incumbentPair[0])
+                        && !string.IsNullOrEmpty(incumbentPair[1]);
+                    if (hasIncumbent)
+                    {
+                        var lastScoredId = await pickDb.TaskTranscriptEvents.AsNoTracking()
+                            .Where(e => e.WorkItemId == w.Id && e.Kind == ScoredKind)
+                            .MaxAsync(e => (long?)e.Id, ct) ?? 0L;
+                        var resumesSinceProgress = await pickDb.TaskTranscriptEvents.AsNoTracking()
+                            .CountAsync(e => e.WorkItemId == w.Id
+                                && e.Kind == ResumedKind
+                                && e.Id > lastScoredId, ct);
+                        if (resumesSinceProgress < RecoveryResumeCap)
+                        {
+                            assignedPair = new[] { incumbentPair[0], incumbentPair[1] };
+                            await this.EmitSpawnEventAsync(w.Id, ResumedKind, new
+                            {
+                                wsId = w.Id,
+                                spawnId = spawn.Id,
+                                generator = assignedPair[0],
+                                evaluator = assignedPair[1],
+                                resumeNumber = resumesSinceProgress + 1,
+                                cap = RecoveryResumeCap,
+                            }, ct);
+                            this.logger?.LogInformation(
+                                "Workstream {WsId} transport-death recovery: RESUMING incumbent {Gen}/{Eval} "
+                                + "(resume {N}/{Cap}) — reattaching its session instead of cold-starting a fresh agent.",
+                                w.Id, assignedPair[0], assignedPair[1], resumesSinceProgress + 1, RecoveryResumeCap);
+                        }
+                        else
+                        {
+                            assignedPair = await RotateAsync();
+                            this.logger?.LogInformation(
+                                "Workstream {WsId} incumbent {Gen} resumed {Cap}× without a scored iter — rotating to fresh pair [{New}].",
+                                w.Id, incumbentPair[0], RecoveryResumeCap, string.Join(", ", assignedPair));
+                        }
+                    }
+                    else
+                    {
+                        assignedPair = await RotateAsync();
+                    }
+
                     var assignedJson = JsonSerializer.Serialize(assignedPair);
                     w.AgentsJson = assignedJson;
                     var pickRow = await pickDb.Workstreams.FirstOrDefaultAsync(ws => ws.Id == w.Id, ct);
