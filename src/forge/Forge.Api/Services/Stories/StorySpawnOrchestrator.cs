@@ -2715,14 +2715,25 @@ public sealed class StorySpawnOrchestrator
                         ? string.Empty
                         : $" running `{bfe.Command}`";
                     buildRow.Status = WorkstreamStatuses.Stalled;
-                    buildRow.StallReason = bfe.TrippedByConsecutiveIters
-                        ? $"Gate failed ({stageLabel}){commandSuffix}: {bfe.ConsecutiveBrokenIters} consecutive "
-                            + $"failed iterations (through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
-                            + $"{bfe.ErrorCount} error(s)). Operator triage required."
-                        : $"Gate ({stageLabel}) rejected pass{commandSuffix} after recovery attempts exhausted "
-                            + $"(through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
-                            + $"{bfe.ErrorCount} error(s)). Evaluator scored at pass repeatedly but the gate "
-                            + $"kept rejecting the diff. Operator triage required.";
+                    buildRow.StallReason = bfe.HostLaunchFailure
+                        // Host process-init failure (e.g. 0xC0000142): the
+                        // toolchain never ran. The remedy is HOST triage, not a
+                        // workstream Restart — say so explicitly so the operator
+                        // doesn't waste a Restart on an environment problem.
+                        ? $"Gate ({stageLabel}){commandSuffix} could not run: the build toolchain process exited "
+                            + $"{bfe.ExitCode} (0x{unchecked((uint)bfe.ExitCode):X8}), a Windows process-INIT failure "
+                            + $"(through iter {bfe.LastIteration}). This is a HOST environment problem (commonly "
+                            + "leaked build-process trees exhausting the Forge.Api host's desktop heap), NOT a code "
+                            + "defect. Triage: clear leaked build processes / restart Forge.Api, THEN Restart the "
+                            + "workstream — a Restart alone will not help."
+                        : bfe.TrippedByConsecutiveIters
+                            ? $"Gate failed ({stageLabel}){commandSuffix}: {bfe.ConsecutiveBrokenIters} consecutive "
+                                + $"failed iterations (through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                                + $"{bfe.ErrorCount} error(s)). Operator triage required."
+                            : $"Gate ({stageLabel}) rejected pass{commandSuffix} after recovery attempts exhausted "
+                                + $"(through iter {bfe.LastIteration}, exit {bfe.ExitCode}, "
+                                + $"{bfe.ErrorCount} error(s)). Evaluator scored at pass repeatedly but the gate "
+                                + $"kept rejecting the diff. Operator triage required.";
                     await buildDb.SaveChangesAsync(CancellationToken.None);
                     await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
                 }
@@ -2745,6 +2756,10 @@ public sealed class StorySpawnOrchestrator
                     // so the Conversation/Build tab can render which gate broke.
                     gateStage = bfe.Stage,
                     gateCommand = bfe.Command,
+                    // Host process-init failure (0xC000xxxx) → the Build tab can
+                    // badge this as an infrastructure stall (host triage), not a
+                    // code-defect stall.
+                    hostLaunchFailure = bfe.HostLaunchFailure,
                 }, CancellationToken.None);
             }
             catch (Exception ex)

@@ -34,6 +34,56 @@ public static class StoryBuildRunner
     public const int ErrorSummaryMaxChars = 2400;
 
     /// <summary>
+    /// Global cap on how many gate process trees (each shelling out
+    /// <c>cmd → init/restore → build/test → compile/link workers</c>) run
+    /// CONCURRENTLY across ALL workstreams. Without this, several spawns each
+    /// running the impl fan-out (8-wide) can stack dozens of deep process trees
+    /// at once; on Windows that pressures the session's desktop-heap / handle
+    /// budget and — combined with any orphan leak — pushes freshly-spawned
+    /// children into <c>0xC0000142</c> (<c>STATUS_DLL_INIT_FAILED</c>). Acquired
+    /// for the lifetime of each <see cref="RunBuildAsync"/> process run and
+    /// released only after the run's tree is reaped (see the <c>using</c> order
+    /// in <see cref="RunBuildAsync"/>). Override via the
+    /// <c>FORGE_GATE_MAX_CONCURRENCY</c> env var; default is the core count
+    /// clamped to [4, 16] — generous enough not to bottleneck normal operation
+    /// while bounding the worst case.
+    /// </summary>
+    private static readonly SemaphoreSlim GateConcurrency = new(ResolveGateConcurrency());
+
+    private static int ResolveGateConcurrency()
+    {
+        var raw = Environment.GetEnvironmentVariable("FORGE_GATE_MAX_CONCURRENCY");
+        if (int.TryParse(raw, out var n) && n >= 1) return n;
+        return Math.Clamp(Environment.ProcessorCount, 4, 16);
+    }
+
+    /// <summary>
+    /// Acquire a gate-concurrency slot (<see cref="GateConcurrency"/>) and return
+    /// a disposable that releases it. Declared as the FIRST <c>using</c> in
+    /// <see cref="RunBuildAsync"/> so it disposes LAST — i.e. the slot is held
+    /// until after the per-run <see cref="Forge.Api.Agents.ChildProcessJob"/> has
+    /// killed the process tree, never freeing capacity to a waiting run before
+    /// this run's children are actually gone.
+    /// </summary>
+    private static async Task<IDisposable> AcquireGateSlotAsync(CancellationToken ct)
+    {
+        await GateConcurrency.WaitAsync(ct).ConfigureAwait(false);
+        return new GateSlotReleaser();
+    }
+
+    private sealed class GateSlotReleaser : IDisposable
+    {
+        private bool released;
+
+        public void Dispose()
+        {
+            if (this.released) return;
+            this.released = true;
+            try { GateConcurrency.Release(); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
     /// Max Go-failure lines retained from the stream (bounds memory). Go's
     /// `--- FAIL:` / `panic:` / `*.go:line:` detail doesn't match the
     /// compiler-oriented <see cref="ErrorLineRegex"/> and the trailing wall of
@@ -100,6 +150,56 @@ public static class StoryBuildRunner
         }
 
         return inFailContext && GoSourceDetailRegex.IsMatch(line);
+    }
+
+    /// <summary>
+    /// NTSTATUS codes that mean a process failed in the <b>loader / init</b>
+    /// phase — it never reached user code. These are environmental, never a
+    /// code-compile defect:
+    /// <list type="bullet">
+    ///   <item><c>0xC0000142 STATUS_DLL_INIT_FAILED</c> — "the application failed
+    ///         to initialize properly"; the canonical symptom of session
+    ///         desktop-heap / handle exhaustion when a long-running host spawns
+    ///         many child-process trees (the observed gate-leak failure).</item>
+    ///   <item><c>0xC0000017 STATUS_NO_MEMORY</c> — resource exhaustion at
+    ///         process-create time.</item>
+    ///   <item><c>0xC0000135 STATUS_DLL_NOT_FOUND</c> /
+    ///         <c>0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND</c> /
+    ///         <c>0xC000007B STATUS_INVALID_IMAGE_FORMAT</c> — loader failures
+    ///         (missing runtime DLL, bad entrypoint, arch mismatch).</item>
+    /// </list>
+    /// <b>Execution</b> crashes (<c>0xC0000005</c> access violation,
+    /// <c>0xC00000FD</c> stack overflow, <c>0xC0000409</c> buffer overrun) are
+    /// deliberately EXCLUDED — those can be a genuine bug in the code under
+    /// test, which the agent SHOULD fix, so they flow down the normal code-fix
+    /// path.
+    /// </summary>
+    private static readonly uint[] LoaderInitFailureCodes =
+    {
+        0xC0000142u, // STATUS_DLL_INIT_FAILED
+        0xC0000017u, // STATUS_NO_MEMORY
+        0xC0000135u, // STATUS_DLL_NOT_FOUND
+        0xC0000139u, // STATUS_ENTRYPOINT_NOT_FOUND
+        0xC000007Bu, // STATUS_INVALID_IMAGE_FORMAT
+    };
+
+    /// <summary>
+    /// True when <paramref name="exitCode"/> denotes a Windows process
+    /// <b>loader / initialization</b> failure (see
+    /// <see cref="LoaderInitFailureCodes"/>) — the build/test toolchain process
+    /// never ran, so the failure is a HOST/environment problem (commonly
+    /// desktop-heap / handle exhaustion from leaked gate child-process trees),
+    /// NOT a defect in the engineer's diff (there are no compiler errors to
+    /// read; the output is empty). The runner's own <c>-1</c> sentinel and every
+    /// normal tool exit code (1/2/101/…) are excluded, as are execution-crash
+    /// NTSTATUS codes (AV / stack overflow). Used by the gate to stall for
+    /// operator triage instead of feeding the agent's iterate-to-fix loop a
+    /// failure it has no lever over.
+    /// </summary>
+    public static bool IsHostProcessInitFailureExit(int exitCode)
+    {
+        var u = unchecked((uint)exitCode);
+        return Array.IndexOf(LoaderInitFailureCodes, u) >= 0;
     }
 
     private static readonly Regex ErrorLineRegex = new(
@@ -310,6 +410,14 @@ public static class StoryBuildRunner
         // path). Snapshot a second earlier to ride out clock resolution
         // quirks on Windows (FAT-style mtime is 2 s precision).
         var trxScanStartUtc = DateTime.UtcNow.AddSeconds(-1);
+
+        // Bound concurrent gate process trees across all workstreams (desktop-
+        // heap / handle-exhaustion guard). Declared FIRST so it disposes LAST —
+        // the slot is released only after `using var _ = proc` and the per-run
+        // ChildProcessJob below have reaped this run's tree, so a waiting run
+        // never gets capacity while our children are still alive.
+        using var gateSlot = await AcquireGateSlotAsync(ct).ConfigureAwait(false);
+
         Process? proc;
         try
         {
@@ -343,6 +451,17 @@ public static class StoryBuildRunner
         }
 
         using var _ = proc;
+
+        // Per-run kill-on-close job: assign the gate's top process so that when
+        // this method returns (success, failure, OR timeout) the ENTIRE tree is
+        // terminated — including re-parented grandchildren (compile/link
+        // workers, testhost, make/sh) that Process.Kill(entireProcessTree) can
+        // no longer reach once their immediate parent (cmd.exe) has exited.
+        // This is the fix for the gate child-process leak that exhausts the
+        // host desktop heap and ultimately causes 0xC0000142. Disposes BEFORE
+        // `proc` and the gate slot (reverse `using` order). Best-effort on
+        // non-Windows / restricted-job hosts (inert instance).
+        using var procJob = Forge.Api.Agents.ChildProcessJob.TryCreateAndAssign(proc);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var budget = timeout ?? DefaultTimeout;
@@ -913,4 +1032,25 @@ public sealed record StoryBuildResult(
     // a test-gate run (collectTestFailures: true). Empty/null when no
     // TRX was found or the run passed. Stable across `dotnet clean` —
     // the files have been copied into {workspace}/.forge/logs/trx/.
-    IReadOnlyList<string>? TrxRelPaths = null);
+    IReadOnlyList<string>? TrxRelPaths = null)
+{
+    /// <summary>
+    /// True when this result is a HOST process-init / crash failure (a
+    /// <c>0xC000xxxx</c> NTSTATUS exit — see
+    /// <see cref="StoryBuildRunner.IsHostProcessInitFailureExit"/>) that
+    /// produced no parsed compiler errors. In that case the toolchain never
+    /// compiled anything (it died during DLL/runtime init), so the failure is
+    /// an infrastructure problem on the Forge.Api host — commonly desktop-heap
+    /// / handle exhaustion from leaked gate child-process trees — and NOT a
+    /// defect in the engineer's diff. The gate uses this to stall the
+    /// workstream for operator triage immediately rather than burning
+    /// generator iterations re-running a failure the agent can't fix. The
+    /// <c>ErrorCount == 0</c> guard ensures a genuine code failure that merely
+    /// happened to crash mid-compile (and already emitted <c>error CSnnnn:</c>
+    /// lines) still flows down the normal code-fix path.
+    /// </summary>
+    public bool IsHostLaunchFailure =>
+        !this.Success
+        && this.ErrorCount == 0
+        && StoryBuildRunner.IsHostProcessInitFailureExit(this.ExitCode);
+}

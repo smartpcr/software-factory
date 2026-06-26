@@ -8074,6 +8074,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             workspace,
                         }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
+                        // A HOST process loader/init failure (e.g. exit
+                        // 0xC0000142 STATUS_DLL_INIT_FAILED) means the build/test
+                        // toolchain process never ran — it died during DLL/runtime
+                        // init before compiling anything (execution crashes like
+                        // an access violation are NOT treated as host failures;
+                        // those can be a real code bug — see IsHostLaunchFailure).
+                        // That is an environment problem on the Forge.Api host —
+                        // commonly desktop-heap / handle exhaustion from leaked
+                        // gate child-process trees — NOT a defect in the
+                        // engineer's diff. There are no compiler errors to read
+                        // (the error summary is empty), so re-running just burns
+                        // another full generator iter + budget on a failure the
+                        // agent has zero levers over. Stall IMMEDIATELY with a
+                        // host-specific reason instead of waiting for
+                        // BuildFailThreshold consecutive launch failures.
+                        // (Root cause: code-intelligence 3D-RENDER stage 4.1,
+                        // 2026-06-25 — `go build ./...` exited -1073741502 every
+                        // iter while leaked make/sh/go trees pinned the host.)
+                        if (perIterFailure.Result.IsHostLaunchFailure)
+                        {
+                            await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
+                            {
+                                stage = "per-iter",
+                                gateStage = perIterFailure.Stage,
+                                iter,
+                                reason = "host-process-init-failure",
+                                exitCode = perIterFailure.Result.ExitCode,
+                                durationSec = perIterFailure.Result.Duration.TotalSeconds,
+                                command = perIterFailure.Command,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                            throw new BuildFailedException(
+                                $"{perIterFailure.Stage} gate `{perIterFailure.Command}` exited "
+                                + $"{perIterFailure.Result.ExitCode} "
+                                + $"(0x{unchecked((uint)perIterFailure.Result.ExitCode):X8}) — a Windows "
+                                + "process-INITIALIZATION failure (iter " + iter + "). The toolchain process never "
+                                + "ran; it died during DLL/runtime init before compiling anything, so this is a HOST "
+                                + "environment problem (commonly desktop-heap / handle exhaustion from leaked "
+                                + "build-process trees on the Forge.Api host), NOT a defect in the engineer's diff. "
+                                + "Re-running won't help — stalling for operator triage. Fix: clear leaked build "
+                                + "processes / restart the Forge.Api host; a workstream Restart will NOT resolve it."
+                                + $"\n\n{perIterFailure.Result.ErrorSummary}")
+                            {
+                                ExitCode = perIterFailure.Result.ExitCode,
+                                ErrorCount = perIterFailure.Result.ErrorCount,
+                                WarningCount = perIterFailure.Result.WarningCount,
+                                ErrorSummary = perIterFailure.Result.ErrorSummary,
+                                TrippedByConsecutiveIters = false,
+                                ConsecutiveBrokenIters = consecutiveGateFailure,
+                                LastIteration = iter,
+                                Stage = perIterFailure.Stage,
+                                Command = perIterFailure.Command,
+                                HostLaunchFailure = true,
+                            };
+                        }
+
                         // 2026-05-25 — a TEST-gate TIMEOUT (distinct from a
                         // normal assertion failure) means the suite is too
                         // large/slow or hung for the gate budget; re-running
@@ -8846,6 +8902,47 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         // operations on this loop (none today, but
                         // future hooks) don't see stale state.
                         return null;
+                    }
+
+                    // Host process-init failure (e.g. 0xC0000142) at post-pass
+                    // time — same root cause as the per-iter branch above. The
+                    // toolchain never ran, so a recovery attempt would re-run the
+                    // same host failure; don't consume one. Stall immediately
+                    // with the host-specific reason.
+                    if (failure.Result.IsHostLaunchFailure)
+                    {
+                        await this.taskChannel.EmitAsync(workItemId, "task.gate.recovery-exhausted", new
+                        {
+                            iter = validIter,
+                            attempts = postPassRecoveryAttempts,
+                            max = MaxRecoveryAttempts,
+                            reason = "host-process-init-failure",
+                            gateStage = failure.Stage,
+                            command = failure.Command,
+                            exitCode = failure.Result.ExitCode,
+                        }, agentId: genAgentId, crewId: crew.Id, ct: validCt);
+
+                        throw new BuildFailedException(
+                            $"Workstream {workItemId} post-pass {failure.Stage} gate (`{failure.Command}`) exited "
+                            + $"{failure.Result.ExitCode} "
+                            + $"(0x{unchecked((uint)failure.Result.ExitCode):X8}) — a Windows process-INITIALIZATION "
+                            + "failure (final iter " + validIter + "). The toolchain process never ran; this is a HOST "
+                            + "environment problem (commonly leaked build-process trees exhausting the Forge.Api "
+                            + "host's desktop heap), NOT a defect in the diff. Re-running won't help — stalling for "
+                            + "operator triage. Fix: clear leaked build processes / restart the Forge.Api host; a "
+                            + $"workstream Restart will NOT resolve it.\n\n{failure.Result.ErrorSummary}")
+                        {
+                            ExitCode = failure.Result.ExitCode,
+                            ErrorCount = failure.Result.ErrorCount,
+                            WarningCount = failure.Result.WarningCount,
+                            ErrorSummary = failure.Result.ErrorSummary,
+                            TrippedByConsecutiveIters = false,
+                            ConsecutiveBrokenIters = 0,
+                            LastIteration = validIter,
+                            Stage = failure.Stage,
+                            Command = failure.Command,
+                            HostLaunchFailure = true,
+                        };
                     }
 
                     postPassRecoveryAttempts++;

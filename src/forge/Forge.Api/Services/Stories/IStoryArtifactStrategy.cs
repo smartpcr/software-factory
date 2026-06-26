@@ -445,4 +445,17 @@ public sealed class BuildFailedException : Exception
     /// without spelunking the transcript.
     /// </summary>
     public string? Command { get; init; }
+
+    /// <summary>
+    /// True when the gate tripped on a HOST process-init / crash failure (a
+    /// <c>0xC000xxxx</c> NTSTATUS exit such as <c>0xC0000142</c>
+    /// <c>STATUS_DLL_INIT_FAILED</c>) rather than a code defect — the build/test
+    /// toolchain process never ran (it died during DLL/runtime init), commonly
+    /// because leaked gate child-process trees exhausted the Forge.Api host's
+    /// session desktop heap. The orchestrator renders a DISTINCT
+    /// <c>StallReason</c> for this case so operators know the remedy is host
+    /// triage (clear leaked processes / restart Forge.Api), NOT a workstream
+    /// Restart — a clean code slate cannot fix a host environment failure.
+    /// </summary>
+    public bool HostLaunchFailure { get; init; }
 }
