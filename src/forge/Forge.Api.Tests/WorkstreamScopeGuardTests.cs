@@ -213,4 +213,72 @@ public class WorkstreamScopeGuardTests
         Assert.False(WorkstreamScopeGuard.IsInheritedGateFailure(
             new HashSet<string> { "x.go" }, Array.Empty<string>(), out _));
     }
+
+    // ── (a) mutating tool / edited-path capture ─────────────────────
+
+    [Theory]
+    [InlineData("edit", true)]
+    [InlineData("create", true)]
+    [InlineData("str_replace", true)]
+    [InlineData("apply_patch", true)]
+    [InlineData("multiEdit", true)]
+    [InlineData("write_file", true)]
+    [InlineData("view", false)]
+    [InlineData("grep", false)]
+    [InlineData("read_file", false)]
+    [InlineData("ls", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsMutatingTool_ClassifiesEditsVsReads(string? tool, bool expected)
+    {
+        Assert.Equal(expected, WorkstreamScopeGuard.IsMutatingTool(tool));
+    }
+
+    [Fact]
+    public void TryExtractEditedPath_PullsPathFromMutatingToolPayload()
+    {
+        Assert.Equal("services/agent-memory/go.mod",
+            WorkstreamScopeGuard.TryExtractEditedPath("edit", "{\"path\":\"services/agent-memory/go.mod\"}"));
+        Assert.Equal("web/src/api/types.ts",
+            WorkstreamScopeGuard.TryExtractEditedPath("create", "{\"filePath\":\"web/src/api/types.ts\",\"content\":\"x\"}"));
+    }
+
+    [Fact]
+    public void TryExtractEditedPath_NullForReadsAndJunk()
+    {
+        Assert.Null(WorkstreamScopeGuard.TryExtractEditedPath("view", "{\"path\":\"a.go\"}"));   // read tool
+        Assert.Null(WorkstreamScopeGuard.TryExtractEditedPath("edit", "not json"));               // malformed
+        Assert.Null(WorkstreamScopeGuard.TryExtractEditedPath("edit", "\"a string\""));           // non-object
+        Assert.Null(WorkstreamScopeGuard.TryExtractEditedPath("edit", "{\"foo\":\"bar\"}"));      // no path key
+        Assert.Null(WorkstreamScopeGuard.TryExtractEditedPath("edit", null));
+    }
+
+    [Fact]
+    public void CountOutOfScope_CountsBackendThrashHiddenByCommit_AndCrossesThreshold()
+    {
+        // The 3.2 case: web/src scope, but the agent's mutating edits hit the
+        // backend (go.mod, schema.sql, serve_module.go, go.sum, serve_test.go) —
+        // which the committed diff (mostly web/) never surfaced.
+        var scope = WorkstreamScopeGuard.ScopeKeysFromTargets(new[] { "web/src/components/Graph3DCanvas.tsx" });
+        var edited = new[]
+        {
+            "services/agent-memory/web/src/components/Graph3DCanvas.tsx", // in scope — excluded
+            "services/agent-memory/go.mod",
+            "services/agent-memory/go.sum",
+            "services/agent-memory/internal/graphsink/sqlite/schema.sql",
+            "services/agent-memory/cmd/agent-mcp/serve_module.go",
+            "services/agent-memory/cmd/agent-mcp/serve_test.go",
+        };
+        var outOfScope = WorkstreamScopeGuard.CountOutOfScope(edited, scope);
+        Assert.Equal(5, outOfScope); // the 5 backend files; the web file is in scope
+        Assert.True(outOfScope >= WorkstreamScopeGuard.OffTaskOutOfScopeEditThreshold,
+            "5 out-of-scope backend edits should trip the off-task edit threshold");
+    }
+
+    [Fact]
+    public void CountOutOfScope_ZeroWhenScopeUnknown_FailOpen()
+    {
+        Assert.Equal(0, WorkstreamScopeGuard.CountOutOfScope(
+            new[] { "internal/a.go", "internal/b.go" }, new HashSet<string>()));
+    }
 }

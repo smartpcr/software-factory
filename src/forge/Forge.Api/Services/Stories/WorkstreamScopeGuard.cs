@@ -9,6 +9,7 @@ namespace Forge.Api.Services.Stories;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 /// <summary>
@@ -200,5 +201,102 @@ public static class WorkstreamScopeGuard
 
         // Inherited iff NOT a single failing test file was touched by this ws.
         return !failingFiles.Any(changedBasenames.Contains);
+    }
+
+    /// <summary>Distinct out-of-scope EDITED files (from the agent's mutating tool
+    /// calls, not just the committed diff) that trip the off-task guard — even
+    /// when the agent reverts the edits before commit so the committed diff looks
+    /// on-task. Catches backend thrash on a frontend task (code-intelligence
+    /// 3D-RENDER 3.2: 40+ mutating calls to go.mod / schema.sql / serve_module.go
+    /// while the committed diff was mostly web/).</summary>
+    public const int OffTaskOutOfScopeEditThreshold = 5;
+
+    // Tool-name substrings that MUTATE files (vs read/search). Case-insensitive.
+    private static readonly string[] MutatingToolHints =
+    {
+        "edit", "create", "write", "str_replace", "apply_patch", "insert",
+        "replace", "patch", "new_file", "multi_edit", "multiedit",
+    };
+
+    // Argument keys that carry the edited file path across backends.
+    private static readonly string[] PathKeys =
+    {
+        "path", "filePath", "filepath", "file", "fileName", "filename",
+        "target_file", "targetFile",
+    };
+
+    /// <summary>True when <paramref name="toolName"/> denotes a file-mutating tool
+    /// (edit/create/write/…) rather than a read/search. Reads never count toward
+    /// off-task — an agent may legitimately READ backend files for context.</summary>
+    public static bool IsMutatingTool(string? toolName)
+    {
+        if (string.IsNullOrEmpty(toolName))
+        {
+            return false;
+        }
+
+        var n = toolName.ToLowerInvariant();
+        foreach (var h in MutatingToolHints)
+        {
+            if (n.Contains(h, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Extract the edited file path from a mutating tool call's payload, or null
+    /// when the tool is a read/search or no path arg is present. Best-effort JSON
+    /// parse over the known path-arg keys.
+    /// </summary>
+    public static string? TryExtractEditedPath(string? toolName, string? toolPayloadJson)
+    {
+        if (!IsMutatingTool(toolName) || string.IsNullOrWhiteSpace(toolPayloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(toolPayloadJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            foreach (var key in PathKeys)
+            {
+                if (doc.RootElement.TryGetProperty(key, out var v)
+                    && v.ValueKind == JsonValueKind.String)
+                {
+                    var p = v.GetString();
+                    if (!string.IsNullOrWhiteSpace(p))
+                    {
+                        return p;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Malformed / non-JSON payload — ignore (best-effort).
+        }
+
+        return null;
+    }
+
+    /// <summary>Count of DISTINCT edited paths that fall outside the declared
+    /// scope. Returns 0 when scope is unknown (fail-open).</summary>
+    public static int CountOutOfScope(IEnumerable<string> editedPaths, IReadOnlySet<string> scopeKeys)
+    {
+        if (scopeKeys.Count == 0)
+        {
+            return 0;
+        }
+
+        return editedPaths.Count(p => !IsInScope(p, scopeKeys));
     }
 }

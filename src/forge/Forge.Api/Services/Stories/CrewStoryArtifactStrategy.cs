@@ -7141,6 +7141,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // (fail-open: never trips). Mutated inside GeneratorDelegate's closure.
         var offTaskScopeKeys = WorkstreamScopeGuard.ScopeKeysFromTargets(declaredTargets);
         var consecutiveOffTask = 0;
+        // #(a) — files the agent MUTATES this iter (captured from the tool-call
+        // stream), NOT just the committed diff. Reset at the top of each
+        // generator turn. Lets the off-task guard catch backend thrash the agent
+        // reverts before commit, so a committed diff that looks on-task (mostly
+        // web/) no longer hides 40+ edits to go.mod / schema.sql / internal/**.
+        var editedPathsThisIter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Phase 56 (was Phase 47e) -- separate counter for "agent edited
         // files but the unified gate chain (build → quality → test)
         // tripped". Renamed from consecutiveBrokenBuild because the
@@ -7643,6 +7649,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // is preserved if the runner emits no usage event (CLI path).
             var turnSamples = new List<object>();
             int turnIndex = 0;
+            editedPathsThisIter.Clear();
             await foreach (var evt in invocation.Events.WithCancellation(iterCt))
             {
                 await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
@@ -7672,6 +7679,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     mcpServerName = evt.McpServerName,
                     sessionId = evt.SessionId,
                 }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                // #(a) — record the agent's mutating-tool edit targets this turn
+                // so the off-task guard sees backend thrash even when reverted
+                // before commit. Reads return null (non-mutating) and are ignored.
+                var editTarget = WorkstreamScopeGuard.TryExtractEditedPath(evt.ToolName, evt.ToolPayload);
+                if (editTarget is not null) editedPathsThisIter.Add(editTarget);
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
@@ -8049,7 +8062,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     // schema.sql to fix an inherited agent-memory gate). Abort to
                     // `stalled` before it burns the per-iter wall-clock ceiling again.
                     // Fail-open: IsOffTask returns false when scope is unknown.
-                    if (WorkstreamScopeGuard.IsOffTask(changed, offTaskScopeKeys, out var offRatio, out var offCount))
+                    // #(a) extension — ALSO count out-of-scope files the agent
+                    // MUTATED this turn (from the tool-call stream), not just the
+                    // committed diff. The committed diff hid 3.2's backend thrash
+                    // (40+ edits to go.mod / schema.sql / serve_module.go while the
+                    // commit looked on-task, mostly web/). Either signal trips it.
+                    var offByCommit = WorkstreamScopeGuard.IsOffTask(changed, offTaskScopeKeys, out var offRatio, out var offCount);
+                    var outOfScopeEdits = WorkstreamScopeGuard.CountOutOfScope(editedPathsThisIter, offTaskScopeKeys);
+                    var offByEdits = outOfScopeEdits >= WorkstreamScopeGuard.OffTaskOutOfScopeEditThreshold;
+                    if (offByCommit || offByEdits)
                     {
                         consecutiveOffTask++;
                         await this.taskChannel.EmitAsync(workItemId, "task.off-task.detected", new
@@ -8060,13 +8081,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             offRatio,
                             offCount,
                             changedCount = changed.Count,
+                            outOfScopeEdits,
+                            editedCount = editedPathsThisIter.Count,
+                            trigger = offByEdits ? (offByCommit ? "commit+edits" : "edits") : "commit",
                             declaredScope = string.Join(",", offTaskScopeKeys),
                         }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
                         if (consecutiveOffTask >= WorkstreamScopeGuard.OffTaskThreshold)
                         {
-                            var offSample = string.Join(", ", changed
+                            var offSample = string.Join(", ", changed.Concat(editedPathsThisIter)
                                 .Where(f => !WorkstreamScopeGuard.IsInScope(f, offTaskScopeKeys))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
                                 .Take(8));
                             await this.taskChannel.EmitAsync(workItemId, "task.off-task.aborted", new
                             {
@@ -8074,15 +8099,17 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                                 consecutiveOffTask,
                                 threshold = WorkstreamScopeGuard.OffTaskThreshold,
                                 declaredScope = string.Join(",", offTaskScopeKeys),
+                                outOfScopeEdits,
                                 offSample,
                             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
                             throw new OffTaskException(
                                 $"Engineer abandoned its declared scope ({string.Join(", ", offTaskScopeKeys)}) for "
-                                + $"{consecutiveOffTask} consecutive iterations (through iter {iter}): {offCount} of "
-                                + $"{changed.Count} changed files are out of scope (e.g. {offSample}). This usually means "
-                                + "the agent is chasing an out-of-scope / repo-wide gate it does not own. Aborting to save "
-                                + "budget; scope the gate or fix the base branch rather than Restart.")
+                                + $"{consecutiveOffTask} consecutive iterations (through iter {iter}): "
+                                + $"{offCount}/{changed.Count} committed files and {outOfScopeEdits} edited file(s) are out of "
+                                + $"scope (e.g. {offSample}). This usually means the agent is thrashing on an out-of-scope / "
+                                + "repo-wide gate it does not own. Aborting to save budget; scope the gate or fix the base "
+                                + "branch rather than Restart.")
                             {
                                 ConsecutiveIterations = consecutiveOffTask,
                                 LastIteration = iter,
@@ -8740,6 +8767,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // but we keep the symmetric shape for the snapshot endpoint.
             var turnSamples = new List<object>();
             int turnIndex = 0;
+            editedPathsThisIter.Clear();
             await foreach (var evt in invocation.Events.WithCancellation(iterCt))
             {
                 await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
@@ -8767,6 +8795,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     mcpServerName = evt.McpServerName,
                     sessionId = evt.SessionId,
                 }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+                // #(a) — record the agent's mutating-tool edit targets this turn
+                // so the off-task guard sees backend thrash even when reverted
+                // before commit. Reads return null (non-mutating) and are ignored.
+                var editTarget = WorkstreamScopeGuard.TryExtractEditedPath(evt.ToolName, evt.ToolPayload);
+                if (editTarget is not null) editedPathsThisIter.Add(editTarget);
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
