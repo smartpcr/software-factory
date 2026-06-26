@@ -44,6 +44,15 @@ public static class WorkstreamScopeGuard
     /// <summary>Consecutive off-task iterations before the loop aborts.</summary>
     public const int OffTaskThreshold = 2;
 
+    /// <summary>When the best deliverable score so far is at or above this, the
+    /// off-task guard is SUPPRESSED — the evaluator endorsing the work is ground
+    /// truth that the agent is on the RIGHT files, so a declared scope it
+    /// contradicts is a bad/stale target list, not the agent off-task.
+    /// (BEYOND-AST 5.2: scored 79→92→88 editing the real behavioral/summary files
+    /// while the declared scope was a bogus `src/CodeIntelligence` path — the
+    /// guard wrongly stalled it.)</summary>
+    public const int OffTaskHealthyScoreSuppress = 75;
+
     /// <summary>
     /// Compute the set of declared scope KEYS from the workstream's DECLARED
     /// TARGET file paths (the <c>targets</c> list the loop already derives via

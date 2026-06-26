@@ -2209,6 +2209,46 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         catch { return new List<string>(); }
     }
 
+    // #(b) — keep only declared target paths whose directory actually exists in
+    // the worktree. A hallucinated path (e.g. a .NET-style `src/CodeIntelligence`
+    // in a Go repo) is dropped so it can't define a phantom off-task scope.
+    // Returns the input unchanged when the worktree itself is missing (can't
+    // verify → don't silently disable the guard). New-file targets survive when
+    // their parent directory exists; module-relative paths that don't resolve
+    // under the worktree root are dropped (→ fail-open, the safe direction).
+    internal static IReadOnlyList<string> FilterTargetsToExisting(string? workspace, IReadOnlyList<string>? targets)
+    {
+        if (targets is null || targets.Count == 0
+            || string.IsNullOrEmpty(workspace) || !Directory.Exists(workspace))
+        {
+            return targets ?? Array.Empty<string>();
+        }
+
+        var kept = new List<string>();
+        foreach (var t in targets)
+        {
+            if (string.IsNullOrWhiteSpace(t)) continue;
+            try
+            {
+                var norm = t.Replace('/', Path.DirectorySeparatorChar)
+                            .Replace('\\', Path.DirectorySeparatorChar)
+                            .TrimStart(Path.DirectorySeparatorChar);
+                var full = Path.Combine(workspace, norm);
+                var dir = Path.GetDirectoryName(full);
+                if (File.Exists(full) || (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)))
+                {
+                    kept.Add(t);
+                }
+            }
+            catch
+            {
+                // malformed path — drop it
+            }
+        }
+
+        return kept;
+    }
+
     /// <summary>
     /// Load the same-spawn workstream set and run
     /// <see cref="WorkstreamWorktreeSlug.Compute"/> to produce the canonical
@@ -7139,7 +7179,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // can detect a generator that abandoned its area to churn unrelated files
         // chasing an out-of-scope repo-wide gate. Empty scope ⇒ guard disabled
         // (fail-open: never trips). Mutated inside GeneratorDelegate's closure.
-        var offTaskScopeKeys = WorkstreamScopeGuard.ScopeKeysFromTargets(declaredTargets);
+        // #(b) — drop declared targets whose directory doesn't exist in the
+        // worktree (e.g. a hallucinated `src/CodeIntelligence` path in a Go repo).
+        // If none survive, scope is unknown → guard disabled (fail-open), so a
+        // wrong/stale target list can't define a phantom scope that stalls on-task
+        // work. The score-suppression above is the second line of defence.
+        var offTaskScopeKeys = WorkstreamScopeGuard.ScopeKeysFromTargets(
+            FilterTargetsToExisting(workspace, declaredTargets));
         var consecutiveOffTask = 0;
         // #(a) — files the agent MUTATES this iter (captured from the tool-call
         // stream), NOT just the committed diff. Reset at the top of each
@@ -8070,7 +8116,48 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     var offByCommit = WorkstreamScopeGuard.IsOffTask(changed, offTaskScopeKeys, out var offRatio, out var offCount);
                     var outOfScopeEdits = WorkstreamScopeGuard.CountOutOfScope(editedPathsThisIter, offTaskScopeKeys);
                     var offByEdits = outOfScopeEdits >= WorkstreamScopeGuard.OffTaskOutOfScopeEditThreshold;
-                    if (offByCommit || offByEdits)
+                    var offTaskTriggered = offByCommit || offByEdits;
+
+                    // #(a) FALSE-POSITIVE GUARD — when off-task fires, first check
+                    // whether the deliverable is ALREADY scoring well. The evaluator
+                    // endorsing the diff is ground truth that the agent is on the
+                    // RIGHT files, so a declared scope it contradicts is a bad/stale
+                    // target list (e.g. a hallucinated path), not the agent off-task.
+                    // (BEYOND-AST 5.2: scored 79→92→88 on the real behavioral/summary
+                    // files while its declared scope was a bogus `src/CodeIntelligence`
+                    // path in a Go repo — the guard wrongly stalled near-passing work.)
+                    var bestPriorScore = 0;
+                    if (offTaskTriggered)
+                    {
+                        try
+                        {
+                            using var scoreScope = this.scopeFactory.CreateScope();
+                            var scoreDb = scoreScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                            bestPriorScore = await scoreDb.Deliverables.AsNoTracking()
+                                .Where(d => d.WorkItemId == workItemId)
+                                .Select(d => (int?)d.Score)
+                                .MaxAsync(iterCt) ?? 0;
+                        }
+                        catch (Exception scoreEx) when (scoreEx is not OperationCanceledException)
+                        {
+                            this.logger?.LogDebug(scoreEx,
+                                "Off-task suppression: best-score query failed for {Wi}; not suppressing.", workItemId);
+                        }
+                    }
+
+                    if (offTaskTriggered && bestPriorScore >= WorkstreamScopeGuard.OffTaskHealthyScoreSuppress)
+                    {
+                        consecutiveOffTask = 0;
+                        await this.taskChannel.EmitAsync(workItemId, "task.off-task.suppressed", new
+                        {
+                            iter,
+                            bestPriorScore,
+                            outOfScopeEdits,
+                            declaredScope = string.Join(",", offTaskScopeKeys),
+                            reason = "deliverable scoring well — declared scope likely wrong, not off-task",
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    else if (offTaskTriggered)
                     {
                         consecutiveOffTask++;
                         await this.taskChannel.EmitAsync(workItemId, "task.off-task.detected", new
