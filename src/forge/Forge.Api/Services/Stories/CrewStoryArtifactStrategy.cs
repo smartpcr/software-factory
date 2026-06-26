@@ -4670,6 +4670,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     merged,
                 }, ct: refreshCt);
             },
+            declaredTargets: targets,
             ct: ct);
 
         // Phase 74 follow-up — DeliverableLoop fast-failed because another
@@ -6949,6 +6950,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // origin/{branch} is a no-op data-wise. Null (plan-doc / qa /
         // review-fix callers) = no base refresh.
         Func<int, CancellationToken, Task>? refreshBaseBeforePostPassGate = null,
+        // #2 — the workstream's DECLARED target files (the engineer impl path's
+        // `targets` list from ExtractTargetPaths + architect fallback). Drives the
+        // off-task wandering guard: when the agent's per-iter diff is overwhelmingly
+        // outside the area implied by these for OffTaskThreshold consecutive iters,
+        // the loop aborts to `stalled` so it can't keep burning the wall-clock
+        // ceiling chasing an out-of-scope gate. Null (plan-doc / qa / review-fix
+        // callers, or no resolvable targets) = guard disabled (fail-open).
+        IReadOnlyList<string>? declaredTargets = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -7125,6 +7134,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // burning the full maxIter budget. Set up here, mutated inside
         // GeneratorDelegate's closure.
         var consecutiveNoChange = 0;
+        // #2 — off-task wandering guard. Derive the declared scope from the
+        // workstream's target files (already computed above into `targets`) so we
+        // can detect a generator that abandoned its area to churn unrelated files
+        // chasing an out-of-scope repo-wide gate. Empty scope ⇒ guard disabled
+        // (fail-open: never trips). Mutated inside GeneratorDelegate's closure.
+        var offTaskScopeKeys = WorkstreamScopeGuard.ScopeKeysFromTargets(declaredTargets);
+        var consecutiveOffTask = 0;
         // Phase 56 (was Phase 47e) -- separate counter for "agent edited
         // files but the unified gate chain (build → quality → test)
         // tripped". Renamed from consecutiveBrokenBuild because the
@@ -7909,9 +7925,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             if (isImplPhase)
             {
                 int changedCount;
+                IReadOnlyList<string> changed = Array.Empty<string>();
                 try
                 {
-                    var changed = await this.git.GetChangedFilesAsync(
+                    changed = await this.git.GetChangedFilesAsync(
                         repo: null, worktreePath: workspace, ct: iterCt);
                     changedCount = changed.Count;
                 }
@@ -8005,6 +8022,63 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         this.logger?.LogWarning(ex,
                             "Per-iter commit/push threw for wi={Wi} iter={Iter} workspace={Workspace}; continuing.",
                             workItemId, iter, workspace);
+                    }
+
+                    // #2 — off-task wandering guard. The agent committed a diff this
+                    // iter (durable on origin for inspection). If it's overwhelmingly
+                    // OUTSIDE the declared scope for OffTaskThreshold consecutive
+                    // iters, the agent has abandoned its task — typically to chase an
+                    // out-of-scope / repo-wide gate it does not own (observed on
+                    // code-intelligence 3D-RENDER stage 3.1: a `web/src` types edit
+                    // burned 30-39 min/iter editing internal/** Go + Makefile +
+                    // schema.sql to fix an inherited agent-memory gate). Abort to
+                    // `stalled` before it burns the per-iter wall-clock ceiling again.
+                    // Fail-open: IsOffTask returns false when scope is unknown.
+                    if (WorkstreamScopeGuard.IsOffTask(changed, offTaskScopeKeys, out var offRatio, out var offCount))
+                    {
+                        consecutiveOffTask++;
+                        await this.taskChannel.EmitAsync(workItemId, "task.off-task.detected", new
+                        {
+                            iter,
+                            consecutiveOffTask,
+                            threshold = WorkstreamScopeGuard.OffTaskThreshold,
+                            offRatio,
+                            offCount,
+                            changedCount = changed.Count,
+                            declaredScope = string.Join(",", offTaskScopeKeys),
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                        if (consecutiveOffTask >= WorkstreamScopeGuard.OffTaskThreshold)
+                        {
+                            var offSample = string.Join(", ", changed
+                                .Where(f => !WorkstreamScopeGuard.IsInScope(f, offTaskScopeKeys))
+                                .Take(8));
+                            await this.taskChannel.EmitAsync(workItemId, "task.off-task.aborted", new
+                            {
+                                iter,
+                                consecutiveOffTask,
+                                threshold = WorkstreamScopeGuard.OffTaskThreshold,
+                                declaredScope = string.Join(",", offTaskScopeKeys),
+                                offSample,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                            throw new OffTaskException(
+                                $"Engineer abandoned its declared scope ({string.Join(", ", offTaskScopeKeys)}) for "
+                                + $"{consecutiveOffTask} consecutive iterations (through iter {iter}): {offCount} of "
+                                + $"{changed.Count} changed files are out of scope (e.g. {offSample}). This usually means "
+                                + "the agent is chasing an out-of-scope / repo-wide gate it does not own. Aborting to save "
+                                + "budget; scope the gate or fix the base branch rather than Restart.")
+                            {
+                                ConsecutiveIterations = consecutiveOffTask,
+                                LastIteration = iter,
+                                DeclaredScope = string.Join(", ", offTaskScopeKeys),
+                                OffTaskFilesSample = offSample,
+                            };
+                        }
+                    }
+                    else
+                    {
+                        consecutiveOffTask = 0;
                     }
 
                     // Phase 56 (was Phase 47e/49) -- agent edited files
@@ -8174,6 +8248,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
                         if (consecutiveGateFailure >= BuildFailThreshold)
                         {
+                            // #3 — INHERITED vs OWNED. Extract the failing test
+                            // files from the gate output; if NONE of them are in
+                            // this workstream's diff, the gate was already red on the
+                            // base branch — a Restart will just re-burn budget on a
+                            // gate this ws cannot fix. Flag it so the orchestrator
+                            // renders a distinct "fix the base, don't Restart" reason.
+                            var failingFiles = WorkstreamScopeGuard.ExtractFailingFiles(perIterFailure.Result.ErrorSummary);
+                            var inheritedGate = WorkstreamScopeGuard.IsInheritedGateFailure(failingFiles, changed, out var inheritedFailingList);
+
                             await this.taskChannel.EmitAsync(workItemId, "task.gate-failed.aborted", new
                             {
                                 stage = "per-iter",
@@ -8181,6 +8264,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                                 iter,
                                 consecutiveGateFailure,
                                 threshold = BuildFailThreshold,
+                                inherited = inheritedGate,
+                                failingFiles = inheritedFailingList,
                             }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
 
                             throw new BuildFailedException(
@@ -8198,6 +8283,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                                 LastIteration = iter,
                                 Stage = perIterFailure.Stage,
                                 Command = perIterFailure.Command,
+                                InheritedGateFailure = inheritedGate,
+                                InheritedFailingTests = inheritedGate ? inheritedFailingList : null,
                             };
                         }
                     }

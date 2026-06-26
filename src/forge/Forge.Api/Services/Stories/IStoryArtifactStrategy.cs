@@ -458,4 +458,50 @@ public sealed class BuildFailedException : Exception
     /// Restart — a clean code slate cannot fix a host environment failure.
     /// </summary>
     public bool HostLaunchFailure { get; init; }
+
+    /// <summary>
+    /// True when the failing gate is INHERITED from the base branch rather than
+    /// owned by this workstream's diff — none of the failing test files appear in
+    /// the workstream's changed files (see <c>WorkstreamScopeGuard.IsInheritedGateFailure</c>).
+    /// The orchestrator renders a DISTINCT <c>StallReason</c> for this case so the
+    /// operator knows a Restart will just re-burn budget on a gate this workstream
+    /// cannot fix; the remedy is fixing the base branch / scoping the gate, not a
+    /// clean-slate Restart. (Off by default — only set at the per-iter consecutive
+    /// trip point where the failing tests are known.)
+    /// </summary>
+    public bool InheritedGateFailure { get; init; }
+
+    /// <summary>Comma-separated failing test files used to render the inherited-failure
+    /// <c>StallReason</c> (empty unless <see cref="InheritedGateFailure"/> is true).</summary>
+    public string? InheritedFailingTests { get; init; }
+}
+
+/// <summary>
+/// Thrown by the story workstream gen/eval loop (<c>CrewStoryArtifactStrategy</c>)
+/// when a generator agent has ABANDONED its declared file scope — for
+/// <see cref="WorkstreamScopeGuard.OffTaskThreshold"/> consecutive impl iterations
+/// the overwhelming majority of its changed files fell outside the scope declared
+/// by the task text (see <c>WorkstreamScopeGuard.IsOffTask</c>). This catches the
+/// pathology where a narrowly-scoped workstream (e.g. a <c>web/src</c> frontend
+/// edit) is dragged into churning unrelated backend files to chase an out-of-scope
+/// repo-wide gate, burning the full per-iter wall-clock ceiling every iteration.
+/// The orchestrator routes it to <c>Status="stalled"</c> on the same path as
+/// <see cref="NoProgressException"/> — re-spawning would just re-burn budget the
+/// same way; the remedy is scoping the gate / fixing the base branch, not a Restart.
+/// </summary>
+public sealed class OffTaskException : Exception
+{
+    public OffTaskException(string message) : base(message) { }
+
+    /// <summary>How many consecutive off-task iterations triggered the abort.</summary>
+    public int ConsecutiveIterations { get; init; }
+
+    /// <summary>The iteration number that triggered the abort.</summary>
+    public int LastIteration { get; init; }
+
+    /// <summary>The declared scope keys the agent strayed from (e.g. <c>web/src</c>).</summary>
+    public string? DeclaredScope { get; init; }
+
+    /// <summary>A sample of the out-of-scope files the agent edited instead.</summary>
+    public string? OffTaskFilesSample { get; init; }
 }

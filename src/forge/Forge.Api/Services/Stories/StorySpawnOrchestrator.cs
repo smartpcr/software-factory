@@ -2631,6 +2631,49 @@ public sealed class StorySpawnOrchestrator
                     lastIter = npe.LastIteration,
                 }, CancellationToken.None);
             }
+            catch (OffTaskException ote)
+            {
+                // #2 — the engineer abandoned its declared file scope for N
+                // consecutive iters, churning unrelated files (typically chasing
+                // an out-of-scope repo-wide gate it does not own). Mark stalled
+                // immediately — re-spawning the same scope-blind agent would just
+                // re-burn the per-iter wall-clock ceiling the same way. The reason
+                // tells the operator the real remedy (scope the gate / fix the
+                // base), so they don't waste a blind Restart.
+                this.logger?.LogWarning(
+                    "Workstream {WsId} off-task: agent left declared scope [{Scope}] for {Iters} consecutive iters "
+                    + "(last iter {LastIter}); editing {Sample}. Marking stalled.",
+                    item.ws.Id, ote.DeclaredScope, ote.ConsecutiveIterations, ote.LastIteration, ote.OffTaskFilesSample);
+
+                using var offTaskScope = this.services.CreateScope();
+                var offTaskDb = offTaskScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var offTaskRow = await offTaskDb.Workstreams.FirstOrDefaultAsync(
+                    ws => ws.Id == item.ws.Id, CancellationToken.None);
+                if (offTaskRow is not null && offTaskRow.Status is not "cancelled" and not "complete")
+                {
+                    offTaskRow.Status = WorkstreamStatuses.Stalled;
+                    offTaskRow.StallReason =
+                        $"Off-task: the agent left its declared scope ({ote.DeclaredScope}) and spent "
+                        + $"{ote.ConsecutiveIterations} consecutive iterations editing unrelated files "
+                        + $"(e.g. {ote.OffTaskFilesSample}) — almost always chasing an out-of-scope / repo-wide gate it "
+                        + "does not own. Remedy: scope the gate to this workstream's change (or fix the base branch), "
+                        + "then Restart. A blind Restart will repeat the same wandering.";
+                    await offTaskDb.SaveChangesAsync(CancellationToken.None);
+                    await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
+                }
+
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = nameof(OffTaskException),
+                    message = ote.Message,
+                    declaredScope = ote.DeclaredScope,
+                    consecutiveOffTask = ote.ConsecutiveIterations,
+                    lastIter = ote.LastIteration,
+                }, CancellationToken.None);
+            }
             catch (SloppyVerdictException sve)
             {
                 this.logger?.LogWarning(sve,
@@ -2715,7 +2758,19 @@ public sealed class StorySpawnOrchestrator
                         ? string.Empty
                         : $" running `{bfe.Command}`";
                     buildRow.Status = WorkstreamStatuses.Stalled;
-                    buildRow.StallReason = bfe.HostLaunchFailure
+                    buildRow.StallReason = bfe.InheritedGateFailure
+                        // #3 — INHERITED failure: the red test(s) aren't in this
+                        // workstream's diff, so they were already failing on the
+                        // base branch. A Restart re-runs a fresh agent against the
+                        // same unfixable gate and re-burns a full budget. Say so
+                        // explicitly so the operator fixes the base / scopes the
+                        // gate instead of blind-Restarting.
+                        ? $"INHERITED gate failure ({stageLabel}){commandSuffix}: the failing test(s) "
+                            + $"[{bfe.InheritedFailingTests}] are NOT in this workstream's diff (through iter "
+                            + $"{bfe.LastIteration}) — they were already red on the base branch. A Restart will re-burn "
+                            + "budget on a gate this workstream cannot fix. Remedy: fix the base branch or scope the gate "
+                            + "to this workstream's change — do NOT blind-Restart this workstream."
+                        : bfe.HostLaunchFailure
                         // Host process-init failure (e.g. 0xC0000142): the
                         // toolchain never ran. The remedy is HOST triage, not a
                         // workstream Restart — say so explicitly so the operator

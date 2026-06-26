@@ -394,6 +394,15 @@ public static class StoryBuildRunner
         // BuildValidationWorker.ApplyInteractiveEnvironment pattern.
         ChildProcessEnv.OverlayLiveRegistryPath(psi);
 
+        // Make-based gates (go/python/rust repos whose test/build command shells
+        // out to `make`) need a POSIX `sh` on PATH, else GNU make falls back to
+        // cmd.exe and dies instantly on the first POSIX recipe line (`mkdir -p`,
+        // `rm -rf`, …) — an env-only failure the agent can't see (it runs make via
+        // git-bash) or fix. Append git's usr\bin so gate-make matches the agent.
+        // (code-intelligence 3D-RENDER stage 3.1 `make probe-self` exited 2 on
+        // `mkdir -p bin` under cmd.exe every iter; see ChildProcessEnv.)
+        ChildProcessEnv.EnsurePosixShellOnPath(psi);
+
         psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         psi.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
 

@@ -8,6 +8,7 @@ namespace Forge.Api.Agents;
 
 using System.Collections;
 using System.Diagnostics;
+using System.IO;
 
 /// <summary>
 /// Deterministic environment isolation for every child process Forge spawns —
@@ -196,5 +197,98 @@ public static class ChildProcessEnv
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Ensure a POSIX <c>sh</c> is resolvable on the child's <c>Path</c> so a
+    /// gate-launched GNU <c>make</c> runs recipe lines through <c>sh</c> instead
+    /// of falling back to <c>cmd.exe</c>.
+    ///
+    /// <para>On Windows, GNU make uses <c>sh.exe</c> when one is found on PATH and
+    /// otherwise runs each recipe line via <c>cmd.exe</c>. Under <c>cmd.exe</c> a
+    /// POSIX recipe line such as <c>mkdir -p bin</c> fails INSTANTLY — cmd's
+    /// <c>mkdir</c> has no <c>-p</c>, so it errors and trips
+    /// <c>make: *** Error 1</c> before any compile/scan runs. The git installer
+    /// puts <c>git.exe</c> on the system PATH (<c>…\Git\cmd</c>) but NOT its MSYS2
+    /// coreutils (<c>…\Git\usr\bin</c>, where <c>sh</c>/<c>mkdir</c> live), so a
+    /// gate that shells out to <c>make</c> gets <c>cmd.exe</c> and dies on the
+    /// first POSIX-ism — while the engineer agent (running <c>make</c> via
+    /// git-bash, with <c>/usr/bin</c> on PATH) passes. The asymmetry makes such a
+    /// gate UNWINNABLE and UNDIAGNOSABLE from the agent's side. (Root cause:
+    /// code-intelligence 3D-RENDER stage 3.1, 2026-06-26 — <c>make probe-self</c>
+    /// exited 2 in 0.14s on <c>mkdir -p bin</c> under cmd.exe, every iter, after
+    /// the agent had already fixed the real code and verified it green via sh.)</para>
+    ///
+    /// <para>Best-effort: appends git's <c>usr\bin</c> to the END of PATH (so
+    /// Windows System32 tools like <c>find</c>/<c>sort</c> still win for bare
+    /// names — only <c>sh</c>+coreutils, which have no Windows <c>.exe</c>, become
+    /// newly resolvable). No-op when a <c>sh.exe</c> is already on PATH or no
+    /// git/MSYS2 <c>usr\bin</c> can be located.</para>
+    /// </summary>
+    public static void EnsurePosixShellOnPath(ProcessStartInfo psi)
+    {
+        var path = psi.Environment.TryGetValue("Path", out var p) ? (p ?? string.Empty) : string.Empty;
+        var usrBin = ComputePosixUsrBinToAppend(path, static (dir, file) =>
+        {
+            try
+            {
+                return File.Exists(Path.Combine(dir, file));
+            }
+            catch
+            {
+                return false;
+            }
+        });
+        if (usrBin is null)
+        {
+            return;
+        }
+
+        psi.Environment["Path"] = string.IsNullOrEmpty(path) ? usrBin : path.TrimEnd(';') + ";" + usrBin;
+    }
+
+    /// <summary>
+    /// Pure core of <see cref="EnsurePosixShellOnPath"/> — given a PATH string and
+    /// a <paramref name="probe"/> that reports whether a directory contains a file,
+    /// return the git <c>usr\bin</c> directory to append, or <c>null</c> when a
+    /// <c>sh.exe</c> is already resolvable or none can be derived. Filesystem-free
+    /// so it is deterministically unit-testable.
+    /// </summary>
+    public static string? ComputePosixUsrBinToAppend(string? path, Func<string, string, bool> probe)
+    {
+        var dirs = (path ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries);
+
+        // Already have a POSIX sh on PATH (covers usr\bin already being present)?
+        foreach (var d in dirs)
+        {
+            if (probe(d.Trim(), "sh.exe"))
+            {
+                return null;
+            }
+        }
+
+        // Derive from git.exe on PATH: <gitRoot>\cmd\git.exe → <gitRoot>\usr\bin.
+        foreach (var d in dirs)
+        {
+            var dir = d.Trim();
+            if (!probe(dir, "git.exe"))
+            {
+                continue;
+            }
+
+            var gitRoot = Path.GetDirectoryName(dir.TrimEnd('\\', '/'));
+            if (string.IsNullOrEmpty(gitRoot))
+            {
+                continue;
+            }
+
+            var usrBin = Path.Combine(gitRoot, "usr", "bin");
+            if (probe(usrBin, "sh.exe"))
+            {
+                return usrBin;
+            }
+        }
+
+        return null;
     }
 }
