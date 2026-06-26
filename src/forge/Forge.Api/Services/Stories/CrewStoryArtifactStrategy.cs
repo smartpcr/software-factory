@@ -7392,6 +7392,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     sb.AppendLine("────────────────────────────────────────────────────────────");
                     sb.AppendLine();
                 }
+                // When the generator has had 3+ iterations and still isn't
+                // passing, prepend the ralph-loop persistence discipline (read at
+                // runtime from .claude/skills/ralph-loop/SKILL.md) so it locks onto
+                // the single highest-priority blocker, verifies its own work, and
+                // names an out-of-scope blocker explicitly instead of thrashing on
+                // unrelated files for another full-budget turn. Best-effort:
+                // skipped silently when the skill file can't be located.
+                if (iter >= 3 && RalphLoopPrompt.TryGetGuidanceBlock() is { Length: > 0 } ralphBlock)
+                {
+                    sb.AppendLine(ralphBlock);
+                    await this.taskChannel.EmitAsync(workItemId, "task.ralph-loop.injected", new
+                    {
+                        iter,
+                    }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                }
                 if (hasGateFeedback || hasEvalFeedback)
                 {
                     sb.AppendLine("Now here is the original task brief (for reference only -- the");

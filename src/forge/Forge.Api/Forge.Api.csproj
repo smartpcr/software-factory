@@ -62,6 +62,11 @@
     <Content Include="..\..\..\agents\templates\*.md" LinkBase="agents\templates">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- ralph-loop skill read at runtime (RalphLoopPrompt) and injected into a
+         stalled generator's prompt; the repo copy is the single source of truth. -->
+    <Content Include="..\..\..\.claude\skills\ralph-loop\SKILL.md" Link=".claude\skills\ralph-loop\SKILL.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
