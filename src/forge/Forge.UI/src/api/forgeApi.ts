@@ -160,6 +160,10 @@ export interface StorySpawnWorkstreamSummary {
   latestVerdict?: string | null;
   latestGenAgentId?: string | null;
   latestEvalAgentId?: string | null;
+  // Full gen/eval pair history (oldest first, consecutive-deduped). >1 entry
+  // means the workstream was reassigned mid-run — the swarm card shows the
+  // prior pairs faded before the current one so the switches are visible.
+  agentPairs?: Array<{ gen: string | null; eval: string | null }>;
   lastActiveAt?: string | null;
   /** Phase 28+ — ISO timestamp of the workstream's first deliverable (when the
    *  gen↔eval loop started). Null until the first iteration runs. Surfaced in

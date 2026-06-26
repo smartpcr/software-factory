@@ -498,9 +498,40 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
           {/* Line 1: gen↔eval avatars + run start time. */}
           <div className="phase-metrics-row">
             <div className="doc-agents">
-              <PhaseAgentAvatar id={ws.latestGenAgentId} role="generator" />
-              <span className="doc-agents-link">⇄</span>
-              <PhaseAgentAvatar id={ws.latestEvalAgentId} role="evaluator" />
+              {(ws.agentPairs && ws.agentPairs.length > 1) ? (
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center' }}
+                  title={`${ws.agentPairs.length} agent pairs assigned (oldest → newest): ${ws.agentPairs.map((p) => `${p.gen ?? '?'}/${p.eval ?? '?'}`).join(' → ')}`}
+                >
+                  {ws.agentPairs.map((p, i) => {
+                    const isLatest = i === ws.agentPairs!.length - 1;
+                    return (
+                      <span key={`${p.gen}-${p.eval}-${i}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                        {i > 0 && <span style={{ opacity: 0.4, fontSize: 9, margin: '0 2px' }}>→</span>}
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            opacity: isLatest ? 1 : 0.45,
+                            transform: isLatest ? 'none' : 'scale(0.82)',
+                            transformOrigin: 'center',
+                          }}
+                        >
+                          <PhaseAgentAvatar id={p.gen} role="generator" />
+                          <span className="doc-agents-link">⇄</span>
+                          <PhaseAgentAvatar id={p.eval} role="evaluator" />
+                        </span>
+                      </span>
+                    );
+                  })}
+                </span>
+              ) : (
+                <>
+                  <PhaseAgentAvatar id={ws.latestGenAgentId} role="generator" />
+                  <span className="doc-agents-link">⇄</span>
+                  <PhaseAgentAvatar id={ws.latestEvalAgentId} role="evaluator" />
+                </>
+              )}
             </div>
             {ws.startedAt && (
               <span className="m-cell"><span className="k">START</span><span className="v">{new Date(ws.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>

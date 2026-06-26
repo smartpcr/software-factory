@@ -1811,6 +1811,13 @@ public static class StoriesEndpoints
                 latestVerdict = latest?.Verdict,
                 latestGenAgentId = latest?.GeneratorAgentId,
                 latestEvalAgentId = latest?.EvaluatorAgentId,
+                // Full (generator, evaluator) pair history for this workstream,
+                // oldest first, consecutive-deduped — so the swarm card can show
+                // PRIOR pairs when the workstream was reassigned mid-run
+                // (transport-death recovery, sloppy rotation, operator Retry),
+                // not just the latest pair. Observed BEYOND-AST 3.1:
+                // E9/LL → ZC/WJ → YS4/JZ → YL3/ZK. Empty/1-element on a stable ws.
+                agentPairs = BuildAgentPairsForWorkstream(wsDeliverables),
                 lastActiveAt = latest?.CreatedAt.ToString("O"),
                 // Start of the gen↔eval loop for this workstream: the earliest
                 // deliverable's timestamp. deliverablesByWs is ordered latest-first
@@ -1866,6 +1873,40 @@ public static class StoriesEndpoints
             qaPrMerged,
             workstreams = wsByStatus,
         });
+    }
+
+    private static List<object> BuildAgentPairsForWorkstream(IReadOnlyCollection<DeliverableRow> deliverables)
+    {
+        // Distinct (generator, evaluator) pairs that produced a deliverable for
+        // this workstream, oldest first, deduped on consecutive repeats. Lets the
+        // swarm card render the full pair history when the ws was reassigned
+        // mid-run instead of only the latest pair.
+        var pairs = new List<object>();
+        string? lastGen = null;
+        string? lastEval = null;
+        foreach (var d in deliverables.OrderBy(d => d.CreatedAt))
+        {
+            if (string.IsNullOrEmpty(d.GeneratorAgentId) && string.IsNullOrEmpty(d.EvaluatorAgentId))
+            {
+                continue;
+            }
+
+            if (string.Equals(d.GeneratorAgentId, lastGen, StringComparison.Ordinal)
+                && string.Equals(d.EvaluatorAgentId, lastEval, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            pairs.Add(new
+            {
+                gen = string.IsNullOrEmpty(d.GeneratorAgentId) ? null : d.GeneratorAgentId,
+                eval = string.IsNullOrEmpty(d.EvaluatorAgentId) ? null : d.EvaluatorAgentId,
+            });
+            lastGen = d.GeneratorAgentId;
+            lastEval = d.EvaluatorAgentId;
+        }
+
+        return pairs;
     }
 
     private static string ResolveWorkstreamStatus(
