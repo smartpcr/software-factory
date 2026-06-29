@@ -195,9 +195,13 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
           // switch" cue rendered on the iteration's own chip. Generator-only —
           // the evaluator rotates too, but the operator cares which agent
           // produced this iter's diff.
+          // Pair switched when EITHER the generator OR the evaluator changed vs
+          // the prior iter (the chip shows the full gen/eval pair).
           const genSwitched = prev != null
-            && prev.generatorAgentId != null && it.generatorAgentId != null
-            && prev.generatorAgentId !== it.generatorAgentId;
+            && (prev.generatorAgentId != null || prev.evaluatorAgentId != null)
+            && (it.generatorAgentId != null || it.evaluatorAgentId != null)
+            && (prev.generatorAgentId !== it.generatorAgentId
+              || prev.evaluatorAgentId !== it.evaluatorAgentId);
           const pairAttemptChanged = idx > 0 && thisPair !== prevPair;
           const showPairDivider = pairAttemptChanged || idsChanged;
           const dividerTitle = pairAttemptChanged
@@ -296,10 +300,10 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                 <div style={{ color: 'var(--text-tertiary, #8d94a3)' }} title={`recorded ${formatDateTime(it.createdAt)}`}>
                   {formatClock(it.createdAt)}
                 </div>
-                {/* #2 — generator agent for this iter. Amber + ⇄ prefix when it
-                    switched from the prior iter (transport-death recovery,
-                    sloppy/no-convergence rotation, operator Retry, …) so the
-                    swap is visible on the iteration it happened. */}
+                {/* #2 — gen/eval agent PAIR for this iter. Amber + ⇄ prefix when
+                    the pair switched from the prior iter (transport-death
+                    recovery, sloppy/no-convergence rotation, operator Retry, …)
+                    so the swap is visible on the iteration it happened. */}
                 <div
                   style={{
                     color: genSwitched ? 'var(--sc-amber, #ffb347)' : 'var(--text-tertiary, #8d94a3)',
@@ -309,9 +313,11 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
                     whiteSpace: 'nowrap',
                   }}
                   title={`generator ${it.generatorAgentId ?? '?'} · evaluator ${it.evaluatorAgentId ?? '?'}`
-                    + (genSwitched ? ` — switched from ${prev?.generatorAgentId ?? '?'}` : '')}
+                    + (genSwitched ? ` — switched from ${prev?.generatorAgentId ?? '?'}/${prev?.evaluatorAgentId ?? '?'}` : '')}
                 >
-                  {it.generatorAgentId ? `${genSwitched ? '⇄' : ''}${it.generatorAgentId}` : '—'}
+                  {(it.generatorAgentId || it.evaluatorAgentId)
+                    ? `${genSwitched ? '⇄' : ''}${it.generatorAgentId ?? '?'}/${it.evaluatorAgentId ?? '?'}`
+                    : '—'}
                 </div>
               </button>
             </div>
@@ -351,7 +357,9 @@ export function IterKpiStrip({ iters, activeIter, onSelectIter }: Props): JSX.El
         {/* #2 — generator agent label row, aligning with the per-chip `gen`
             row. Shows the latest iter's generator; the per-chip cells + amber
             divider surface the switches across iters. */}
-        <TextRow label="gen" text={iters.length > 0 ? (iters[iters.length - 1].generatorAgentId ?? '—') : '—'} />
+        <TextRow label="pair" text={iters.length > 0 && (iters[iters.length - 1].generatorAgentId || iters[iters.length - 1].evaluatorAgentId)
+          ? `${iters[iters.length - 1].generatorAgentId ?? '?'}/${iters[iters.length - 1].evaluatorAgentId ?? '?'}`
+          : '—'} />
       </div>
     </div>
   );
