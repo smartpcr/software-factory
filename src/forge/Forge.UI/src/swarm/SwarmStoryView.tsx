@@ -21,6 +21,51 @@ function modeForPhase(p: StorySpawnPhase): SwarmMode {
   return 'impl';
 }
 
+/** Format an elapsed/duration in ms as "Xh Ym" / "Xm Ys" / "Xs". */
+function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const sec = Math.floor(ms / 1000);
+  const min = Math.floor(sec / 60);
+  const hr = Math.floor(min / 60);
+  return hr > 0 ? `${hr}h ${min % 60}m` : min > 0 ? `${min}m ${sec % 60}s` : `${sec}s`;
+}
+
+/** Inline label + value cell for the header's one-line meta row. Renders
+ *  nothing when `text` is null so an absent stat collapses out of the line. */
+function HeaderStat({ label, text, hint }: { label: string; text: string | null; hint?: string }) {
+  if (!text) return null;
+  return (
+    <span title={hint} style={{ display: 'inline-flex', gap: 4, alignItems: 'baseline' }}>
+      <span style={{ color: 'var(--sc-muted)' }}>{label}</span>
+      <span style={{ color: 'var(--sc-text)', fontSize: 12 }}>{text}</span>
+    </span>
+  );
+}
+
+/**
+ * Elapsed readout between two ISO timestamps. While `end` is null the value is
+ * LIVE — it ticks every second from `start` to now (an "uptime", for ongoing
+ * work). Once `end` is set it freezes to the start→end SPAN (for finished
+ * work). Only this node re-renders on tick, not the whole story view. Renders
+ * nothing for a null/unparseable `start`.
+ */
+function LiveElapsed({ start, end, label, hint }: { start?: string | null; end?: string | null; label: string; hint?: string }) {
+  const live = !end;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [live]);
+  if (!start) return null;
+  const s = Date.parse(start);
+  if (Number.isNaN(s)) return null;
+  const e = end ? Date.parse(end) : now;
+  if (Number.isNaN(e)) return null;
+  return <HeaderStat label={label} text={formatElapsed(e - s)} hint={hint} />;
+}
+
+
 export function SwarmStoryView() {
   const { storyId: rawId = '' } = useParams<{ storyId: string }>();
   const storyId = decodeURIComponent(rawId);
@@ -42,6 +87,12 @@ export function SwarmStoryView() {
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Selected-workstream active-time KPIs (Insight I.3, same source as the
+  // Conversation iter-strip). activeMs = Σ per-iter durationMs (active compute
+  // time, excludes idle/queue gaps); lastIterMs = the most recent iteration's
+  // durationMs. Both are finished spans (scored−started), so they freeze once
+  // the workstream stops iterating.
+  const [wsTiming, setWsTiming] = useState<{ activeMs: number | null; lastIterMs: number | null }>({ activeMs: null, lastIterMs: null });
 
   // Restore state from URL search params on mount so page reload preserves
   // the selected pipeline stage, master-panel item, and detail tab.
@@ -141,6 +192,55 @@ export function SwarmStoryView() {
     // activeProductId in deps: after the auto-switch above changes it, re-run
     // load so the spawn fetch uses the corrected product header.
   }, [storyId, tick, activeProductId]);
+
+  // Fetch the selected workstream's iter-kpis to derive WORKSTREAM (active
+  // time) and LAST ITER (last iteration duration). Only runs when a workstream
+  // (phase) is selected; clears otherwise. Polls on the same 30s cadence as
+  // the Conversation tab's iter-strip.
+  const selectedWsId = selection.kind === 'phase' ? selection.id : null;
+  useEffect(() => {
+    if (!selectedWsId) { setWsTiming({ activeMs: null, lastIterMs: null }); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await forgeApi.fetchWorkstreamIterKpis(selectedWsId!);
+        if (cancelled) return;
+        // Per-iter active duration. Prefer the backend's durationMs
+        // (task.iteration.started→scored run time), but those transcript
+        // events get pruned for older iters — leaving only the most recent
+        // iter, which made Σ collapse to "== LAST ITER". Fall back to the
+        // wall-clock gap between consecutive deliverables (always durable)
+        // for iters whose events were evicted. The newest iter (which carries
+        // any post-idle resume) almost always still has its events, so a long
+        // idle/queue wait before it is correctly EXCLUDED — we use its real
+        // run duration, not the gap — while back-to-back middle iters get
+        // gap ≈ run-time.
+        const iters = [...(res.iters ?? [])].sort((a, b) => a.iter - b.iter);
+        const durOf = (i: number): number | null => {
+          const explicit = iters[i].durationMs;
+          if (explicit != null && explicit > 0) return explicit;
+          if (i > 0) {
+            const prev = Date.parse(iters[i - 1].createdAt);
+            const cur = Date.parse(iters[i].createdAt);
+            if (!Number.isNaN(prev) && !Number.isNaN(cur) && cur > prev) return cur - prev;
+          }
+          return null;
+        };
+        let activeMs = 0;
+        for (let i = 0; i < iters.length; i++) {
+          const d = durOf(i);
+          if (d != null) activeMs += d;
+        }
+        const lastIterMs = iters.length > 0 ? durOf(iters.length - 1) : null;
+        setWsTiming({ activeMs: activeMs > 0 ? activeMs : null, lastIterMs });
+      } catch {
+        if (!cancelled) setWsTiming({ activeMs: null, lastIterMs: null });
+      }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [selectedWsId, tick]);
 
   // When mode flips via the nav-bar dropdown, setMode resets selection
   // inline. We intentionally do NOT mirror that into a useEffect on
@@ -252,7 +352,7 @@ export function SwarmStoryView() {
         <div className="swarm-header-expanded">
         {/* Simplified header — title + phase, no metrics */}
         <div className="swarm-header-slim">
-          <div className="swarm-header-slim-left">
+          <div className="swarm-header-slim-left" style={{ flex: 1, minWidth: 0 }}>
             <div className="swarm-header-slim-eyebrow">SWARM CONTROL // {detail.spawn.storyId}</div>
             <h1 className="swarm-header-slim-title">{detail.spawn.storyTitle.toUpperCase()}</h1>
             <div className="swarm-header-slim-sub">
@@ -310,37 +410,63 @@ export function SwarmStoryView() {
               )}
             </div>
           </div>
-          {selection.kind === 'phase' && selection.id && (() => {
-            const ws = detail.workstreams.find((w) => w.id === selection.id);
-            const ms = ws?.lastActiveAt ? Date.now() - Date.parse(ws.lastActiveAt) : null;
-            const uptime = ms !== null ? (() => {
-              const sec = Math.floor(ms / 1000);
-              const min = Math.floor(sec / 60);
-              const hr  = Math.floor(min / 60);
-              return hr > 0 ? `${hr}h ${min % 60}m` : min > 0 ? `${min}m ${sec % 60}s` : `${sec}s`;
-            })() : null;
+          {(() => {
+            const selectedWs = selection.kind === 'phase' && selection.id
+              ? detail.workstreams.find((w) => w.id === selection.id)
+              : undefined;
+            const spawnDone = detail.spawn.phase === 'done';
             return (
-              <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', textAlign: 'right' }}>
-                <a
-                  href={`/work-items?focus=${encodeURIComponent(selection.id)}`}
-                  style={{
-                    fontSize: 10,
-                    color: '#569cd6',
-                    textDecoration: 'none',
-                    letterSpacing: '0.12em',
-                    display: 'inline-block',
-                    marginBottom: 6,
-                  }}
-                  title="Open this work item in the Work Items view"
-                >
-                  ↗ VIEW WORK ITEM
-                </a>
-                {uptime !== null && (
-                  <>
-                    <br />
-                    <span style={{ color: 'var(--sc-muted)' }}>UPTIME</span><br />
-                    <span style={{ color: 'var(--sc-text)', fontSize: 14 }}>{uptime}</span>
-                  </>
+              <div
+                style={{
+                  fontFamily: 'var(--sc-font-display)',
+                  fontSize: 10,
+                  letterSpacing: '0.12em',
+                  color: 'var(--sc-text-dim)',
+                  // One right-aligned line of readouts, pinned into the right
+                  // corner adjacent to (not overlapping) the collapse button.
+                  marginLeft: 'auto',
+                  alignSelf: 'flex-start',
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'baseline',
+                  flexWrap: 'nowrap',
+                  whiteSpace: 'nowrap',
+                  gap: 14,
+                }}
+              >
+                {selectedWs && selection.id && (
+                  <a
+                    href={`/work-items?focus=${encodeURIComponent(selection.id)}`}
+                    style={{
+                      fontSize: 10,
+                      color: '#569cd6',
+                      textDecoration: 'none',
+                      letterSpacing: '0.12em',
+                    }}
+                    title="Open this work item in the Work Items view"
+                  >
+                    ↗ VIEW WORK ITEM
+                  </a>
+                )}
+                <LiveElapsed
+                  start={detail.spawn.createdAt}
+                  end={spawnDone ? detail.spawn.updatedAt : null}
+                  label="SPAWN"
+                  hint={spawnDone ? 'Total spawn span (created → done)' : 'Elapsed since this spawn was created'}
+                />
+                {selectedWs && (
+                  <HeaderStat
+                    label="WORKSTREAM"
+                    text={wsTiming.activeMs != null ? formatElapsed(wsTiming.activeMs) : null}
+                    hint="Active time: sum of this workstream's iteration durations"
+                  />
+                )}
+                {selectedWs && (
+                  <HeaderStat
+                    label="LAST ITER"
+                    text={wsTiming.lastIterMs != null ? formatElapsed(wsTiming.lastIterMs) : null}
+                    hint="Duration of this workstream's most recent iteration"
+                  />
                 )}
               </div>
             );
