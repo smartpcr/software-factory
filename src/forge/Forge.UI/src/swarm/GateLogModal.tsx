@@ -20,7 +20,52 @@ export function GateLogModal({ open, logUrl, title, onClose }: Props) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const preRef = useRef<HTMLPreElement | null>(null);
+
+  // Reset the transient "copied" affordance whenever the modal is
+  // re-opened or pointed at a different log.
+  useEffect(() => { setCopied(false); }, [open, logUrl]);
+
+  const hasContent = content != null && content.length > 0;
+
+  async function handleCopy() {
+    if (content == null) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can reject (insecure context / denied permission);
+      // fall back to a hidden textarea + execCommand so Copy still works.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = content;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      } catch { /* give up silently */ }
+    }
+  }
+
+  function handleSave() {
+    if (content == null) return;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = deriveLogFilename(title);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke on the next tick so the click has consumed the URL.
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 
   // Fetch log content when opened.
   useEffect(() => {
@@ -107,27 +152,47 @@ export function GateLogModal({ open, logUrl, title, onClose }: Props) {
           <h3
             id="gate-log-title"
             className="modal-title"
-            style={{ margin: 0, fontSize: 14, fontWeight: 600 }}
+            style={{ margin: 0, fontSize: 14, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
             {title || 'Gate Log'}
           </h3>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-secondary, #9ca3af)',
-              cursor: 'pointer',
-              fontSize: 16,
-              padding: '2px 6px',
-              borderRadius: 3,
-              lineHeight: 1,
-            }}
-            title="Close (Esc)"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            <button
+              onClick={handleCopy}
+              disabled={!hasContent}
+              style={logActionBtnStyle(!hasContent)}
+              title="Copy all logs to clipboard"
+              aria-label="Copy all logs"
+            >
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!hasContent}
+              style={logActionBtnStyle(!hasContent)}
+              title="Save all logs to a file"
+              aria-label="Save all logs"
+            >
+              Save
+            </button>
+            <button
+              onClick={onClose}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-secondary, #9ca3af)',
+                cursor: 'pointer',
+                fontSize: 16,
+                padding: '2px 6px',
+                borderRadius: 3,
+                lineHeight: 1,
+              }}
+              title="Close (Esc)"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Body */}
@@ -176,4 +241,35 @@ export function GateLogModal({ open, logUrl, title, onClose }: Props) {
       </div>
     </>
   );
+}
+
+// Turn the human modal title ("test · iter 1 · log") into a safe download
+// filename ("test-iter-1-log.log"). Strips anything that isn't a word char,
+// dash, or dot; collapses runs to a single dash; always ends in `.log`.
+function deriveLogFilename(title?: string): string {
+  const base = (title || 'gate-log')
+    .normalize('NFKD')
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .toLowerCase();
+  const safe = base || 'gate-log';
+  return safe.endsWith('.log') ? safe : `${safe}.log`;
+}
+
+function logActionBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    background: 'transparent',
+    border: '1px solid var(--border-strong, rgba(255,255,255,0.18))',
+    color: disabled ? 'var(--text-tertiary, #6b7280)' : 'var(--text-secondary, #9ca3af)',
+    cursor: disabled ? 'default' : 'pointer',
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0.3,
+    padding: '3px 9px',
+    borderRadius: 4,
+    lineHeight: 1.4,
+    opacity: disabled ? 0.5 : 1,
+    whiteSpace: 'nowrap',
+  };
 }

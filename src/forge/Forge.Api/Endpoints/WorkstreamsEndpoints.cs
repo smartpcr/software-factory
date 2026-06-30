@@ -891,6 +891,30 @@ public static class WorkstreamsEndpoints
         }
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
+        // ── 0d. Pre-flight: the worktree MUST be fully removable before we
+        // wipe any state. A Restart's whole purpose is a clean slate, and
+        // EnsureWorktreeAsync re-creates the worktree from scratch on the very
+        // next dispatch — if a prior build/test gate left an UNDELETABLE
+        // directory behind (most often a test-output `Logs` folder with a
+        // hardened/non-inherited ACL that non-elevated Forge.Api can neither
+        // delete nor re-permission, or a process still holding a handle inside
+        // it), that dispatch fails the SAME "could not be removed" way every
+        // ~5 min. A Restart that silently swallowed the delete failure and
+        // reported success therefore just resurrected the crash-loop with
+        // iter=0 and no captured prompt. Fail LOUDLY here — BEFORE deleting
+        // deliverables / transcript / branch — so the state stays intact for a
+        // clean retry once the operator clears the blocker. (2026-06-30:
+        // local:UPDATE-NET10-MIGRATI stage 1.2 re-spawned 19× against an
+        // Access-Denied `out\…\BootstrapValidation.UnitTest\Logs` dir.)
+        var worktreeClearError = await EnsureWorktreeRemovedForRestartAsync(db, ws, ctx.RequestAborted);
+        if (worktreeClearError is not null)
+        {
+            return Results.Problem(
+                title: "Restart blocked — worktree could not be cleared",
+                detail: worktreeClearError,
+                statusCode: 409);
+        }
+
         // ── 1. Delete all deliverables for this workstream ──────────────
         var deliverables = await db.Deliverables.Where(d => d.WorkItemId == id).ToListAsync();
         db.Deliverables.RemoveRange(deliverables);
@@ -1230,6 +1254,143 @@ public static class WorkstreamsEndpoints
             gateLogsPruned,
             planReconciled,
         });
+    }
+
+    /// <summary>
+    /// Restart pre-flight — remove this workstream's git worktree directory and
+    /// HARD-VERIFY it is gone. Returns null on success (including "nothing to
+    /// remove"), or an actionable error string when the folder, or some file
+    /// under it, cannot be deleted. Two failure modes are surfaced: a
+    /// hardened/non-inherited ACL left by a prior build/test gate (e.g. a
+    /// test-output `Logs` dir owned by an elevated principal) that the
+    /// non-elevated Forge.Api account can neither delete nor re-permission; and
+    /// a live process still holding a handle inside the worktree. The caller
+    /// fails the Restart with this string BEFORE wiping any state so the
+    /// operator can clear the blocker and retry against an intact workstream.
+    /// </summary>
+    private static async Task<string?> EnsureWorktreeRemovedForRestartAsync(
+        ProductDbContext db, WorkstreamRow ws, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(ws.Branch)) return null;
+
+        var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId, ct);
+        if (repoRow is null || string.IsNullOrEmpty(repoRow.CloneRoot)
+            || !System.IO.Directory.Exists(repoRow.CloneRoot))
+        {
+            // No resolvable clone root → no worktree we own to clear. Don't
+            // block the restart on a repo we can't locate.
+            return null;
+        }
+        var cloneRoot = repoRow.CloneRoot;
+
+        // Same canonical + git-registered path computation as the step-7 branch
+        // teardown below, so we hard-verify exactly the dirs that teardown
+        // would otherwise delete-and-swallow.
+        string? canonicalWtPath = null;
+        if (!string.IsNullOrEmpty(ws.StorySpawnId))
+        {
+            var siblings = await db.Workstreams.AsNoTracking()
+                .Where(w => w.StorySpawnId == ws.StorySpawnId)
+                .ToListAsync(ct);
+            if (siblings.All(w => w.Id != ws.Id)) siblings.Add(ws);
+            var slug = Forge.Api.Services.Stories.WorkstreamWorktreeSlug.Compute(ws, siblings);
+            canonicalWtPath = System.IO.Path.Combine(cloneRoot, ".worktree", slug);
+        }
+        var registeredPath = await TryFindWorktreeForBranchAsync(cloneRoot, ws.Branch);
+
+        foreach (var wtPath in new[] { canonicalWtPath, registeredPath }
+            .Where(p => !string.IsNullOrEmpty(p)).Distinct())
+        {
+            var err = await RemoveWorktreeDirHardAsync(cloneRoot, wtPath!, ct);
+            if (err is not null) return err;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Drop the git worktree registration for <paramref name="wtPath"/>, then
+    /// robustly delete the directory (clear read-only attributes, break locks,
+    /// retry). Returns null once the directory no longer exists; otherwise an
+    /// operator-actionable description of why it could not be removed. Mirrors
+    /// <c>RealStoryGitOps.ForceDeleteWorktreeDirAsync</c>'s retry/lock-break
+    /// loop but reports failure to the caller instead of throwing deep inside
+    /// the next dispatch.
+    /// </summary>
+    private static async Task<string?> RemoveWorktreeDirHardAsync(
+        string cloneRoot, string wtPath, CancellationToken ct)
+    {
+        // git first so the registration is dropped; harmless if not registered.
+        await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath);
+
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 6 && System.IO.Directory.Exists(wtPath); attempt++)
+        {
+            try
+            {
+                ClearReadOnlyRecursiveSafe(wtPath);
+                System.IO.Directory.Delete(wtPath, recursive: true);
+                break;
+            }
+            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+            {
+                last = ex;
+                // After the first transient retry, treat it as a real lock and
+                // ask the Restart-Manager lock-breaker to kill agent-infra
+                // holders (copilot server / orphaned testhost). No-op for an
+                // ACL wall — there is no process to kill.
+                if (attempt >= 2)
+                {
+                    Forge.Api.Services.Stories.WorktreeLockBreaker.BreakLocks(wtPath, null);
+                }
+                try { await Task.Delay(TimeSpan.FromMilliseconds(400 * attempt), ct); }
+                catch (OperationCanceledException) { break; }
+            }
+        }
+        await RunGitQuietAsync(cloneRoot, "worktree", "prune");
+
+        if (!System.IO.Directory.Exists(wtPath)) return null;
+
+        // Still on disk → genuinely undeletable. Classify by the last error:
+        // UnauthorizedAccessException that survives lock-breaking is almost
+        // always an ACL/ownership wall; IOException is a live handle.
+        var reason = last?.Message ?? "Access to the path is denied.";
+        var hint = last is UnauthorizedAccessException
+            ? "The blocking path has a hardened or non-inherited ACL that the non-elevated Forge.Api "
+              + "account cannot delete or re-permission (commonly a test-output `Logs` folder created by a "
+              + "prior build/test gate). Clear it from an ELEVATED shell, then Restart again:\n"
+              + $"    takeown /f \"{wtPath}\" /a /r /d y\n"
+              + $"    icacls \"{wtPath}\" /reset /t /c\n"
+              + $"    Remove-Item \"{wtPath}\" -Recurse -Force"
+            : "A process is still holding a handle inside the worktree (an editor/indexer such as "
+              + "Visual Studio/ReSharper, or an orphaned testhost/dotnet from a timed-out gate). Close it "
+              + "or wait for it to exit, then Restart again.";
+        return $"Restart could not delete all contents under the worktree '{wtPath}'. "
+            + $"Underlying error: {reason}\n{hint}";
+    }
+
+    /// <summary>
+    /// Best-effort recursive read-only clear so <see cref="System.IO.Directory.Delete(string,bool)"/>
+    /// can remove git pack files and build outputs that are frequently marked
+    /// read-only. Per-item try/catch — enumeration may race the locking process.
+    /// </summary>
+    private static void ClearReadOnlyRecursiveSafe(string root)
+    {
+        try
+        {
+            foreach (var fsi in new System.IO.DirectoryInfo(root)
+                .EnumerateFileSystemInfos("*", System.IO.SearchOption.AllDirectories))
+            {
+                try
+                {
+                    if ((fsi.Attributes & System.IO.FileAttributes.ReadOnly) != 0)
+                    {
+                        fsi.Attributes &= ~System.IO.FileAttributes.ReadOnly;
+                    }
+                }
+                catch { /* best-effort per item */ }
+            }
+        }
+        catch { /* enumeration may hit a denied dir — caller verifies + reports */ }
     }
 
     /// <summary>

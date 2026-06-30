@@ -293,9 +293,22 @@ public sealed class SpawnDependencyScheduler : BackgroundService
                 // strand the spawn at done with the work item still active.
                 // DriveDoneAsync short-circuits once the WI state is already
                 // closed, so this remains effectively a one-shot per spawn.
+                //
+                // Exclude Paused AND Deleting: Pause already parked the spawn
+                // out of the scheduler's reach; Deleting must get the SAME
+                // quiescence so DELETE /spawn can wipe rows without a
+                // concurrent DriveAsync resurrecting the story WorkItem
+                // (RunOneStepAsync re-creates it when missing) or re-claiming
+                // plan-doc agents after the deliverable wipe un-passes the
+                // Phase-48 gate and regresses the phase to Plan. Without this,
+                // delete raced the 15 s tick — SQLITE_BUSY 500s on cleanup
+                // SaveChanges, and tasks rescheduled mid-delete — which is why
+                // the operator had to Pause first then Delete (StoriesEndpoints
+                // DeleteSpawn flips Phase=Deleting before its long cleanup).
                 var rows = await db.StorySpawns
                     .AsNoTracking()
-                    .Where(s => s.Phase != StorySpawnPhases.Paused)
+                    .Where(s => s.Phase != StorySpawnPhases.Paused
+                        && s.Phase != StorySpawnPhases.Deleting)
                     .Select(s => new ValueTuple<string, string>(s.StoryId, s.Id))
                     .ToListAsync(ct);
                 aggregate.AddRange(rows);

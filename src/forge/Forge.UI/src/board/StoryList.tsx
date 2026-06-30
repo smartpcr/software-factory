@@ -68,6 +68,19 @@ export function StoryList() {
     });
   }
 
+  // Bulk expand/collapse. `allCollapsed` is true only when every currently
+  // rendered group is folded; the toggle then expands everything, otherwise
+  // it collapses everything. Keyed off the live group ids so stale ids left
+  // in the set from a previous product/filter don't skew the "all" check.
+  const groupIds = useMemo(
+    () => groups.map(({ story }) => story?.id ?? '__none__'),
+    [groups],
+  );
+  const allCollapsed = groupIds.length > 0 && groupIds.every((id) => collapsed.has(id));
+  function toggleAll() {
+    setCollapsed(allCollapsed ? new Set() : new Set(groupIds));
+  }
+
   const [editing, setEditing] = useState<ProductStory | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ProductStory | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -91,7 +104,22 @@ export function StoryList() {
   return (
     <div className="story-list">
       <div style={headerStyle}>
-        <span style={{ flex: 2 }}>Story / Card</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 2, minWidth: 0 }}>
+          <button
+            type="button"
+            onClick={toggleAll}
+            disabled={groupIds.length === 0}
+            style={{ ...chevronBtnStyle, cursor: groupIds.length === 0 ? 'default' : 'pointer' }}
+            title={allCollapsed ? 'Expand all stories' : 'Collapse all stories'}
+            aria-label={allCollapsed ? 'Expand all stories' : 'Collapse all stories'}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: allCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
+              <path d="M2 2 L5 4.5 L8 2" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2 5 L5 7.5 L8 5" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <span>Story / Card</span>
+        </span>
         <span style={{ width: 80, textAlign: 'center' }}>Status</span>
         <span style={{ width: 50, textAlign: 'center' }}>Pts</span>
         <span style={{ width: 70, textAlign: 'center' }}>Priority</span>

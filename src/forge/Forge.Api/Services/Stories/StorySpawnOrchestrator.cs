@@ -275,6 +275,23 @@ public sealed class StorySpawnOrchestrator
     private async Task<bool> RunOneStepAsync(
         ControlDbContext control, ProductDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
     {
+        // Hard quiescence for an in-flight delete. DeleteSpawn flips
+        // Phase=Deleting before its (slow, multi-second) cleanup and the
+        // scheduler now skips Deleting spawns when enumerating — but a tick
+        // already in flight when the flip landed (it read the spawn under its
+        // pre-Deleting phase, or is orphaned past the 60 s RunWithTimeoutAsync)
+        // would still run here. Bail BEFORE the story-WorkItem resurrection
+        // below and BEFORE the phase switch: otherwise a stray tick re-creates
+        // the story WorkItem the cascade just removed, or the deliverable wipe
+        // un-passes the Phase-48 plan-doc gate and re-claims plan-doc agents —
+        // exactly the "tasks rescheduled mid-delete" race that forced the
+        // operator to Pause first. The switch already has no Deleting case;
+        // this just stops the resurrection that precedes it.
+        if (string.Equals(spawn.Phase, StorySpawnPhases.Deleting, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
         // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
         // **persist** a fresh WorkItemRow so plan-doc / workstream child rows
