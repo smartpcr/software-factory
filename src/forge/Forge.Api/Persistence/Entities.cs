@@ -2005,6 +2005,20 @@ public class RepoRow
     /// </summary>
     public bool? RunTestsElevated { get; set; }
 
+    /// <summary>
+    /// Per-repo override for the qa-e2e test STYLE. <c>null</c> = inherit the
+    /// global <c>Forge:Stories:E2eUseBddPattern</c> default (which defaults to
+    /// <c>true</c>); <c>true</c> = generate BDD / Gherkin acceptance tests
+    /// (a <c>.feature</c> file + step-definition bindings — Reqnroll for .NET,
+    /// godog for Go, cucumber-rs for Rust, pytest-bdd for Python, Cucumber-JVM
+    /// for Java); <c>false</c> = generate plain idiomatic test methods (one per
+    /// acceptance scenario) in the repo's existing unit-test framework, no
+    /// <c>.feature</c> file. Drives
+    /// <see cref="Forge.Api.Services.Stories.CrewStoryArtifactStrategy"/>'s
+    /// qa-e2e generator-prompt selection. (docs/forge/e2e.md Stage 4.3.)
+    /// </summary>
+    public bool? E2eUseBddPattern { get; set; }
+
     // -- Phase 33 — persisted sync settings ----------------------------------
 
     /// <summary>Default assignee filter for WI sync (email or display name).</summary>

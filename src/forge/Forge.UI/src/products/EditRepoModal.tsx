@@ -35,6 +35,10 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [previewingImpacted, setPreviewingImpacted] = useState(false);
   // Phase 84 — per-repo build/test elevation requirement (Administrator).
   const [runTestsElevated, setRunTestsElevated] = useState<boolean>(repo.runTestsElevated ?? false);
+  // Phase 94 — per-repo qa-e2e test-style override. Tri-state: null inherits the
+  // global Forge:Stories:E2eUseBddPattern default (true = BDD/Gherkin);
+  // 'true' / 'false' override.
+  const [e2eUseBddPattern, setE2eUseBddPattern] = useState<boolean | null>(repo.e2eUseBddPattern ?? null);
   // Phase 34 — per-repo sync cadence overrides. Stored as seconds; 0 clears
   // the override and the row inherits the global default (2 hr).
   const [wiIntervalSec, setWiIntervalSec] = useState<number>(repo.workItemSyncIntervalSeconds ?? 0);
@@ -66,6 +70,7 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setTestTimeoutSec(repo.testTimeoutSec ?? '');
     setTestImpactedOnly(repo.testImpactedOnly ?? null);
     setRunTestsElevated(repo.runTestsElevated ?? false);
+    setE2eUseBddPattern(repo.e2eUseBddPattern ?? null);
     setImpactedPreview(null);
     setPreviewingImpacted(false);
     setWiIntervalSec(repo.workItemSyncIntervalSeconds ?? 0);
@@ -126,6 +131,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       if (testImpactedOnly !== (repo.testImpactedOnly ?? null)) patch.testImpactedOnly = testImpactedOnly;
       // Phase 84 — per-repo build/test elevation requirement.
       if (runTestsElevated !== (repo.runTestsElevated ?? false)) patch.runTestsElevated = runTestsElevated;
+      // Phase 94 — per-repo qa-e2e test-style override (BDD/Gherkin vs plain).
+      if (e2eUseBddPattern !== (repo.e2eUseBddPattern ?? null)) patch.e2eUseBddPattern = e2eUseBddPattern;
 
       // Phase 34 — per-repo sync cadence overrides. Send 0 to clear; the server
       // treats <= 0 as "fall back to global default".
@@ -412,6 +419,25 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                   </button>
                   {impactedPreview && <ImpactedTestPreviewLine preview={impactedPreview} />}
                 </div>
+
+                {/* Phase 94 — qa-e2e test style (BDD/Gherkin vs plain) */}
+                <SectionLabel>qa-e2e test style</SectionLabel>
+                <FieldGroup label="Pattern" hint="Controls how Forge's qa-e2e workstreams write acceptance tests. BDD/Gherkin emits a .feature file + step bindings (Reqnroll for .NET, godog for Go, cucumber-rs for Rust, pytest-bdd for Python, Cucumber-JVM for Java). Plain emits one idiomatic test method per scenario in the repo's existing test framework (no .feature file). For .NET, BDD detects and matches the repo's existing runner (MSTest / xUnit / NUnit) instead of defaulting to xUnit.">
+                  <select
+                    value={e2eUseBddPattern === null ? 'inherit' : e2eUseBddPattern ? 'bdd' : 'plain'}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setE2eUseBddPattern(v === 'inherit' ? null : v === 'bdd');
+                    }}
+                    disabled={busy}
+                    style={{ ...inputStyle, ...monoStyle }}
+                    data-testid="repo-e2e-use-bdd-pattern"
+                  >
+                    <option value="inherit">Inherit global (Forge:Stories:E2eUseBddPattern — default BDD)</option>
+                    <option value="bdd">BDD / Gherkin — .feature file + step bindings</option>
+                    <option value="plain">Plain — idiomatic test methods in the repo's framework</option>
+                  </select>
+                </FieldGroup>
 
                 {/* Detect / Validate actions */}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>

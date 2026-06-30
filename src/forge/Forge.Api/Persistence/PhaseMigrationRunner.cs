@@ -113,6 +113,10 @@ public sealed class PhaseMigrationRunner
         // build/test-gate migration already holds 92, placed at the head of the
         // chain above for its WorkstreamRow EF-model ordering dependency.)
         93,
+        // Phase 94 — repos.E2eUseBddPattern (per-repo qa-e2e test-style override).
+        // Product-only, fans out per {slug}.db. Additive nullable column; no
+        // EF-model ordering dependency (no migration EF-queries `repos`).
+        94,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

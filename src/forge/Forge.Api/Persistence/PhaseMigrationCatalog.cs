@@ -323,6 +323,13 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(93, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "operator_prompts" }),
+        // Phase 94 — repos.E2eUseBddPattern (per-repo qa-e2e test-style override:
+        // BDD/Gherkin vs plain idiomatic test methods). Product-only: post-Phase-80.B
+        // `repos` is a ProductDbContext entity in each {slug}.db, so the runner fans
+        // this out per product DB. Additive nullable column; no ordering dependency.
+        new PhaseMigrationSpec(94, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "repos" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

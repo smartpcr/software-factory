@@ -2033,6 +2033,10 @@ export const forgeApi = {
     planDocBaseDir?: string | null;
     // Phase 84 — per-repo build/test elevation requirement (Administrator).
     runTestsElevated?: boolean | null;
+    // Phase 94 — per-repo qa-e2e test-style override. null = inherit global
+    // Forge:Stories:E2eUseBddPattern (true = BDD/Gherkin); true forces
+    // BDD/Gherkin; false = plain idiomatic test methods in the repo's framework.
+    e2eUseBddPattern?: boolean | null;
     // Phase 33 — persisted sync settings.
     wiSyncAssignedTo?: string;
     wiSyncDateFromDays?: number | null;

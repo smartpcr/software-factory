@@ -156,6 +156,14 @@ public static class ProductsEndpoints
         if (req.RunTestsElevated is { } runTestsElevated)
             row.RunTestsElevated = runTestsElevated;
 
+        // Phase 94 — per-repo qa-e2e test-style override. true / false pin
+        // BDD/Gherkin vs plain idiomatic test methods for this repo; the
+        // request DTO's bool? round-trips JSON null (leave unchanged) vs. the
+        // explicit value. Null on the row inherits the global
+        // Forge:Stories:E2eUseBddPattern default (true).
+        if (req.E2eUseBddPattern is { } e2eUseBddPattern)
+            row.E2eUseBddPattern = e2eUseBddPattern;
+
         // Phase 83 — per-repo plan-doc base dir. Empty string clears the
         // override (inherit the default docs/stories); any other value is
         // normalized (forward slashes, no leading/trailing slash, no
@@ -1149,7 +1157,8 @@ public static class ProductsEndpoints
             r.LastUpstreamChangedDate,
             r.TestImpactedOnly,
             r.PlanDocBaseDir,
-            r.RunTestsElevated);
+            r.RunTestsElevated,
+            r.E2eUseBddPattern);
     }
 
     private static string Slugify(string name)

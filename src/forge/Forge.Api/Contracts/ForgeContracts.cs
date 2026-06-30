@@ -312,7 +312,12 @@ public sealed record Repo(
     string? PlanDocBaseDir = null,
     // Per-repo build/test elevation requirement. true => the validation must run
     // elevated (admin); null/false => no requirement. See RepoRow.RunTestsElevated.
-    bool? RunTestsElevated = null);
+    bool? RunTestsElevated = null,
+    // Phase 94 — per-repo qa-e2e test-style override. null = inherit the global
+    // Forge:Stories:E2eUseBddPattern default (true = BDD/Gherkin); true = force
+    // BDD/Gherkin (.feature + step bindings); false = plain idiomatic test
+    // methods in the repo's existing test framework. See RepoRow.E2eUseBddPattern.
+    bool? E2eUseBddPattern = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -539,7 +544,11 @@ public sealed record UpdateRepoRequest(
     string? PlanDocBaseDir = null,
     // Per-repo build/test elevation requirement. null = leave unchanged;
     // true/false pin whether this repo's validation must run elevated (admin).
-    bool? RunTestsElevated = null);
+    bool? RunTestsElevated = null,
+    // Phase 94 — per-repo qa-e2e test-style override. null = leave unchanged;
+    // true = force BDD/Gherkin (.feature + step bindings); false = plain
+    // idiomatic test methods in the repo's existing test framework.
+    bool? E2eUseBddPattern = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

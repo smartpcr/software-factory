@@ -1995,6 +1995,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     }
 
     /// <summary>
+    /// Phase 94 — resolve the effective qa-e2e test-style for a repo. Per-repo
+    /// <see cref="RepoRow.E2eUseBddPattern"/> override wins; null falls through
+    /// to the global <c>Forge:Stories:E2eUseBddPattern</c> config key (default
+    /// <c>true</c> = BDD/Gherkin). Mirrors <see cref="ResolveImpactedTestOnly"/>.
+    /// </summary>
+    internal static bool ResolveE2eUseBddPattern(RepoRow? repo, IConfiguration config)
+    {
+        if (repo?.E2eUseBddPattern is bool overrideValue)
+        {
+            return overrideValue;
+        }
+        return config.GetValue<bool?>("Forge:Stories:E2eUseBddPattern") ?? true;
+    }
+
+    /// <summary>
     /// 2026-05-21 — convert a nullable per-repo timeout (seconds) into a
     /// <see cref="TimeSpan"/>. Returns null for null / non-positive values
     /// so the gate falls back to <see cref="StoryBuildRunner.DefaultTimeout"/>.
@@ -5755,7 +5770,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // `*_test.go` step defs + `go test`); everything else → Reqnroll /
         // .NET (the historical default). Defaults to `dotnet` so existing
         // callers / unit fixtures keep the prior behaviour.
-        string Ecosystem = "dotnet");
+        string Ecosystem = "dotnet",
+        // Phase 94 — whether to emit BDD/Gherkin acceptance tests (a `.feature`
+        // file + step bindings) vs plain idiomatic test methods (one per
+        // scenario, no `.feature`). Resolved from the repo's
+        // `E2eUseBddPattern` override falling back to the global
+        // `Forge:Stories:E2eUseBddPattern` (default true). Defaults to `true`
+        // so existing callers / unit fixtures keep the BDD behaviour.
+        bool UseBddPattern = true,
+        // Phase 94 — the .NET unit-test framework the dotnet harness binds to,
+        // detected from the target repo so the generated suite matches the
+        // repo's existing convention instead of defaulting to xUnit. One of
+        // `mstest` | `xunit` | `nunit`. Only consulted for the dotnet
+        // ecosystem; defaults to `mstest` (the repo-wide convention here).
+        string DotnetTestFramework = "mstest");
 
     /// <summary>
     /// docs/forge/e2e.md Stage 4.3 — gather everything the QA-crew
@@ -5792,6 +5820,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var ecosystem = ResolveRepoEcosystem(repo);
 
+        // Phase 94 — repo override wins over the global default; the global
+        // default is itself true (BDD/Gherkin) unless the operator turns it
+        // off in appsettings. Mirrors the GateImplOnPriorStageE2e config shape.
+        var useBdd = ResolveE2eUseBddPattern(repo, this.config);
+
+        // Phase 94 — detect the repo's existing .NET test framework so the
+        // dotnet harness matches it (MSTest here) instead of free-choosing
+        // xUnit. No-op for non-dotnet ecosystems (the token is ignored there).
+        var dotnetFramework = ResolveDotnetTestFramework(repo);
+
         return new QaE2ePromptInputs(
             StoryId: spawn.StoryId,
             StoryTitle: spawn.StoryTitle ?? string.Empty,
@@ -5805,7 +5843,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             SetupType: setupType,
             SetupBlockMarkdown: setupBlock,
             AttachmentPromptSection: attachmentPromptSection,
-            Ecosystem: ecosystem);
+            Ecosystem: ecosystem,
+            UseBddPattern: useBdd,
+            DotnetTestFramework: dotnetFramework);
     }
 
     /// <summary>
@@ -5850,6 +5890,122 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return "dotnet";
     }
 
+    /// <summary>
+    /// Phase 94 — resolve the target repo's existing .NET unit-test framework so
+    /// the dotnet qa-e2e harness binds to the SAME runner the repo already uses
+    /// (the root cause of the "generated e2e switched to xUnit" drift: the prompt
+    /// never named a Reqnroll unit-test provider, so a fresh scaffold defaulted
+    /// to xUnit instead of matching the repo's <c>Reqnroll.MsTest</c> convention).
+    /// Scans <c>Directory.Packages.props</c> + a bounded set of <c>*.csproj</c>
+    /// under the clone root for the package references that name the framework.
+    /// Precedence: an explicit Reqnroll provider package
+    /// (<c>Reqnroll.xUnit</c>/<c>Reqnroll.NUnit</c>/<c>Reqnroll.MsTest</c>) wins,
+    /// then a bare framework package (<c>xunit</c>/<c>nunit</c>/<c>MSTest.*</c>),
+    /// else <c>mstest</c> as the safe default. Returns a lowercase token:
+    /// <c>mstest</c> | <c>xunit</c> | <c>nunit</c>. IO failures are non-fatal
+    /// (returns the default) per the repo's "permission errors are non-fatal" rule.
+    /// </summary>
+    internal static string ResolveDotnetTestFramework(RepoRow? repo)
+    {
+        const string Default = "mstest";
+        if (repo is null || string.IsNullOrWhiteSpace(repo.CloneRoot)) return Default;
+
+        try
+        {
+            if (!Directory.Exists(repo.CloneRoot)) return Default;
+
+            // Cheap, bounded corpus: central package management file (if any) +
+            // up to 40 project files. A repo declares its test runner in exactly
+            // these files; we never need a full-tree walk.
+            var corpus = new List<string>();
+            var props = Path.Combine(repo.CloneRoot, "Directory.Packages.props");
+            if (File.Exists(props)) corpus.Add(props);
+            try
+            {
+                corpus.AddRange(Directory
+                    .EnumerateFiles(repo.CloneRoot, "*.csproj", SearchOption.AllDirectories)
+                    .Take(40));
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                // Partial enumeration is fine — score whatever we collected.
+            }
+
+            var sawReqnrollXunit = false;
+            var sawReqnrollNunit = false;
+            var sawReqnrollMstest = false;
+            var sawXunit = false;
+            var sawNunit = false;
+            var sawMstest = false;
+
+            foreach (var file in corpus)
+            {
+                string text;
+                try { text = File.ReadAllText(file); }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { continue; }
+                var t = text.ToLowerInvariant();
+
+                if (t.Contains("reqnroll.xunit")) sawReqnrollXunit = true;
+                if (t.Contains("reqnroll.nunit")) sawReqnrollNunit = true;
+                if (t.Contains("reqnroll.mstest")) sawReqnrollMstest = true;
+                // Bare framework packages — `nunit` is a substring of
+                // `reqnroll.nunit`, so only count a standalone reference.
+                if (t.Contains("\"xunit\"") || t.Contains("include=\"xunit")) sawXunit = true;
+                if (t.Contains("\"nunit\"") || t.Contains("include=\"nunit")) sawNunit = true;
+                if (t.Contains("mstest.testframework") || t.Contains("mstest.testadapter")) sawMstest = true;
+            }
+
+            // Reqnroll provider package is the strongest signal (it IS the
+            // BDD runner the repo already chose). Then a bare framework package.
+            if (sawReqnrollXunit) return "xunit";
+            if (sawReqnrollNunit) return "nunit";
+            if (sawReqnrollMstest) return "mstest";
+            if (sawXunit) return "xunit";
+            if (sawNunit) return "nunit";
+            if (sawMstest) return "mstest";
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or DirectoryNotFoundException)
+        {
+            // Non-fatal — fall through to the default.
+        }
+
+        return Default;
+    }
+
+    /// <summary>Phase 94 — human-facing framework label for the dotnet qa-e2e prompt.</summary>
+    private static string DotnetFrameworkLabel(string? framework) =>
+        (framework ?? string.Empty).ToLowerInvariant() switch
+        {
+            "xunit" => "xUnit",
+            "nunit" => "NUnit",
+            _ => "MSTest",
+        };
+
+    /// <summary>Phase 94 — the Reqnroll unit-test-provider package that binds a
+    /// `.feature` suite to the repo's framework. Pinning this is what stops the
+    /// generator free-choosing xUnit.</summary>
+    private static string DotnetReqnrollProvider(string? framework) =>
+        (framework ?? string.Empty).ToLowerInvariant() switch
+        {
+            "xunit" => "Reqnroll.xUnit",
+            "nunit" => "Reqnroll.NUnit",
+            _ => "Reqnroll.MsTest",
+        };
+
+    /// <summary>Phase 94 — for the plain (non-BDD) dotnet harness, the test
+    /// class/method attributes + e2e-category tag the agent must emit so the
+    /// gate's <c>--filter Category=e2e</c> selects the suite.</summary>
+    private static string DotnetPlainTestAttributes(string? framework) =>
+        (framework ?? string.Empty).ToLowerInvariant() switch
+        {
+            "xunit" => "an xUnit test class (one `[Fact]` per scenario) tagged "
+                + "`[Trait(\"Category\", \"e2e\")]` on each fact (xUnit has no `[TestClass]`)",
+            "nunit" => "an NUnit `[TestFixture]` class with one `[Test]` per scenario, "
+                + "each also tagged `[Category(\"e2e\")]`",
+            _ => "an MSTest `[TestClass]` with one `[TestMethod]` per scenario, "
+                + "each also tagged `[TestCategory(\"e2e\")]`",
+        };
+
 
     /// <summary>
     /// docs/forge/e2e.md Stage 4.3 — pure prompt assembler. Takes the
@@ -5870,8 +6026,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             : Trim(inputs.ImplDiff, 16_000);
 
         var role = evaluator ? "Evaluator" : "Generator";
+        // Phase 94 — the "what counts as covered" clause differs between the
+        // BDD/Gherkin harness (a `.feature` scenario + its bindings) and the
+        // plain harness (one idiomatic test method per scenario, no `.feature`).
+        var coverageClause = inputs.UseBddPattern
+            ? "covered by at least one Gherkin scenario in the `.feature` "
+                + "file. Step-def file must implement every binding referenced."
+            : "covered by at least one idiomatic test method (one method per "
+                + "scenario, asserting its Given/When/Then). There is NO Gherkin "
+                + "feature file in this mode — a missing test method for a "
+                + "required scenario is an unmet scenario.";
         var task = evaluator
-            ? """
+            ? $$"""
                 ## Your task
 
                 Score the Generator's qa-e2e output against the acceptance
@@ -5882,8 +6048,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 ```
 
                 Pass requires score >= 90 AND every acceptance scenario
-                covered by at least one Gherkin scenario in the `.feature`
-                file. Step-def file must implement every binding referenced.
+                {{coverageClause}}
                 A required scenario that SKIPS or no-ops because a backing
                 service was unavailable is NOT covered — for `inline` /
                 `compose` setups the suite must self-provision its dependency
@@ -6014,6 +6179,50 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var storySafe = StoryPaths.Safe(inputs.StoryId);
         var goPhase = inputs.PhaseSlug.Replace('-', '_');
         var goStage = inputs.StageSlug.Replace('-', '_');
+
+        // Phase 94 — plain (non-BDD) variant: idiomatic `go test` table-driven
+        // subtests, NO godog / `.feature`.
+        if (!inputs.UseBddPattern)
+        {
+            return $$"""
+                ## Your task
+
+                Produce the qa-e2e acceptance suite for the impl workstream above.
+                This is a **Go** repository — do NOT scaffold a C#/.NET project
+                (no `.csproj`, no Reqnroll, no `dotnet`) and do NOT use godog or a
+                Gherkin feature file (plain-test mode).
+
+                FIRST locate the Go module that owns the code under test: find the
+                nearest `go.mod` above the files in the impl diff. Call its
+                directory `<MOD>`. ALL files below go inside that module so
+                `go test` compiles.
+
+                  1. ONE Go test file at
+                     `<MOD>/test/e2e/{{storySafe}}/{{goPhase}}_{{goStage}}_test.go`,
+                     `package e2e`. Its FIRST line MUST be the build tag
+                     `//go:build e2e` so the suite only runs under
+                     `go test -tags e2e`. Add a test entrypoint
+                     `func TestE2E_{{goPhase}}_{{goStage}}(t *testing.T)` with one
+                     `t.Run("<scenario>", func(t *testing.T){ … })` subtest per
+                     acceptance scenario, asserting its Given/When/Then. Use these
+                     UNIQUE per-stage names so sibling stages sharing the `e2e`
+                     package don't collide.
+                     BACKING SERVICES — honor the proof strategy the plan declares
+                     (`golden` -> committed fixture; `service:<name>` -> provided
+                     DSN when set, else ephemeral in-process instance + migrations).
+                     Never `t.Skip` a required scenario for a missing service
+                     (only `lab-*` setups may skip).
+                  2. When setup type is `compose` or `lab-*`, ALSO write
+                     `<MOD>/test/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` per docs/forge/e2e.md §8.
+
+                Do NOT commit build output. Reply `DONE` when complete. Forge will
+                run `{{gateCommand}}` against your output; a non-zero exit re-enters
+                this loop with the failure summary, so make sure the `e2e` package
+                compiles AND the subtests exercise the impl diff above.
+                """;
+        }
+
         return $$"""
             ## Your task
 
@@ -6077,6 +6286,44 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var storySafe = StoryPaths.Safe(inputs.StoryId);
         var rustPhase = inputs.PhaseSlug.Replace('-', '_');
         var rustStage = inputs.StageSlug.Replace('-', '_');
+
+        // Phase 94 — plain (non-BDD) variant: idiomatic `#[test]` functions, NO
+        // cucumber-rs / `.feature`.
+        if (!inputs.UseBddPattern)
+        {
+            return $$"""
+                ## Your task
+
+                Produce the qa-e2e acceptance suite for the impl workstream above.
+                This is a **Rust** repository — do NOT scaffold a C#/.NET project
+                (no `.csproj`, no Reqnroll, no `dotnet`) and do NOT use cucumber-rs
+                or a Gherkin feature file (plain-test mode).
+
+                FIRST locate the crate that owns the code under test: find the
+                nearest `Cargo.toml` above the files in the impl diff. Call its
+                directory `<CRATE>`. ALL files below go inside that crate so
+                `cargo test` compiles.
+
+                  1. ONE integration test at
+                     `<CRATE>/tests/e2e_{{rustPhase}}_{{rustStage}}.rs` mapping each
+                     acceptance scenario to a `#[test]` / `#[tokio::test]` fn that
+                     asserts its Given/When/Then. Gate the WHOLE file behind
+                     `#![cfg(feature = "e2e")]` so it only compiles under the `e2e`
+                     feature, and add `[features]`/`e2e = []` (plus any `tokio`
+                     dev-dependencies) to `<CRATE>/Cargo.toml`. Commit the updated
+                     `Cargo.toml` / `Cargo.lock`.
+                  2. When setup type is `compose` or `lab-*`, ALSO write
+                     `<CRATE>/tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` per docs/forge/e2e.md §8.
+
+                Do NOT commit build output (`target/`). Reply `DONE` when complete.
+                Forge will run `{{gateCommand}}` against your output; a non-zero
+                exit re-enters this loop with the failure summary, so make sure the
+                suite compiles under the `e2e` feature AND the tests exercise the
+                impl diff above.
+                """;
+        }
+
         return $$"""
             ## Your task
 
@@ -6120,6 +6367,42 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private static string BuildPythonQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
     {
         var pyStage = inputs.StageSlug.Replace('-', '_');
+
+        // Phase 94 — plain (non-BDD) variant: idiomatic pytest functions, NO
+        // pytest-bdd / `.feature`.
+        if (!inputs.UseBddPattern)
+        {
+            return $$"""
+                ## Your task
+
+                Produce the qa-e2e acceptance suite for the impl workstream above.
+                This is a **Python** repository — do NOT scaffold a C#/.NET project
+                (no `.csproj`, no Reqnroll, no `dotnet`) and do NOT use pytest-bdd
+                or a Gherkin feature file (plain-test mode).
+
+                FIRST locate the package/project that owns the code under test: find
+                the nearest `pyproject.toml` / `setup.cfg` / `requirements.txt`
+                above the files in the impl diff. Call its directory `<PKG>`.
+
+                  1. ONE pytest module at
+                     `<PKG>/tests/e2e/{{inputs.PhaseSlug}}/test_{{pyStage}}.py` with
+                     one `def test_<scenario>()` per acceptance scenario, asserting
+                     its Given/When/Then. Mark the module
+                     `pytestmark = pytest.mark.e2e` and REGISTER the `e2e` marker
+                     (in `pyproject.toml`
+                     `[tool.pytest.ini_options] markers = ["e2e: end-to-end"]` or
+                     `pytest.ini`) so `-m e2e` selects it.
+                  2. When setup type is `compose` or `lab-*`, ALSO write
+                     `<PKG>/tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` per docs/forge/e2e.md §8.
+
+                Reply `DONE` when complete. Forge will run `{{gateCommand}}` against
+                your output; a non-zero exit re-enters this loop with the failure
+                summary, so make sure the module imports cleanly AND the tests
+                exercise the impl diff above.
+                """;
+        }
+
         return $$"""
             ## Your task
 
@@ -6197,6 +6480,35 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var javaPhase = inputs.PhaseSlug.Replace('-', '_');
         var pascalStage = ToPascalCase(inputs.StageSlug);
+
+        // Phase 94 — plain (non-BDD) variant: idiomatic JUnit 5 test methods, NO
+        // Cucumber-JVM / `.feature`.
+        if (!inputs.UseBddPattern)
+        {
+            return $$"""
+                ## Your task
+
+                Produce the qa-e2e acceptance suite for the impl workstream above.
+                This is a **Java / Maven** repository — do NOT scaffold a C#/.NET
+                project (no `.csproj`, no Reqnroll, no `dotnet`) and do NOT use
+                Cucumber-JVM or a Gherkin feature file (plain-test mode).
+
+                  1. ONE JUnit 5 test class at
+                     `src/test/java/e2e/{{javaPhase}}/{{pascalStage}}Test.java`
+                     annotated `@Tag("e2e")`, with one `@Test` method per
+                     acceptance scenario asserting its Given/When/Then, so
+                     `-Dgroups=e2e` selects it.
+                  2. When setup type is `compose` or `lab-*`, ALSO write
+                     `src/test/resources/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` per docs/forge/e2e.md §8.
+
+                Do NOT commit build output (`target/`). Reply `DONE` when complete.
+                Forge will run `{{gateCommand}}` against your output; a non-zero
+                exit re-enters this loop with the failure summary, so make sure the
+                suite compiles AND the tests exercise the impl diff above.
+                """;
+        }
+
         return $$"""
             ## Your task
 
@@ -6231,9 +6543,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
     private static string BuildDotnetQaE2eTask(QaE2ePromptInputs inputs, string setupTypeWire, string gateCommand)
     {
-        // Historical .NET / Reqnroll behaviour — preserved verbatim so the
-        // prompt-shape spec tests (Stage43CrewQaE2eTests) stay green. The
-        // back-compat default for unrecognised ecosystems too.
+        var fwLabel = DotnetFrameworkLabel(inputs.DotnetTestFramework);
+
+        // Phase 94 — plain (non-BDD) variant: idiomatic test methods in the
+        // repo's existing framework, NO `.feature` file. The framework is
+        // detected from the repo (ResolveDotnetTestFramework) so the suite
+        // matches the repo's convention instead of defaulting to xUnit.
+        if (!inputs.UseBddPattern)
+        {
+            var plainAttrs = DotnetPlainTestAttributes(inputs.DotnetTestFramework);
+            var nsStory = inputs.StoryId.Replace('-', '_');
+            var nsPhase = inputs.PhaseSlug.Replace('-', '_');
+            return $$"""
+                ## Your task
+
+                Produce the qa-e2e artifacts for the impl workstream above.
+                This repo uses **{{fwLabel}}** for tests — do NOT introduce a
+                Gherkin feature file, a BDD/Gherkin test runner, or a second test
+                framework. Write plain {{fwLabel}} tests:
+                  1. ONE test file at
+                     `tests/E2e/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}Tests.cs`
+                     containing {{plainAttrs}}. One test method per acceptance
+                     scenario, named after the scenario, with the Given/When/Then
+                     steps as Arrange/Act/Assert in the body. Namespace
+                     `Forge.Tests.Stories.{{nsStory}}.{{nsPhase}}`. The `[…Category…]`
+                     `e2e` tag is REQUIRED so the gate's
+                     `--filter Category=e2e` selects the suite.
+                  2. When setup type is `compose` or `lab-*`, ALSO write
+                     `tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
+                     `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire
+                     the right runner pool / secrets per docs/forge/e2e.md §8.
+
+                Reply `DONE` when complete. Forge will run
+                `{{gateCommand}}` against your output; a non-zero exit re-enters
+                this loop with the failure summary as evaluator feedback, so make
+                sure every test compiles AND actually exercises the impl diff above.
+                """;
+        }
+
+        // BDD/Gherkin (default) — Gherkin `.feature` + Reqnroll step defs. The
+        // Reqnroll provider package is PINNED to the repo's detected framework
+        // ({{provider}}) so a fresh test-project scaffold matches the repo's
+        // existing runner instead of free-choosing xUnit (the reported drift).
+        var provider = DotnetReqnrollProvider(inputs.DotnetTestFramework);
         return $$"""
             ## Your task
 
@@ -6245,6 +6597,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                  `tests/Steps/{{inputs.StoryId}}/{{inputs.PhaseSlug}}/{{inputs.StageSlug}}Steps.cs`
                  that implements every binding. `[Binding]` class,
                  namespace `Forge.Tests.Stories.{{inputs.StoryId.Replace('-', '_')}}.{{inputs.PhaseSlug.Replace('-', '_')}}`.
+                 This repo's tests use **{{fwLabel}}** — bind Reqnroll to the SAME
+                 runner: reference the **{{provider}}** unit-test-provider package
+                 (NOT Reqnroll.xUnit unless the repo already uses xUnit) and the
+                 matching test SDK, so the scaffolded test project compiles under
+                 the repo's existing convention. Match the version Central Package
+                 Management (`Directory.Packages.props`) already pins when present.
               3. When setup type is `compose` or `lab-*`, ALSO write
                  `tests/e2e/{{inputs.PhaseSlug}}/azure-pipeline.yml` +
                  `.github/workflows/e2e-{{inputs.PhaseSlug}}.yml` that wire

@@ -54,7 +54,9 @@ public class Stage43CrewQaE2eTests
         E2eSetupType setupType = E2eSetupType.Inline,
         string? setupBlock = null,
         string? attachmentSection = null,
-        string ecosystem = "dotnet") =>
+        string ecosystem = "dotnet",
+        bool useBdd = true,
+        string dotnetFramework = "mstest") =>
         new(
             StoryId: StoryId,
             StoryTitle: "Stage 4.3 fixture",
@@ -69,7 +71,9 @@ public class Stage43CrewQaE2eTests
             SetupType: setupType,
             SetupBlockMarkdown: setupBlock ?? string.Empty,
             AttachmentPromptSection: attachmentSection ?? string.Empty,
-            Ecosystem: ecosystem);
+            Ecosystem: ecosystem,
+            UseBddPattern: useBdd,
+            DotnetTestFramework: dotnetFramework);
 
     // ── 1. [unit] Prompt contains ## Implementation diff with the diff body ──
 
@@ -185,6 +189,152 @@ public class Stage43CrewQaE2eTests
             var normalized = System.Text.RegularExpressions.Regex.Replace(gen, @"\s+", " ");
             Assert.Contains("do NOT scaffold a C#/.NET project", normalized);
         }
+    }
+
+    // ── 2c. [unit] Phase 94 — dotnet BDD prompt PINS the repo's framework ──
+
+    [Theory]
+    [InlineData("mstest", "Reqnroll.MsTest", "MSTest")]
+    [InlineData("xunit", "Reqnroll.xUnit", "xUnit")]
+    [InlineData("nunit", "Reqnroll.NUnit", "NUnit")]
+    public void BuildQaE2ePrompt_Dotnet_Bdd_PinsDetectedFramework(
+        string framework, string providerNeedle, string labelNeedle)
+    {
+        // The reported drift: the dotnet BDD prompt never named a Reqnroll
+        // unit-test provider, so a fresh scaffold free-chose xUnit instead of
+        // matching the repo's MSTest convention. The prompt must now name the
+        // detected framework + its matching Reqnroll provider.
+        var gen = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: "dotnet", useBdd: true, dotnetFramework: framework),
+            evaluator: false);
+
+        Assert.Contains("ONE Gherkin `.feature` file", gen);   // still BDD
+        Assert.Contains(providerNeedle, gen);                  // pinned provider
+        Assert.Contains(labelNeedle, gen);                     // framework label
+    }
+
+    // ── 2d. [unit] Phase 94 — BDD-off emits a PLAIN suite, no `.feature` ──
+
+    [Fact]
+    public void BuildQaE2ePrompt_Dotnet_PlainMode_NoFeatureFile_MatchesFramework()
+    {
+        var mstest = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: "dotnet", useBdd: false, dotnetFramework: "mstest"),
+            evaluator: false);
+        Assert.DoesNotContain(".feature", mstest);
+        Assert.DoesNotContain("Reqnroll", mstest);
+        Assert.Contains("[TestMethod]", mstest);
+        Assert.Contains("[TestCategory(\"e2e\")]", mstest);
+
+        var xunit = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: "dotnet", useBdd: false, dotnetFramework: "xunit"),
+            evaluator: false);
+        Assert.DoesNotContain(".feature", xunit);
+        Assert.Contains("[Fact]", xunit);
+        Assert.Contains("[Trait(\"Category\", \"e2e\")]", xunit);
+
+        // The evaluator's coverage clause flips to "test method per scenario"
+        // (no `.feature`) so it doesn't reject a passing plain suite.
+        var eval = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: "dotnet", useBdd: false), evaluator: true);
+        Assert.DoesNotContain(".feature", eval);
+        Assert.Contains("idiomatic test method", eval);
+    }
+
+    // ── 2e. [unit] Phase 94 — BDD-off non-dotnet drops the `.feature` file ──
+
+    [Theory]
+    [InlineData("go", "godog")]
+    [InlineData("rust", "cucumber")]
+    [InlineData("python", "pytest-bdd")]
+    [InlineData("maven", "Cucumber-JVM")]
+    public void BuildQaE2ePrompt_NonDotnet_PlainMode_DropsFeatureFile(
+        string ecosystem, string gherkinRunnerNeedle)
+    {
+        var bddOn = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: ecosystem, useBdd: true), evaluator: false);
+        var bddOff = CrewStoryArtifactStrategy.BuildQaE2ePrompt(
+            SampleInputs(ecosystem: ecosystem, useBdd: false), evaluator: false);
+
+        // BDD-on names the Gherkin runner AND emits a `.feature` file …
+        Assert.Contains(gherkinRunnerNeedle, bddOn);
+        Assert.Contains(".feature", bddOn);
+        // … BDD-off emits a plain idiomatic suite — no `.feature` file. (The
+        // plain prompt still mentions the runner in a "do NOT use" negation, so
+        // key on the artifact, not the runner name.)
+        Assert.DoesNotContain(".feature", bddOff);
+        // Still never scaffolds a .NET project, BDD-off included.
+        Assert.DoesNotContain("dotnet test", bddOff);
+    }
+
+    // ── 2f. [unit] Phase 94 — flag resolution: repo override wins over config ──
+
+    [Fact]
+    public void ResolveE2eUseBddPattern_RepoOverride_Wins_Then_Config_Then_DefaultTrue()
+    {
+        var on = new RepoRow { E2eUseBddPattern = true };
+        var off = new RepoRow { E2eUseBddPattern = false };
+        var inherit = new RepoRow { E2eUseBddPattern = null };
+
+        var cfgOff = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Forge:Stories:E2eUseBddPattern"] = "false",
+            }).Build();
+        var cfgEmpty = new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build();
+
+        // Repo override always wins.
+        Assert.True(CrewStoryArtifactStrategy.ResolveE2eUseBddPattern(on, cfgOff));
+        Assert.False(CrewStoryArtifactStrategy.ResolveE2eUseBddPattern(off, cfgEmpty));
+        // Null override falls through to config …
+        Assert.False(CrewStoryArtifactStrategy.ResolveE2eUseBddPattern(inherit, cfgOff));
+        // … and absent config defaults to true (BDD).
+        Assert.True(CrewStoryArtifactStrategy.ResolveE2eUseBddPattern(inherit, cfgEmpty));
+        Assert.True(CrewStoryArtifactStrategy.ResolveE2eUseBddPattern(null, cfgEmpty));
+    }
+
+    // ── 2g. [unit] Phase 94 — framework detection matches the repo's runner ──
+
+    [Theory]
+    [InlineData("Reqnroll.MsTest", "mstest")]
+    [InlineData("Reqnroll.xUnit", "xunit")]
+    [InlineData("Reqnroll.NUnit", "nunit")]
+    [InlineData("xunit", "xunit")]
+    public void ResolveDotnetTestFramework_DetectsFromDirectoryPackagesProps(
+        string packageName, string expected)
+    {
+        var dir = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), "forge-fwdetect-" + System.Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine(dir, "Directory.Packages.props"),
+                $"""
+                <Project>
+                  <ItemGroup>
+                    <PackageVersion Include="{packageName}" Version="1.0.0" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var repo = new RepoRow { CloneRoot = dir };
+            Assert.Equal(expected, CrewStoryArtifactStrategy.ResolveDotnetTestFramework(repo));
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void ResolveDotnetTestFramework_DefaultsToMsTest_WhenNoSignal()
+    {
+        Assert.Equal("mstest", CrewStoryArtifactStrategy.ResolveDotnetTestFramework(null));
+        Assert.Equal("mstest", CrewStoryArtifactStrategy.ResolveDotnetTestFramework(
+            new RepoRow { CloneRoot = "" }));
+        Assert.Equal("mstest", CrewStoryArtifactStrategy.ResolveDotnetTestFramework(
+            new RepoRow { CloneRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "forge-nonexistent-" + System.Guid.NewGuid().ToString("N")) }));
     }
 
     // ── 3. [unit] Empty test scenarios → InvalidOperationException ───────

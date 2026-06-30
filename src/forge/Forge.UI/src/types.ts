@@ -437,6 +437,13 @@ export interface Repo {
    * admin. Null/false = no elevation requirement.
    */
   runTestsElevated?: boolean | null;
+  /**
+   * Phase 94 — per-repo qa-e2e test-style override. null = inherit the global
+   * Forge:Stories:E2eUseBddPattern default (true = BDD/Gherkin); true = force
+   * BDD/Gherkin (.feature + step bindings); false = plain idiomatic test
+   * methods in the repo's existing test framework (no .feature file).
+   */
+  e2eUseBddPattern?: boolean | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */
