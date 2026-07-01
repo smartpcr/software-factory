@@ -486,11 +486,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] DismissQuestionsRequest req,
-        ControlDbContext control,
-        ProductDbContext db,
-        IHubContext<ForgeHub> hub,
-        IServiceScopeFactory scopeFactory,
-        IStoryArtifactStrategy strategy,
+        Forge.Api.Services.IOpenQuestionService questions,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -499,34 +495,10 @@ public static class TaskExecutionEndpoints
             return Results.Problem(title: "externalIds[] is required", statusCode: 400);
 
         var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
-        var existing = await db.DeliverableQuestions
-            .Where(q => q.WorkItemId == id)
-            .ToListAsync(ct);
-        var byExtId = existing
-            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
-
-        var now = DateTimeOffset.UtcNow;
-        foreach (var extId in req.ExternalIds)
-        {
-            if (string.IsNullOrEmpty(extId)) continue;
-            if (!byExtId.TryGetValue(extId, out var latest)) continue;
-            latest.Answer = "(dismissed by operator)";
-            latest.AnsweredAt = now;
-            latest.AnsweredBy = actor;
-        }
-        await db.SaveChangesAsync(ct);
-
-        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(control, db, id, ct);
-
-        // Phase 66 — dismissals also clear the gate; fire the resume.
-        var resumeScheduled = false;
-        if (unansweredCount == 0)
-        {
-            resumeScheduled = await TryUnparkAndResumeAsync(
-                control, db, hub, scopeFactory, strategy, id, ct);
-        }
-        return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
+        // Phase 95.3 — delegate to the shared IOpenQuestionService so the chat
+        // inbound path and this endpoint drive one implementation.
+        var result = await questions.DismissAsync(id, req.ExternalIds, actor, ct);
+        return Results.Ok(new { workItemId = id, unansweredCount = result.UnansweredCount, resumeScheduled = result.ResumeScheduled });
     }
 
     /// <summary>
@@ -563,11 +535,7 @@ public static class TaskExecutionEndpoints
         HttpContext ctx,
         string id,
         [FromBody] AnswerQuestionsRequest req,
-        ControlDbContext control,
-        ProductDbContext db,
-        IHubContext<ForgeHub> hub,
-        IServiceScopeFactory scopeFactory,
-        IStoryArtifactStrategy strategy,
+        Forge.Api.Services.IOpenQuestionService questions,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -576,215 +544,13 @@ public static class TaskExecutionEndpoints
             return Results.Problem(title: "answers[] is required", statusCode: 400);
 
         var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
-        var existing = await db.DeliverableQuestions
-            .Where(q => q.WorkItemId == id)
-            .ToListAsync(ct);
-        var byExtId = existing
-            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
-
-        var now = DateTimeOffset.UtcNow;
-        foreach (var a in req.Answers)
-        {
-            if (string.IsNullOrEmpty(a.ExternalId)) continue;
-            if (!byExtId.TryGetValue(a.ExternalId, out var latest)) continue;
-            // Update the latest row in place so subsequent renders show the
-            // answer next to the question that surfaced it. If a future iter
-            // re-emits the same ExternalId with a fresh row, the operator
-            // will see the new (unanswered) row alongside the historical
-            // answer via the per-iter dedupe.
-            latest.Answer = a.Answer ?? string.Empty;
-            latest.AnsweredAt = now;
-            latest.AnsweredBy = actor;
-        }
-        await db.SaveChangesAsync(ct);
-
-        // Re-compute and return the updated unanswered count for the UI.
-        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(control, db, id, ct);
-
-        // Phase 66 — when all questions are answered, fire the resume.
-        var resumeScheduled = false;
-        if (unansweredCount == 0)
-        {
-            resumeScheduled = await TryUnparkAndResumeAsync(
-                control, db, hub, scopeFactory, strategy, id, ct);
-        }
-
-        return Results.Ok(new { workItemId = id, unansweredCount, resumeScheduled });
-    }
-
-    /// <summary>
-    /// Phase 66 — flip a work item out of
-    /// <see cref="ExecutionStatuses.AwaitingAnswers"/> and kick the
-    /// appropriate resume path:
-    /// <list type="bullet">
-    ///   <item>Plan-doc ids (<c>plan-doc:{spawnId}:{filename}</c>) → resolve
-    ///   spawn + story, call <see cref="StoriesEndpoints.AddResumePending"/>,
-    ///   then fire-and-forget <see cref="StoriesEndpoints.RunResumeWithCleanupAsync"/>.
-    ///   The resume marker is required so a crash mid-resume is recovered
-    ///   by <c>StoryResumeRecoveryService</c>.</item>
-    ///   <item>Workstream ids → clear any bogus
-    ///   <c>"Sloppy-3-attempts:"</c> stall on the row (2026-05-15 fix),
-    ///   demote the workstream back to <c>active</c>, reset WI failure
-    ///   fields, and emit <c>ws-changed</c>; the orchestrator's next
-    ///   tick re-enters <c>DriveOneWorkstreamImplAsync</c>. Operator-set
-    ///   stall reasons (build failures, no-progress exceptions,
-    ///   cancelled/paused/complete/merging/review/historic) are left
-    ///   untouched so unrelated stalls aren't reanimated.</item>
-    ///   <item>Bare work-item rows (legacy / non-workstream) → flip
-    ///   <c>ExecutionStatus=queued</c>.</item>
-    /// </list>
-    /// Also clears any <c>spawn.LastError</c> that references this work
-    /// item via the <see cref="StorySpawnOrchestrator.AwaitingAnswersErrorPrefix"/>
-    /// sentinel so the UI banner flips from blue "awaiting answers" back
-    /// to clean.
-    /// </summary>
-    /// <returns>True when a resume was scheduled (caller can surface this
-    /// to the operator); false when no further action was needed.</returns>
-    private static async Task<bool> TryUnparkAndResumeAsync(
-        ControlDbContext control,
-        ProductDbContext db,
-        IHubContext<ForgeHub> hub,
-        IServiceScopeFactory scopeFactory,
-        IStoryArtifactStrategy strategy,
-        string workItemId,
-        CancellationToken ct)
-    {
-        // Plan-doc path: id format `plan-doc:{spawnId}:{filename}`.
-        if (workItemId.StartsWith("plan-doc:", StringComparison.Ordinal))
-        {
-            var parts = workItemId.Split(':', 3);
-            if (parts.Length != 3) return false;
-            var spawnId = parts[1];
-            var fileName = parts[2];
-            // Strip the `.md` suffix to get the canonical doc key
-            // (matches PlanDocStateHelpers.PlanDocFileName values).
-            var docKey = fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
-                ? fileName[..^3]
-                : fileName;
-
-            var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
-            if (spawn is null) return false;
-
-            // Clear soft "Awaiting operator answers" LastError when it
-            // references this doc; the banner flips back to clean.
-            if (!string.IsNullOrEmpty(spawn.LastError)
-                && spawn.LastError.StartsWith(StorySpawnOrchestrator.AwaitingAnswersErrorPrefix, StringComparison.Ordinal))
-            {
-                spawn.LastError = null;
-                spawn.LastErrorAt = null;
-                spawn.UpdatedAt = DateTimeOffset.UtcNow;
-            }
-
-            StoriesEndpoints.AddResumePending(spawn, docKey);
-            spawn.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
-
-            // Fire-and-forget the resume; the strategy's deliverable loop
-            // seeds the prior chain (now including the stalled-questions
-            // row, which the loop's resume branch treats as iterate-like)
-            // and continues at iter N+1.
-            var storyId = spawn.StoryId;
-            _ = Task.Run(() => StoriesEndpoints.RunResumeWithCleanupAsync(
-                scopeFactory, strategy, spawn.Id, storyId, docKey, CancellationToken.None));
-
-            await hub.Clients.All.SendAsync("story-spawn.changed",
-                new { kind = "questions-answered", storyId, key = docKey, workItemId }, ct);
-            return true;
-        }
-
-        // Workstream path: id is the workstream's row id.
-        var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
-        if (ws is not null)
-        {
-            // Clear soft LastError on the parent spawn if it references
-            // this workstream.
-            var parentSpawn = await db.StorySpawns
-                .FirstOrDefaultAsync(s => s.Id == ws.StorySpawnId, ct);
-            if (parentSpawn is not null
-                && !string.IsNullOrEmpty(parentSpawn.LastError)
-                && parentSpawn.LastError.StartsWith(StorySpawnOrchestrator.AwaitingAnswersErrorPrefix, StringComparison.Ordinal))
-            {
-                parentSpawn.LastError = null;
-                parentSpawn.LastErrorAt = null;
-                parentSpawn.UpdatedAt = DateTimeOffset.UtcNow;
-            }
-
-            // 2026-05-15 — unwedge bogus Sloppy-3-attempts stall. The
-            // operator's answer/dismiss action signals their intent to
-            // resume; if the workstream was wrongly demoted to `stalled`
-            // by SloppyReassignmentReconciler.MarkTerminalFailedAsync
-            // while it was actually parked on `stalled-questions` (bug
-            // path: ImplSpawnGuard mis-counted no-progress during
-            // question parking → routed to sloppy reassignment → at-cap
-            // → terminal failure → ws.Status=stalled with bogus
-            // "Sloppy-3-attempts: ..." reason), we MUST clear that stall
-            // here. Otherwise the orchestrator's claim sweep at
-            // StorySpawnOrchestrator.cs:1801 keeps skipping the row and
-            // even a successful post-answer iter never gets the PR
-            // opened.
-            //
-            // Scope: ONLY recover when ws.Status=="stalled" AND
-            // ws.StallReason starts with "Sloppy-3-attempts:" — that's
-            // the known-bogus class. Build failures (`Gate failed`),
-            // no-progress exceptions (`No progress: ...`), and
-            // operator-set states (cancelled/paused/complete/merging
-            // /review/historic) are all left untouched.
-            //
-            // Also clear stale WI terminal-failure fields so a later
-            // path can't re-interpret the WI as still-failed and
-            // re-stall the row. WorkstreamRecovery owns the
-            // canonical reset shape, but this path only needs to
-            // erase the failure indicators — pair-attempt accounting
-            // and PriorPairsJson are retained so the next attempt
-            // still excludes already-tried pairs.
-            const string BogusSloppyPrefix = "Sloppy-3-attempts:";
-            const string StalledQuestionsVerdictPrefix = "Evaluator terminal verdict 'stalled-questions'";
-            if (string.Equals(ws.Status, "stalled", StringComparison.Ordinal)
-                && !string.IsNullOrEmpty(ws.StallReason)
-                && (ws.StallReason.StartsWith(BogusSloppyPrefix, StringComparison.Ordinal)
-                    || ws.StallReason.StartsWith(StalledQuestionsVerdictPrefix, StringComparison.Ordinal)))
-            {
-                ws.Status = "active";
-                ws.StallReason = null;
-                ws.LastActive = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-                var wiForReset = await db.WorkItems.FirstOrDefaultAsync(x => x.Id == workItemId, ct);
-                if (wiForReset is not null)
-                {
-                    wiForReset.FailureReason = null;
-                    // Only reset ExecutionStatus when it's still in a
-                    // terminal-failed shape. If a queue-worker path
-                    // already advanced it to Queued/Live/Completed,
-                    // leave it alone so we don't stomp valid state.
-                    if (string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.Failed, StringComparison.Ordinal)
-                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.PendingReassign, StringComparison.Ordinal)
-                        || string.Equals(wiForReset.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
-                    {
-                        wiForReset.ExecutionStatus = ExecutionStatuses.Queued;
-                    }
-                    wiForReset.UpdatedAt = DateTimeOffset.UtcNow;
-                }
-            }
-
-            await db.SaveChangesAsync(ct);
-            await hub.Clients.All.SendAsync("ws-changed",
-                new { workstreamId = ws.Id, storyId = parentSpawn?.StoryId, kind = "questions-answered" }, ct);
-            return true;
-        }
-
-        // Generic work-item path: bare WorkItem row (e.g. crew-queue items).
-        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
-        if (wi is not null
-            && string.Equals(wi.ExecutionStatus, ExecutionStatuses.AwaitingAnswers, StringComparison.Ordinal))
-        {
-            wi.ExecutionStatus = ExecutionStatuses.Queued;
-            wi.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
-            return true;
-        }
-
-        return false;
+        // Phase 95.3 — delegate to the shared IOpenQuestionService (the same core
+        // the chat-bridge inbound path calls) so there is one answer/resume impl.
+        var mapped = req.Answers
+            .Select(a => new Forge.Api.Services.OpenQuestionAnswer(a.ExternalId, a.Answer))
+            .ToList();
+        var result = await questions.AnswerAsync(id, mapped, actor, ct);
+        return Results.Ok(new { workItemId = id, unansweredCount = result.UnansweredCount, resumeScheduled = result.ResumeScheduled });
     }
 
     private static async Task<IResult> GetExecution(

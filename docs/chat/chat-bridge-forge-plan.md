@@ -63,7 +63,7 @@ chain it at the end of `Program.cs` after `EnsureCreatedAsync`, guarded idempote
 | Column | Purpose |
 |---|---|
 | `Id` (PK) | notification id |
-| `Kind` | `open-questions` \| `workstream-stalled` \| `queue-strain` |
+| `Kind` | `open-questions` \| `workstream-stalled` \| `queue-strain` \| `human-interaction` (auth popup / manual host step) |
 | `ProductId`, `RepoId` | scope, so inbound dispatch opens the right `ProductDbContext` (Phase 80 `RepoId`) |
 | `WorkItemId` / `WorkstreamId` / `QueueId` | the domain anchor the reply acts on |
 | `DedupeKey` (UNIQUE) | e.g. `oq:{workItemId}:{maxIter}` — prevents duplicate sends on repeated ticks |
@@ -126,6 +126,14 @@ Add one `IChatNotifier` call at each existing raise point (no behavior change be
   `[Retry] [Accept] [Cancel] [Restart ⚠]`.
 - **Queue strain** (optional, phase 5) → `CrewQueueWorker` where it sends `queue.strained` to
   `user.{leadId}`. Enqueue `queue-strain` with `[Confirm] [Reassign…]`.
+- **Auth / human interaction required** → when Forge is blocked on something only a human at the host can
+  complete: an **interactive sign-in** (ADO WAM broker / GitHub OAuth) that a background sync/agent hit on
+  an expired or missing token, or a **host-side manual step** (UAC elevation for the elevated test broker, a
+  browser approval). The auth services (`AdoAuthService`/`GitHubAuthService`) / broker enqueue
+  `human-interaction`, dedupe `interaction:{kind}:{account-or-context}`. `ActionsJson`: `[Retry] [Done]
+  [Snooze]`. **The auth flow itself completes on the host** — a WAM/OAuth/UAC prompt can't be satisfied over
+  chat; the alert tells the operator to go do it and lets them re-trigger or acknowledge from chat. No token
+  or secret value ever transits chat, only the prompt to act.
 
 **Resolution echo:** the existing resume/act broadcasts already refresh the web UI. To keep chat in sync
 when the operator acts in the **web UI** instead, `ChatNotifier.MarkResolvedAsync(anchor)` flips the
@@ -180,6 +188,10 @@ cache in `AdoAuthService`. Never commit the token; `AllowedChatIds` bootstraps t
   message to "Tap again within 30s to confirm restart — this wipes the worktree") before calling
   `IOperatorActionService.Restart`. Every action writes the existing audit rows (`forge_actions`,
   `agent_assignments`) via the reused service core.
+- **Auth / human interaction:** title (e.g. "ADO sign-in needed", "UAC elevation pending") + what's blocked
+  + `[Retry] [Done] [Snooze]`. `Retry` re-invokes the host auth attempt (e.g. `IAuthService.SignInAsync`);
+  `Done` marks it resolved after the operator completed it on the host; `Snooze` re-queues the alert later.
+  Only the *prompt to act* is sent — never a token, code, or secret.
 - **Commands:** `/link <token>` (bind chat↔user), `/status` (list this operator's pending questions +
   stalled workstreams), `/mute`, `/help`.
 - Char cap 4096 (truncate + "… open in UI" deep link); skip no-op edits (Telegram rejects
@@ -230,56 +242,62 @@ conventions. Each phase is independently shippable.
     - [x] `test-send` as a non-PO user → 403
     - [x] `test-send` with `Enabled=false` returns a clear "bridge disabled" (409) problem response
 
-### Phase 2 — Outbox + outbound pump
+### Phase 2 — Outbox + outbound pump ✅ **COMPLETE** (31/31 Chat tests green; caught+fixed a SQLite DateTimeOffset ORDER BY bug)
 > Producers get a durable enqueue path; the service drains it to chat with dedupe, retry, and TTL.
 > Alerts appear in chat; replies still ignored.
 
-- [ ] **2.1 Notifier (enqueue API)**
-  - [ ] `IChatNotifier` + `ChatNotifier`: `EnqueueOpenQuestionsAsync` / `EnqueueWorkstreamStalledAsync` / `EnqueueQueueStrainAsync` / `MarkResolvedAsync`
-  - [ ] Dedupe-key computation (`oq:{wi}:{iter}`, `stall:{wsId}:{reasonHash}`, `strain:{crewId}`)
+- [x] **2.1 Notifier (enqueue API)**
+  - [x] `IChatNotifier` + `ChatNotifier`: `EnqueueOpenQuestionsAsync` / `EnqueueWorkstreamStalledAsync` / `EnqueueQueueStrainAsync` / `MarkOpenQuestionsResolvedAsync` / `MarkWorkstreamResolvedAsync`
+  - [x] Dedupe-key computation (`oq:{wi}:{iter}`, `stall:{wsId}:{reasonHash}` via stable SHA-256, `strain:{crewId}`)
   - _Test scenarios:_
-    - [ ] Enqueue writes a `pending` row with correct `Kind`, anchor ids, `ProductId`/`RepoId`, `ActionsJson`
-    - [ ] Second enqueue with the same `DedupeKey` while first is still open → no duplicate row
-    - [ ] `MarkResolvedAsync` flips an open row to a resolved state and stamps `RespondedAt`
-- [ ] **2.2 Outbound pump loop**
-  - [ ] `ChatBridgeService : BackgroundService`, outbound loop on `OutboundTickInterval`; public `RunOutboundOnceAsync`
-  - [ ] Claim `pending` → render → `transport.Send` → store `ChatMessageId` → mark `sent`
-  - [ ] Edit pass: rows flipped to resolved get their sent message edited to "✅ …"
+    - [x] Enqueue writes a `pending` row with correct `Kind`, anchor ids, `ProductId`/`RepoId`, `ActionsJson`
+    - [x] Second enqueue with the same `DedupeKey` while first is still open → no duplicate row (different iter → not deduped)
+    - [x] `MarkResolved` flips a sent row to `resolving` (pending→terminal) and stamps `RespondedAt`
+- [x] **2.2 Outbound pump loop**
+  - [x] `ChatBridgeService : BackgroundService`, outbound loop on `OutboundTickInterval`; public `RunOutboundOnceAsync` → `OutboundTickResult`
+  - [x] Claim `pending` → render → `transport.Send` → store `ChatMessageId` → mark `sent`
+  - [x] Edit pass: `resolving` rows get their sent message edited to "✅ Resolved" then flip terminal (`answered`/`acted`)
   - _Test scenarios:_
-    - [ ] `RunOutboundOnceAsync` sends exactly one message per `pending` row and marks it `sent` with the returned `ChatMessageId`
-    - [ ] A row already `sent` is not re-sent on the next tick
-    - [ ] A resolved row triggers exactly one `EditAsync` and no further edits afterward
-    - [ ] Rendering respects the char cap and includes the inline-keyboard actions from `ActionsJson`
-- [ ] **2.3 Retry, TTL & failure isolation**
-  - [ ] `Attempts++`/`LastError` on send failure; give up + mark `failed` past `MaxAttempts`
-  - [ ] `ExpiresAt`/`NotificationTtl` → stale `pending` rows flip to `expired`
-  - [ ] Per-tick exceptions swallowed + logged (loop never dies), gated by `FORGE_TEST_GUARDRAIL`
+    - [x] `RunOutboundOnceAsync` sends exactly one message per `pending` row and marks it `sent` with the returned `ChatMessageId`
+    - [x] A row already `sent` is not re-sent on the next tick
+    - [x] A resolved row triggers exactly one `EditAsync` and no further edits afterward
+    - [x] Rendering includes title + body and the inline-keyboard actions from `ActionsJson` (char cap enforced in the transport, Phase 1)
+- [x] **2.3 Retry, TTL & failure isolation**
+  - [x] `Attempts++`/`LastError` on send failure; give up + mark `failed` past `MaxAttempts`
+  - [x] `ExpiresAt`/`NotificationTtl` → stale `pending` rows flip to `expired`
+  - [x] Per-row **and** per-tick exceptions swallowed + logged (loop never dies), gated by `FORGE_TEST_GUARDRAIL`
   - _Test scenarios:_
-    - [ ] Transient send failure increments `Attempts` and retries next tick; succeeds before `MaxAttempts`
-    - [ ] Exceeding `MaxAttempts` marks the row `failed` and stops retrying
-    - [ ] A row past `ExpiresAt` is marked `expired` and never sent
-    - [ ] An exception thrown mid-tick is caught; the loop processes remaining rows and survives to the next tick
+    - [x] Transient send failure increments `Attempts` and retries next tick; succeeds before `MaxAttempts`
+    - [x] Exceeding `MaxAttempts` marks the row `failed` and stops retrying
+    - [x] A row past `ExpiresAt` is marked `expired` and never sent
+    - [x] An exception thrown mid-tick is caught; the loop processes remaining rows and survives to the next tick
 
-### Phase 3 — Action-core extraction (behavior-preserving)
+### Phase 3 — Action-core extraction (behavior-preserving) — ✅ **COMPLETE** (3.1 + 3.2)
 > Pull the resume/act logic out of the endpoints into shared services so chat and HTTP can't fork.
 > **Guard:** all pre-existing endpoint tests stay green.
+>
+> **3.2 note:** a concurrent Forge agent had an uncommitted change *inside* `WorkstreamsEndpoints.Restart`
+> (preserve answered questions on restart). Per operator decision, the extraction **absorbed** it — the
+> current (working-tree) `Restart` was moved into `IOperatorActionService.RestartAsync` so the fix is
+> preserved. 168 tests green (incl. `RestartBehaviorTests`, `WorkstreamRestartCleanupTests`,
+> `WorkstreamRestartAgentMemoryWipeTests`, `Phase50RestartFromScratchTests`).
 
-- [ ] **3.1 Open-question service**
-  - [ ] `IOpenQuestionService.AnswerAsync(workItemId, answers, actor, ct)` extracted from `TaskExecutionEndpoints.AnswerQuestions` + `TryUnparkAndResumeAsync` (plan-doc / workstream / bare-WI branches, resume markers, spawn `LastError` clear, SignalR broadcasts intact)
-  - [ ] `TaskExecutionEndpoints.AnswerQuestions` reduced to a thin wrapper over the service
+- [x] **3.1 Open-question service** ✅ (54 tests green incl. `StalledQuestions*` + `Phase91Explain`)
+  - [x] `IOpenQuestionService.AnswerAsync` **+ `DismissAsync`** extracted from `TaskExecutionEndpoints.AnswerQuestions` / `DismissQuestions` + `TryUnparkAndResumeAsync` (plan-doc / workstream / bare-WI branches, resume markers, spawn `LastError` clear, SignalR broadcasts intact); orphaned method removed; DI registered
+  - [x] `TaskExecutionEndpoints.AnswerQuestions` **and `DismissQuestions`** reduced to thin wrappers over the service
   - _Test scenarios:_
-    - [ ] Existing `StalledQuestionsRecoveryTests` / answer endpoint tests pass unchanged against the wrapper
-    - [ ] Service answering the last question schedules the resume (plan-doc path adds the resume-pending marker)
-    - [ ] Workstream-id path demotes `stalled`→`active` and clears only the bogus stall reason (operator stalls untouched)
-    - [ ] Partial answer (not all questions) leaves `awaiting-answers` set and schedules no resume
-- [ ] **3.2 Operator-action service**
-  - [ ] `IOperatorActionService.{Retry,Accept,Cancel,Restart}` extracted from `WorkstreamsEndpoints`; endpoints become wrappers
-  - [ ] Audit rows (`forge_actions`, `agent_assignments`) still written from the service core
+    - [x] Existing `StalledQuestionsRecoveryTests` / `Phase91Explain` endpoint tests pass unchanged against the wrapper
+    - [x] Service answering the last question schedules the resume (workstream path demotes + resumes; dismiss uses the sentinel)
+    - [x] Workstream-id path demotes `stalled`→`active` and clears only the bogus stall reason (operator stalls untouched)
+    - [x] Partial answer (not all questions) leaves `awaiting-answers` set and schedules no resume
+- [x] **3.2 Operator-action service** ✅ (extracted one-at-a-time: Accept → Cancel → Retry → Restart)
+  - [x] `IOperatorActionService.{AcceptAsync,CancelAsync,RetryAsync,RestartAsync}` extracted from `WorkstreamsEndpoints`; all four endpoints become thin wrappers over a structured `OperatorActionOutcome`; dead 440-line `Restart` body removed; DI registered
+  - [x] Audit rows / SignalR broadcasts still written from the service core (behaviour preserved verbatim)
   - _Test scenarios:_
-    - [ ] Existing `WorkstreamsEndpoints` restart/retry/accept/cancel tests pass unchanged
-    - [ ] `Restart` via the service wipes worktree/memory/deliverables + clears `StallReason` (parity with the endpoint)
-    - [ ] `Accept` flips the latest deliverable verdict to `pass` and lets the orchestrator open the PR
-    - [ ] Each action writes the expected audit row(s)
+    - [x] Existing `WorkstreamsEndpoints` restart/retry/accept/cancel tests pass unchanged (168 total green)
+    - [x] `Restart` via the service wipes worktree/memory/deliverables + clears `StallReason` (parity with the endpoint)
+    - [x] `Accept` flips the latest deliverable verdict to `pass` and lets the orchestrator open the PR
+    - [x] Each action writes the expected audit row(s) / SignalR events (preserved verbatim in the moved code)
 
 ### Phase 4 — Inbound + open-question answering (end-to-end)
 > Long-poll inbound, correlate replies, authorize, and answer open questions from chat. Wire the
@@ -312,8 +330,9 @@ conventions. Each phase is independently shippable.
     - [ ] Multi-question item: chat answers only after all are resolved does the resume fire
     - [ ] Unauthorized subscriber's answer attempt is rejected (role gate)
 
-### Phase 5 — Stalled-workstream actions + strain (+ optional Discord)
-> Stall/strain producers, action buttons, Restart confirm handshake, resolution echo. Discord adapter
+### Phase 5 — Stalled-workstream actions + strain + auth/human-interaction (+ optional Discord)
+> Stall/strain producers, action buttons, Restart confirm handshake, resolution echo, and
+> auth/human-interaction alerts (Forge blocked on a host-side sign-in / manual step). Discord adapter
 > is additive behind `IChatTransport`.
 
 - [ ] **5.1 Stalled-workstream producer + actions**
@@ -330,7 +349,16 @@ conventions. Each phase is independently shippable.
   - _Test scenarios:_
     - [ ] Strain enqueues an alert to the lead's linked subscriber
     - [ ] `Confirm` clears the strain flag; `Reassign` routes to the chosen crew (parity with `POST /api/queue/{id}/reassign`)
-- [ ] **5.3 Discord adapter (optional / deferred)**
+- [ ] **5.3 Auth / human-interaction alerts**
+  - [ ] Producer: auth services (`AdoAuthService`/`GitHubAuthService`) + elevated broker enqueue `human-interaction` when an interactive sign-in / host-side manual step is required while running unattended
+  - [ ] `IChatNotifier.EnqueueHumanInteractionAsync`; buttons `[Retry] [Done] [Snooze]`
+  - [ ] Dispatcher: `Retry` re-invokes the host auth attempt (`IAuthService.SignInAsync`); `Done` marks resolved; `Snooze` re-queues after an interval
+  - _Test scenarios:_
+    - [ ] A background token-refresh needing interaction enqueues exactly one `human-interaction` alert (deduped per account/context)
+    - [ ] `Retry` re-invokes the auth attempt; on success the alert is edited to "✅ Resolved"
+    - [ ] `Done` marks the interaction resolved without a host retry; `Snooze` re-queues after the interval
+    - [ ] No token / device-code / secret value appears in any sent message — only the prompt to act
+- [ ] **5.4 Discord adapter (optional / deferred)**
   - [ ] `DiscordTransport : IChatTransport` (gateway or interactions webhook)
   - _Test scenarios:_
     - [ ] The full Phase-4/5 loop passes against `DiscordTransport` behind the same dispatcher (transport-agnostic contract test)

@@ -370,6 +370,12 @@ builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.
 builder.Services.AddScoped<Forge.Api.Services.Chat.IChatNotifier, Forge.Api.Services.Chat.ChatNotifier>();
 builder.Services.AddSingleton<Forge.Api.Services.Chat.ChatBridgeService>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatBridgeService>());
+// Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
+// questions endpoints AND the chat-bridge inbound path).
+builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();
+// Phase 95.3 — shared operator-action core (accept/cancel/retry/restart) for
+// the HTTP workstream endpoints AND the chat-bridge inbound path.
+builder.Services.AddScoped<Forge.Api.Services.IOperatorActionService, Forge.Api.Services.OperatorActionService>();
 // Phase 10 — ADO config resolver (user-settings → appsettings).
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IAdoConfigResolver, AdoConfigResolver>();
