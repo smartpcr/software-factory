@@ -28,6 +28,7 @@ public sealed class ChatNotifier : IChatNotifier
     private const string KindOpenQuestions = "open-questions";
     private const string KindWorkstreamStalled = "workstream-stalled";
     private const string KindQueueStrain = "queue-strain";
+    private const string KindHumanInteraction = "human-interaction";
 
     private readonly ControlDbContext control;
     private readonly IOptionsMonitor<ChatBridgeOptions> options;
@@ -90,6 +91,22 @@ public sealed class ChatNotifier : IChatNotifier
             RepoId = alert.RepoId,
             QueueId = alert.QueueId,
             DedupeKey = $"strain:{alert.CrewId}",
+            Title = alert.Title,
+            Body = alert.Body,
+            ActionsJson = ChatActions.Serialize(alert.Buttons),
+        };
+        return this.EnqueueAsync(row, ct);
+    }
+
+    /// <inheritdoc/>
+    public Task<bool> EnqueueHumanInteractionAsync(HumanInteractionAlert alert, CancellationToken ct)
+    {
+        var row = new ChatNotificationRow
+        {
+            Kind = KindHumanInteraction,
+            ProductId = alert.ProductId,
+            RepoId = alert.RepoId,
+            DedupeKey = $"interaction:{alert.InteractionKey}",
             Title = alert.Title,
             Body = alert.Body,
             ActionsJson = ChatActions.Serialize(alert.Buttons),

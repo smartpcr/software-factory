@@ -7,6 +7,7 @@
 namespace Forge.Api.Auth;
 
 using Forge.Api.Persistence;
+using Forge.Api.Services.Chat;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -209,7 +210,14 @@ public class AdoAuthService : IAuthService
                     // Account is cached but the refresh token expired. When the
                     // caller can't tolerate a prompt, surface null so AdoProvider
                     // falls back to PAT (or fails fast on a health probe).
-                    if (!allowInteractive) return null;
+                    if (!allowInteractive)
+                    {
+                        // Phase 95 (Phase 5.3) — a known account can no longer
+                        // refresh unattended: ask the operator (over chat) to
+                        // complete an interactive sign-in on the host.
+                        await this.TryEnqueueSignInNeededAsync(account.Username, ct);
+                        return null;
+                    }
                 }
             }
             else if (!allowInteractive)
@@ -226,6 +234,41 @@ public class AdoAuthService : IAuthService
         {
             this.logger.LogDebug(ex, "GetAccessTokenAsync failure");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Phase 95 (Phase 5.3) — best-effort chat alert that an interactive ADO
+    /// sign-in is required on the host. No token/secret is placed in the message.
+    /// </summary>
+    private async Task TryEnqueueSignInNeededAsync(string? account, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var notifier = scope.ServiceProvider.GetService<IChatNotifier>();
+            if (notifier is null) return;
+
+            var acct = string.IsNullOrWhiteSpace(account) ? "your ADO account" : account!;
+            await notifier.EnqueueHumanInteractionAsync(
+                new HumanInteractionAlert(
+                    ProductId: string.Empty,
+                    RepoId: null,
+                    InteractionKey: $"ado-signin:{acct}",
+                    Title: "🔐 ADO sign-in needed",
+                    Body: $"Forge can't refresh the Azure DevOps token for {acct} unattended. "
+                        + "Complete an interactive sign-in on the Forge host (a browser prompt), then tap Done.",
+                    Buttons: new[]
+                    {
+                        new ChatButton("🔁 Retry", $"hi|retry|ado-signin:{acct}"),
+                        new ChatButton("✅ Done", $"hi|done|ado-signin:{acct}"),
+                        new ChatButton("⏰ Snooze", $"hi|snooze|ado-signin:{acct}"),
+                    }),
+                ct);
+        }
+        catch
+        {
+            // Best-effort — never let chat delivery affect auth.
         }
     }
 

@@ -9,9 +9,11 @@ namespace Forge.Api.Services;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Chat;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 /// <summary>
@@ -380,6 +382,8 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
             "WorkstreamLivenessMonitor: silent stall detected — workstream={WorkItem} code={Code} idle={Idle}",
             cand.WorkItemId, verdict.Code, verdict.IdleDuration);
 
+        // (chat alert emitted at the end of this method — see TryEnqueueStalledChatAlertAsync)
+
         if (this.hub is not null)
         {
             try
@@ -406,7 +410,49 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
             }
         }
 
+        // Phase 95 (Phase 5) — alert the operator over chat with action buttons.
+        await this.TryEnqueueStalledChatAlertAsync(cand.WorkItemId, freshWs.RepoId, freshWs.StallReason, ct);
+
         return true;
+    }
+
+    /// <summary>
+    /// Phase 95 (Phase 5) — best-effort chat alert that a workstream stalled,
+    /// with inline [Retry] [Accept] [Cancel] [Restart] buttons (callback
+    /// <c>act|{action}|{workstreamId}</c>). Never affects stall detection.
+    /// </summary>
+    private async Task TryEnqueueStalledChatAlertAsync(string workstreamId, string? repoId, string? stallReason, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var notifier = scope.ServiceProvider.GetService<IChatNotifier>();
+            if (notifier is null) return;
+
+            var reason = string.IsNullOrWhiteSpace(stallReason) ? "Workstream stalled." : stallReason!;
+            var buttons = new[]
+            {
+                new ChatButton("🔁 Retry", $"act|retry|{workstreamId}"),
+                new ChatButton("✅ Accept", $"act|accept|{workstreamId}"),
+                new ChatButton("🚫 Cancel", $"act|cancel|{workstreamId}"),
+                new ChatButton("⚠ Restart", $"act|restart|{workstreamId}"),
+            };
+
+            await notifier.EnqueueWorkstreamStalledAsync(
+                new WorkstreamStalledAlert(
+                    ProductId: string.Empty,
+                    RepoId: repoId,
+                    WorkstreamId: workstreamId,
+                    StallReason: reason,
+                    Title: "⚠ Workstream stalled",
+                    Body: reason.Length > 1500 ? reason[..1500] : reason,
+                    Buttons: buttons),
+                ct);
+        }
+        catch
+        {
+            // Best-effort — never let chat delivery affect stall detection.
+        }
     }
 
     /// <summary>

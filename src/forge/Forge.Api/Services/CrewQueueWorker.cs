@@ -10,10 +10,13 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Forge.Api.Agents;
+using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Chat;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 /// <summary>
@@ -3773,6 +3776,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 await this.taskChannel.EmitAsync(head, "queue.strained", stats, crewId: crewId, ct: ct);
             }
+
+            // Phase 95 (Phase 5.2) — alert the operator over chat (best-effort).
+            await this.TryEnqueueStrainChatAlertAsync(crewId, crew?.Name ?? crewId, stats, ct);
         }
         // Reset the debounce flag for crews that no longer have queues.
         foreach (var key in this.strainArmed.Keys.ToList())
@@ -3780,6 +3786,40 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             if (!observed.Contains(key)) this.strainArmed.TryRemove(key, out _);
         }
         return fired;
+    }
+
+    /// <summary>
+    /// Phase 95 (Phase 5.2) — best-effort chat alert that a crew's queue is
+    /// strained, with a [Confirm] ack button (callback <c>strain|confirm|{crewId}</c>).
+    /// Reassignment stays in the Forge UI. Never affects strain detection.
+    /// </summary>
+    private async Task TryEnqueueStrainChatAlertAsync(string crewId, string crewName, CrewQueueStats stats, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var notifier = scope.ServiceProvider.GetService<IChatNotifier>();
+            if (notifier is null) return;
+
+            var body = $"Crew {crewName} queue is strained — depth {stats.Depth}, ETA ~{stats.EtaMinutes}m.\n"
+                + "Confirm to keep it queued, or reassign in the Forge UI.";
+            var buttons = new[] { new ChatButton("✅ Confirm — keep queued", $"strain|confirm|{crewId}") };
+
+            await notifier.EnqueueQueueStrainAsync(
+                new QueueStrainAlert(
+                    ProductId: string.Empty,
+                    RepoId: null,
+                    CrewId: crewId,
+                    QueueId: stats.HeadWorkItemId,
+                    Title: "🌊 Crew queue strained",
+                    Body: body,
+                    Buttons: buttons),
+                ct);
+        }
+        catch
+        {
+            // Best-effort — never let chat delivery affect strain detection.
+        }
     }
 
     // ── Sweep 4 — abandoned recovery ──────────────────────────────────────

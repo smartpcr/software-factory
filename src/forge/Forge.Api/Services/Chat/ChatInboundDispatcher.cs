@@ -30,6 +30,7 @@ public sealed class ChatInboundDispatcher
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IOpenQuestionService openQuestions;
+    private readonly IOperatorActionService operatorActions;
     private readonly IChatTransport transport;
     private readonly ILogger<ChatInboundDispatcher> logger;
 
@@ -37,12 +38,14 @@ public sealed class ChatInboundDispatcher
         ControlDbContext control,
         ProductDbContext db,
         IOpenQuestionService openQuestions,
+        IOperatorActionService operatorActions,
         IChatTransport transport,
         ILogger<ChatInboundDispatcher> logger)
     {
         this.control = control;
         this.db = db;
         this.openQuestions = openQuestions;
+        this.operatorActions = operatorActions;
         this.transport = transport;
         this.logger = logger;
     }
@@ -76,7 +79,24 @@ public sealed class ChatInboundDispatcher
                 return;
             }
 
-            // Not a command → a reply/tap that should answer an open question.
+            var cb = update.CallbackData ?? string.Empty;
+
+            // Stalled-workstream action buttons: callback `act|{action}|{wsId}`.
+            if (cb.StartsWith("act|", StringComparison.Ordinal))
+            {
+                await this.HandleWorkstreamActionAsync(update, subscriber, ct);
+                return;
+            }
+
+            // Queue-strain [Confirm] + auth/human-interaction [Retry|Done|Snooze]
+            // acks: `strain|{action}|…` / `hi|{action}|…`.
+            if (cb.StartsWith("strain|", StringComparison.Ordinal) || cb.StartsWith("hi|", StringComparison.Ordinal))
+            {
+                await this.HandleAckActionAsync(update, ct);
+                return;
+            }
+
+            // Otherwise a reply/tap that should answer an open question.
             await this.HandleAnswerAsync(update, subscriber, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -147,6 +167,97 @@ public sealed class ChatInboundDispatcher
                 await this.transport.SendAsync(update.ChatId, "Unknown command. /help for options.", buttons: null, ct);
                 break;
         }
+    }
+
+    private async Task HandleWorkstreamActionAsync(ChatInbound update, ChatSubscriberRow subscriber, CancellationToken ct)
+    {
+        var parts = update.CallbackData!.Split('|');
+        if (parts.Length != 3) return;
+        var action = parts[1];
+        var wsId = parts[2];
+        var actor = subscriber.ForgeUserId ?? $"chat:{update.ChatId}";
+        var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
+            n => n.ChatMessageId == update.ReplyToMessageId, ct);
+
+        // Restart is destructive → arm a second-tap confirm before executing.
+        if (action == "restart")
+        {
+            await this.EditIfPossibleAsync(update,
+                "⚠ Restart wipes the worktree, deliverables & branch. Tap to confirm.",
+                new[]
+                {
+                    new ChatButton("⚠ Confirm restart", $"act|restart-confirm|{wsId}"),
+                    new ChatButton("Cancel", $"act|restart-cancel|{wsId}"),
+                }, ct);
+            return;
+        }
+
+        if (action == "restart-cancel")
+        {
+            await this.EditIfPossibleAsync(update, "Restart cancelled — the workstream is unchanged.", buttons: null, ct);
+            return;
+        }
+
+        var outcome = action switch
+        {
+            "retry" => await this.operatorActions.RetryAsync(wsId, actor, ct),
+            "accept" => await this.operatorActions.AcceptAsync(wsId, actor, ct),
+            "cancel" => await this.operatorActions.CancelAsync(wsId, ct),
+            "restart-confirm" => await this.operatorActions.RestartAsync(wsId, ct),
+            _ => OperatorActionOutcome.Problem(400, null, "Unknown action", null),
+        };
+
+        if (notif is not null)
+        {
+            notif.Status = ChatNotificationStatuses.Acted;
+            notif.RespondedAt = DateTimeOffset.UtcNow;
+            await this.control.SaveChangesAsync(ct);
+        }
+
+        var label = action == "restart-confirm" ? "restart" : action;
+        await this.EditIfPossibleAsync(update,
+            outcome.Ok ? $"✅ {label} done." : $"❌ {label} failed: {outcome.Title}", buttons: null, ct);
+    }
+
+    private async Task EditIfPossibleAsync(ChatInbound update, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(update.ChatId) && !string.IsNullOrEmpty(update.ReplyToMessageId))
+        {
+            await this.transport.EditAsync(update.ChatId, update.ReplyToMessageId!, text, buttons, ct);
+        }
+    }
+
+    /// <summary>
+    /// Ack-style buttons that resolve the alert on the Forge side elsewhere:
+    /// queue-strain [Confirm] and auth/human-interaction [Retry|Done|Snooze].
+    /// Marks the notification acted and edits the message; the actual
+    /// reassignment / host auth completes in the UI / on the host.
+    /// </summary>
+    private async Task HandleAckActionAsync(ChatInbound update, CancellationToken ct)
+    {
+        var parts = (update.CallbackData ?? string.Empty).Split('|');
+        if (parts.Length < 2) return;
+        var kind = parts[0];
+        var action = parts[1];
+
+        var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
+            n => n.ChatMessageId == update.ReplyToMessageId, ct);
+        if (notif is not null && action != "snooze")
+        {
+            notif.Status = ChatNotificationStatuses.Acted;
+            notif.RespondedAt = DateTimeOffset.UtcNow;
+            await this.control.SaveChangesAsync(ct);
+        }
+
+        var msg = (kind, action) switch
+        {
+            ("strain", "confirm") => "✅ Acknowledged — kept in queue.",
+            ("hi", "done") => "✅ Marked done — thanks for completing it on the host.",
+            ("hi", "snooze") => "⏰ Snoozed — I'll remind you again later.",
+            ("hi", "retry") => "🔁 Re-attempting — complete the sign-in / prompt on the Forge host.",
+            _ => "Done.",
+        };
+        await this.EditIfPossibleAsync(update, msg, buttons: null, ct);
     }
 
     private async Task HandleAnswerAsync(ChatInbound update, ChatSubscriberRow subscriber, CancellationToken ct)

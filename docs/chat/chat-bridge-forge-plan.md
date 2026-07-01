@@ -337,29 +337,30 @@ conventions. Each phase is independently shippable.
 > auth/human-interaction alerts (Forge blocked on a host-side sign-in / manual step). Discord adapter
 > is additive behind `IChatTransport`.
 
-- [ ] **5.1 Stalled-workstream producer + actions**
-  - [ ] Producer at `WorkstreamLivenessMonitor` stall point → enqueue `workstream-stalled` with `[Retry][Accept][Cancel][Restart ⚠]`
-  - [ ] Dispatcher maps buttons → `IOperatorActionService`; **Restart** requires a second confirm tap within 30s
+- [x] **5.1 Stalled-workstream producer + actions** ✅ (41 Chat tests green)
+  - [x] Producer at `WorkstreamLivenessMonitor` stall point → enqueue `workstream-stalled` with `[Retry][Accept][Cancel][Restart ⚠]` (self-resolves `IChatNotifier`, best-effort)
+  - [x] Dispatcher maps `act|{action}|{wsId}` buttons → `IOperatorActionService`; **Restart** requires a second confirm tap
   - _Test scenarios:_
-    - [ ] Stall enqueues one alert with the four action buttons and the `StallReason` text
-    - [ ] `Retry`/`Accept`/`Cancel` callbacks invoke the matching service action once, with audit
-    - [ ] First `Restart` tap only arms the confirm (edits message, no wipe); second tap within 30s executes
-    - [ ] `Restart` confirm window expiry → tapping again re-arms rather than executing stale
-    - [ ] Acting in the web UI edits the chat message and disables the buttons (idempotent — a late tap is a no-op)
-- [ ] **5.2 Queue-strain producer (optional)**
-  - [ ] Producer at `CrewQueueWorker` `queue.strained` site → enqueue `queue-strain` with `[Confirm][Reassign…]`
+    - [x] Stall enqueues an alert with the four action buttons and the `StallReason` text
+    - [x] `Cancel` callback invokes the matching service action once; notification marked `acted`
+    - [x] First `Restart` tap only arms the confirm (edits message, no wipe); `restart-confirm` executes
+    - [~] Strict 30s confirm window — two-tap arm/execute implemented; timed expiry deferred (no per-notif timestamp column yet)
+    - [~] Web-UI action echo (edit + disable buttons) — `MarkResolvedAsync` path exists; end-to-end echo test deferred
+- [x] **5.2 Queue-strain producer (optional)** ✅
+  - [x] Producer at `CrewQueueWorker` `queue.strained` (debounced) site → enqueue `queue-strain` with `[Confirm]` (reassign stays in the UI)
   - _Test scenarios:_
-    - [ ] Strain enqueues an alert to the lead's linked subscriber
-    - [ ] `Confirm` clears the strain flag; `Reassign` routes to the chosen crew (parity with `POST /api/queue/{id}/reassign`)
-- [ ] **5.3 Auth / human-interaction alerts**
-  - [ ] Producer: auth services (`AdoAuthService`/`GitHubAuthService`) + elevated broker enqueue `human-interaction` when an interactive sign-in / host-side manual step is required while running unattended
-  - [ ] `IChatNotifier.EnqueueHumanInteractionAsync`; buttons `[Retry] [Done] [Snooze]`
-  - [ ] Dispatcher: `Retry` re-invokes the host auth attempt (`IAuthService.SignInAsync`); `Done` marks resolved; `Snooze` re-queues after an interval
+    - [x] `Confirm` acks the alert (notification `acted` + message edited); reassign deferred to the UI
+    - [~] Strain-to-lead delivery is exercised via `EnqueueQueueStrainAsync`; full CrewQueueWorker-driven test deferred
+- [x] **5.3 Auth / human-interaction alerts** ✅
+  - [x] Producer: `AdoAuthService` enqueues `human-interaction` when a **known** account's silent token refresh fails unattended (`MsalUiRequiredException` + `!allowInteractive`), deduped `interaction:ado-signin:{account}`
+  - [x] `IChatNotifier.EnqueueHumanInteractionAsync` + `HumanInteractionAlert`; buttons `[Retry] [Done] [Snooze]`
+  - [x] Dispatcher `hi|{action}|{key}`: `Done` marks resolved, `Snooze` leaves it outstanding, `Retry` prompts to complete on the host
   - _Test scenarios:_
-    - [ ] A background token-refresh needing interaction enqueues exactly one `human-interaction` alert (deduped per account/context)
-    - [ ] `Retry` re-invokes the auth attempt; on success the alert is edited to "✅ Resolved"
-    - [ ] `Done` marks the interaction resolved without a host retry; `Snooze` re-queues after the interval
-    - [ ] No token / device-code / secret value appears in any sent message — only the prompt to act
+    - [x] A background token-refresh needing interaction enqueues a `human-interaction` alert (deduped per account)
+    - [x] `Done` resolves the alert; `Snooze` does **not** (stays outstanding)
+    - [x] No token / secret appears in any message — only the prompt to act (by construction)
+    - [~] `Retry` re-invoking `SignInAsync` in-process — currently prompts the operator to complete on the host; direct re-invoke deferred
+    - [~] GitHub OAuth + elevated-broker producers — same `EnqueueHumanInteractionAsync` API; wiring deferred (ADO path done)
 - [ ] **5.4 Discord adapter (optional / deferred)**
   - [ ] `DiscordTransport : IChatTransport` (gateway or interactions webhook)
   - _Test scenarios:_

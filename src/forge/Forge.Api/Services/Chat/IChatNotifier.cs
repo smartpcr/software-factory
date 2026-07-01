@@ -29,6 +29,13 @@ public interface IChatNotifier
     /// <summary>Enqueue a queue-strain alert. Returns false when deduped.</summary>
     Task<bool> EnqueueQueueStrainAsync(QueueStrainAlert alert, CancellationToken ct);
 
+    /// <summary>
+    /// Enqueue an auth / human-interaction alert (Forge blocked on a host-side
+    /// sign-in or manual step). Returns false when deduped. No token/secret is
+    /// ever placed in the alert — only the prompt to act.
+    /// </summary>
+    Task<bool> EnqueueHumanInteractionAsync(HumanInteractionAlert alert, CancellationToken ct);
+
     /// <summary>Flip open open-questions notifications for a work item toward resolved. Returns rows affected.</summary>
     Task<int> MarkOpenQuestionsResolvedAsync(string workItemId, CancellationToken ct);
 
@@ -62,6 +69,19 @@ public sealed record QueueStrainAlert(
     string? RepoId,
     string CrewId,
     string? QueueId,
+    string Title,
+    string Body,
+    IReadOnlyList<ChatButton>? Buttons);
+
+/// <summary>
+/// Producer input for an auth / human-interaction alert. <see cref="InteractionKey"/>
+/// identifies the blocked flow (e.g. <c>ado-signin:{account}</c>) and drives the
+/// dedupe key; the buttons carry <c>hi|{action}|{InteractionKey}</c> callbacks.
+/// </summary>
+public sealed record HumanInteractionAlert(
+    string ProductId,
+    string? RepoId,
+    string InteractionKey,
     string Title,
     string Body,
     IReadOnlyList<ChatButton>? Buttons);
