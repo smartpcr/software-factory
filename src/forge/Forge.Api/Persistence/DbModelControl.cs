@@ -156,5 +156,8 @@ public static class DbModelControl
         mb.Entity<ChatSubscriberRow>().HasIndex(x => new { x.Platform, x.ChatId })
             .IsUnique()
             .HasDatabaseName("IX_chat_subscribers_platform_chatid");
+
+        // Phase 95 (Phase 4) — chat-bridge inbound long-poll cursor (single row).
+        mb.Entity<ChatBridgeStateRow>().ToTable("chat_bridge_state").HasKey(x => x.Id);
     }
 }

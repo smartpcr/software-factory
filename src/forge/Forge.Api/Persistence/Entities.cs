@@ -2291,6 +2291,26 @@ public class ChatSubscriberRow
 }
 
 /// <summary>
+/// Phase 95 (chat bridge, Phase 4) — single-row durable state for the inbound
+/// long-poll cursor. Persisting the last processed Telegram <c>update_id</c>
+/// means a bridge restart resumes from where it left off instead of
+/// reprocessing (or, worse, re-acting on) the 24h backlog Telegram redelivers.
+/// Control-DB; exactly one row keyed by <see cref="SingletonId"/>.
+/// </summary>
+public class ChatBridgeStateRow
+{
+    /// <summary>The single row's fixed primary key.</summary>
+    public const string SingletonId = "singleton";
+
+    public string Id { get; set; } = SingletonId;
+
+    /// <summary>Highest processed inbound update id; next poll uses <c>+1</c> as the offset.</summary>
+    public long LastUpdateId { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>
 /// Phase 29 — persistent build-validation run history. One row per
 /// <c>POST /api/repos/{id}/validate-build</c> invocation. Steps are
 /// stored as a JSON array in <see cref="StepsJson"/>.

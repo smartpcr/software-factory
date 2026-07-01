@@ -52,7 +52,10 @@ public sealed class ChatNotifier : IChatNotifier
             ProductId = alert.ProductId,
             RepoId = alert.RepoId,
             WorkItemId = alert.WorkItemId,
-            DedupeKey = $"oq:{alert.WorkItemId}:{alert.Iter}",
+            // Per work item (not per iter) so a re-emitted question block doesn't
+            // spawn a fresh alert every iteration — the open-state partial-unique
+            // index keeps at most one outstanding alert per work item.
+            DedupeKey = $"oq:{alert.WorkItemId}",
             Title = alert.Title,
             Body = alert.Body,
             ActionsJson = ChatActions.Serialize(alert.Buttons),

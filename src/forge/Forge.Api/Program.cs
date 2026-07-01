@@ -370,6 +370,8 @@ builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.
 builder.Services.AddScoped<Forge.Api.Services.Chat.IChatNotifier, Forge.Api.Services.Chat.ChatNotifier>();
 builder.Services.AddSingleton<Forge.Api.Services.Chat.ChatBridgeService>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatBridgeService>());
+// Phase 95 (Phase 4) — inbound dispatcher: /link + commands + answer correlation.
+builder.Services.AddScoped<Forge.Api.Services.Chat.ChatInboundDispatcher>();
 // Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
 // questions endpoints AND the chat-bridge inbound path).
 builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();
@@ -409,7 +411,8 @@ builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
     new Forge.Api.Services.DeliverableLoop(
         sp.GetRequiredService<Forge.Api.Persistence.ControlDbContext>(),
         sp.GetRequiredService<Forge.Api.Persistence.ProductDbContext>(),
-        sp.GetService<Forge.Api.Realtime.TaskChannel>()));
+        sp.GetService<Forge.Api.Realtime.TaskChannel>(),
+        sp.GetService<Forge.Api.Services.Chat.IChatNotifier>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
 // Phase 91 — nightly auto-promotion scheduler (02:00 PT). Promotion-only,

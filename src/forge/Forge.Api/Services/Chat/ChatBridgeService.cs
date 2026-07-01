@@ -53,6 +53,15 @@ public sealed class ChatBridgeService : BackgroundService
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Two independent loops: the outbound pump (timer) and the inbound
+        // long-poll. A fault in one must not stop the other.
+        await Task.WhenAll(
+            this.OutboundLoopAsync(stoppingToken),
+            this.InboundLoopAsync(stoppingToken));
+    }
+
+    private async Task OutboundLoopAsync(CancellationToken stoppingToken)
+    {
         try
         {
             await Task.Delay(this.options.CurrentValue.OutboundTickInterval, stoppingToken);
@@ -90,6 +99,98 @@ public sealed class ChatBridgeService : BackgroundService
                 return;
             }
         }
+    }
+
+    private async Task InboundLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var opt = this.options.CurrentValue;
+            var hasToken = !string.IsNullOrWhiteSpace(ChatTokenResolver.Resolve(opt, this.logger));
+            if (!opt.Enabled || !hasToken)
+            {
+                // Idle — the long-poll can't run without a token; back off.
+                try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
+                catch (TaskCanceledException) { return; }
+                continue;
+            }
+
+            try
+            {
+                // The long-poll (getUpdates?timeout=…) provides the pacing.
+                await this.RunInboundOnceAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "chat inbound tick errored — continuing.");
+                try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); }
+                catch (TaskCanceledException) { return; }
+            }
+        }
+    }
+
+    /// <summary>
+    /// One inbound tick: long-poll for updates newer than the persisted cursor,
+    /// route each, then advance the cursor. Returns the update count.
+    /// </summary>
+    public async Task<int> RunInboundOnceAsync(CancellationToken ct)
+    {
+        var offset = await this.LoadOffsetAsync(ct);
+        var pollOffset = offset == 0 ? 0 : offset + 1;
+        var updates = await this.transport.PollUpdatesAsync(pollOffset, ct);
+        if (updates.Count == 0)
+        {
+            return 0;
+        }
+
+        await this.HandleInboundAsync(updates, ct);
+
+        var maxId = updates.Max(u => u.UpdateId);
+        if (maxId > offset)
+        {
+            await this.SaveOffsetAsync(maxId, ct);
+        }
+
+        return updates.Count;
+    }
+
+    /// <summary>Route a batch of inbound updates (public for deterministic tests).</summary>
+    public async Task HandleInboundAsync(IReadOnlyList<ChatInbound> updates, CancellationToken ct)
+    {
+        foreach (var update in updates)
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
+            await dispatcher.DispatchAsync(update, ct);
+        }
+    }
+
+    private async Task<long> LoadOffsetAsync(CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var row = await control.ChatBridgeState.AsNoTracking().FirstOrDefaultAsync(ct);
+        return row?.LastUpdateId ?? 0;
+    }
+
+    private async Task SaveOffsetAsync(long lastUpdateId, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var row = await control.ChatBridgeState.FirstOrDefaultAsync(ct);
+        if (row is null)
+        {
+            row = new ChatBridgeStateRow { Id = ChatBridgeStateRow.SingletonId };
+            control.ChatBridgeState.Add(row);
+        }
+
+        row.LastUpdateId = lastUpdateId;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        await control.SaveChangesAsync(ct);
     }
 
     /// <summary>

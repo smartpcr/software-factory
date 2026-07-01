@@ -84,6 +84,9 @@ public class ControlDbContext : DbContext
     /// <summary>Phase 95 — chat-bridge operator allow-list (chat account ↔ Forge user).</summary>
     public DbSet<ChatSubscriberRow> ChatSubscribers => this.Set<ChatSubscriberRow>();
 
+    /// <summary>Phase 95 (Phase 4) — chat-bridge inbound long-poll cursor (single row).</summary>
+    public DbSet<ChatBridgeStateRow> ChatBridgeState => this.Set<ChatBridgeStateRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

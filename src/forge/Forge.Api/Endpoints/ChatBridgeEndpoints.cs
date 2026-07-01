@@ -67,6 +67,39 @@ public static class ChatBridgeEndpoints
             .WithTags("ChatBridge")
             .WithName("ChatBridgeTestSend");
 
+        // POST /api/chat/link-token — mint a one-time token for the current user.
+        // The operator then sends `/link <token>` from the chat app to bind their
+        // chat account to this Forge user (Phase 4). Role-gated product-owner.
+        app.MapPost("/api/chat/link-token", async (
+            HttpContext ctx,
+            ControlDbContext control,
+            IOptionsMonitor<ChatBridgeOptions> options,
+            CancellationToken ct) =>
+        {
+            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
+
+            var opt = options.CurrentValue;
+            var user = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+            var token = Guid.NewGuid().ToString("N")[..8];
+
+            control.ChatSubscribers.Add(new ChatSubscriberRow
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Platform = opt.Platform,
+                // Placeholder keeps the (Platform, ChatId) unique index happy until
+                // /link swaps in the real chat id.
+                ChatId = $"pending:{token}",
+                ForgeUserId = user,
+                LinkToken = token,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await control.SaveChangesAsync(ct);
+
+            return Results.Ok(new { token, instructions = $"In the chat app, send: /link {token}" });
+        })
+            .WithTags("ChatBridge")
+            .WithName("ChatBridgeLinkToken");
+
         return app;
     }
 }

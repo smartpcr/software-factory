@@ -9,6 +9,7 @@ namespace Forge.Api.Services;
 using System.Text.Json;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Chat;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -547,6 +548,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
     private readonly TaskChannel? channel;
 
     /// <summary>
+    /// Phase 95 (Phase 4) — optional chat-bridge producer. Null in unit tests /
+    /// offline; injected by the DI factory in production. When set, the loop
+    /// enqueues an open-questions alert when a work item parks on unanswered
+    /// questions (best-effort — never affects the loop).
+    /// </summary>
+    private readonly IChatNotifier? chatNotifier;
+
+    /// <summary>
     /// Phase 74 — per-<c>workItemId</c> fast-fail mutex. Two concurrent
     /// <see cref="RunAsync"/> calls on the same work item used to share
     /// the <c>CopilotSessionPool</c> entry; when the first reached a
@@ -598,11 +607,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// emits <c>task.iteration.started | scored | iterated | passed |
     /// rejected | stalled</c> events on the per-work-item live channel.
     /// </summary>
-    public DeliverableLoop(ControlDbContext control, ProductDbContext db, TaskChannel? channel)
+    public DeliverableLoop(ControlDbContext control, ProductDbContext db, TaskChannel? channel, IChatNotifier? chatNotifier = null)
     {
         this.control = control;
         this.db = db;
         this.channel = channel;
+        this.chatNotifier = chatNotifier;
     }
 
     /// <summary>
@@ -613,6 +623,48 @@ public sealed class DeliverableLoop : IDeliverableLoop
     {
         foreach (var sem in WorkItemMutexes.Values) { try { sem.Dispose(); } catch { } }
         WorkItemMutexes.Clear();
+    }
+
+    /// <summary>
+    /// Phase 95 (Phase 4) — enqueue a chat-bridge open-questions alert for the
+    /// operator. Buttons are emitted for the first choice question (one per
+    /// choice, callback <c>oq|{externalId}|{index}</c>); open questions are
+    /// answered by replying to the message. Fully best-effort.
+    /// </summary>
+    private async Task TryEnqueueOpenQuestionsChatAlertAsync(
+        string workItemId, int iter, int unansweredCount,
+        IReadOnlyList<OpenQuestionsExtractor.OpenQuestion> questions, CancellationToken ct)
+    {
+        try
+        {
+            var title = $"❓ {unansweredCount} open question(s) need your answer";
+            var body = string.Join("\n", questions.Select((q, i) => $"{i + 1}. {q.Text}"));
+
+            IReadOnlyList<ChatButton>? buttons = null;
+            var firstChoice = questions.FirstOrDefault(q =>
+                string.Equals(q.Kind, "choice", StringComparison.OrdinalIgnoreCase) && q.Choices is { Count: > 0 });
+            if (firstChoice is not null)
+            {
+                buttons = firstChoice.Choices!
+                    .Select((c, idx) => new ChatButton(c, $"oq|{firstChoice.ExternalId}|{idx}"))
+                    .ToList();
+            }
+
+            await this.chatNotifier!.EnqueueOpenQuestionsAsync(
+                new OpenQuestionsAlert(
+                    ProductId: string.Empty,
+                    RepoId: null,
+                    WorkItemId: workItemId,
+                    Iter: iter,
+                    Title: title,
+                    Body: body,
+                    Buttons: buttons),
+                ct);
+        }
+        catch
+        {
+            // Never let a chat-delivery hiccup affect the deliverable loop.
+        }
     }
 
     public async Task<DeliverableLoopResult> RunAsync(DeliverableLoopRequest request, CancellationToken ct)
@@ -1370,6 +1422,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // the new row) won't flip the gate back to blocking. See
             // CountUnansweredQuestionsAsync for the full rationale.
             var unansweredCount = await CountUnansweredQuestionsAsync(this.control, this.db, request.WorkItemId, ct);
+
+            // Phase 95 (Phase 4) — alert the operator over chat that this work
+            // item is now parked on open questions. Best-effort; guarded so a
+            // chat hiccup never affects the deliverable loop.
+            if (this.chatNotifier is not null && unansweredCount > 0 && newQuestions.Count > 0)
+            {
+                await this.TryEnqueueOpenQuestionsChatAlertAsync(request.WorkItemId, iter, unansweredCount, newQuestions, ct);
+            }
 
             verdict = lastScore.Verdict;
 

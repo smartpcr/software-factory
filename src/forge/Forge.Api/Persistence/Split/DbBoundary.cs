@@ -111,6 +111,7 @@ public static class DbBoundary
         // (the operator + their chat identity are global), so control-side.
         new DbTableSpec("chat_notifications", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_subscribers", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_bridge_state", DbKind.Control, PartitionStrategy.Global, null),
         // EF maps AuditRow to "forge_actions" (Phase 6.10 audit log).
         new DbTableSpec("forge_actions", DbKind.Control, PartitionStrategy.Global, null),
         // Single-row meta table tracking "which seed step has already run"

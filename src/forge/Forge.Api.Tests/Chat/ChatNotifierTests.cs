@@ -64,7 +64,7 @@ public class ChatNotifierTests
             Assert.Equal("prod-1", row.ProductId);
             Assert.Equal("repo-1", row.RepoId);
             Assert.Equal("wi-1", row.WorkItemId);
-            Assert.Equal("oq:wi-1:0", row.DedupeKey);
+            Assert.Equal("oq:wi-1", row.DedupeKey);
             Assert.Equal("telegram", row.Platform);
             Assert.Equal("123", row.ChatId);
             Assert.NotNull(row.ActionsJson);
@@ -86,8 +86,12 @@ public class ChatNotifierTests
 
             Assert.Equal(1, await db.ChatNotifications.CountAsync());
 
-            // A different iteration is a different dedupe key → not deduped.
-            Assert.True(await notifier.EnqueueOpenQuestionsAsync(Oq(iter: 1), default));
+            // Same work item, any iter → still deduped (one outstanding alert per WI).
+            Assert.False(await notifier.EnqueueOpenQuestionsAsync(Oq(iter: 1), default));
+            Assert.Equal(1, await db.ChatNotifications.CountAsync());
+
+            // A DIFFERENT work item is a different dedupe key → not deduped.
+            Assert.True(await notifier.EnqueueOpenQuestionsAsync(Oq(wi: "wi-2"), default));
             Assert.Equal(2, await db.ChatNotifications.CountAsync());
         }
     }
