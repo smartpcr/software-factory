@@ -74,10 +74,11 @@ public static class ConversationInsightQueries
             .OrderBy(d => d.CreatedAt)
             .ThenBy(d => d.Iter)
             .ToList();
-        if (deliverables.Count == 0)
-        {
-            return new { workItemId, iters = Array.Empty<object>() };
-        }
+        // NOTE: do NOT early-return on an empty deliverable set — the timing
+        // anchors below (startedAt / currentIterStartedAt) must still be
+        // reported for a workstream that is mid-iteration-1 and has not
+        // produced its first deliverable yet (the "actively running, no
+        // deliverable" case the swarm header uptime relies on).
 
         var usageRows = await control.AgentUsage.AsNoTracking()
             .Where(u => u.TaskId == workItemId)
@@ -149,6 +150,45 @@ public static class ConversationInsightQueries
             .ToList();
 
         var sortedUsage = usageRows.OrderBy(u => u.StartedAt).ToList();
+
+        // ── Durable timing anchors (swarm header uptime) ────────────────────
+        // startedAt = when the agent pair began this task. The earliest
+        // agent_usage row is the true pair-start (recorded at first invocation)
+        // and survives transcript eviction; fall back to the first
+        // task.iteration.started, then the first deliverable. Reported even
+        // when no deliverable exists yet so an in-flight iter-1 workstream
+        // still shows a live uptime.
+        DateTimeOffset? wsStartedAt = sortedUsage.Count > 0 ? sortedUsage[0].StartedAt : (DateTimeOffset?)null;
+        if (startedByIter.Count > 0)
+        {
+            var firstIterStarted = startedByIter.Values.Min();
+            if (wsStartedAt is null || firstIterStarted < wsStartedAt) wsStartedAt = firstIterStarted;
+        }
+        if (deliverables.Count > 0)
+        {
+            var firstDeliverable = deliverables[0].CreatedAt;
+            if (wsStartedAt is null || firstDeliverable < wsStartedAt) wsStartedAt = firstDeliverable;
+        }
+
+        // currentIterStartedAt = the running iteration's start = the most
+        // recent task.iteration.started that is newer than every completion
+        // signal (a scored event or a persisted deliverable). Null when the
+        // last thing that happened was a completion (between iters / finished)
+        // or no iteration ever started — the frontend only ticks it while the
+        // workstream status is active, so a crashed-after-start run doesn't
+        // tick forever.
+        DateTimeOffset? completionMark = scoredByIter.Count > 0 ? scoredByIter.Values.Max() : (DateTimeOffset?)null;
+        if (deliverables.Count > 0)
+        {
+            var lastDeliverable = deliverables[^1].CreatedAt;
+            if (completionMark is null || lastDeliverable > completionMark) completionMark = lastDeliverable;
+        }
+        DateTimeOffset? currentIterStartedAt = null;
+        if (startedByIter.Count > 0)
+        {
+            var lastIterStarted = startedByIter.Values.Max();
+            if (completionMark is null || lastIterStarted > completionMark) currentIterStartedAt = lastIterStarted;
+        }
 
         var iters = new List<object>(deliverables.Count);
         // Start from MinValue so the first iter's window captures ALL
@@ -281,7 +321,14 @@ public static class ConversationInsightQueries
             prevAt = windowEnd;
         }
 
-        return new { workItemId, iters };
+        return new
+        {
+            workItemId,
+            // ISO-8601 round-trip so the client can Date.parse() directly.
+            startedAt = wsStartedAt?.ToString("o"),
+            currentIterStartedAt = currentIterStartedAt?.ToString("o"),
+            iters,
+        };
     }
 
     /// <summary>

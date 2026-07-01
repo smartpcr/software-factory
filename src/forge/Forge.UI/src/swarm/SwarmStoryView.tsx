@@ -87,12 +87,19 @@ export function SwarmStoryView() {
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Selected-workstream active-time KPIs (Insight I.3, same source as the
-  // Conversation iter-strip). activeMs = Σ per-iter durationMs (active compute
-  // time, excludes idle/queue gaps); lastIterMs = the most recent iteration's
-  // durationMs. Both are finished spans (scored−started), so they freeze once
-  // the workstream stops iterating.
-  const [wsTiming, setWsTiming] = useState<{ activeMs: number | null; lastIterMs: number | null }>({ activeMs: null, lastIterMs: null });
+  // Selected-workstream timing (Insight I.3, same source as the Conversation
+  // iter-strip). lastIterMs = the most recent finished iteration's duration
+  // (scored−started, frozen) — the fallback for the ITER stat when the
+  // workstream isn't currently iterating.
+  // startedAt = when the agent pair was assigned/began this task (durable,
+  // from the earliest agent_usage row). currentIterStartedAt = the running
+  // iteration's start (null when not iterating). Both drive LIVE header
+  // uptimes; lastIterMs stays the frozen fallback for ITER when idle.
+  const [wsTiming, setWsTiming] = useState<{
+    lastIterMs: number | null;
+    startedAt: string | null;
+    currentIterStartedAt: string | null;
+  }>({ lastIterMs: null, startedAt: null, currentIterStartedAt: null });
 
   // Restore state from URL search params on mount so page reload preserves
   // the selected pipeline stage, master-panel item, and detail tab.
@@ -193,13 +200,15 @@ export function SwarmStoryView() {
     // load so the spawn fetch uses the corrected product header.
   }, [storyId, tick, activeProductId]);
 
-  // Fetch the selected workstream's iter-kpis to derive WORKSTREAM (active
-  // time) and LAST ITER (last iteration duration). Only runs when a workstream
-  // (phase) is selected; clears otherwise. Polls on the same 30s cadence as
-  // the Conversation tab's iter-strip.
+  // Fetch the selected workstream's iter-kpis to derive the header uptimes:
+  // UPTIME (since the pair was assigned → startedAt) + ITER (running-iter
+  // uptime → currentIterStartedAt, else last finished iter's duration). Only
+  // runs when a workstream (phase) is selected; clears otherwise. Polls on the
+  // same 30s cadence as the Conversation tab's iter-strip; the LiveElapsed
+  // nodes tick every 1s locally between polls.
   const selectedWsId = selection.kind === 'phase' ? selection.id : null;
   useEffect(() => {
-    if (!selectedWsId) { setWsTiming({ activeMs: null, lastIterMs: null }); return; }
+    if (!selectedWsId) { setWsTiming({ lastIterMs: null, startedAt: null, currentIterStartedAt: null }); return; }
     let cancelled = false;
     async function load() {
       try {
@@ -226,15 +235,14 @@ export function SwarmStoryView() {
           }
           return null;
         };
-        let activeMs = 0;
-        for (let i = 0; i < iters.length; i++) {
-          const d = durOf(i);
-          if (d != null) activeMs += d;
-        }
         const lastIterMs = iters.length > 0 ? durOf(iters.length - 1) : null;
-        setWsTiming({ activeMs: activeMs > 0 ? activeMs : null, lastIterMs });
+        setWsTiming({
+          lastIterMs,
+          startedAt: res.startedAt ?? null,
+          currentIterStartedAt: res.currentIterStartedAt ?? null,
+        });
       } catch {
-        if (!cancelled) setWsTiming({ activeMs: null, lastIterMs: null });
+        if (!cancelled) setWsTiming({ lastIterMs: null, startedAt: null, currentIterStartedAt: null });
       }
     }
     void load();
@@ -454,20 +462,55 @@ export function SwarmStoryView() {
                   label="SPAWN"
                   hint={spawnDone ? 'Total spawn span (created → done)' : 'Elapsed since this spawn was created'}
                 />
-                {selectedWs && (
-                  <HeaderStat
-                    label="WORKSTREAM"
-                    text={wsTiming.activeMs != null ? formatElapsed(wsTiming.activeMs) : null}
-                    hint="Active time: sum of this workstream's iteration durations"
-                  />
-                )}
-                {selectedWs && (
-                  <HeaderStat
-                    label="LAST ITER"
-                    text={wsTiming.lastIterMs != null ? formatElapsed(wsTiming.lastIterMs) : null}
-                    hint="Duration of this workstream's most recent iteration"
-                  />
-                )}
+                {selectedWs && (() => {
+                  const status = selectedWs.status ?? '';
+                  // Terminal states freeze the uptime to its final span; every
+                  // other state (active / review / merging / stalled) is still
+                  // "up" and keeps ticking.
+                  const wsDone = status === 'complete' || status === 'cancelled' || status === 'historic';
+                  // Only an actively-iterating workstream has a live current
+                  // iteration — gate the ITER live tick on it so a crashed /
+                  // stalled run (which can leave a dangling currentIterStartedAt)
+                  // doesn't tick forever.
+                  const isIterating = status === 'active';
+                  const assignedLocal = wsTiming.startedAt
+                    ? new Date(wsTiming.startedAt).toLocaleString(undefined, {
+                        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                      })
+                    : null;
+                  return (
+                    <>
+                      {/* WORKSTREAM UPTIME — wall-clock since the agent pair was
+                          assigned (live while working, frozen span once done).
+                          The exact assignment time is in the tooltip. */}
+                      <LiveElapsed
+                        start={wsTiming.startedAt}
+                        end={wsDone ? (selectedWs.lastActiveAt ?? null) : null}
+                        label="UPTIME"
+                        hint={assignedLocal
+                          ? `Uptime since the agent pair was assigned (${assignedLocal})`
+                          : 'Uptime since the agent pair was assigned'}
+                      />
+                      {/* ITER — live uptime of the running iteration while the
+                          workstream is iterating; otherwise the most recent
+                          finished iteration's duration (frozen). */}
+                      {isIterating && wsTiming.currentIterStartedAt ? (
+                        <LiveElapsed
+                          start={wsTiming.currentIterStartedAt}
+                          end={null}
+                          label="ITER"
+                          hint="Current iteration uptime (live)"
+                        />
+                      ) : (
+                        <HeaderStat
+                          label="ITER"
+                          text={wsTiming.lastIterMs != null ? formatElapsed(wsTiming.lastIterMs) : null}
+                          hint="Duration of this workstream's most recent iteration"
+                        />
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             );
           })()}

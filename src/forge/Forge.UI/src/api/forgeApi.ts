@@ -1216,6 +1216,15 @@ export const forgeApi = {
    */
   async fetchWorkstreamIterKpis(id: string): Promise<{
     workItemId: string;
+    // Durable timing anchors for the swarm header uptime readouts. Both are
+    // ISO-8601 strings or null. `startedAt` = when the agent pair began this
+    // task (earliest agent_usage row → survives transcript eviction); drives
+    // the WORKSTREAM UPTIME stat. `currentIterStartedAt` = the running
+    // iteration's start (null when not currently iterating); drives the live
+    // ITER uptime. Reported even before the first deliverable exists so an
+    // in-flight iter-1 workstream still shows a live uptime.
+    startedAt?: string | null;
+    currentIterStartedAt?: string | null;
     iters: {
       iter: number;
       score: number;
