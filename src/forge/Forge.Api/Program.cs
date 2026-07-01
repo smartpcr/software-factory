@@ -358,6 +358,14 @@ builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection(GitHu
 builder.Services.Configure<ProviderSyncOptions>(builder.Configuration.GetSection(ProviderSyncOptions.SectionName));
 builder.Services.AddHttpClient(AdoProvider.ClientName);
 builder.Services.AddHttpClient(GitHubProvider.ClientName);
+
+// Phase 95 (chat bridge) — Telegram-first operator chat bridge. Phase 1 wires
+// the options + transport + admin test-send only; the outbound/inbound pumps
+// (a BackgroundService) land in Phase 2, so NOTHING is auto-started here.
+builder.Services.Configure<Forge.Api.Services.Chat.ChatBridgeOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.Chat.ChatBridgeOptions.SectionName));
+builder.Services.AddHttpClient(Forge.Api.Services.Chat.TelegramTransport.ClientName);
+builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.Services.Chat.TelegramTransport>();
 // Phase 10 — ADO config resolver (user-settings → appsettings).
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IAdoConfigResolver, AdoConfigResolver>();
@@ -1016,6 +1024,8 @@ app.MapProvidersEndpoints();
 app.MapWebhooksEndpoints();
 app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
+// Phase 95 (chat bridge) — admin test-send (outbound smoke test).
+app.MapChatBridgeEndpoints();
 app.MapProductsEndpoints();
 app.MapSprintEndpoints();
 app.MapAuthEndpoints();

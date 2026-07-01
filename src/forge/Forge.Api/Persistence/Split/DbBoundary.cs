@@ -107,6 +107,10 @@ public static class DbBoundary
         new DbTableSpec("agent_level_history", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("agent_usage", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("agents", DbKind.Control, PartitionStrategy.Global, null),
+        // Phase 95 — chat-bridge outbox + operator allow-list. Cross-product
+        // (the operator + their chat identity are global), so control-side.
+        new DbTableSpec("chat_notifications", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_subscribers", DbKind.Control, PartitionStrategy.Global, null),
         // EF maps AuditRow to "forge_actions" (Phase 6.10 audit log).
         new DbTableSpec("forge_actions", DbKind.Control, PartitionStrategy.Global, null),
         // Single-row meta table tracking "which seed step has already run"

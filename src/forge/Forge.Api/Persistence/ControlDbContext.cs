@@ -78,6 +78,12 @@ public class ControlDbContext : DbContext
     /// </summary>
     public DbSet<RepoRegistryRow> RepoRegistry => this.Set<RepoRegistryRow>();
 
+    /// <summary>Phase 95 — chat-bridge outbound notification + reply-correlation outbox.</summary>
+    public DbSet<ChatNotificationRow> ChatNotifications => this.Set<ChatNotificationRow>();
+
+    /// <summary>Phase 95 — chat-bridge operator allow-list (chat account ↔ Forge user).</summary>
+    public DbSet<ChatSubscriberRow> ChatSubscribers => this.Set<ChatSubscriberRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

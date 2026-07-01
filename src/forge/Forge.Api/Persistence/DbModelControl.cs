@@ -134,5 +134,27 @@ public static class DbModelControl
             .IsUnique()
             .HasFilter("DeletedAt IS NULL")
             .HasDatabaseName("IX_repo_registry_CloneRoot");
+
+        // Phase 95 — chat-bridge outbox. The partial-unique index on DedupeKey
+        // (filtered to the OPEN states pending/sent) enforces "at most one
+        // outstanding alert per dedupe key" the same way task_queue enforces one
+        // open row per work item. Index names are pinned via HasDatabaseName so
+        // Phase95Migration's raw-SQL `CREATE ... IF NOT EXISTS` matches by name
+        // and no-ops on a fresh DB (where EnsureCreated lays down the model
+        // index first).
+        mb.Entity<ChatNotificationRow>().ToTable("chat_notifications").HasKey(x => x.Id);
+        mb.Entity<ChatNotificationRow>().HasIndex(x => x.Status)
+            .HasDatabaseName("IX_chat_notifications_Status");
+        mb.Entity<ChatNotificationRow>().HasIndex(x => x.DedupeKey)
+            .IsUnique()
+            .HasFilter("Status IN ('pending','sent')")
+            .HasDatabaseName("IX_chat_notifications_DedupeKey_open");
+
+        // Phase 95 — chat-bridge operator allow-list. One subscriber per
+        // (platform, chatId).
+        mb.Entity<ChatSubscriberRow>().ToTable("chat_subscribers").HasKey(x => x.Id);
+        mb.Entity<ChatSubscriberRow>().HasIndex(x => new { x.Platform, x.ChatId })
+            .IsUnique()
+            .HasDatabaseName("IX_chat_subscribers_platform_chatid");
     }
 }

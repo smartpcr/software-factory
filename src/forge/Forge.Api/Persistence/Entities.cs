@@ -2158,6 +2158,132 @@ public class RepoRegistryRow
 }
 
 /// <summary>
+/// Phase 95 (chat bridge) — durable outbound notification + reply-correlation
+/// row (the "outbox"). A producer enqueues one of these when an open question
+/// is raised or a workstream stalls; the (Phase 2) bridge service drains
+/// <c>pending</c> rows to the operator's chat, stores the sent
+/// <see cref="ChatMessageId"/> so a reply can be correlated back, and edits the
+/// message when the item is resolved. Lives in the <b>control DB</b> because the
+/// operator + their chat identity are cross-product; <see cref="ProductId"/>
+/// lets inbound dispatch open the right per-product DB.
+/// </summary>
+public class ChatNotificationRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>One of: <c>open-questions</c>, <c>workstream-stalled</c>, <c>queue-strain</c>.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>Owning product — used to route inbound replies to the right per-product DB.</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>Owning repo (Phase 80 scope). Null for legacy/product-wide notifications.</summary>
+    public string? RepoId { get; set; }
+
+    /// <summary>The work item the reply acts on (open-questions / bare-WI actions).</summary>
+    public string? WorkItemId { get; set; }
+
+    /// <summary>The workstream the reply acts on (stalled-workstream actions).</summary>
+    public string? WorkstreamId { get; set; }
+
+    /// <summary>The queue row the reply acts on (queue-strain).</summary>
+    public string? QueueId { get; set; }
+
+    /// <summary>
+    /// Idempotency key (e.g. <c>oq:{workItemId}:{iter}</c>). A partial-unique
+    /// index over open states (<c>pending</c>/<c>sent</c>) blocks a duplicate
+    /// alert while the first is still outstanding.
+    /// </summary>
+    public string DedupeKey { get; set; } = string.Empty;
+
+    /// <summary>Rendered message title / headline.</summary>
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>Rendered message body.</summary>
+    public string Body { get; set; } = string.Empty;
+
+    /// <summary>JSON of the inline actions (choices / action buttons) + their callback data. Null = no buttons.</summary>
+    public string? ActionsJson { get; set; }
+
+    /// <summary>
+    /// Lifecycle: <c>pending</c> → <c>sent</c> → <c>answered</c>/<c>acted</c>,
+    /// or <c>expired</c>/<c>failed</c>. See <see cref="ChatNotificationStatuses"/>.
+    /// </summary>
+    public string Status { get; set; } = ChatNotificationStatuses.Pending;
+
+    /// <summary>Chat platform the row was/will be delivered on (e.g. <c>telegram</c>).</summary>
+    public string Platform { get; set; } = string.Empty;
+
+    /// <summary>Target chat id (set when sent).</summary>
+    public string? ChatId { get; set; }
+
+    /// <summary>The sent message id — the anchor a reply-to correlates against.</summary>
+    public string? ChatMessageId { get; set; }
+
+    /// <summary>Send attempts so far (retry/backoff accounting).</summary>
+    public int Attempts { get; set; }
+
+    /// <summary>Last delivery error, for diagnostics.</summary>
+    public string? LastError { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    public DateTimeOffset? SentAt { get; set; }
+
+    public DateTimeOffset? RespondedAt { get; set; }
+
+    /// <summary>When a still-<c>pending</c> row flips to <c>expired</c>.</summary>
+    public DateTimeOffset? ExpiresAt { get; set; }
+}
+
+/// <summary>Canonical <see cref="ChatNotificationRow.Status"/> values.</summary>
+public static class ChatNotificationStatuses
+{
+    public const string Pending = "pending";
+    public const string Sent = "sent";
+    public const string Answered = "answered";
+    public const string Acted = "acted";
+    public const string Expired = "expired";
+    public const string Failed = "failed";
+
+    /// <summary>States that still hold the <c>DedupeKey</c> slot (partial-unique index filter).</summary>
+    public static readonly IReadOnlyList<string> Open = new[] { Pending, Sent };
+}
+
+/// <summary>
+/// Phase 95 (chat bridge) — the operator allow-list. Maps a chat account to a
+/// Forge user so replies can be authorized (role-gated) and inbound updates from
+/// an unlinked chat id are ignored. Bound via the one-time <c>/link &lt;token&gt;</c>
+/// flow (Phase 4). Control-DB, cross-product.
+/// </summary>
+public class ChatSubscriberRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>Chat platform (e.g. <c>telegram</c>).</summary>
+    public string Platform { get; set; } = string.Empty;
+
+    /// <summary>Numeric chat id (stored as text for provider-agnosticism).</summary>
+    public string ChatId { get; set; } = string.Empty;
+
+    /// <summary>Linked Forge user id — actions are authorized against this user's role. Null until linked.</summary>
+    public string? ForgeUserId { get; set; }
+
+    /// <summary>Pending one-time link token; cleared once <see cref="ForgeUserId"/> is set.</summary>
+    public string? LinkToken { get; set; }
+
+    public DateTimeOffset? LinkedAt { get; set; }
+
+    /// <summary>Optional JSON array of product ids this operator wants alerts for. Null = all.</summary>
+    public string? ProductFilterJson { get; set; }
+
+    /// <summary>Quiet switch — muted subscribers are skipped by the outbound pump.</summary>
+    public bool Muted { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>
 /// Phase 29 — persistent build-validation run history. One row per
 /// <c>POST /api/repos/{id}/validate-build</c> invocation. Steps are
 /// stored as a JSON array in <see cref="StepsJson"/>.

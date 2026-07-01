@@ -18,6 +18,8 @@
     <!-- Phase 9 — MSAL interactive sign-in (system browser), DPAPI-backed token cache. -->
     <PackageReference Include="Microsoft.Identity.Client" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
+    <!-- Phase 95 — DPAPI-encrypted chat-bridge bot-token blob (%LOCALAPPDATA%\Forge\chat-token.bin). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" />
     <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner. -->
     <PackageReference Include="GitHub.Copilot.SDK" />
     <!-- Phase 46 — workstreams.yaml decomposition artefact + plan front-matter parser. -->

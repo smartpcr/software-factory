@@ -330,6 +330,12 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(94, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "repos" }),
+        // Phase 95 (chat bridge) — control-side chat_notifications outbox +
+        // chat_subscribers allow-list. Control-only (operator + chat identity
+        // are cross-product); new tables, no ordering dependency.
+        new PhaseMigrationSpec(95, PhaseMigrationKind.Control,
+            ControlTables: new[] { "chat_notifications", "chat_subscribers" },
+            ProductTables: Array.Empty<string>()),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

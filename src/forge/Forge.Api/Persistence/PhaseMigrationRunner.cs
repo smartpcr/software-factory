@@ -117,6 +117,9 @@ public sealed class PhaseMigrationRunner
         // Product-only, fans out per {slug}.db. Additive nullable column; no
         // EF-model ordering dependency (no migration EF-queries `repos`).
         94,
+        // Phase 95 (chat bridge) — control-side chat_notifications +
+        // chat_subscribers. New tables; no ordering dependency.
+        95,
     };
 
     private readonly IServiceScopeFactory scopeFactory;
