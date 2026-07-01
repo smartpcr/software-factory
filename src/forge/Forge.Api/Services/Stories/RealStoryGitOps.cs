@@ -1285,13 +1285,20 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "remove", "--force", existing);
             if (Directory.Exists(existing))
             {
-                try { Directory.Delete(existing, recursive: true); }
-                catch (IOException ex)
-                {
-                    this.logger?.LogWarning(ex,
-                        "RemoveWorktreeAsync: could not delete dir {Path} after `git worktree remove`; will be pruned on next claim.",
-                        existing);
-                }
+                // `git worktree remove --force` deletes the tracked files AND the
+                // git registration, but leaves locked gitignored subtrees behind:
+                // the agent's `.forge\memory\session-state` (held by copilot.exe)
+                // and `out\` build/test output (held by an orphaned testhost/
+                // dotnet from the build gate). A naive Directory.Delete throws on
+                // those — and because the registration is ALREADY gone, that
+                // strands an unrecoverable orphan: `git worktree prune` finds no
+                // dangling entry, a later RemoveWorktreeAsync early-returns
+                // ("nothing registered"), and WorktreeReaper only scans
+                // registered worktrees. Use the lock-breaking deleter (retries +
+                // Restart Manager) so the locked dirs actually go; anything it
+                // still can't clear is collected by WorktreeReaper's on-disk
+                // orphan sweep once the lock releases.
+                await this.ForceDeleteWorktreeDirAsync(existing, ct);
             }
             await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "prune");
         }
@@ -1299,6 +1306,59 @@ public sealed class RealStoryGitOps : IStoryGitOps
         {
             this.logger?.LogWarning(ex,
                 "RemoveWorktreeAsync: best-effort cleanup failed for branch {Branch}; ignoring.", branch);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryRemoveOrphanWorktreeDirAsync(
+        RepoRow? repo, string worktreeDir, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(worktreeDir)) return false;
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return false;
+        if (!Directory.Exists(repo.CloneRoot)) return false;
+
+        // Safety: only ever touch a leaf directly under `{cloneRoot}\.worktree\`,
+        // and NEVER the cloneRoot / main worktree. Mirrors the Phase 55 guard in
+        // RemoveWorktreeAsync that stopped a base-branch cleanup from wiping the
+        // operator's clone (`.git` and all).
+        var wtRoot = Path.Combine(repo.CloneRoot, ".worktree");
+        var parent = Path.GetDirectoryName(
+            worktreeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (parent is null || !IsSamePath(parent, wtRoot)) return false;
+        if (IsSamePath(worktreeDir, repo.CloneRoot) || IsMainWorktreeDir(worktreeDir)) return false;
+        if (!Directory.Exists(worktreeDir)) return true;
+
+        // A still-git-attached worktree (`.git` file pointer or dir) must go
+        // through the branch-keyed RemoveWorktreeAsync path, not this one — the
+        // orphan sweep is strictly for directories git has already forgotten.
+        if (File.Exists(Path.Combine(worktreeDir, ".git"))
+            || Directory.Exists(Path.Combine(worktreeDir, ".git")))
+        {
+            return false;
+        }
+
+        var gate = branchLocks.GetOrAdd(NormalizeAbsolutePath(worktreeDir), _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            // remove+prune first in case a stale registration somehow lingers
+            // (typically a no-op for a truly orphaned dir), then force-delete the
+            // locked remnant subtree with the Restart-Manager lock-breaker.
+            await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "remove", "--force", worktreeDir);
+            await this.ForceDeleteWorktreeDirAsync(worktreeDir, ct);
+            await this.RunGitCaptureAsync(repo.CloneRoot, ct, "worktree", "prune");
+            return !Directory.Exists(worktreeDir);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "TryRemoveOrphanWorktreeDirAsync: failed to remove orphan worktree dir {Path} (repo {Repo}); will retry next tick.",
+                worktreeDir, repo.Id);
+            return !Directory.Exists(worktreeDir);
         }
         finally
         {
@@ -3019,6 +3079,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
     /// </summary>
     private async Task ForceDeleteWorktreeDirAsync(string wtPath, CancellationToken ct)
     {
+        var aclResetTried = false;
         for (var attempt = 1; attempt <= 6; attempt++)
         {
             if (!Directory.Exists(wtPath)) return;
@@ -3049,12 +3110,27 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     }
                 }
 
+                // ACCESS_DENIED is often not a lock at all but a hardened,
+                // non-inherited ACL a build/test gate stamped on a subdir
+                // (observed 2026-06-30: out\...\Logs granting only SYSTEM +
+                // Administrators, no ACE for the interactive user) — so
+                // Directory.Delete throws UnauthorizedAccessException even though
+                // we own the tree and it is otherwise empty. Re-take ownership +
+                // grant the current user FullControl across the subtree so the
+                // next attempt can delete it. Best-effort, once.
+                if (ex is UnauthorizedAccessException && !aclResetTried)
+                {
+                    aclResetTried = true;
+                    TryGrantCurrentUserFullControl(wtPath, this.logger);
+                }
+
                 if (attempt == 6)
                 {
                     throw new InvalidOperationException(
                         $"Worktree directory '{wtPath}' could not be removed after {attempt} attempts — it is locked by "
                         + "another process that the Restart Manager lock-breaker could not release (e.g. an editor such as "
-                        + "Visual Studio holding it open, or an elevated process a non-elevated Forge.Api cannot kill). "
+                        + "Visual Studio holding it open, or an elevated process a non-elevated Forge.Api cannot kill), or a "
+                        + "hardened ACL on a subdirectory that the ACL re-grant could not reset. "
                         + "Close any editor pointed at this path, then Restart the workstream. "
                         + $"Underlying error: {ex.Message}", ex);
                 }
@@ -3062,6 +3138,64 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     "Worktree dir {Path} still locked (attempt {Attempt}/6): {Err} — retrying.", wtPath, attempt, ex.Message);
                 await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
             }
+        }
+    }
+
+    /// <summary>
+    /// Best-effort: take ownership and grant the current user FullControl over
+    /// <paramref name="root"/> and everything under it via <c>icacls</c>. Used
+    /// when <see cref="ForceDeleteWorktreeDirAsync"/> hits ACCESS_DENIED caused
+    /// not by a lock but by a hardened, non-inherited ACL a build/test gate
+    /// stamped on a subdirectory (e.g. <c>out\...\Logs</c> granting only
+    /// SYSTEM + Administrators). Windows-only; never throws.
+    /// </summary>
+    private static void TryGrantCurrentUserFullControl(string root, ILogger? log)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return;
+
+        string user;
+        try { user = System.Security.Principal.WindowsIdentity.GetCurrent().Name; }
+        catch { return; }
+        if (string.IsNullOrEmpty(user)) return;
+
+        // /setowner needs us to already own it (we do for worktrees we created)
+        // or hold the privilege; /C makes both continue past any entry that
+        // can't be updated so a single stubborn node never aborts the sweep.
+        RunIcacls(new[] { root, "/setowner", user, "/T", "/C", "/Q" }, root, log);
+        RunIcacls(new[] { root, "/grant", $"{user}:(OI)(CI)F", "/T", "/C", "/Q" }, root, log);
+    }
+
+    private static void RunIcacls(string[] args, string root, ILogger? log)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("icacls")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return;
+
+            // Drain both pipes concurrently to avoid a full-buffer deadlock,
+            // then bound the wait so a wedged icacls can never hang the sweep.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(15000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            }
+
+            try { Task.WaitAll(new Task[] { stdout, stderr }, 2000); } catch { /* ignore */ }
+        }
+        catch (Exception ex)
+        {
+            log?.LogDebug(ex, "icacls invocation failed for {Path} (non-fatal).", root);
         }
     }
 

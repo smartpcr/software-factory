@@ -35,8 +35,14 @@ using Microsoft.Extensions.Configuration;
 /// applying the fix. The reaper also removes orphan per-workstream worktrees
 /// (<c>stage-*</c> / <c>ws-*</c> leaves) whose branch matches no live
 /// workstream row — these survive plan-doc reshapes that tombstone the old
-/// row but leave its worktree on disk. Mirrors
-/// <c>POST /api/admin/worktrees/prune</c>.</para>
+/// row but leave its worktree on disk. Finally it runs an on-disk sweep for
+/// <c>stage-*</c> / <c>ws-*</c> directories git no longer tracks at all
+/// (unregistered, no <c>.git</c> pointer) — the residue of a
+/// <see cref="StorySpawnOrchestrator"/> / reaper removal whose
+/// <c>git worktree remove</c> dropped the registration but whose follow-up
+/// delete failed on a locked <c>out\</c> / <c>.forge\</c> subtree; once
+/// unregistered, the git-based loops and <c>git worktree prune</c> can never
+/// see it again. Mirrors <c>POST /api/admin/worktrees/prune</c>.</para>
 ///
 /// <para><b>Grace period:</b> a worktree whose directory was modified within
 /// <c>Forge:WorktreeReaper:GraceMinutes</c> is skipped, so a freshly-spawned
@@ -209,6 +215,54 @@ public sealed class WorktreeReaper : BackgroundService
                     removed++;
                 }
             }
+
+            // (3) On-disk orphan sweep — directories under {cloneRoot}\.worktree\
+            // that git no longer tracks (absent from `git worktree list`, no
+            // `.git` pointer). These are the residue of a RemoveWorktreeAsync
+            // whose `git worktree remove` dropped the registration but whose
+            // follow-up delete failed on a locked out\ / .forge\ subtree: once
+            // unregistered, loops (1)/(2) above never see them (both iterate
+            // git-registered worktrees) and `git worktree prune` can't help.
+            // Only stage-*/ws-* leaves are swept (plan-*/qa-*/merge-* belong to
+            // other hooks); anything still carrying a `.git` entry is left to the
+            // branch-keyed path (it may be an active or mid-rebase worktree).
+            // Honors the same grace window.
+            var wtRoot = Path.Combine(repo.CloneRoot, ".worktree");
+            if (Directory.Exists(wtRoot))
+            {
+                var registeredPaths = new HashSet<string>(
+                    registered.Select(r => NormalizeForCompare(r.Path)), StringComparer.Ordinal);
+
+                IReadOnlyList<string> leaves;
+                try
+                {
+                    leaves = Directory.EnumerateDirectories(wtRoot).ToList();
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning(ex,
+                        "WorktreeReaper: failed to enumerate {Root} for orphan sweep (product {Slug}); skipping.",
+                        wtRoot, slug);
+                    leaves = Array.Empty<string>();
+                }
+
+                foreach (var dir in leaves)
+                {
+                    var leaf = Path.GetFileName(dir) ?? string.Empty;
+                    if (!PerWorkstreamLeafPrefixes.Any(p => leaf.StartsWith(p, StringComparison.Ordinal))) continue;
+                    if (registeredPaths.Contains(NormalizeForCompare(dir))) continue; // handled by (1)/(2)
+                    if (File.Exists(Path.Combine(dir, ".git")) || Directory.Exists(Path.Combine(dir, ".git"))) continue;
+                    if (IsWithinGrace(dir, grace)) continue;
+
+                    if (await this.git.TryRemoveOrphanWorktreeDirAsync(repo, dir, ct))
+                    {
+                        removed++;
+                        this.logger.LogInformation(
+                            "WorktreeReaper: removed ORPHAN worktree dir {Path} (unregistered, no .git; product={Slug}).",
+                            dir, slug);
+                    }
+                }
+            }
         }
 
         if (removed > 0)
@@ -253,6 +307,20 @@ public sealed class WorktreeReaper : BackgroundService
         "complete" => true,
         _ => false,
     };
+
+    private static string NormalizeForCompare(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .ToLowerInvariant();
+        }
+        catch
+        {
+            return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToLowerInvariant();
+        }
+    }
 
     private static bool IsWithinGrace(string worktreePath, TimeSpan grace)
     {

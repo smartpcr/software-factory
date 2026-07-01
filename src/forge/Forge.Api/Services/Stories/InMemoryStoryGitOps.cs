@@ -230,6 +230,10 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    public Task<bool> TryRemoveOrphanWorktreeDirAsync(RepoRow? repo, string worktreeDir, CancellationToken ct = default)
+        => Task.FromResult(true); // in-memory ops model no real filesystem — nothing to reap
+
     /// <summary>
     /// Phase 59 — in-memory probe. Returns <c>false</c> after the test has
     /// called <see cref="RemoveWorktreeAsync"/> for this (repo, branch); the

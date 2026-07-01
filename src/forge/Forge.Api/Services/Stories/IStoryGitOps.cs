@@ -221,6 +221,23 @@ public interface IStoryGitOps
     Task<bool> WorktreeExistsAsync(RepoRow? repo, string branch, CancellationToken ct = default);
 
     /// <summary>
+    /// Best-effort removal of an ORPHANED per-workstream worktree directory —
+    /// one left on disk under <c>{cloneRoot}\.worktree\</c> that git no longer
+    /// tracks (absent from <c>git worktree list</c>, no <c>.git</c> pointer).
+    /// These arise when <see cref="RemoveWorktreeAsync"/>'s
+    /// <c>git worktree remove --force</c> dropped the registration but the
+    /// follow-up directory delete failed on a locked <c>out\</c> / <c>.forge\</c>
+    /// subtree; once the registration is gone, nothing else re-scans the
+    /// directory (prune sees no dangling entry, RemoveWorktreeAsync early-returns,
+    /// the reaper's git-based loops don't see it), so it survives forever.
+    /// <paramref name="worktreeDir"/> MUST be an absolute path directly under the
+    /// repo's <c>.worktree\</c> folder; the implementation refuses the cloneRoot /
+    /// main worktree and anything outside <c>.worktree\</c>. Returns <c>true</c>
+    /// when the directory no longer exists on return. Never throws.
+    /// </summary>
+    Task<bool> TryRemoveOrphanWorktreeDirAsync(RepoRow? repo, string worktreeDir, CancellationToken ct = default);
+
+    /// <summary>
     /// Phase 42 — stage one repo-relative path in <paramref name="branch"/>'s
     /// worktree and commit. Used by per-iteration plan-doc commits so the
     /// Worktree tab shows real history. Serialized per-branch so concurrent

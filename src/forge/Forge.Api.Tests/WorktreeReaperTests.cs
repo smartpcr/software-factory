@@ -137,6 +137,57 @@ public class WorktreeReaperTests : IAsyncLifetime
             "grace period must protect a worktree modified within the window.");
     }
 
+    [Fact]
+    public async Task RunForProduct_SweepsUnregisteredOrphanDir_OnDisk()
+    {
+        if (!GitAvailable()) return;
+
+        // Reproduces the 2026-06-30 stage-1.2 leak: `git worktree remove` dropped
+        // the registration but the follow-up delete failed on a locked/hardened
+        // out\ / .forge\ subtree, leaving an UNREGISTERED `.worktree/stage-*` dir
+        // (no `.git` pointer, absent from `git worktree list`). Loops (1)/(2)
+        // can't see it (both iterate git-registered worktrees) and
+        // `git worktree prune` can't either. Pass (3) must collect it.
+        var brActive = "ws/test/stage-active";
+        var pathActive = await this.AddWorktreeAsync("stage-active", brActive);
+
+        // Unregistered orphan leaf with the classic leftover content, NO `.git`.
+        var wtDir = Path.Combine(this.clonePath, ".worktree");
+        var orphan = Path.Combine(wtDir, "stage-detached");
+        Directory.CreateDirectory(Path.Combine(orphan, ".forge", "memory"));
+        Directory.CreateDirectory(Path.Combine(orphan, "out"));
+        await File.WriteAllTextAsync(Path.Combine(orphan, "out", "marker.txt"), "build output\n");
+
+        // A non-per-workstream unregistered leaf (plan-*) must be LEFT ALONE —
+        // plan/qa/merge worktrees are owned by other lifecycle hooks.
+        var planLeaf = Path.Combine(wtDir, "plan-architecture");
+        Directory.CreateDirectory(planLeaf);
+
+        var (conn, _, db) = await NewProductDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            db.Repos.Add(this.repo);
+            db.Workstreams.Add(NewWs("ws-active", brActive, "active"));
+            await db.SaveChangesAsync();
+
+            var reaper = new WorktreeReaper(
+                scopeFactory: null!,
+                git: this.git,
+                config: new ConfigurationBuilder().Build(),
+                logger: NullLogger<WorktreeReaper>.Instance);
+
+            // grace = 0 so the just-created orphan isn't grace-skipped.
+            var removed = await reaper.RunForProductAsync(db, "test", TimeSpan.Zero, CancellationToken.None);
+
+            Assert.Equal(1, removed);
+        }
+
+        Assert.False(Directory.Exists(orphan), "unregistered stage-* orphan dir should be swept.");
+        Assert.True(Directory.Exists(planLeaf), "unregistered plan-* dir must be LEFT for other hooks.");
+        Assert.True(Directory.Exists(pathActive), "registered active worktree must be KEPT.");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private async Task<string> AddWorktreeAsync(string leaf, string branch)

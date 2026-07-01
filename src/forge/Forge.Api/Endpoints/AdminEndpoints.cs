@@ -237,6 +237,66 @@ public static class AdminEndpoints
                         skipped.Add(new { branch, path, error = ex.Message });
                     }
                 }
+
+                // On-disk orphan sweep — directories under {cloneRoot}/.worktree/
+                // that git no longer tracks at all (absent from the porcelain
+                // list above, no `.git` pointer). Residue of a RemoveWorktreeAsync
+                // whose `git worktree remove` dropped the registration but whose
+                // follow-up delete failed on a locked out\ / .forge\ subtree;
+                // once unregistered, neither the branch→row join nor
+                // `git worktree prune` re-scans them. Only stage-*/ws-* leaves;
+                // anything still git-attached is left to the branch-keyed path.
+                var wtRoot = System.IO.Path.Combine(repo.CloneRoot, ".worktree");
+                if (System.IO.Directory.Exists(wtRoot))
+                {
+                    static string NormPath(string p)
+                    {
+                        try
+                        {
+                            return System.IO.Path.GetFullPath(p)
+                                .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
+                                .ToLowerInvariant();
+                        }
+                        catch { return p.ToLowerInvariant(); }
+                    }
+
+                    var registeredPaths = new HashSet<string>(
+                        registered.Select(r => NormPath(r.Path)), StringComparer.Ordinal);
+
+                    foreach (var dir in System.IO.Directory.EnumerateDirectories(wtRoot))
+                    {
+                        var leaf = System.IO.Path.GetFileName(dir) ?? string.Empty;
+                        var isPerWs = leaf.StartsWith("stage-", StringComparison.Ordinal)
+                            || leaf.StartsWith("ws-", StringComparison.Ordinal);
+                        if (!isPerWs) continue;
+                        if (registeredPaths.Contains(NormPath(dir))) continue;
+                        if (System.IO.File.Exists(System.IO.Path.Combine(dir, ".git"))
+                            || System.IO.Directory.Exists(System.IO.Path.Combine(dir, ".git"))) continue;
+
+                        if (dry)
+                        {
+                            removed.Add(new { wsId = (string?)null, status = "orphan-dir", branch = (string?)null, path = dir, dryRun = true });
+                            continue;
+                        }
+
+                        try
+                        {
+                            var ok = await git.TryRemoveOrphanWorktreeDirAsync(repo, dir, ct);
+                            if (ok)
+                            {
+                                removed.Add(new { wsId = (string?)null, status = "orphan-dir", branch = (string?)null, path = dir });
+                            }
+                            else
+                            {
+                                skipped.Add(new { path = dir, error = "still present after force-delete (locked?)" });
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            skipped.Add(new { path = dir, error = ex.Message });
+                        }
+                    }
+                }
             }
 
             return Results.Ok(new
