@@ -2968,6 +2968,23 @@
   color: var(--sc-green); font-style: italic;
   margin-top: 4px;
 }
+/* Re-answer affordance on a previously-answered question. Matches the
+ * explain/dismiss chip styling; hover picks up the accent like explain. */
+.swarm-ctrl .oq-wizard__q-edit {
+  font-family: var(--sc-font-display); font-size: 8px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__q-edit:hover:not(:disabled) {
+  border-color: var(--sc-accent, #7c9cff);
+  color: var(--sc-accent, #7c9cff);
+}
+.swarm-ctrl .oq-wizard__q-edit:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__q-edit-panel { margin-top: 6px; display: grid; gap: 6px; }
 
 /* Resume button on the conversation tab pair bar — re-fires the gen↔eval
  * loop (architect via /spawn/retry, engineer via /work-items/{id}/resume).

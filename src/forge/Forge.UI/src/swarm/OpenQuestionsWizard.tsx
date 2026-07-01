@@ -37,6 +37,14 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  // Re-answer state for the "previously answered" list: the externalId whose
+  // inline editor is open, plus its draft value. Only one edit is open at a
+  // time. Editing an answered question overwrites it in place (the server
+  // supports re-answering); the operator then Restarts the workstream, which
+  // now preserves answered questions so the new value reaches the fresh run's
+  // `## Operator answers` block.
+  const [editingFor, setEditingFor] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   const showToast = useToastStore((s) => s.show);
 
   // Explain popup state. `explainFor` is the externalId whose popup is open;
@@ -146,6 +154,41 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
       onAnswered?.(r.unansweredCount);
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Submit failed', 'danger');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function beginEdit(q: QuestionItem) {
+    setEditingFor(q.externalId);
+    setEditDraft(q.answer ?? '');
+  }
+
+  function cancelEdit() {
+    setEditingFor(null);
+    setEditDraft('');
+  }
+
+  async function handleEditSave(externalId: string) {
+    const answer = editDraft.trim();
+    if (answer.length === 0) {
+      showToast('Enter a new answer before saving.', 'info');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const r = await forgeApi.answerQuestions(workItemId, [{ externalId, answer }]);
+      setUnansweredCount(r.unansweredCount);
+      const full = await forgeApi.listQuestions(workItemId);
+      setItems(full.items);
+      cancelEdit();
+      showToast(
+        'Answer updated — Restart the workstream to feed the new answer into a fresh run.',
+        'success',
+      );
+      onAnswered?.(r.unansweredCount);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Update failed', 'danger');
     } finally {
       setSubmitting(false);
     }
@@ -304,9 +347,67 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                       >
                         ⓘ explain
                       </button>
+                      {editingFor !== q.externalId && (
+                        <button
+                          type="button"
+                          className="oq-wizard__q-edit"
+                          title="Change this answer — Restart the workstream afterwards to feed the new answer into a fresh run"
+                          disabled={submitting}
+                          onClick={() => beginEdit(q)}
+                        >
+                          ✎ edit
+                        </button>
+                      )}
                     </div>
                     <div className="oq-wizard__q-text">{q.text}</div>
-                    <div className="oq-wizard__q-answer">→ {q.answer}</div>
+                    {editingFor === q.externalId ? (
+                      <div className="oq-wizard__q-edit-panel">
+                        {q.kind === 'choice' && q.choices.length > 0 && (
+                          <div className="oq-wizard__q-choices">
+                            {q.choices.map((c) => (
+                              <label key={c} className="oq-wizard__q-choice">
+                                <input
+                                  type="radio"
+                                  name={`edit-${q.externalId}`}
+                                  value={c}
+                                  checked={editDraft === c}
+                                  onChange={() => setEditDraft(c)}
+                                />
+                                <span>{c}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        <textarea
+                          className="oq-wizard__q-textarea"
+                          placeholder="Type the new answer…"
+                          rows={2}
+                          value={editDraft}
+                          disabled={submitting}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                        />
+                        <div className="oq-wizard__actions">
+                          <button
+                            type="button"
+                            className="oq-wizard__dismiss-all"
+                            disabled={submitting}
+                            onClick={cancelEdit}
+                          >
+                            cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="oq-wizard__submit"
+                            disabled={submitting || editDraft.trim().length === 0}
+                            onClick={() => void handleEditSave(q.externalId)}
+                          >
+                            {submitting ? '⏳ saving…' : '✓ save answer'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="oq-wizard__q-answer">→ {q.answer}</div>
+                    )}
                   </div>
                 ))}
               </div>

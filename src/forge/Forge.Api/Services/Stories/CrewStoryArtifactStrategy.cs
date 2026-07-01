@@ -8733,7 +8733,38 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                             };
                         }
 
-                        if (consecutiveGateFailure >= BuildFailThreshold)
+                        // TEST gate is BLOCKING but NOT TERMINAL (operator policy
+                        // 2026-07-01): a red TEST gate must never dead-end an impl
+                        // workstream to "operator must Restart". Build + quality stay
+                        // HARD (a diff that doesn't compile or fails lint/format can't
+                        // ship). For test we keep iterating — the failure is fed back to
+                        // the generator via lastGateFailure and the evaluator still
+                        // forces correctness=0, so the diff never reaches a pass/PR while
+                        // tests are red — and the normal MaxIter / budget caps are the
+                        // backstop. (Host-init + test-TIMEOUT above keep their own
+                        // terminal handling: the toolchain produced no real test signal.)
+                        if (consecutiveGateFailure >= BuildFailThreshold && perIterFailure.Stage == "test")
+                        {
+                            // Emit once, on the crossing, so the operator can see the ws
+                            // is in blocking-but-non-terminal iterate mode (not looping
+                            // silently and not dead).
+                            if (consecutiveGateFailure == BuildFailThreshold)
+                            {
+                                await this.taskChannel.EmitAsync(workItemId, "task.gate.test-non-terminal", new
+                                {
+                                    stage = "per-iter",
+                                    gateStage = perIterFailure.Stage,
+                                    iter,
+                                    consecutiveGateFailure,
+                                    threshold = BuildFailThreshold,
+                                    reason = "test-gate-blocking-non-terminal-keep-iterating",
+                                    command = perIterFailure.Command,
+                                    exitCode = perIterFailure.Result.ExitCode,
+                                    errorCount = perIterFailure.Result.ErrorCount,
+                                }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                            }
+                        }
+                        else if (consecutiveGateFailure >= BuildFailThreshold)
                         {
                             // #3 — INHERITED vs OWNED. Extract the failing test
                             // files from the gate output; if NONE of them are in
@@ -9540,7 +9571,33 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         timedOut = failure.Result.TimedOut,
                     }, agentId: genAgentId, crewId: crew.Id, ct: validCt);
 
-                    if (postPassRecoveryAttempts >= MaxRecoveryAttempts)
+                    if (failure.Stage == "test" && postPassRecoveryAttempts >= MaxRecoveryAttempts)
+                    {
+                        // TEST gate is BLOCKING but NOT TERMINAL (operator policy
+                        // 2026-07-01): a red TEST gate must never ship a PR AND must
+                        // never dead-end the workstream to "operator must Restart". Past
+                        // the recovery budget we DON'T throw — we fall through to the
+                        // demote-to-iterate return below so the loop keeps working the
+                        // failing tests (never accepting the pass, so nothing red ships).
+                        // The normal MaxIter / budget / time caps are the backstop.
+                        // BUILD / QUALITY exhaustion still hard-stalls (else branch).
+                        if (postPassRecoveryAttempts == MaxRecoveryAttempts)
+                        {
+                            await this.taskChannel.EmitAsync(workItemId, "task.gate.test-non-terminal", new
+                            {
+                                stage = "post-pass",
+                                gateStage = failure.Stage,
+                                iter = validIter,
+                                attempts = postPassRecoveryAttempts,
+                                max = MaxRecoveryAttempts,
+                                reason = "test-gate-blocking-non-terminal-keep-iterating",
+                                command = failure.Command,
+                                exitCode = failure.Result.ExitCode,
+                                errorCount = failure.Result.ErrorCount,
+                            }, agentId: genAgentId, crewId: crew.Id, ct: validCt);
+                        }
+                    }
+                    else if (postPassRecoveryAttempts >= MaxRecoveryAttempts)
                     {
                         await this.taskChannel.EmitAsync(workItemId, "task.gate.recovery-exhausted", new
                         {

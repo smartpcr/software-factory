@@ -542,13 +542,36 @@ public sealed class RoslynImpactedTestProvider : IImpactedTestProvider
         if (model is null) return string.Empty;
         var sym = model.GetDeclaredSymbol(method, ct);
         if (sym is null) return string.Empty;
-        // `Namespace.Class.Method` shape — matches `dotnet test --filter
-        // FullyQualifiedName~...` semantics. Strip the global:: prefix
-        // that Roslyn's default SymbolDisplayFormat sometimes inserts.
+        // CSharpErrorMessageFormat renders a METHOD WITH its parameter list
+        // (e.g. `N.C.M()` for a parameterless test, `N.C.M(int, string)` with
+        // params). Those parentheses/commas are grouping + operators in
+        // vstest's `--filter` grammar, so an emitted `FullyQualifiedName~N.C.M()`
+        // aborts the run with "Incorrect format for TestCaseFilter Error: Empty
+        // parenthesis ( )" and matches ZERO tests — the gate then fails every
+        // iteration until the workstream stalls (observed 2026-07-01 on download
+        // stage-1.2). NormalizeFqnForFilter trims the parameter list (and any
+        // `global::` prefix) down to the `Namespace.Class.Method` shape vstest
+        // actually keys on.
         var fqn = sym.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
-        return fqn.StartsWith("global::", StringComparison.Ordinal)
-            ? fqn["global::".Length..]
-            : fqn;
+        return NormalizeFqnForFilter(fqn);
+    }
+
+    /// <summary>
+    /// Normalize a Roslyn symbol display string into a vstest
+    /// <c>--filter</c>-safe <c>FullyQualifiedName</c>: strip the leading
+    /// <c>global::</c> and drop the method parameter list. See
+    /// <see cref="GetFqnAsync"/> for why the raw display string is unsafe.
+    /// </summary>
+    internal static string NormalizeFqnForFilter(string fqn)
+    {
+        if (string.IsNullOrEmpty(fqn)) return fqn;
+        if (fqn.StartsWith("global::", StringComparison.Ordinal))
+        {
+            fqn = fqn["global::".Length..];
+        }
+
+        var paren = fqn.IndexOf('(');
+        return paren >= 0 ? fqn[..paren] : fqn;
     }
 
     // ── Test-project + total-count helpers ──────────────────────────────

@@ -291,4 +291,74 @@ class C {{
         Assert.NotNull(result);
         Assert.Equal("heuristic", result.Mode); // additive default
     }
+
+    // ── C.T8 — FQN normalization strips the parameter list (empty-parens gate bug) ──
+
+    /// <summary>
+    /// Regression for the 2026-07-01 download stage-1.2 stall: the roslyn
+    /// per-test filter emitted <c>FullyQualifiedName~N.C.M()</c> because the FQN
+    /// carried the method parameter list. vstest read the trailing <c>()</c> as
+    /// an empty filter group ("Incorrect format for TestCaseFilter Error: Empty
+    /// parenthesis ( )") and ran ZERO tests, so the gate failed every iteration
+    /// until the workstream stalled.
+    /// <see cref="RoslynImpactedTestProvider.NormalizeFqnForFilter"/> must drop
+    /// the parameter list (and any <c>global::</c> prefix).
+    /// </summary>
+    [Theory]
+    [InlineData("N.C.MatchesGoldenSnapshot()", "N.C.MatchesGoldenSnapshot")]
+    [InlineData("N.C.M(int, string)", "N.C.M")]
+    [InlineData("global::N.C.M()", "N.C.M")]
+    [InlineData("global::Ns.Cls.Method(System.Int32)", "Ns.Cls.Method")]
+    [InlineData("Already.Clean.Name", "Already.Clean.Name")]
+    [InlineData("Generic.Cls.Method<T>()", "Generic.Cls.Method<T>")]
+    [InlineData("", "")]
+    public void C_T8_NormalizeFqnForFilter_StripsParameterListAndGlobalPrefix(string input, string expected)
+    {
+        var actual = RoslynImpactedTestProvider.NormalizeFqnForFilter(input);
+        Assert.Equal(expected, actual);
+        Assert.DoesNotContain("(", actual);
+        Assert.DoesNotContain(")", actual);
+    }
+
+    /// <summary>
+    /// End-to-end proof through Roslyn's real symbol display: a test method's
+    /// <see cref="Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat"/>
+    /// string DOES include the parameter-list parentheses (the bug), and
+    /// <see cref="RoslynImpactedTestProvider.NormalizeFqnForFilter"/> removes
+    /// them (the fix). Uses an in-memory <c>CSharpCompilation</c> — no SDK /
+    /// MSBuild needed, so it runs everywhere.
+    /// </summary>
+    [Fact]
+    public void C_T9_MethodSymbolDisplay_CarriesParens_NormalizeStripsThem()
+    {
+        const string src = @"
+namespace N { public class C {
+    public void MatchesGoldenSnapshot() { }
+    public void WithArgs(int a, string b) { }
+} }";
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(src);
+        var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+            "asm",
+            new[] { tree },
+            new[] { Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+
+        var methods = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>()
+            .ToList();
+        Assert.Equal(2, methods.Count);
+
+        foreach (var m in methods)
+        {
+            var sym = Microsoft.CodeAnalysis.CSharp.CSharpExtensions.GetDeclaredSymbol(model, m)!;
+            var raw = sym.ToDisplayString(Microsoft.CodeAnalysis.SymbolDisplayFormat.CSharpErrorMessageFormat);
+            Assert.Contains("(", raw); // the bug: display string carries the parameter list
+
+            var normalized = RoslynImpactedTestProvider.NormalizeFqnForFilter(raw);
+            Assert.DoesNotContain("(", normalized); // the fix
+            Assert.DoesNotContain(")", normalized);
+            Assert.Contains(m.Identifier.Text, normalized); // method name preserved
+        }
+    }
 }
