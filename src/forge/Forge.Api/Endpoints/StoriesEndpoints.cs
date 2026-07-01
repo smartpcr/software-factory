@@ -863,6 +863,39 @@ public static class StoriesEndpoints
 
         var logger = loggerFactory.CreateLogger("forge.story-spawn.delete");
 
+        // ── Base-branch share check — runs FIRST, before the phase flip ─────
+        // Moved ahead of the Phase=Deleting write (2026-06-30) so a refusal
+        // leaves the spawn completely untouched. Previously this lived after
+        // the flip, so a 409 wedged the spawn in Deleting (which the scheduler
+        // now excludes) — observed deleting download:NET10-MIGRATION.
+        //
+        // SCOPE THE SHARE TEST TO THE SAME REPO. A base-branch NAME like
+        // `feature/net10` can legitimately exist in multiple repos under one
+        // product; they are independent branches on independent remotes.
+        // Comparing name-only wrongly blocked deleting download's
+        // `feature/net10` because the `update` repo's spawn carried the same
+        // name — deleting download's base must never consider update's repo.
+        var alsoDeleteBase = deleteBaseBranch == true;
+        var baseBranchToDelete = (string?)null;
+        if (alsoDeleteBase
+            && !string.IsNullOrEmpty(spawn.BaseBranch)
+            && !string.Equals(spawn.BaseBranch, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            var sharedCount = await db.StorySpawns
+                .Where(s => s.Id != spawn.Id
+                    && s.BaseBranch == spawn.BaseBranch
+                    && s.RepoId == spawn.RepoId)
+                .CountAsync(ctx.RequestAborted);
+            if (sharedCount > 0)
+            {
+                return Results.Problem(
+                    title: "Base branch is shared",
+                    detail: $"Base branch '{spawn.BaseBranch}' is also used by {sharedCount} other story spawn(s) in the same repo. Re-call without deleteBaseBranch=true, or delete those spawns first.",
+                    statusCode: 409);
+            }
+            baseBranchToDelete = spawn.BaseBranch;
+        }
+
         // 2026-05-13 fix — flip phase to "deleting" before any other write so
         // the orchestrator's RunOneStepAsync switch falls through and stops
         // claiming new agents while the delete is in flight. Without this,
@@ -910,7 +943,6 @@ public static class StoriesEndpoints
         // inherited stale plan-doc commits because the orphan remote
         // branch was never reported as a delete failure.
         var remoteDeleteFailures = new List<string>();
-        var alsoDeleteBase = deleteBaseBranch == true;
 
         // ── 1. Snapshot every relevant id BEFORE we start mutating ──────
         var workstreams = await db.Workstreams
@@ -975,25 +1007,8 @@ public static class StoriesEndpoints
             : await db.Prs.Where(p => prIds.Contains(p.Id)).ToListAsync(ctx.RequestAborted);
         counts["prs"] = prRows.Count;
 
-        // ── 2. Base-branch share check (early — refuses BEFORE any
-        // destructive work so the operator can re-call safely) ──────────
-        var baseBranchToDelete = (string?)null;
-        if (alsoDeleteBase
-            && !string.IsNullOrEmpty(spawn.BaseBranch)
-            && !string.Equals(spawn.BaseBranch, "main", StringComparison.OrdinalIgnoreCase))
-        {
-            var sharedCount = await db.StorySpawns
-                .Where(s => s.Id != spawn.Id && s.BaseBranch == spawn.BaseBranch)
-                .CountAsync(ctx.RequestAborted);
-            if (sharedCount > 0)
-            {
-                return Results.Problem(
-                    title: "Base branch is shared",
-                    detail: $"Base branch '{spawn.BaseBranch}' is also used by {sharedCount} other story spawn(s). Re-call without deleteBaseBranch=true, or delete those spawns first.",
-                    statusCode: 409);
-            }
-            baseBranchToDelete = spawn.BaseBranch;
-        }
+        // ── 2. Base-branch share check ran earlier (before the phase flip,
+        // repo-scoped). `baseBranchToDelete` is already resolved above. ──────
 
         // ── 3. Cancel in-flight work — runner, queue, claims ────────────
         var invocationsCancelled = 0;
