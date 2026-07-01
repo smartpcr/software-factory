@@ -32,9 +32,17 @@ public sealed class FakeChatTransport : IChatTransport
     /// <summary>Chat ids whose <see cref="SendAsync"/> throws (per-row isolation tests).</summary>
     public HashSet<string> ThrowOnChatId { get; } = new();
 
+    /// <summary>Thread id passed to each <see cref="SendAsync"/> (parallel to <see cref="Sent"/>).</summary>
+    public List<string?> SentThreadIds { get; } = new();
+
+    /// <summary>Topics created via <see cref="CreateTopicAsync"/>.</summary>
+    public List<(string ChatId, string Name)> TopicsCreated { get; } = new();
+
+    private int nextThreadId = 500;
+
     public string Platform => "telegram";
 
-    public Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct)
+    public Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct, string? threadId = null)
     {
         if (this.ThrowOnChatId.Contains(chatId))
         {
@@ -47,6 +55,7 @@ public sealed class FakeChatTransport : IChatTransport
         }
 
         this.Sent.Add((chatId, text, buttons));
+        this.SentThreadIds.Add(threadId);
         return Task.FromResult(ChatSendResult.Success((this.nextMessageId++).ToString()));
     }
 
@@ -54,6 +63,12 @@ public sealed class FakeChatTransport : IChatTransport
     {
         this.Edits.Add((chatId, messageId, text));
         return Task.FromResult(ChatSendResult.Success(messageId));
+    }
+
+    public Task<string?> CreateTopicAsync(string chatId, string name, CancellationToken ct)
+    {
+        this.TopicsCreated.Add((chatId, name));
+        return Task.FromResult<string?>((this.nextThreadId++).ToString());
     }
 
     public Task<IReadOnlyList<ChatInbound>> PollUpdatesAsync(long offset, CancellationToken ct)

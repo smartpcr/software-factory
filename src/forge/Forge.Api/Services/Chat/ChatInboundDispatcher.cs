@@ -9,6 +9,7 @@ namespace Forge.Api.Services.Chat;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 /// <summary>
 /// Phase 95 (chat bridge, Phase 4) — routes one normalized inbound update to a
@@ -32,6 +33,7 @@ public sealed class ChatInboundDispatcher
     private readonly IOpenQuestionService openQuestions;
     private readonly IOperatorActionService operatorActions;
     private readonly IChatTransport transport;
+    private readonly IOptionsMonitor<ChatBridgeOptions> options;
     private readonly ILogger<ChatInboundDispatcher> logger;
 
     public ChatInboundDispatcher(
@@ -40,6 +42,7 @@ public sealed class ChatInboundDispatcher
         IOpenQuestionService openQuestions,
         IOperatorActionService operatorActions,
         IChatTransport transport,
+        IOptionsMonitor<ChatBridgeOptions> options,
         ILogger<ChatInboundDispatcher> logger)
     {
         this.control = control;
@@ -47,6 +50,7 @@ public sealed class ChatInboundDispatcher
         this.openQuestions = openQuestions;
         this.operatorActions = operatorActions;
         this.transport = transport;
+        this.options = options;
         this.logger = logger;
     }
 
@@ -64,12 +68,21 @@ public sealed class ChatInboundDispatcher
                 return;
             }
 
+            // Part B — authorize by the sender's user id, not the chat id: in a
+            // shared supergroup every message carries the same chat id. The
+            // subscriber's ChatId column holds the user id (in a DM they're equal,
+            // so legacy rows already match).
             var subscriber = await this.control.ChatSubscribers.FirstOrDefaultAsync(
-                s => s.Platform == this.transport.Platform && s.ChatId == update.ChatId && s.LinkedAt != null, ct);
+                s => s.Platform == this.transport.Platform && s.LinkedAt != null && s.ChatId == update.FromId, ct);
             if (subscriber is null)
             {
-                // Hard allow-list: an unlinked chat id can't drive Forge.
-                this.logger.LogInformation("Chat inbound from unlinked chat {ChatId} ignored.", update.ChatId);
+                subscriber = await this.TryBootstrapAllowedUserAsync(update, ct);
+            }
+
+            if (subscriber is null)
+            {
+                // Hard allow-list: an unlinked user can't drive Forge.
+                this.logger.LogInformation("Chat inbound from unlinked user {UserId} (chat {ChatId}) ignored.", update.FromId, update.ChatId);
                 return;
             }
 
@@ -122,8 +135,10 @@ public sealed class ChatInboundDispatcher
             return;
         }
 
-        // Bind this chat id to the operator; the token is single-use.
-        pending.ChatId = update.ChatId;
+        // Bind this operator; the token is single-use. ChatId holds the sender's
+        // user id (the identity key) — in a DM it equals the chat id, in a
+        // supergroup it disambiguates operators sharing the group.
+        pending.ChatId = update.FromId;
         pending.LinkedAt = DateTimeOffset.UtcNow;
         pending.LinkToken = null;
         await this.control.SaveChangesAsync(ct);
@@ -131,6 +146,42 @@ public sealed class ChatInboundDispatcher
         await this.transport.SendAsync(update.ChatId,
             "✅ Linked. You'll get Forge alerts here and can answer questions by tapping a choice or replying.",
             buttons: null, ct);
+    }
+
+    /// <summary>
+    /// Part B (group mode) — auto-link a sender whose user id is in the
+    /// <c>AllowedUserIds</c> bootstrap so an operator can drive Forge from the
+    /// supergroup without a per-user <c>/link</c> dance. No-op when the sender
+    /// isn't allow-listed. Idempotent: a second message just re-finds the row.
+    /// </summary>
+    private async Task<ChatSubscriberRow?> TryBootstrapAllowedUserAsync(ChatInbound update, CancellationToken ct)
+    {
+        if (!long.TryParse(update.FromId, out var fromId)) return null;
+        var allowed = this.options.CurrentValue.Telegram.AllowedUserIds;
+        if (allowed is null || !allowed.Contains(fromId)) return null;
+
+        var row = new ChatSubscriberRow
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Platform = this.transport.Platform,
+            ChatId = update.FromId, // identity key (see ChatSubscriberRow.ChatId).
+            LinkedAt = DateTimeOffset.UtcNow,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        this.control.ChatSubscribers.Add(row);
+        try
+        {
+            await this.control.SaveChangesAsync(ct);
+            this.logger.LogInformation("Bootstrapped allow-listed chat operator {UserId} from the group.", update.FromId);
+            return row;
+        }
+        catch (DbUpdateException)
+        {
+            // Raced another update (unique index on platform+chatid) — re-read.
+            this.control.Entry(row).State = EntityState.Detached;
+            return await this.control.ChatSubscribers.FirstOrDefaultAsync(
+                s => s.Platform == this.transport.Platform && s.ChatId == update.FromId, ct);
+        }
     }
 
     private async Task HandleCommandAsync(ChatInbound update, string text, ChatSubscriberRow subscriber, CancellationToken ct)
@@ -175,7 +226,7 @@ public sealed class ChatInboundDispatcher
         if (parts.Length != 3) return;
         var action = parts[1];
         var wsId = parts[2];
-        var actor = subscriber.ForgeUserId ?? $"chat:{update.ChatId}";
+        var actor = subscriber.ForgeUserId ?? $"chat:{update.FromId}";
         var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
             n => n.ChatMessageId == update.ReplyToMessageId, ct);
 
@@ -274,7 +325,7 @@ public sealed class ChatInboundDispatcher
             return;
         }
 
-        var actor = subscriber.ForgeUserId ?? $"chat:{update.ChatId}";
+        var actor = subscriber.ForgeUserId ?? $"chat:{update.FromId}";
 
         // Button tap → callback data `oq|{externalId}|{choiceIndex}`.
         if (!string.IsNullOrEmpty(update.CallbackData))

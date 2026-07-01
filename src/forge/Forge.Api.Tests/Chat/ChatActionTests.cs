@@ -52,8 +52,9 @@ public class ChatActionTests
         await db.SaveChangesAsync();
     }
 
+    // FromId matches the subscriber's identity ("123") — chat.id == user.id in a DM.
     private static ChatInbound Tap(string callbackData) =>
-        new(7, "123", "user-1", Text: null, CallbackData: callbackData, ReplyToMessageId: "m1");
+        new(7, "123", "123", Text: null, CallbackData: callbackData, ReplyToMessageId: "m1");
 
     [Fact]
     public async Task Cancel_Action_Cancels_Workstream_And_Marks_Acted()

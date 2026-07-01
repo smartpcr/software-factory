@@ -411,7 +411,7 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
         }
 
         // Phase 95 (Phase 5) — alert the operator over chat with action buttons.
-        await this.TryEnqueueStalledChatAlertAsync(cand.WorkItemId, freshWs.RepoId, freshWs.StallReason, ct);
+        await this.TryEnqueueStalledChatAlertAsync(cand.WorkItemId, freshWs.RepoId, freshWs.StallReason, freshWs.StorySpawnId, ct);
 
         return true;
     }
@@ -421,7 +421,7 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
     /// with inline [Retry] [Accept] [Cancel] [Restart] buttons (callback
     /// <c>act|{action}|{workstreamId}</c>). Never affects stall detection.
     /// </summary>
-    private async Task TryEnqueueStalledChatAlertAsync(string workstreamId, string? repoId, string? stallReason, CancellationToken ct)
+    private async Task TryEnqueueStalledChatAlertAsync(string workstreamId, string? repoId, string? stallReason, string? spawnId, CancellationToken ct)
     {
         try
         {
@@ -446,7 +446,8 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
                     StallReason: reason,
                     Title: "⚠ Workstream stalled",
                     Body: reason.Length > 1500 ? reason[..1500] : reason,
-                    Buttons: buttons),
+                    Buttons: buttons,
+                    SpawnId: spawnId),
                 ct);
         }
         catch

@@ -50,10 +50,58 @@ public sealed class TelegramTransport : IChatTransport
     public string Platform => "telegram";
 
     /// <inheritdoc/>
-    public async Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct)
+    public async Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct, string? threadId = null)
     {
         var body = BuildMessageBody(chatId, Cap(text), buttons);
+        if (!string.IsNullOrEmpty(threadId))
+        {
+            body["message_thread_id"] = threadId;
+        }
+
         return await this.PostForMessageIdAsync("sendMessage", body, ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task<string?> CreateTopicAsync(string chatId, string name, CancellationToken ct)
+    {
+        var opt = this.options.CurrentValue;
+        var token = ChatTokenResolver.Resolve(opt, this.logger);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        try
+        {
+            var client = this.clientFactory.CreateClient(ClientName);
+            var body = new Dictionary<string, object> { ["chat_id"] = chatId, ["name"] = Cap(name) };
+            using var resp = await client.PostAsJsonAsync($"{BaseUrl(opt, token)}/createForumTopic", body, ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
+            {
+                var desc = doc.RootElement.TryGetProperty("description", out var d) ? d.GetString() : Trim(json);
+                this.logger.LogWarning("createForumTopic failed: {Desc}", desc);
+                return null;
+            }
+
+            if (doc.RootElement.TryGetProperty("result", out var res)
+                && res.TryGetProperty("message_thread_id", out var tid))
+            {
+                return TryString(tid);
+            }
+
+            return null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "createForumTopic threw.");
+            return null;
+        }
     }
 
     /// <inheritdoc/>
@@ -149,7 +197,8 @@ public sealed class TelegramTransport : IChatTransport
                     var fromId = TryString(TryPath(cb, "from", "id"));
                     var data = cb.TryGetProperty("data", out var d) ? d.GetString() : null;
                     var replyTo = TryString(TryPath(cb, "message", "message_id"));
-                    list.Add(new ChatInbound(updateId, chatId, fromId, Text: null, CallbackData: data, ReplyToMessageId: replyTo));
+                    var threadId = NullIfEmpty(TryString(TryPath(cb, "message", "message_thread_id")));
+                    list.Add(new ChatInbound(updateId, chatId, fromId, Text: null, CallbackData: data, ReplyToMessageId: replyTo, ThreadId: threadId));
                     continue;
                 }
 
@@ -159,7 +208,8 @@ public sealed class TelegramTransport : IChatTransport
                     var fromId = TryString(TryPath(msg, "from", "id"));
                     var text = msg.TryGetProperty("text", out var t) ? t.GetString() : null;
                     var replyTo = TryString(TryPath(msg, "reply_to_message", "message_id"));
-                    list.Add(new ChatInbound(updateId, chatId, fromId, Text: text, CallbackData: null, ReplyToMessageId: replyTo));
+                    var threadId = NullIfEmpty(TryString(TryPath(msg, "message_thread_id")));
+                    list.Add(new ChatInbound(updateId, chatId, fromId, Text: text, CallbackData: null, ReplyToMessageId: replyTo, ThreadId: threadId));
                 }
             }
         }
@@ -276,4 +326,6 @@ public sealed class TelegramTransport : IChatTransport
     }
 
     private static string Trim(string s) => s.Length > 300 ? s[..300] : s;
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 }

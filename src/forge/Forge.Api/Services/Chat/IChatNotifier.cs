@@ -51,7 +51,8 @@ public sealed record OpenQuestionsAlert(
     int Iter,
     string Title,
     string Body,
-    IReadOnlyList<ChatButton>? Buttons);
+    IReadOnlyList<ChatButton>? Buttons,
+    string? SpawnId = null);
 
 /// <summary>Producer input for a stalled-workstream alert.</summary>
 public sealed record WorkstreamStalledAlert(
@@ -61,7 +62,8 @@ public sealed record WorkstreamStalledAlert(
     string StallReason,
     string Title,
     string Body,
-    IReadOnlyList<ChatButton>? Buttons);
+    IReadOnlyList<ChatButton>? Buttons,
+    string? SpawnId = null);
 
 /// <summary>Producer input for a queue-strain alert.</summary>
 public sealed record QueueStrainAlert(

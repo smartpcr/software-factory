@@ -201,6 +201,9 @@ public sealed class ChatBridgeService : BackgroundService
     {
         using var scope = this.scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        // Optional — always registered in production; some unit tests build a
+        // minimal provider without it (spawn-less rows never need a topic anyway).
+        var topics = scope.ServiceProvider.GetService<IChatTopicResolver>();
         var opt = this.options.CurrentValue;
         var now = DateTimeOffset.UtcNow;
         var result = default(OutboundTickResult);
@@ -231,7 +234,15 @@ public sealed class ChatBridgeService : BackgroundService
                 }
 
                 var (text, buttons) = ChatMessageRenderer.Render(row);
-                var send = await this.transport.SendAsync(row.ChatId, text, buttons, ct);
+
+                // Part B — route the alert into its spawn's forum topic (group
+                // mode). Null threadId → group root (single-chat mode, spawn-less
+                // alert, or topic-creation failure) — send is unaffected.
+                var threadId = topics is not null && row.SpawnId is { Length: > 0 } spawn
+                    ? await topics.EnsureTopicAsync(spawn, row.ProductId, row.Title, ct)
+                    : null;
+
+                var send = await this.transport.SendAsync(row.ChatId, text, buttons, ct, threadId);
                 if (send.Ok)
                 {
                     row.Status = ChatNotificationStatuses.Sent;

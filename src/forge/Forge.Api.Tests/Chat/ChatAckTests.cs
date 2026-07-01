@@ -47,7 +47,8 @@ public class ChatAckTests
         await control.SaveChangesAsync();
     }
 
-    private static ChatInbound Tap(string cb) => new(3, "123", "user-1", null, cb, "m1");
+    // FromId matches the subscriber's identity ("123") — chat.id == user.id in a DM.
+    private static ChatInbound Tap(string cb) => new(3, "123", "123", null, cb, "m1");
 
     [Fact]
     public async Task HumanInteraction_Enqueue_Creates_A_Row()

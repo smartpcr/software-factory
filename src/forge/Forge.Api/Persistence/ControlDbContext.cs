@@ -87,6 +87,9 @@ public class ControlDbContext : DbContext
     /// <summary>Phase 95 (Phase 4) — chat-bridge inbound long-poll cursor (single row).</summary>
     public DbSet<ChatBridgeStateRow> ChatBridgeState => this.Set<ChatBridgeStateRow>();
 
+    /// <summary>Phase 95 (Part B) — spawn → Telegram forum-topic mapping.</summary>
+    public DbSet<ChatSpawnTopicRow> ChatSpawnTopics => this.Set<ChatSpawnTopicRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

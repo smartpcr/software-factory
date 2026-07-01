@@ -53,6 +53,7 @@ public sealed class ChatNotifier : IChatNotifier
             ProductId = alert.ProductId,
             RepoId = alert.RepoId,
             WorkItemId = alert.WorkItemId,
+            SpawnId = alert.SpawnId,
             // Per work item (not per iter) so a re-emitted question block doesn't
             // spawn a fresh alert every iteration — the open-state partial-unique
             // index keeps at most one outstanding alert per work item.
@@ -73,6 +74,7 @@ public sealed class ChatNotifier : IChatNotifier
             ProductId = alert.ProductId,
             RepoId = alert.RepoId,
             WorkstreamId = alert.WorkstreamId,
+            SpawnId = alert.SpawnId,
             DedupeKey = $"stall:{alert.WorkstreamId}:{StableHash(alert.StallReason)}",
             Title = alert.Title,
             Body = alert.Body,
@@ -133,8 +135,13 @@ public sealed class ChatNotifier : IChatNotifier
         row.CreatedAt = now;
         row.ExpiresAt = now + opt.NotificationTtl;
 
-        var firstChat = opt.Telegram.AllowedChatIds.FirstOrDefault();
-        row.ChatId = firstChat == 0 ? null : firstChat.ToString();
+        // Part B — in group mode alerts go to the supergroup (a forum topic is
+        // then selected per-spawn by the outbound pump); otherwise the first
+        // configured single chat.
+        var target = opt.Telegram.SupergroupChatId != 0
+            ? opt.Telegram.SupergroupChatId
+            : opt.Telegram.AllowedChatIds.FirstOrDefault();
+        row.ChatId = target == 0 ? null : target.ToString();
 
         // Dedupe: skip when an OPEN (pending/sent) row already holds this key.
         // The partial-unique index is the hard backstop; this is the fast path.

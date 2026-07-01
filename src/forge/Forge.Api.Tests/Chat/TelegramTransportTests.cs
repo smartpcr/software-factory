@@ -52,6 +52,71 @@ public class TelegramTransportTests
     }
 
     [Fact]
+    public async Task Send_With_ThreadId_Adds_Message_Thread_Id()
+    {
+        var handler = new RecordingHttpMessageHandler(_ =>
+            RecordingHttpMessageHandler.Json("{\"ok\":true,\"result\":{\"message_id\":7}}"));
+        var transport = NewTransport(handler);
+
+        var result = await transport.SendAsync("999", "hello", buttons: null, default, threadId: "88");
+
+        Assert.True(result.Ok);
+        Assert.Contains("\"message_thread_id\":\"88\"", handler.Bodies[0]);
+    }
+
+    [Fact]
+    public async Task Send_Without_ThreadId_Omits_Message_Thread_Id()
+    {
+        var handler = new RecordingHttpMessageHandler(_ =>
+            RecordingHttpMessageHandler.Json("{\"ok\":true,\"result\":{\"message_id\":7}}"));
+        var transport = NewTransport(handler);
+
+        await transport.SendAsync("999", "hello", buttons: null, default);
+
+        Assert.DoesNotContain("message_thread_id", handler.Bodies[0]);
+    }
+
+    [Fact]
+    public async Task CreateTopic_Posts_And_Returns_Thread_Id()
+    {
+        var handler = new RecordingHttpMessageHandler(_ =>
+            RecordingHttpMessageHandler.Json("{\"ok\":true,\"result\":{\"message_thread_id\":321,\"name\":\"spawn X\"}}"));
+        var transport = NewTransport(handler);
+
+        var threadId = await transport.CreateTopicAsync("-100200", "spawn X", default);
+
+        Assert.Equal("321", threadId);
+        Assert.Contains("/botTESTTOKEN/createForumTopic", handler.Urls[0]);
+        Assert.Contains("\"chat_id\":\"-100200\"", handler.Bodies[0]);
+        Assert.Contains("spawn X", handler.Bodies[0]);
+    }
+
+    [Fact]
+    public async Task CreateTopic_On_Error_Returns_Null_Not_Throw()
+    {
+        var handler = new RecordingHttpMessageHandler(_ =>
+            RecordingHttpMessageHandler.Json("{\"ok\":false,\"description\":\"not enough rights\"}"));
+        var transport = NewTransport(handler);
+
+        Assert.Null(await transport.CreateTopicAsync("-100200", "spawn X", default));
+    }
+
+    [Fact]
+    public void ParseUpdates_Extracts_Message_Thread_Id()
+    {
+        const string Json =
+            "{\"ok\":true,\"result\":[" +
+            "{\"update_id\":10,\"message\":{\"message_id\":5,\"chat\":{\"id\":111},\"from\":{\"id\":222},\"text\":\"hi\",\"message_thread_id\":88}}," +
+            "{\"update_id\":11,\"callback_query\":{\"data\":\"a:x\",\"from\":{\"id\":222},\"message\":{\"message_id\":7,\"chat\":{\"id\":111},\"message_thread_id\":88}}}" +
+            "]}";
+
+        var updates = TelegramTransport.ParseUpdates(Json);
+
+        Assert.Equal("88", updates[0].ThreadId);
+        Assert.Equal("88", updates[1].ThreadId);
+    }
+
+    [Fact]
     public void Cap_Truncates_Over_Limit_With_Ui_Hint()
     {
         var capped = TelegramTransport.Cap(new string('x', 5000));

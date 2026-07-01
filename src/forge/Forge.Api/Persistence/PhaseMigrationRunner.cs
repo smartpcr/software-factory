@@ -123,6 +123,8 @@ public sealed class PhaseMigrationRunner
         // Phase 96 (chat bridge, Phase 4) — control-side chat_bridge_state
         // (inbound long-poll cursor). New table; no ordering dependency.
         96,
+        // Phase 97 (chat bridge, Part B) — chat_spawn_topics + chat_notifications.SpawnId.
+        97,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

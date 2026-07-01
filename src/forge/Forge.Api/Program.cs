@@ -368,6 +368,8 @@ builder.Services.Configure<Forge.Api.Services.Chat.ChatBridgeOptions>(
 builder.Services.AddHttpClient(Forge.Api.Services.Chat.TelegramTransport.ClientName);
 builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.Services.Chat.TelegramTransport>();
 builder.Services.AddScoped<Forge.Api.Services.Chat.IChatNotifier, Forge.Api.Services.Chat.ChatNotifier>();
+// Phase 95 (Part B) — spawn → forum-topic resolver (create-on-first-need + cache).
+builder.Services.AddScoped<Forge.Api.Services.Chat.IChatTopicResolver, Forge.Api.Services.Chat.ChatTopicResolver>();
 builder.Services.AddSingleton<Forge.Api.Services.Chat.ChatBridgeService>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatBridgeService>());
 // Phase 95 (Phase 4) — inbound dispatcher: /link + commands + answer correlation.

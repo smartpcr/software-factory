@@ -2190,6 +2190,12 @@ public class ChatNotificationRow
     public string? QueueId { get; set; }
 
     /// <summary>
+    /// Part B — the owning story spawn, used to route this alert into the spawn's
+    /// Telegram forum topic. Null → posted to the group root (no thread).
+    /// </summary>
+    public string? SpawnId { get; set; }
+
+    /// <summary>
     /// Idempotency key (e.g. <c>oq:{workItemId}:{iter}</c>). A partial-unique
     /// index over open states (<c>pending</c>/<c>sent</c>) blocks a duplicate
     /// alert while the first is still outstanding.
@@ -2270,7 +2276,14 @@ public class ChatSubscriberRow
     /// <summary>Chat platform (e.g. <c>telegram</c>).</summary>
     public string Platform { get; set; } = string.Empty;
 
-    /// <summary>Numeric chat id (stored as text for provider-agnosticism).</summary>
+    /// <summary>
+    /// The operator's numeric <b>user</b> id (Telegram <c>from.id</c>), stored as
+    /// text. This is the identity/allow-list key — Part B keys on the sender, not
+    /// the chat, so a shared supergroup routes per-operator. In a DM the chat id
+    /// equals the user id, so legacy DM rows already hold the right value here.
+    /// The send target is resolved separately by the notifier (supergroup or
+    /// configured chat), never from this column.
+    /// </summary>
     public string ChatId { get; set; } = string.Empty;
 
     /// <summary>Linked Forge user id — actions are authorized against this user's role. Null until linked.</summary>
@@ -2308,6 +2321,31 @@ public class ChatBridgeStateRow
     public long LastUpdateId { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// Phase 95 (chat bridge, Part B) — maps a story spawn to its Telegram forum
+/// topic so all of that spawn's alerts land in one thread. Control-DB (the
+/// supergroup is global); one row per spawn.
+/// </summary>
+public class ChatSpawnTopicRow
+{
+    public string SpawnId { get; set; } = string.Empty;
+
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>The supergroup chat id the topic lives in.</summary>
+    public string ChatId { get; set; } = string.Empty;
+
+    /// <summary>Telegram <c>message_thread_id</c> for the spawn's topic.</summary>
+    public string ThreadId { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Set when the spawn is done and the topic is closed (best-effort).</summary>
+    public DateTimeOffset? ClosedAt { get; set; }
 }
 
 /// <summary>

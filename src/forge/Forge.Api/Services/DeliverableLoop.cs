@@ -650,6 +650,13 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     .ToList();
             }
 
+            // Part B — route this alert into the owning spawn's forum topic (group
+            // mode). Resolved from the workstream; null → group root.
+            var spawnId = await this.db.Workstreams
+                .Where(w => w.Id == workItemId)
+                .Select(w => w.StorySpawnId)
+                .FirstOrDefaultAsync(ct);
+
             await this.chatNotifier!.EnqueueOpenQuestionsAsync(
                 new OpenQuestionsAlert(
                     ProductId: string.Empty,
@@ -658,7 +665,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     Iter: iter,
                     Title: title,
                     Body: body,
-                    Buttons: buttons),
+                    Buttons: buttons,
+                    SpawnId: spawnId),
                 ct);
         }
         catch

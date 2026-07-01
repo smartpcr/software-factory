@@ -341,6 +341,10 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(96, PhaseMigrationKind.Control,
             ControlTables: new[] { "chat_bridge_state" },
             ProductTables: Array.Empty<string>()),
+        // Phase 97 (chat bridge, Part B) — chat_spawn_topics + chat_notifications.SpawnId.
+        new PhaseMigrationSpec(97, PhaseMigrationKind.Control,
+            ControlTables: new[] { "chat_spawn_topics", "chat_notifications" },
+            ProductTables: Array.Empty<string>()),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

@@ -148,9 +148,10 @@ public class ChatInboundTests
         using (var scope = app.Services.CreateScope())
         {
             var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
-            // Button tap: callback_data oq|persistence|0, on message m1.
+            // Button tap: callback_data oq|persistence|0, on message m1. FromId
+            // matches the subscriber's identity (ChatId), as chat.id == user.id in a DM.
             await dispatcher.DispatchAsync(
-                new ChatInbound(5, "123", "user-1", Text: null, CallbackData: "oq|persistence|0", ReplyToMessageId: "m1"),
+                new ChatInbound(5, "123", "123", Text: null, CallbackData: "oq|persistence|0", ReplyToMessageId: "m1"),
                 default);
         }
 
@@ -165,6 +166,72 @@ public class ChatInboundTests
         }
 
         Assert.Contains(fake.Edits, e => e.Text.Contains("Answered: asz store"));
+    }
+
+    [Fact]
+    public async Task AllowListed_User_Is_Bootstrapped_From_The_Group_Without_Link()
+    {
+        var fake = new FakeChatTransport();
+        await using var f = new ForgeWebApplicationFactory();
+        var app = f.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<IChatTransport>();
+            s.AddSingleton<IChatTransport>(fake);
+            s.Configure<ChatBridgeOptions>(o =>
+            {
+                o.Telegram.SupergroupChatId = 42;
+                o.Telegram.AllowedUserIds = new List<long> { 777 };
+            });
+        }));
+        using (app.CreateClient()) { }
+
+        // Inbound from allow-listed user 777, sent in the shared supergroup (chat
+        // 42). No prior /link — the allow-list bootstraps the subscriber.
+        using (var scope = app.Services.CreateScope())
+        {
+            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
+            await dispatcher.DispatchAsync(new ChatInbound(1, "42", "777", "/help", null, null), default);
+        }
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var sub = await control.ChatSubscribers.AsNoTracking().SingleAsync();
+            Assert.Equal("777", sub.ChatId); // identity keyed on the user id, not the group chat.
+            Assert.NotNull(sub.LinkedAt);
+        }
+
+        // Authorized → /help was answered.
+        Assert.Contains(fake.Sent, m => m.Text.Contains("chat bridge", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Non_AllowListed_User_In_Group_Is_Ignored()
+    {
+        var fake = new FakeChatTransport();
+        await using var f = new ForgeWebApplicationFactory();
+        var app = f.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<IChatTransport>();
+            s.AddSingleton<IChatTransport>(fake);
+            s.Configure<ChatBridgeOptions>(o =>
+            {
+                o.Telegram.SupergroupChatId = 42;
+                o.Telegram.AllowedUserIds = new List<long> { 777 };
+            });
+        }));
+        using (app.CreateClient()) { }
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
+            await dispatcher.DispatchAsync(new ChatInbound(1, "42", "999", "/help", null, null), default);
+        }
+
+        Assert.Empty(fake.Sent);
+        using var s2 = app.Services.CreateScope();
+        var control = s2.ServiceProvider.GetRequiredService<ControlDbContext>();
+        Assert.Equal(0, await control.ChatSubscribers.CountAsync());
     }
 
     [Fact]

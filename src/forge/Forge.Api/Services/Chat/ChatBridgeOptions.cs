@@ -64,4 +64,15 @@ public sealed class TelegramOptions
 
     /// <summary>Telegram Bot API base URL. Overridable so tests can point at a stub.</summary>
     public string ApiBaseUrl { get; set; } = "https://api.telegram.org";
+
+    /// <summary>
+    /// Part B — forum supergroup for per-spawn topics. When set (non-zero), the
+    /// bridge runs in <b>group mode</b>: alerts route to their spawn's topic in
+    /// this supergroup, and inbound is authorized by the sender's user id. When
+    /// 0, single-chat / DM mode (send to <see cref="AllowedChatIds"/>[0]).
+    /// </summary>
+    public long SupergroupChatId { get; set; }
+
+    /// <summary>Part B — Telegram user ids allowed to drive Forge (group-mode allow-list bootstrap).</summary>
+    public List<long> AllowedUserIds { get; set; } = new();
 }
