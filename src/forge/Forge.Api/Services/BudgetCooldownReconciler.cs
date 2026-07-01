@@ -129,13 +129,20 @@ public sealed class BudgetCooldownReconciler : BackgroundService
         // Phase E — fan out per product. Each product's BudgetCooldown
         // recovery is independent; we sum the per-product resume counts.
         var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
-        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         var totalResumed = 0;
         var lockObj = new object();
         var now = DateTimeOffset.UtcNow;
 
         await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
+            // Resolve the task queue in a slug-scoped child scope so its
+            // ProductDbContext binds to THIS product's {slug}.db (the AsyncLocal
+            // slug pushed by ProductFanout is active here). Resolving it from the
+            // outer scope bound it to the unscoped control DB, stranding any
+            // resume-enqueued row — never swept by ProductFanout (2026-06-30 fix;
+            // see the guard in TaskQueueService.EnqueueAsync).
+            using var qScope = this.scopeFactory.CreateScope();
+            var queue = qScope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             // Pull both row sets in one EF query — the ExecutionStatus
             // index (Phase 51 migration) covers both predicates.
             var candidates = await db.WorkItems

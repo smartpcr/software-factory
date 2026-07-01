@@ -389,7 +389,13 @@ public static class CrewsEndpoints
         string? DefaultEvaluatorAgentId = null,
         string? EvaluatorModel = null,
         // Phase 18.4 — flip the crew between 'day' and 'night' bands.
-        string? Shift = null);
+        string? Shift = null,
+        // 2026-06-30 — IANA/Windows timezone id the ScheduleGate uses to place
+        // the day/night band. A null/blank crew timezone resolves to UTC, so a
+        // 'day' crew goes off-shift during UTC night (i.e. US afternoon/evening),
+        // parking all members and leaving only the lead pickable. Set this to the
+        // operator's zone (e.g. 'Pacific Standard Time') so shifts track local time.
+        string? Timezone = null);
 
     private static async Task<IResult> Patch(
         HttpContext ctx,
@@ -488,6 +494,29 @@ public static class CrewsEndpoints
             {
                 control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "shift", FromValue = row.Shift, ToValue = ns, ByUserId = caller });
                 row.Shift = ns;
+            }
+        }
+
+        // 2026-06-30 — crew timezone the ScheduleGate uses for the day/night
+        // band. Validate against the OS tz database (accepts IANA and Windows
+        // ids on .NET 8) so a typo can't silently fall back to UTC. Blank
+        // string is rejected here (use an explicit id); to intentionally track
+        // UTC set 'UTC'. A changed value writes an audit row like shift.
+        if (req.Timezone is not null)
+        {
+            var tzId = req.Timezone.Trim();
+            if (tzId.Length == 0 || !ScheduleGate.IsValidTimeZone(tzId))
+            {
+                return Results.Problem(
+                    type: "crew.unknown_timezone",
+                    title: $"Unknown timezone '{req.Timezone}'",
+                    detail: "Provide a valid IANA (e.g. 'America/Los_Angeles') or Windows (e.g. 'Pacific Standard Time') timezone id.",
+                    statusCode: 400);
+            }
+            if (tzId != row.Timezone)
+            {
+                control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "timezone", FromValue = row.Timezone, ToValue = tzId, ByUserId = caller });
+                row.Timezone = tzId;
             }
         }
 

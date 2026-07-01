@@ -124,6 +124,16 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
         var capacityBlocked = 0;
         var offShift = 0;
 
+        // Enqueue through a slug-scoped child scope so the task queue's
+        // ProductDbContext binds to THIS product's {slug}.db. This method runs
+        // inside the ProductFanout callback where the AsyncLocal product slug is
+        // active, so a fresh scope resolves correctly; the outer request scope
+        // (`scope` param) is NOT slug-bound and would strand rows in the control
+        // DB — never swept by ProductFanout (2026-06-30 fix; see the guard in
+        // TaskQueueService.EnqueueAsync).
+        using var qScope = this.scopeFactory.CreateScope();
+        var taskQueue = qScope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+
         // 1. Build the team-lead universe. A "team lead" for Phase 16 is an
         //    agent set as a crew's Lead (rather than role='tech-lead', which
         //    is human-side). We look up by crew.Lead so the dispatcher works
@@ -218,7 +228,8 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             // 6. Enqueue to Phase 17 task queue → CrewQueueWorker picks it up
             //    and starts the agent runner. AutoDispatchedAt is stamped only
             //    AFTER a successful enqueue so the row is never orphaned.
-            var taskQueue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            //    `taskQueue` is the slug-scoped instance resolved at the top of
+            //    this method (binds to this product's {slug}.db).
             TaskQueueRow? queueRow;
             try
             {

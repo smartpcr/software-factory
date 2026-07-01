@@ -897,6 +897,50 @@ using (var scope = app.Services.CreateScope())
     var startupConfig = scope.ServiceProvider.GetRequiredService<IConfiguration>();
     var backendPolicy = Forge.Api.Configuration.ForgeBackendPolicy.FromConfiguration(startupConfig);
     await ForgeSeed.EnsureStartupConfigAsync(control, db, startupLogger, backendPolicy);
+
+    // Boot self-heal (2026-06-30) — cancel any task_queue rows STRANDED in the
+    // control DB (forge.db). CrewQueueWorker drains only per-product {slug}.db
+    // via ProductFanout and NEVER sweeps the control DB, so a row whose enqueue
+    // resolved to the unscoped control DB (ProductDbContext.ProductSlug == null)
+    // is orphaned forever — never claimed, permanently reported as "strained".
+    // `db` here was resolved in this no-HTTP/no-slug startup scope, so it binds
+    // to the control DB; if it does, cancel any OPEN rows. The EnqueueAsync guard
+    // now prevents new strandings; this heals legacy/leftover rows on boot.
+    // Non-fatal: a failure here must never block startup.
+    try
+    {
+        if (string.IsNullOrEmpty(db.ProductSlug))
+        {
+            var openStates = Forge.Api.Persistence.TaskQueueStates.OpenStates.ToList();
+            var stranded = await db.TaskQueue.Where(r => openStates.Contains(r.State)).ToListAsync();
+            if (stranded.Count > 0)
+            {
+                var healNow = DateTimeOffset.UtcNow;
+                foreach (var r in stranded)
+                {
+                    r.State = Forge.Api.Persistence.TaskQueueStates.Cancelled;
+                    r.LastUpdatedAt = healNow;
+                    db.TaskQueueHistory.Add(new Forge.Api.Persistence.TaskQueueHistoryRow
+                    {
+                        QueueId = r.Id,
+                        Kind = "cancelled",
+                        ToValue = Forge.Api.Persistence.TaskQueueStates.Cancelled,
+                        PayloadJson = "{\"reason\":\"boot self-heal: task_queue row stranded in control DB, never swept by ProductFanout\"}",
+                        At = healNow,
+                    });
+                }
+                await db.SaveChangesAsync();
+                startupLogger?.LogWarning(
+                    "Boot self-heal: cancelled {Count} task_queue row(s) stranded in the control DB " +
+                    "(orphaned pre-split / mis-routed enqueues never swept by ProductFanout).",
+                    stranded.Count);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        startupLogger?.LogWarning(ex, "Boot self-heal for stranded control-DB task_queue rows failed (non-fatal).");
+    }
 }
 
 // One-time CLI scrub of test fixture rows that leaked into the prod DB

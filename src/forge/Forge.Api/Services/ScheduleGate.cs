@@ -141,6 +141,20 @@ public static class ScheduleGate
     }
 
     /// <summary>
+    /// True when <paramref name="id"/> is a real IANA/Windows timezone id the
+    /// OS tz database recognises (.NET 8 accepts both id styles). Lets the crew
+    /// PATCH endpoint reject a typo up front instead of silently resolving to
+    /// UTC via <see cref="ResolveTimeZone"/>.
+    /// </summary>
+    public static bool IsValidTimeZone(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return false;
+        try { _ = TimeZoneInfo.FindSystemTimeZoneById(id); return true; }
+        catch (TimeZoneNotFoundException) { return false; }
+        catch (InvalidTimeZoneException) { return false; }
+    }
+
+    /// <summary>
     /// Next on/off transition after <paramref name="local"/> for the given
     /// shift. Day shift on → today 21:00, day shift off → next work day 09:00.
     /// Night shift on → next 09:00 (today if hour&lt;9, else tomorrow);

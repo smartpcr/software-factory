@@ -130,12 +130,19 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         // Phase E — fan out per product. PendingReassign work items are
         // product-scoped; each product's pool is processed independently.
         var fanout = scope.ServiceProvider.GetRequiredService<ProductFanout>();
-        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
         var totalProgressed = 0;
         var lockObj = new object();
 
         await fanout.ForEachProductAsync(async (control, db, slug, fct) =>
         {
+            // Resolve the task queue in a slug-scoped child scope so its
+            // ProductDbContext binds to THIS product's {slug}.db (the AsyncLocal
+            // slug pushed by ProductFanout is active here). Resolving it from the
+            // outer scope bound it to the unscoped control DB, stranding any
+            // reassignment-enqueued row — never swept by ProductFanout
+            // (2026-06-30 fix; see the guard in TaskQueueService.EnqueueAsync).
+            using var qScope = this.scopeFactory.CreateScope();
+            var queue = qScope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             var candidates = await db.WorkItems
                 .Where(w => w.ExecutionStatus == ExecutionStatuses.PendingReassign)
                 .ToListAsync(fct);

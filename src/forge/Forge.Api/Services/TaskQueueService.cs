@@ -55,6 +55,35 @@ public sealed class TaskQueueService : ITaskQueueService
             .FirstOrDefaultAsync(ct);
         var rank = PriorityRankFor(wi?.Priority);
 
+        // Guard (2026-06-30) — a task_queue write with NO product scope binds to
+        // the UNSCOPED control DB (ProductDbContext.ProductSlug == null; see
+        // ProductDbContextFactory.CreateUnscoped). CrewQueueWorker drains via
+        // ProductFanout over the per-product {slug}.db files ONLY and never
+        // sweeps the control DB, so such a row is stranded forever — never
+        // claimed, permanently reported as "strained". Surface it loudly, and
+        // when the work item is ALSO absent from this DB the row is
+        // unquestionably mis-routed (it belongs to another product's {slug}.db),
+        // so refuse to create the orphan. Callers must run under a product slug
+        // (ProductDbContextFactory.PushAsyncLocalSlug or an X-Forge-Product-Id
+        // header). See the LeadAutoDispatcher / *Reconciler child-scope fix.
+        if (string.IsNullOrEmpty(this.db.ProductSlug))
+        {
+            // LOG-LOUD (not throw) on purpose: throwing here could break any
+            // not-yet-audited enqueue site at runtime on a live host. The
+            // LeadAutoDispatcher/*Reconciler child-scope fixes stop the known
+            // strandings, and the boot self-heal (Program.cs) cancels any that
+            // slip through, so surfacing is enough. `wi is null` means the work
+            // item isn't even in this (control) DB → the row is unquestionably
+            // mis-routed (it belongs to another product's {slug}.db). Flip this
+            // to a throw once every enqueue call site is confirmed slug-scoped.
+            this.logger.LogError(
+                "Unscoped task_queue enqueue for work item {WorkItemId} -> {TargetKind}:{TargetId} " +
+                "resolved to the control DB (no product slug in scope; work item {Presence} in this DB). " +
+                "This row will be STRANDED — never swept by ProductFanout. Push a product slug at the " +
+                "enqueue call site (ProductDbContextFactory.PushAsyncLocalSlug / X-Forge-Product-Id).",
+                workItemId, targetKind, targetId, wi is null ? "ABSENT" : "present");
+        }
+
         var now = DateTimeOffset.UtcNow;
         var row = new TaskQueueRow
         {
