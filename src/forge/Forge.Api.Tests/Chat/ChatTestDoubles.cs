@@ -29,10 +29,18 @@ public sealed class FakeChatTransport : IChatTransport
     /// <summary>When set, every <see cref="SendAsync"/> returns a failure (retry-path tests).</summary>
     public bool FailSends { get; set; }
 
+    /// <summary>Chat ids whose <see cref="SendAsync"/> throws (per-row isolation tests).</summary>
+    public HashSet<string> ThrowOnChatId { get; } = new();
+
     public string Platform => "telegram";
 
     public Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct)
     {
+        if (this.ThrowOnChatId.Contains(chatId))
+        {
+            throw new InvalidOperationException($"boom for {chatId}");
+        }
+
         if (this.FailSends)
         {
             return Task.FromResult(ChatSendResult.Failure("forced failure"));

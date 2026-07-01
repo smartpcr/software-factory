@@ -2241,6 +2241,13 @@ public static class ChatNotificationStatuses
 {
     public const string Pending = "pending";
     public const string Sent = "sent";
+
+    /// <summary>
+    /// Transient — resolved elsewhere while still <c>sent</c>; the outbound pump
+    /// owes the chat message exactly one "resolved" edit, after which it flips to
+    /// the terminal <see cref="Answered"/>/<see cref="Acted"/>.
+    /// </summary>
+    public const string Resolving = "resolving";
     public const string Answered = "answered";
     public const string Acted = "acted";
     public const string Expired = "expired";

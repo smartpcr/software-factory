@@ -359,13 +359,17 @@ builder.Services.Configure<ProviderSyncOptions>(builder.Configuration.GetSection
 builder.Services.AddHttpClient(AdoProvider.ClientName);
 builder.Services.AddHttpClient(GitHubProvider.ClientName);
 
-// Phase 95 (chat bridge) — Telegram-first operator chat bridge. Phase 1 wires
-// the options + transport + admin test-send only; the outbound/inbound pumps
-// (a BackgroundService) land in Phase 2, so NOTHING is auto-started here.
+// Phase 95 (chat bridge) — Telegram-first operator chat bridge. Options +
+// transport + admin test-send (Phase 1); notifier (enqueue API) + outbound pump
+// (Phase 2). The pump is gated by enableBackground like the other hosted
+// services AND stays idle unless Forge:ChatBridge:Enabled + a bot token are set.
 builder.Services.Configure<Forge.Api.Services.Chat.ChatBridgeOptions>(
     builder.Configuration.GetSection(Forge.Api.Services.Chat.ChatBridgeOptions.SectionName));
 builder.Services.AddHttpClient(Forge.Api.Services.Chat.TelegramTransport.ClientName);
 builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.Services.Chat.TelegramTransport>();
+builder.Services.AddScoped<Forge.Api.Services.Chat.IChatNotifier, Forge.Api.Services.Chat.ChatNotifier>();
+builder.Services.AddSingleton<Forge.Api.Services.Chat.ChatBridgeService>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatBridgeService>());
 // Phase 10 — ADO config resolver (user-settings → appsettings).
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IAdoConfigResolver, AdoConfigResolver>();
