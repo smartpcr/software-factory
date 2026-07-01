@@ -151,8 +151,48 @@ internal static class SharedRepoGitGate
         {
             return true;
         }
+        // 5. Per-clone .gitconfig read/write contention. Git Credential Manager
+        //    rewrites the per-clone-root global config to re-persist its
+        //    `azrepos:org/*` hints on every Azure-repos op (atomic .lock+rename);
+        //    a concurrent git read that lands in that rename window hits a
+        //    Windows ERROR_SHARING_VIOLATION and dies exit 128 with
+        //    "unable to access '…/.gitconfig': Permission denied" /
+        //    "fatal: unknown error occurred while reading the configuration files".
+        //    Backstops the per-clone-root HOME sharding in GitProcessEnv, which
+        //    reduces but (observed 2026-07-01 on the `update` clone) does not
+        //    fully eliminate the race. Distinct from the SSH "Permission denied
+        //    (publickey)" auth case, which carries no `.gitconfig`/config-read
+        //    token and stays non-transient.
+        if ((stderr.Contains(".gitconfig", StringComparison.OrdinalIgnoreCase)
+                && stderr.Contains("Permission denied", StringComparison.OrdinalIgnoreCase))
+            || stderr.Contains("error occurred while reading the configuration files", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
         return false;
     }
+
+    /// <summary>
+    /// Retry decision for a git op that returned <paramref name="exitCode"/> /
+    /// <paramref name="stderr"/>. Extends <see cref="IsTransientLockError"/>
+    /// with a network-op-scoped rule: a NON-ZERO exit with EMPTY stderr from an
+    /// idempotent network op (fetch / ls-remote / clone / push) is treated as
+    /// transient and retried.
+    /// <para>Rationale: genuine network / auth / ref failures always write a
+    /// diagnostic to stderr ("Could not resolve host", "Permission denied",
+    /// "couldn't find remote ref", …), so a non-zero exit with NO stderr at all
+    /// is the fingerprint of a Windows-side abort that killed git before it
+    /// printed — e.g. the config-write race that HALTED a spawn on 2026-07-01
+    /// when <c>git fetch origin main</c> on the shared <c>update</c> clone
+    /// exited 128 with empty stdout+stderr and slipped past every stderr
+    /// signature above (<see cref="IsTransientLockError"/> bails on empty
+    /// stderr by design, so the halt could never be retried). The retry is
+    /// bounded (<see cref="MaxRetryAttempts"/> × capped backoff) and network
+    /// ops are safe to re-attempt.</para>
+    /// </summary>
+    public static bool ShouldRetryNetworkOp(int exitCode, string? stderr, bool isNetworkOp)
+        => IsTransientLockError(exitCode, stderr)
+           || (isNetworkOp && exitCode != 0 && string.IsNullOrEmpty(stderr));
 
     /// <summary>
     /// Exponential backoff: 50, 100, 200, 400, 800 (capped). Attempt is

@@ -122,8 +122,29 @@ public sealed class RealStoryGitOps : IStoryGitOps
     {
         var root = ResolveCloneRoot(repo);
 
-        // Make sure we have the latest base.
-        await this.GitAsync(root, ct, "fetch", "origin", baseBranch);
+        // Make sure we have the latest base. Capture (don't throw): this is a
+        // shared-clone network op that can transiently fail on a Windows
+        // config / packed-refs race (GCM rewriting the per-clone .gitconfig
+        // mid-read → exit 128, sometimes with EMPTY stderr the retry classifier
+        // can't match — observed 2026-07-01 on the `update` clone, which HALTED
+        // the whole spawn: "implement failed: git fetch origin main failed
+        // (exit 128)"). A stale local origin/{base} is harmless here — the
+        // branch-recreate path below and the later worktree merge/rebase both
+        // re-fetch — so a transient base fetch must NOT halt the orchestrator.
+        // The branch fetch a few lines down was soft-failed for this same
+        // reason (transient race bubbling to TickOneSpawnAsync); this closes
+        // the matching gap on the base fetch. RunGitCaptureAsync already runs
+        // the lock + empty-stderr-network retry internally, so reaching here
+        // non-zero means the transient budget was genuinely exhausted.
+        var (baseFetchCode, _, baseFetchErr) = await this.RunGitCaptureAsync(root, ct, "fetch", "origin", baseBranch);
+        if (baseFetchCode != 0)
+        {
+            this.logger?.LogWarning(
+                "EnsureBranchAsync: `fetch origin {Base}` failed (exit {Code}) in '{Root}'; "
+                + "continuing with the last-known base ref (stale base is recovered by the "
+                + "downstream branch-create + worktree merge). stderr: {Err}",
+                baseBranch, baseFetchCode, root, baseFetchErr);
+        }
 
         // Does the branch already exist on origin? If so, make sure local
         // tracking ref is up to date and exit.
@@ -3597,6 +3618,11 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Windows packed-refs / index.lock race that halted two spawn
         // orchestrators on 2026-05-28 (see SharedRepoGitGate docstring).
         var repoKey = Forge.Api.Services.Git.SharedRepoGitGate.ResolveCloneRootKey(cwd);
+        // Network ops (fetch/push/ls-remote/clone) are idempotent + safe to
+        // re-attempt, so they additionally retry on a non-zero exit with EMPTY
+        // stderr — the fingerprint of a Windows-side abort (e.g. a config-write
+        // race) that IsTransientLockError can't match. See ShouldRetryNetworkOp.
+        var isNetworkOp = IsNetworkGitOp(args);
         (int Code, string StdOut, string StdErr) lastResult = (0, string.Empty, string.Empty);
 
         for (var attempt = 0; attempt < Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts; attempt++)
@@ -3617,14 +3643,15 @@ public sealed class RealStoryGitOps : IStoryGitOps
                 sem.Release();
             }
 
-            if (!Forge.Api.Services.Git.SharedRepoGitGate.IsTransientLockError(lastResult.Code, lastResult.StdErr))
+            if (!Forge.Api.Services.Git.SharedRepoGitGate.ShouldRetryNetworkOp(lastResult.Code, lastResult.StdErr, isNetworkOp))
             {
                 return lastResult;
             }
 
             this.logger?.LogWarning(
-                "git {Args} hit transient lock race (attempt {Attempt}/{Max}) in '{Cwd}'. stderr: {StdErr}",
-                string.Join(' ', args), attempt + 1, Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts, cwd, lastResult.StdErr);
+                "git {Args} hit a transient failure (lock race or empty-stderr network abort; exit {Code}) "
+                + "(attempt {Attempt}/{Max}) in '{Cwd}'. stderr: {StdErr}",
+                string.Join(' ', args), lastResult.Code, attempt + 1, Forge.Api.Services.Git.SharedRepoGitGate.MaxRetryAttempts, cwd, lastResult.StdErr);
         }
 
         // Exhausted all retries. Return the last (still-failing) result

@@ -151,6 +151,68 @@ public class SharedRepoGitGateTests
         Assert.False(SharedRepoGitGate.IsTransientLockError(1, null));
     }
 
+    [Fact]
+    public void IsTransientLockError_Matches_GitconfigSharingViolation()
+    {
+        // GCM rewrites the per-clone global .gitconfig (azrepos hints) atomically;
+        // a concurrent reader hits ERROR_SHARING_VIOLATION → exit 128.
+        const string Stderr =
+            "warning: unable to access 'C:/Users/x/AppData/Local/Forge/git-home/update-2b0cd04364e6/.gitconfig': Permission denied";
+        Assert.True(SharedRepoGitGate.IsTransientLockError(128, Stderr));
+    }
+
+    [Fact]
+    public void IsTransientLockError_Matches_ConfigReadFatal()
+    {
+        const string Stderr = "fatal: unknown error occurred while reading the configuration files";
+        Assert.True(SharedRepoGitGate.IsTransientLockError(128, Stderr));
+    }
+
+    // ── ShouldRetryNetworkOp (empty-stderr network abort) ─────────────────
+
+    [Fact]
+    public void ShouldRetryNetworkOp_Empty_Stderr_NetworkOp_Retries()
+    {
+        // The 2026-07-01 halt fingerprint: `git fetch origin main` exit 128 with
+        // empty stdout+stderr. IsTransientLockError can't match it (empty
+        // stderr), but a network op is safe to re-attempt.
+        Assert.True(SharedRepoGitGate.ShouldRetryNetworkOp(128, string.Empty, isNetworkOp: true));
+        Assert.True(SharedRepoGitGate.ShouldRetryNetworkOp(128, null, isNetworkOp: true));
+    }
+
+    [Fact]
+    public void ShouldRetryNetworkOp_Empty_Stderr_NonNetworkOp_Does_Not_Retry()
+    {
+        // A local op (status/commit/checkout) that fails with no stderr is not
+        // a transient network abort — don't blindly loop it.
+        Assert.False(SharedRepoGitGate.ShouldRetryNetworkOp(128, string.Empty, isNetworkOp: false));
+    }
+
+    [Fact]
+    public void ShouldRetryNetworkOp_Zero_Exit_Never_Retries()
+    {
+        Assert.False(SharedRepoGitGate.ShouldRetryNetworkOp(0, string.Empty, isNetworkOp: true));
+    }
+
+    [Fact]
+    public void ShouldRetryNetworkOp_Genuine_Network_Error_Does_Not_Retry()
+    {
+        // A real network/auth failure writes a diagnostic to stderr, so it is
+        // NOT the empty-stderr fingerprint and must not retry (creds/DNS won't
+        // change within the backoff budget).
+        const string Stderr = "fatal: unable to access 'https://github.com/x.git/': Could not resolve host: github.com";
+        Assert.False(SharedRepoGitGate.ShouldRetryNetworkOp(128, Stderr, isNetworkOp: true));
+    }
+
+    [Fact]
+    public void ShouldRetryNetworkOp_Delegates_To_LockError_For_NonEmpty_Stderr()
+    {
+        // Lock-race signatures still retry regardless of the network-op flag.
+        const string PackedRefs =
+            "fatal: couldn't read E:/forge/update/.git/packed-refs: Permission denied";
+        Assert.True(SharedRepoGitGate.ShouldRetryNetworkOp(1, PackedRefs, isNetworkOp: false));
+    }
+
     // ── RetryDelayMs (exponential backoff) ─────────────────────────────────
 
     [Fact]
