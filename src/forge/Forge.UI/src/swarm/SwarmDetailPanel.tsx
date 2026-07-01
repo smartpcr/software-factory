@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
+import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse, IterationPromptDto } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import type { Build, PrComment, StoryAttachment } from '@/types';
 import { PrCommentsList } from '@/prs/PrCommentsList';
@@ -982,7 +982,7 @@ function shortenBranch(b: string): string {
 
 /* ─── AGENT OVERVIEW PANE (doc / workstream selection) ───────────────── */
 
-type PromptShape = { agentId: string | null; systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string; eventId: number | null };
+type PromptShape = { agentId: string | null; systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string; eventId: number | null; iter: number | null };
 
 function useLatestPrompts(transcript: TaskTranscriptEvent[]): { gen: PromptShape | null; ev: PromptShape | null } {
   return useMemo(() => {
@@ -1001,12 +1001,81 @@ function useLatestPrompts(transcript: TaskTranscriptEvent[]): { gen: PromptShape
         backend: (p.backend as string) ?? '',
         mode: (p.invokeMode as string) ?? '',
         eventId: (transcript[i].id as number | undefined) ?? null,
+        iter: typeof p.iter === 'number' ? (p.iter as number) : null,
       };
       if (role === 'evaluator' && !ev) ev = candidate;
       else if (role !== 'evaluator' && !gen) gen = candidate;
     }
     return { gen, ev };
   }, [transcript]);
+}
+
+/**
+ * Durable prompt fallback (Phase 82). The live transcript stream drops
+ * `task.prompt` rows once a work item's transcript passes the 10 000-row
+ * per-item cap (`TaskChannel.EvictOverCapAsync` evicts oldest-first, and
+ * the prompt is the FIRST event of each iteration). A single tool-heavy
+ * generator iteration can blow past that cap on its own — leaving the
+ * Overview pane with no prompt to show even though the run is live and
+ * accruing cost. The `iteration_prompts` table is written next to every
+ * emit precisely to survive that eviction; this hook reads its latest
+ * generator + evaluator rows so the pane always has a source of truth.
+ *
+ * Polled (not just fetched once) so it picks up later iterations during a
+ * long-running workstream; the transcript-derived prompt still wins when
+ * present so the live "Show full" refetch affordance keeps working.
+ */
+function useDurablePrompts(workItemId: string | null): { gen: PromptShape | null; ev: PromptShape | null } {
+  const [prompts, setPrompts] = useState<{ gen: PromptShape | null; ev: PromptShape | null }>({ gen: null, ev: null });
+  useEffect(() => {
+    if (!workItemId) { setPrompts({ gen: null, ev: null }); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await forgeApi.getWorkItemIterationPrompts(workItemId!);
+        if (cancelled) return;
+        // Endpoint returns iters ascending; the last entry with a row for
+        // the role is the latest. Scan from the end so a role that stopped
+        // running earlier still resolves to its last captured prompt.
+        let gen: PromptShape | null = null;
+        let ev: PromptShape | null = null;
+        for (let i = r.iters.length - 1; i >= 0 && (!gen || !ev); i--) {
+          const entry = r.iters[i];
+          if (!gen && entry.generator) gen = durableToShape(entry.generator, entry.iter);
+          if (!ev && entry.evaluator) ev = durableToShape(entry.evaluator, entry.iter);
+        }
+        setPrompts({ gen, ev });
+      } catch { /* silent — transcript path remains primary */ }
+    }
+    void load();
+    const id = setInterval(load, 8_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [workItemId]);
+  return prompts;
+}
+
+function durableToShape(dto: IterationPromptDto, iter: number): PromptShape {
+  return {
+    agentId: dto.agentId || null,
+    systemPrompt: dto.systemPrompt ?? '',
+    userPrompt: dto.userPrompt ?? '',
+    model: dto.model ?? '',
+    backend: dto.backend ?? '',
+    mode: dto.invokeMode ?? '',
+    // Durable rows aren't transcript events, so there is no eventId to
+    // refetch — but the payload is already FULL (untruncated), so the
+    // "Show full" affordance is unnecessary for them.
+    eventId: null,
+    iter,
+  };
+}
+
+/** Prefer the higher-iter prompt; on a tie keep `a` (the live transcript
+ *  copy) so its addressable eventId / "Show full" affordance survives. */
+function pickLaterPrompt(a: PromptShape | null, b: PromptShape | null): PromptShape | null {
+  if (!a) return b;
+  if (!b) return a;
+  return (a.iter ?? 0) >= (b.iter ?? 0) ? a : b;
 }
 
 /**
@@ -1188,7 +1257,16 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const liveForDoc = useTaskLive(!isWorkstream ? workItemId : null);
   const docTranscript = liveForDoc?.transcript ?? [];
   const allTranscript = isWorkstream ? transcript : docTranscript;
-  const latestPrompts = useLatestPrompts(allTranscript);
+  const transcriptPrompts = useLatestPrompts(allTranscript);
+  // Durable fallback (Phase 82) — survives the 10k transcript-cap eviction
+  // that deletes the oldest `task.prompt` rows during long, tool-heavy
+  // iterations. Keyed by the same work-item id the emit uses (workstream
+  // id, or the resolved plan-doc id).
+  const durablePrompts = useDurablePrompts(workItemId ?? null);
+  const latestPrompts = useMemo(() => ({
+    gen: pickLaterPrompt(transcriptPrompts.gen, durablePrompts.gen),
+    ev: pickLaterPrompt(transcriptPrompts.ev, durablePrompts.ev),
+  }), [transcriptPrompts, durablePrompts]);
   const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const activePrompt = promptRole === 'evaluator' ? latestPrompts.ev : latestPrompts.gen;
 

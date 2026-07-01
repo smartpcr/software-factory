@@ -27,6 +27,47 @@ public sealed class TaskChannel
     private const int TranscriptCapPerWorkItem = 10_000;
 
     /// <summary>
+    /// Kinds that are NEVER evicted by the per-work-item cap, and which the
+    /// snapshot endpoint pins so they survive its recent-500 window. These
+    /// are the sparse, high-value rows the UI depends on being present
+    /// regardless of how many token/tool events pile up around them — the
+    /// prompt bodies (Overview + Conversation panes), the iteration-boundary
+    /// markers (iter pager), and the build/test gate results (Build tab). A
+    /// single tool-heavy generator iteration can emit &gt;10 000 token/tool
+    /// events on its own; evicting oldest-first would then delete THIS
+    /// iteration's <c>task.prompt</c> (the first row of the iter) mid-run,
+    /// leaving the Overview pane empty even though the run is live. Excluding
+    /// these from eviction keeps
+    /// <see cref="Endpoints.TaskExecutionEndpoints"/>'s pinning promise honest
+    /// — pinning can only re-surface rows that still exist. The set is tiny
+    /// per iteration (≈2 prompts + a few markers/gates), so protecting it
+    /// across all iters is bounded.
+    /// <para>Single source of truth: <c>TaskExecutionEndpoints</c> references
+    /// this same set for its snapshot pinning so the two never drift.</para>
+    /// <para>Typed as a concrete <see cref="HashSet{T}"/> (not an interface)
+    /// so EF Core reliably translates <c>NeverEvictKinds.Contains(e.Kind)</c>
+    /// to a SQL <c>IN</c> at both query sites. Treat as immutable — do not
+    /// mutate after static init.</para>
+    /// </summary>
+    public static readonly HashSet<string> NeverEvictKinds = new(StringComparer.Ordinal)
+    {
+        "task.prompt", "task.delegated",
+        "task.iteration.started", "task.iteration.scored",
+        "task.iteration.passed", "task.iteration.rejected",
+        "task.iteration.iterated", "task.iteration.stalled",
+        // Build/test gate events — the authoritative pass/fail rows the Build
+        // tab (BuildPane.tsx, FORGE_BUILD_EVENT_KINDS in filters.ts) renders.
+        // SPARSE (a handful per iter) and payloads are small, so pinning +
+        // never-evicting every gate across all iters is cheap. (Observed
+        // 2026-06-01 on repo-scanner: iter-2 `task.test-gate.failed` existed
+        // in the full transcript but the Build tab only showed iter-1's gates
+        // because iter-2/3 had scrolled past the recent-500 window.)
+        "task.build-gate.passed", "task.build-gate.failed", "task.build-gate.skipped",
+        "task.build-failed.detected", "task.build-failed.aborted",
+        "task.test-gate.passed", "task.test-gate.failed", "task.test-gate.skipped",
+    };
+
+    /// <summary>
     /// SignalR event name. Single name with a typed payload so clients
     /// only need one subscription per work item — the <c>kind</c> field on
     /// the payload distinguishes between iteration / token / tool /
@@ -80,7 +121,6 @@ public sealed class TaskChannel
         try
         {
             using var scope = this.scopeFactory.CreateScope();
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
             var row = new TaskTranscriptEventRow
             {
@@ -99,7 +139,7 @@ public sealed class TaskChannel
             // common case is one INSERT, no DELETE.
             if (Random.Shared.Next(100) == 0)
             {
-                await EvictOverCapAsync(control, db, workItemId, ct);
+                await EvictOverCapAsync(db, workItemId, TranscriptCapPerWorkItem, ct);
             }
         }
         catch (Exception ex)
@@ -131,18 +171,31 @@ public sealed class TaskChannel
         }
     }
 
-    private static async Task EvictOverCapAsync(ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
+    /// <summary>
+    /// Evict oldest evictable rows for a work item once its transcript
+    /// exceeds <paramref name="cap"/>. <see cref="NeverEvictKinds"/> are never
+    /// deleted. Public + <paramref name="cap"/>-parameterised (mirrors the
+    /// codebase's public-test-seam convention, e.g.
+    /// <c>ChildProcessEnv.CaptureBaseline</c>) so tests can drive it
+    /// deterministically with a small cap instead of seeding 10 000+ rows and
+    /// relying on the probabilistic trigger.
+    /// </summary>
+    public static async Task EvictOverCapAsync(ProductDbContext db, string workItemId, int cap, CancellationToken ct)
     {
         var count = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
             .CountAsync(db.TaskTranscriptEvents, e => e.WorkItemId == workItemId, ct);
-        if (count <= TranscriptCapPerWorkItem) return;
+        if (count <= cap) return;
 
-        var toEvict = count - TranscriptCapPerWorkItem;
+        var toEvict = count - cap;
         // Pull just the ids to evict (oldest first), then delete in one batch.
+        // Protected kinds (prompts / iteration markers / gate results) are
+        // excluded so they survive regardless of surrounding token/tool
+        // volume — see NeverEvictKinds. Only the bulky, replaceable rows
+        // (tokens, tool-calls, worktree-ticks) are candidates for eviction.
         var oldIds = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
             .ToListAsync(
                 db.TaskTranscriptEvents
-                    .Where(e => e.WorkItemId == workItemId)
+                    .Where(e => e.WorkItemId == workItemId && !NeverEvictKinds.Contains(e.Kind))
                     .OrderBy(e => e.Id)
                     .Take(toEvict)
                     .Select(e => e.Id),

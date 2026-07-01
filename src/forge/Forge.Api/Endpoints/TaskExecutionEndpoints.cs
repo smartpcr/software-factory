@@ -994,28 +994,12 @@ public static class TaskExecutionEndpoints
             .OrderByDescending(e => e.Id)
             .Take(500)
             .ToListAsync(ct);
-        var pinnedKinds = new HashSet<string>
-        {
-            "task.prompt", "task.delegated",
-            "task.iteration.started", "task.iteration.scored",
-            "task.iteration.passed", "task.iteration.rejected",
-            "task.iteration.iterated", "task.iteration.stalled",
-            // 2026-06-01 — pin build/test gate events too. These are the
-            // authoritative pass/fail rows the Build tab (BuildPane.tsx,
-            // FORGE_BUILD_EVENT_KINDS in filters.ts) renders, and they are
-            // SPARSE — typically a handful per iteration. Without pinning,
-            // once the transcript grows past the recent-500 window the gate
-            // events from earlier iterations fall out of recentTranscript and
-            // the Build tab silently drops them (observed 2026-06-01 on
-            // repo-scanner docs-and-shipping-stage-context-refresh: iter-2
-            // `task.test-gate.failed` existed in the full transcript but the
-            // Build tab only showed iter-1's gates because iter-2/3 had
-            // scrolled past the window). Payloads are small (no bulky text)
-            // so pinning every gate across all iters is cheap.
-            "task.build-gate.passed", "task.build-gate.failed", "task.build-gate.skipped",
-            "task.build-failed.detected", "task.build-failed.aborted",
-            "task.test-gate.passed", "task.test-gate.failed", "task.test-gate.skipped",
-        };
+        // Single source of truth for the sparse, high-value kinds we always
+        // want present: shared with TaskChannel's cap-eviction guard so the
+        // set the endpoint pins here == the set the cap never deletes. (Prompt
+        // bodies, iteration markers, build/test gate results — see
+        // TaskChannel.NeverEvictKinds for the rationale + history.)
+        var pinnedKinds = TaskChannel.NeverEvictKinds;
         var pinnedIds = new HashSet<long>(transcriptRows.Select(r => r.Id));
         var pinnedRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == id && pinnedKinds.Contains(e.Kind) && !pinnedIds.Contains(e.Id))
