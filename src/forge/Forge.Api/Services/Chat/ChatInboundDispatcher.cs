@@ -8,6 +8,7 @@ namespace Forge.Api.Services.Chat;
 
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -31,7 +32,7 @@ public sealed class ChatInboundDispatcher
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IOpenQuestionService openQuestions;
-    private readonly IOperatorActionService operatorActions;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly IChatTransport transport;
     private readonly IOptionsMonitor<ChatBridgeOptions> options;
     private readonly ILogger<ChatInboundDispatcher> logger;
@@ -40,7 +41,7 @@ public sealed class ChatInboundDispatcher
         ControlDbContext control,
         ProductDbContext db,
         IOpenQuestionService openQuestions,
-        IOperatorActionService operatorActions,
+        IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatBridgeOptions> options,
         ILogger<ChatInboundDispatcher> logger)
@@ -48,7 +49,7 @@ public sealed class ChatInboundDispatcher
         this.control = control;
         this.db = db;
         this.openQuestions = openQuestions;
-        this.operatorActions = operatorActions;
+        this.scopeFactory = scopeFactory;
         this.transport = transport;
         this.options = options;
         this.logger = logger;
@@ -223,12 +224,19 @@ public sealed class ChatInboundDispatcher
     private async Task HandleWorkstreamActionAsync(ChatInbound update, ChatSubscriberRow subscriber, CancellationToken ct)
     {
         var parts = update.CallbackData!.Split('|');
-        if (parts.Length != 3) return;
+        if (parts.Length < 2) return;
         var action = parts[1];
-        var wsId = parts[2];
         var actor = subscriber.ForgeUserId ?? $"chat:{update.FromId}";
         var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
             n => n.ChatMessageId == update.ReplyToMessageId, ct);
+
+        // The workstream id comes from the correlated notification, not the
+        // callback payload — Telegram caps callback_data at 64 bytes, which long
+        // ws ids exceed. Fall back to a legacy 3-part payload (act|action|wsId)
+        // for any already-sent messages that still carry the id inline.
+        var wsId = notif?.WorkstreamId;
+        if (string.IsNullOrEmpty(wsId) && parts.Length >= 3) wsId = parts[2];
+        if (string.IsNullOrEmpty(wsId)) return; // can't correlate → ignore.
 
         // Restart is destructive → arm a second-tap confirm before executing.
         if (action == "restart")
@@ -237,8 +245,8 @@ public sealed class ChatInboundDispatcher
                 "⚠ Restart wipes the worktree, deliverables & branch. Tap to confirm.",
                 new[]
                 {
-                    new ChatButton("⚠ Confirm restart", $"act|restart-confirm|{wsId}"),
-                    new ChatButton("Cancel", $"act|restart-cancel|{wsId}"),
+                    new ChatButton("⚠ Confirm restart", "act|restart-confirm"),
+                    new ChatButton("Cancel", "act|restart-cancel"),
                 }, ct);
             return;
         }
@@ -249,14 +257,24 @@ public sealed class ChatInboundDispatcher
             return;
         }
 
-        var outcome = action switch
+        // The workstream lives in its product's DB, not the ambient (header-less)
+        // one this background scope resolved. Scope a fresh IOperatorActionService
+        // to the notification's product via the AsyncLocal slug so it opens the
+        // right per-product ProductDbContext (else the lookup returns "not found").
+        OperatorActionOutcome outcome;
+        using (ProductDbContextFactory.PushAsyncLocalSlug(notif?.ProductId))
+        using (var pscope = this.scopeFactory.CreateScope())
         {
-            "retry" => await this.operatorActions.RetryAsync(wsId, actor, ct),
-            "accept" => await this.operatorActions.AcceptAsync(wsId, actor, ct),
-            "cancel" => await this.operatorActions.CancelAsync(wsId, ct),
-            "restart-confirm" => await this.operatorActions.RestartAsync(wsId, ct),
-            _ => OperatorActionOutcome.Problem(400, null, "Unknown action", null),
-        };
+            var ops = pscope.ServiceProvider.GetRequiredService<IOperatorActionService>();
+            outcome = action switch
+            {
+                "retry" => await ops.RetryAsync(wsId, actor, ct),
+                "accept" => await ops.AcceptAsync(wsId, actor, ct),
+                "cancel" => await ops.CancelAsync(wsId, ct),
+                "restart-confirm" => await ops.RestartAsync(wsId, ct),
+                _ => OperatorActionOutcome.Problem(400, null, "Unknown action", null),
+            };
+        }
 
         if (notif is not null)
         {

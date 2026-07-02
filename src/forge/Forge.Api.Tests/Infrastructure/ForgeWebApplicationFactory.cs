@@ -196,6 +196,11 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // RunOnceAsync deterministically; tests that don't need them
                 // aren't fighting their background writes.
                 ["Forge:Background:Disabled"] = "true",
+                // Phase 95 — the chat bridge is opt-in; pin it OFF for tests so
+                // the suite never inherits a real appsettings.json Enabled=true
+                // (the operator machine's config). Tests that exercise the bridge
+                // set Enabled=true explicitly via extraConfig.
+                ["Forge:ChatBridge:Enabled"] = "false",
             };
             foreach (var kv in this.extraConfig)
             {

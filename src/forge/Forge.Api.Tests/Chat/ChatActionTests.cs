@@ -87,6 +87,40 @@ public class ChatActionTests
     }
 
     [Fact]
+    public async Task Action_With_Long_WsId_Uses_TwoPart_Callback_And_Resolves_From_Notification()
+    {
+        // Regression: Telegram caps callback_data at 64 bytes. Long workstream
+        // ids blew past it when embedded (BUTTON_DATA_INVALID → alert stuck
+        // unsent). The button now carries only "act|cancel" and the ws id is
+        // resolved from the correlated notification.
+        var fake = new FakeChatTransport();
+        await using var f = new ForgeWebApplicationFactory();
+        var app = WithFakeTransport(f, fake);
+        using (app.CreateClient()) { }
+
+        const string Ws = "ws-local-net10-migration-phase-de-risk-and-feed-foundation-stage-component-mapping-and-persistence-spike-e2e";
+        Assert.True(("act|cancel|" + Ws).Length > 64); // the old inline form was over the limit
+        await SeedStalledAsync(app, Ws);
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
+            // 2-part callback (no ws id) — well under 64 bytes.
+            await dispatcher.DispatchAsync(new ChatInbound(9, "123", "123", Text: null, CallbackData: "act|cancel", ReplyToMessageId: "m1"), default);
+        }
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var ws = await db.Workstreams.AsNoTracking().SingleAsync(w => w.Id == Ws);
+            Assert.Equal("cancelled", ws.Status);
+            var notif = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == "n-" + Ws);
+            Assert.Equal(ChatNotificationStatuses.Acted, notif.Status);
+        }
+    }
+
+    [Fact]
     public async Task Restart_Requires_A_Second_Confirm_Tap()
     {
         var fake = new FakeChatTransport();

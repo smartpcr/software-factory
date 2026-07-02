@@ -163,6 +163,16 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var cutoff = now - idleThreshold;
 
+        // Alert sweep (independent of the silent-stall detector below): a
+        // workstream can land in `stalled` status from paths this monitor never
+        // sees — the orchestrator's terminal triage (gen-eval non-convergence,
+        // build-fail), the sloppy/budget reconcilers, etc. Those set Status +
+        // StallReason but never enqueue a chat alert, so the operator gets a
+        // STALLED badge and no notification. Sweep them here so every stalled
+        // workstream reaches chat. Idempotent (the notifier dedupes on
+        // ws+reason) and best-effort — never affects stall detection.
+        await this.SweepStalledForAlertsAsync(db, slug, ct);
+
         // Candidate pre-filter: cheap query over `work_items`.
         // UpdatedAt < cutoff is a NECESSARY but NOT sufficient condition;
         // we re-confirm with a compound activity watermark in the per-row
@@ -230,7 +240,7 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
             {
                 if (await this.IsSilentStallAsync(control, db, cand, cutoff, ct) is StallVerdict verdict)
                 {
-                    if (await this.RecordSilentStallAsync(db, cand, verdict, now, ct))
+                    if (await this.RecordSilentStallAsync(db, cand, verdict, now, slug, ct))
                     {
                         detected++;
                     }
@@ -348,6 +358,7 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
         CandidateRow cand,
         StallVerdict verdict,
         DateTimeOffset now,
+        string slug,
         CancellationToken ct)
     {
         var freshWs = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == cand.WorkItemId, ct);
@@ -411,7 +422,9 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
         }
 
         // Phase 95 (Phase 5) — alert the operator over chat with action buttons.
-        await this.TryEnqueueStalledChatAlertAsync(cand.WorkItemId, freshWs.RepoId, freshWs.StallReason, freshWs.StorySpawnId, ct);
+        var stageNumber = await this.ResolveStageNumberAsync(db, cand.WorkItemId, freshWs.StorySpawnId, ct);
+        await this.TryEnqueueStalledChatAlertAsync(
+            cand.WorkItemId, freshWs.RepoId, freshWs.StallReason, freshWs.StorySpawnId, slug, freshWs.Name, stageNumber, ct);
 
         return true;
     }
@@ -421,7 +434,38 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
     /// with inline [Retry] [Accept] [Cancel] [Restart] buttons (callback
     /// <c>act|{action}|{workstreamId}</c>). Never affects stall detection.
     /// </summary>
-    private async Task TryEnqueueStalledChatAlertAsync(string workstreamId, string? repoId, string? stallReason, string? spawnId, CancellationToken ct)
+    /// <summary>
+    /// Emit a chat alert for every workstream already sitting in <c>stalled</c>
+    /// status with a reason — whatever set it (orchestrator terminal triage,
+    /// sloppy / budget reconcilers, or this monitor's own silent-stall pass).
+    /// The notifier's dedupe key keeps at most one open alert per ws+reason, so
+    /// this is safe to run every tick. Fully best-effort.
+    /// </summary>
+    private async Task SweepStalledForAlertsAsync(ProductDbContext db, string slug, CancellationToken ct)
+    {
+        try
+        {
+            var stalledStatus = WorkstreamStatuses.Stalled;
+            var stalled = await db.Workstreams.AsNoTracking()
+                .Where(w => w.Status == stalledStatus && w.StallReason != null && w.StallReason != "")
+                .Select(w => new { w.Id, w.RepoId, w.StallReason, w.StorySpawnId, w.Name })
+                .ToListAsync(ct);
+
+            foreach (var w in stalled)
+            {
+                var stageNumber = await this.ResolveStageNumberAsync(db, w.Id, w.StorySpawnId, ct);
+                await this.TryEnqueueStalledChatAlertAsync(w.Id, w.RepoId, w.StallReason, w.StorySpawnId, slug, w.Name, stageNumber, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "WorkstreamLivenessMonitor: stalled-alert sweep failed; continuing.");
+        }
+    }
+
+    private async Task TryEnqueueStalledChatAlertAsync(
+        string workstreamId, string? repoId, string? stallReason, string? spawnId,
+        string? productId, string? stageName, string? stageNumber, CancellationToken ct)
     {
         try
         {
@@ -430,22 +474,56 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
             if (notifier is null) return;
 
             var reason = string.IsNullOrWhiteSpace(stallReason) ? "Workstream stalled." : stallReason!;
+
+            // Callback data carries ONLY the action — the workstream id is
+            // resolved from the correlated notification on tap. Embedding the id
+            // blows past Telegram's 64-byte callback_data cap for long ws ids
+            // (BUTTON_DATA_INVALID), which silently wedged the alert as unsent.
             var buttons = new[]
             {
-                new ChatButton("🔁 Retry", $"act|retry|{workstreamId}"),
-                new ChatButton("✅ Accept", $"act|accept|{workstreamId}"),
-                new ChatButton("🚫 Cancel", $"act|cancel|{workstreamId}"),
-                new ChatButton("⚠ Restart", $"act|restart|{workstreamId}"),
+                new ChatButton("🔁 Retry", "act|retry"),
+                new ChatButton("✅ Accept", "act|accept"),
+                new ChatButton("🚫 Cancel", "act|cancel"),
+                new ChatButton("⚠ Restart", "act|restart"),
             };
+
+            // Lead with the STAGE identity (number + name) so multiple stalled
+            // workstreams within one spawn — which all route to the same topic —
+            // are individually identifiable, plus the product · repo · spawn scope.
+            var reasonBody = reason.Length > 1500 ? reason[..1500] : reason;
+            var stage = (stageNumber, stageName) switch
+            {
+                // A plan-stage number uniquely identifies the stage within its
+                // spawn/topic — no ws id needed.
+                ({ Length: > 0 } n, { Length: > 0 } s) => $"📍 Stage {n} — {s}",
+                ({ Length: > 0 } n, _) => $"📍 Stage {n}",
+                // No number (ad-hoc / legacy workstream, e.g. spawn-less stalls in
+                // the group root): ALWAYS include the unique ws id so two stalls
+                // sharing a name/reason are distinguishable.
+                (_, { Length: > 0 } s) => $"📍 {s}\n🆔 {workstreamId}",
+                _ => $"📍 {workstreamId}",
+            };
+            var scopeParts = new[]
+            {
+                string.IsNullOrEmpty(productId) ? null : productId,
+                string.IsNullOrEmpty(repoId) ? null : $"repo {repoId}",
+                string.IsNullOrEmpty(spawnId) ? null : spawnId,
+            };
+            var scopeLine = string.Join(" · ", scopeParts.Where(p => !string.IsNullOrEmpty(p)));
+            var body = string.IsNullOrEmpty(scopeLine)
+                ? $"{stage}\n\n{reasonBody}"
+                : $"{stage}\n🔧 {scopeLine}\n\n{reasonBody}";
+
+            var title = stageNumber is { Length: > 0 } num ? $"⚠ Stalled · Stage {num}" : "⚠ Workstream stalled";
 
             await notifier.EnqueueWorkstreamStalledAsync(
                 new WorkstreamStalledAlert(
-                    ProductId: string.Empty,
+                    ProductId: productId ?? string.Empty,
                     RepoId: repoId,
                     WorkstreamId: workstreamId,
                     StallReason: reason,
-                    Title: "⚠ Workstream stalled",
-                    Body: reason.Length > 1500 ? reason[..1500] : reason,
+                    Title: title,
+                    Body: body,
                     Buttons: buttons,
                     SpawnId: spawnId),
                 ct);
@@ -453,6 +531,34 @@ public sealed class WorkstreamLivenessMonitor : BackgroundService
         catch
         {
             // Best-effort — never let chat delivery affect stall detection.
+        }
+    }
+
+    /// <summary>
+    /// Resolve a stalled workstream's canonical <c>{phase}.{stage}</c> label
+    /// (e.g. <c>1.2-e2e</c>) by numbering its whole spawn the same way the swarm
+    /// board does (<see cref="StageNumbering"/>). Null when there's no spawn or
+    /// the row can't be labelled. Best-effort.
+    /// </summary>
+    private async Task<string?> ResolveStageNumberAsync(ProductDbContext db, string workstreamId, string? spawnId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(spawnId)) return null;
+        try
+        {
+            var rows = await db.Workstreams.AsNoTracking()
+                .Where(w => w.StorySpawnId == spawnId)
+                .OrderBy(w => w.Sort)
+                .Select(w => new { w.Id, w.PhaseAnchor, w.PlanAnchor, w.Category })
+                .ToListAsync(ct);
+            var stageWs = rows
+                .Select(r => new StageNumbering.StageWs(r.Id, r.PhaseAnchor, r.PlanAnchor, r.Category))
+                .ToList();
+            return StageNumbering.Compute(stageWs).TryGetValue(workstreamId, out var num) ? num : null;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "WorkstreamLivenessMonitor: stage-number resolve failed for {WorkItem}; omitting.", workstreamId);
+            return null;
         }
     }
 
