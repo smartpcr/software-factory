@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Tests.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Microsoft.Data.Sqlite;
@@ -15,9 +16,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 /// <summary>
-/// Phase 95 (Part B) — per-spawn forum-topic routing: the resolver creates +
-/// caches a topic per spawn, and the outbound pump sends a spawn-scoped alert
-/// into that topic's thread. Group mode is gated on <c>SupergroupChatId</c>.
+/// Phase 95 (Part B) — per-spawn forum-topic routing via the Common.Chat
+/// channel map + Forge's spawn-topic store: the map creates + caches a topic
+/// per spawn route, resolves an inbound thread back to its spawn route, and
+/// the outbound pump sends a spawn-scoped alert into that topic's thread.
+/// Group mode is gated on <c>SupergroupChatId</c>.
 /// </summary>
 public class ChatTopicRoutingTests : IAsyncLifetime
 {
@@ -38,8 +41,10 @@ public class ChatTopicRoutingTests : IAsyncLifetime
         services.AddDbContext<ControlDbContext>(o => o.UseSqlite(this.conn));
         services.AddSingleton<IChatTransport>(this.transport);
         services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ChatBridgeOptions>>(
-            new StaticOptionsMonitor<ChatBridgeOptions>(GroupOptions()));
-        services.AddScoped<IChatTopicResolver, ChatTopicResolver>();
+            new StaticOptionsMonitor<ChatBridgeOptions>(new ChatBridgeOptions { Enabled = true }));
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<ChatTransportOptions>>(
+            new StaticOptionsMonitor<ChatTransportOptions>(GroupOptions()));
+        services.AddChatChannelMap<ForgeChatChannelStore>();
         this.provider = services.BuildServiceProvider();
 
         using var scope = this.provider.CreateScope();
@@ -52,9 +57,9 @@ public class ChatTopicRoutingTests : IAsyncLifetime
         await this.conn.DisposeAsync();
     }
 
-    private static ChatBridgeOptions GroupOptions()
+    private static ChatTransportOptions GroupOptions()
     {
-        var opt = new ChatBridgeOptions { Enabled = true };
+        var opt = new ChatTransportOptions { Enabled = true };
         opt.Telegram.SupergroupChatId = Supergroup;
         return opt;
     }
@@ -63,26 +68,41 @@ public class ChatTopicRoutingTests : IAsyncLifetime
         this.provider.GetRequiredService<IServiceScopeFactory>(),
         this.transport,
         this.provider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ChatBridgeOptions>>(),
+        this.provider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ChatTransportOptions>>(),
         NullLogger<ChatBridgeService>.Instance);
 
     [Fact]
-    public async Task Resolver_Creates_Then_Caches_A_Topic_Per_Spawn()
+    public void Spawn_Route_Key_Round_Trips()
     {
-        string? first, second;
+        var key = ForgeChatRoutes.Spawn("prod-1", "spawn-9");
+        Assert.True(ForgeChatRoutes.TryParseSpawn(key, out var productId, out var spawnId));
+        Assert.Equal("prod-1", productId);
+        Assert.Equal("spawn-9", spawnId);
+
+        Assert.False(ForgeChatRoutes.TryParseSpawn(null, out _, out _));
+        Assert.False(ForgeChatRoutes.TryParseSpawn("spawn/only-one-part", out _, out _));
+        Assert.False(ForgeChatRoutes.TryParseSpawn("other/x/y", out _, out _));
+    }
+
+    [Fact]
+    public async Task Map_Creates_Then_Caches_A_Topic_Per_Spawn_Route()
+    {
+        var route = ForgeChatRoutes.Spawn("prod", "spawn-1");
+        ChatChannelAddress? first, second;
         using (var scope = this.provider.CreateScope())
         {
-            var resolver = scope.ServiceProvider.GetRequiredService<IChatTopicResolver>();
-            first = await resolver.EnsureTopicAsync("spawn-1", "prod", "Story A", default);
+            var map = scope.ServiceProvider.GetRequiredService<IChatChannelMap>();
+            first = await map.EnsureChannelAsync(route, "Story A", default);
         }
 
         using (var scope = this.provider.CreateScope())
         {
-            var resolver = scope.ServiceProvider.GetRequiredService<IChatTopicResolver>();
-            second = await resolver.EnsureTopicAsync("spawn-1", "prod", "Story A", default);
+            var map = scope.ServiceProvider.GetRequiredService<IChatChannelMap>();
+            second = await map.EnsureChannelAsync(route, "Story A", default);
         }
 
-        Assert.False(string.IsNullOrEmpty(first));
-        Assert.Equal(first, second);
+        Assert.False(string.IsNullOrEmpty(first?.ThreadId));
+        Assert.Equal(first!.ThreadId, second?.ThreadId);
 
         // Created exactly once, against the supergroup.
         Assert.Single(this.transport.TopicsCreated);
@@ -91,23 +111,47 @@ public class ChatTopicRoutingTests : IAsyncLifetime
         using var check = this.provider.CreateScope();
         var control = check.ServiceProvider.GetRequiredService<ControlDbContext>();
         var row = await control.ChatSpawnTopics.AsNoTracking().SingleAsync(t => t.SpawnId == "spawn-1");
-        Assert.Equal(first, row.ThreadId);
+        Assert.Equal(first.ThreadId, row.ThreadId);
+        Assert.Equal("prod", row.ProductId);
     }
 
     [Fact]
-    public async Task Resolver_Returns_Null_In_Single_Chat_Mode()
+    public async Task Map_Resolves_An_Inbound_Thread_Back_To_Its_Spawn_Route()
+    {
+        var route = ForgeChatRoutes.Spawn("prod", "spawn-7");
+        ChatChannelAddress? address;
+        using (var scope = this.provider.CreateScope())
+        {
+            var map = scope.ServiceProvider.GetRequiredService<IChatChannelMap>();
+            address = await map.EnsureChannelAsync(route, "Story Seven", default);
+        }
+
+        using (var scope = this.provider.CreateScope())
+        {
+            var map = scope.ServiceProvider.GetRequiredService<IChatChannelMap>();
+            var resolved = await map.ResolveRouteAsync(address!.ChatId, address.ThreadId, default);
+            Assert.Equal(route, resolved);
+
+            // Group root (no thread) and unknown threads resolve to no route.
+            Assert.Null(await map.ResolveRouteAsync(address.ChatId, threadId: null, default));
+            Assert.Null(await map.ResolveRouteAsync(address.ChatId, "does-not-exist", default));
+        }
+    }
+
+    [Fact]
+    public async Task Map_Returns_Null_In_Single_Chat_Mode()
     {
         using var scope = this.provider.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-        var resolver = new ChatTopicResolver(
-            control,
+        var map = new ChatChannelMap(
+            new ForgeChatChannelStore(control),
             this.transport,
-            new StaticOptionsMonitor<ChatBridgeOptions>(new ChatBridgeOptions { Enabled = true }), // SupergroupChatId == 0
-            NullLogger<ChatTopicResolver>.Instance);
+            new StaticOptionsMonitor<ChatTransportOptions>(new ChatTransportOptions { Enabled = true }), // SupergroupChatId == 0
+            NullLogger<ChatChannelMap>.Instance);
 
-        var threadId = await resolver.EnsureTopicAsync("spawn-1", "prod", "Story A", default);
+        var address = await map.EnsureChannelAsync(ForgeChatRoutes.Spawn("prod", "spawn-1"), "Story A", default);
 
-        Assert.Null(threadId);
+        Assert.Null(address);
         Assert.Empty(this.transport.TopicsCreated);
     }
 

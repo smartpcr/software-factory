@@ -4,24 +4,25 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Forge.Api.Services.Chat;
+namespace Common.Chat;
 
 /// <summary>
-/// Phase 95 — platform-agnostic chat transport seam. Telegram is the first
-/// implementation (<see cref="TelegramTransport"/>); Discord slots in later
-/// behind the same contract. The (Phase 2) bridge service depends only on this
-/// interface so the outbound/inbound pumps never know which platform they're on.
+/// Platform-agnostic chat transport seam. Telegram is the first implementation
+/// (<see cref="TelegramTransport"/>); Discord slots in later behind the same
+/// contract. Consumers (outbound pumps, inbound dispatchers) depend only on
+/// this interface so they never know which platform they're on.
 /// </summary>
 public interface IChatTransport
 {
-    /// <summary>Platform id (e.g. <c>telegram</c>) — stamped onto notification rows.</summary>
+    /// <summary>Platform id (e.g. <c>telegram</c>) — apps stamp it onto their outbox rows.</summary>
     string Platform { get; }
 
     /// <summary>
     /// Send a message, optionally with an inline button keyboard. When
-    /// <paramref name="threadId"/> is set (Part B forum topics), the message is
-    /// posted into that topic thread. Never throws on a transport/HTTP failure —
-    /// returns <see cref="ChatSendResult"/> with <c>Ok=false</c> so the caller can retry.
+    /// <paramref name="threadId"/> is set (forum topics / threads), the message
+    /// is posted into that topic thread. Never throws on a transport/HTTP
+    /// failure — returns <see cref="ChatSendResult"/> with <c>Ok=false</c> so
+    /// the caller can retry.
     /// </summary>
     Task<ChatSendResult> SendAsync(string chatId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct, string? threadId = null);
 
@@ -33,9 +34,9 @@ public interface IChatTransport
     Task<ChatSendResult> EditAsync(string chatId, string messageId, string text, IReadOnlyList<ChatButton>? buttons, CancellationToken ct);
 
     /// <summary>
-    /// Part B — create a forum topic in a supergroup and return its
-    /// <c>message_thread_id</c> (null on failure). Requires the bot to be an
-    /// admin with Manage-Topics.
+    /// Create a forum topic / thread in a group chat and return its thread id
+    /// (null on failure). On Telegram this requires the bot to be an admin
+    /// with Manage-Topics.
     /// </summary>
     Task<string?> CreateTopicAsync(string chatId, string name, CancellationToken ct);
 
@@ -59,8 +60,9 @@ public sealed record ChatButton(string Label, string CallbackData);
 
 /// <summary>
 /// A normalized inbound update. Both a text reply and a button tap
-/// (callback query) map into this shape; the (Phase 4) dispatcher correlates
-/// via <see cref="ReplyToMessageId"/> or <see cref="CallbackData"/>.
+/// (callback query) map into this shape; app dispatchers correlate via
+/// <see cref="ReplyToMessageId"/> or <see cref="CallbackData"/>, and
+/// <see cref="ThreadId"/> identifies the forum topic the update arrived in.
 /// </summary>
 public sealed record ChatInbound(
     long UpdateId,

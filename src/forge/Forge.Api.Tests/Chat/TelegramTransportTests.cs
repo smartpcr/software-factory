@@ -7,7 +7,7 @@
 namespace Forge.Api.Tests.Chat;
 
 using System.Net;
-using Forge.Api.Services.Chat;
+using Common.Chat;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -19,12 +19,12 @@ public class TelegramTransportTests
 {
     private static TelegramTransport NewTransport(HttpMessageHandler handler, string token = "TESTTOKEN")
     {
-        var opt = new ChatBridgeOptions { Enabled = true };
+        var opt = new ChatTransportOptions { Enabled = true };
         opt.Telegram.BotToken = token;
         opt.Telegram.ApiBaseUrl = "https://api.telegram.org";
         return new TelegramTransport(
             new SingleHandlerHttpClientFactory(handler),
-            new StaticOptionsMonitor<ChatBridgeOptions>(opt),
+            new StaticOptionsMonitor<ChatTransportOptions>(opt),
             NullLogger<TelegramTransport>.Instance);
     }
 
@@ -208,13 +208,9 @@ public class TelegramTransportTests
     [Fact]
     public async Task Blank_Token_Send_Returns_Failure_Without_Calling_Network()
     {
-        // No blob on the test host → blank token resolves to null → the send
-        // short-circuits to a failure and never touches the handler.
-        if (File.Exists(ChatTokenResolver.BlobPath()))
-        {
-            return; // machine has a real token blob; skip.
-        }
-
+        // TokenBlobPath is unset here, so there is no DPAPI fallback: a blank
+        // token resolves to null → the send short-circuits to a failure and
+        // never touches the handler.
         var handler = new RecordingHttpMessageHandler(_ => throw new HttpRequestException("should not be called"));
         var transport = NewTransport(handler, token: "   ");
 

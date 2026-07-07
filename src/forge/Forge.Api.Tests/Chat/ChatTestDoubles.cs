@@ -8,7 +8,7 @@ namespace Forge.Api.Tests.Chat;
 
 using System.Net;
 using System.Text;
-using Forge.Api.Services.Chat;
+using Common.Chat;
 using Microsoft.Extensions.Options;
 
 /// <summary>

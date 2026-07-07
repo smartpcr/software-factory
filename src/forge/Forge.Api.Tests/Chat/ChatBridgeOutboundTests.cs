@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Tests.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Microsoft.Data.Sqlite;
@@ -47,6 +48,7 @@ public class ChatBridgeOutboundTests : IAsyncLifetime
             this.provider.GetRequiredService<IServiceScopeFactory>(),
             transport,
             new StaticOptionsMonitor<ChatBridgeOptions>(opt),
+            new StaticOptionsMonitor<ChatTransportOptions>(new ChatTransportOptions { Enabled = true }),
             NullLogger<ChatBridgeService>.Instance);
     }
 

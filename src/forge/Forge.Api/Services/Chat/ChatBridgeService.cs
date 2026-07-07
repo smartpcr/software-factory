@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,11 +15,13 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 95 (chat bridge) — the outbound pump. A <see cref="BackgroundService"/>
+/// Phase 95 (chat bridge) — the <b>outbound</b> pump. A <see cref="BackgroundService"/>
 /// that on each tick (1) sends <c>pending</c> outbox rows to the chat platform
 /// and stores the returned message id, and (2) edits the sent message of any row
 /// resolved elsewhere (<c>resolving</c>) exactly once before flipping it
-/// terminal.
+/// terminal. The inbound half lives in the reusable <c>Common.Chat</c>
+/// <see cref="ChatInboundPump"/>, which fans updates out to
+/// <see cref="ChatInboundDispatcher"/>.
 ///
 /// <para><b>Failure-isolated:</b> a bad row can't abort the tick (per-row
 /// try/catch), a bad tick can't kill the loop (per-tick try/catch). Transient
@@ -36,31 +39,25 @@ public sealed class ChatBridgeService : BackgroundService
     private readonly IServiceScopeFactory scopeFactory;
     private readonly IChatTransport transport;
     private readonly IOptionsMonitor<ChatBridgeOptions> options;
+    private readonly IOptionsMonitor<ChatTransportOptions> transportOptions;
     private readonly ILogger<ChatBridgeService> logger;
 
     public ChatBridgeService(
         IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatBridgeOptions> options,
+        IOptionsMonitor<ChatTransportOptions> transportOptions,
         ILogger<ChatBridgeService> logger)
     {
         this.scopeFactory = scopeFactory;
         this.transport = transport;
         this.options = options;
+        this.transportOptions = transportOptions;
         this.logger = logger;
     }
 
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Two independent loops: the outbound pump (timer) and the inbound
-        // long-poll. A fault in one must not stop the other.
-        await Task.WhenAll(
-            this.OutboundLoopAsync(stoppingToken),
-            this.InboundLoopAsync(stoppingToken));
-    }
-
-    private async Task OutboundLoopAsync(CancellationToken stoppingToken)
     {
         try
         {
@@ -76,7 +73,8 @@ public sealed class ChatBridgeService : BackgroundService
             try
             {
                 var opt = this.options.CurrentValue;
-                if (opt.Enabled && !string.IsNullOrWhiteSpace(ChatTokenResolver.Resolve(opt, this.logger)))
+                var token = ChatTokenResolver.Resolve(this.transportOptions.CurrentValue, this.logger);
+                if (opt.Enabled && !string.IsNullOrWhiteSpace(token))
                 {
                     await this.RunOutboundOnceAsync(stoppingToken);
                 }
@@ -101,98 +99,6 @@ public sealed class ChatBridgeService : BackgroundService
         }
     }
 
-    private async Task InboundLoopAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            var opt = this.options.CurrentValue;
-            var hasToken = !string.IsNullOrWhiteSpace(ChatTokenResolver.Resolve(opt, this.logger));
-            if (!opt.Enabled || !hasToken)
-            {
-                // Idle — the long-poll can't run without a token; back off.
-                try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
-                catch (TaskCanceledException) { return; }
-                continue;
-            }
-
-            try
-            {
-                // The long-poll (getUpdates?timeout=…) provides the pacing.
-                await this.RunInboundOnceAsync(stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                this.logger.LogWarning(ex, "chat inbound tick errored — continuing.");
-                try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); }
-                catch (TaskCanceledException) { return; }
-            }
-        }
-    }
-
-    /// <summary>
-    /// One inbound tick: long-poll for updates newer than the persisted cursor,
-    /// route each, then advance the cursor. Returns the update count.
-    /// </summary>
-    public async Task<int> RunInboundOnceAsync(CancellationToken ct)
-    {
-        var offset = await this.LoadOffsetAsync(ct);
-        var pollOffset = offset == 0 ? 0 : offset + 1;
-        var updates = await this.transport.PollUpdatesAsync(pollOffset, ct);
-        if (updates.Count == 0)
-        {
-            return 0;
-        }
-
-        await this.HandleInboundAsync(updates, ct);
-
-        var maxId = updates.Max(u => u.UpdateId);
-        if (maxId > offset)
-        {
-            await this.SaveOffsetAsync(maxId, ct);
-        }
-
-        return updates.Count;
-    }
-
-    /// <summary>Route a batch of inbound updates (public for deterministic tests).</summary>
-    public async Task HandleInboundAsync(IReadOnlyList<ChatInbound> updates, CancellationToken ct)
-    {
-        foreach (var update in updates)
-        {
-            using var scope = this.scopeFactory.CreateScope();
-            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
-            await dispatcher.DispatchAsync(update, ct);
-        }
-    }
-
-    private async Task<long> LoadOffsetAsync(CancellationToken ct)
-    {
-        using var scope = this.scopeFactory.CreateScope();
-        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-        var row = await control.ChatBridgeState.AsNoTracking().FirstOrDefaultAsync(ct);
-        return row?.LastUpdateId ?? 0;
-    }
-
-    private async Task SaveOffsetAsync(long lastUpdateId, CancellationToken ct)
-    {
-        using var scope = this.scopeFactory.CreateScope();
-        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-        var row = await control.ChatBridgeState.FirstOrDefaultAsync(ct);
-        if (row is null)
-        {
-            row = new ChatBridgeStateRow { Id = ChatBridgeStateRow.SingletonId };
-            control.ChatBridgeState.Add(row);
-        }
-
-        row.LastUpdateId = lastUpdateId;
-        row.UpdatedAt = DateTimeOffset.UtcNow;
-        await control.SaveChangesAsync(ct);
-    }
-
     /// <summary>
     /// One outbound tick: send pending rows, then edit resolving rows. Returns
     /// per-outcome counts for deterministic tests.
@@ -203,7 +109,7 @@ public sealed class ChatBridgeService : BackgroundService
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Optional — always registered in production; some unit tests build a
         // minimal provider without it (spawn-less rows never need a topic anyway).
-        var topics = scope.ServiceProvider.GetService<IChatTopicResolver>();
+        var channels = scope.ServiceProvider.GetService<IChatChannelMap>();
         var opt = this.options.CurrentValue;
         var now = DateTimeOffset.UtcNow;
         var result = default(OutboundTickResult);
@@ -238,8 +144,8 @@ public sealed class ChatBridgeService : BackgroundService
                 // Part B — route the alert into its spawn's forum topic (group
                 // mode). Null threadId → group root (single-chat mode, spawn-less
                 // alert, or topic-creation failure) — send is unaffected.
-                var threadId = topics is not null && row.SpawnId is { Length: > 0 } spawn
-                    ? await topics.EnsureTopicAsync(spawn, row.ProductId, row.Title, ct)
+                var threadId = channels is not null && row.SpawnId is { Length: > 0 } spawn
+                    ? (await channels.EnsureChannelAsync(ForgeChatRoutes.Spawn(row.ProductId, spawn), row.Title, ct))?.ThreadId
                     : null;
 
                 var send = await this.transport.SendAsync(row.ChatId, text, buttons, ct, threadId);

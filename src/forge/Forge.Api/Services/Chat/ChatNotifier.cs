@@ -8,6 +8,7 @@ namespace Forge.Api.Services.Chat;
 
 using System.Security.Cryptography;
 using System.Text;
+using Common.Chat;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;

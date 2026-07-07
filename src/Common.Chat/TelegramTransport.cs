@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Forge.Api.Services.Chat;
+namespace Common.Chat;
 
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -12,15 +12,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 95 — Telegram <see cref="IChatTransport"/> over raw HTTP (the Bot API's
-/// <c>sendMessage</c> / <c>editMessageText</c> / <c>getUpdates</c>), matching
-/// Forge's "raw <c>HttpClient</c>, small deps" provider house style (no bot SDK).
-/// A fresh client is built per call from the named factory client so tests can
-/// swap the message handler.
+/// Telegram <see cref="IChatTransport"/> over raw HTTP (the Bot API's
+/// <c>sendMessage</c> / <c>editMessageText</c> / <c>getUpdates</c>) — raw
+/// <c>HttpClient</c>, no bot SDK, small deps. A fresh client is built per call
+/// from the named factory client so tests can swap the message handler.
 ///
 /// <para>All calls are failure-tolerant: transport/HTTP errors and Telegram
 /// <c>ok:false</c> bodies become a <see cref="ChatSendResult.Failure"/> /
-/// empty update list — never an unhandled throw — so the (Phase 2) pump can
+/// empty update list — never an unhandled throw — so an outbound pump can
 /// retry rather than die.</para>
 /// </summary>
 public sealed class TelegramTransport : IChatTransport
@@ -33,12 +32,12 @@ public sealed class TelegramTransport : IChatTransport
     private const string TruncationSuffix = "\n… open in UI";
 
     private readonly IHttpClientFactory clientFactory;
-    private readonly IOptionsMonitor<ChatBridgeOptions> options;
+    private readonly IOptionsMonitor<ChatTransportOptions> options;
     private readonly ILogger<TelegramTransport> logger;
 
     public TelegramTransport(
         IHttpClientFactory clientFactory,
-        IOptionsMonitor<ChatBridgeOptions> options,
+        IOptionsMonitor<ChatTransportOptions> options,
         ILogger<TelegramTransport> logger)
     {
         this.clientFactory = clientFactory;
@@ -286,7 +285,7 @@ public sealed class TelegramTransport : IChatTransport
         return body;
     }
 
-    private static string BaseUrl(ChatBridgeOptions opt, string token)
+    private static string BaseUrl(ChatTransportOptions opt, string token)
     {
         var root = string.IsNullOrWhiteSpace(opt.Telegram.ApiBaseUrl)
             ? "https://api.telegram.org"

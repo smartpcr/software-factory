@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using Common.Chat;
 using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Domain;
@@ -359,21 +360,34 @@ builder.Services.Configure<ProviderSyncOptions>(builder.Configuration.GetSection
 builder.Services.AddHttpClient(AdoProvider.ClientName);
 builder.Services.AddHttpClient(GitHubProvider.ClientName);
 
-// Phase 95 (chat bridge) — Telegram-first operator chat bridge. Options +
-// transport + admin test-send (Phase 1); notifier (enqueue API) + outbound pump
-// (Phase 2). The pump is gated by enableBackground like the other hosted
-// services AND stays idle unless Forge:ChatBridge:Enabled + a bot token are set.
+// Phase 95 (chat bridge) — Telegram-first operator chat bridge. The transport,
+// route⇄channel map, and inbound long-poll pump live in the reusable
+// Common.Chat library; Forge binds the SAME Forge:ChatBridge section to both
+// its own options (outbox knobs) and the lib's transport options, and plugs in
+// its stores (control-DB spawn-topic bindings + inbound cursor) and its
+// dispatcher as the subscribed inbound handler. Everything is gated by
+// enableBackground like the other hosted services AND stays idle unless
+// Forge:ChatBridge:Enabled + a bot token are set.
 builder.Services.Configure<Forge.Api.Services.Chat.ChatBridgeOptions>(
     builder.Configuration.GetSection(Forge.Api.Services.Chat.ChatBridgeOptions.SectionName));
-builder.Services.AddHttpClient(Forge.Api.Services.Chat.TelegramTransport.ClientName);
-builder.Services.AddSingleton<Forge.Api.Services.Chat.IChatTransport, Forge.Api.Services.Chat.TelegramTransport>();
+builder.Services.Configure<Common.Chat.ChatTransportOptions>(
+    builder.Configuration.GetSection(Forge.Api.Services.Chat.ChatBridgeOptions.SectionName));
+builder.Services.PostConfigure<Common.Chat.ChatTransportOptions>(o =>
+    o.TokenBlobPath ??= Forge.Api.Services.Chat.ChatBridgeOptions.DefaultTokenBlobPath());
+builder.Services.AddTelegramChatTransport();
 builder.Services.AddScoped<Forge.Api.Services.Chat.IChatNotifier, Forge.Api.Services.Chat.ChatNotifier>();
-// Phase 95 (Part B) — spawn → forum-topic resolver (create-on-first-need + cache).
-builder.Services.AddScoped<Forge.Api.Services.Chat.IChatTopicResolver, Forge.Api.Services.Chat.ChatTopicResolver>();
+// Phase 95 (Part B) — spawn ⇄ forum-topic channel map (create-on-first-need +
+// reverse thread→spawn route resolution for inbound).
+builder.Services.AddChatChannelMap<Forge.Api.Services.Chat.ForgeChatChannelStore>();
 builder.Services.AddSingleton<Forge.Api.Services.Chat.ChatBridgeService>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatBridgeService>());
-// Phase 95 (Phase 4) — inbound dispatcher: /link + commands + answer correlation.
+// Phase 95 (Phase 4) — inbound: durable cursor + dispatcher subscribed to the
+// Common.Chat pump (/link + commands + answer/action correlation).
+builder.Services.AddScoped<Common.Chat.IChatCursorStore, Forge.Api.Services.Chat.ForgeChatCursorStore>();
 builder.Services.AddScoped<Forge.Api.Services.Chat.ChatInboundDispatcher>();
+builder.Services.AddScoped<Common.Chat.IChatInboundHandler>(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatInboundDispatcher>());
+builder.Services.AddSingleton<Common.Chat.ChatInboundPump>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Common.Chat.ChatInboundPump>());
 // Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
 // questions endpoints AND the chat-bridge inbound path).
 builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();

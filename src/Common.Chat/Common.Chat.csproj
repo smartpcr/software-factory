@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Product>Common Chat Bridge</Product>
+    <Description>App-agnostic chat bridge: platform transports (Telegram first), channel/topic mapping to app-defined routes, and an inbound long-poll pump with handler subscriptions. Persistence enters only through store seams — no EF, no app dependencies.</Description>
+    <RootNamespace>Common.Chat</RootNamespace>
+    <AssemblyName>Common.Chat</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <!-- DPAPI-encrypted bot-token blob fallback (Windows-only at runtime; guarded). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" />
+  </ItemGroup>
+
+</Project>

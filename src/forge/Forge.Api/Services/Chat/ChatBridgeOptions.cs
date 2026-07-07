@@ -6,14 +6,16 @@
 
 namespace Forge.Api.Services.Chat;
 
+using Common.Chat;
+
 /// <summary>
-/// Phase 95 (chat bridge) — config bound from <c>Forge:ChatBridge:*</c>.
+/// Phase 95 (chat bridge) — Forge-side config bound from <c>Forge:ChatBridge:*</c>.
 ///
-/// <para>The chat bridge lets Forge reach a human operator over a chat app
-/// (Telegram first) to get answers to open questions and drive stalled-workstream
-/// actions. Phase 1 ships the options, the transport, and an admin test-send
-/// endpoint; the outbound/inbound pumps (a <c>BackgroundService</c>) land in
-/// Phase 2, so nothing here is auto-started yet.</para>
+/// <para>The transport half of the bridge lives in the reusable
+/// <c>Common.Chat</c> library; the same config section is <b>also</b> bound to
+/// <see cref="ChatTransportOptions"/> (the shapes agree on
+/// <c>Enabled</c>/<c>Platform</c>/<c>Telegram</c>), and this type adds the
+/// Forge-only outbox knobs (tick interval, TTL, retry cap).</para>
 ///
 /// <para><b>Disabled by default.</b> <see cref="Enabled"/> is <c>false</c> until
 /// an operator configures a bot token — a blank token leaves the bridge idle
@@ -23,16 +25,19 @@ public sealed class ChatBridgeOptions
 {
     public const string SectionName = "Forge:ChatBridge";
 
+    /// <summary>File name of the DPAPI token blob under <c>%LOCALAPPDATA%\Forge</c>.</summary>
+    public const string TokenBlobFileName = "chat-token.bin";
+
     /// <summary>Master switch. When false the bridge is registered but does nothing.</summary>
     public bool Enabled { get; set; }
 
     /// <summary>Chat platform. Only <c>telegram</c> is implemented today.</summary>
     public string Platform { get; set; } = "telegram";
 
-    /// <summary>Telegram bot configuration.</summary>
+    /// <summary>Telegram bot configuration (shared shape with <see cref="ChatTransportOptions.Telegram"/>).</summary>
     public TelegramOptions Telegram { get; set; } = new();
 
-    /// <summary>How often the (Phase 2) outbound pump drains pending notifications.</summary>
+    /// <summary>How often the outbound pump drains pending notifications.</summary>
     public TimeSpan OutboundTickInterval { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>How long a pending notification lives before it is marked <c>expired</c>.</summary>
@@ -40,39 +45,14 @@ public sealed class ChatBridgeOptions
 
     /// <summary>Max send attempts before a notification row is marked <c>failed</c>.</summary>
     public int MaxAttempts { get; set; } = 5;
-}
-
-/// <summary>Telegram-specific chat-bridge options.</summary>
-public sealed class TelegramOptions
-{
-    /// <summary>
-    /// Bot token from BotFather. Prefer the env var
-    /// <c>Forge__ChatBridge__Telegram__BotToken</c> or the DPAPI blob
-    /// (<see cref="ChatTokenResolver"/>) over committing it to appsettings.
-    /// </summary>
-    public string BotToken { get; set; } = string.Empty;
 
     /// <summary>
-    /// Bootstrap allow-list of numeric chat ids the bridge may talk to. The
-    /// durable <c>chat_subscribers</c> table is the real allow-list (Phase 4);
-    /// this seeds the first operator + the admin test-send default target.
+    /// Default DPAPI blob path (<c>%LOCALAPPDATA%\Forge\chat-token.bin</c>) —
+    /// stamped onto <see cref="ChatTransportOptions.TokenBlobPath"/> at wiring
+    /// time, mirroring the MSAL cache location in <c>AdoAuthService</c>.
     /// </summary>
-    public List<long> AllowedChatIds { get; set; } = new();
-
-    /// <summary>Long-poll <c>getUpdates</c> timeout (seconds). Telegram holds the request open this long.</summary>
-    public int LongPollTimeoutSec { get; set; } = 25;
-
-    /// <summary>Telegram Bot API base URL. Overridable so tests can point at a stub.</summary>
-    public string ApiBaseUrl { get; set; } = "https://api.telegram.org";
-
-    /// <summary>
-    /// Part B — forum supergroup for per-spawn topics. When set (non-zero), the
-    /// bridge runs in <b>group mode</b>: alerts route to their spawn's topic in
-    /// this supergroup, and inbound is authorized by the sender's user id. When
-    /// 0, single-chat / DM mode (send to <see cref="AllowedChatIds"/>[0]).
-    /// </summary>
-    public long SupergroupChatId { get; set; }
-
-    /// <summary>Part B — Telegram user ids allowed to drive Forge (group-mode allow-list bootstrap).</summary>
-    public List<long> AllowedUserIds { get; set; } = new();
+    public static string DefaultTokenBlobPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Forge",
+        TokenBlobFileName);
 }

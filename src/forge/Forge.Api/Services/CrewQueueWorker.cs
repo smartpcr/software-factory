@@ -13,6 +13,7 @@ using Forge.Api.Agents;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Common.Chat;
 using Forge.Api.Services.Chat;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;

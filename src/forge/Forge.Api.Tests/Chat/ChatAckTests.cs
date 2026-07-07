@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Tests.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Forge.Api.Tests.Infrastructure;

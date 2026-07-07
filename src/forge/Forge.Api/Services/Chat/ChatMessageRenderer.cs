@@ -6,13 +6,14 @@
 
 namespace Forge.Api.Services.Chat;
 
-using System.Text.Json;
+using Common.Chat;
 using Forge.Api.Persistence;
 
 /// <summary>
 /// Phase 95 (chat bridge) — turns a <see cref="ChatNotificationRow"/> into the
 /// text + inline buttons the transport sends, and the "resolved" text the
 /// outbound pump edits in once the item is answered/acted elsewhere.
+/// Button JSON (de)serialization lives in <see cref="ChatActions"/> (Common.Chat).
 /// </summary>
 public static class ChatMessageRenderer
 {
@@ -27,51 +28,4 @@ public static class ChatMessageRenderer
 
     private static string BaseText(ChatNotificationRow row) =>
         string.IsNullOrWhiteSpace(row.Body) ? row.Title : $"{row.Title}\n\n{row.Body}";
-}
-
-/// <summary>
-/// Serialize/parse the inline-action set stored in
-/// <see cref="ChatNotificationRow.ActionsJson"/>.
-/// </summary>
-public static class ChatActions
-{
-    /// <summary>Serialize buttons to the compact JSON array stored on the row (null when empty).</summary>
-    public static string? Serialize(IReadOnlyList<ChatButton>? buttons)
-    {
-        if (buttons is not { Count: > 0 })
-        {
-            return null;
-        }
-
-        return JsonSerializer.Serialize(buttons.Select(b => new ButtonDto(b.Label, b.CallbackData)).ToList());
-    }
-
-    /// <summary>Parse the stored JSON back into buttons (null on empty/malformed).</summary>
-    public static IReadOnlyList<ChatButton>? Parse(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return null;
-        }
-
-        try
-        {
-            var dtos = JsonSerializer.Deserialize<List<ButtonDto>>(json);
-            if (dtos is null || dtos.Count == 0)
-            {
-                return null;
-            }
-
-            return dtos
-                .Where(d => !string.IsNullOrEmpty(d.Label) && !string.IsNullOrEmpty(d.CallbackData))
-                .Select(d => new ChatButton(d.Label, d.CallbackData))
-                .ToList();
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    private sealed record ButtonDto(string Label, string CallbackData);
 }

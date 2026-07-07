@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,24 +15,29 @@ using Microsoft.Extensions.Options;
 
 /// <summary>
 /// Phase 95 (chat bridge, Phase 4) — routes one normalized inbound update to a
-/// Forge action. Handles the <c>/link</c> bind + slash commands, enforces the
-/// <c>chat_subscribers</c> allow-list (unlinked chat ids are ignored), and
-/// correlates a reply/button-tap back to the originating <c>chat_notifications</c>
-/// row to answer an open question via the shared <see cref="IOpenQuestionService"/>.
+/// Forge action. Registered as the app's <see cref="IChatInboundHandler"/> with
+/// the <c>Common.Chat</c> inbound pump. Handles the <c>/link</c> bind + slash
+/// commands, enforces the <c>chat_subscribers</c> allow-list (unlinked chat ids
+/// are ignored), and correlates a reply/button-tap back to the originating
+/// <c>chat_notifications</c> row to answer an open question via the shared
+/// <see cref="IOpenQuestionService"/>.
 ///
 /// <para>Correlation: a Telegram <c>callback_query</c> and a text reply both carry
 /// the id of the message they act on, mapped to
 /// <see cref="ChatInbound.ReplyToMessageId"/> — so a single lookup
-/// (<c>ChatMessageId == ReplyToMessageId</c>) resolves the notification for both.</para>
+/// (<c>ChatMessageId == ReplyToMessageId</c>) resolves the notification for both.
+/// A <b>non-reply</b> message typed inside a spawn's forum topic falls back to the
+/// channel route (<see cref="ChatInboundMessage.RouteKey"/>,
+/// <c>spawn/{productId}/{spawnId}</c>) — it targets that spawn's outstanding
+/// open-questions alert, and all product-DB work (questions, answer/resume) is
+/// scoped to the notification's product via the AsyncLocal slug.</para>
 /// </summary>
-public sealed class ChatInboundDispatcher
+public sealed class ChatInboundDispatcher : IChatInboundHandler
 {
     /// <summary>Callback-data scheme for an open-question choice: <c>oq|{externalId}|{choiceIndex}</c>.</summary>
     public const string OpenQuestionCallbackPrefix = "oq";
 
     private readonly ControlDbContext control;
-    private readonly ProductDbContext db;
-    private readonly IOpenQuestionService openQuestions;
     private readonly IServiceScopeFactory scopeFactory;
     private readonly IChatTransport transport;
     private readonly IOptionsMonitor<ChatBridgeOptions> options;
@@ -39,24 +45,28 @@ public sealed class ChatInboundDispatcher
 
     public ChatInboundDispatcher(
         ControlDbContext control,
-        ProductDbContext db,
-        IOpenQuestionService openQuestions,
         IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatBridgeOptions> options,
         ILogger<ChatInboundDispatcher> logger)
     {
         this.control = control;
-        this.db = db;
-        this.openQuestions = openQuestions;
         this.scopeFactory = scopeFactory;
         this.transport = transport;
         this.options = options;
         this.logger = logger;
     }
 
+    /// <inheritdoc/>
+    public Task HandleAsync(ChatInboundMessage message, CancellationToken ct) =>
+        this.DispatchAsync(message.Update, message.RouteKey, ct);
+
+    /// <summary>Route a single unrouted update (kept for tests / non-topic paths).</summary>
+    public Task DispatchAsync(ChatInbound update, CancellationToken ct) =>
+        this.DispatchAsync(update, routeKey: null, ct);
+
     /// <summary>Route a single inbound update. Never throws — logs and swallows per-update errors.</summary>
-    public async Task DispatchAsync(ChatInbound update, CancellationToken ct)
+    public async Task DispatchAsync(ChatInbound update, string? routeKey, CancellationToken ct)
     {
         try
         {
@@ -89,7 +99,7 @@ public sealed class ChatInboundDispatcher
 
             if (text.StartsWith("/", StringComparison.Ordinal))
             {
-                await this.HandleCommandAsync(update, text, subscriber, ct);
+                await this.HandleCommandAsync(update, text, routeKey, subscriber, ct);
                 return;
             }
 
@@ -110,8 +120,9 @@ public sealed class ChatInboundDispatcher
                 return;
             }
 
-            // Otherwise a reply/tap that should answer an open question.
-            await this.HandleAnswerAsync(update, subscriber, ct);
+            // Otherwise a reply/tap (or a message in a spawn topic) that should
+            // answer an open question.
+            await this.HandleAnswerAsync(update, routeKey, subscriber, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -185,7 +196,7 @@ public sealed class ChatInboundDispatcher
         }
     }
 
-    private async Task HandleCommandAsync(ChatInbound update, string text, ChatSubscriberRow subscriber, CancellationToken ct)
+    private async Task HandleCommandAsync(ChatInbound update, string text, string? routeKey, ChatSubscriberRow subscriber, CancellationToken ct)
     {
         var cmd = text.Split(' ', 2)[0].ToLowerInvariant();
         switch (cmd)
@@ -208,8 +219,18 @@ public sealed class ChatInboundDispatcher
                 break;
 
             case "/status":
-                var openCount = await this.db.WorkItems
-                    .CountAsync(w => w.ExecutionStatus == ExecutionStatuses.AwaitingAnswers, ct);
+                // In a spawn topic the channel route pins the product — count in
+                // that product's DB; at the group root / in a DM stay ambient.
+                var hasRoute = ForgeChatRoutes.TryParseSpawn(routeKey, out var productId, out _);
+                int openCount;
+                using (ProductDbContextFactory.PushAsyncLocalSlug(hasRoute ? productId : null))
+                using (var pscope = this.scopeFactory.CreateScope())
+                {
+                    var db = pscope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                    openCount = await db.WorkItems
+                        .CountAsync(w => w.ExecutionStatus == ExecutionStatuses.AwaitingAnswers, ct);
+                }
+
                 await this.transport.SendAsync(update.ChatId,
                     openCount == 0 ? "✅ No work items are awaiting answers." : $"⏳ {openCount} work item(s) awaiting answers.",
                     buttons: null, ct);
@@ -329,58 +350,82 @@ public sealed class ChatInboundDispatcher
         await this.EditIfPossibleAsync(update, msg, buttons: null, ct);
     }
 
-    private async Task HandleAnswerAsync(ChatInbound update, ChatSubscriberRow subscriber, CancellationToken ct)
+    private async Task HandleAnswerAsync(ChatInbound update, string? routeKey, ChatSubscriberRow subscriber, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(update.ReplyToMessageId))
+        ChatNotificationRow? notif = null;
+        if (!string.IsNullOrEmpty(update.ReplyToMessageId))
         {
-            return; // uncorrelatable (not a reply / not a tap) — ignore quietly.
+            notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
+                n => n.ChatMessageId == update.ReplyToMessageId, ct);
         }
 
-        var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
-            n => n.ChatMessageId == update.ReplyToMessageId, ct);
+        // Channel-route fallback: a plain (non-reply) message typed inside a
+        // spawn's forum topic targets that spawn's outstanding open-questions
+        // alert — the topic IS the spawn's channel, so no reply is needed.
+        if (notif is null && ForgeChatRoutes.TryParseSpawn(routeKey, out _, out var spawnId))
+        {
+            var candidates = await this.control.ChatNotifications
+                .Where(n => n.Kind == "open-questions"
+                    && n.SpawnId == spawnId
+                    && n.Status == ChatNotificationStatuses.Sent)
+                .ToListAsync(ct);
+            // Client-side order — SQLite can't ORDER BY DateTimeOffset.
+            notif = candidates.OrderByDescending(n => n.CreatedAt).FirstOrDefault();
+        }
+
         if (notif is null || notif.Kind != "open-questions" || string.IsNullOrEmpty(notif.WorkItemId))
         {
-            return;
+            return; // uncorrelatable — ignore quietly.
         }
 
         var actor = subscriber.ForgeUserId ?? $"chat:{update.FromId}";
 
-        // Button tap → callback data `oq|{externalId}|{choiceIndex}`.
-        if (!string.IsNullOrEmpty(update.CallbackData))
+        // Questions + the answer/resume core live in the notification's product
+        // DB — scope a fresh provider to it via the AsyncLocal slug (the same
+        // idiom the workstream-action path uses).
+        using (ProductDbContextFactory.PushAsyncLocalSlug(notif.ProductId))
+        using (var pscope = this.scopeFactory.CreateScope())
         {
-            var answer = await this.ResolveChoiceAnswerAsync(notif.WorkItemId!, update.CallbackData, ct);
-            if (answer is null) return;
-            await this.AnswerAndEditAsync(notif, answer.Value.ExternalId, answer.Value.Answer, actor, ct);
-            return;
-        }
+            var db = pscope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var openQuestions = pscope.ServiceProvider.GetRequiredService<IOpenQuestionService>();
 
-        // Free-text reply → answers the single unanswered question, when unambiguous.
-        var unanswered = await this.db.DeliverableQuestions
-            .Where(q => q.WorkItemId == notif.WorkItemId && (q.Answer == null || q.Answer == ""))
-            .ToListAsync(ct);
-        var distinct = unanswered
-            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.Key)
-            .ToList();
-        if (distinct.Count == 1 && !string.IsNullOrWhiteSpace(update.Text))
-        {
-            await this.AnswerAndEditAsync(notif, distinct[0], update.Text!.Trim(), actor, ct);
-        }
-        else if (distinct.Count > 1)
-        {
-            await this.transport.SendAsync(update.ChatId,
-                "This item has multiple open questions — tap a choice button, or answer in the Forge UI.", buttons: null, ct);
+            // Button tap → callback data `oq|{externalId}|{choiceIndex}`.
+            if (!string.IsNullOrEmpty(update.CallbackData))
+            {
+                var answer = await ResolveChoiceAnswerAsync(db, notif.WorkItemId!, update.CallbackData, ct);
+                if (answer is null) return;
+                await this.AnswerAndEditAsync(openQuestions, notif, answer.Value.ExternalId, answer.Value.Answer, actor, ct);
+                return;
+            }
+
+            // Free-text reply → answers the single unanswered question, when unambiguous.
+            var unanswered = await db.DeliverableQuestions
+                .Where(q => q.WorkItemId == notif.WorkItemId && (q.Answer == null || q.Answer == ""))
+                .ToListAsync(ct);
+            var distinct = unanswered
+                .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.Key)
+                .ToList();
+            if (distinct.Count == 1 && !string.IsNullOrWhiteSpace(update.Text))
+            {
+                await this.AnswerAndEditAsync(openQuestions, notif, distinct[0], update.Text!.Trim(), actor, ct);
+            }
+            else if (distinct.Count > 1)
+            {
+                await this.transport.SendAsync(update.ChatId,
+                    "This item has multiple open questions — tap a choice button, or answer in the Forge UI.", buttons: null, ct);
+            }
         }
     }
 
-    private async Task<(string ExternalId, string Answer)?> ResolveChoiceAnswerAsync(string workItemId, string callbackData, CancellationToken ct)
+    private static async Task<(string ExternalId, string Answer)?> ResolveChoiceAnswerAsync(ProductDbContext db, string workItemId, string callbackData, CancellationToken ct)
     {
         var parts = callbackData.Split('|');
         if (parts.Length != 3 || parts[0] != OpenQuestionCallbackPrefix) return null;
         var externalId = parts[1];
         if (!int.TryParse(parts[2], out var choiceIdx)) return null;
 
-        var row = await this.db.DeliverableQuestions
+        var row = await db.DeliverableQuestions
             .Where(q => q.WorkItemId == workItemId && q.ExternalId == externalId)
             .OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id)
             .FirstOrDefaultAsync(ct);
@@ -391,9 +436,9 @@ public sealed class ChatInboundDispatcher
         return (externalId, choices[choiceIdx]);
     }
 
-    private async Task AnswerAndEditAsync(ChatNotificationRow notif, string externalId, string answer, string actor, CancellationToken ct)
+    private async Task AnswerAndEditAsync(IOpenQuestionService openQuestions, ChatNotificationRow notif, string externalId, string answer, string actor, CancellationToken ct)
     {
-        await this.openQuestions.AnswerAsync(
+        await openQuestions.AnswerAsync(
             notif.WorkItemId!, new[] { new OpenQuestionAnswer(externalId, answer) }, actor, ct);
 
         // Reflect the answer on the sent message and release the outbox slot.

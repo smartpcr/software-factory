@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -205,6 +205,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Memory", "src\ast\Ast.Memory\Ast.Memory.csproj", "{473A1069-BFA8-49C5-9AAC-F08F9402AEC8}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Memory.UnitTests", "src\ast\Ast.Memory.UnitTests\Ast.Memory.UnitTests.csproj", "{84B22F65-DDA9-4ADD-9BF3-8A7AF3654159}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Common.Chat", "src\Common.Chat\Common.Chat.csproj", "{37778ED3-160C-479F-A4D9-EC0A538CF972}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -840,6 +842,18 @@ Global
 		{84B22F65-DDA9-4ADD-9BF3-8A7AF3654159}.Release|x64.Build.0 = Release|Any CPU
 		{84B22F65-DDA9-4ADD-9BF3-8A7AF3654159}.Release|x86.ActiveCfg = Release|Any CPU
 		{84B22F65-DDA9-4ADD-9BF3-8A7AF3654159}.Release|x86.Build.0 = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|x64.Build.0 = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Debug|x86.Build.0 = Debug|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|Any CPU.Build.0 = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|x64.ActiveCfg = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|x64.Build.0 = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|x86.ActiveCfg = Release|Any CPU
+		{37778ED3-160C-479F-A4D9-EC0A538CF972}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -902,6 +916,7 @@ Global
 		{01A04AD7-CF8E-4452-853C-684AD4D680C1} = {C033017E-9C7F-7D0F-195C-77EA714944A2}
 		{473A1069-BFA8-49C5-9AAC-F08F9402AEC8} = {C033017E-9C7F-7D0F-195C-77EA714944A2}
 		{84B22F65-DDA9-4ADD-9BF3-8A7AF3654159} = {C033017E-9C7F-7D0F-195C-77EA714944A2}
+		{37778ED3-160C-479F-A4D9-EC0A538CF972} = {A90E0A6B-6432-4B87-B724-A27CF07C0F9B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {7B4A29CC-B2C1-43A0-8EFB-EE2547F576E4}

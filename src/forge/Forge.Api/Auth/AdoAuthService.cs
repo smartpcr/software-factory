@@ -7,6 +7,7 @@
 namespace Forge.Api.Auth;
 
 using Forge.Api.Persistence;
+using Common.Chat;
 using Forge.Api.Services.Chat;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

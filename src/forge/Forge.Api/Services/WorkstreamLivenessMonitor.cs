@@ -9,6 +9,7 @@ namespace Forge.Api.Services;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Common.Chat;
 using Forge.Api.Services.Chat;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.SignalR;

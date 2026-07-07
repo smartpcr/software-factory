@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Endpoints;
 
+using Common.Chat;
 using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;

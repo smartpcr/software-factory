@@ -9,6 +9,7 @@ namespace Forge.Api.Services;
 using System.Text.Json;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Common.Chat;
 using Forge.Api.Services.Chat;
 using Microsoft.EntityFrameworkCore;
 

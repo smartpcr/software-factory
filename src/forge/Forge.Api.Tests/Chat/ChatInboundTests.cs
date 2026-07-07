@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Tests.Chat;
 
+using Common.Chat;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Forge.Api.Tests.Infrastructure;
@@ -169,6 +170,67 @@ public class ChatInboundTests
     }
 
     [Fact]
+    public async Task Free_Text_In_Spawn_Topic_Answers_That_Spawns_Question_Without_Reply()
+    {
+        var fake = new FakeChatTransport();
+        await using var f = new ForgeWebApplicationFactory();
+        var app = WithFakeTransport(f, fake);
+        using (app.CreateClient()) { }
+
+        const string Wi = "wi-topic-answer";
+        const string Spawn = "spawn-route-5";
+        using (var scope = app.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            control.ChatSubscribers.Add(new ChatSubscriberRow
+            {
+                Id = "sub-t", Platform = "telegram", ChatId = "123",
+                ForgeUserId = "user-1", LinkedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow,
+            });
+            control.ChatNotifications.Add(new ChatNotificationRow
+            {
+                Id = "n-t", Kind = "open-questions", ProductId = "p", WorkItemId = Wi, SpawnId = Spawn,
+                DedupeKey = $"oq:{Wi}", Title = "Pick a backend", Status = ChatNotificationStatuses.Sent,
+                Platform = "telegram", ChatId = "42", ChatMessageId = "m9", CreatedAt = DateTimeOffset.UtcNow,
+            });
+            db.WorkItems.Add(new WorkItemRow { Id = Wi, ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
+            db.DeliverableQuestions.Add(new DeliverableQuestionRow
+            {
+                WorkItemId = Wi, ExternalId = "persistence", Iter = 1, Text = "Which backend?",
+                Kind = "open", CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await control.SaveChangesAsync();
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
+            // A plain message typed IN the spawn's forum topic — no reply id.
+            // The channel route (resolved by the pump from the thread) carries
+            // the product + spawn, which correlates to the spawn's alert.
+            await dispatcher.HandleAsync(
+                new ChatInboundMessage(
+                    new ChatInbound(6, "42", "123", "use asz store", CallbackData: null, ReplyToMessageId: null, ThreadId: "88"),
+                    ForgeChatRoutes.Spawn("p", Spawn)),
+                default);
+        }
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var q = await db.DeliverableQuestions.AsNoTracking().SingleAsync(x => x.WorkItemId == Wi);
+            Assert.Equal("use asz store", q.Answer);
+            var notif = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == "n-t");
+            Assert.Equal(ChatNotificationStatuses.Answered, notif.Status);
+        }
+
+        Assert.Contains(fake.Edits, e => e.Text.Contains("Answered: use asz store"));
+    }
+
+    [Fact]
     public async Task AllowListed_User_Is_Bootstrapped_From_The_Group_Without_Link()
     {
         var fake = new FakeChatTransport();
@@ -245,8 +307,8 @@ public class ChatInboundTests
         var app = WithFakeTransport(f, fake);
         using (app.CreateClient()) { }
 
-        var svc = app.Services.GetRequiredService<ChatBridgeService>();
-        var count = await svc.RunInboundOnceAsync(default);
+        var pump = app.Services.GetRequiredService<ChatInboundPump>();
+        var count = await pump.RunOnceAsync(default);
         Assert.Equal(2, count);
 
         using var scope = app.Services.CreateScope();

@@ -8,6 +8,7 @@ namespace Forge.Api.Tests.Chat;
 
 using System.Net;
 using System.Net.Http.Json;
+using Common.Chat;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Forge.Api.Tests.Infrastructure;

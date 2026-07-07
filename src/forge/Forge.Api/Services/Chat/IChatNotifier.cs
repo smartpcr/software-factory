@@ -6,6 +6,8 @@
 
 namespace Forge.Api.Services.Chat;
 
+using Common.Chat;
+
 /// <summary>
 /// Phase 95 (chat bridge) — the enqueue API producers call. Writing a
 /// dedupe-keyed <c>pending</c> row to the outbox is the <b>only</b> thing a

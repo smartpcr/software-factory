@@ -6,12 +6,16 @@
 
 namespace Forge.Api.Tests.Chat;
 
+using Common.Chat;
 using Forge.Api.Services.Chat;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
 /// <summary>
-/// Phase 95 stage 1.1 — options binding + token resolution.
+/// Phase 95 stage 1.1 — options binding + token resolution. The same
+/// <c>Forge:ChatBridge</c> section binds BOTH the Forge options (outbox knobs)
+/// and the Common.Chat transport options — the double-binding contract the
+/// Program.cs wiring relies on.
 /// </summary>
 public class ChatBridgeOptionsTests
 {
@@ -42,6 +46,14 @@ public class ChatBridgeOptionsTests
         Assert.Equal("json-token", opt.Telegram.BotToken);
         Assert.Equal(30, opt.Telegram.LongPollTimeoutSec);
         Assert.Equal(new List<long> { 111, 222 }, opt.Telegram.AllowedChatIds);
+
+        // The lib's transport options bind from the SAME section (shared shape).
+        var transportOpt = new ChatTransportOptions();
+        config.GetSection(ChatBridgeOptions.SectionName).Bind(transportOpt);
+        Assert.True(transportOpt.Enabled);
+        Assert.Equal("telegram", transportOpt.Platform);
+        Assert.Equal("json-token", transportOpt.Telegram.BotToken);
+        Assert.Equal(new List<long> { 111, 222 }, transportOpt.Telegram.AllowedChatIds);
     }
 
     [Fact]
@@ -77,7 +89,7 @@ public class ChatBridgeOptionsTests
                 .AddEnvironmentVariables()
                 .Build();
 
-            var opt = new ChatBridgeOptions();
+            var opt = new ChatTransportOptions();
             config.GetSection(ChatBridgeOptions.SectionName).Bind(opt);
 
             Assert.Equal("env-token", opt.Telegram.BotToken);
@@ -92,7 +104,7 @@ public class ChatBridgeOptionsTests
     [Fact]
     public void Resolve_Returns_Configured_Token_Trimmed()
     {
-        var opt = new ChatBridgeOptions();
+        var opt = new ChatTransportOptions();
         opt.Telegram.BotToken = "  padded-token  ";
         Assert.Equal("padded-token", ChatTokenResolver.Resolve(opt));
     }
@@ -100,13 +112,18 @@ public class ChatBridgeOptionsTests
     [Fact]
     public void Blank_Token_Resolves_Null_When_No_Blob()
     {
-        var opt = new ChatBridgeOptions();
+        var opt = new ChatTransportOptions
+        {
+            // Forge's production wiring points this at %LOCALAPPDATA%\Forge —
+            // guard on the file so the test passes on a machine with a real blob.
+            TokenBlobPath = ChatBridgeOptions.DefaultTokenBlobPath(),
+        };
         opt.Telegram.BotToken = "   ";
 
         // The DPAPI fallback only applies when the blob exists. On a machine
         // without the blob (the normal test host), a blank token resolves to
         // null — the "bridge stays idle" signal, not a crash.
-        if (!File.Exists(ChatTokenResolver.BlobPath()))
+        if (!File.Exists(opt.TokenBlobPath))
         {
             Assert.Null(ChatTokenResolver.Resolve(opt));
         }
