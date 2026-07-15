@@ -326,7 +326,9 @@ public class AgentRuntimeTests
         public Forge.Api.Contracts.ModelInfo? Find(string id)
             => this.All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
 
-        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
+        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay, System.Collections.Generic.IReadOnlyList<Forge.Api.Contracts.ModelInfo>? discoveredModels = null) { }
+
+        public string SeedFilePath => string.Empty;
 
         public bool CatalogEnriched => false;
 

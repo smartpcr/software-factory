@@ -165,7 +165,9 @@ public class Phase74ConcurrentDispatchGuardTests
     {
         public IReadOnlyList<ModelInfo> All => Array.Empty<ModelInfo>();
         public ModelInfo? Find(string id) => null;
-        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay) { }
+        public void ApplyCatalogOverlay(System.Collections.Generic.IReadOnlyDictionary<string, Forge.Api.Agents.ModelCatalogOverlay> overlay, System.Collections.Generic.IReadOnlyList<Forge.Api.Contracts.ModelInfo>? discoveredModels = null) { }
+
+        public string SeedFilePath => string.Empty;
         public bool CatalogEnriched => false;
         public System.Collections.Generic.IReadOnlyCollection<string> LiveCatalogIds => System.Array.Empty<string>();
         public void RecordLiveCatalog(System.Collections.Generic.IReadOnlyCollection<string> liveModelIds) { }

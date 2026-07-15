@@ -886,6 +886,16 @@ public sealed record ModelInfo(
     public bool? ReasoningOverride { get; init; }
 
     /// <summary>
+    /// 2026-07-14: the model's default reasoning effort from the live Copilot
+    /// catalog (<c>defaultReasoningEffort</c>, e.g. "medium" or "max"), applied
+    /// by <see cref="Forge.Api.Services.ModelCatalogEnrichmentService"/>. Null
+    /// when the model has no reasoning or before enrichment runs. Surfaced on
+    /// <c>/api/models</c> so the picker can show the effort level (matching the
+    /// Copilot CLI's Reasoning column) instead of a bare boolean.
+    /// </summary>
+    public string? DefaultReasoningEffort { get; init; }
+
+    /// <summary>
     /// 2026-06-22 — whether this model can currently be assigned to a crew/agent
     /// (i.e., <see cref="Forge.Api.Agents.IModelRegistry.ValidateAssignable"/>
     /// returns null for it). Projected onto the <c>/api/models</c> response so

@@ -35,13 +35,18 @@ public sealed class ModelRegistry : IModelRegistry
     // (fail-open), never "nothing available".
     private volatile HashSet<string> liveCatalog = new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly string seedFilePath;
+
     public ModelRegistry(IHostEnvironment env)
     {
         var contentRoot = env?.ContentRootPath ?? AppContext.BaseDirectory;
-        this.baseModels = new Lazy<IReadOnlyList<ModelInfo>>(() => Load(contentRoot));
+        this.seedFilePath = ResolveSeedFilePath(contentRoot);
+        this.baseModels = new Lazy<IReadOnlyList<ModelInfo>>(() => Load(this.seedFilePath));
     }
 
     public IReadOnlyList<ModelInfo> All => this.effective ?? this.baseModels.Value;
+
+    public string SeedFilePath => this.seedFilePath;
 
     public bool CatalogEnriched { get; private set; }
 
@@ -89,22 +94,31 @@ public sealed class ModelRegistry : IModelRegistry
     public ModelInfo? Find(string id)
         => this.All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
 
-    public void ApplyCatalogOverlay(IReadOnlyDictionary<string, ModelCatalogOverlay> overlay)
+    public void ApplyCatalogOverlay(
+        IReadOnlyDictionary<string, ModelCatalogOverlay> overlay,
+        IReadOnlyList<ModelInfo>? discoveredModels = null)
     {
-        if (overlay is null || overlay.Count == 0) return;
+        var hasOverlay = overlay is { Count: > 0 };
+        var hasDiscovered = discoveredModels is { Count: > 0 };
+        if (!hasOverlay && !hasDiscovered) return;
+
         lock (this.overlayLock)
         {
             // Always rebuild from the immutable JSON base so repeated overlays
             // (refresh cadence) are idempotent rather than compounding.
-            var rebuilt = new List<ModelInfo>(this.baseModels.Value.Count);
-            foreach (var m in this.baseModels.Value)
+            var seed = this.baseModels.Value;
+            var rebuilt = new List<ModelInfo>(seed.Count + (discoveredModels?.Count ?? 0));
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in seed)
             {
-                if (overlay.TryGetValue(m.Id, out var ov))
+                seen.Add(m.Id);
+                if (hasOverlay && overlay.TryGetValue(m.Id, out var ov))
                 {
                     rebuilt.Add(m with
                     {
                         ContextWindow = ov.ContextWindow ?? m.ContextWindow,
                         ReasoningOverride = ov.SupportsReasoning ?? m.ReasoningOverride,
+                        DefaultReasoningEffort = ov.DefaultReasoningEffort ?? m.DefaultReasoningEffort,
                     });
                 }
                 else
@@ -112,23 +126,46 @@ public sealed class ModelRegistry : IModelRegistry
                     rebuilt.Add(m);
                 }
             }
+
+            // Append live-catalog models the seed doesn't list (auto-discovered
+            // by the scheduled enrichment). A seed id always wins, so its
+            // curated pricing is preserved; intra-list duplicates are dropped.
+            if (hasDiscovered)
+            {
+                foreach (var d in discoveredModels!)
+                {
+                    if (d is null || string.IsNullOrWhiteSpace(d.Id)) continue;
+                    if (!seen.Add(d.Id)) continue;
+                    rebuilt.Add(d);
+                }
+            }
+
             this.effective = rebuilt;
             this.CatalogEnriched = true;
         }
     }
 
-    private static IReadOnlyList<ModelInfo> Load(string contentRoot)
+    private static string ResolveSeedFilePath(string contentRoot)
     {
         // Probe the published location first, fall back to the source tree
-        // when running tests from the project's bin/ folder.
+        // when running tests from the project's bin/ folder. When neither
+        // exists yet, return the primary candidate so a writer still has a
+        // deterministic target.
         var candidates = new[]
         {
             Path.Combine(contentRoot, "Agents", "Models", SeedFileName),
             Path.Combine(AppContext.BaseDirectory, "Agents", "Models", SeedFileName),
         };
-        var path = candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException(
-                $"Model registry seed '{SeedFileName}' not found. Looked in: {string.Join(", ", candidates)}");
+        return candidates.FirstOrDefault(File.Exists) ?? candidates[0];
+    }
+
+    private static IReadOnlyList<ModelInfo> Load(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                $"Model registry seed '{SeedFileName}' not found at '{path}'.");
+        }
 
         using var stream = File.OpenRead(path);
         var list = JsonSerializer.Deserialize<List<ModelInfo>>(stream, JsonOpts)

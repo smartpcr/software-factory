@@ -725,6 +725,11 @@ contexts, a silo auditor, and a false-parallel planner. None of `30.1–30.17` e
   `X-Forge-Repo-Id` header / `RepoScopeMiddleware`, no topbar repo switcher, `ProductStoryRow` has no
   `RepoId`, `Product` has no `defaultRepoId`, and `WorkItemRow.RepoId` / `StorySpawnRow.RepoId` remain
   nullable. Code still reads `control.Repos`. Don't assume any Phase 80 surface exists yet.
+- **Release gate (`docs/forge/release-gate.md`)** — spec'd, entirely `[ ]`. Third gate after
+  build/test: repo-mapped GH-workflow/ADO-pipeline that packages the workstream branch, copies
+  artifacts to a lab machine, deploys, and runs the stage's e2e suite; gates `review → merging`
+  (`releasing` status). Only fires for concrete (non-skeleton) deliverables. Next migration
+  slot when it lands: `Phase98`.
 - **Phase 30 (ACP)** — entirely `[ ]`.
 - **Phase 57 (operator cap-override)** — entirely `[ ]`; `Phase57Migration` + `work_item_override_history`
   table do **not** exist yet.
