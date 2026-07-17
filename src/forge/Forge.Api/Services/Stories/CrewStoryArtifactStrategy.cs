@@ -8087,8 +8087,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 // #(a) — record the agent's mutating-tool edit targets this turn
                 // so the off-task guard sees backend thrash even when reverted
                 // before commit. Reads return null (non-mutating) and are ignored.
+                // Worktree-relative so absolute and relative spellings of one file
+                // dedupe and root-level files match RepoRootScopeKey.
                 var editTarget = WorkstreamScopeGuard.TryExtractEditedPath(evt.ToolName, evt.ToolPayload);
-                if (editTarget is not null) editedPathsThisIter.Add(editTarget);
+                if (editTarget is not null) editedPathsThisIter.Add(WorkstreamScopeGuard.NormalizeEditedPath(editTarget, workspace));
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
@@ -9275,8 +9277,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 // #(a) — record the agent's mutating-tool edit targets this turn
                 // so the off-task guard sees backend thrash even when reverted
                 // before commit. Reads return null (non-mutating) and are ignored.
+                // Worktree-relative so absolute and relative spellings of one file
+                // dedupe and root-level files match RepoRootScopeKey.
                 var editTarget = WorkstreamScopeGuard.TryExtractEditedPath(evt.ToolName, evt.ToolPayload);
-                if (editTarget is not null) editedPathsThisIter.Add(editTarget);
+                if (editTarget is not null) editedPathsThisIter.Add(WorkstreamScopeGuard.NormalizeEditedPath(editTarget, workspace));
 
                 if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                 if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;

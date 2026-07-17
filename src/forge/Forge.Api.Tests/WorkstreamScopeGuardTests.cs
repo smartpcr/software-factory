@@ -42,12 +42,25 @@ public class WorkstreamScopeGuardTests
     }
 
     [Fact]
-    public void ScopeKeys_RootLevelFile_ProducesNoKey()
+    public void ScopeKeys_RootLevelFile_ProducesRepoRootKey()
     {
-        // Makefile / go.mod at repo root have no directory → no area key
-        // (they can't anchor a scope, and shouldn't widen one).
+        // Makefile / go.mod at repo root → the repo-root sentinel, so a
+        // bootstrap-style workstream whose deliverables live at the root
+        // doesn't read its own declared work as out-of-scope (release
+        // RELEASE-PROVIDER stage 1.1: scope derived to (internal, examples)
+        // while the unchecked steps were go.sum / Makefile / .goreleaser.yml).
         var keys = WorkstreamScopeGuard.ScopeKeysFromTargets(new[] { "Makefile", "go.mod" });
-        Assert.Empty(keys);
+        Assert.Equal(new[] { WorkstreamScopeGuard.RepoRootScopeKey }, keys.ToArray());
+    }
+
+    [Fact]
+    public void ScopeKeys_MixedRootAndSubdirTargets_KeepBoth()
+    {
+        var keys = WorkstreamScopeGuard.ScopeKeysFromTargets(
+            new[] { "main.go", "internal/provider/provider.go", "examples/basic/main.tf" });
+        Assert.Contains(WorkstreamScopeGuard.RepoRootScopeKey, keys);
+        Assert.Contains("internal", keys);
+        Assert.Contains("examples", keys);
     }
 
     [Fact]
@@ -83,6 +96,61 @@ public class WorkstreamScopeGuardTests
         Assert.True(WorkstreamScopeGuard.IsInScope("services/agent-memory/web/src/components/Graph3D.tsx", scope));
         Assert.False(WorkstreamScopeGuard.IsInScope("services/agent-memory/internal/graphsink/sqlite/schema.sql", scope));
         Assert.False(WorkstreamScopeGuard.IsInScope("Makefile", scope));
+    }
+
+    [Fact]
+    public void IsInScope_RootLevelChange_AdmittedOnlyByRepoRootKey()
+    {
+        // Without a declared root-level target, root files stay out of scope…
+        var subdirOnly = WorkstreamScopeGuard.ScopeKeysFromTargets(new[] { "internal/provider/provider.go" });
+        Assert.False(WorkstreamScopeGuard.IsInScope("go.sum", subdirOnly));
+
+        // …with one, they're in scope; subdir foreign modules still are not.
+        var withRoot = WorkstreamScopeGuard.ScopeKeysFromTargets(
+            new[] { "main.go", "internal/provider/provider.go" });
+        Assert.True(WorkstreamScopeGuard.IsInScope("go.sum", withRoot));
+        Assert.True(WorkstreamScopeGuard.IsInScope("Makefile", withRoot));
+        Assert.True(WorkstreamScopeGuard.IsInScope(".goreleaser.yml", withRoot));
+        Assert.False(WorkstreamScopeGuard.IsInScope("cmd/other/main.go", withRoot));
+    }
+
+    [Fact]
+    public void IsOffTask_BootstrapStageEditingRootDeliverables_DoesNotTrip()
+    {
+        // Regression: release RELEASE-PROVIDER stage 1.1 "Repository Bootstrap
+        // and Toolchain" — declared targets mixed root files (main.go) with
+        // internal/examples paths; the agent's iter edited exactly its
+        // unchecked plan steps (go.sum, Makefile, .goreleaser.yml, CI) and the
+        // guard read ~100% off-scope → OffTaskException at iter 1, wedging the
+        // 55 downstream workstreams.
+        var scope = WorkstreamScopeGuard.ScopeKeysFromTargets(new[]
+        {
+            "main.go", "internal/provider/provider.go", "examples/basic/main.tf",
+        });
+        var changed = new[]
+        {
+            "Makefile", ".goreleaser.yml", "go.mod", "go.sum", "main.go", "main_test.go",
+        };
+        Assert.False(WorkstreamScopeGuard.IsOffTask(changed, scope, out var ratio, out _));
+        Assert.Equal(0, ratio);
+    }
+
+    // ── NormalizeEditedPath — tool-call paths → worktree-relative ────
+
+    [Fact]
+    public void NormalizeEditedPath_StripsWorktreePrefix_AndDedupesWithRelative()
+    {
+        const string ws = @"C:\forge\release\.worktree\stage-1.1-repository-bootstrap-and-toolchain";
+        Assert.Equal("Makefile", WorkstreamScopeGuard.NormalizeEditedPath(ws + @"\Makefile", ws));
+        Assert.Equal(
+            "internal/provider/provider.go",
+            WorkstreamScopeGuard.NormalizeEditedPath(ws + @"\internal\provider\provider.go", ws));
+        // Already-relative and foreign-absolute paths pass through (normalized).
+        Assert.Equal("Makefile", WorkstreamScopeGuard.NormalizeEditedPath("Makefile", ws));
+        Assert.Equal(
+            "D:/elsewhere/Makefile",
+            WorkstreamScopeGuard.NormalizeEditedPath(@"D:\elsewhere\Makefile", ws));
+        Assert.Equal("go.mod", WorkstreamScopeGuard.NormalizeEditedPath("go.mod", null));
     }
 
     // ── IsOffTask — the #2 trip condition ───────────────────────────

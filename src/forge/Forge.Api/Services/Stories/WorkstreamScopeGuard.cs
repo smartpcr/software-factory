@@ -53,6 +53,16 @@ public static class WorkstreamScopeGuard
     /// guard wrongly stalled it.)</summary>
     public const int OffTaskHealthyScoreSuppress = 75;
 
+    /// <summary>Sentinel scope key emitted when a declared target is a ROOT-LEVEL
+    /// file (<c>Makefile</c>, <c>go.mod</c>, <c>main.go</c>). Admits root-level
+    /// changed files in <see cref="IsInScope"/>. Without it, a bootstrap-style
+    /// workstream whose deliverables live at the repo root arms the guard from its
+    /// few subdirectory targets and then reads 100% of its own declared work as
+    /// out-of-scope (release RELEASE-PROVIDER stage 1.1, 2026-07-15: scope derived
+    /// to <c>(internal, examples)</c> while the stage's unchecked steps were
+    /// go.sum / Makefile / .goreleaser.yml / CI at root — stalled on-task work).</summary>
+    public const string RepoRootScopeKey = ".";
+
     /// <summary>
     /// Compute the set of declared scope KEYS from the workstream's DECLARED
     /// TARGET file paths (the <c>targets</c> list the loop already derives via
@@ -64,8 +74,10 @@ public static class WorkstreamScopeGuard
     /// <c>cmd/**</c>) does not. Keys are matched by path-segment containment later,
     /// so they tolerate a target written module-relative (<c>web/src/api/…</c>)
     /// while git reports repo-relative (<c>services/agent-memory/web/src/api/…</c>).
-    /// Returns an empty set when no target names a file in a directory — callers
-    /// MUST treat empty as "guard disabled" (fail-open: never trips).
+    /// A root-level target (no directory) contributes <see cref="RepoRootScopeKey"/>
+    /// so root-level changed files stay in scope. Returns an empty set when no
+    /// target survives — callers MUST treat empty as "guard disabled" (fail-open:
+    /// never trips).
     /// </summary>
     public static IReadOnlySet<string> ScopeKeysFromTargets(IEnumerable<string>? targetPaths)
     {
@@ -86,7 +98,8 @@ public static class WorkstreamScopeGuard
             var lastSlash = p.LastIndexOf('/');
             if (lastSlash < 0)
             {
-                continue; // root-level target (Makefile, go.mod) — no area key
+                keys.Add(RepoRootScopeKey); // root-level target (Makefile, go.mod)
+                continue;
             }
 
             var dir = p[..lastSlash];
@@ -110,7 +123,10 @@ public static class WorkstreamScopeGuard
     }
 
     /// <summary>True when <paramref name="changedPath"/> lies within any declared
-    /// scope key (path-segment containment, slash-normalized).</summary>
+    /// scope key (path-segment containment, slash-normalized). A root-level path
+    /// (no directory) is in scope when the scope carries
+    /// <see cref="RepoRootScopeKey"/> — i.e. the workstream declared at least one
+    /// root-level target of its own.</summary>
     public static bool IsInScope(string changedPath, IReadOnlySet<string> scopeKeys)
     {
         if (scopeKeys.Count == 0)
@@ -118,9 +134,20 @@ public static class WorkstreamScopeGuard
             return true; // fail-open
         }
 
-        var norm = "/" + changedPath.Replace('\\', '/').Trim('/') + "/";
+        var trimmed = changedPath.Replace('\\', '/').Trim('/');
+        if (!trimmed.Contains('/'))
+        {
+            return scopeKeys.Contains(RepoRootScopeKey);
+        }
+
+        var norm = "/" + trimmed + "/";
         foreach (var key in scopeKeys)
         {
+            if (key == RepoRootScopeKey)
+            {
+                continue; // sentinel — only admits root-level paths above
+            }
+
             if (norm.Contains("/" + key + "/", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
@@ -128,6 +155,31 @@ public static class WorkstreamScopeGuard
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Normalize an edited-file path captured from the tool-call stream before it
+    /// enters the off-task tally: agents pass ABSOLUTE worktree paths as often as
+    /// repo-relative ones (<c>C:\…\.worktree\stage-1.1\Makefile</c> vs
+    /// <c>Makefile</c>), which (a) double-counts one file as two distinct paths
+    /// toward <see cref="OffTaskOutOfScopeEditThreshold"/> and (b) hides that a
+    /// file is root-level, defeating <see cref="RepoRootScopeKey"/>. Strips the
+    /// <paramref name="workspace"/> prefix when the path is rooted under it;
+    /// returns the slash-normalized path otherwise.
+    /// </summary>
+    public static string NormalizeEditedPath(string path, string? workspace)
+    {
+        var p = path.Replace('\\', '/').Trim();
+        if (!string.IsNullOrWhiteSpace(workspace))
+        {
+            var ws = workspace.Replace('\\', '/').TrimEnd('/') + "/";
+            if (p.StartsWith(ws, StringComparison.OrdinalIgnoreCase))
+            {
+                p = p[ws.Length..];
+            }
+        }
+
+        return p.Trim('/');
     }
 
     /// <summary>
