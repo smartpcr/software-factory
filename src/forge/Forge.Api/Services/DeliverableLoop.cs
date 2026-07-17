@@ -658,9 +658,18 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 .Select(w => w.StorySpawnId)
                 .FirstOrDefaultAsync(ct);
 
+            // The spawn route key is `spawn/{productId}/{spawnId}` — an empty
+            // product renders `spawn//…`, which the channel store rejects and
+            // the alert dies after max attempts (release RELEASE-PROVIDER,
+            // 2026-07-17: 8 open-questions alerts failed while the stalled
+            // alert — whose producer stamps the slug — delivered).
+            var productId = this.db.ProductSlug
+                ?? ProductDbContextFactory.CurrentAsyncLocalSlug
+                ?? string.Empty;
+
             await this.chatNotifier!.EnqueueOpenQuestionsAsync(
                 new OpenQuestionsAlert(
-                    ProductId: string.Empty,
+                    ProductId: productId,
                     RepoId: null,
                     WorkItemId: workItemId,
                     Iter: iter,

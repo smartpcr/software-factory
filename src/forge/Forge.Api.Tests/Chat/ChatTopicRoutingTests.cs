@@ -233,6 +233,82 @@ public class ChatTopicRoutingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Outbound_Topic_Is_Named_After_The_Spawn_Not_The_Alert_Title()
+    {
+        // Regression: the topic hosts every alert kind for the story's lifetime,
+        // but it was named after whichever alert happened to create it — leaving
+        // topics permanently titled "⚠ Stalled · Stage 1.1".
+        using (var scope = this.provider.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            control.ChatNotifications.Add(new ChatNotificationRow
+            {
+                Id = "n4",
+                Kind = "workstream-stalled",
+                ProductId = "prod",
+                WorkstreamId = "ws-4",
+                SpawnId = "spawn-release-RELEASE-PROVIDER",
+                DedupeKey = "k:n4",
+                Status = ChatNotificationStatuses.Pending,
+                ChatId = Supergroup.ToString(),
+                Title = "⚠ Stalled · Stage 1.1",
+                Body = "stall reason",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(1),
+            });
+            await control.SaveChangesAsync();
+        }
+
+        var result = await this.NewPump().RunOutboundOnceAsync(default);
+
+        Assert.Equal(1, result.Sent);
+        Assert.Single(this.transport.TopicsCreated);
+        Assert.Equal("📖 release-RELEASE-PROVIDER", this.transport.TopicsCreated[0].Name);
+    }
+
+    [Fact]
+    public async Task Outbound_Spawn_Alert_Without_ProductId_Falls_Back_To_Group_Root()
+    {
+        // Regression (release RELEASE-PROVIDER, 2026-07-17): a spawn-scoped
+        // alert whose producer left ProductId empty rendered the malformed
+        // route key `spawn//spawn-…`, which the channel store rejects — the
+        // send threw and the alert burned all attempts to `failed`. Delivery
+        // must not die on a topic-routing detail: fall back to the group root.
+        using (var scope = this.provider.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            control.ChatNotifications.Add(new ChatNotificationRow
+            {
+                Id = "n3",
+                Kind = "open-questions",
+                ProductId = string.Empty,
+                WorkItemId = "wi-3",
+                SpawnId = "spawn-3",
+                DedupeKey = "k:n3",
+                Status = ChatNotificationStatuses.Pending,
+                ChatId = Supergroup.ToString(),
+                Title = "Story Three",
+                Body = "please answer",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(1),
+            });
+            await control.SaveChangesAsync();
+        }
+
+        var result = await this.NewPump().RunOutboundOnceAsync(default);
+
+        Assert.Equal(1, result.Sent);
+        Assert.Single(this.transport.Sent);
+        Assert.Null(this.transport.SentThreadIds[0]); // no product → no route key → group root.
+        Assert.Empty(this.transport.TopicsCreated);
+
+        using var check = this.provider.CreateScope();
+        var db = check.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var row = await db.ChatNotifications.AsNoTracking().SingleAsync(r => r.Id == "n3");
+        Assert.Equal(ChatNotificationStatuses.Sent, row.Status);
+    }
+
+    [Fact]
     public async Task Outbound_Spawnless_Alert_Goes_To_Group_Root_No_Thread()
     {
         using (var scope = this.provider.CreateScope())

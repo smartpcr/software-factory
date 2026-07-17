@@ -144,8 +144,17 @@ public sealed class ChatBridgeService : BackgroundService
                 // Part B — route the alert into its spawn's forum topic (group
                 // mode). Null threadId → group root (single-chat mode, spawn-less
                 // alert, or topic-creation failure) — send is unaffected.
-                var threadId = channels is not null && row.SpawnId is { Length: > 0 } spawn
-                    ? (await channels.EnsureChannelAsync(ForgeChatRoutes.Spawn(row.ProductId, spawn), row.Title, ct))?.ThreadId
+                // A missing ProductId would render a malformed `spawn//…` route
+                // key that the channel store rejects, burning all send attempts
+                // on a routing detail — fall back to the group root instead.
+                // Topic display name derives from the SPAWN, not the alert title:
+                // the topic hosts every alert kind for the story's lifetime, and
+                // naming it after whichever alert happened to create it left
+                // topics permanently titled "⚠ Stalled · Stage 1.1".
+                var threadId = channels is not null
+                    && row.SpawnId is { Length: > 0 } spawn
+                    && row.ProductId is { Length: > 0 } prod
+                    ? (await channels.EnsureChannelAsync(ForgeChatRoutes.Spawn(prod, spawn), SpawnTopicName(spawn), ct))?.ThreadId
                     : null;
 
                 var send = await this.transport.SendAsync(row.ChatId, text, buttons, ct, threadId);
@@ -234,6 +243,16 @@ public sealed class ChatBridgeService : BackgroundService
 
     private static string TerminalFor(ChatNotificationRow row) =>
         row.Kind == "open-questions" ? ChatNotificationStatuses.Answered : ChatNotificationStatuses.Acted;
+
+    /// <summary>
+    /// Stable display name for a spawn's forum topic, derived from the spawn id
+    /// (<c>spawn-release-RELEASE-PROVIDER</c> → <c>📖 release-RELEASE-PROVIDER</c>).
+    /// Deterministic and DB-free — the name only matters on first topic creation,
+    /// and deriving it from the alert instead named topics after whichever alert
+    /// arrived first.
+    /// </summary>
+    internal static string SpawnTopicName(string spawnId) =>
+        "📖 " + (spawnId.StartsWith("spawn-", StringComparison.Ordinal) ? spawnId["spawn-".Length..] : spawnId);
 }
 
 /// <summary>Per-tick outcome counts returned by <see cref="ChatBridgeService.RunOutboundOnceAsync"/>.</summary>

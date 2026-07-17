@@ -65,7 +65,7 @@ public class ChatNotifierTests
             Assert.Equal("prod-1", row.ProductId);
             Assert.Equal("repo-1", row.RepoId);
             Assert.Equal("wi-1", row.WorkItemId);
-            Assert.Equal("oq:wi-1", row.DedupeKey);
+            Assert.StartsWith("oq:wi-1:", row.DedupeKey); // per-WI prefix + content hash
             Assert.Equal("telegram", row.Platform);
             Assert.Equal("123", row.ChatId);
             Assert.NotNull(row.ActionsJson);
@@ -87,12 +87,51 @@ public class ChatNotifierTests
 
             Assert.Equal(1, await db.ChatNotifications.CountAsync());
 
-            // Same work item, any iter → still deduped (one outstanding alert per WI).
+            // Same work item, same question set, any iter → still deduped.
             Assert.False(await notifier.EnqueueOpenQuestionsAsync(Oq(iter: 1), default));
             Assert.Equal(1, await db.ChatNotifications.CountAsync());
 
             // A DIFFERENT work item is a different dedupe key → not deduped.
             Assert.True(await notifier.EnqueueOpenQuestionsAsync(Oq(wi: "wi-2"), default));
+            Assert.Equal(2, await db.ChatNotifications.CountAsync());
+        }
+    }
+
+    [Fact]
+    public async Task Enqueue_Changed_Question_Set_Supersedes_Open_Alert_And_Realerts()
+    {
+        // Regression (release RELEASE-PROVIDER, 2026-07-17): the per-WI dedupe
+        // key had no content component, so the first alert held the slot while
+        // new questions accumulated unseen — a changed set must supersede the
+        // stale open alert and send a fresh message.
+        var (conn, db) = await FreshDbAsync();
+        await using var _ = conn;
+        using (db)
+        {
+            var notifier = NewNotifier(db);
+            Assert.True(await notifier.EnqueueOpenQuestionsAsync(Oq(iter: 13), default));
+
+            // Simulate the first alert having been delivered.
+            var first = await db.ChatNotifications.SingleAsync();
+            first.Status = ChatNotificationStatuses.Sent;
+            first.ChatMessageId = "68";
+            await db.SaveChangesAsync();
+
+            var changed = Oq(iter: 30) with { Body = "Pick a persistence backend.\nAccept the Windows atomic-replace?" };
+            Assert.True(await notifier.EnqueueOpenQuestionsAsync(changed, default));
+
+            // NB: no OrderBy(CreatedAt) — EF SQLite can't translate DateTimeOffset
+            // ordering (documented Forge gotcha); select by identity instead.
+            var rows = await db.ChatNotifications.ToListAsync();
+            Assert.Equal(2, rows.Count);
+            var staleRow = rows.Single(r => r.Id == first.Id);
+            var freshRow = rows.Single(r => r.Id != first.Id);
+            Assert.Equal(ChatNotificationStatuses.Superseded, staleRow.Status); // stale alert freed its slot
+            Assert.Equal(ChatNotificationStatuses.Pending, freshRow.Status);    // current set will send
+            Assert.NotEqual(staleRow.DedupeKey, freshRow.DedupeKey);
+
+            // Re-emitting the changed set again stays deduped.
+            Assert.False(await notifier.EnqueueOpenQuestionsAsync(changed, default));
             Assert.Equal(2, await db.ChatNotifications.CountAsync());
         }
     }

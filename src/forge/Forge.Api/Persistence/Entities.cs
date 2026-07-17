@@ -2259,6 +2259,13 @@ public static class ChatNotificationStatuses
     public const string Expired = "expired";
     public const string Failed = "failed";
 
+    /// <summary>
+    /// Terminal — an open-questions alert whose question set went stale: a newer
+    /// alert with the current set replaced it (content-hash dedupe). No edit is
+    /// owed; the superseding message is the live one.
+    /// </summary>
+    public const string Superseded = "superseded";
+
     /// <summary>States that still hold the <c>DedupeKey</c> slot (partial-unique index filter).</summary>
     public static readonly IReadOnlyList<string> Open = new[] { Pending, Sent };
 }

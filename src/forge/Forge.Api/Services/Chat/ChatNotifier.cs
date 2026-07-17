@@ -46,8 +46,36 @@ public sealed class ChatNotifier : IChatNotifier
     }
 
     /// <inheritdoc/>
-    public Task<bool> EnqueueOpenQuestionsAsync(OpenQuestionsAlert alert, CancellationToken ct)
+    public async Task<bool> EnqueueOpenQuestionsAsync(OpenQuestionsAlert alert, CancellationToken ct)
     {
+        // Content-aware dedupe: a re-emitted UNCHANGED question block stays
+        // deduped iteration over iteration, but a CHANGED set (question added or
+        // answered) must produce a fresh chat message — an in-place edit would
+        // not notify the operator, and without the hash the first alert held the
+        // per-work-item slot forever while new questions accumulated unseen
+        // (release RELEASE-PROVIDER, 2026-07-17: the iter-30 question never
+        // reached chat because the iter-13 alert was still open).
+        var dedupeKey = $"oq:{alert.WorkItemId}:{StableHash(alert.Body)}";
+
+        // Supersede open alerts carrying an OUTDATED set for this work item —
+        // frees their dedupe slot so the current set can send. Their chat
+        // messages remain as history; the newest message is the live one.
+        var stale = await this.control.ChatNotifications
+            .Where(r => r.Kind == KindOpenQuestions
+                && r.WorkItemId == alert.WorkItemId
+                && r.DedupeKey != dedupeKey
+                && (r.Status == ChatNotificationStatuses.Pending || r.Status == ChatNotificationStatuses.Sent))
+            .ToListAsync(ct);
+        if (stale.Count > 0)
+        {
+            foreach (var r in stale)
+            {
+                r.Status = ChatNotificationStatuses.Superseded;
+            }
+
+            await this.control.SaveChangesAsync(ct);
+        }
+
         var row = new ChatNotificationRow
         {
             Kind = KindOpenQuestions,
@@ -55,15 +83,12 @@ public sealed class ChatNotifier : IChatNotifier
             RepoId = alert.RepoId,
             WorkItemId = alert.WorkItemId,
             SpawnId = alert.SpawnId,
-            // Per work item (not per iter) so a re-emitted question block doesn't
-            // spawn a fresh alert every iteration — the open-state partial-unique
-            // index keeps at most one outstanding alert per work item.
-            DedupeKey = $"oq:{alert.WorkItemId}",
+            DedupeKey = dedupeKey,
             Title = alert.Title,
             Body = alert.Body,
             ActionsJson = ChatActions.Serialize(alert.Buttons),
         };
-        return this.EnqueueAsync(row, ct);
+        return await this.EnqueueAsync(row, ct);
     }
 
     /// <inheritdoc/>
