@@ -27,6 +27,10 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
     // RemoveWorktreeAsync. Used by WorktreeExistsAsync so tests can model
     // the "PR merged → worktree wiped" sequence without a real disk.
     private readonly ConcurrentDictionary<string, bool> removedBranches = new();
+    // 2026-07-18 — branches passed to DeleteBranchAsync (key → deleteRemote
+    // flag). Tests assert the finished-workstream contract: PR merged ⇒
+    // branch closed local + remote.
+    private readonly ConcurrentDictionary<string, bool> deletedBranches = new();
     // 2026-05-26 — set of (repoId | "_default", branch, baseBranch) tuples
     // recording that `branch` has been merged into `baseBranch`. Populated
     // by MergeAsync; queried by IsBranchAlreadyMergedIntoBaseAsync. Tests
@@ -229,6 +233,20 @@ public sealed class InMemoryStoryGitOps : IStoryGitOps
         this.removedBranches[Key(repo, branch)] = true;
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// In-memory stub — records the deletion so tests can assert the
+    /// finished-workstream contract (PR merged ⇒ branch closed local +
+    /// remote). Keyed like <see cref="RemoveWorktreeAsync"/>'s tracking.
+    /// </summary>
+    public Task DeleteBranchAsync(RepoRow? repo, string branch, bool deleteRemote, CancellationToken ct = default)
+    {
+        this.deletedBranches[Key(repo, branch)] = deleteRemote;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Branches passed to <see cref="DeleteBranchAsync"/> (key → deleteRemote flag) — test assertion hook.</summary>
+    public IReadOnlyDictionary<string, bool> DeletedBranches => this.deletedBranches;
 
     /// <inheritdoc />
     public Task<bool> TryRemoveOrphanWorktreeDirAsync(RepoRow? repo, string worktreeDir, CancellationToken ct = default)

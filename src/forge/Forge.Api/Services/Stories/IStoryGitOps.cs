@@ -195,12 +195,27 @@ public interface IStoryGitOps
     /// Phase 49 follow-up — best-effort cleanup of the worktree associated
     /// with <paramref name="branch"/>. Runs <c>git worktree remove --force</c>
     /// and removes any leftover directory. The branch ref itself is left
-    /// alone (cheap on disk, useful for audit). Used to free disk after a
-    /// spawn's plan PR merges (plan worktree becomes stale) and after each
-    /// workstream's PR merges (engineer worktree becomes stale). No-op when
-    /// no worktree currently maps to the branch; never throws.
+    /// alone — deleting merged branches is <see cref="DeleteBranchAsync"/>'s
+    /// job. Used to free disk after a spawn's plan PR merges (plan worktree
+    /// becomes stale) and after each workstream's PR merges (engineer
+    /// worktree becomes stale). No-op when no worktree currently maps to the
+    /// branch; never throws.
     /// </summary>
     Task RemoveWorktreeAsync(RepoRow? repo, string branch, CancellationToken ct = default);
+
+    /// <summary>
+    /// Best-effort deletion of a MERGED workstream / plan-doc branch, local
+    /// and (when <paramref name="deleteRemote"/> is set) on origin — the
+    /// finished-workstream contract is "PR merged AND branch closed on both
+    /// ends"; without this every spawn leaks its full <c>ws/…</c> branch set
+    /// into the repo's branch list (observed 2026-07-18: 25 stale remote +
+    /// ~30 stale local branches on release:RELEASE-PROVIDER). Idempotent and
+    /// cheap once clean: probes local refs (<c>git show-ref</c>, no network)
+    /// and only contacts origin while a local or remote-tracking ref still
+    /// exists — safe to call from per-tick catch-up walks. Callers MUST only
+    /// invoke this after the branch's PR is terminal-merged. Never throws.
+    /// </summary>
+    Task DeleteBranchAsync(RepoRow? repo, string branch, bool deleteRemote, CancellationToken ct = default);
 
     /// <summary>
     /// Phase 59 — returns <c>true</c> iff a worktree for <paramref name="branch"/>

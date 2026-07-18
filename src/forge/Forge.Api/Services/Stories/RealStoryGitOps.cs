@@ -1335,6 +1335,87 @@ public sealed class RealStoryGitOps : IStoryGitOps
     }
 
     /// <inheritdoc />
+    public async Task DeleteBranchAsync(RepoRow? repo, string branch, bool deleteRemote, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(branch)) return;
+        if (repo is null || string.IsNullOrEmpty(repo.CloneRoot)) return;
+        if (!Directory.Exists(repo.CloneRoot)) return;
+
+        // Refuse to delete the base/default branch — a mis-stamped workstream
+        // row must never take out main (mirrors the DeleteSpawn guard).
+        var baseBranch = string.IsNullOrEmpty(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
+        if (string.Equals(branch, baseBranch, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(branch, "main", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(branch, "master", StringComparison.OrdinalIgnoreCase))
+        {
+            this.logger?.LogWarning(
+                "DeleteBranchAsync REFUSING to delete base branch {Branch} on repo {Repo}.", branch, repo.Id);
+            return;
+        }
+
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            // Local-ref probes only (no network) — this runs from per-tick
+            // catch-up walks, so the already-clean case must stay cheap.
+            var (localRc, _, _) = await this.RunGitCaptureAsync(
+                repo.CloneRoot, ct, "show-ref", "--verify", "--quiet", $"refs/heads/{branch}");
+            var (trackRc, _, _) = await this.RunGitCaptureAsync(
+                repo.CloneRoot, ct, "show-ref", "--verify", "--quiet", $"refs/remotes/origin/{branch}");
+            if (localRc != 0 && trackRc != 0)
+            {
+                return; // already clean on both ends (as far as local refs know)
+            }
+
+            if (localRc == 0)
+            {
+                var (rc, _, err) = await this.RunGitCaptureAsync(repo.CloneRoot, ct, "branch", "-D", branch);
+                if (rc != 0)
+                {
+                    // Typical cause: branch still checked out in a worktree that
+                    // RemoveWorktreeAsync could not fully clear — leave it; the
+                    // next completion tick retries after the reaper frees it.
+                    this.logger?.LogWarning(
+                        "DeleteBranchAsync: local `git branch -D {Branch}` failed (exit {Rc}): {Err}",
+                        branch, rc, TrimForLog(err));
+                    return;
+                }
+            }
+
+            if (deleteRemote)
+            {
+                var (rc, _, err) = await this.RunGitCaptureAsync(
+                    repo.CloneRoot, ct, "push", "origin", "--delete", branch);
+                if (rc != 0 && !err.Contains("remote ref does not exist", StringComparison.OrdinalIgnoreCase))
+                {
+                    this.logger?.LogWarning(
+                        "DeleteBranchAsync: `git push origin --delete {Branch}` failed (exit {Rc}): {Err} — remote may still hold the branch.",
+                        branch, rc, TrimForLog(err));
+                }
+                else
+                {
+                    this.logger?.LogInformation(
+                        "DeleteBranchAsync: closed merged branch {Branch} (local + origin) on repo {Repo}.",
+                        branch, repo.Id);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogWarning(ex,
+                "DeleteBranchAsync: best-effort branch cleanup failed for {Branch}; ignoring.", branch);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static string TrimForLog(string? s) =>
+        string.IsNullOrEmpty(s) ? string.Empty : (s.Length > 300 ? s[..300] : s).Trim();
+
+    /// <inheritdoc />
     public async Task<bool> TryRemoveOrphanWorktreeDirAsync(
         RepoRow? repo, string worktreeDir, CancellationToken ct = default)
     {

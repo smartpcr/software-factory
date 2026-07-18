@@ -655,11 +655,15 @@ public sealed class StorySpawnOrchestrator
             }
 
             // PR merged. Free the worktree disk for this doc (forensic-only
-            // now that the content is on base). Best-effort: failures here
-            // log + continue.
+            // now that the content is on base) and close the merged doc
+            // branch local + remote. Best-effort: failures here log +
+            // continue. DeleteBranchAsync is ref-probe-cheap once clean, so
+            // this per-tick catch-up walk stays network-free after the
+            // first successful cleanup.
             if (repo is not null && !string.IsNullOrEmpty(entry.Branch))
             {
                 await this.git.RemoveWorktreeAsync(repo, entry.Branch!, ct);
+                await this.git.DeleteBranchAsync(repo, entry.Branch!, deleteRemote: true, ct);
             }
             // Continue to the next doc on the same tick — quick walk
             // through already-completed docs is cheap.
@@ -990,12 +994,14 @@ public sealed class StorySpawnOrchestrator
                     // Phase 49 follow-up — all plan docs passed AND the PR
                     // is merged; the plan worktree on disk is now stale
                     // (the docs are live on main, per-iter snapshots inside
-                    // the worktree are forensic-only). Free the disk.
+                    // the worktree are forensic-only). Free the disk and
+                    // close the merged plan branch local + remote.
                     // Best-effort: failures here log + continue; we've
                     // already saved the phase advance.
                     if (repo is not null && !string.IsNullOrEmpty(earlyRow.PlanBranch))
                     {
                         await this.git.RemoveWorktreeAsync(repo, earlyRow.PlanBranch!, ct);
+                        await this.git.DeleteBranchAsync(repo, earlyRow.PlanBranch!, deleteRemote: true, ct);
                     }
 
                     return true;
@@ -1171,11 +1177,13 @@ public sealed class StorySpawnOrchestrator
         await EmitChange(hub, "phase-advanced", sRow, ct);
 
         // Phase 49 follow-up — plan docs all passed AND the PR is merged;
-        // the plan worktree on disk is now stale. Free the disk. Matches
-        // the same cleanup at the early-return fast path above.
+        // the plan worktree on disk is now stale. Free the disk and close
+        // the merged plan branch local + remote. Matches the same cleanup
+        // at the early-return fast path above.
         if (repo is not null && !string.IsNullOrEmpty(sRow.PlanBranch))
         {
             await this.git.RemoveWorktreeAsync(repo, sRow.PlanBranch!, ct);
+            await this.git.DeleteBranchAsync(repo, sRow.PlanBranch!, deleteRemote: true, ct);
         }
 
         return true;
@@ -4523,11 +4531,14 @@ public sealed class StorySpawnOrchestrator
 
                     // Phase 49 follow-up — workstream PR is merged into
                     // main; the per-stage worktree on disk is now stale
-                    // (its commits are live on main). Free the disk.
-                    // Best-effort: failures log + continue.
+                    // (its commits are live on main). Free the disk, then
+                    // close the merged branch local + remote (finished-
+                    // workstream contract). Best-effort: failures log +
+                    // continue.
                     if (repo is not null && !string.IsNullOrEmpty(w.Branch))
                     {
                         await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                        await this.git.DeleteBranchAsync(repo, w.Branch, deleteRemote: true, ct);
                     }
 
                     // docs/forge/e2e.md Stage 5.2 — done-gate. When this
@@ -4567,10 +4578,11 @@ public sealed class StorySpawnOrchestrator
 
                 // Phase 49 follow-up — mirror the merging→complete cleanup
                 // for the external-merge fast path. Worktree is stale once
-                // upstream is merged.
+                // upstream is merged; branch closes local + remote.
                 if (repo is not null && !string.IsNullOrEmpty(w.Branch))
                 {
                     await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                    await this.git.DeleteBranchAsync(repo, w.Branch, deleteRemote: true, ct);
                 }
 
                 // docs/forge/e2e.md Stage 5.2 — done-gate (external-merge

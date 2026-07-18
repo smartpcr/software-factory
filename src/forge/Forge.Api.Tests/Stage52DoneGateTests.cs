@@ -354,5 +354,16 @@ public class Stage52DoneGateTests
         // via the Stage 5.2 gate inside DriveReviewAsync).
         Assert.Null(after.QaBranch);
         Assert.Null(after.QaPrId);
+
+        // Finished-workstream contract (2026-07-18): the merging→complete
+        // transition CLOSES the merged branch, local + remote — not just
+        // the worktree. Without this every spawn leaked its full ws/…
+        // branch set (release:RELEASE-PROVIDER: 25 stale remote branches).
+        var git = Assert.IsType<InMemoryStoryGitOps>(f.Services.GetRequiredService<IStoryGitOps>());
+        foreach (var wsId in new[] { "s1-e2e", "s2-e2e" })
+        {
+            Assert.Contains(git.DeletedBranches,
+                kv => kv.Key.EndsWith($"@ws/{wsId}", StringComparison.Ordinal) && kv.Value);
+        }
     }
 }
