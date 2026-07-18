@@ -42,15 +42,33 @@ public class WorkstreamScopeGuardTests
     }
 
     [Fact]
-    public void ScopeKeys_RootLevelFile_ProducesRepoRootKey()
+    public void ScopeKeys_RootLevelTargetsOnly_IsEmpty_FailOpen()
     {
-        // Makefile / go.mod at repo root → the repo-root sentinel, so a
-        // bootstrap-style workstream whose deliverables live at the root
-        // doesn't read its own declared work as out-of-scope (release
-        // RELEASE-PROVIDER stage 1.1: scope derived to (internal, examples)
-        // while the unchecked steps were go.sum / Makefile / .goreleaser.yml).
+        // Root-level targets (Makefile, go.mod) accompany every kind of work
+        // and carry no scoping signal alone — a root-only scope must read as
+        // "unknown" so the guard stays disarmed (release RELEASE-PROVIDER
+        // stage 4.2, 2026-07-17: targets extracted to root files only → scope
+        // {.} armed the guard → the stage's actual internal/pattern/** work
+        // counted 100% off-scope and stalled at iter 2).
         var keys = WorkstreamScopeGuard.ScopeKeysFromTargets(new[] { "Makefile", "go.mod" });
-        Assert.Equal(new[] { WorkstreamScopeGuard.RepoRootScopeKey }, keys.ToArray());
+        Assert.Empty(keys);
+    }
+
+    [Fact]
+    public void IsOffTask_RootOnlyTargets_SubdirWork_DoesNotTrip()
+    {
+        // Regression for stage 4.2 (see above): root-only targets → guard
+        // disarmed → deep subdirectory work never reads as off-task.
+        var scope = WorkstreamScopeGuard.ScopeKeysFromTargets(new[] { "go.mod", "main.go" });
+        var changed = new[]
+        {
+            "internal/pattern/windows_service.go",
+            "internal/pattern/windows_service_golden_test.go",
+            "internal/pattern/testdata/winsw_windows.xml",
+            "internal/pattern/testdata/s4_configure_fresh_windows.ps1",
+        };
+        Assert.False(WorkstreamScopeGuard.IsOffTask(changed, scope, out _, out _));
+        Assert.Equal(0, WorkstreamScopeGuard.CountOutOfScope(changed, scope));
     }
 
     [Fact]

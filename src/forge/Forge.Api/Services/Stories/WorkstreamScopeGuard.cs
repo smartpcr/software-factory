@@ -119,6 +119,20 @@ public static class WorkstreamScopeGuard
             }
         }
 
+        // The root sentinel must never ARM the guard by itself: root-level
+        // targets (go.mod, Makefile) accompany every kind of work and carry no
+        // scoping signal alone, so a root-only scope reads as "scope unknown"
+        // → fail-open. (release RELEASE-PROVIDER stage 4.2, 2026-07-17: targets
+        // extracted to root files only → scope {.} → the stage's actual
+        // internal/pattern/** work counted 100% off-scope and stalled at
+        // iter 2.) The sentinel only matters ALONGSIDE directory keys, where
+        // it admits the root files the directory keys would otherwise exclude
+        // (the stage-1.1 case: {., internal, examples}).
+        if (keys.Count == 1 && keys.Contains(RepoRootScopeKey))
+        {
+            keys.Clear();
+        }
+
         return keys;
     }
 
