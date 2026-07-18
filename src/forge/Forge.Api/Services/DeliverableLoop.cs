@@ -639,15 +639,31 @@ public sealed class DeliverableLoop : IDeliverableLoop
         try
         {
             var title = $"❓ {unansweredCount} open question(s) need your answer";
-            var body = string.Join("\n", questions.Select((q, i) => $"{i + 1}. {q.Text}"));
+
+            // Parity with the QUESTIONS tab (OpenQuestionsWizard): mark the
+            // agent's recommended choice and surface the "Other" free-text
+            // path — the inbound dispatcher accepts a plain reply as a custom
+            // answer when exactly one question is open (multi-question replies
+            // get redirected to buttons/UI), but without the hint the Telegram
+            // message reads as buttons-only.
+            var otherHint = unansweredCount == 1
+                ? "✏️ Other: reply to this message with a custom answer."
+                : "✏️ Tap a choice to answer; free-text replies work once a single question remains (or answer in the Forge UI).";
+            var body = string.Join("\n", questions.Select((q, i) => $"{i + 1}. {q.Text}"))
+                + "\n\n" + otherHint;
 
             IReadOnlyList<ChatButton>? buttons = null;
             var firstChoice = questions.FirstOrDefault(q =>
                 string.Equals(q.Kind, "choice", StringComparison.OrdinalIgnoreCase) && q.Choices is { Count: > 0 });
             if (firstChoice is not null)
             {
+                // Same match rule as the wizard UI: recommendation is the exact
+                // choice string (OpenQuestionsWizard.tsx `rec === c`).
+                var recommended = TryGetRecommendation(firstChoice.ExplanationJson);
                 buttons = firstChoice.Choices!
-                    .Select((c, idx) => new ChatButton(c, $"oq|{firstChoice.ExternalId}|{idx}"))
+                    .Select((c, idx) => new ChatButton(
+                        (string.Equals(c, recommended, StringComparison.Ordinal) ? "★ " : string.Empty) + c,
+                        $"oq|{firstChoice.ExternalId}|{idx}"))
                     .ToList();
             }
 
@@ -682,6 +698,29 @@ public sealed class DeliverableLoop : IDeliverableLoop
         catch
         {
             // Never let a chat-delivery hiccup affect the deliverable loop.
+        }
+    }
+
+    /// <summary>
+    /// Pull the agent's <c>recommendation</c> string out of a question's
+    /// <c>ExplanationJson</c> payload (see <see cref="OpenQuestionsExtractor"/>).
+    /// Null when absent or malformed — best-effort, the marker is cosmetic.
+    /// </summary>
+    private static string? TryGetRecommendation(string? explanationJson)
+    {
+        if (string.IsNullOrWhiteSpace(explanationJson)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(explanationJson);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("recommendation", out var rec)
+                && rec.ValueKind == System.Text.Json.JsonValueKind.String
+                ? rec.GetString()
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
         }
     }
 
