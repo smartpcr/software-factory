@@ -6058,6 +6058,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 For `compose` / `lab-*` setup types the pipeline YAML stubs
                 must also be present and reference the declared secret /
                 runner-pool names.
+
+                LAB-ONLY SCENARIOS — a scenario whose proof tag is `lab` (or
+                whose setup is `lab-*` and genuinely needs lab hardware, e.g.
+                real Windows service registration or a real Linux VM) is
+                covered STRUCTURALLY in this gate, never by local execution:
+                (a) the test exists and drives the real code path when the
+                lab env-vars / acceptance opt-in are present, (b) it skips
+                cleanly with a clear reason when they are absent, and (c) the
+                lab pipeline YAML wires it to the declared runner pool and
+                secret names. When (a)-(c) hold, score the scenario as
+                COVERED and do NOT withhold pass for the missing lab run —
+                Forge's gate host is lab-less and non-admin, so demanding an
+                "authoritative lab execution result" is a point the Generator
+                structurally cannot earn, and repeating it iteration over
+                iteration only burns budget. The lab pipeline is the
+                execution venue for those scenarios; this gate verifies the
+                wiring.
                 """
             : BuildQaE2eGeneratorTask(inputs, setupTypeWire);
 
