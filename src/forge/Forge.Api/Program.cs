@@ -149,6 +149,13 @@ catch (Exception ex)
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Chat settings belong to the host user, independent of the launcher's repo-root
+// working directory. Tests load their own isolated fixture instead of this user's file.
+if (Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") != "1")
+{
+    Forge.Api.Services.Chat.ChatBridgeConfiguration.AddHostConfiguration(builder.Configuration);
+}
+
 builder.WebHost.UseUrls("http://localhost:5180");
 
 // JSON: camelCase + ISO-8601 timestamps.

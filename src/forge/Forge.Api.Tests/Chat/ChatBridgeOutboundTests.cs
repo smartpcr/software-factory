@@ -41,9 +41,9 @@ public class ChatBridgeOutboundTests : IAsyncLifetime
         await this.conn.DisposeAsync();
     }
 
-    private ChatBridgeService NewService(FakeChatTransport transport, int maxAttempts = 5)
+    private ChatBridgeService NewService(FakeChatTransport transport, int maxAttempts = 5, bool allowRemoteActions = true)
     {
-        var opt = new ChatBridgeOptions { Enabled = true, MaxAttempts = maxAttempts };
+        var opt = new ChatBridgeOptions { Enabled = true, AllowRemoteActions = allowRemoteActions, MaxAttempts = maxAttempts };
         return new ChatBridgeService(
             this.provider.GetRequiredService<IServiceScopeFactory>(),
             transport,
@@ -128,6 +128,23 @@ public class ChatBridgeOutboundTests : IAsyncLifetime
         Assert.NotNull(buttons);
         Assert.Equal(2, buttons!.Count);
         Assert.Equal("act:retry", buttons[0].CallbackData);
+    }
+
+    [Fact]
+    public async Task Notification_Only_Mode_Sends_Without_Action_Buttons()
+    {
+        var row = Pending("read-only");
+        row.ActionsJson = ChatActions.Serialize(new[] { new ChatButton("Cancel", "act|cancel|ws") });
+        await this.SeedAsync(row);
+        var transport = new FakeChatTransport();
+
+        var result = await this.NewService(transport, allowRemoteActions: false).RunOutboundOnceAsync(default);
+
+        Assert.Equal(1, result.Sent);
+        var sent = Assert.Single(transport.Sent);
+        Assert.Null(sent.Buttons);
+        Assert.Contains("Open Forge to respond", sent.Text);
+        Assert.Equal(ChatNotificationStatuses.Sent, (await this.GetAsync("read-only")).Status);
     }
 
     [Fact]

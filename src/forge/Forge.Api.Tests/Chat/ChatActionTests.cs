@@ -29,6 +29,8 @@ public class ChatActionTests
         {
             s.RemoveAll<IChatTransport>();
             s.AddSingleton<IChatTransport>(fake);
+            // Explicit legacy opt-in: these tests cover the existing interactive paths.
+            s.PostConfigure<ChatBridgeOptions>(o => { o.Enabled = true; o.AllowRemoteActions = true; });
         }));
 
     private static async Task SeedStalledAsync(WebApplicationFactory<Program> app, string wsId)

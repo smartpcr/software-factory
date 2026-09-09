@@ -18,8 +18,8 @@ using Common.Chat;
 /// Forge-only outbox knobs (tick interval, TTL, retry cap).</para>
 ///
 /// <para><b>Disabled by default.</b> <see cref="Enabled"/> is <c>false</c> until
-/// an operator configures a bot token — a blank token leaves the bridge idle
-/// rather than crashing.</para>
+/// an operator explicitly enables it in host-user configuration or the environment.
+/// A stored token alone never enables the bridge; a missing token leaves it idle.</para>
 /// </summary>
 public sealed class ChatBridgeOptions
 {
@@ -30,6 +30,13 @@ public sealed class ChatBridgeOptions
 
     /// <summary>Master switch. When false the bridge is registered but does nothing.</summary>
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Legacy inbound switch, disabled by default until the shared authorization
+    /// prerequisite is implemented. Enabled alone permits notifications; it does
+    /// not permit linking, commands, answers, or action callbacks.
+    /// </summary>
+    public bool AllowRemoteActions { get; set; }
 
     /// <summary>Chat platform. Only <c>telegram</c> is implemented today.</summary>
     public string Platform { get; set; } = "telegram";

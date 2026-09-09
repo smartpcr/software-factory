@@ -96,8 +96,7 @@ public sealed class ChatInboundPump : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             var opt = this.options.CurrentValue;
-            var hasToken = !string.IsNullOrWhiteSpace(ChatTokenResolver.Resolve(opt, this.logger));
-            if (!opt.Enabled || !hasToken)
+            if (!opt.Enabled || string.IsNullOrWhiteSpace(ChatTokenResolver.Resolve(opt, this.logger)))
             {
                 // Idle — the long-poll can't run without a token; back off.
                 try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }

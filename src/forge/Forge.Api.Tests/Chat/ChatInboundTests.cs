@@ -28,6 +28,8 @@ public class ChatInboundTests
         {
             s.RemoveAll<IChatTransport>();
             s.AddSingleton<IChatTransport>(fake);
+            // Explicit legacy opt-in: these tests cover the existing interactive paths.
+            s.PostConfigure<ChatBridgeOptions>(o => { o.Enabled = true; o.AllowRemoteActions = true; });
         }));
 
     private static ChatInbound TextUpdate(long id, string chatId, string text) =>
@@ -239,6 +241,8 @@ public class ChatInboundTests
         {
             s.RemoveAll<IChatTransport>();
             s.AddSingleton<IChatTransport>(fake);
+            // Explicit legacy opt-in: these tests cover the existing interactive paths.
+            s.PostConfigure<ChatBridgeOptions>(o => { o.Enabled = true; o.AllowRemoteActions = true; });
             s.Configure<ChatBridgeOptions>(o =>
             {
                 o.Telegram.SupergroupChatId = 42;
@@ -276,6 +280,8 @@ public class ChatInboundTests
         {
             s.RemoveAll<IChatTransport>();
             s.AddSingleton<IChatTransport>(fake);
+            // Explicit legacy opt-in: these tests cover the existing interactive paths.
+            s.PostConfigure<ChatBridgeOptions>(o => { o.Enabled = true; o.AllowRemoteActions = true; });
             s.Configure<ChatBridgeOptions>(o =>
             {
                 o.Telegram.SupergroupChatId = 42;

@@ -1,12 +1,13 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** proposed; no implementation has started. Updated 2026-09-09.
+**Status:** Stage 0A implemented and verified; Stage 0B onward remains planned. Updated 2026-09-09.
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
 This document plans the implementation of the requested workstream plugin model,
 multiple chat providers/connections/channels, and Slack support. Implementation
-checkboxes remain open; checked review items record documentation resolutions only.
+checkboxes are checked only for completed Stage 0A work; checked review items
+record documentation resolutions only.
 Historical completed phases in the older chat plans do not count as completion of
 this revision.
 
@@ -28,8 +29,8 @@ only as action targets. This replaces the earlier draft's child-level enablement
 > [chat-plugin-design.md](chat-plugin-design.md). Search the tag to jump to a comment.
 >
 > **Resolution status:** fixed/checked review items mean the documents were revised.
-> Implementation tasks outside these review blocks remain unchecked; no code changes
-> or live tests are claimed by this review pass. Original comment text is retained.
+> This review pass did not implement code. Subsequent Stage 0A implementation and
+> isolated validation are recorded below. Original comment text is retained.
 >
 > | Tag | Severity | Section | Summary | Status |
 > |---|---|---|---|---|
@@ -195,25 +196,29 @@ explicit Stage 6 rollback boundaries rather than reverting database files.
 ### Stage 0A — standalone defaults fix, before plugin implementation
 
 This is an immediate independent maintenance change, not Stage 6 migration work.
-**It is planned here, not executed by this documentation-only revision.**
+**Implemented and verified (2026-09-09).** See [host configuration and requirement-by-requirement evidence](host-chat-configuration.md).
 
-- [ ] Move machine-specific chat values to explicit host user configuration, then
+- [x] Move machine-specific chat values to explicit host user configuration, then
       set tracked defaults to `Enabled=false`, empty allowed-ID arrays, empty token,
       and `SupergroupChatId=0`. Do not copy personal IDs into examples or history.
-- [ ] Make the normal launcher and helper read that local configuration consistently
+- [x] Make the normal launcher and helper read that local configuration consistently
       with documented environment precedence; avoid the current base/Development
       JSON mismatch. Explicit opt-in is required even when a DPAPI blob exists.
-- [ ] Update the stale `_comment` to describe the actually shipped Telegram bridge
+- [x] Update the stale `_comment` to describe the actually shipped Telegram bridge
       and disabled defaults; preserve existing operators through their local opt-in.
-- [ ] Until Stage 0B protects equivalent HTTP and chat actions, keep new interactive
+- [x] Until Stage 0B protects equivalent HTTP and chat actions, keep new interactive
       ingress disabled. Add a legacy `AllowRemoteActions=false` guard so explicit
       local opt-in can deliver notifications without executing inbound domain actions;
-      this mode is planned work, not an existing configuration capability.
-- [ ] Validate a clean checkout with a preexisting DPAPI test blob stays idle; verify
+      notification-only mode is implemented and the helper sets `AllowRemoteActions=false`.
+- [x] Validate a clean checkout with a preexisting DPAPI test blob stays idle; verify
       local opt-in survives a normal launcher restart in an isolated fixture.
 
 **Gate:** a standalone commit is ready independently of plugin schemas/adapters.
-The actual executable work remains unchecked until implemented and validated.
+Validation: 105 chat tests passed (zero failed/skipped), including an isolated
+DPAPI idle fixture, setup persistence, two host starts in normal launcher context,
+and a recorded launcher process handoff. No live host restart or provider sends
+were performed. No Stage 0A gaps remain; changes are ready for review as an
+independent commit (not committed automatically).
 
 <a id="authorization-prerequisite"></a>
 ### Stage 0B — authenticated identity and shared capabilities

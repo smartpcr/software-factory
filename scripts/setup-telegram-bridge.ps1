@@ -23,9 +23,9 @@
     Forge__ChatBridge__Telegram__BotToken; none = don't persist.
 
 .PARAMETER WriteConfig
-    Patch appsettings.Development.json: Forge:ChatBridge:Enabled=true and
-    Telegram:AllowedChatIds=[<supergroup>]. Off by default (the script always
-    prints the snippet so you can paste it yourself).
+    Write %LOCALAPPDATA%\Forge\chat-settings.json (or FORGE_CHAT_SETTINGS_PATH):
+    explicitly enable notifications with AllowRemoteActions=false. Without this
+    switch, ask before writing. Tracked appsettings files are never modified.
 
 .PARAMETER SkipSmokeTest
     Skip the createForumTopic/sendMessage/deleteForumTopic verification.
@@ -45,23 +45,19 @@ param(
     [switch]$WriteConfig,
     [switch]$SkipSmokeTest,
     [switch]$SkipTelegramInstall,
-    # Override the Forge operator identity used for the /link mint. By default
-    # it is AUTO-DISCOVERED from Forge's sign-in (the account Forge is signed in
-    # as — a product-owner, e.g. name@microsoft.com). This is your Forge/ADO/
-    # GitHub account and may differ from your Gmail. It must be a product-owner
-    # or the mint returns 403. (Telegram itself signs in by phone, not Gmail.)
+    # Retained for command-line compatibility; notification-only setup does not
+    # sign in to Forge or mint account-link tokens.
     [string]$ForgeUser,
     [string]$ForgeApiUrl = 'http://localhost:5180',
-    # Forge provider to sign in to (the interactive browser/WAM popup). 'ado' =
-    # Microsoft account (which may use a Gmail address); 'github' = GitHub OAuth.
     [ValidateSet('ado', 'github')][string]$AuthKind = 'ado',
     [string]$ApiBaseUrl = 'https://api.telegram.org'
 )
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AppSettingsDev = Join-Path $RepoRoot 'src/forge/Forge.Api/appsettings.Development.json'
-$BlobPath = Join-Path $env:LOCALAPPDATA 'Forge\chat-token.bin'
+. (Join-Path $PSScriptRoot 'forge-chat-settings.ps1')
+$ChatSettingsPath = Get-ForgeChatSettingsPath
+$BlobPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Forge/chat-token.bin'
 
 function Write-Step { param([string]$m) Write-Host "`n=== $m ===" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$m) Write-Host "  [OK] $m" -ForegroundColor Green }
@@ -123,8 +119,7 @@ else {
 Write-Step '0b. Sign in to Telegram Desktop'
 Write-Host @'
   Telegram authenticates by PHONE NUMBER (SMS/call code) or QR scan from your
-  phone. There is NO Google/Gmail sign-in for Telegram itself. (Your Forge
-  operator identity IS your Gmail — that link happens in step 7.)
+  phone. Forge account linking is disabled in notification-only mode.
 '@
 if ($tgExe) { try { Start-Process $tgExe } catch {} ; Write-Host '  Launched Telegram Desktop — sign in with your phone number now.' }
 $null = Read-Host '  Press Enter once you are signed in to Telegram'
@@ -231,122 +226,38 @@ switch ($StoreToken) {
         catch {
             Write-Warn2 "DPAPI unavailable ($($_.Exception.Message)). Falling back to a user env var."
             [Environment]::SetEnvironmentVariable('Forge__ChatBridge__Telegram__BotToken', $BotToken, 'User')
+            $env:Forge__ChatBridge__Telegram__BotToken = $BotToken
             Write-Ok 'Set user env var Forge__ChatBridge__Telegram__BotToken (restart the shell/service to pick it up).'
         }
     }
     'env' {
         [Environment]::SetEnvironmentVariable('Forge__ChatBridge__Telegram__BotToken', $BotToken, 'User')
+        $env:Forge__ChatBridge__Telegram__BotToken = $BotToken
         Write-Ok 'Set user env var Forge__ChatBridge__Telegram__BotToken.'
     }
-    'none' { Write-Warn2 'Token NOT persisted (per -StoreToken none). Provide it via env/appsettings yourself.' }
+    'none' { Write-Warn2 'Token NOT persisted (per -StoreToken none). Provide it via the environment yourself.' }
 }
 
-# --- 6. Config (non-secret) --------------------------------------------------
-Write-Step '6. Forge config'
-$snippet = @"
-"Forge": {
-  "ChatBridge": {
-    "Enabled": true,
-    "Platform": "telegram",
-    "Telegram": {
-      "AllowedChatIds": [ $chatId ],
-      "SupergroupChatId": $chatId,   // used by the per-spawn-topic layer (plan Part B)
-      "AllowedUserIds": [ $userId ], // telegram user ids allowed to drive Forge
-      "LongPollTimeoutSec": 25
-    }
-  }
+# --- 6. Explicit notification-only opt-in (non-secret) -----------------------
+Write-Step '6. Host-user chat configuration'
+Write-Host "  Settings: $ChatSettingsPath"
+Write-Host '  This enables notifications. Remote linking, commands, replies, and buttons stay disabled.'
+Write-Host '  Forge__ChatBridge__* environment values override this file; a stored token alone never enables chat.'
+$chatEnvOverrides = @(Get-ChildItem Env: | Where-Object Name -Like 'Forge__ChatBridge__*')
+if ($chatEnvOverrides.Count -gt 0) {
+    Write-Warn2 'Chat environment overrides are present. Review their names/values locally before restarting; setup does not clear them.'
 }
-"@
-Write-Host $snippet -ForegroundColor DarkGray
-
-$doWrite = $WriteConfig -or ((Read-Host 'Write this config to appsettings.Development.json now? (Y/n)') -notmatch '^[nN]')
+$doWrite = $WriteConfig -or ((Read-Host 'Enable notifications and save host-user chat settings now? (y/N)') -match '^[yY]')
 if ($doWrite) {
-    try {
-        $json = if (Test-Path $AppSettingsDev) { Get-Content -Raw $AppSettingsDev | ConvertFrom-Json } else { [pscustomobject]@{} }
-        if (-not $json.Forge) { $json | Add-Member Forge ([pscustomobject]@{}) -Force }
-        if (-not $json.Forge.ChatBridge) { $json.Forge | Add-Member ChatBridge ([pscustomobject]@{}) -Force }
-        $cb = $json.Forge.ChatBridge
-        $cb | Add-Member Enabled $true -Force
-        $cb | Add-Member Platform 'telegram' -Force
-        if (-not $cb.Telegram) { $cb | Add-Member Telegram ([pscustomobject]@{}) -Force }
-        # AllowedChatIds is what today's bridge sends to + accepts from (single-chat
-        # model). SupergroupChatId/AllowedUserIds are captured for the per-spawn
-        # topic layer (plan Part B, not yet implemented).
-        $cb.Telegram | Add-Member AllowedChatIds @($chatId) -Force
-        $cb.Telegram | Add-Member SupergroupChatId $chatId -Force
-        $cb.Telegram | Add-Member AllowedUserIds @($userId) -Force
-        ($json | ConvertTo-Json -Depth 12) | Set-Content -Path $AppSettingsDev -Encoding utf8
-        Write-Ok "Wrote $AppSettingsDev (Enabled=true + chat id $chatId). Token is NOT written here (DPAPI blob)."
-    }
-    catch { Write-Warn2 "Could not patch appsettings ($($_.Exception.Message)); paste the snippet above manually." }
-}
-else {
-    Write-Warn2 'Config not written. Paste the snippet above into appsettings.Development.json (Forge:ChatBridge:Enabled=true).'
+    Save-ForgeTelegramSettings -ChatId $chatId -UserId $userId -ApiBaseUrl $ApiBaseUrl -Path $ChatSettingsPath
+    Write-Ok "Saved $ChatSettingsPath (Enabled=true, AllowRemoteActions=false; no bot token in JSON)."
+} else {
+    Write-Warn2 'Settings unchanged. Re-run with -WriteConfig when ready to opt in.'
 }
 
-# --- 7. Auth: ensure Forge sign-in (browser popup only if needed) + bind ------
-Write-Step "7. Forge sign-in ($AuthKind) + link Telegram to your operator account"
-
-function Get-ForgeAuthStatus {
-    try { return Invoke-RestMethod -Uri "$ForgeApiUrl/api/auth/$AuthKind/status" -Method Get `
-            -Headers @{ 'X-Forge-User' = ($ForgeUser ? $ForgeUser : 'setup') } -TimeoutSec 15 }
-    catch { return $null }
-}
-
-$forgeUp = $true
-$st = Get-ForgeAuthStatus
-if ($null -eq $st) {
-    $forgeUp = $false
-    Write-Warn2 "Forge.Api not reachable at $ForgeApiUrl. Start it (run-forge-ui.ps1 -ServerOnly), then re-run — or pass -ForgeApiUrl."
-}
-elseif ($st.connected) {
-    Write-Ok "Forge is signed in ($AuthKind) as $($st.account) — no browser needed."
-}
-else {
-    Write-Host "  Not signed in to $AuthKind. A BROWSER window will open on this machine to sign in;" -ForegroundColor Yellow
-    Write-Host "  complete it, then return here (waits up to 5 min)." -ForegroundColor Yellow
-    if ((Read-Host '  Open the sign-in browser now? (Y/n)') -notmatch '^[nN]') {
-        try {
-            $st = Invoke-RestMethod -Uri "$ForgeApiUrl/api/auth/$AuthKind/sign-in" -Method Post `
-                -Headers @{ 'X-Forge-User' = ($ForgeUser ? $ForgeUser : 'operator') } -ContentType 'application/json' -Body '{}' -TimeoutSec 330
-            if ($st.connected) { Write-Ok "Signed in as $($st.account)" } else { Write-Warn2 "Sign-in did not complete: $($st.error)" }
-        }
-        catch { Write-Warn2 "Sign-in request failed: $($_.Exception.Message). Sign in from the Forge UI, then re-run." }
-    }
-}
-
-# Operator identity = the account Forge is signed in as (a product-owner),
-# unless overridden with -ForgeUser. This is your Forge/ADO/GitHub account
-# (e.g. name@microsoft.com) and may differ from your Gmail — the bridge binds
-# your Telegram user to THIS Forge account.
-if (-not $ForgeUser -and $st -and $st.connected -and $st.account) { $ForgeUser = $st.account }
-if (-not $ForgeUser) { $ForgeUser = Read-Host '  Forge operator account (must be a product-owner)' }
-Write-Host "  Operator identity: $ForgeUser"
-
-$linkToken = $null
-if ($forgeUp) {
-    try {
-        $resp = Invoke-RestMethod -Uri "$ForgeApiUrl/api/chat/link-token" -Method Post `
-            -Headers @{ 'X-Forge-User' = $ForgeUser } -ContentType 'application/json' -Body '{}' -TimeoutSec 20
-        $linkToken = $resp.token
-        Write-Ok "Minted a one-time chat link token for $ForgeUser"
-    }
-    catch {
-        $code = try { $_.Exception.Response.StatusCode.value__ } catch { 0 }
-        if ($code -eq 403) {
-            Write-Warn2 "'$ForgeUser' is NOT a product-owner (403). Use your signed-in Forge account shown above (pass it via -ForgeUser), or grant that user the product-owner role in Forge."
-        }
-        else { Write-Warn2 "Link-token mint failed ($code): $($_.Exception.Message)." }
-    }
-}
-if ($linkToken) {
-    Write-Host "  In your Forge Telegram group, send this to bind Telegram user $userId -> $ForgeUser :" -ForegroundColor Green
-    Write-Host "        /link $linkToken" -ForegroundColor Green
-}
-
-# --- 8. Restart Forge.Api (loads the bridge) ---------------------------------
-Write-Step '8. Restart Forge.Api to load the bridge'
-Write-Host '  The running server must restart to pick up Enabled=true + the token.'
+# --- 7. Restart Forge.Api (loads the bridge) ---------------------------------
+Write-Step '7. Restart Forge.Api to load the bridge'
+Write-Host '  Restart to load saved settings and token changes.'
 Write-Host '  NOTE: a restart kills any in-flight agent / LLM work.' -ForegroundColor Yellow
 if ((Read-Host '  Restart Forge.Api now? (y/N)') -match '^[yY]') {
     try { & (Join-Path $RepoRoot 'scripts/run-forge-ui.ps1') -ServerOnly; Write-Ok 'Restart invoked.' }
@@ -358,12 +269,11 @@ else {
 
 Write-Step 'Done'
 @"
-  * Send the /link line above in your chat (mint a fresh token any time:
-        POST /api/chat/link-token  with header X-Forge-User: $ForgeUser).
-  * Smoke test:  POST /api/chat/test-send  — or spawn a story and watch for alerts.
-
-  SCOPE TODAY (Phases 1-5, committed): a SINGLE-CHAT bridge — every spawn's
-  alerts land in chat $chatId, and you answer/act there. Per-spawn Telegram
-  TOPICS (one thread per spawn) require plan Part B
-  (docs/chat/telegram-per-spawn-plan.md, Phases 6-10) — not yet implemented.
+  * Settings: $ChatSettingsPath
+  * A saved configuration is loaded on the next normal launcher start.
+  * Test delivery: POST /api/chat/test-send from Forge, or watch for story alerts.
+  * Shipped: outbound notifications and per-spawn Telegram forum topics.
+  * Remote actions and account linking are disabled by this setup. Respond in
+    Forge; shared authenticated authorization is tracked in plugin plan Stage 0B.
+  * Configuration and environment precedence: docs/chat/host-chat-configuration.md
 "@ | Write-Host -ForegroundColor Green

@@ -12,16 +12,15 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status: proposed, documentation only (2026-09-09).** No plugin runtime, Slack
-adapter, new endpoints, or settings screens described in these documents have been
-implemented. They are the source of truth for this next revision.
+**Status (2026-09-09): Stage 0A implemented and verified.** The legacy bridge now
+uses explicit host-user configuration, safe tracked defaults, and a notification-only
+guard. See [host chat configuration and verification](host-chat-configuration.md).
+Plugin runtime, Slack, shared authenticated authorization, and settings screens
+remain planned.
 
-**Review status (round 1, 2026-09-09): 15 open comments, 4 blocking.** Both
-documents carry inline `REVIEW-D-nn` / `REVIEW-P-nn` callouts with checkboxes and
-an index table at the top. The blocking items are: the authorization primitives the
-design assumes do not exist in Forge; unscoped host/queue alerts have no destination
-after cutover; and two stage-acceptance gates depend on providers built in later
-stages. Resolve or explicitly decline each before implementation starts.
+**Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**
+The inline `REVIEW-D-nn` / `REVIEW-P-nn` records preserve the original feedback and
+resolutions. Checked review comments do not imply implementation of later stages.
 
 ## Existing implementation and history
 

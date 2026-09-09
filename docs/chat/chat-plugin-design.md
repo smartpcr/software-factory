@@ -1,6 +1,7 @@
 # Forge workstream chat plugins — design
 
-**Status:** proposed; documentation only, 2026-09-09. Implementation is tracked in
+**Status:** plugin design proposed; standalone Stage 0A defaults/configuration
+maintenance implemented and verified, 2026-09-09. Implementation is tracked in
 [the implementation plan](chat-plugin-implementation-plan.md). Existing code was
 examined at `70103c83`. This design supersedes the single-provider and global-target
 assumptions in the earlier chat plans for the next revision.
@@ -15,8 +16,8 @@ assumptions in the earlier chat plans for the next revision.
 > Search the tag to jump to a comment.
 >
 > **Resolution status:** fixed/checked review items mean the documents were revised.
-> Implementation tasks outside these review blocks remain unchecked; no code changes
-> or live tests are claimed by this review pass. Original comment text is retained.
+> This review pass did not implement code. Subsequent Stage 0A implementation and
+> isolated validation are recorded in the implementation plan. Original comment text is retained.
 >
 > | Tag | Severity | Section | Summary | Status |
 > |---|---|---|---|---|
@@ -125,6 +126,11 @@ or building a plugin marketplace is outside this revision.
 >       it is not a migration-only route if nothing replaces it.
 
 ## 2. Problems in the existing implementation
+
+The table records the original baseline. Stage 0A has since fixed the defaults
+and setup/launcher mismatch through a shared host-user file and added the
+notification-only guard. See [current setup and validation](host-chat-configuration.md).
+The plugin settings service and shared authorization remain planned.
 
 | Observed behavior | Evidence | Required change |
 |---|---|---|

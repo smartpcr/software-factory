@@ -15,9 +15,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 95 (chat bridge) — admin/ops endpoints. Phase 1 ships only the
-/// smoke-test send; the subscriber/link/outbox surfaces land with the inbound
-/// work in later phases. All endpoints are <see cref="RequireRole.ProductOwner"/>-gated.
+/// Legacy chat smoke-test and account-link endpoints.
+/// All endpoints are <see cref="RequireRole.ProductOwner"/>-gated.
 /// </summary>
 public static class ChatBridgeEndpoints
 {
@@ -80,6 +79,14 @@ public static class ChatBridgeEndpoints
             if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
 
             var opt = options.CurrentValue;
+            if (!opt.Enabled || !opt.AllowRemoteActions)
+            {
+                return Results.Problem(
+                    title: "Chat remote actions disabled",
+                    detail: "Account linking is unavailable in notification-only mode. Use Forge to respond to alerts.",
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
             var user = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
             var token = Guid.NewGuid().ToString("N")[..8];
 

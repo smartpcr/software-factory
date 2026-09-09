@@ -68,6 +68,12 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
     /// <summary>Route a single inbound update. Never throws — logs and swallows per-update errors.</summary>
     public async Task DispatchAsync(ChatInbound update, string? routeKey, CancellationToken ct)
     {
+        // Check before /link, allow-list bootstrap, and every domain/command path.
+        // The pump may consume updates to advance its cursor in notification-only
+        // mode, but no subscriber, question, workstream, or acknowledgement changes.
+        var opt = this.options.CurrentValue;
+        if (!opt.Enabled || !opt.AllowRemoteActions) return;
+
         try
         {
             var text = update.Text?.Trim() ?? string.Empty;

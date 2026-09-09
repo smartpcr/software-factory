@@ -201,6 +201,7 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // (the operator machine's config). Tests that exercise the bridge
                 // set Enabled=true explicitly via extraConfig.
                 ["Forge:ChatBridge:Enabled"] = "false",
+                ["Forge:ChatBridge:AllowRemoteActions"] = "false",
             };
             foreach (var kv in this.extraConfig)
             {

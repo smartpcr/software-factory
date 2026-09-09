@@ -73,8 +73,8 @@ public sealed class ChatBridgeService : BackgroundService
             try
             {
                 var opt = this.options.CurrentValue;
-                var token = ChatTokenResolver.Resolve(this.transportOptions.CurrentValue, this.logger);
-                if (opt.Enabled && !string.IsNullOrWhiteSpace(token))
+                if (opt.Enabled && !string.IsNullOrWhiteSpace(
+                    ChatTokenResolver.Resolve(this.transportOptions.CurrentValue, this.logger)))
                 {
                     await this.RunOutboundOnceAsync(stoppingToken);
                 }
@@ -140,6 +140,11 @@ public sealed class ChatBridgeService : BackgroundService
                 }
 
                 var (text, buttons) = ChatMessageRenderer.Render(row);
+                if (!opt.AllowRemoteActions)
+                {
+                    buttons = null;
+                    text += "\n\nRemote actions are disabled. Open Forge to respond.";
+                }
 
                 // Part B — route the alert into its spawn's forum topic (group
                 // mode). Null threadId → group root (single-chat mode, spawn-less

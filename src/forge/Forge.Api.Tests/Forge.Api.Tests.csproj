@@ -20,6 +20,11 @@
 
   <ItemGroup>
     <None Include="..\Forge.UI\src\board\policy.fixtures.ts" Link="Fixtures\policy.fixtures.ts" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Forge.Api\appsettings.json" Link="ChatFixtures\appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Forge.Api\appsettings.Development.json" Link="ChatFixtures\appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\scripts\forge-chat-settings.ps1" Link="ChatFixtures\forge-chat-settings.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\scripts\setup-telegram-bridge.ps1" Link="ChatFixtures\setup-telegram-bridge.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\scripts\run-forge-ui.ps1" Link="ChatFixtures\run-forge-ui.ps1" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

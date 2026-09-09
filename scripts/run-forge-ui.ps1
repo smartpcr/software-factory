@@ -473,37 +473,12 @@ if ($targetServer) {
         }
     }
 
-    # 2026-07-01 — promote Forge:ChatBridge from appsettings.json to env vars for
-    # the same content-root reason as ExcludeFilter above (repo root has no
-    # appsettings.json, so the project file never loads under -WorkingDirectory
-    # $RepoRoot). Flatten the whole subtree onto Forge__ChatBridge__* keys so the
-    # Telegram chat bridge actually activates. The bot token is NOT promoted here
-    # — it lives in the DPAPI blob (%LOCALAPPDATA%\Forge\chat-token.bin) read by
-    # ChatTokenResolver — so no secret ever touches env/argv.
-    if ($appsettings -and $appsettings.Forge.ChatBridge) {
-        function Export-ForgeConfigTree {
-            param([string]$Prefix, $Node)
-            if ($null -eq $Node) { return }
-            if ($Node -is [System.Management.Automation.PSCustomObject]) {
-                foreach ($p in $Node.PSObject.Properties) {
-                    if ($p.Name -like '_*') { continue } # skip _comment keys
-                    Export-ForgeConfigTree -Prefix "${Prefix}__$($p.Name)" -Node $p.Value
-                }
-            } elseif ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
-                $i = 0
-                foreach ($item in $Node) { Export-ForgeConfigTree -Prefix "${Prefix}__$i" -Node $item; $i++ }
-            } else {
-                # Don't override an env var already set (e.g. a real BotToken).
-                if (-not (Test-Path "Env:$Prefix")) { Set-Item -Path "Env:$Prefix" -Value ([string]$Node) }
-            }
-        }
-        try {
-            Export-ForgeConfigTree -Prefix 'Forge__ChatBridge' -Node $appsettings.Forge.ChatBridge
-            Write-Host "  Forge__ChatBridge__Enabled = $($env:Forge__ChatBridge__Enabled)" -ForegroundColor Gray
-        } catch {
-            Write-Host "  ⚠ Could not promote Forge:ChatBridge from appsettings.json: $_" -ForegroundColor Yellow
-        }
-    }
+    # Forge.Api loads host-user chat-settings.json itself, regardless of this
+    # repo-root working directory. Do not export project JSON into the process
+    # environment: that used to hide setup's Development settings and persist
+    # stale values across restarts. Explicit Forge__ChatBridge__* environment
+    # overrides (and FORGE_CHAT_SETTINGS_PATH) pass through unchanged.
+    # See docs/chat/host-chat-configuration.md.
 
     $serverProc = Start-Process -FilePath $serverExe `
         -ArgumentList "--environment","Development" `

@@ -67,6 +67,9 @@ public class ChatBridgeOptionsTests
         config.GetSection(ChatBridgeOptions.SectionName).Bind(opt);
 
         Assert.False(opt.Enabled);
+        Assert.False(opt.AllowRemoteActions);
+        Assert.Empty(opt.Telegram.AllowedUserIds);
+        Assert.Equal(0, opt.Telegram.SupergroupChatId);
         Assert.Equal("telegram", opt.Platform);
         Assert.Equal(5, opt.MaxAttempts);
         Assert.Empty(opt.Telegram.AllowedChatIds);
@@ -77,6 +80,7 @@ public class ChatBridgeOptionsTests
     public void Env_Var_Overrides_AppSettings_For_BotToken()
     {
         const string EnvKey = "Forge__ChatBridge__Telegram__BotToken";
+        var previous = Environment.GetEnvironmentVariable(EnvKey);
         Environment.SetEnvironmentVariable(EnvKey, "env-token");
         try
         {
@@ -97,7 +101,7 @@ public class ChatBridgeOptionsTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(EnvKey, null);
+            Environment.SetEnvironmentVariable(EnvKey, previous);
         }
     }
 
@@ -114,18 +118,10 @@ public class ChatBridgeOptionsTests
     {
         var opt = new ChatTransportOptions
         {
-            // Forge's production wiring points this at %LOCALAPPDATA%\Forge —
-            // guard on the file so the test passes on a machine with a real blob.
-            TokenBlobPath = ChatBridgeOptions.DefaultTokenBlobPath(),
+            TokenBlobPath = Path.Combine(Path.GetTempPath(), $"missing-chat-token-{Guid.NewGuid():N}.bin"),
         };
         opt.Telegram.BotToken = "   ";
 
-        // The DPAPI fallback only applies when the blob exists. On a machine
-        // without the blob (the normal test host), a blank token resolves to
-        // null — the "bridge stays idle" signal, not a crash.
-        if (!File.Exists(opt.TokenBlobPath))
-        {
-            Assert.Null(ChatTokenResolver.Resolve(opt));
-        }
+        Assert.Null(ChatTokenResolver.Resolve(opt));
     }
 }
