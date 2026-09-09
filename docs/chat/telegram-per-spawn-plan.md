@@ -1,5 +1,11 @@
 # Telegram per-spawn channels — setup + implementation plan
 
+> **Next revision (2026-09-09):** the [workstream chat plugin design](chat-plugin-design.md)
+> and [implementation plan](chat-plugin-implementation-plan.md) define the proposed
+> setup experience, per-workstream subscriptions, multi-provider delivery and Slack.
+> Existing spawn topics are preserved through an explicit migration. This document
+> records the earlier Telegram setup and implementation; it is not the new setup guide.
+
 > **Goal.** Run Telegram on Windows against Forge so **each story spawn gets its own
 > Telegram forum topic** (a "channel" thread), and the operator can interact with that
 > spawn's crew inside its topic — answer open questions, inject steering, and drive

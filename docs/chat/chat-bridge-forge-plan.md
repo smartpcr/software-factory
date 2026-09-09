@@ -1,5 +1,11 @@
 # Forge Chat Bridge — Implementation Plan
 
+> **Next revision (2026-09-09):** see the [workstream chat plugin design](chat-plugin-design.md)
+> and [implementation plan](chat-plugin-implementation-plan.md) for per-workstream
+> enablement, multiple providers/destinations, and Slack. They are proposed, not
+> implemented. This document retains the original Telegram implementation history;
+> its global/single-provider assumptions do not define the next revision.
+
 > **Goal.** Let Forge reach a human **operator** over a chat app (Telegram first, Discord later)
 > to (a) get **answers to open questions** and (b) drive **stalled-workstream actions**, and let the
 > operator's chat replies flow back into Forge to resume or act — without opening the web UI.

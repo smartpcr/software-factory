@@ -1,5 +1,11 @@
 # Common.Chat — extract the chat bridge into a reusable library
 
+> **Next revision (2026-09-09):** see the [workstream chat plugin design](chat-plugin-design.md)
+> and [implementation plan](chat-plugin-implementation-plan.md). The extraction below
+> is already implemented; provider plugin projects, multiple connections/channels,
+> per-workstream enablement and Slack are proposed follow-on work. The next revision
+> replaces the single transport and Telegram-specific shared polling assumptions.
+
 > **Goal.** Split the app-agnostic half of the chat bridge (transport, options, token
 > resolution, channel/topic mapping, inbound long-poll + subscription) out of `Forge.Api`
 > into a standalone class library **`src/Common.Chat`** so (1) any app — not just Forge —
