@@ -143,14 +143,17 @@ public sealed partial class ChatInboxService
     {
         var addressJson = JsonSerializer.Serialize(envelope.Address);
         var candidates = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.State == "sent" && !m.ControlsRetired && m.QuestionId != null
-            && m.AddressJson == addressJson && m.ActionKind != "question.prompt" && control.ChatDeliveries.Any(d => d.Id == m.DeliveryId && d.ConnectionId == envelope.ConnectionId && d.ChannelId == envelope.Address.ChannelId))
-            .OrderBy(m => m.Id).Take(201).ToListAsync(ct);
+            && m.AddressJson == addressJson && (m.ActionKind != "question.prompt" || envelope.ProviderId == "slack")
+            && control.ChatDeliveries.Any(d => d.Id == m.DeliveryId && d.ConnectionId == envelope.ConnectionId && d.ChannelId == envelope.Address.ChannelId))
+            .OrderByDescending(m => m.ActionKind == "question.prompt").ThenBy(m => m.Id).Take(201).ToListAsync(ct);
         if (candidates.Count == 201) return new([], true); // Never infer a unique question from a truncated scan.
         using var scope = scopes.CreateScope();
         var actor = await scope.ServiceProvider.GetRequiredService<ChatLinkService>().ResolveAsync(envelope.ProviderId, envelope.Address.ExternalTenantId, envelope.SenderId, ct);
         var result = new List<ChatDeliveryMessageRow>();
         foreach (var message in candidates.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address))
         {
+            if (message.ActionKind == "question.prompt" && (actor is null || message.ConfirmationActorId != actor.UserId
+                || message.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds())) continue;
             var delivery = await control.ChatDeliveries.AsNoTracking().SingleAsync(d => d.Id == message.DeliveryId, ct);
             var notification = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == delivery.NotificationId, ct);
             var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson)!;
@@ -161,7 +164,10 @@ public sealed partial class ChatInboxService
             catch (ForgeAccessDeniedException) { continue; }
             if (!result.Any(m => m.DeliveryId == message.DeliveryId && m.QuestionId == message.QuestionId && m.ExpectedRevision == message.ExpectedRevision)) result.Add(message);
         }
-        return new(result);
+        // Slack thread replies identify the root, not the question message. An actor's explicit custom selection
+        // narrows the candidates; several active selections still require a message ID and never select arbitrarily.
+        var selected = result.Where(m => m.ActionKind == "question.prompt").ToList();
+        return new(selected.Count > 0 ? selected : result);
     }
 
     private async Task<string> QuestionListAsync(ChatInboxRow row, ChatInboundEnvelope envelope, CancellationToken ct, string? subscriptionId = null)
@@ -174,7 +180,8 @@ public sealed partial class ChatInboxService
         questions = questions.Where(q => deliveries.Any(d => d.Id == q.DeliveryId)).ToList();
         row.ContentScopesJson = JsonSerializer.Serialize(deliveries.Select(d => JsonSerializer.Deserialize<ChatDeliveryTarget>(d.TargetJson)!).Select(t => new { t.ProductId, t.SpawnId }).Distinct());
         return questions.Count == 0 ? "No open question messages in this conversation. Open Forge for the current status."
-            : "Reply to the specific question message, or use the answer command with its message ID and your answer.\n"
+            : (envelope.ProviderId == "slack" ? "Use !forge answer <message ID> <answer> in this thread, or select a question's Custom answer button.\n"
+                : "Reply to the specific question message, or use the answer command with its message ID and your answer.\n")
                 + string.Join("\n", questions.Take(20).Select(q => $"Message {q.MessageId}: question {q.QuestionId}"))
                 + (questions.Count > 20 ? "\nMore questions are available in Forge." : "");
     }
@@ -188,7 +195,9 @@ public sealed partial class ChatInboxService
         {
             "linked" => "Linked to your Forge operator identity. Use status or questions in a configured workstream conversation.",
             "unlinked" => "Your chat identity links were revoked. Link again from Forge to restore access.",
-            "link-instructions" => $"Open Forge while signed in and request a chat identity link for connection {envelope.ConnectionId}, bot {envelope.Address.ExternalTenantId}, sender {envelope.SenderId}. Send the challenge with the start command.",
+            "link-instructions" => envelope.ProviderId == "slack"
+                ? $"Open Forge while signed in and request a chat identity link for connection {envelope.ConnectionId}, workspace {envelope.Address.ExternalTenantId}, sender {envelope.SenderId}. Send !forge link <challenge> in this channel."
+                : $"Open Forge while signed in and request a chat identity link for connection {envelope.ConnectionId}, bot {envelope.Address.ExternalTenantId}, sender {envelope.SenderId}. Send the challenge with the start command.",
             "link-invalid-or-expired" => "This link challenge is expired, already used, or belongs to another connection or sender. Request a new challenge in Forge.",
             "link-required" or "not-authorized" => "Link your enrolled Forge identity and check your workstream access in Forge.",
             "answered-all" => "Answer saved. All questions in this request are answered.",

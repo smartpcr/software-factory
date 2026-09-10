@@ -90,7 +90,9 @@ public sealed partial class ChatInboxService(ControlDbContext control, ChatRunti
         if (command is "start" or "link") argument = argument is { Length: 64 } ? "sha256:" + ChatEventCatalog.Hash(argument) : "";
         else if (command is "status" or "pause" or "resume" or "questions")
             argument = argument is { Length: <= 128 } && argument.All(c => char.IsAsciiLetterOrDigit(c) || c is ':' or '-' or '_' or '.') ? argument : "invalid-scope";
-        else if (command == "answer") argument = argument is { Length: <= 128 } && argument.All(char.IsAsciiDigit) ? argument : "invalid-message";
+        else if (command == "answer") argument = argument is { Length: > 0 and <= 128 }
+            && (envelope.ProviderId == "slack" ? argument.All(c => char.IsAsciiDigit(c) || c == '.') && argument.Count(c => c == '.') == 1 && argument[0] != '.' && argument[^1] != '.'
+                : argument.All(char.IsAsciiDigit)) ? argument : "invalid-message";
         else argument = null;
         var action = envelope.ActionToken;
         if (action is "act|retry" or "act|accept" or "act|cancel" or "act|restart")

@@ -63,6 +63,8 @@ public sealed class ChatStatusService(ControlDbContext control, IProductDbContex
         {
             options.Value.HostId, Chat = await this.HistoryAsync(null, null, options.Value.HostId, ct),
             Health = await control.ChatConnectionStates.AsNoTracking().ToListAsync(ct),
+            Receivers = await control.ChatReceiverStates.AsNoTracking().Select(r => new { r.ProviderId, r.ReceptionKey, r.State, r.RetiredAt,
+                r.DiagnosticCode, r.DiagnosticTenantId, r.DiagnosticAt, r.DiagnosticCount }).ToListAsync(ct),
             Orphaned = await control.ChatConversationBindings.CountAsync(b => b.ProvisioningState == "orphaned", ct),
             Degraded = await control.ChatConversationBindings.CountAsync(b => b.ProvisioningState == "degraded", ct),
             ExpiredInbox = await control.ChatInbox.CountAsync(i => i.State == "expired", ct),

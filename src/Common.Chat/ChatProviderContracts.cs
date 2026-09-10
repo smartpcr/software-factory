@@ -111,3 +111,16 @@ public interface IChatResumableSession
 {
     ValueTask RestoreCursorAsync(string? cursor, CancellationToken ct = default);
 }
+
+/// <summary>ReceiveAsync belongs to the reception key and survives disposal of one member session.
+/// The supervisor cancels it when the last member leaves. Disposal detaches only that installation.</summary>
+public interface IChatSharedReceptionSession
+{
+    string? ReceptionFailureCode { get; }
+}
+
+/// <summary>Durable, content-free diagnostics for envelopes that cannot be assigned to an installation.</summary>
+public interface IChatReceptionDiagnosticSink
+{
+    ValueTask<ChatInboundAcceptance> AcceptDiagnosticAsync(string code, string? externalTenantId = null, CancellationToken ct = default);
+}

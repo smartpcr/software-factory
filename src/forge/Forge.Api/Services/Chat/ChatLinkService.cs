@@ -22,6 +22,7 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(senderId) || tenantId.Length > 512 || senderId.Length > 512)
             throw new ChatConfigurationException("invalid-link-target");
         if (connection.ProviderId == "telegram" && tenantId != connection.InstallationId) throw new ChatConfigurationException("link-bot-mismatch");
+        if (connection.ProviderId == "slack" && tenantId != connection.InstallationId) throw new ChatConfigurationException("link-workspace-mismatch");
         var token = identities.IssueLinkChallenge(actor!.UserId, connection.ProviderId, tenantId, senderId);
         control.ChatLinkChallenges.Add(new() { Hash = ChatEventCatalog.Hash(token), ConnectionId = connectionId, ConnectionRevision = connection.Revision,
             UserId = actor.UserId, ExternalTenantId = tenantId, ExternalUserId = senderId, ExpiresAt = clock.GetUtcNow().AddMinutes(2).ToUnixTimeMilliseconds(),
@@ -29,7 +30,8 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
         await control.SaveChangesAsync(ct);
         var session = connection.ProviderId == "telegram" ? await supervisor.GetAsync(connection, ct) : null;
         var deepLink = session?.Provider is Common.Chat.Telegram.TelegramSession telegram ? $"https://t.me/{telegram.BotUsername}?start={token}" : null;
-        return new { Token = token, ExpiresInSeconds = 120, DeepLink = deepLink };
+        return new { Token = token, ExpiresInSeconds = 120, DeepLink = deepLink,
+            ChannelCommand = connection.ProviderId == "slack" ? "!forge link " + token : null };
     }
 
     public Task<ForgeActor?> RedeemAsync(string token, string connectionId, string tenantId, string senderId, CancellationToken ct)

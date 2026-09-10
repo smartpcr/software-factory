@@ -116,6 +116,10 @@ public sealed class ChatReceiverStateRow
     public long? RecoveryDeadline { get; set; }
     public string State { get; set; } = "starting";
     public long CheckpointAt { get; set; }
+    public string? DiagnosticCode { get; set; }
+    public string? DiagnosticTenantId { get; set; }
+    public long? DiagnosticAt { get; set; }
+    public long DiagnosticCount { get; set; }
     public long? RetiredAt { get; set; }
 }
 

@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B, 1, 2 and 3 implemented. Stage 1S automated checks pass; its real-bot/manual gate remains pending. Stage 3 has 314 passing backend checks and one skipped live-provider test; see the validation report. Stages 4–6 remain planned. Updated 2026-09-10.
+**Status:** Stages 0A, 0B, 1, 2 and 3 implemented. Stage 4 Slack adapter and host integration implemented: nine checklist items complete; item 10 awaits its Stage 5 connection UI. Stage 1S automated checks pass; its real-bot/manual gate remains pending. Stage 4 has 369 passing backend checks and one skipped live-provider test; see the validation report. Stages 5-6 remain planned. Updated 2026-09-10.
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -70,7 +70,7 @@ Paths marked **new** are proposed files/projects, not existing implementations.
 | Authentication/authorization prerequisite | `Auth/{ForgeUser,RequireRole}.cs`, `Persistence/ProductScope.cs`, user/role mutation endpoints | Authenticated host-paired sessions, stable user identities and `ForgeCapabilityAuthorizer`; protect web/chat action and grant/role mutation paths before remote control |
 | Shared chat contract | `src/Common.Chat/{IChatTransport,ChatTransportOptions,ChatChannelMap,ChatInboundPump,ChatServiceCollectionExtensions}.cs` | Add provider registry/session contracts, capability descriptors, semantic messages and normalized inbound envelopes; retire Telegram assumptions after compatibility migration |
 | Telegram | `src/Common.Chat.Telegram/`, `src/Common.Chat/ChatTokenResolver.cs` | Stage 3 extracted protocol/rendering; legacy adapter retained; connection-specific state and common secret-store seam |
-| Slack | No adapter exists | **New** `src/Common.Chat.Slack/{SlackProviderPlugin,SlackConnectionSession,SlackApiClient,SlackSocketReceiver,SlackMessageRenderer}.cs` |
+| Slack | `src/Common.Chat.Slack/` | **Implemented** `src/Common.Chat.Slack/{SlackProviderPlugin,SlackConnectionSession,SlackApiClient,SlackSocketReceiver,SlackMessageRenderer}.cs` |
 | Workstream plugins | No workstream plugin model exists | **New** minimal `src/forge/Forge.Api/Plugins/{IWorkstreamPlugin,WorkstreamPluginRegistry}.cs`; explicit `story-spawn` scope; `ChatWorkstreamPlugin` consumes parent subscriptions |
 | Routing and delivery | `Services/Chat/{ChatNotifier,ChatBridgeService,ChatInboundDispatcher,ForgeChatRoutes,ForgeChatChannelStore,ForgeChatCursorStore}.cs` | Scoped subscriptions, independent deliveries, inbox processing, operator linking and connection supervision |
 | Domain actions | `Services/{OpenQuestionService,OperatorActionService}.cs`, `Endpoints/StoriesEndpoints.cs` (`PauseSpawn`, `ResumeSpawn`, artifact actions) | Shared authorization, revisions and receipts; extract required parent/artifact action cores so HTTP and chat share behavior |
@@ -556,35 +556,42 @@ row gate remains pending; Slack, the full setup UI and legacy import remain late
 
 ### Stage 4 — Slack provider
 
-- [ ] Create `Common.Chat.Slack` and register it alongside Telegram.
-- [ ] Supply `docs/chat/slack-app-manifest.yaml` and `slack-setup.md` during this
+- [x] Create `Common.Chat.Slack` and register it alongside Telegram.
+- [x] Supply `docs/chat/slack-app-manifest.yaml` and `slack-setup.md` during this
       implementation stage. Include public-channel scopes/event subscriptions and
       document the private-channel option specified in the design.
-- [ ] Implement bot credential validation (`auth.test`), app-token/socket validation,
+- [x] Implement bot credential validation (`auth.test`), app-token/socket validation,
       paginated destination listing, and channel membership checks. Show credential,
       app-installation, workspace and channel failures separately.
-- [ ] Implement Web API sending/editing and one root thread per top-level row and
+- [x] Implement Web API sending/editing and one root thread per top-level row and
       destination, shared by its children; preserve
       `channel`, `ts`, `thread_ts` and workspace identity as strings.
-- [ ] Implement Block Kit rendering with accessible fallback text, opaque buttons,
+- [x] Implement Block Kit rendering with accessible fallback text, opaque buttons,
       custom-answer selection, content limits and multi-part correlation.
-- [ ] Implement Socket Mode envelope reception, durable acceptance, timely ack,
+- [x] Implement Socket Mode envelope reception, durable acceptance, timely ack,
       reconnect/refresh, backoff, cancellation and connection ownership.
-- [ ] Share one app receiver across its workspace installations, validate the
+- [x] Share one app receiver across its workspace installations, validate the
       handshake app ID and route events to the matching workspace connection.
       Diagnose unknown workspaces without dispatching their events as another user.
-- [ ] Normalize user replies and interactive events; filter self/bot and edit/delete
+- [x] Normalize user replies and interactive events; filter self/bot and edit/delete
       events. Use event/envelope dedupe plus logical action idempotency.
-- [ ] Implement question disambiguation for thread replies and channel-based linking
+- [x] Implement question disambiguation for thread replies and channel-based linking
       challenges. Initial support must not require direct-message or user tokens.
 - [ ] Respect provider rate-limit hints and make removed channel membership, revoked
       tokens and archived channels repairable from the connection UI.
+
+    - [x] Provider pacing, safe failure codes, validation and revision/retry APIs.
+    - [ ] Connection repair screen and browser acceptance: owned by Stage 5.
 
 **Acceptance:** fixtures exercise public/private channel replies, buttons, split
 messages, duplicate envelopes, reconnects, 429s and revoked credentials. Two Slack
 workspaces using one app receiver and Telegram can run simultaneously. Disabling
 one workspace leaves the other receiving. A channel reply with an ambiguous
 question never answers an arbitrary work item. No history polling is required.
+
+See [Stage 4 validation](chat-plugin-stage4-validation.md) for all ten requirements,
+fixture evidence, the remaining Stage 5 UI dependency and the gap review.
+Use the [Slack setup guide](slack-setup.md) and [manifest](slack-app-manifest.yaml).
 
 <a id="provider-integration-gate"></a>
 **Real-provider integration gate (after Stages 4 and 5):** record a Telegram test

@@ -22,7 +22,9 @@ public sealed class ChatProviderSetupService(ControlDbContext control, ForgeCapa
         var session = await supervisor.GetAsync(connection, ct);
         if (session is null) return ChatProviderResult<ChatDestinationPage>.Fail(ChatFailureKind.InvalidConfiguration, this.FailureReason(connectionId));
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, session.Cancellation.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        return await session.Provider.DiscoverAsync(cursor, timeout.Token);
+        var result = await session.Provider.DiscoverAsync(cursor, timeout.Token);
+        if (!result.Succeeded) runtime.RecordHealth(connectionId, "degraded", ChatConnectionSupervisor.SafeProviderReason(result.Failure?.Code), null, null);
+        return result;
     }
     public async Task<ChatProviderResult<ChatDestination>> ValidateAsync(ForgeActor? actor, string connectionId, string destinationId, CancellationToken ct)
     {
@@ -38,6 +40,7 @@ public sealed class ChatProviderSetupService(ControlDbContext control, ForgeCapa
         if (result.Succeeded && result.Value!.Address != address) result = ChatProviderResult<ChatDestination>.Fail(ChatFailureKind.InvalidConfiguration, "destination-mismatch");
         destination.AccessState = result.Succeeded ? "ready" : "unavailable"; destination.ValidatedAt = clock.GetUtcNow();
         if (result.Succeeded) destination.Kind = result.Value!.Kind;
+        runtime.RecordHealth(connectionId, result.Succeeded ? "ready" : "degraded", result.Succeeded ? null : ChatConnectionSupervisor.SafeProviderReason(result.Failure?.Code), null, null);
         // Validation updates health for this immutable address, not its routing revision.
         await control.SaveChangesAsync(ct); return result;
     }

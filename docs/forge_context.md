@@ -73,7 +73,8 @@ The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 1 validation](chat/chat-plugin-stage1-validation.md) and
 [Stage 1S validation](chat/chat-plugin-stage1s-validation.md) and
 [Stage 2 validation](chat/chat-plugin-stage2-validation.md) and
-[Stage 3 validation](chat/chat-plugin-stage3-validation.md). Stage 0B replaced
+[Stage 3 validation](chat/chat-plugin-stage3-validation.md) and
+[Stage 4 validation](chat/chat-plugin-stage4-validation.md). Stage 0B replaced
 header-based operator authority with paired sessions and shared capabilities;
 the historical Phase 9 description below is not the current authorization boundary.
 
@@ -104,9 +105,16 @@ resume, topic retirement and original-message aliases. Interactive configuration
 available for capable spawn subscriptions; Stage 1S and Host alerts remain notification
 only. Phase 104 adds reply recovery, command revisions/content scopes, choice indexes
 and topic retirement fields to existing control tables. DPAPI credentials use the
-common secret-store interface. Slack, full setup UI and legacy import remain Stages
-4–6. See the validation documents for fixture evidence, the pending live test-bot
-exercise and the existing `repos` catalog-test exclusion.
+common secret-store interface. Stage 4 adds `src/Common.Chat.Slack`: Web API sends/
+edits, bounded Block Kit rendering, channel discovery, channel-based operator links,
+and one Socket Mode receiver per app shared across workspace connections. Replies
+use root-scoped question selection; event/envelope dedupe and domain receipts prevent
+repeated actions across Slack and Telegram. Phase 105 adds durable receiver diagnostics
+and completion/reopening root state to the existing control tables. Nine Stage 4
+checklist items are complete; the final item's repair APIs are implemented and its
+connection UI remains Stage 5. Full setup UI and legacy import remain Stages 5-6.
+See [Slack setup](chat/slack-setup.md), the validation reports, the pending live
+provider gate and the existing `repos` catalog-test exclusion.
 
 ## Foundational decisions (apply everywhere)
 

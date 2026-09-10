@@ -41,6 +41,7 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
     private readonly Dictionary<string, Session> sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Receiver> receivers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Provider, string Key)> retiredReceivers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> receptionFailures = new(StringComparer.Ordinal);
     private long lastHealthCheckpoint;
     private IServiceScope NewScope() => scopes.CreateScope();
     public sealed record Session(ChatConnectionRow Configuration, IChatConnectionSession Provider, CancellationTokenSource Cancellation);
@@ -117,6 +118,16 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
                 .GroupBy(s => s.Configuration.ProviderId + ":" + s.Provider.ReceptionKey))
             {
                 var first = group.First();
+                foreach (var member in group)
+                    if (member.Provider is IChatSharedReceptionSession shared)
+                    {
+                        if (shared.ReceptionFailureCode is { } reason)
+                        {
+                            this.receptionFailures[member.Configuration.Id] = reason;
+                            runtime.RecordHealth(member.Configuration.Id, "degraded", SafeProviderReason(reason), null, null);
+                        }
+                        else if (this.receptionFailures.Remove(member.Configuration.Id)) runtime.RecordHealth(member.Configuration.Id, "ready", null, null, null);
+                    }
                 var capability = providers.Resolve(first.Configuration.ProviderId)!.Descriptor.Capabilities;
                 if (capability.Reception == ChatReceptionMode.None || this.receivers.ContainsKey(group.Key)) continue;
                 if (group.Count() > 1 && (capability.Reception != ChatReceptionMode.Socket || first.Configuration.ProviderId != "slack"))
@@ -136,11 +147,12 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
                 ownership.RecoveryDeadline = clock.GetUtcNow().AddSeconds(60).ToUnixTimeMilliseconds(); ownership.RetiredAt = null;
                 await scope.ServiceProvider.GetRequiredService<ChatDbBudget>().SaveAsync(db, ct);
                 this.retiredReceivers.Remove(group.Key);
-                var cancellation = CancellationTokenSource.CreateLinkedTokenSource(first.Cancellation.Token);
+                var cancellation = first.Provider is IChatSharedReceptionSession ? new CancellationTokenSource()
+                    : CancellationTokenSource.CreateLinkedTokenSource(first.Cancellation.Token);
                 var key = group.Key;
                 var task = Task.Run(async () =>
                 {
-                    try { await first.Provider.ReceiveAsync(new ReceptionSink(this, key), cancellation.Token); }
+                    try { await first.Provider.ReceiveAsync(new ReceptionSink(this, key, first.Configuration.ProviderId, first.Provider.ReceptionKey), cancellation.Token); }
                     catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
                     catch (Exception ex) { runtime.RecordHealth(first.Configuration.Id, "degraded", SafeProviderReason(ex is InvalidOperationException ? ex.Message : null), null, null); }
                 }, CancellationToken.None);
@@ -163,6 +175,14 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         "telegram-webhook-conflict" or "duplicate-telegram-bot" or "telegram-receiver-conflict" or "telegram-token-revoked"
             or "telegram-token-required" or "telegram-secret-unavailable" or "telegram-identity-mismatch" or "telegram-membership-denied"
             or "telegram-rate-limited" => code,
+        "invalid-slack-connection" or "slack-bot-token-required" or "slack-app-token-required" or "slack-secret-unavailable"
+            or "slack-bot-token-revoked" or "slack-app-token-revoked" or "slack-bot-scope-required" or "slack-app-scope-required"
+            or "slack-workspace-mismatch" or "slack-workspace-unavailable" or "slack-bot-installation-required"
+            or "slack-app-installation-mismatch" or "slack-app-handshake-mismatch" or "slack-app-token-conflict" or "duplicate-slack-workspace"
+            or "slack-enterprise-installation-unsupported" or "slack-connect-unsupported" or "slack-private-channels-disabled"
+            or "slack-membership-required" or "slack-channel-archived" or "slack-channel-unavailable" or "slack-channel-required"
+            or "slack-socket-url-invalid" or "slack-socket-disabled" or "slack-socket-unavailable" or "slack-socket-reconnecting"
+            or "slack-receiver-conflict" or "slack-rate-limited" or "slack-api-unavailable" or "slack-message-unavailable" => code,
         _ => "session-unavailable",
     };
 
@@ -204,7 +224,9 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
     private async Task<bool> StopAsync(Session session)
     {
         var key = session.Configuration.ProviderId + ":" + session.Provider.ReceptionKey;
-        if (this.receivers.TryGetValue(key, out var receiver))
+        var sharedSurvives = session.Provider is IChatSharedReceptionSession && this.sessions.Values.Any(s => s != session
+            && s.Provider is IChatSharedReceptionSession && s.Configuration.ProviderId == session.Configuration.ProviderId && s.Provider.ReceptionKey == session.Provider.ReceptionKey);
+        if (!sharedSurvives && this.receivers.TryGetValue(key, out var receiver))
         {
             receiver.Cancellation.Cancel();
             try { await receiver.Task.WaitAsync(TimeSpan.FromSeconds(2)); }
@@ -219,6 +241,7 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         }
         session.Cancellation.Cancel();
         await session.Provider.DisposeAsync(); session.Cancellation.Dispose(); this.sessions.Remove(session.Configuration.Id);
+        this.receptionFailures.Remove(session.Configuration.Id);
         runtime.RecordHealth(session.Configuration.Id, "stopped", "configuration-changed", null, null);
         return true;
     }
@@ -231,8 +254,33 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
     }
     public void Dispose() => this.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-    private sealed class ReceptionSink(ChatConnectionSupervisor supervisor, string receptionKey) : IChatDurableBatchSink
+    private sealed class ReceptionSink(ChatConnectionSupervisor supervisor, string receptionKey, string providerId, string providerKey) : IChatDurableBatchSink, IChatReceptionDiagnosticSink
     {
+        public async ValueTask<ChatInboundAcceptance> AcceptDiagnosticAsync(string code, string? externalTenantId = null, CancellationToken ct = default)
+        {
+            var safe = code switch
+            {
+                "slack-unknown-workspace" or "slack-event-app-mismatch" or "slack-app-installation-mismatch" or "slack-cross-workspace-unsupported"
+                    or "slack-event-invalid" or "slack-event-unsupported" or "slack-interaction-invalid" => code,
+                _ => "provider-event-unroutable",
+            };
+            var tenant = externalTenantId is { Length: > 0 and <= 128 } && externalTenantId.All(char.IsAsciiLetterOrDigit) ? externalTenantId : null;
+            using var scope = supervisor.NewScope();
+            var db = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            using var limits = ChatDbBudget.Limit(db);
+            try
+            {
+                var now = scope.ServiceProvider.GetRequiredService<TimeProvider>().GetUtcNow().ToUnixTimeMilliseconds();
+                await scope.ServiceProvider.GetRequiredService<ChatDbBudget>().WriteAsync(db, async () =>
+                {
+                    if (await db.ChatReceiverStates.Where(r => r.ProviderId == providerId && r.ReceptionKey == providerKey)
+                        .ExecuteUpdateAsync(s => s.SetProperty(r => r.DiagnosticCode, safe).SetProperty(r => r.DiagnosticTenantId, tenant).SetProperty(r => r.DiagnosticAt, now)
+                            .SetProperty(r => r.DiagnosticCount, r => r.DiagnosticCount + 1), ct) != 1) throw new InvalidOperationException("receiver-unavailable");
+                }, ct);
+                return ChatInboundAcceptance.Accepted;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { return ChatInboundAcceptance.Retry; }
+        }
         public ValueTask<ChatInboundAcceptance> AcceptAsync(ChatInboundEnvelope envelope, CancellationToken ct = default)
             => this.AcceptBatchAsync([envelope], [], ct);
         public async ValueTask<ChatInboundAcceptance> AcceptBatchAsync(IReadOnlyList<ChatInboundEnvelope> envelopes, IReadOnlyList<ChatAcceptedCursor> cursors, CancellationToken ct = default)

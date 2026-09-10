@@ -103,6 +103,17 @@ public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbCont
                 var liveSubscriptions = await control.ChatSubscriptions.Where(s => s.ProductId == product.Id && liveIds.Contains(s.SpawnId!)).Select(s => s.Id).ToListAsync(ct);
                 foreach (var binding in await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.ProvisioningState == "degraded" && b.RetiredAt == null).ToListAsync(ct))
                     binding.ProvisioningState = binding.ConversationId is not null ? "ready" : "pending";
+                var slackBindings = await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.RetiredAt == null
+                    && control.ChatConnections.Any(c => c.Id == b.ConnectionId && c.ProviderId == "slack")).ToListAsync(ct);
+                if (slackBindings.Count > 0)
+                {
+                    var parents = await control.ChatSubscriptions.Where(s => liveSubscriptions.Contains(s.Id)).ToDictionaryAsync(s => s.Id, s => s.SpawnId!, ct);
+                    foreach (var binding in slackBindings)
+                    {
+                        var desired = spawns[parents[binding.SubscriptionId]].Phase == "done" ? "completed" : "active";
+                        if (binding.RootDesiredState != desired) { binding.RootDesiredState = desired; binding.RootNextAttemptAt = 0; }
+                    }
+                }
                 if (control.ChangeTracker.HasChanges()) await control.SaveChangesAsync(ct);
             }
         }

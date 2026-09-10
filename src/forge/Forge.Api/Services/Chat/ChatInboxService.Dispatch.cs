@@ -61,7 +61,7 @@ public sealed partial class ChatInboxService
             token = await control.ChatActionTokens.SingleOrDefaultAsync(t => t.Hash == hash, ct);
             if (token is null || token.State != "active" || token.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()) return "stale-action";
             message = await control.ChatDeliveryMessages.SingleOrDefaultAsync(m => m.Id == token.DeliveryMessageId, ct);
-            if ((envelope.ProviderId == "telegram" || envelope.ReplyToMessageId is not null) && message?.MessageId != envelope.ReplyToMessageId) return "unmatched-message";
+            if ((envelope.ProviderId is "telegram" or "slack" || envelope.ReplyToMessageId is not null) && message?.MessageId != envelope.ReplyToMessageId) return "unmatched-message";
         }
         else if (envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true)
         {

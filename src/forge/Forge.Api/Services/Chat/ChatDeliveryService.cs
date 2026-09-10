@@ -45,6 +45,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 { runtime.RecordHealth(delivery.ConnectionId, "degraded", "delivery-storage-unavailable", null, null); control.ChangeTracker.Clear(); }
             }
             await this.EditOnceAsync(ct);
+            await this.UpdateSlackRootsAsync(ct);
             await this.RetireTopicsAsync(ct);
         }
         finally { runtime.DeliveryGate.Release(); }
@@ -141,7 +142,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
             }
         }
         var rendered = policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions);
-        if (connection.ProviderId != "telegram") rendered = Bound(rendered, capabilities);
+        if (connection.ProviderId is not ("telegram" or "slack")) rendered = Bound(rendered, capabilities);
         // Revalidate after session opening/provisioning, immediately before a durable send claim.
         if (await resolver.ValidateAsync(target, notification, ct) is { } changed) { await this.CancelAsync(delivery, changed, ct); return; }
         part.RenderedJson = JsonSerializer.Serialize(rendered with { Actions = [] });
@@ -188,8 +189,14 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
             "render-payload-limit:callback_data:64" or "render-payload-limit:action-key:25" or "render-payload-limit:button-label:256"
                 or "render-payload-limit:buttons:20" or "render-payload-limit:text:65536" or "render-payload-limit:payload-bytes:32768"
                 or "render-payload-limit:edit-text:4096" => failure.Code,
+            "render-payload-limit:button-value:2000" or "render-payload-limit:button-label:75" or "render-payload-limit:edit-text:3000" => failure.Code,
             _ => "render-payload-limit",
         };
+        if (failure.Code.StartsWith("slack-", StringComparison.Ordinal) && ChatConnectionSupervisor.SafeProviderReason(failure.Code) is var slackReason && slackReason != "session-unavailable")
+        {
+            delivery.LastError = slackReason;
+            runtime.RecordHealth(delivery.ConnectionId, "degraded", slackReason, null, null);
+        }
         var delay = failure.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, Math.Min(delivery.Attempts, 8))) + Random.Shared.NextDouble());
         delay = TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 86400));
         delivery.NextAttemptAt = clock.GetUtcNow().Add(delay).ToUnixTimeMilliseconds();
@@ -243,7 +250,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 var delivery = await control.ChatDeliveries.SingleAsync(d => d.Id == part.DeliveryId, ct);
                 if (checkpoint.Kind == "send")
                 {
-                    // Telegram places controls on the last split message; this remains the token's canonical reference.
+                    // Providers place controls on the last split message; this remains the token's canonical reference.
                     part.MessageId = checkpoint.Send!.Messages[^1].MessageId; part.State = "sent";
                     if (checkpoint.Uncertain) { part.ControlsRetired = true; delivery.State = "uncertain"; delivery.LastError = "partial-send-outcome-unknown"; }
                     for (var index = 0; index < checkpoint.Send.Messages.Count - 1; index++)

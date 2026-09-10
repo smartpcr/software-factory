@@ -21,16 +21,18 @@ public sealed class ChatProviderConformanceTests
     [InlineData("FakeAlpha")]
     [InlineData("FakeBeta")]
     [InlineData("telegram")]
+    [InlineData("slack")]
     public async Task Shared_provider_contract_qualifies_destinations_receipts_edits_and_unsupported_policies(string id)
     {
         using var telegram = new TelegramProviderFixture();
-        IChatProviderPlugin provider = id == "telegram" ? telegram.Provider : new FakeChatProvider(id, id == "FakeAlpha");
-        var config = id == "telegram" ? telegram.Configuration() : new ChatConnectionConfiguration("one", id, "installation", 1, 1,
+        using var slack = new SlackProviderFixture();
+        IChatProviderPlugin provider = id == "slack" ? slack.Provider : id == "telegram" ? telegram.Provider : new FakeChatProvider(id, id == "FakeAlpha");
+        var config = id == "slack" ? slack.Configuration() : id == "telegram" ? telegram.Configuration() : new ChatConnectionConfiguration("one", id, "installation", 1, 1,
             ChatPluginTestFactory.EmptySettings, new Dictionary<string, ChatSecretReference>());
-        IChatSecretStore secrets = id == "telegram" ? telegram : new FakeSecretStore();
+        IChatSecretStore secrets = id == "slack" ? slack : id == "telegram" ? telegram : new FakeSecretStore();
         var registry = new ChatProviderRegistry([provider]); Assert.Same(provider, registry.Resolve(id));
         await using var session = (await registry.Resolve(id)!.OpenSessionAsync(config, secrets)).Value!;
-        var address = id == "telegram" ? TelegramProviderFixture.Address(topic: null) : new ChatAddress("one", "tenant", "channel");
+        var address = id == "slack" ? SlackProviderFixture.Address(thread: null) : id == "telegram" ? TelegramProviderFixture.Address(topic: null) : new ChatAddress("one", "tenant", "channel");
         var destination = (await session.ValidateDestinationAsync(address)).Value!; Assert.Equal(address, destination.Address);
         var flat = (await session.EnsureConversationAsync(destination, ChatConversationPolicy.Flat, "parent", "Forge")).Value!;
         var notification = new ChatSemanticNotification("event", "open-questions", "Forge", "Hello café", 1,

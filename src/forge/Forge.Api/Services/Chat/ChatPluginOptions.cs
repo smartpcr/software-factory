@@ -8,6 +8,7 @@ namespace Forge.Api.Services.Chat;
 
 using Common.Chat;
 using Common.Chat.Telegram;
+using Common.Chat.Slack;
 using Forge.Api.Plugins;
 using Microsoft.Extensions.Options;
 
@@ -45,6 +46,10 @@ public static class ChatPluginRegistration
         services.AddSingleton<IChatProviderPlugin>(sp => sp.GetRequiredService<IOptions<ChatPluginOptions>>().Value.TelegramSlice.Enabled
             ? new TelegramNotificationProvider(sp.GetRequiredService<IHttpClientFactory>())
             : new TelegramProvider(sp.GetRequiredService<IHttpClientFactory>()));
+        services.AddHttpClient(SlackProviderPlugin.ClientName, client => client.Timeout = TimeSpan.FromSeconds(30))
+            .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddSingleton<ISlackWebSocketFactory, SlackWebSocketFactory>();
+        services.AddSingleton<IChatProviderPlugin, SlackProviderPlugin>();
         services.AddSingleton<ChatTestEnvironmentSecrets>();
         services.AddSingleton<ChatSliceCoordinator>();
         services.AddSingleton<ChatContentPolicy>();

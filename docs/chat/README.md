@@ -12,7 +12,7 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status (2026-09-10): Stages 0A, 0B, 1, 2 and 3 implemented; Stage 1S live gate pending.** The legacy bridge uses
+**Status (2026-09-10): Stages 0A, 0B, 1, 2 and 3 implemented; Stage 4 Slack adapter implemented, with connection UI acceptance pending Stage 5. Stage 1S live gate pending.** The legacy bridge uses
 explicit host-user configuration and safe defaults. Authenticated operator pairing
 and shared capabilities are implemented. Stage 1 adds provider/plugin contracts,
 the six control-DB configuration tables, scoped configuration APIs, Host alerts
@@ -28,6 +28,9 @@ setup state, revision checks and protection against reused spawn IDs.
   schema registration, 37 new durability/recovery tests and complete regression evidence.
 - [Stage 3 validation](chat-plugin-stage3-validation.md) — Telegram extraction, commands,
   linking, topic lifecycle, callback correlation, and the eight-item gap review.
+- [Stage 4 validation](chat-plugin-stage4-validation.md) - Slack Socket Mode, workspace
+  routing, thread replies/choices, 369 passing checks and the remaining UI/live gates.
+- [Slack setup](slack-setup.md) and [app manifest](slack-app-manifest.yaml).
 
 The active engine still defaults to `legacy`. Stage 1S adapts `TelegramTransport`
 for one connection, one selected parent row and one destination on a fresh isolated
@@ -41,8 +44,10 @@ for the general engine, supports per-bot reception, identity linking, scoped com
 question choices/custom replies and parent topics, and opens interactive subscriptions
 for capable providers. Enable `Forge:Chat:Enabled`, select the `plugins` engine and
 leave `TelegramSlice:Enabled` false to use it. Existing configuration APIs and
-secret references provide setup; Slack, the full administration UI and legacy import
-remain Stages 4–6. Automated HTTP and host fixtures are distinguished from the real
+secret references provide setup. Stage 4 adds `Common.Chat.Slack`, one Socket Mode
+receiver per app, workspace-qualified inbox routing, Web API threads and Block Kit
+controls, channel linking and root completion/retirement updates. The full
+administration/repair UI and legacy import remain Stages 5-6. Automated HTTP and host fixtures are distinguished from the real
 Telegram exercise, which has not run.
 
 **Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**

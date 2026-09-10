@@ -87,6 +87,9 @@ public sealed class ChatConversationBindingRow
     public string ChannelId { get; set; } = "";
     public string? ConversationId { get; set; }
     public string? RootMessageId { get; set; }
+    public string RootDesiredState { get; set; } = "active";
+    public string RootRenderedState { get; set; } = "active";
+    public long RootNextAttemptAt { get; set; }
     public long Revision { get; set; } = 1;
     public string ProvisioningState { get; set; } = "pending";
     public string RetirementState { get; set; } = "none";

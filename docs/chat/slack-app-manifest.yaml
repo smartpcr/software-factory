@@ -1,0 +1,32 @@
+# Forge Slack provider manifest v1. Public channels are enabled by default.
+# To enable private channels, uncomment BOTH groups scopes and message.groups,
+# reinstall the app, and set includePrivateChannels=true on the Forge connection.
+_metadata:
+  major_version: 1
+  minor_version: 0
+display_information:
+  name: Forge
+  description: Workstream notifications and linked operator replies
+  background_color: "#24324A"
+features:
+  bot_user:
+    display_name: Forge
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:read
+      - channels:history
+      # - groups:read
+      # - groups:history
+settings:
+  socket_mode_enabled: true
+  interactivity:
+    is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      # - message.groups
+  org_deploy_enabled: false
+  token_rotation_enabled: false

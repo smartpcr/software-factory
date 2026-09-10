@@ -86,6 +86,7 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
                 @"https?://[^\s]*?(?:@|[?&](?:token|key|secret|signature|sig|password)=)[^\s]*",
                 @"\b(?:Bearer\s+\S+|(?:authorization|token|password|secret|api[_-]?key)\s*[:=]\s*\S+)",
                 @"\b\d{5,}:[A-Za-z0-9_-]{20,}",
+                @"\bx(?:ox[baprs]-|app-)[A-Za-z0-9-]{10,}",
                 @"(?:\b[A-Za-z]:[\\/]|\\\\)[^\r\n]*|(?<![:/\w])/[^\s/]+(?:/[^\s]*)?",
             }) text = Regex.Replace(text, pattern, "[redacted]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
             // Plain text transport has no parse mode; break automatic Telegram @mentions.
