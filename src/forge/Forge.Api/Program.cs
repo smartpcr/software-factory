@@ -178,7 +178,7 @@ const string DevCorsPolicy = "ForgeUiDev";
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(DevCorsPolicy, policy => policy
-        .WithOrigins("http://localhost:5181", "http://127.0.0.1:5181")
+        .WithOrigins("http://localhost:5181", "http://127.0.0.1:5181", "http://[::1]:5181")
         .AllowAnyHeader()
         .AllowAnyMethod()
         .AllowCredentials());

@@ -18,10 +18,12 @@ export default defineConfig({
             '/api': {
                 target: 'http://localhost:5180',
                 changeOrigin: true,
+                headers: { 'X-Forge-Proxy': 'vite' },
             },
             '/hubs': {
                 target: 'http://localhost:5180',
                 changeOrigin: true,
+                headers: { 'X-Forge-Proxy': 'vite' },
                 ws: true,
             },
         },

@@ -858,18 +858,24 @@ proof of trusted host-issued pairing, not a claim of enterprise SSO verification
 Framework building blocks: [cookie authentication](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/cookie?view=aspnetcore-8.0)
 and [policy authorization](https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies?view=aspnetcore-8.0).
 
-**Existing-account launch experience:** preserve the existing stable Forge user ID
-and explicitly migrate its intended product memberships during host setup. The
-launcher runs the host-local `--operator open-browser` command after startup. If
-exactly one enrolled database user exists, it selects that account; with several,
-require an explicit `--user-id`. It opens the default browser with the one-use
-challenge in a URL **fragment**, never a query parameter or log. The UI immediately
-removes the fragment from browser history and redeems it in the CSRF-protected POST
-body, once even under React StrictMode. The fragment is visible only to the trusted
-local OS/browser, not HTTP servers or Referer headers. An expired link leaves the
-manual pairing fallback available. This command does not enroll users, infer grants
-from provider OAuth caches, or give anonymous HTTP callers host authority. Restarting
-the local launcher opens a new session; signing out does not silently sign in again.
+**Automatic localhost sign-in:** opening Forge directly in a browser on the host
+signs into the single enrolled, existing Forge account without a pairing code.
+`POST /api/operator/local-sign-in` verifies the actual client TCP socket belongs
+to the same Windows user as the API, then issues the normal protected session
+cookie. Loopback address, a username header, and provider OAuth caches alone are
+not identity proof. The request still requires the trusted Origin and CSRF token.
+The browser calls the API directly; Vite tags proxied requests, which this endpoint
+rejects. Socket lookup failures, other Windows users, revoked/deleted accounts and
+multiple enrolled accounts fall back to manual pairing. The endpoint never enrolls
+users or grants roles. Explicit sign-out suppresses automatic sign-in across reloads;
+the local sign-in button or a pairing code signs in again. Browser profiles on the
+same trusted Windows account share this local-host authority. This is a local host
+identity mechanism, not Microsoft or GitHub SSO.
+
+The host-local `--operator open-browser` fragment handoff and clipboard pairing
+remain available to explicitly select an enrolled account. The one-use fragment
+is removed before POST redemption; no challenge is exposed by anonymous HTTP.
+Implementation uses the Windows [TCP connection ownership API](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable).
 
 `ForgeActorResolver` accepts only an authenticated browser principal or a verified
 provider/tenant/user link and returns a stable Forge user ID. A new

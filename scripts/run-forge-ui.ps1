@@ -1,6 +1,10 @@
 <#
 .SYNOPSIS
   Launches, stops, or checks the status of the Forge UI and Forge.Api server.
+  Startup ensures inbound TCP firewall rules for the targeted services (API 5180,
+  UI 5181), on Domain/Private networks including routed remote clients. Only firewall setup
+  elevates when rules need changing. -Status and -Stop do not change firewall rules.
+  The UI listens on 0.0.0.0:5181 and proxies requests to the loopback-only API.
 
 .PARAMETER Rebuild
   When set, deletes prior build artifacts first (server bin\ + obj\, UI dist\),
@@ -44,11 +48,10 @@ $ErrorActionPreference = 'Stop'
 # Forge.Api runs NON-elevated, so every git / agent (Copilot CLI/SDK) /
 # normal-build child it spawns is non-elevated too — which avoids the whole
 # class of elevation bugs (shared ~/.gitconfig access denials, MSBuildLocator
-# env pollution, worktree pollution). The ONLY thing that needs Administrator
-# is the build/test command of a repo flagged RunTestsElevated (its tests
-# write HKLM / bind HttpListener URLs). That single command is marshalled to a
-# small ELEVATED broker — a second `Forge.Api.exe --elevated-broker` this
-# launcher starts via one UAC prompt (Start-ElevatedBroker below). The broker
+# env pollution, worktree pollution). Firewall repairs use a short elevated
+# helper. The build/test command of a repo flagged RunTestsElevated (its tests
+# write HKLM / bind HttpListener URLs) uses a separate elevated broker — a
+# second `Forge.Api.exe --elevated-broker` started via its own UAC prompt. The broker
 # watches the web host's PID and self-exits when it stops, so a plain
 # non-elevated -Stop tears down both. This launcher therefore NO LONGER
 # self-elevates the whole script.
@@ -69,6 +72,13 @@ $ServerProj = Join-Path $RepoRoot 'src\forge\Forge.Api\Forge.Api.csproj'
 $ServerBinDir = Join-Path $RepoRoot 'src\forge\Forge.Api\bin\Debug'
 $ApiPort = 5180
 $UiPort  = 5181
+# Advertise only this machine's concrete hostnames and interface addresses.
+$remoteUiHosts = @($env:COMPUTERNAME.ToLowerInvariant())
+try { $remoteUiHosts += [Net.Dns]::GetHostEntry([Net.Dns]::GetHostName()).HostName.ToLowerInvariant() } catch { }
+$remoteUiHosts += @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+    Select-Object -ExpandProperty IPAddress)
+$remoteUiHosts = @($remoteUiHosts | Sort-Object -Unique)
 
 # ── Resolve the built Forge.Api apphost (single source of truth) ──────────
 # Ask MSBuild where it ACTUALLY writes the apphost (the `RunCommand` property)
@@ -312,6 +322,21 @@ if ($Stop) {
 }
 
 # ── Start action (default) ───────────────────────────────────────────────
+$env:FORGE_UI_HOSTS = $remoteUiHosts -join ','
+# Keep local origins; add the exact remote UI origins separately. Refresh stale
+# launcher-owned entries when interfaces change between runs.
+Get-ChildItem Env: | Where-Object { $_.Name -match '^Forge__Identity__RemoteBrowserOrigins__\d+$' } |
+    ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }
+for ($originIndex = 0; $originIndex -lt $remoteUiHosts.Count; $originIndex++) {
+    Set-Item -LiteralPath "Env:Forge__Identity__RemoteBrowserOrigins__$originIndex" -Value "http://$($remoteUiHosts[$originIndex]):$UiPort"
+}
+# Fail before stopping any service if firewall setup cannot complete.
+. (Join-Path $PSScriptRoot 'forge-firewall.ps1')
+$firewallPorts = @()
+if ($targetServer) { $firewallPorts += $ApiPort }
+if ($targetUI) { $firewallPorts += $UiPort }
+if ($firewallPorts.Count -gt 0) { Ensure-ForgeFirewallRules -Ports $firewallPorts }
+
 Write-Host "🧹 Stopping existing processes..." -ForegroundColor Yellow
 Stop-TargetProcesses -IncludeServer:$targetServer -IncludeUI:$targetUI
 
@@ -530,7 +555,13 @@ if ($targetUI) {
         -ArgumentList "/c","npm","run","dev" `
         -WorkingDirectory $UIDir `
         -WindowStyle Hidden
-    Wait-ForPort -Port $UiPort -Label "Forge UI" -TimeoutSeconds 30 | Out-Null
+    if (-not (Wait-ForPort -Port $UiPort -Label "Forge UI" -TimeoutSeconds 30)) { throw 'Forge UI did not start.' }
+    $uiListeners = @(Get-NetTCPConnection -LocalPort $UiPort -State Listen -ErrorAction Stop)
+    if (-not ($uiListeners | Where-Object { $_.LocalAddress -in @('0.0.0.0', '::') })) {
+        throw "Forge UI is not listening on a network interface. Expected 0.0.0.0:$UiPort."
+    }
+    $remoteUiResponse = Invoke-WebRequest -Uri "http://$($env:COMPUTERNAME):$UiPort" -UseBasicParsing -TimeoutSec 10 -NoProxy
+    if ($remoteUiResponse.StatusCode -ne 200) { throw 'Forge UI hostname reachability check failed.' }
 }
 
 # Sign the host user's browser into the existing enrolled Forge account. This
@@ -553,6 +584,8 @@ if ($targetServer) {
 }
 if ($targetUI) {
     Write-Host "  Forge UI:    http://localhost:$UiPort"         -ForegroundColor White
+    foreach ($remoteUiHost in $remoteUiHosts) { Write-Host "  Remote UI:   http://${remoteUiHost}:$UiPort" -ForegroundColor White }
+    Write-Host '  Remote browsers require a host-issued pairing code. Automatic Windows sign-in is localhost-only.' -ForegroundColor Gray
 }
 Write-Host "════════════════════════════════════════════" -ForegroundColor DarkGray
 Write-Host ""

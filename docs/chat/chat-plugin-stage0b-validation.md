@@ -88,3 +88,27 @@ For test migrations use `OperatorTestIdentity.EnrollAsync`, `PairedClientAsync`,
 `SeedProductAsync` and explicit repository/parent relationships. `AnonymousClient`
 is the fixture for denial tests. Do not restore header-based authority or an
 empty-users bypass to make older tests pass.
+
+
+## Automatic localhost sign-in follow-up (2026-09-09)
+
+Opening the localhost UI now signs into the single existing enrolled account
+without copying a code. The browser calls the API directly; Windows verifies the
+client socket's process owner against the host's Windows identity. Vite marks
+proxied requests so they cannot borrow its identity. The normal cookie, CSRF,
+Origin, enrollment, revocation and product-role checks remain in force. Explicit
+sign-out persists as a browser preference, and manual sign-in/pairing remains available.
+
+Focused checks: 21 backend tests pass (including real IPv4/IPv6 socket ownership
+and local sign-in denial cases); 13 browser request tests pass; TypeScript build
+passes. This supersedes the launch-only workaround, which did not sign in a browser
+opened independently of the launcher. No new account or role migration is required
+for an already enrolled host account.
+
+
+Live verification after the authorized redeploy: a fresh, isolated Chrome browser
+context opened `http://localhost:5181/workstreams` with no cookies, code or launch
+fragment. Automatic local sign-in returned HTTP 200 for the existing enrolled
+account; Workstreams rendered with no page errors. Screenshot:
+`E:/work/github/crp/workflow-local-sign-in.png`. Remote browser sign-in remains
+outside the current loopback-only deployment.

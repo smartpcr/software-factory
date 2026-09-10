@@ -111,3 +111,64 @@ describe('local launcher browser sign-in', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+
+describe('automatic localhost sign-in', () => {
+  function browser() {
+    const values = new Map<string, string>();
+    vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:5181', hostname: 'localhost' }, dispatchEvent: vi.fn(),
+      localStorage: { getItem: (key: string) => values.get(key), setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) },
+    });
+    return values;
+  }
+  const unpaired = { state: 'Pair browser' as const, userId: null, localSignInAvailable: true };
+
+  it('automatically establishes a session directly with the API and shares concurrent attempts', async () => {
+    browser();
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/status')
+      ? json({ state: 'Paired', userId: 'existing' }) : json({ token: 'csrf' }));
+    const { restoreLocalOperator } = await import('./operatorSession');
+    const statuses = await Promise.all([restoreLocalOperator(unpaired), restoreLocalOperator(unpaired)]);
+    expect(statuses.every(s => s.userId === 'existing')).toBe(true);
+    const calls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/local-sign-in'));
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0][0])).toBe('http://localhost:5180/api/operator/local-sign-in');
+    expect(calls[0][1]?.credentials).toBe('include');
+    expect(new Headers(calls[0][1]?.headers).get('X-Forge-CSRF')).toBe('csrf');
+  });
+
+  it('does not retry a denied automatic sign-in, but permits a manual retry', async () => {
+    browser();
+    fetchMock.mockResolvedValueOnce(json({ token: 'csrf' })).mockResolvedValueOnce(json({}, 403)).mockResolvedValueOnce(json({ token: 'paired' }));
+    const { restoreLocalOperator, signInLocalOperator } = await import('./operatorSession');
+    await expect(restoreLocalOperator(unpaired)).rejects.toThrow('unavailable');
+    expect(await restoreLocalOperator(unpaired)).toEqual(unpaired);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await signInLocalOperator();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('respects explicit logout across reloads and permits explicit local sign-in', async () => {
+    const values = browser();
+    fetchMock.mockResolvedValueOnce(json({ token: 'csrf' })).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    let session = await import('./operatorSession');
+    await session.unpairOperator();
+    expect(values.get('forge.operator.signed-out')).toBe('true');
+    vi.resetModules();
+    session = await import('./operatorSession');
+    expect(await session.restoreLocalOperator(unpaired)).toEqual(unpaired);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockResolvedValueOnce(json({ token: 'csrf' })).mockResolvedValueOnce(json({ token: 'paired' }));
+    await session.signInLocalOperator();
+    expect(values.has('forge.operator.signed-out')).toBe(false);
+  });
+
+  it('leaves paired sessions and unavailable local sign-in alone', async () => {
+    browser();
+    const { restoreLocalOperator } = await import('./operatorSession');
+    await restoreLocalOperator({ ...unpaired, localSignInAvailable: false });
+    await restoreLocalOperator({ state: 'Paired', userId: 'existing', localSignInAvailable: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

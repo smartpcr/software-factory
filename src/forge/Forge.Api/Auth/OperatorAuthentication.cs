@@ -18,6 +18,7 @@ using Microsoft.Extensions.Options;
 
 public sealed class OperatorAuthenticationOptions
 {
+    public string[] RemoteBrowserOrigins { get; set; } = [];
     public string[] ApiOrigins { get; set; } = ["http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
     public string[] BrowserOrigins { get; set; } = ["http://localhost:5181", "http://127.0.0.1:5181", "http://[::1]:5181",
         "http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
@@ -33,12 +34,14 @@ public static class OperatorAuthentication
             sp.GetRequiredService<IConfiguration>()["Forge:Identity:StorePath"] ?? HostIdentityStore.DefaultPath(),
             sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<OperatorSessions>();
+        services.AddSingleton<ILocalBrowserIdentity, LocalBrowserIdentity>();
         services.AddScoped<ForgeActorResolver>();
         services.AddScoped<ForgeCapabilityAuthorizer>();
         services.AddScoped<ForgeActionContext>();
         services.AddOptions<OperatorAuthenticationOptions>().Bind(configuration.GetSection("Forge:Identity"))
             .Validate(o => o.ApiOrigins.Length > 0 && o.BrowserOrigins.Length > 0
                 && o.ApiOrigins.Concat(o.BrowserOrigins).All(IsLoopbackOrigin), "Only explicit loopback origins are supported.")
+            .Validate(o => o.RemoteBrowserOrigins.All(IsExplicitOrigin), "Remote browser origins must be explicit HTTP(S) origins.")
             .ValidateOnStart();
         services.AddAuthentication(OperatorSessions.Scheme).AddCookie(OperatorSessions.Scheme, o =>
         {
@@ -71,6 +74,11 @@ public static class OperatorAuthentication
         });
     }
 
+    public static bool IsExplicitOrigin(string origin) => Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+        && uri.Scheme is "http" or "https" && uri.AbsolutePath == "/"
+        && uri.Query.Length == 0 && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0
+        && !uri.Host.Contains('*') && origin.TrimEnd('/') == uri.GetLeftPart(UriPartial.Authority);
+
     public static bool IsLoopbackOrigin(string origin) => Uri.TryCreate(origin, UriKind.Absolute, out var uri)
         && uri.IsLoopback && uri.Scheme is "http" or "https" && uri.AbsolutePath == "/"
         && uri.Query.Length == 0 && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0
@@ -88,7 +96,8 @@ public sealed class OperatorOriginMiddleware(RequestDelegate next)
         var expected = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
         if ((remote is not null && !IPAddress.IsLoopback(remote))
             || !options.Value.ApiOrigins.Contains(expected, StringComparer.OrdinalIgnoreCase)
-            || origin.Count > 1 || (origin.Count == 1 && !options.Value.BrowserOrigins.Contains(origin[0], StringComparer.OrdinalIgnoreCase)))
+            || origin.Count > 1 || (origin.Count == 1 && !options.Value.BrowserOrigins.Contains(origin[0], StringComparer.OrdinalIgnoreCase)
+                && !options.Value.RemoteBrowserOrigins.Contains(origin[0], StringComparer.OrdinalIgnoreCase)))
         {
             ctx.Response.StatusCode = 403;
             await ctx.Response.WriteAsJsonAsync(new { title = "Untrusted host or origin", status = 403 });
@@ -105,7 +114,7 @@ public sealed class OperatorRequestMiddleware(RequestDelegate next)
     {
         var path = ctx.Request.Path.Value ?? "";
         var safe = HttpMethods.IsGet(ctx.Request.Method) || HttpMethods.IsHead(ctx.Request.Method) || HttpMethods.IsOptions(ctx.Request.Method);
-        var publicRoute = path is "/api/operator/status" or "/api/operator/csrf" or "/api/operator/pair" or "/health" or "/api/health";
+        var publicRoute = path is "/api/operator/status" or "/api/operator/csrf" or "/api/operator/pair" or "/api/operator/local-sign-in" or "/health" or "/api/health";
         var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
         if (!publicRoute && (path.StartsWith("/api/", StringComparison.Ordinal) || path.StartsWith("/hubs/", StringComparison.Ordinal)) && actor is null)
         {
@@ -154,7 +163,8 @@ public static class OperatorSessionEndpoints
             ctx.Response.Headers.CacheControl = "no-store";
             var enrolledIds = identities.EnrolledUserIds;
             var enrolled = await control.Users.AnyAsync(u => enrolledIds.Contains(u.Id), ctx.RequestAborted);
-            return Results.Ok(new { state = actor is not null ? "Paired" : enrolled ? "Pair browser" : "Needs operator enrollment", userId = actor?.UserId });
+            return Results.Ok(new { state = actor is not null ? "Paired" : enrolled ? "Pair browser" : "Needs operator enrollment", userId = actor?.UserId,
+                localSignInAvailable = OperatingSystem.IsWindows() && await LocalEnrollmentAsync(identities, control, ctx.RequestAborted) is not null });
         }).AllowAnonymous();
         app.MapGet("/api/operator/csrf", (HttpContext ctx, IAntiforgery anti) =>
         {
@@ -170,14 +180,20 @@ public static class OperatorSessionEndpoints
                 ? identities.RedeemBrowserChallenge(req.Challenge!) : null;
             if (enrollment is null || !await control.Users.AnyAsync(u => u.Id == enrollment.UserId, ctx.RequestAborted))
                 return Results.Problem(title: "Invalid, expired, or used pairing challenge", statusCode: 403);
-            sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
-            var principal = sessions.Issue(enrollment);
-            await ctx.SignInAsync(OperatorSessions.Scheme, principal, new AuthenticationProperties
-            {
-                IsPersistent = false, AllowRefresh = false, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8),
-            });
-            ctx.User = principal;
-            return Results.Ok(new { state = "Paired", userId = enrollment.UserId, token = anti.GetAndStoreTokens(ctx).RequestToken });
+            return await SignInAsync(ctx, enrollment, sessions, anti);
+        }).AllowAnonymous();
+        app.MapPost("/api/operator/local-sign-in", async (HttpContext ctx, HostIdentityStore identities,
+            ILocalBrowserIdentity browser, OperatorSessions sessions, ControlDbContext control, IAntiforgery anti) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-store";
+            // A loopback proxy must never lend its Windows identity to another caller.
+            if (ctx.Request.Headers.ContainsKey("X-Forge-Proxy") || ctx.Request.Headers.ContainsKey("Forwarded")
+                || ctx.Request.Headers.ContainsKey("X-Forwarded-For") || !browser.IsHostUser(ctx))
+                return Results.Problem(title: "Connect directly from the Forge host user's browser", statusCode: 403);
+            var enrollment = await LocalEnrollmentAsync(identities, control, ctx.RequestAborted);
+            if (enrollment is null)
+                return Results.Problem(title: "Local sign-in requires exactly one enrolled Forge account. Use browser pairing to select an account.", statusCode: 403);
+            return await SignInAsync(ctx, enrollment, sessions, anti);
         }).AllowAnonymous();
         app.MapPost("/api/operator/logout", async (HttpContext ctx, OperatorSessions sessions) =>
         {
@@ -206,6 +222,25 @@ public static class OperatorSessionEndpoints
             await control.SaveChangesAsync(ctx.RequestAborted);
             return Results.NoContent();
         });
+    }
+
+    private static async Task<OperatorEnrollment?> LocalEnrollmentAsync(HostIdentityStore identities, ControlDbContext control, CancellationToken ct)
+    {
+        var ids = identities.EnrolledUserIds.ToList();
+        var users = await control.Users.Where(u => ids.Contains(u.Id)).Select(u => u.Id).Take(2).ToListAsync(ct);
+        return users.Count == 1 && identities.GetEnrollment(users[0]) is { Enabled: true } enrollment ? enrollment : null;
+    }
+
+    private static async Task<IResult> SignInAsync(HttpContext ctx, OperatorEnrollment enrollment, OperatorSessions sessions, IAntiforgery anti)
+    {
+        sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
+        var principal = sessions.Issue(enrollment);
+        await ctx.SignInAsync(OperatorSessions.Scheme, principal, new AuthenticationProperties
+        {
+            IsPersistent = false, AllowRefresh = false, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8),
+        });
+        ctx.User = principal;
+        return Results.Ok(new { state = "Paired", userId = enrollment.UserId, token = anti.GetAndStoreTokens(ctx).RequestToken });
     }
 
     public sealed record PairBrowserRequest(string? Challenge);

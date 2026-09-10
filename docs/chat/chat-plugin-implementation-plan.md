@@ -256,6 +256,12 @@ principals instead of retaining the old header-only shortcut.
 
 **Implementation evidence:** [Stage 0B requirement review, validation and host setup](chat-plugin-stage0b-validation.md).
 
+- [x] Automatically sign in a direct localhost browser after verifying its TCP
+      connection belongs to the Forge host's Windows user. Retain the existing
+      enrolled account and roles, CSRF/Origin/cookie enforcement, explicit logout,
+      and manual pairing for unavailable or ambiguous local identity. Validate real
+      IPv4/IPv6 socket ownership, denial cases, and the browser request flow.
+
 **Existing-login follow-up:** the local launcher opens an authenticated browser for
 an existing enrolled account through `--operator open-browser`. Its short-lived,
 one-use fragment is removed before POST redemption. Existing IDs and explicitly
