@@ -552,7 +552,7 @@ if ($targetUI) {
     }
 
     Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c","npm","run","dev" `
+        -ArgumentList "/c","npm","run","dev","--","--host","0.0.0.0" `
         -WorkingDirectory $UIDir `
         -WindowStyle Hidden
     if (-not (Wait-ForPort -Port $UiPort -Label "Forge UI" -TimeoutSeconds 30)) { throw 'Forge UI did not start.' }

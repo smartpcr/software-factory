@@ -6,9 +6,12 @@
 
 namespace Forge.Api.Auth;
 
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
+using Common.Chat;
 using Forge.Api.Persistence;
+using Forge.Api.Services.Chat;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -19,6 +22,7 @@ using Microsoft.Extensions.Options;
 public sealed class OperatorAuthenticationOptions
 {
     public string[] RemoteBrowserOrigins { get; set; } = [];
+
     public string[] ApiOrigins { get; set; } = ["http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
     public string[] BrowserOrigins { get; set; } = ["http://localhost:5181", "http://127.0.0.1:5181", "http://[::1]:5181",
         "http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
@@ -35,6 +39,7 @@ public static class OperatorAuthentication
             sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<OperatorSessions>();
         services.AddSingleton<ILocalBrowserIdentity, LocalBrowserIdentity>();
+        services.AddSingleton<OperatorCodeDelivery>();
         services.AddScoped<ForgeActorResolver>();
         services.AddScoped<ForgeCapabilityAuthorizer>();
         services.AddScoped<ForgeActionContext>();
@@ -114,7 +119,9 @@ public sealed class OperatorRequestMiddleware(RequestDelegate next)
     {
         var path = ctx.Request.Path.Value ?? "";
         var safe = HttpMethods.IsGet(ctx.Request.Method) || HttpMethods.IsHead(ctx.Request.Method) || HttpMethods.IsOptions(ctx.Request.Method);
-        var publicRoute = path is "/api/operator/status" or "/api/operator/csrf" or "/api/operator/pair" or "/api/operator/local-sign-in" or "/health" or "/api/health";
+        var publicRoute = path is "/api/operator/status" or "/api/operator/csrf" or "/api/operator/pair" or "/api/operator/local-sign-in"
+            or "/api/operator/request-pairing-code"
+            or "/health" or "/api/health";
         var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
         if (!publicRoute && (path.StartsWith("/api/", StringComparison.Ordinal) || path.StartsWith("/hubs/", StringComparison.Ordinal)) && actor is null)
         {
@@ -153,18 +160,48 @@ public sealed class OperatorRequestMiddleware(RequestDelegate next)
     }
 }
 
+/// <summary>
+/// Host-wide throttle for out-of-band pairing codes. One code per window: a newer code
+/// supersedes the previous one, so this is what stops a request flood from starving the
+/// operator of a usable code.
+/// </summary>
+public sealed class OperatorCodeDelivery(TimeProvider clock)
+{
+    private static readonly TimeSpan Window = TimeSpan.FromSeconds(60);
+    private readonly object gate = new();
+    private DateTimeOffset lastSentAt = DateTimeOffset.MinValue;
+
+    public bool TryBegin(out TimeSpan retryAfter)
+    {
+        lock (this.gate)
+        {
+            var elapsed = clock.GetUtcNow() - this.lastSentAt;
+            if (elapsed < Window)
+            {
+                retryAfter = Window - elapsed;
+                return false;
+            }
+            this.lastSentAt = clock.GetUtcNow();
+            retryAfter = TimeSpan.Zero;
+            return true;
+        }
+    }
+}
+
 public static class OperatorSessionEndpoints
 {
     public static void MapOperatorSessionEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/operator/status", async (HttpContext ctx, HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control) =>
+        app.MapGet("/api/operator/status", async (HttpContext ctx, HostIdentityStore identities, ForgeActorResolver actors,
+            ControlDbContext control, IOptionsMonitor<ChatBridgeOptions> chat) =>
         {
             var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
             ctx.Response.Headers.CacheControl = "no-store";
             var enrolledIds = identities.EnrolledUserIds;
             var enrolled = await control.Users.AnyAsync(u => enrolledIds.Contains(u.Id), ctx.RequestAborted);
             return Results.Ok(new { state = actor is not null ? "Paired" : enrolled ? "Pair browser" : "Needs operator enrollment", userId = actor?.UserId,
-                localSignInAvailable = OperatingSystem.IsWindows() && await LocalEnrollmentAsync(identities, control, ctx.RequestAborted) is not null });
+                localSignInAvailable = OperatingSystem.IsWindows() && await LocalEnrollmentAsync(identities, control, ctx.RequestAborted) is not null,
+                codeDeliveryAvailable = enrolled && DeliveryChatId(chat.CurrentValue) is not null });
         }).AllowAnonymous();
         app.MapGet("/api/operator/csrf", (HttpContext ctx, IAntiforgery anti) =>
         {
@@ -195,6 +232,40 @@ public static class OperatorSessionEndpoints
                 return Results.Problem(title: "Local sign-in requires exactly one enrolled Forge account. Use browser pairing to select an account.", statusCode: 403);
             return await SignInAsync(ctx, enrollment, sessions, anti);
         }).AllowAnonymous();
+        // Lets any browser on a trusted origin ASK for a pairing code, while the code itself
+        // travels out of band to the operator's own chat. The requester never sees it, so
+        // reaching this endpoint proves nothing and grants nothing; possession of the chat
+        // account is the actual gate. The code is sent directly rather than through the
+        // notification outbox, which would persist a live secret in the control DB and keep
+        // retrying it for a day.
+        app.MapPost("/api/operator/request-pairing-code", async (HttpContext ctx, HostIdentityStore identities,
+            ControlDbContext control, IChatTransport transport, IOptionsMonitor<ChatBridgeOptions> chat,
+            OperatorCodeDelivery delivery) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-store";
+            if (DeliveryChatId(chat.CurrentValue) is not { } chatId)
+                return Results.Problem(title: "Out-of-band code delivery is not configured on this host", statusCode: 503);
+            // Issuing a code invalidates the previous one, so an unthrottled endpoint would
+            // let anyone on the subnet keep the operator's own code from ever arriving.
+            if (!delivery.TryBegin(out var retryAfter))
+            {
+                ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
+                return Results.Problem(title: "A pairing code was just sent. Use that one, or wait before asking again.", statusCode: 429);
+            }
+            var enrollment = await LocalEnrollmentAsync(identities, control, ctx.RequestAborted);
+            if (enrollment is null)
+                return Results.Problem(title: "Requesting a code requires exactly one enrolled Forge account", statusCode: 403);
+            var origin = ctx.Request.Headers.Origin.Count == 1 ? ctx.Request.Headers.Origin[0] : "an unknown origin";
+            var caller = ctx.Connection.RemoteIpAddress?.ToString() ?? "an unknown address";
+            var sent = await transport.SendAsync(chatId,
+                $"Forge pairing code: {identities.IssueBrowserChallenge(enrollment.UserId)}\n\n"
+                + $"Requested from {origin} ({caller}). Valid for two minutes, single use.\n"
+                + "If you did not request this, ignore it and it expires on its own.",
+                null, ctx.RequestAborted);
+            return sent.Ok
+                ? Results.Accepted(value: new { delivered = true, platform = transport.Platform })
+                : Results.Problem(title: "Could not deliver the pairing code to chat", statusCode: 502);
+        }).AllowAnonymous();
         app.MapPost("/api/operator/logout", async (HttpContext ctx, OperatorSessions sessions) =>
         {
             sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
@@ -222,6 +293,14 @@ public static class OperatorSessionEndpoints
             await control.SaveChangesAsync(ctx.RequestAborted);
             return Results.NoContent();
         });
+    }
+
+    /// <summary>Destination for out-of-band codes, or null when chat is disabled or unconfigured.</summary>
+    private static string? DeliveryChatId(ChatBridgeOptions options)
+    {
+        if (!options.Enabled) return null;
+        var chatId = options.Telegram.AllowedChatIds.FirstOrDefault();
+        return chatId == 0 ? null : chatId.ToString(CultureInfo.InvariantCulture);
     }
 
     private static async Task<OperatorEnrollment?> LocalEnrollmentAsync(HostIdentityStore identities, ControlDbContext control, CancellationToken ct)

@@ -112,3 +112,21 @@ fragment. Automatic local sign-in returned HTTP 200 for the existing enrolled
 account; Workstreams rendered with no page errors. Screenshot:
 `E:/work/github/crp/workflow-local-sign-in.png`. Remote browser sign-in remains
 outside the current loopback-only deployment.
+
+
+## LAN listener correction (2026-09-09)
+
+The previous firewall-only change did not make the localhost listener reachable.
+Vite and the launcher now explicitly bind `0.0.0.0:5181`. The launcher checks a
+network listener and HTTP via the machine hostname before reporting success.
+Firewall rules now admit routed clients on Domain/Private profiles. Exact host
+names and interface IPs configure UI host validation and API browser-origin
+validation; the API stays on loopback behind Vite. Remote browsers can redeem a
+host-issued code but cannot obtain the proxy's local Windows identity.
+
+Validation: 18 focused backend tests and 14 UI request tests passed; TypeScript
+build passed. The new regression test pairs through an explicitly permitted
+remote UI origin, rejects unlisted origins, and denies local auto-login through
+the proxy. The live listener reports `0.0.0.0:5181`, and `http://xd003:5181`
+returned HTTP 200 from the host. A separate remote client still must confirm its
+network path; host-side HTTP success does not verify upstream network policy.

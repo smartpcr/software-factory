@@ -776,3 +776,11 @@ credentials. Never reuse a production chat receiver during the suite.
       plans; keep previous phase histories as historical references.
 - [ ] Update this plan with actual completed checkboxes and recorded validation only
       as implementation lands. No release claim is implied by this planning change.
+
+
+**LAN connectivity follow-up (2026-09-09):** the UI binds to `0.0.0.0:5181`;
+the launcher verifies the listener and hostname HTTP response, configures exact
+remote browser origins, and repairs Domain/Private firewall rules for routed
+clients. The API remains loopback-only behind the UI proxy. Remote pairing is
+supported through that proxy; automatic host identity is rejected there. Browser
+SSO remains separate work.

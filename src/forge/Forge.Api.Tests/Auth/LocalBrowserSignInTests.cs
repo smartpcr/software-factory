@@ -85,6 +85,30 @@ public sealed class LocalBrowserSignInTests
     }
 
     [Fact]
+    public async Task Configured_Remote_UI_Can_Pair_Through_Proxy_But_Cannot_Borrow_Host_Identity()
+    {
+        await using var factory = new ForgeWebApplicationFactory();
+        await using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.Configure<OperatorAuthenticationOptions>(o => o.RemoteBrowserOrigins = ["http://xd003:5181"]);
+            s.AddSingleton<ILocalBrowserIdentity>(new Peer(true));
+        }));
+        await app.EnrollAsync("existing");
+        using var client = app.AnonymousClient();
+        client.DefaultRequestHeaders.Remove("Origin");
+        client.DefaultRequestHeaders.Add("Origin", "http://xd003:5181");
+        client.DefaultRequestHeaders.Add("X-Forge-Proxy", "vite");
+        await OperatorTestIdentity.RefreshCsrfAsync(client);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/operator/local-sign-in", null)).StatusCode);
+        var challenge = app.Services.GetRequiredService<HostIdentityStore>().IssueBrowserChallenge("existing");
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/operator/pair", new { challenge })).StatusCode);
+        Assert.Equal("Paired", (await client.GetFromJsonAsync<JsonElement>("/api/operator/status")).GetProperty("state").GetString());
+        client.DefaultRequestHeaders.Remove("Origin");
+        client.DefaultRequestHeaders.Add("Origin", "http://untrusted:5181");
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/operator/status")).StatusCode);
+    }
+
+    [Fact]
     public async Task Verified_Local_User_Gets_Existing_Account_Cookie_Without_Code_Or_New_Grants()
     {
         await using var factory = new ForgeWebApplicationFactory();

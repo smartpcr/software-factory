@@ -114,6 +114,16 @@ describe('local launcher browser sign-in', () => {
 
 
 describe('automatic localhost sign-in', () => {
+  it('offers code pairing on a remote hostname without attempting local Windows sign-in', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'xd003', origin: 'http://xd003:5181' } });
+    fetchMock.mockResolvedValueOnce(json({ state: 'Pair browser', userId: null, localSignInAvailable: true }));
+    const { getOperatorStatus, restoreLocalOperator } = await import('./operatorSession');
+    const status = await getOperatorStatus();
+    expect(status.localSignInAvailable).toBe(false);
+    expect(await restoreLocalOperator(status)).toEqual(status);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   function browser() {
     const values = new Map<string, string>();
     vi.stubGlobal('window', {
@@ -170,5 +180,53 @@ describe('automatic localhost sign-in', () => {
     await restoreLocalOperator({ ...unpaired, localSignInAvailable: false });
     await restoreLocalOperator({ state: 'Paired', userId: 'existing', localSignInAvailable: true });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('choosing a sign-in path', () => {
+  const remoteWindow = { location: { hostname: 'xd003', origin: 'http://xd003:5181' }, addEventListener: vi.fn(), dispatchEvent: vi.fn(), localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined } };
+
+  it('never offers or attempts local sign-in from another machine', async () => {
+    vi.stubGlobal('window', remoteWindow);
+    const { localSignInUsable, restoreLocalOperator } = await import('./operatorSession');
+    const status = { state: 'Pair browser' as const, userId: null, localSignInAvailable: true };
+    expect(localSignInUsable(status)).toBe(false);
+    expect(await restoreLocalOperator(status)).toBe(status);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still offers local sign-in on the host itself', async () => {
+    vi.stubGlobal('window', { ...remoteWindow, location: { hostname: 'localhost', origin: 'http://localhost:5181' } });
+    const { localSignInUsable } = await import('./operatorSession');
+    expect(localSignInUsable({ state: 'Pair browser', userId: null, localSignInAvailable: true })).toBe(true);
+    expect(localSignInUsable({ state: 'Pair browser', userId: null, localSignInAvailable: false })).toBe(false);
+  });
+});
+
+describe('out-of-band pairing code delivery', () => {
+  beforeEach(() => vi.stubGlobal('window', { location: { hostname: 'xd003', origin: 'http://xd003:5181' }, addEventListener: vi.fn(), dispatchEvent: vi.fn(), localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined } }));
+
+  it('asks the host to send a code and never receives one back', async () => {
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/csrf') ? json({ token: 'csrf' }) : json({ delivered: true, platform: 'telegram' }, 202));
+    const { requestPairingCode } = await import('./operatorSession');
+    await requestPairingCode();
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/operator/request-pairing-code'));
+    expect(call).toBeDefined();
+    expect(call?.[1]?.method).toBe('POST');
+    expect(new Headers(call?.[1]?.headers).get('X-Forge-CSRF')).toBe('csrf');
+    const body = await (await json({ delivered: true })).json() as Record<string, unknown>;
+    expect(body).not.toHaveProperty('challenge');
+  });
+
+  it('explains the throttle instead of reporting a generic failure', async () => {
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/csrf') ? json({ token: 'csrf' }) : json({ title: 'too soon' }, 429));
+    const { requestPairingCode } = await import('./operatorSession');
+    await expect(requestPairingCode()).rejects.toThrow(/just sent/i);
+  });
+
+  it('surfaces an unconfigured chat bridge', async () => {
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/csrf') ? json({ token: 'csrf' }) : json({ title: 'not configured' }, 503));
+    const { requestPairingCode } = await import('./operatorSession');
+    await expect(requestPairingCode()).rejects.toThrow(/chat bridge/i);
   });
 });

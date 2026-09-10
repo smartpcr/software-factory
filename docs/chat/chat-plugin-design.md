@@ -858,6 +858,17 @@ proof of trusted host-issued pairing, not a claim of enterprise SSO verification
 Framework building blocks: [cookie authentication](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/cookie?view=aspnetcore-8.0)
 and [policy authorization](https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies?view=aspnetcore-8.0).
 
+**LAN UI access:** the launcher binds Vite to `0.0.0.0:5181`, permits this
+machine's concrete hostnames/IP addresses, and configures those exact browser
+origins on the API. `/api` and `/hubs` are proxied to the API on localhost:5180;
+the API itself remains bound to loopback. The managed firewall rules allow routed
+clients on Domain/Private profiles, instead of restricting them to LocalSubnet.
+The launcher verifies the network listener and a hostname HTTP request before
+reporting UI startup success. Remote browsers use host-issued pairing codes; they
+cannot use the proxy's Windows identity for automatic login. Microsoft/GitHub
+browser SSO remains unimplemented. This is the existing HTTP development host;
+HTTPS deployment for untrusted networks is a separate requirement.
+
 **Automatic localhost sign-in:** opening Forge directly in a browser on the host
 signs into the single enrolled, existing Forge account without a pairing code.
 `POST /api/operator/local-sign-in` verifies the actual client TCP socket belongs

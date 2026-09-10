@@ -22,6 +22,7 @@ export interface OperatorStatus {
   state: 'Paired' | 'Pair browser' | 'Needs operator enrollment';
   userId: string | null;
   localSignInAvailable?: boolean;
+  codeDeliveryAvailable?: boolean;
 }
 
 export function clearOperatorSession(): void {
@@ -76,6 +77,17 @@ export async function pairOperator(challenge: string): Promise<void> {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(operatorSessionChanged));
 }
 
+/**
+ * Asks the host to send a pairing code to the operator's own chat. The code never comes
+ * back in this response, so reaching this endpoint from anywhere on the network reveals
+ * nothing; holding the chat account is what actually grants access.
+ */
+export async function requestPairingCode(): Promise<void> {
+  const response = await operatorFetch(`${baseUrl}/api/operator/request-pairing-code`, { method: 'POST' });
+  if (response.status === 429) throw new Error('A code was just sent. Use that one, or wait a minute before asking again.');
+  if (!response.ok) throw new Error('Could not send a pairing code. Check that the chat bridge is configured on the host.');
+}
+
 let localSignInRequest: Promise<void> | null = null;
 let automaticSignInAttempted = false;
 const signedOutKey = 'forge.operator.signed-out';
@@ -83,6 +95,17 @@ const signedOutKey = 'forge.operator.signed-out';
 function setSignedOut(value: boolean): void {
   try { if (value) window.localStorage.setItem(signedOutKey, 'true'); else window.localStorage.removeItem(signedOutKey); }
   catch { /* Storage can be unavailable in restricted browser profiles. */ }
+}
+
+/**
+ * The host reports local sign-in without knowing who is asking, because it verifies the
+ * caller's socket only when the request arrives. A browser on another machine can never
+ * satisfy that, so it must not be offered the local path or auto-attempt it.
+ */
+export function localSignInUsable(status: OperatorStatus | null): boolean {
+  if (!status?.localSignInAvailable || typeof window === 'undefined') return false;
+  try { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(baseUrl || window.location.origin).hostname); }
+  catch { return false; }
 }
 
 export async function signInLocalOperator(): Promise<void> {
@@ -104,7 +127,7 @@ export async function signInLocalOperator(): Promise<void> {
 }
 
 export async function restoreLocalOperator(status: OperatorStatus): Promise<OperatorStatus> {
-  if (status.state === 'Paired' || !status.localSignInAvailable) return status;
+  if (status.state === 'Paired' || !localSignInUsable(status)) return status;
   // Explicit logout must remain logged out, including after a reload or in another tab.
   try { if (window.localStorage.getItem(signedOutKey) === 'true') return status; } catch { /* Optional preference. */ }
   if (localSignInRequest) { await localSignInRequest; return getOperatorStatus(); }

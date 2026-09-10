@@ -1,7 +1,18 @@
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
+var _a, _b;
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
+import { hostname } from 'node:os';
 export default defineConfig({
     plugins: [react()],
     resolve: {
@@ -10,10 +21,10 @@ export default defineConfig({
         },
     },
     server: {
-        host: 'localhost',
+        host: '0.0.0.0',
         port: 5181,
         strictPort: true,
-        allowedHosts: ['localhost', '127.0.0.1', '[::1]'],
+        allowedHosts: __spreadArray(['localhost', '127.0.0.1', '[::1]', hostname().toLowerCase()], ((_b = (_a = process.env.FORGE_UI_HOSTS) === null || _a === void 0 ? void 0 : _a.split(',').filter(Boolean)) !== null && _b !== void 0 ? _b : []), true),
         proxy: {
             '/api': {
                 target: 'http://localhost:5180',
