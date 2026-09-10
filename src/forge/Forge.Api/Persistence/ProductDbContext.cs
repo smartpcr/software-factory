@@ -45,6 +45,7 @@ public class ProductDbContext : DbContext
     public DbSet<ColumnRow> Columns => this.Set<ColumnRow>();
 
     public DbSet<WorkstreamRow> Workstreams => this.Set<WorkstreamRow>();
+    public DbSet<ChatActionReceiptRow> ChatActionReceipts => this.Set<ChatActionReceiptRow>();
 
     public DbSet<WsEventRow> WsEvents => this.Set<WsEventRow>();
 

@@ -8,11 +8,37 @@ namespace Forge.Api.Services.Chat;
 
 using System.Text.RegularExpressions;
 using Common.Chat;
+using Forge.Api.Persistence;
 using Microsoft.Extensions.Options;
 
 /// <summary>Metadata only in Stage 1S. Agent titles, questions, choices and source never enter the outbox.</summary>
 public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
 {
+    public bool AllowsQuestions(string? productId, string subscriptionMode = "redacted") => subscriptionMode == "redacted"
+        && (productId is null ? options.Value.HostContentMode : options.Value.ProductContentModes.GetValueOrDefault(productId)) == "redacted";
+
+    public ChatSemanticNotification Render(ChatNotificationRow row, ChatDeliveryMessageRow part, string subscriptionMode,
+        IEnumerable<string> credentials, IReadOnlyList<ChatSemanticAction> actions)
+    {
+        var title = row.Kind switch
+        {
+            "open-questions" => "Forge · Open questions", "workstream-stalled" => "Forge · Workstream needs attention",
+            "queue-strain" => "Forge · Queue pressure", "human-interaction" => "Forge · Host action needed", _ => "Forge notification",
+        };
+        var body = part.ControlsRetired ? "This request is closed. Open Forge for the current status." : "Open Forge to review the current status.";
+        var question = ChatPayloadConverter.Read(row)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
+        var allow = !part.ControlsRetired && this.AllowsQuestions(row.ScopeKind == "host" ? null : row.ProductId, subscriptionMode);
+        if (allow && question?.Text is { } questionText) body = questionText + "\n\n" + body;
+        var link = this.Create(row.Id, row.Kind, "", []).Body;
+        var linkStart = link.IndexOf("\n\n", StringComparison.Ordinal);
+        if (linkStart >= 0) body += link[linkStart..];
+        return new(row.Id, row.Kind, Redact(title, credentials), Redact(body, credentials), part.DesiredRevision,
+            allow ? actions : [], part.QuestionId);
+    }
+
+    public bool AcceptsAnswer(string? text, IEnumerable<string> credentials) => !string.IsNullOrWhiteSpace(text)
+        && text.Length <= 4000 && Redact(text, credentials) == text;
+
     public ChatSemanticNotification Create(string id, string kind, string storyId, IEnumerable<string> credentials)
     {
         var title = kind == "setup" ? "Forge · Notifications only" : "Forge · Open questions";

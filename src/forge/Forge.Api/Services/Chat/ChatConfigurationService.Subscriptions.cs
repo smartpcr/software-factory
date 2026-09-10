@@ -34,6 +34,7 @@ public sealed partial class ChatConfigurationService
         if (write.Interactive && !ChatPluginInteractiveGate.IsAvailable)
             throw new ChatConfigurationException("interactive-mode-unavailable", 409);
         if (write.CatalogVersion != 1) throw new ChatConfigurationException("unsupported-event-catalog");
+        if (write.ContentMode is not ("metadata" or "redacted")) throw new ChatConfigurationException("unsupported-content-mode");
         var kinds = write.EventKinds ?? (scope.Kind == "host" ? HostKinds : SpawnKinds);
         var allowed = scope.Kind == "host" ? HostKinds.Concat(SpawnKinds).ToArray() : SpawnKinds;
         if (kinds.Distinct(StringComparer.Ordinal).Count() != kinds.Count || kinds.Any(k => !allowed.Contains(k, StringComparer.Ordinal)))
@@ -48,6 +49,7 @@ public sealed partial class ChatConfigurationService
         if (row.Revision == 0) control.ChatSubscriptions.Add(row);
         row.DestinationId = write.DestinationId; row.ConversationPolicy = write.ConversationPolicy;
         row.Interactive = write.Interactive; row.Paused = write.Paused; row.CatalogVersion = write.CatalogVersion;
+        row.ContentMode = write.ContentMode;
         row.EventKindsJson = JsonSerializer.Serialize(kinds); row.ActivationGeneration = parent?.ActivationGeneration ?? 0; row.Revision++;
         if (parent is not null) parent.Revision++;
         foreach (var binding in await control.ChatConversationBindings.Where(b => b.SubscriptionId == id && b.RetiredAt == null).ToListAsync(ct))

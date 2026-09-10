@@ -19,6 +19,8 @@ public sealed class ChatPluginOptions
     /// <summary>Stable identity in host configuration, independent of product/connection selection.</summary>
     public string HostId { get; set; } = "local";
     public TelegramSliceOptions TelegramSlice { get; set; } = new();
+    public Dictionary<string, string> ProductContentModes { get; set; } = new(StringComparer.Ordinal);
+    public string HostContentMode { get; set; } = "metadata";
     public bool LegacyEnabled(bool legacyOptIn) => this.Engine == "legacy" && this.Enabled != false && legacyOptIn;
     public bool PluginsEnabled => this.Engine == "plugins" && this.Enabled == true;
     public string? UnavailableReason => this.Engine is not ("legacy" or "plugins") ? "unsupported-chat-engine"
@@ -45,6 +47,16 @@ public static class ChatPluginRegistration
         services.AddScoped<IChatNotifier, ChatEngineNotifier>();
         services.AddScoped<ChatSliceRetention>();
         services.AddSingleton<ChatTelegramSliceWorker>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IChatSecretStore>(sp => sp.GetRequiredService<ChatTestEnvironmentSecrets>());
+        services.AddSingleton<ChatSecretResolver>();
+        services.AddSingleton<ChatRuntimeState>();
+        services.AddSingleton<ChatDbBudget>();
+        services.AddSingleton<ChatConnectionSupervisor>();
+        services.AddScoped<ChatScopeResolver>();
+        services.AddScoped<ChatEventService>();
+        services.AddScoped<ChatDeliveryService>();
+        services.AddScoped<ChatInboxService>();
         services.AddOptions<ChatBridgeOptions>().PostConfigure<IOptions<ChatPluginOptions>>((legacy, plugins) =>
             legacy.Enabled = plugins.Value.LegacyEnabled(legacy.Enabled));
         services.AddOptions<ChatTransportOptions>().PostConfigure<IOptions<ChatPluginOptions>>((legacy, plugins) =>

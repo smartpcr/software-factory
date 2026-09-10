@@ -68,6 +68,7 @@ public sealed class ChatSubscriptionRow
     public string DestinationId { get; set; } = "";
     public string ConversationPolicy { get; set; } = "flat";
     public bool Interactive { get; set; }
+    public string ContentMode { get; set; } = "metadata";
     public int CatalogVersion { get; set; } = 1;
     public string EventKindsJson { get; set; } = "[]";
     public bool Paused { get; set; }

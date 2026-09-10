@@ -80,6 +80,12 @@ public class ControlDbContext : DbContext
 
     /// <summary>Phase 95 — chat-bridge outbound notification + reply-correlation outbox.</summary>
     public DbSet<ChatNotificationRow> ChatNotifications => this.Set<ChatNotificationRow>();
+    public DbSet<ChatDeliveryRow> ChatDeliveries => this.Set<ChatDeliveryRow>();
+    public DbSet<ChatDeliveryMessageRow> ChatDeliveryMessages => this.Set<ChatDeliveryMessageRow>();
+    public DbSet<ChatInboxRow> ChatInbox => this.Set<ChatInboxRow>();
+    public DbSet<ChatConnectionStateRow> ChatConnectionStates => this.Set<ChatConnectionStateRow>();
+    public DbSet<ChatReceiverStateRow> ChatReceiverStates => this.Set<ChatReceiverStateRow>();
+    public DbSet<ChatActionTokenRow> ChatActionTokens => this.Set<ChatActionTokenRow>();
 
     /// <summary>Phase 95 — chat-bridge operator allow-list (chat account ↔ Forge user).</summary>
     public DbSet<ChatSubscriberRow> ChatSubscribers => this.Set<ChatSubscriberRow>();

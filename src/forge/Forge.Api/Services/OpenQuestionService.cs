@@ -11,6 +11,7 @@ using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Stories;
+using Forge.Api.Services.Chat;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
@@ -43,7 +44,7 @@ public interface IOpenQuestionService
 }
 
 /// <summary>An operator answer to a single open question.</summary>
-public sealed record OpenQuestionAnswer(string ExternalId, string? Answer);
+public sealed record OpenQuestionAnswer(string ExternalId, string? Answer, long? ExpectedRevision = null);
 
 /// <summary>Result of an answer/dismiss: the recomputed unanswered count + whether a resume fired.</summary>
 public sealed record OpenQuestionAnswerResult(int UnansweredCount, bool ResumeScheduled);
@@ -54,6 +55,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
     private const string DismissSentinel = "(dismissed by operator)";
 
     private readonly ForgeActionContext actionContext;
+    private readonly ChatRuntimeState chatRuntime;
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IHubContext<ForgeHub> hub;
@@ -66,9 +68,11 @@ public sealed class OpenQuestionService : IOpenQuestionService
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
         IStoryArtifactStrategy strategy,
-        ForgeActionContext actionContext)
+        ForgeActionContext actionContext,
+        ChatRuntimeState chatRuntime)
     {
         this.actionContext = actionContext;
+        this.chatRuntime = chatRuntime;
         this.control = control;
         this.db = db;
         this.hub = hub;
@@ -81,39 +85,56 @@ public sealed class OpenQuestionService : IOpenQuestionService
         string workItemId, IReadOnlyList<OpenQuestionAnswer> answers, string actor, CancellationToken ct)
     {
         actor = (await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct)).UserId;
-        var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
-        var now = DateTimeOffset.UtcNow;
-        foreach (var a in answers)
+        await this.chatRuntime.DomainGate.WaitAsync(ct);
+        try
         {
-            if (string.IsNullOrEmpty(a.ExternalId)) continue;
-            if (!byExtId.TryGetValue(a.ExternalId, out var latest)) continue;
-            // Update the latest row in place so subsequent renders show the
-            // answer next to the question that surfaced it.
-            latest.Answer = a.Answer ?? string.Empty;
-            latest.AnsweredAt = now;
-            latest.AnsweredBy = actor;
+            var now = DateTimeOffset.UtcNow;
+            var productId = await this.control.Products.Where(p => p.Slug == this.db.ProductSlug).Select(p => p.Id).SingleAsync(ct);
+            var accepted = 0;
+            ChatActionReceiptRow? resume = null;
+            int unanswered;
+            await using (var tx = await this.db.Database.BeginTransactionAsync(ct))
+            {
+                var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
+                foreach (var answer in answers)
+                {
+                    if (string.IsNullOrEmpty(answer.ExternalId) || !byExtId.TryGetValue(answer.ExternalId, out var latest)
+                        || latest.Answer is not null || answer.ExpectedRevision is { } revision && revision != latest.Id) continue;
+                    latest.Answer = answer.Answer ?? string.Empty; latest.AnsweredAt = now; latest.AnsweredBy = actor;
+                    this.db.ChatActionReceipts.Add(new() { ProductId = productId, ActionKey = ChatEventCatalog.Hash($"question:{workItemId}:{latest.Id}"),
+                        Action = "question.answer", TargetId = workItemId, ExpectedRevision = latest.Id, ActorId = actor,
+                        CreatedAt = now.ToUnixTimeMilliseconds(), TerminalAt = now.ToUnixTimeMilliseconds() });
+                    accepted++;
+                }
+                unanswered = byExtId.Values.Count(q => q.Answer is null);
+                if (accepted > 0 && unanswered == 0)
+                {
+                    resume = new() { ProductId = productId, ActionKey = "resume:" + Guid.NewGuid().ToString("N"), Action = "questions.resume",
+                        TargetId = workItemId, ActorId = actor, State = "executing", Result = "pending", OperationId = Guid.NewGuid().ToString("N"),
+                        OwnerProcessInstanceId = this.chatRuntime.ProcessId, CreatedAt = now.ToUnixTimeMilliseconds() };
+                    this.db.ChatActionReceipts.Add(resume);
+                }
+                await this.db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+            }
+            var scheduled = false;
+            if (resume is not null)
+            {
+                try { scheduled = await this.TryUnparkAndResumeAsync(workItemId, ct); resume.State = "completed"; resume.Result = scheduled ? "scheduled" : "no-resume-needed"; resume.TerminalAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); }
+                catch { resume.State = "uncertain"; resume.Result = "resume-outcome-unknown"; }
+                await this.db.SaveChangesAsync(ct);
+            }
+            this.chatRuntime.Signal();
+            return new(unanswered, scheduled);
         }
-
-        return await this.FinalizeAsync(workItemId, ct);
+        finally { this.chatRuntime.DomainGate.Release(); }
     }
 
     /// <inheritdoc/>
     public async Task<OpenQuestionAnswerResult> DismissAsync(
         string workItemId, IReadOnlyList<string> externalIds, string actor, CancellationToken ct)
     {
-        actor = (await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct)).UserId;
-        var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
-        var now = DateTimeOffset.UtcNow;
-        foreach (var extId in externalIds)
-        {
-            if (string.IsNullOrEmpty(extId)) continue;
-            if (!byExtId.TryGetValue(extId, out var latest)) continue;
-            latest.Answer = DismissSentinel;
-            latest.AnsweredAt = now;
-            latest.AnsweredBy = actor;
-        }
-
-        return await this.FinalizeAsync(workItemId, ct);
+        return await this.AnswerAsync(workItemId, externalIds.Select(id => new OpenQuestionAnswer(id, DismissSentinel)).ToArray(), actor, ct);
     }
 
     private async Task<Dictionary<string, DeliverableQuestionRow>> LatestByExternalIdAsync(string workItemId, CancellationToken ct)

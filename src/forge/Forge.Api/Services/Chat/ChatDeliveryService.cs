@@ -1,0 +1,255 @@
+// -----------------------------------------------------------------------
+// <copyright file="ChatDeliveryService.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Services.Chat;
+
+using System.Security.Cryptography;
+using System.Text.Json;
+using Common.Chat;
+using Forge.Api.Persistence;
+using Microsoft.EntityFrameworkCore;
+
+/// <summary>Per-copy scheduling with durable claims and memory-only successful-result checkpoints.</summary>
+public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRuntimeState runtime, ChatDbBudget budget,
+    ChatScopeResolver resolver, ChatConnectionSupervisor supervisor, ChatSecretResolver secrets, ChatContentPolicy policy,
+    IChatProviderRegistry providers, TimeProvider clock)
+{
+    public async Task RunOnceAsync(CancellationToken ct = default)
+    {
+        if (!runtime.EnsureHostOwnership()) return;
+        await runtime.DeliveryGate.WaitAsync(ct);
+        try
+        {
+            await this.FlushCheckpointsAsync(ct);
+            await this.RecoverAsync(ct);
+            var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
+            // The oldest ready item per connection/channel gets one slot before another item on that channel.
+            var candidates = await control.ChatDeliveries.Where(d => (d.State == "pending" || d.State == "retry") && d.NextAttemptAt <= now)
+                .OrderBy(d => d.NextAttemptAt).ThenBy(d => d.CreatedAt).Take(500).ToListAsync(ct);
+            var fair = candidates.GroupBy(d => (d.ConnectionId, d.ChannelId)).Select(g => g.First()).Take(20).ToArray();
+            foreach (var delivery in fair)
+            {
+                try { await this.SendAsync(delivery, ct); }
+                catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
+                { runtime.Health[delivery.ConnectionId] = ("degraded", "delivery-storage-unavailable", null, null); control.ChangeTracker.Clear(); }
+            }
+            await this.EditOnceAsync(ct);
+        }
+        finally { runtime.DeliveryGate.Release(); }
+    }
+
+    private async Task SendAsync(ChatDeliveryRow delivery, CancellationToken ct)
+    {
+        var now = clock.GetUtcNow();
+        var notification = await control.ChatNotifications.SingleAsync(n => n.Id == delivery.NotificationId, ct);
+        var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson);
+        if (target is null) { await this.CancelAsync(delivery, "invalid-target", ct); return; }
+        var reason = await resolver.ValidateAsync(target, notification, ct);
+        if (reason is not null)
+        {
+            if (reason == "ownership-unverified") { delivery.LastError = reason; delivery.NextAttemptAt = now.AddMinutes(5).ToUnixTimeMilliseconds(); await budget.SaveAsync(control, ct); }
+            else await this.CancelAsync(delivery, reason, ct);
+            return;
+        }
+        if (notification.Status is "superseded" or "expired" or "resolved" || notification.ExpiresAt <= now)
+        { await this.CancelAsync(delivery, notification.Status == "superseded" ? "superseded" : "expired", ct); return; }
+        if (ChatPayloadConverter.Read(notification) is null)
+        { delivery.State = "failed"; delivery.LastError = "unsupported-payload"; await budget.SaveAsync(control, ct); return; }
+        if (delivery.Actionable && await control.ChatDeliveries.AnyAsync(d => d.Id != delivery.Id && d.SubscriptionId == delivery.SubscriptionId
+            && d.Actionable && (d.DomainRevision < delivery.DomainRevision || d.DomainRevision == delivery.DomainRevision && d.CreatedAt < delivery.CreatedAt)
+            && (d.State == "pending" || d.State == "retry" || d.State == "sending" || d.State == "uncertain" || d.State == "failed"), ct))
+        { delivery.LastError = "blocked-by-earlier-action"; delivery.NextAttemptAt = now.AddSeconds(5).ToUnixTimeMilliseconds(); await budget.SaveAsync(control, ct); return; }
+        var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == delivery.ConnectionId, ct);
+        var session = await supervisor.GetAsync(connection, ct);
+        if (session is null) { this.Failure(delivery, new(ChatFailureKind.InvalidConfiguration, "session-unavailable")); await budget.SaveAsync(control, ct); return; }
+        var binding = await control.ChatConversationBindings.SingleAsync(b => b.Id == delivery.BindingId, ct);
+        if (binding.RetiredAt is not null) { await this.CancelAsync(delivery, "binding-retired", ct); return; }
+        if (binding.ProvisioningState == "uncertain") { delivery.State = "uncertain"; delivery.LastError = "conversation-outcome-unknown"; await budget.SaveAsync(control, ct); return; }
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, session.Cancellation.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        var address = new ChatAddress(connection.Id, target.ExternalTenantId, target.ChannelId);
+        var validated = await session.Provider.ValidateDestinationAsync(address, timeout.Token);
+        if (!validated.Succeeded || validated.Value!.Address != address)
+        { this.Failure(delivery, validated.Failure ?? new(ChatFailureKind.InvalidConfiguration, "destination-mismatch")); await budget.SaveAsync(control, ct); return; }
+        if (binding.ProvisioningState != "ready")
+        {
+            if (target.ConversationPolicy == "flat") { binding.ProvisioningState = "ready"; await budget.SaveAsync(control, ct); }
+            else
+            {
+                if (binding.ProvisioningState == "provisioning") return;
+                binding.ProvisioningState = "provisioning"; binding.OperationOwner = runtime.ProcessId; binding.RecoveryDeadline = now.AddSeconds(60);
+                await budget.SaveAsync(control, ct);
+                ChatProviderResult<ChatConversation> result;
+                try { result = await session.Provider.EnsureConversationAsync(validated.Value!, Enum.Parse<ChatConversationPolicy>(target.ConversationPolicy, true), binding.Id, "Forge workstream", timeout.Token); }
+                catch { result = ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.UnknownOutcome, "conversation-outcome-unknown"); }
+                if (!result.Succeeded || result.Value!.Address.ConnectionId != address.ConnectionId
+                    || result.Value.Address.ExternalTenantId != address.ExternalTenantId || result.Value.Address.ChannelId != address.ChannelId)
+                {
+                    var failure = result.Failure ?? new(ChatFailureKind.UnknownOutcome, "conversation-outcome-unknown");
+                    binding.ProvisioningState = failure.Kind == ChatFailureKind.UnknownOutcome ? "uncertain" : "pending";
+                    this.Failure(delivery, failure); await budget.SaveAsync(control, ct); return;
+                }
+                runtime.Checkpoints[binding.Id] = new("provision", binding.Id, Conversation: result.Value);
+                await this.FlushCheckpointsAsync(ct);
+            }
+        }
+        address = address with { ConversationId = binding.ConversationId };
+        var part = await control.ChatDeliveryMessages.Where(m => m.DeliveryId == delivery.Id && m.State == "pending").OrderBy(m => m.PartKey).FirstOrDefaultAsync(ct);
+        if (part is null) { delivery.State = "sent"; await budget.SaveAsync(control, ct); return; }
+        if (part.ControlsRetired) { part.State = "cancelled"; await budget.SaveAsync(control, ct); return; }
+        var subscription = await control.ChatSubscriptions.AsNoTracking().SingleAsync(s => s.Id == target.SubscriptionId, ct);
+        var actions = new List<ChatSemanticAction>();
+        var capabilities = providers.Resolve(target.ProviderId)!.Descriptor.Capabilities;
+        if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
+        {
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+            control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
+                Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ExpiresAt = now.AddDays(7).ToUnixTimeMilliseconds() });
+            actions.Add(new("Answer", token, "question.answer"));
+        }
+        var rendered = Bound(policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions), capabilities);
+        // Revalidate after session opening/provisioning, immediately before a durable send claim.
+        if (await resolver.ValidateAsync(target, notification, ct) is { } changed) { await this.CancelAsync(delivery, changed, ct); return; }
+        part.RenderedJson = JsonSerializer.Serialize(rendered with { Actions = [] });
+        part.AddressJson = JsonSerializer.Serialize(address); part.State = "sending"; part.OperationId = Guid.NewGuid().ToString("N");
+        part.OwnerProcessInstanceId = runtime.ProcessId; part.RecoveryDeadline = now.AddSeconds(60).ToUnixTimeMilliseconds(); part.Attempts++;
+        delivery.State = "sending"; delivery.OperationId = part.OperationId; delivery.OwnerProcessInstanceId = runtime.ProcessId;
+        delivery.RecoveryDeadline = part.RecoveryDeadline; delivery.Attempts++; delivery.LastError = null;
+        await budget.SaveAsync(control, ct);
+        ChatProviderResult<ChatSendReceipt> sent;
+        try { sent = await session.Provider.SendAsync(address, rendered, timeout.Token); }
+        catch { sent = ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.UnknownOutcome, "send-outcome-unknown"); }
+        if (sent.Succeeded && sent.Value!.Messages.Count > 0 && sent.Value.Messages.All(m => m.Address == address && !string.IsNullOrEmpty(m.MessageId)))
+        {
+            runtime.Checkpoints[part.Id] = new("send", part.Id, sent.Value, Revision: part.DesiredRevision);
+            // A storage exception leaves the successful receipt in memory. Next tick retries only this checkpoint.
+            await this.FlushCheckpointsAsync(ct);
+        }
+        else
+        {
+            this.Failure(delivery, sent.Failure ?? new(ChatFailureKind.UnknownOutcome, "send-outcome-unknown"));
+            part.State = delivery.State == "uncertain" ? "uncertain" : "pending"; part.LastError = delivery.LastError;
+            await budget.SaveAsync(control, ct);
+        }
+    }
+
+    internal static ChatSemanticNotification Bound(ChatSemanticNotification value, ChatProviderCapabilities caps)
+    {
+        var limit = Math.Max(1, Math.Min(caps.MaxTextCharacters, caps.MaxPayloadBytes / 4));
+        return value with { Body = value.Body[..Math.Min(value.Body.Length, limit)], Actions = value.Actions.Where(a => a.Token.Length <= caps.MaxActionBytes).ToArray() };
+    }
+
+    private void Failure(ChatDeliveryRow delivery, ChatProviderFailure failure)
+    {
+        // Codes from providers are not trusted log text. Persist only the host's fixed classification.
+        delivery.State = failure.Kind switch { ChatFailureKind.UnknownOutcome => "uncertain", ChatFailureKind.RateLimited or ChatFailureKind.Unavailable => "retry", _ => "failed" };
+        delivery.LastError = failure.Kind switch { ChatFailureKind.UnknownOutcome => "send-outcome-unknown", ChatFailureKind.RateLimited => "rate-limited",
+            ChatFailureKind.Unavailable => "provider-unavailable", ChatFailureKind.Unauthorized => "provider-permission-denied", _ => "provider-configuration-error" };
+        var delay = failure.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, Math.Min(delivery.Attempts, 8))) + Random.Shared.NextDouble());
+        delay = TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 86400));
+        delivery.NextAttemptAt = clock.GetUtcNow().Add(delay).ToUnixTimeMilliseconds();
+    }
+
+    internal async Task CancelAsync(ChatDeliveryRow delivery, string reason, CancellationToken ct)
+    {
+        delivery.State = reason == "superseded" ? "superseded" : "cancelled"; delivery.LastError = reason;
+        delivery.TerminalAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+        foreach (var message in await control.ChatDeliveryMessages.Where(m => m.DeliveryId == delivery.Id).ToListAsync(ct))
+        {
+            message.ControlsRetired = true; message.DesiredRevision++; message.TerminalAt = delivery.TerminalAt;
+            if (message.State == "sent") message.EditState = "pending";
+            else if (message.State == "pending") message.State = "cancelled";
+            foreach (var token in await control.ChatActionTokens.Where(t => t.DeliveryMessageId == message.Id && t.State == "active").ToListAsync(ct)) token.State = "retired";
+        }
+        await budget.SaveAsync(control, ct);
+    }
+
+    private async Task RecoverAsync(CancellationToken ct)
+    {
+        foreach (var part in await control.ChatDeliveryMessages.Where(m => (m.State == "sending" || m.EditState == "editing") && m.OwnerProcessInstanceId != runtime.ProcessId).Take(100).ToListAsync(ct))
+        {
+            if (part.State == "sending")
+            {
+                part.State = "uncertain"; part.LastError = "send-outcome-unknown";
+                var delivery = await control.ChatDeliveries.SingleAsync(d => d.Id == part.DeliveryId, ct);
+                delivery.State = "uncertain"; delivery.LastError = part.LastError;
+            }
+            // Edits address an existing message and are safe to reconcile to the latest desired revision.
+            if (part.EditState == "editing") part.EditState = "pending";
+        }
+        foreach (var binding in await control.ChatConversationBindings.Where(b => b.ProvisioningState == "provisioning" && b.OperationOwner != runtime.ProcessId).Take(100).ToListAsync(ct))
+            binding.ProvisioningState = "uncertain";
+        if (control.ChangeTracker.HasChanges()) await budget.SaveAsync(control, ct);
+    }
+
+    private async Task FlushCheckpointsAsync(CancellationToken ct)
+    {
+        foreach (var checkpoint in runtime.Checkpoints.Values.Take(20))
+        {
+            if (checkpoint.Kind == "provision")
+            {
+                var binding = await control.ChatConversationBindings.SingleAsync(b => b.Id == checkpoint.Id, ct);
+                binding.ConversationId = checkpoint.Conversation!.Address.ConversationId; binding.RootMessageId = checkpoint.Conversation.RootMessageId;
+                binding.ProvisioningState = "ready"; binding.OperationOwner = null; binding.RecoveryDeadline = null;
+            }
+            else
+            {
+                var part = await control.ChatDeliveryMessages.SingleAsync(m => m.Id == checkpoint.Id, ct);
+                var delivery = await control.ChatDeliveries.SingleAsync(d => d.Id == part.DeliveryId, ct);
+                if (checkpoint.Kind == "send")
+                {
+                    part.MessageId = checkpoint.Send!.Messages[0].MessageId; part.State = "sent";
+                    for (var index = 1; index < checkpoint.Send.Messages.Count; index++)
+                    {
+                        var partKey = part.PartKey + ":" + index;
+                        if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == partKey, ct))
+                            control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = partKey, QuestionId = part.QuestionId,
+                                ExpectedRevision = part.ExpectedRevision, MessageId = checkpoint.Send.Messages[index].MessageId,
+                                AddressJson = JsonSerializer.Serialize(checkpoint.Send.Messages[index].Address), State = "sent", RenderedRevision = checkpoint.Revision,
+                                ControlsRetired = part.ControlsRetired, EditState = part.ControlsRetired ? "pending" : "none" });
+                    }
+                    if (delivery.State == "sending") delivery.State = await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.Id != part.Id && m.State == "pending", ct) ? "pending" : "sent";
+                    runtime.Health[delivery.ConnectionId] = ("ready", null, clock.GetUtcNow().ToUnixTimeMilliseconds(), null);
+                }
+                part.RenderedRevision = Math.Max(part.RenderedRevision, checkpoint.Revision);
+                part.EditState = part.DesiredRevision > part.RenderedRevision || part.ControlsRetired && checkpoint.Kind == "send" ? "pending" : "none";
+                part.OwnerProcessInstanceId = null; part.RecoveryDeadline = null;
+            }
+            await budget.SaveAsync(control, ct);
+            runtime.Checkpoints.TryRemove(checkpoint.Id, out _);
+        }
+    }
+
+    private async Task EditOnceAsync(CancellationToken ct)
+    {
+        var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
+        foreach (var part in await control.ChatDeliveryMessages.Where(m => m.EditState == "pending" && m.MessageId != null && m.NextAttemptAt <= now).Take(20).ToListAsync(ct))
+        {
+            var delivery = await control.ChatDeliveries.SingleAsync(d => d.Id == part.DeliveryId, ct);
+            var notification = await control.ChatNotifications.SingleAsync(n => n.Id == delivery.NotificationId, ct);
+            var connection = await control.ChatConnections.AsNoTracking().SingleOrDefaultAsync(c => c.Id == delivery.ConnectionId && c.DeletedAt == null && c.Enabled, ct);
+            if (connection is null) { part.EditState = "unavailable"; await budget.SaveAsync(control, ct); continue; }
+            if (providers.Resolve(connection.ProviderId)?.Descriptor.Capabilities.Edits != true) { part.EditState = "not-supported"; await budget.SaveAsync(control, ct); continue; }
+            var session = await supervisor.GetAsync(connection, ct);
+            if (session is null) continue;
+            // Reconciliation edits can bypass disabled subscriptions but only remove controls, never add authority.
+            var rendered = Bound(policy.Render(notification, part, "metadata", await secrets.ValuesAsync(connection, ct), []), providers.Resolve(connection.ProviderId)!.Descriptor.Capabilities);
+            part.EditState = "editing"; part.OwnerProcessInstanceId = runtime.ProcessId; part.RecoveryDeadline = now + 60000;
+            part.RenderedJson = JsonSerializer.Serialize(rendered); await budget.SaveAsync(control, ct);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, session.Cancellation.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            ChatProviderResult<bool> result;
+            try { result = await session.Provider.EditAsync(new(JsonSerializer.Deserialize<ChatAddress>(part.AddressJson)!, part.MessageId!), rendered, timeout.Token); }
+            catch { result = ChatProviderResult<bool>.Fail(ChatFailureKind.Unavailable, "edit-unconfirmed"); }
+            if (result.Succeeded)
+            { runtime.Checkpoints[part.Id] = new("edit", part.Id, Revision: part.DesiredRevision); await this.FlushCheckpointsAsync(ct); }
+            else
+            {
+                part.EditState = result.Failure?.Kind is ChatFailureKind.Unavailable or ChatFailureKind.RateLimited or ChatFailureKind.UnknownOutcome ? "pending" : "failed";
+                part.NextAttemptAt = now + 30000; part.LastError = "control-retirement-unconfirmed"; await budget.SaveAsync(control, ct);
+            }
+        }
+    }
+}

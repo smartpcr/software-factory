@@ -46,7 +46,7 @@ public sealed record ChatDestinationWrite(long ExpectedRevision, string External
 public sealed record ChatPluginWrite(long ExpectedRevision, bool Enabled, int SettingsVersion, JsonElement Settings,
     bool ActivateNewRun = false, string? CopyFromSpawnId = null);
 public sealed record ChatSubscriptionWrite(long ExpectedRevision, long ParentRevision, string DestinationId, string ConversationPolicy,
-    bool Interactive = false, bool Paused = false, int CatalogVersion = 1, IReadOnlyList<string>? EventKinds = null);
+    bool Interactive = false, bool Paused = false, int CatalogVersion = 1, IReadOnlyList<string>? EventKinds = null, string ContentMode = "metadata");
 public sealed record ChatPluginView(string ProductId, string SpawnId, bool Enabled, long Revision,
     long ActivationGeneration, int SettingsVersion, string? CopyOrigin, string State, string? Reason,
     IReadOnlyList<ChatSubscriptionRow> Subscriptions);

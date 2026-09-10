@@ -35,7 +35,6 @@
     "supportsStreaming": true,
     "status": "live"
   },
-
   {
     "id": "claude-sonnet-4.6",
     "vendor": "copilot",
@@ -47,7 +46,8 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "claude-sonnet-4.5",
@@ -59,7 +59,8 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "claude-haiku-4.5",
@@ -78,7 +79,7 @@
     "vendor": "copilot",
     "family": "claude-4",
     "displayName": "Claude Opus 4.8",
-    "_contextWindow_note": "Authoritative from Copilot ListModelsAsync (2026-06-18): max_context_window_tokens=1000000 (max_prompt 936000) — a genuine 1M window (unlike the capped base/effort Opus 4.7). supportsReasoning=true, supportedReasoningEfforts=[low,medium,high,xhigh,max], defaultReasoningEffort=medium.",
+    "_contextWindow_note": "Authoritative from Copilot ListModelsAsync (2026-06-18): max_context_window_tokens=1000000 (max_prompt 936000) \u2014 a genuine 1M window (unlike the capped base/effort Opus 4.7). supportsReasoning=true, supportedReasoningEfforts=[low,medium,high,xhigh,max], defaultReasoningEffort=medium.",
     "contextWindow": 1000000,
     "_price_note": "Billing not returned by ListModelsAsync (billing:{} ); mirrors base Opus per-MTok rate ($15/$75) pending an authoritative billing source.",
     "inputPricePerMTok": 15.0,
@@ -110,7 +111,8 @@
     "outputPricePerMTok": 75.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "claude-opus-4.5",
@@ -122,7 +124,8 @@
     "outputPricePerMTok": 75.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "claude-sonnet-4",
@@ -134,7 +137,8 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "gpt-5.4",
@@ -185,7 +189,8 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "gpt-5.2",
@@ -197,7 +202,8 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "gpt-5.4-mini",
@@ -235,9 +241,9 @@
     "outputPricePerMTok": 5.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
-
   {
     "id": "gemini-3.1-pro-preview",
     "vendor": "copilot",
@@ -245,12 +251,13 @@
     "displayName": "Gemini 3.1 Pro",
     "_contextWindow_note": "Authoritative from Copilot ListModelsAsync (2026-06-18): max_context_window_tokens=1000000 (max_prompt 936000), supportsReasoning=true, defaultReasoningEffort=medium, vision=true.",
     "contextWindow": 1000000,
-    "_price_note": "ESTIMATE — ListModelsAsync returned empty billing ({}). Placeholder at Pro tier ($3/$15); verify before relying on cost figures.",
+    "_price_note": "ESTIMATE \u2014 ListModelsAsync returned empty billing ({}). Placeholder at Pro tier ($3/$15); verify before relying on cost figures.",
     "inputPricePerMTok": 3.0,
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "gemini-3.5-flash",
@@ -259,7 +266,7 @@
     "displayName": "Gemini 3.5 Flash",
     "_contextWindow_note": "Authoritative from Copilot ListModelsAsync (2026-06-18): max_context_window_tokens=1000000 (max_prompt 936000), supportsReasoning=true, vision=true.",
     "contextWindow": 1000000,
-    "_price_note": "ESTIMATE — ListModelsAsync returned empty billing ({}). Placeholder at Flash/mini tier ($1/$5); verify before relying on cost figures.",
+    "_price_note": "ESTIMATE \u2014 ListModelsAsync returned empty billing ({}). Placeholder at Flash/mini tier ($1/$5); verify before relying on cost figures.",
     "inputPricePerMTok": 1.0,
     "outputPricePerMTok": 5.0,
     "supportsTools": true,
@@ -273,14 +280,14 @@
     "displayName": "MAI-Code-1-Flash (Internal only)",
     "_contextWindow_note": "Authoritative from Copilot ListModelsAsync (2026-06-18): max_context_window_tokens=256000 (max_prompt 128000), supportsReasoning=true, vision=false.",
     "contextWindow": 256000,
-    "_price_note": "ESTIMATE — ListModelsAsync returned empty billing ({}). Placeholder at Flash/mini tier ($1/$5); verify before relying on cost figures.",
+    "_price_note": "ESTIMATE \u2014 ListModelsAsync returned empty billing ({}). Placeholder at Flash/mini tier ($1/$5); verify before relying on cost figures.",
     "inputPricePerMTok": 1.0,
     "outputPricePerMTok": 5.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live"
+    "status": "retired",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
-
   {
     "id": "gpt-5.6-sol",
     "vendor": "copilot",
@@ -352,9 +359,10 @@
     "outputPricePerMTok": 75.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live",
+    "status": "retired",
     "reasoningOverride": true,
-    "defaultReasoningEffort": "medium"
+    "defaultReasoningEffort": "medium",
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "kimi-k2.7-code",
@@ -367,8 +375,9 @@
     "outputPricePerMTok": 15.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live",
-    "reasoningOverride": false
+    "status": "retired",
+    "reasoningOverride": false,
+    "_statusChanged_note": "Retired 2026-09-10 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "mai-code-1-flash-picker",
@@ -385,7 +394,6 @@
     "reasoningOverride": true,
     "defaultReasoningEffort": "medium"
   },
-
   {
     "id": "claude-opus-5",
     "vendor": "copilot",
@@ -516,7 +524,6 @@
     "reasoningOverride": true,
     "defaultReasoningEffort": "medium"
   },
-
   {
     "id": "local-stub",
     "vendor": "forge",

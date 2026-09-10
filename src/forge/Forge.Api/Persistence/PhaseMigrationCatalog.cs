@@ -350,6 +350,11 @@ public static class PhaseMigrationCatalog
             ProductTables: Array.Empty<string>()),
         new PhaseMigrationSpec(99, PhaseMigrationKind.Control,
             ControlTables: new[] { "spawn_plugins" }, ProductTables: Array.Empty<string>()),
+        new PhaseMigrationSpec(100, PhaseMigrationKind.Control,
+            ControlTables: new[] { "chat_notifications", "chat_subscriptions", "chat_deliveries", "chat_delivery_messages", "chat_inbox", "chat_connection_state", "chat_receiver_state", "chat_action_tokens" },
+            ProductTables: Array.Empty<string>()),
+        new PhaseMigrationSpec(101, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(), ProductTables: new[] { "chat_action_receipts" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

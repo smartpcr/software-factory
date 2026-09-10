@@ -163,5 +163,6 @@ public static class DbModelControl
         // Phase 95 (Part B) — spawn → forum-topic mapping (one row per spawn).
         mb.Entity<ChatSpawnTopicRow>().ToTable("chat_spawn_topics").HasKey(x => x.SpawnId);
         ChatConfigurationModel.Configure(mb);
+        ChatDeliveryModel.Configure(mb);
     }
 }

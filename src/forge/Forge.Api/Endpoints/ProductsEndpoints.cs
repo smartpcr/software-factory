@@ -815,6 +815,8 @@ public static class ProductsEndpoints
         control.Products.Remove(row);
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
+        await ctx.RequestServices.GetRequiredService<Forge.Api.Services.Chat.ChatScopeLifecycleService>().RetireProductAsync(id, ctx.RequestAborted);
+
         await hub.Clients.All.SendAsync("product.changed", new { kind = "deleted", id });
         return Results.NoContent();
     }

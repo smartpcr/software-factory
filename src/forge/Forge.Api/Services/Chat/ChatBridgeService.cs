@@ -118,7 +118,7 @@ public sealed class ChatBridgeService : BackgroundService
         // NOTE: order client-side — SQLite can't ORDER BY a DateTimeOffset
         // column (documented Forge SQLite gotcha), so materialize then sort.
         var pending = await control.ChatNotifications
-            .Where(r => r.Status == ChatNotificationStatuses.Pending && r.Platform != ChatTelegramSliceService.Platform)
+            .Where(r => r.Status == ChatNotificationStatuses.Pending && r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins")
             .ToListAsync(ct);
         pending = pending.OrderBy(r => r.CreatedAt).ToList();
 
@@ -185,7 +185,7 @@ public sealed class ChatBridgeService : BackgroundService
 
         // ---- Edit pass: resolving → terminal (exactly one edit) -----------
         var resolving = await control.ChatNotifications
-            .Where(r => r.Status == ChatNotificationStatuses.Resolving && r.Platform != ChatTelegramSliceService.Platform)
+            .Where(r => r.Status == ChatNotificationStatuses.Resolving && r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins")
             .ToListAsync(ct);
 
         foreach (var row in resolving)

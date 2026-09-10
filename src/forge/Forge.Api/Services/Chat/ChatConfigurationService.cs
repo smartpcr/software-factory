@@ -216,6 +216,7 @@ public sealed partial class ChatConfigurationService(
 
     private async Task SaveAsync(CancellationToken ct)
     {
+        await ChatScopeLifecycleService.ConfigurationChangedAsync(control, ct);
         try { await control.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException) { throw new ChatConfigurationException("revision-conflict", 409); }
         catch (DbUpdateException ex) when (ex.InnerException is SqliteException { SqliteErrorCode: 19 })

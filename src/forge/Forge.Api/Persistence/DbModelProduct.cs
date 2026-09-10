@@ -27,6 +27,7 @@ public static class DbModelProduct
 {
     public static void Configure(ModelBuilder mb)
     {
+        ChatDeliveryModel.ConfigureProduct(mb);
         // Phase 80.B — repos moved here from the control DB. Within ONE
         // product the remote URL + clone root are still unique (per-product
         // indexes); the GLOBAL (cross-product) Q2/Q5 uniqueness moved to the

@@ -85,9 +85,10 @@ public sealed record OperatorActionOutcome(
 }
 
 /// <inheritdoc/>
-public sealed class OperatorActionService : IOperatorActionService
+public sealed partial class OperatorActionService : IOperatorActionService
 {
     private readonly ForgeActionContext actionContext;
+    private readonly Forge.Api.Services.Chat.ChatDomainActionRunner chatActions;
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IAgentRunner runner;
@@ -112,9 +113,10 @@ public sealed class OperatorActionService : IOperatorActionService
         PlanReconciler reconciler,
         IterationPromptStore promptStore,
         CopilotSessionPool copilotPool,
-        ForgeActionContext actionContext)
+        ForgeActionContext actionContext, Forge.Api.Services.Chat.ChatDomainActionRunner chatActions)
     {
         this.actionContext = actionContext;
+        this.chatActions = chatActions;
         this.control = control;
         this.db = db;
         this.runner = runner;
@@ -129,7 +131,7 @@ public sealed class OperatorActionService : IOperatorActionService
     }
 
     /// <inheritdoc/>
-    public async Task<OperatorActionOutcome> AcceptAsync(string id, string actor, CancellationToken ct)
+    private async Task<OperatorActionOutcome> AcceptCoreAsync(string id, string actor, CancellationToken ct)
     {
         var verifiedActor = await this.actionContext.RequireAsync("workstream.accept", new(WorkstreamId: id), ct);
         actor = verifiedActor.UserId;
@@ -231,7 +233,7 @@ public sealed class OperatorActionService : IOperatorActionService
     }
 
     /// <inheritdoc/>
-    public async Task<OperatorActionOutcome> CancelAsync(string id, CancellationToken ct)
+    private async Task<OperatorActionOutcome> CancelCoreAsync(string id, CancellationToken ct)
     {
         var verifiedActor = await this.actionContext.RequireAsync("workstream.cancel", new(WorkstreamId: id), ct);
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);
@@ -299,7 +301,7 @@ public sealed class OperatorActionService : IOperatorActionService
     }
 
     /// <inheritdoc/>
-    public async Task<OperatorActionOutcome> RetryAsync(string id, string actor, CancellationToken ct)
+    private async Task<OperatorActionOutcome> RetryCoreAsync(string id, string actor, CancellationToken ct)
     {
         var verifiedActor = await this.actionContext.RequireAsync("workstream.retry", new(WorkstreamId: id), ct);
         actor = verifiedActor.UserId;
@@ -461,7 +463,7 @@ public sealed class OperatorActionService : IOperatorActionService
     }
 
     /// <inheritdoc/>
-    public async Task<OperatorActionOutcome> RestartAsync(string id, CancellationToken ct)
+    private async Task<OperatorActionOutcome> RestartCoreAsync(string id, CancellationToken ct)
     {
         var verifiedActor = await this.actionContext.RequireAsync("workstream.restart", new(WorkstreamId: id), ct);
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);

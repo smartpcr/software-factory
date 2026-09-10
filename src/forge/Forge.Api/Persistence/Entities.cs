@@ -2167,7 +2167,7 @@ public class RepoRegistryRow
 /// operator + their chat identity are cross-product; <see cref="ProductId"/>
 /// lets inbound dispatch open the right per-product DB.
 /// </summary>
-public class ChatNotificationRow
+public partial class ChatNotificationRow
 {
     public string Id { get; set; } = string.Empty;
 

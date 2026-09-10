@@ -11,7 +11,7 @@ using System.Text.Json;
 public enum ChatReceptionMode { None, LongPolling, Socket }
 public enum ChatConversationPolicy { Flat, Topic, Thread }
 public enum ChatConversationRetirement { LocalOnly, RemoteClose }
-public enum ChatFailureKind { NotSupported, InvalidConfiguration, Unauthorized, RateLimited, Unavailable, InvalidPayload }
+public enum ChatFailureKind { NotSupported, InvalidConfiguration, Unauthorized, RateLimited, Unavailable, InvalidPayload, UnknownOutcome }
 
 public sealed record ChatProviderCapabilities(
     ChatReceptionMode Reception, bool TextReplies, bool Buttons, bool Edits,
@@ -96,4 +96,17 @@ public interface IChatConnectionSession : IAsyncDisposable
     ValueTask<ChatProviderResult<ChatSendReceipt>> SendAsync(ChatAddress address, ChatSemanticNotification notification, CancellationToken ct = default);
     ValueTask<ChatProviderResult<bool>> EditAsync(ChatMessageReference message, ChatSemanticNotification notification, CancellationToken ct = default);
     Task ReceiveAsync(IChatInboundSink sink, CancellationToken ct);
+}
+
+public sealed record ChatAcceptedCursor(string ConnectionId, string Cursor);
+public interface IChatDurableBatchSink : IChatInboundSink
+{
+    /// <summary>Envelopes and their cursors commit together; an empty poll must not advance a cursor.</summary>
+    ValueTask<ChatInboundAcceptance> AcceptBatchAsync(IReadOnlyList<ChatInboundEnvelope> envelopes,
+        IReadOnlyList<ChatAcceptedCursor> cursors, CancellationToken ct = default);
+}
+
+public interface IChatResumableSession
+{
+    ValueTask RestoreCursorAsync(string? cursor, CancellationToken ct = default);
 }

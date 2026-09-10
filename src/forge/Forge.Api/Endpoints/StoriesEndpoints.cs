@@ -1460,6 +1460,8 @@ public static class StoriesEndpoints
             "remove-spawn-row",
             ctx.RequestAborted);
         counts["spawn"] = 1;
+        var chatProductId = await control.Products.Where(p => p.Slug == db.ProductSlug).Select(p => p.Id).SingleAsync(ctx.RequestAborted);
+        await ctx.RequestServices.GetRequiredService<Forge.Api.Services.Chat.ChatScopeLifecycleService>().RetireSpawnsAsync(chatProductId, new[] { spawn.Id }, ctx.RequestAborted);
 
         // ── 11. SignalR + result ────────────────────────────────────────
         await hub.Clients.All.SendAsync("story-spawn.changed",

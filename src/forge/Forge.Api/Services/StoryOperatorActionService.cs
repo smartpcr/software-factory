@@ -25,9 +25,9 @@ using Microsoft.Extensions.Logging;
 using static Forge.Api.Endpoints.StoriesEndpoints;
 
 /// <summary>Shared, authenticated spawn and artifact operations. No HTTP context or synthetic headers.</summary>
-public sealed class StoryOperatorActionService(IServiceProvider services, ForgeActionContext actions)
+public sealed partial class StoryOperatorActionService(IServiceProvider services, ForgeActionContext actions)
 {
-    public async Task<IResult> ResumeArtifactAsync(string storyId, string key, CancellationToken ct)
+    private async Task<IResult> ResumeArtifactCoreAsync(string storyId, string key, CancellationToken ct)
     {
         await actions.RequireAsync("artifact.retry", new(StoryId: storyId, ArtifactKey: key.ToLowerInvariant()), ct);
         key = key.ToLowerInvariant();
@@ -92,7 +92,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         return Results.Ok(new { storyId, key, status = "resuming" });
     }
 
-    public async Task<IResult> RetryArtifactAsync(string storyId, string key, CancellationToken ct)
+    private async Task<IResult> RetryArtifactCoreAsync(string storyId, string key, CancellationToken ct)
     {
         await actions.RequireAsync("artifact.retry", new(StoryId: storyId, ArtifactKey: key.ToLowerInvariant()), ct);
         key = key.ToLowerInvariant();
@@ -231,7 +231,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         });
     }
 
-    public async Task<IResult> CancelArtifactAsync(string storyId, string key, CancellationToken ct)
+    private async Task<IResult> CancelArtifactCoreAsync(string storyId, string key, CancellationToken ct)
     {
         await actions.RequireAsync("artifact.cancel", new(StoryId: storyId, ArtifactKey: key.ToLowerInvariant()), ct);
         key = key.ToLowerInvariant();
@@ -309,7 +309,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         });
     }
 
-    public async Task<IResult> AcceptArtifactAsync(string storyId, string key, CancellationToken ct)
+    private async Task<IResult> AcceptArtifactCoreAsync(string storyId, string key, CancellationToken ct)
     {
         await actions.RequireAsync("artifact.accept", new(StoryId: storyId, ArtifactKey: key.ToLowerInvariant()), ct);
         key = key.ToLowerInvariant();
@@ -586,7 +586,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         });
     }
 
-    public async Task<IResult> RestartArtifactAsync(string storyId, string key, CancellationToken ct)
+    private async Task<IResult> RestartArtifactCoreAsync(string storyId, string key, CancellationToken ct)
     {
         await actions.RequireAsync("artifact.restart", new(StoryId: storyId, ArtifactKey: key.ToLowerInvariant()), ct);
         key = key.ToLowerInvariant();
@@ -741,7 +741,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         });
     }
 
-    public async Task<IResult> PauseSpawnAsync(string storyId, CancellationToken ct)
+    private async Task<IResult> PauseSpawnCoreAsync(string storyId, CancellationToken ct)
     {
         await actions.RequireAsync("spawn.pause", new(StoryId: storyId), ct);
         var control = services.GetRequiredService<ControlDbContext>();
@@ -871,7 +871,7 @@ public sealed class StoryOperatorActionService(IServiceProvider services, ForgeA
         });
     }
 
-    public async Task<IResult> ResumeSpawnAsync(string storyId, CancellationToken ct)
+    private async Task<IResult> ResumeSpawnCoreAsync(string storyId, CancellationToken ct)
     {
         await actions.RequireAsync("spawn.resume", new(StoryId: storyId), ct);
         var control = services.GetRequiredService<ControlDbContext>();

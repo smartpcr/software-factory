@@ -119,6 +119,13 @@ public static class DbBoundary
         new DbTableSpec("chat_destinations", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_subscriptions", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_conversation_bindings", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_deliveries", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_delivery_messages", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_inbox", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_connection_state", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_receiver_state", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_action_tokens", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_action_receipts", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         // EF maps AuditRow to "forge_actions" (Phase 6.10 audit log).
         new DbTableSpec("forge_actions", DbKind.Control, PartitionStrategy.Global, null),
         // Single-row meta table tracking "which seed step has already run"

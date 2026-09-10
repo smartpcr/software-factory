@@ -61,7 +61,7 @@ public sealed class ChatNotifier : IChatNotifier
         // frees their dedupe slot so the current set can send. Their chat
         // messages remain as history; the newest message is the live one.
         var stale = await this.control.ChatNotifications
-            .Where(r => r.Platform != ChatTelegramSliceService.Platform && r.Kind == KindOpenQuestions
+            .Where(r => r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins" && r.Kind == KindOpenQuestions
                 && r.WorkItemId == alert.WorkItemId
                 && r.DedupeKey != dedupeKey
                 && (r.Status == ChatNotificationStatuses.Pending || r.Status == ChatNotificationStatuses.Sent))
@@ -201,7 +201,7 @@ public sealed class ChatNotifier : IChatNotifier
         CancellationToken ct)
     {
         var rows = await this.control.ChatNotifications
-            .Where(r => r.Platform != ChatTelegramSliceService.Platform && r.Kind == kind
+            .Where(r => r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins" && r.Kind == kind
                 && (r.Status == ChatNotificationStatuses.Pending || r.Status == ChatNotificationStatuses.Sent))
             .Where(anchor)
             .ToListAsync(ct);
