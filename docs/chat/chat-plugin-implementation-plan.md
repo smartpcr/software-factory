@@ -255,6 +255,14 @@ alias-route bypass cases deny before any side effect. Tests use authenticated te
 principals instead of retaining the old header-only shortcut.
 
 **Implementation evidence:** [Stage 0B requirement review, validation and host setup](chat-plugin-stage0b-validation.md).
+
+**Existing-login follow-up:** the local launcher opens an authenticated browser for
+an existing enrolled account through `--operator open-browser`. Its short-lived,
+one-use fragment is removed before POST redemption. Existing IDs and explicitly
+migrated product roles are preserved; no HTTP enrollment or OAuth-cache trust is
+introduced. Manual pairing remains a fallback, and multiple enrolled accounts
+require explicit local selection.
+
 Focused verification: 139 backend tests and 175 UI tests passed; TypeScript build
 passed. All six implementation tasks are checked. **Full-suite validation is not
 complete:** the broader API run was stopped with legacy authentication/ownership

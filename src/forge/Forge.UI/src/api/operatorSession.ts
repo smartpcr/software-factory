@@ -2,6 +2,21 @@ const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 export const operatorSessionChanged = 'forge:operator-session-changed';
 let csrfToken: string | null = null;
 let csrfRequest: Promise<string> | null = null;
+let browserHandoff: Promise<void> | null = null;
+
+/** Consume the local launcher's one-use handoff once, including React StrictMode remounts. */
+export function completeBrowserHandoff(): Promise<void> {
+  if (browserHandoff) return browserHandoff;
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const challenge = fragment.get('forge-pair');
+  if (challenge === null) return Promise.resolve();
+  // Remove the secret before any network request, rendering, or error reporting.
+  window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+  browserHandoff = /^[0-9a-f]{64}$/i.test(challenge)
+    ? pairOperator(challenge)
+    : Promise.reject(new Error('This browser sign-in link is invalid. Open Forge from the launcher again.'));
+  return browserHandoff;
+}
 
 export interface OperatorStatus {
   state: 'Paired' | 'Pair browser' | 'Needs operator enrollment';

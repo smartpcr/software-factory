@@ -58,3 +58,56 @@ describe('paired operator requests', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('local launcher browser sign-in', () => {
+  function browser(hash: string) {
+    const replaceState = vi.fn();
+    vi.stubGlobal('window', {
+      location: { hash, pathname: '/workstreams', search: '?product=local' },
+      history: { state: null, replaceState }, dispatchEvent: vi.fn(),
+    });
+    return replaceState;
+  }
+
+  it('removes the fragment before HTTP and redeems once across concurrent mounts', async () => {
+    const secret = 'A'.repeat(64);
+    const replaceState = browser(`#forge-pair=${secret}`);
+    fetchMock.mockImplementation(async (url) => {
+      expect(replaceState).toHaveBeenCalledWith(null, '', '/workstreams?product=local');
+      expect(String(url)).not.toContain(secret);
+      return json({ token: 'protected' });
+    });
+    const { completeBrowserHandoff } = await import('./operatorSession');
+    await Promise.all([completeBrowserHandoff(), completeBrowserHandoff()]);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/pair'))).toHaveLength(1);
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({ challenge: secret });
+    expect(fetchMock.mock.calls[1][1]?.credentials).toBe('include');
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-Forge-CSRF')).toBe('protected');
+  });
+
+  it('does not sign in on ordinary navigation or after an explicit logout', async () => {
+    const replaceState = browser('#workstream-detail');
+    const { completeBrowserHandoff } = await import('./operatorSession');
+    await completeBrowserHandoff();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('strips malformed secrets without making requests', async () => {
+    const replaceState = browser('#forge-pair=bad-secret');
+    const { completeBrowserHandoff } = await import('./operatorSession');
+    await expect(completeBrowserHandoff()).rejects.toThrow('invalid');
+    expect(replaceState).toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an expired handoff and never retries the one-use secret', async () => {
+    browser(`#forge-pair=${'B'.repeat(64)}`);
+    fetchMock.mockResolvedValueOnce(json({ token: 'anonymous' })).mockResolvedValueOnce(json({}, 403));
+    const { completeBrowserHandoff } = await import('./operatorSession');
+    await expect(completeBrowserHandoff()).rejects.toThrow('expired');
+    await expect(completeBrowserHandoff()).rejects.toThrow('expired');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

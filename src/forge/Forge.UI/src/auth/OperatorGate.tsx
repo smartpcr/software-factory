@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { getOperatorStatus, operatorSessionChanged, pairOperator, unpairOperator, type OperatorStatus } from '@/api/operatorSession';
+import { completeBrowserHandoff, getOperatorStatus, operatorSessionChanged, pairOperator, unpairOperator, type OperatorStatus } from '@/api/operatorSession';
 
 export function OperatorGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<OperatorStatus | null>(null);
@@ -12,8 +12,12 @@ export function OperatorGate({ children }: { children: ReactNode }) {
     if (demo) return;
     let active = true;
     const refresh = () => {
-      void getOperatorStatus().then((value) => { if (active) setStatus(value); })
-        .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'Connection failed.'); });
+      void (async () => {
+        try { await completeBrowserHandoff(); }
+        catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Sign-in failed.'); }
+        try { const value = await getOperatorStatus(); if (active) setStatus(value); }
+        catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Connection failed.'); }
+      })();
     };
     refresh();
     window.addEventListener(operatorSessionChanged, refresh);
@@ -41,13 +45,13 @@ export function OperatorGate({ children }: { children: ReactNode }) {
           <p>A host administrator must enroll your operator identity on this computer. Then run the Pair browser command and return here.</p>
         ) : status?.state === 'Pair browser' ? (
           <form onSubmit={(event) => { void submit(event); }}>
-            <p>Run Pair browser on the Forge host for your enrolled user. Paste the code copied to your clipboard within two minutes.</p>
+            <p>Open Forge from the local launcher to sign in with your existing account. You can also paste a Pair browser code here.</p>
             <label htmlFor="pairing-code">Pairing code</label>
             <input id="pairing-code" type="password" autoComplete="off" spellCheck={false} maxLength={64}
               value={challenge} onChange={(event) => setChallenge(event.target.value)} required
               style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: 12, margin: '8px 0 16px', background: '#151a21', color: 'inherit', border: '1px solid #50555d' }} />
             <button type="submit" disabled={busy || challenge.trim().length !== 64} style={{ padding: '10px 20px' }}>{busy ? 'Pairing…' : 'Pair browser'}</button>
-            <p style={{ color: '#a7adb7', fontSize: 13 }}>Sessions last up to eight hours. A host restart requires pairing again.</p>
+            <p style={{ color: '#a7adb7', fontSize: 13 }}>Sessions last up to eight hours. The launcher signs you in again after a host restart.</p>
           </form>
         ) : null}
         <button type="button" onClick={() => { setError(''); void getOperatorStatus().then(setStatus).catch(() => setError('Could not connect to Forge.')); }} style={{ marginTop: 16 }}>Check again</button>

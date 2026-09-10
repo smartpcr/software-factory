@@ -852,11 +852,24 @@ HttpOnly/SameSite session cookie with an eight-hour maximum lifetime; the challe
 is neither a URL query parameter nor a log entry. Use ASP.NET Core authentication,
 anti-forgery protection on cookie-authenticated writes, strict Host/Origin checks
 and an explicit local UI origin allowlist. Session revocation is checked on every
-sensitive request; after a server restart require pairing again. No users or no
+sensitive request; after a server restart the local launcher obtains a fresh browser session. No users or no
 enrollment means **Needs operator enrollment**, with mutations denied. This is
 proof of trusted host-issued pairing, not a claim of enterprise SSO verification.
 Framework building blocks: [cookie authentication](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/cookie?view=aspnetcore-8.0)
 and [policy authorization](https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies?view=aspnetcore-8.0).
+
+**Existing-account launch experience:** preserve the existing stable Forge user ID
+and explicitly migrate its intended product memberships during host setup. The
+launcher runs the host-local `--operator open-browser` command after startup. If
+exactly one enrolled database user exists, it selects that account; with several,
+require an explicit `--user-id`. It opens the default browser with the one-use
+challenge in a URL **fragment**, never a query parameter or log. The UI immediately
+removes the fragment from browser history and redeems it in the CSRF-protected POST
+body, once even under React StrictMode. The fragment is visible only to the trusted
+local OS/browser, not HTTP servers or Referer headers. An expired link leaves the
+manual pairing fallback available. This command does not enroll users, infer grants
+from provider OAuth caches, or give anonymous HTTP callers host authority. Restarting
+the local launcher opens a new session; signing out does not silently sign in again.
 
 `ForgeActorResolver` accepts only an authenticated browser principal or a verified
 provider/tenant/user link and returns a stable Forge user ID. A new

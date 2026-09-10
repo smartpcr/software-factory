@@ -527,10 +527,21 @@ if ($targetUI) {
     }
 
     Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c","npm","run","dev","--","--host" `
+        -ArgumentList "/c","npm","run","dev" `
         -WorkingDirectory $UIDir `
         -WindowStyle Hidden
     Wait-ForPort -Port $UiPort -Label "Forge UI" -TimeoutSeconds 30 | Out-Null
+}
+
+# Sign the host user's browser into the existing enrolled Forge account. This
+# command only issues a short-lived handoff; it never creates users or grants roles.
+if ((Get-NetTCPConnection -LocalPort $ApiPort -State Listen -ErrorAction SilentlyContinue) -and
+    (Get-NetTCPConnection -LocalPort $UiPort -State Listen -ErrorAction SilentlyContinue)) {
+    $browserHostExe = Get-ServerExe
+    if ($browserHostExe) {
+        & $browserHostExe --operator open-browser
+        if ($LASTEXITCODE -ne 0) { Write-Warning 'Forge is running, but browser sign-in failed. Run --operator open-browser for your enrolled user.' }
+    }
 }
 
 # ── Summary ──────────────────────────────────────────────────────────────

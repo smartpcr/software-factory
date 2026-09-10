@@ -18,7 +18,8 @@ public static class HostOperatorCommand
         string? Value(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
         var action = Value("--operator");
         var id = Value("--user-id");
-        if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("Specify --user-id with a stable Forge user ID.");
+        if (string.IsNullOrWhiteSpace(id) && action != "open-browser")
+            throw new ArgumentException("Specify --user-id with a stable Forge user ID.");
         using var configuration = new ConfigurationManager();
         configuration.SetBasePath(AppContext.BaseDirectory).AddJsonFile("appsettings.json", optional: true).AddEnvironmentVariables();
         if (Value("--db-folder") is { } folder)
@@ -30,8 +31,33 @@ public static class HostOperatorCommand
         await using var db = new ControlDbContext(new DbContextOptionsBuilder<ControlDbContext>().UseSqlite(
             new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = paths.ControlDbPath() }.ToString()).Options);
         var identities = new HostIdentityStore(configuration["Forge:Identity:StorePath"] ?? HostIdentityStore.DefaultPath());
+        if (action == "open-browser" && string.IsNullOrWhiteSpace(id))
+        {
+            var enrolledIds = identities.EnrolledUserIds.ToList();
+            var candidates = await db.Users.Where(u => enrolledIds.Contains(u.Id)).Select(u => u.Id).ToListAsync();
+            if (candidates.Count != 1)
+            {
+                Console.WriteLine(candidates.Count == 0
+                    ? "No enrolled operator. Enroll your existing Forge user before opening a browser session."
+                    : "Multiple operators enrolled. Use --operator open-browser --user-id <stable-id>.");
+                return;
+            }
+            id = candidates[0];
+        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
         switch (action)
         {
+            case "open-browser":
+                if (!await db.Users.AnyAsync(u => u.Id == id)) throw new InvalidOperationException("Unknown Forge user. Enroll first.");
+                var browserChallenge = identities.IssueBrowserChallenge(id);
+                // A fragment is never sent in HTTP requests or Referer. The UI removes it
+                // before redemption; only the trusted local OS/browser receives this value.
+                Process.Start(new ProcessStartInfo("http://localhost:5181/workstreams#forge-pair=" + browserChallenge)
+                {
+                    UseShellExecute = true,
+                });
+                Console.WriteLine("Opened Forge with your existing operator account.");
+                break;
             case "enroll":
                 await db.Database.EnsureCreatedAsync();
                 if (!await db.Users.AnyAsync(u => u.Id == id))
@@ -74,7 +100,7 @@ public static class HostOperatorCommand
                 await db.SaveChangesAsync();
                 Console.WriteLine("Product role saved.");
                 break;
-            default: throw new ArgumentException("Use --operator enroll|pair|revoke|grant-role --user-id <stable-id>.");
+            default: throw new ArgumentException("Use --operator enroll|open-browser|pair|revoke|grant-role --user-id <stable-id>.");
         }
     }
 }
