@@ -1,12 +1,12 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A and 0B implemented; Stage 0B focused checks pass, with remaining full-suite fixture migration documented. Stage 1 onward remains planned. Updated 2026-09-09.
+**Status:** Stages 0A, 0B and 1 implemented. Stage 1 has 194 passing focused checks (26 new); the pre-existing catalog-test mismatch and broader fixture limits are documented. Stage 1S onward remains planned. Updated 2026-09-09.
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
 This document plans the implementation of the requested workstream plugin model,
 multiple chat providers/connections/channels, and Slack support. Implementation
-checkboxes are checked only for completed Stage 0A work; checked review items
+checkboxes are checked only for completed Stages 0A, 0B and 1 work; checked review items
 record documentation resolutions only.
 Historical completed phases in the older chat plans do not count as completion of
 this revision.
@@ -104,7 +104,7 @@ boundary classification and are also listed in the altering phase's catalog.
 
 | Planned increment | Per-table registration checklist | Boundary |
 |---|---|---|
-| Stage 1 configuration | [ ] `spawn_plugins`; [ ] `chat_connections`; [ ] `chat_connection_products`; [ ] `chat_destinations`; [ ] `chat_subscriptions`; [ ] `chat_conversation_bindings` | Each `Control` / `Global` |
+| Stage 1 configuration (Phase98) | [x] `spawn_plugins`; [x] `chat_connections`; [x] `chat_connection_products`; [x] `chat_destinations`; [x] `chat_subscriptions`; [x] `chat_conversation_bindings` | Each `Control` / `Global` |
 | Stage 2 delivery | [ ] existing `chat_notifications` alterations; [ ] `chat_deliveries`; [ ] `chat_delivery_messages` | Each `Control` / `Global` |
 | Stage 2 reception | [ ] `chat_inbox`; [ ] `chat_connection_state`; [ ] `chat_receiver_state` | Each `Control` / `Global` |
 | Stage 2 identities/actions | [ ] `chat_operator_links`; [ ] `chat_link_challenges`; [ ] `chat_action_tokens` | Each `Control` / `Global` |
@@ -308,22 +308,24 @@ gated until its later runtime/delivery stages pass.
 
 ### Stage 1 — contracts, registry, and workstream configuration
 
-- [ ] Add the minimal workstream plugin descriptor/catalog with versioned settings;
+**Implemented and verified (2026-09-09).** See [Stage 1 requirement review and validation](chat-plugin-stage1-validation.md).
+
+- [x] Add the minimal workstream plugin descriptor/catalog with versioned settings;
       register the `chat` plugin. Avoid adding a generic plugin execution framework
       beyond the lifecycle/configuration needed by this feature.
-- [ ] Introduce provider descriptors, registry, connection session, inbound sink,
+- [x] Introduce provider descriptors, registry, connection session, inbound sink,
       secret store, semantic notification/action, destination, and address contracts.
-- [ ] Model provider capabilities independently of Telegram, including thread/topic
+- [x] Model provider capabilities independently of Telegram, including thread/topic
       support, discovery, edits, buttons, and conversation retirement behavior.
-- [ ] Add `spawn_plugins` keyed by `(ProductId, SpawnId, PluginId)`, connection/product access grants, connections,
+- [x] Add `spawn_plugins` keyed by `(ProductId, SpawnId, PluginId)`, connection/product access grants, connections,
       destinations, subscriptions and versioned bindings to the control DB.
-- [ ] Implement scoped CRUD/validation services with optimistic revision checks.
+- [x] Implement scoped CRUD/validation services with optimistic revision checks.
       Persist explicit parent enabled state, activation generation and optional
       copy origin; default off. Child creation reads parent settings dynamically.
-- [ ] Add the permanent host subscription scope alongside spawn scope, with a
+- [x] Add the permanent host subscription scope alongside spawn scope, with a
       canonical non-null ScopeKey, scope check constraints and Host alerts setup
       state. Restrict its configuration to `chat.connection.manage` / `host.alert.manage`.
-- [ ] Add host master switch and engine selection (`legacy` / `plugins`) without
+- [x] Add host master switch and engine selection (`legacy` / `plugins`) without
       changing the active legacy engine during this stage.
 
 **Acceptance (in-repo fake providers only):** a fixture containing two products
@@ -334,6 +336,33 @@ versions pause only the affected instances. Inaccessible connections and duplica
 subscriptions are rejected. Renaming/reordering a row
 and reconciling its children preserve parent settings. A recreated spawn cannot
 reuse an old run's active controls or configuration without explicit activation.
+
+Acceptance evidence (all offline, with real SQLite and paired HTTP identities):
+
+- [x] Two physical product DBs reuse the same spawn ID; 32 existing children and
+      a future child read the correct parent settings dynamically.
+- [x] `FakeAlpha`, `FakeBeta` and two named `FakeAlpha` connections resolve saved
+      subscriptions to independent session addresses.
+- [x] Duplicate provider/plugin IDs disable their registry; Forge health still
+      responds. Unsupported provider, connection and parent settings versions
+      remain isolated and retain saved data.
+- [x] Inaccessible connections, duplicate active subscriptions/installations,
+      stale revisions, unsupported policies/filters and interactive opt-in reject.
+- [x] Rename/phase changes preserve settings; Chat changes leave execution state
+      unchanged. Explicit copies start disabled with new subscription identities.
+- [x] Recreated spawn reads are off until explicit activation; prior subscriptions
+      and bindings retire when the new run is activated.
+- [x] Phase98 is idempotent on fresh/upgrade schemas; all six tables have control
+      model/catalog/runner/boundary registration and clean split dry-run results.
+
+The focused selection passes **194/194** (26 new). The baseline independently
+recorded one existing `Catalog_ClassificationMatchesDbBoundary` failure for
+`repos`; it is excluded from that passing selection, with the reason and exact
+command recorded in the validation document. No full-suite claim is made.
+Production provider adapters, live session supervision, durable delivery/inbox,
+global deletion reconciliation and the row UI remain in their later stages.
+Tracked engine selection stays `legacy`; no host restart, network message, commit
+or push was performed. Stage 1S is the next implementation stage.
 
 > <a id="review-p-01"></a>
 > ### 🔴 REVIEW-P-01 — Blocking: acceptance gates depend on later stages [FIXED]

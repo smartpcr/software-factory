@@ -53,6 +53,7 @@ public static class ForgeEndpointCapabilities
         return (entry.Capability, entry.TargetKind switch
         {
             "host" or "self" => new(),
+            "chat-spawn" => new(Route("productId"), SpawnId: Route("spawnId")),
             "workstream" or "execution-alias" => new(productId, WorkstreamId: id),
             "spawn" => new(productId, StoryId: Route("storyId")),
             "artifact" => new(productId, StoryId: Route("storyId"), ArtifactKey: Route("key")?.ToLowerInvariant()),
@@ -75,7 +76,7 @@ public sealed class ForgeEndpointCapabilityMiddleware(RequestDelegate next)
         var name = ctx.GetEndpoint()?.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName;
         var actor = await action.ActorAsync(ctx.RequestAborted);
         var routeProduct = path.StartsWith("/api/products/", StringComparison.Ordinal)
-            ? ctx.Request.RouteValues.GetValueOrDefault("id")?.ToString() : null;
+            ? (ctx.Request.RouteValues.GetValueOrDefault("productId") ?? ctx.Request.RouteValues.GetValueOrDefault("id"))?.ToString() : null;
         if (routeProduct is not null)
             await authorizer.RequireAsync(actor, ForgeCapabilities.SpawnRead, new(routeProduct), ctx.RequestAborted);
         if (path.StartsWith("/api/repos/", StringComparison.Ordinal) && ctx.Request.RouteValues.GetValueOrDefault("id") is { } repoId)
@@ -89,7 +90,9 @@ public sealed class ForgeEndpointCapabilityMiddleware(RequestDelegate next)
         var readableIds = (await authorizer.ReadableProductIdsAsync(actor, ctx.RequestAborted)).ToList();
         ctx.Items[ReadableProductsKey] = readableIds.Count == 0 ? new HashSet<string>(StringComparer.Ordinal) : (await control.Products.AsNoTracking()
             .Where(p => readableIds.Contains(p.Id)).Select(p => p.Slug).ToListAsync(ctx.RequestAborted)).ToHashSet(StringComparer.Ordinal);
-        if (name is not null && ForgeEndpointCapabilities.Supported.TryGetValue(name, out var entry))
+        var entry = ctx.GetEndpoint()?.Metadata.GetMetadata<ForgeEndpointCapability>();
+        if (entry is null && name is not null) ForgeEndpointCapabilities.Supported.TryGetValue(name, out entry);
+        if (entry is not null)
         {
             var (capability, target) = ForgeEndpointCapabilities.Resolve(entry, ctx, action.ProductId);
             await authorizer.RequireAsync(actor, capability, target, ctx.RequestAborted);

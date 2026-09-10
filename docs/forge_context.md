@@ -64,6 +64,26 @@ the caller's console).
 | Add a realtime event | **Realtime / messaging** |
 | Add a UI view/store | **Frontend** |
 | Change sign-in / identity / roles | **Identity & auth** |
+| Change Chat plugin configuration, provider contracts or Host alerts | **Chat configuration update** below; `docs/chat/README.md` |
+
+### Chat configuration update (2026-09-09)
+
+The current chat/auth source is documented in [the chat index](chat/README.md),
+[Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and
+[Stage 1 validation](chat/chat-plugin-stage1-validation.md). Stage 0B replaced
+header-based operator authority with paired sessions and shared capabilities;
+the historical Phase 9 description below is not the current authorization boundary.
+
+Stage 1 adds `Common.Chat/ChatProviderContracts.cs` and `ChatProviderRegistry.cs`,
+`Forge.Api/Plugins`, `Services/Chat/ChatConfigurationService*.cs` and
+`Endpoints/ChatPluginEndpoints.cs`. Parent settings use `(ProductId, SpawnId)`;
+children resolve that configuration dynamically. Host alerts have a separate
+permanent host scope. `Phase98Migration` owns six additive control tables, with
+model/catalog/runner/`DbBoundary` registration. No new product table is introduced.
+`Forge:Chat` contains the engine/master switch and stable host ID; the default
+engine remains `legacy`. Runtime delivery, adapters, deletion reconciliation and
+the row UI follow in Stage 1S onward. Stage 1 validation: 194 focused checks pass;
+see its validation document for the existing `repos` catalog-test exclusion.
 
 ## Foundational decisions (apply everywhere)
 
@@ -728,8 +748,9 @@ contexts, a silo auditor, and a false-parallel planner. None of `30.1–30.17` e
 - **Release gate (`docs/forge/release-gate.md`)** — spec'd, entirely `[ ]`. Third gate after
   build/test: repo-mapped GH-workflow/ADO-pipeline that packages the workstream branch, copies
   artifacts to a lab machine, deploys, and runs the stage's e2e suite; gates `review → merging`
-  (`releasing` status). Only fires for concrete (non-skeleton) deliverables. Next migration
-  slot when it lands: `Phase98`.
+  (`releasing` status). Only fires for concrete (non-skeleton) deliverables. `Phase98`
+  is now allocated to chat configuration; inspect the current catalog before
+  allocating the release-gate migration.
 - **Phase 30 (ACP)** — entirely `[ ]`.
 - **Phase 57 (operator cap-override)** — entirely `[ ]`; `Phase57Migration` + `work_item_override_history`
   table do **not** exist yet.

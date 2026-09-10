@@ -90,6 +90,13 @@ public class ControlDbContext : DbContext
     /// <summary>Phase 95 (Part B) — spawn → Telegram forum-topic mapping.</summary>
     public DbSet<ChatSpawnTopicRow> ChatSpawnTopics => this.Set<ChatSpawnTopicRow>();
 
+    public DbSet<SpawnPluginRow> SpawnPlugins => this.Set<SpawnPluginRow>();
+    public DbSet<ChatConnectionRow> ChatConnections => this.Set<ChatConnectionRow>();
+    public DbSet<ChatConnectionProductRow> ChatConnectionProducts => this.Set<ChatConnectionProductRow>();
+    public DbSet<ChatDestinationRow> ChatDestinations => this.Set<ChatDestinationRow>();
+    public DbSet<ChatSubscriptionRow> ChatSubscriptions => this.Set<ChatSubscriptionRow>();
+    public DbSet<ChatConversationBindingRow> ChatConversationBindings => this.Set<ChatConversationBindingRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         DbModelControl.Configure(mb);

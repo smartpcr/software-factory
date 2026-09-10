@@ -406,6 +406,7 @@ builder.Services.AddScoped<Forge.Api.Services.Chat.ChatInboundDispatcher>();
 builder.Services.AddScoped<Common.Chat.IChatInboundHandler>(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatInboundDispatcher>());
 builder.Services.AddSingleton<Common.Chat.ChatInboundPump>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Common.Chat.ChatInboundPump>());
+Forge.Api.Services.Chat.ChatPluginRegistration.AddChatPlugins(builder.Services, builder.Configuration);
 // Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
 // questions endpoints AND the chat-bridge inbound path).
 builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();
@@ -1123,6 +1124,7 @@ app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
 // Phase 95 (chat bridge) — admin test-send (outbound smoke test).
 app.MapChatBridgeEndpoints();
+app.MapChatPluginEndpoints();
 app.MapProductsEndpoints();
 app.MapSprintEndpoints();
 app.MapAuthEndpoints();

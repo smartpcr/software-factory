@@ -125,6 +125,8 @@ public sealed class PhaseMigrationRunner
         96,
         // Phase 97 (chat bridge, Part B) — chat_spawn_topics + chat_notifications.SpawnId.
         97,
+        // Stage 1 — additive control-side chat configuration; legacy remains selected.
+        98,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

@@ -12,11 +12,22 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status (2026-09-09): Stage 0A implemented and verified.** The legacy bridge now
-uses explicit host-user configuration, safe tracked defaults, and a notification-only
-guard. See [host chat configuration and verification](host-chat-configuration.md).
-Plugin runtime, Slack, shared authenticated authorization, and settings screens
-remain planned.
+**Status (2026-09-09): Stages 0A, 0B and 1 implemented.** The legacy bridge uses
+explicit host-user configuration and safe defaults. Authenticated operator pairing
+and shared capabilities are implemented. Stage 1 adds provider/plugin contracts,
+the six control-DB configuration tables, scoped configuration APIs, Host alerts
+setup state, revision checks and protection against reused spawn IDs.
+
+- [Host chat configuration](host-chat-configuration.md) — legacy setup and defaults.
+- [Stage 0B validation](chat-plugin-stage0b-validation.md) — identity and authorization.
+- [Stage 1 validation](chat-plugin-stage1-validation.md) — all seven requirements,
+  194 passing focused checks, the existing catalog-test limitation and API usage.
+
+The active engine still defaults to `legacy`. Stage 1 uses offline fake providers;
+production plugin sessions, Telegram/Slack adapters, delivery/inbound processing
+and settings screens remain planned. **Stage 1S is next:** the notification-only
+Telegram slice and minimal row Chat control. No live messaging behavior is claimed
+by the Stage 1 checks.
 
 **Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**
 The inline `REVIEW-D-nn` / `REVIEW-P-nn` records preserve the original feedback and
