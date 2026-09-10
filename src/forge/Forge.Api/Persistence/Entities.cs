@@ -2208,12 +2208,12 @@ public class ChatNotificationRow
     /// <summary>Rendered message body.</summary>
     public string Body { get; set; } = string.Empty;
 
-    /// <summary>JSON of the inline actions (choices / action buttons) + their callback data. Null = no buttons.</summary>
+    /// <summary>Legacy inline actions. Platform telegram-1s instead stores a versioned, content-free target snapshot; its renderer never treats this as buttons.</summary>
     public string? ActionsJson { get; set; }
 
     /// <summary>
     /// Lifecycle: <c>pending</c> → <c>sent</c> → <c>answered</c>/<c>acted</c>,
-    /// or <c>expired</c>/<c>failed</c>. See <see cref="ChatNotificationStatuses"/>.
+    /// or <c>expired</c>/<c>failed</c>. The telegram-1s slice also uses <c>sending</c>/<c>uncertain</c> to prevent blind network retries.
     /// </summary>
     public string Status { get; set; } = ChatNotificationStatuses.Pending;
 

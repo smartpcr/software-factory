@@ -20,7 +20,7 @@ using Microsoft.Extensions.Options;
 /// <summary>Configuration only. No domain execution, provider send, or receiver is started here.</summary>
 public sealed partial class ChatConfigurationService(
     ControlDbContext control, IProductDbContextFactory products, ForgeCapabilityAuthorizer authorizer,
-    IChatProviderRegistry providers, WorkstreamPluginRegistry plugins, IOptions<ChatPluginOptions> options)
+    IChatProviderRegistry providers, WorkstreamPluginRegistry plugins, IOptions<ChatPluginOptions> options, ChatTelegramSliceService slice)
 {
     private static readonly string[] SpawnKinds = ["open-questions", "workstream-stalled"];
     private static readonly string[] HostKinds = ["queue-strain", "human-interaction"];
@@ -103,6 +103,9 @@ public sealed partial class ChatConfigurationService(
         row.Enabled = false; row.DeletedAt = DateTimeOffset.UtcNow; row.Revision++;
         var destinations = await control.ChatDestinations.Where(d => d.ConnectionId == id).Select(d => d.Id).ToListAsync(ct);
         await this.RetireAsync(await control.ChatSubscriptions.Where(s => destinations.Contains(s.DestinationId) && s.RetiredAt == null).ToListAsync(ct), ct);
+        foreach (var destination in await control.ChatDestinations.Where(d => d.ConnectionId == id && d.DeletedAt == null).ToListAsync(ct))
+        { destination.DeletedAt = row.DeletedAt; destination.Revision++; }
+        control.ChatConnectionProducts.RemoveRange(await control.ChatConnectionProducts.Where(g => g.ConnectionId == id).ToListAsync(ct));
         await this.SaveAsync(ct);
         await transaction.CommitAsync(ct);
     }
@@ -190,7 +193,7 @@ public sealed partial class ChatConfigurationService(
         => await control.ChatConnections.SingleOrDefaultAsync(c => c.Id == id && c.DeletedAt == null, ct)
             ?? throw new ChatConfigurationException("connection-not-found", 404);
 
-    private static string RunIdentity(StorySpawnRow spawn) => Convert.ToHexString(SHA256.HashData(
+    internal static string RunIdentity(StorySpawnRow spawn) => Convert.ToHexString(SHA256.HashData(
         Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { spawn.StoryId, spawn.RepoId, Created = spawn.CreatedAt.UtcTicks }))));
     private static void CheckRevision(long? actual, long expected)
     {

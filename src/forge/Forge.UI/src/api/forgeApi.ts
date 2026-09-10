@@ -98,6 +98,8 @@ export interface OperatorPrompt {
 
 export interface StorySpawn {
   id: string;
+  /** Explicit ownership from the list response, including the all-products view. */
+  productId?: string | null;
   storyId: string;
   storyTitle: string;
   repoId: string | null;
@@ -2388,6 +2390,17 @@ export const forgeApi = {
   /** GET /api/models — Phase 11.2 model registry. */
   async listModels(): Promise<ModelInfo[]> {
     return fetchJson<ModelInfo[]>('/api/models');
+  },
+
+  /**
+   * POST /api/models/refresh — force a model-catalog enrichment cycle against
+   * the live Copilot catalog (auto-add new models, retire dropped ones, persist
+   * to models.json) and return the refreshed catalog. Slower than
+   * {@link listModels} because it round-trips the Copilot server.
+   */
+  async refreshModels(): Promise<ModelInfo[]> {
+    const res = await fetchJson<{ models: ModelInfo[] }>('/api/models/refresh', { method: 'POST' });
+    return res.models ?? [];
   },
 
   /** GET /api/agents/{id}/soul — Phase 11.3 soul.md fetch. */

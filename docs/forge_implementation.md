@@ -7953,3 +7953,140 @@ cross-product / global-uniqueness → `control.RepoRegistry`**; **scope-less by-
   `src/forge/Forge.UI/src/api/forgeApi.ts:407,934,1248` (`X-Forge-Repo-Id` header),
   `src/forge/Forge.UI/src/views/SpawnStoryModal.tsx` (drop per-spawn repo pick),
   `useReposStore` / `useProductsStore` (active-repo state).
+
+---
+
+## Phase 81 — Model catalog freshness: durable seed writes, retire/revive, self-refreshing UI
+
+### Problem
+
+The Crews model picker showed a stale roster: models released after
+2026-07-14 (`claude-opus-5`, `gpt-6-astra`, `gpt-5.6-sol-fast`,
+`gemini-3.6/3.7/3.8-flash`, `grok-4.5/4.6`, `mai-code-1.1-flash`) were
+missing, while long-dead ones (`gpt-5.2`, `gpt-4.1`, `claude-opus-4.6`,
+`gemini-3.1-pro-preview`, ...) still filled the dropdown as disabled
+"- unsupported" rows.
+
+The scheduled `ModelCatalogEnrichmentService` was in fact discovering the
+new models correctly. Three defects hid that work:
+
+1. **Discoveries were written to the build output, not the repo.**
+   `ModelRegistry.ResolveSeedFilePath` resolved the seed from
+   `IHostEnvironment.ContentRootPath`, and `scripts/run-forge-ui.ps1`
+   launches `Forge.Api.exe` straight out of
+   `bin/Debug/net8.0/win-x64`. Every discovered model therefore landed in
+   `bin/.../Agents/Models/models.json` (39 entries) while the committed
+   source seed stayed at 30. Because the csproj copies the file with
+   `CopyToOutputDirectory=PreserveNewest`, the next touch of the source
+   seed (a `git pull`, a manual edit) made it newer and MSBuild
+   overwrote the output copy - silently discarding every discovery.
+2. **Nothing ever retired a model.** The enrichment recorded the live
+   catalog id set for `ValidateAssignable`, so dead models rendered as
+   disabled `available: false` options, but their seed `status` stayed
+   `"live"` forever and the list only ever grew.
+3. **The UI never refreshed.** `CrewsView`, `NewAgentModal` and
+   `AgentEditModal` each called `listModels()` once on mount. The first
+   enrichment runs ~25 s after API boot, so a tab opened at boot showed
+   the pre-enrichment catalog until a manual page reload.
+
+### Outcomes
+
+- **O-81.1** The committed `models.json` is the durable record of the live
+  Copilot catalog; a discovered model survives rebuild and restart.
+- **O-81.2** The picker offers only models that can actually be assigned;
+  an already-assigned stale model stays visible and warned about.
+- **O-81.3** An open tab converges on the current catalog without a reload.
+
+### Deliverables
+
+- **D-81.1 - Seed path resolves to the source tree (O-81.1).**
+  `ModelRegistry.ResolveSeedFilePath` keeps its content-root probe, then
+  calls the new `ProbeSourceSeed`: when the resolved file sits inside the
+  project's own `bin/` output, walk up to the folder owning
+  `Forge.Api.csproj` and use its `Agents/Models/models.json` for BOTH read
+  and write. A published deployment has no `.csproj` above the binaries,
+  so the operator-editable content-root copy stays authoritative.
+- **D-81.2 - Retire / revive reconciliation (O-81.2).**
+  `ModelCatalogEnrichmentService.BuildStatusOverrides` compares each
+  catalog entry against the live id set and emits only the ids whose
+  status must change: `live -> retired` when the catalog stopped serving a
+  model, `retired -> live` when it came back. Guards: `vendor == "copilot"`
+  only (anthropic runs the Claude SDK, forge's `local-stub` bypasses every
+  backend - neither is ever in the Copilot catalog); a curated status such
+  as `preview` is left alone; a catalog smaller than 5 entries is treated
+  as a partial fetch and retires nothing. Entries are never deleted, so
+  crew/agent rows still resolve their model for historical cost lookups.
+- **D-81.3 - Seed writer applies status, not just appends (O-81.1).**
+  `ModelSeedFileWriter.Sync(path, discovered, statusOverrides)` replaces
+  the append-only `AppendDiscovered` (kept as a wrapper). It edits the raw
+  `JsonNode` array so curated `_note` annotations survive, stamps a dated
+  `_statusChanged_note`, and writes nothing at all when the requested
+  status already matches - so a steady-state cycle leaves the file byte
+  identical.
+- **D-81.4 - Registry accepts status overrides (O-81.2).**
+  `IModelRegistry.ApplyCatalogOverlay` gains an optional
+  `statusOverrides` parameter, applied on the rebuild-from-immutable-seed
+  path so revival works and retirement never compounds.
+- **D-81.5 - Daily cadence + operator-forced refresh (O-81.1).**
+  The weekly Sunday tick becomes daily local midnight
+  (`TimeUntilNextMidnight`); `Program.cs` registers the service as a
+  singleton as well as a hosted service so the new
+  `POST /api/models/refresh` can run a cycle on demand and return the
+  refreshed catalog. A `SemaphoreSlim` serialises it against the timer.
+- **D-81.6 - Shared self-refreshing UI catalog (O-81.3).**
+  New `useModelCatalogStore` / `useModelCatalog()` holds one copy of
+  `GET /api/models`, revalidates every 5 min and on tab focus / `online`,
+  and keeps the last good list on a failed fetch. `selectableModels()`
+  hides `available === false` and `status === 'retired'` entries except
+  the current value. `CrewsView`, `NewAgentModal` and `AgentEditModal`
+  drop their one-shot fetches and consume the store. `AgentEditModal`
+  keeps its existing fallback `<option>` for a filtered-out current value
+  (so a save can never silently reassign) and now labels it with the
+  actual reason — retired / not in the live catalog / wrong backend —
+  instead of always claiming "not in registry".
+- **D-81.7 - Recover the stranded discoveries (O-81.1).** The 9 models the
+  job had written only to `bin/` are merged into the source seed
+  (30 -> 39 entries) with their live-catalog context windows.
+
+### Acceptance
+
+- `dotnet test src/forge/Forge.Api.Tests/Forge.Api.Tests.csproj --filter "FullyQualifiedName~ModelCatalogEnrichmentTests"`
+  - 45 passed. New cases: source-seed resolution from a simulated
+    `bin/Debug/net8.0/win-x64` layout and the published-layout fallback
+    (D-81.1); retire, revive, non-Copilot exemption, small-catalog guard
+    and curated-status passthrough (D-81.2); status rewrite preserving
+    curated notes, idempotent no-write, combined add+retire (D-81.3);
+    registry retirement blocking assignment and rebuild-based revival
+    (D-81.4); daily-midnight schedule (D-81.5).
+- `npx vitest run src/state/useModelCatalogStore.spec.ts` - 5 passed
+  (D-81.6 filter rules, including keeping the current stale value).
+- `npx tsc --noEmit` in `Forge.UI` - clean.
+- Seed parses to 39 entries with no duplicate ids (D-81.7).
+- **Not yet observed:** a live enrichment cycle against the real Copilot
+  catalog writing the source seed, and the UI picking up a mid-session
+  catalog change. Both need a Forge.Api restart, which is operator-gated.
+
+### Files
+
+- `src/forge/Forge.Api/Agents/ModelRegistry.cs` (`ResolveSeedFilePath`,
+  new `ProbeSourceSeed`, `ApplyCatalogOverlay` status pass).
+- `src/forge/Forge.Api/Agents/IModelRegistry.cs` (`statusOverrides` param,
+  `SeedFilePath` doc).
+- `src/forge/Forge.Api/Services/ModelCatalogEnrichmentService.cs`
+  (`BuildStatusOverrides`, `TimeUntilNextMidnight`, `RefreshNowAsync`,
+  `TryPersist`, refresh gate).
+- `src/forge/Forge.Api/Services/ModelSeedFileWriter.cs` (`Sync`,
+  `SeedSyncResult`).
+- `src/forge/Forge.Api/Endpoints/ModelsEndpoints.cs`
+  (`POST /api/models/refresh`).
+- `src/forge/Forge.Api/Program.cs` (singleton + hosted registration).
+- `src/forge/Forge.Api/Agents/Models/models.json` (+9 recovered models).
+- `src/forge/Forge.UI/src/state/useModelCatalogStore.ts` (+ `.spec.ts`),
+  `src/forge/Forge.UI/src/api/forgeApi.ts` (`refreshModels`),
+  `src/forge/Forge.UI/src/views/CrewsView.tsx`,
+  `src/forge/Forge.UI/src/agents/NewAgentModal.tsx`,
+  `src/forge/Forge.UI/src/agents/AgentEditModal.tsx`.
+- `src/forge/Forge.Api.Tests/ModelCatalogEnrichmentTests.cs` (+12 cases);
+  `AgentRuntimeTests.cs`, `AgentSalaryAndLedgerTests.cs`,
+  `CopilotMemoryStoreTests.cs`, `Phase74ConcurrentDispatchGuardTests.cs`
+  (fake registry signatures).

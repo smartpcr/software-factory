@@ -18,6 +18,7 @@ public sealed class SpawnPluginRow
     public long Revision { get; set; } = 1;
     public long ActivationGeneration { get; set; }
     public string? CopyOrigin { get; set; }
+    public DateTimeOffset? RetiredAt { get; set; }
 }
 
 public sealed class ChatConnectionRow

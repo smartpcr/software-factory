@@ -18,7 +18,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
-internal sealed class ChatPluginTestFactory : ForgeWebApplicationFactory
+internal class ChatPluginTestFactory : ForgeWebApplicationFactory
 {
     public ChatPluginTestFactory() : base(new Dictionary<string, string?>
     {

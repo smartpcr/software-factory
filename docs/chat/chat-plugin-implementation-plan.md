@@ -394,23 +394,27 @@ or push was performed. Stage 1S is the next implementation stage.
 <a id="telegram-vertical-slice"></a>
 ### Stage 1S — thin Telegram path visible on the row
 
-- [ ] On a fresh isolated profile, adapt the existing `TelegramTransport` to one
+Implementation and automated checks: [Stage 1S validation](chat-plugin-stage1s-validation.md).
+The live Telegram/manual row gate below is still open; checked implementation
+items do not claim that exercise has run.
+
+- [x] On a fresh isolated profile, adapt the existing `TelegramTransport` to one
       named connection, one selected top-level row and one destination. Use only
       the narrow contracts exercised by this slice; full provider extraction is Stage 3.
-- [ ] Add the minimal row Chat control, notification-only toggle, provider/channel
+- [x] Add the minimal row Chat control, notification-only toggle, provider/channel
       picker and persisted off/needs-setup/ready status under `swarm/plugins/`.
       Stage 5 extends this same UI; it does not replace it.
-- [ ] Send an explicit setup introduction and one metadata-only open-question alert
+- [x] Send an explicit setup introduction and one metadata-only open-question alert
       through the existing single-recipient outbox shape, with the verified parent
       subscription selecting its target. Read health on the row without restarting
       agents. Apply outbound redaction from the start; do not wait for Stage 5.
-- [ ] Apply the design's retention/purge rules to the subset of configuration and
+- [x] Apply the design's retention/purge rules to the subset of configuration and
       outbox tables used by this slice; Stage 2 expands coverage to its new tables.
-- [ ] Require a new test bot/empty legacy queue for this early slice. Plugin engine
+- [x] Require a new test bot/empty legacy queue for this early slice. Plugin engine
       selection disables legacy polling/sending; there is no parallel owner and no
       legacy-data migration. Existing installations continue their explicitly chosen
       legacy notification path until Stage 6.
-- [ ] Ship no Slack, multi-destination fan-out or inbound domain mutations in this
+- [x] Ship no Slack, multi-destination fan-out or inbound domain mutations in this
       slice. Label it **Notifications only**; the final remote-control requirement
       remains open until Stage 3.
 
@@ -418,6 +422,14 @@ or push was performed. Stage 1S is the next implementation stage.
 toggle → channel → actual send → persisted row status. Other rows remain off.
 Cancel has no effects; a normal refresh preserves state. This gate supplies a real
 provider/visible UI stopping point before the full delivery/inbox schema is built.
+
+- [x] Fake Telegram HTTP: setup → outbox → receipt → persisted health; verified
+      parent/child routing, disabled rows, revocation, redaction and failure paths.
+- [x] Isolated browser exercise: row toggle/channel, Cancel/Escape, Save, refresh,
+      other row off, reader restrictions and stale revision feedback.
+- [ ] Recorded real Telegram test-bot exercise and manual row confirmation.
+      Awaiting an explicitly supplied new-bot/isolated-destination profile. The
+      opt-in live exercise is skipped by default, never substituted with a fake pass.
 
 ### Stage 2 — delivery, inbound durability, and domain result handling
 

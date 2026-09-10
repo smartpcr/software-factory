@@ -22,9 +22,11 @@ public interface IModelRegistry
 
     /// <summary>
     /// 2026-07-14: absolute path of the <c>models.json</c> seed file the registry
-    /// loaded (resolved from the content root, falling back to the app base
-    /// directory). The scheduled enrichment writes newly discovered models back
-    /// to this file so the on-disk catalog stays current.
+    /// loaded. In a dev run the app starts from its own <c>bin\</c> output, so
+    /// this resolves back to the SOURCE <c>Agents/Models/models.json</c> — the
+    /// scheduled enrichment writes newly discovered models there, keeping the
+    /// committed catalog current instead of updating a build artefact MSBuild
+    /// later overwrites. A published deployment resolves to the content root.
     /// </summary>
     string SeedFilePath { get; }
 
@@ -46,10 +48,19 @@ public interface IModelRegistry
     /// its pricing, always wins). Rebuilt from the immutable seed each call, so
     /// passing the full current discovered set each cycle both adds new models
     /// and drops ones the catalog no longer serves.</para>
+    ///
+    /// <para>2026-09-10: <paramref name="statusOverrides"/> maps a seed model id
+    /// to a replacement <see cref="ModelInfo.Status"/>. The scheduled enrichment
+    /// uses it to RETIRE Copilot-vendor models the live catalog stopped serving
+    /// (so the picker and <see cref="ValidateAssignable"/> agree with reality)
+    /// and to REVIVE a previously retired model that came back. Entries are
+    /// re-applied on top of the immutable seed each call, so the override set
+    /// must be the full desired delta, not an increment.</para>
     /// </summary>
     void ApplyCatalogOverlay(
         IReadOnlyDictionary<string, ModelCatalogOverlay> overlay,
-        IReadOnlyList<ModelInfo>? discoveredModels = null);
+        IReadOnlyList<ModelInfo>? discoveredModels = null,
+        IReadOnlyDictionary<string, string>? statusOverrides = null);
 
     /// <summary>True once <see cref="ApplyCatalogOverlay"/> has run at least once.</summary>
     bool CatalogEnriched { get; }

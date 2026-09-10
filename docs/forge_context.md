@@ -66,11 +66,12 @@ the caller's console).
 | Change sign-in / identity / roles | **Identity & auth** |
 | Change Chat plugin configuration, provider contracts or Host alerts | **Chat configuration update** below; `docs/chat/README.md` |
 
-### Chat configuration update (2026-09-09)
+### Chat configuration update (2026-09-10)
 
 The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and
-[Stage 1 validation](chat/chat-plugin-stage1-validation.md). Stage 0B replaced
+[Stage 1 validation](chat/chat-plugin-stage1-validation.md) and
+[Stage 1S validation](chat/chat-plugin-stage1s-validation.md). Stage 0B replaced
 header-based operator authority with paired sessions and shared capabilities;
 the historical Phase 9 description below is not the current authorization boundary.
 
@@ -81,9 +82,16 @@ children resolve that configuration dynamically. Host alerts have a separate
 permanent host scope. `Phase98Migration` owns six additive control tables, with
 model/catalog/runner/`DbBoundary` registration. No new product table is introduced.
 `Forge:Chat` contains the engine/master switch and stable host ID; the default
-engine remains `legacy`. Runtime delivery, adapters, deletion reconciliation and
-the row UI follow in Stage 1S onward. Stage 1 validation: 194 focused checks pass;
-see its validation document for the existing `repos` catalog-test exclusion.
+engine remains `legacy`. Stage 1S adds `TelegramNotificationProvider`,
+`ChatTelegramSliceService`, `ChatContentPolicy`, bounded hourly `ChatSliceRetention`
+and `Forge.UI/src/swarm/plugins/ChatRowControl.tsx`. It uses the existing outbox with
+a separate `telegram-1s` discriminator and immutable route snapshot, one connection
+and one selected parent. `Phase99Migration` adds the spawn-plugin retirement timestamp.
+The browser saves row settings and the introduction atomically and polls saved
+delivery health; no agent restart is involved. The live test-bot/manual row gate
+remains pending. Stage 2 owns the full delivery/inbox schema, supervisors and lifecycle
+reconciler; later stages add interactive providers and Slack. See the validation
+documents for automated evidence and the existing `repos` catalog-test exclusion.
 
 ## Foundational decisions (apply everywhere)
 

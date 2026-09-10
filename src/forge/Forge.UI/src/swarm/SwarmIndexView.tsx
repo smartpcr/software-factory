@@ -325,7 +325,7 @@ export function SwarmIndexView() {
             <div className="story-list">
               {filtered.map((s, i) => (
                 <SwarmStoryRow
-                  key={s.storyId}
+                  key={`${s.productId ?? ''}:${s.id}`}
                   spawn={s}
                   index={i}
                   onDeleted={handleSpawnDeleted}

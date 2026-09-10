@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
-import type { Crew, ModelInfo, AgentDetail } from '@/types';
+import { useModelCatalog, selectableModels } from '@/state/useModelCatalogStore';
+import type { Crew, AgentDetail } from '@/types';
 
 interface Props {
   open: boolean;
@@ -24,7 +25,8 @@ export function NewAgentModal({ open, onClose, onCreated }: Props) {
   const [err, setErr] = useState<string | null>(null);
 
   const [crews, setCrews] = useState<Crew[]>([]);
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  const models = useModelCatalog();
+  const pickable = selectableModels(models);
   const nameRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -34,9 +36,6 @@ export function NewAgentModal({ open, onClose, onCreated }: Props) {
     let cancelled = false;
     void forgeApi.listCrews()
       .then((cs) => { if (!cancelled) { setCrews(cs); setCrewId((prev) => prev || cs[0]?.id || ''); } })
-      .catch(() => { /* offline */ });
-    void forgeApi.listModels()
-      .then((ms) => { if (!cancelled) setModels(ms.filter((m) => m.status !== 'retired')); })
       .catch(() => { /* offline */ });
     const t = window.requestAnimationFrame(() => nameRef.current?.focus());
     return () => { cancelled = true; window.cancelAnimationFrame(t); };
@@ -139,14 +138,14 @@ export function NewAgentModal({ open, onClose, onCreated }: Props) {
               <span style={labelStyle}>Generator model</span>
               <select value={generatorModel} onChange={(e) => setGeneratorModel(e.target.value)} disabled={busy} style={inputStyle}>
                 <option value="">Inherit crew</option>
-                {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+                {pickable.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
             </label>
             <label style={{ display: 'grid', gap: 5 }}>
               <span style={labelStyle}>Evaluator model</span>
               <select value={evaluatorModel} onChange={(e) => setEvaluatorModel(e.target.value)} disabled={busy} style={inputStyle}>
                 <option value="">Inherit crew</option>
-                {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+                {pickable.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
             </label>
           </div>

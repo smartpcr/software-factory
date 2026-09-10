@@ -7,6 +7,7 @@ import { useToastStore } from '@/state/useToastStore';
 import { StoryDeliveryStrip } from './StoryDeliveryStrip';
 import { CANONICAL_PHASES, phaseBadgeProps } from './storyPhaseBadge';
 import { computeStoryProgressPct } from './storyProgress';
+import { ChatRowControl } from './plugins/ChatRowControl';
 
 interface Props {
   spawn: StorySpawn;
@@ -197,6 +198,7 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
           {spawn.repoId && <span className="seg">repo <b>{spawn.repoId}</b></span>}
         </div>
         {detail && <StoryDeliveryStrip detail={detail} />}
+        {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} />}
       </div>
       {(() => {
         // docs/forge/e2e.md Stage 8.3 — `phase==='qa'` is a legacy
@@ -297,4 +299,3 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
     </div>
   );
 }
-

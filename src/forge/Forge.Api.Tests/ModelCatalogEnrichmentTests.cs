@@ -264,36 +264,136 @@ public sealed class ModelCatalogEnrichmentTests : IDisposable
         Assert.True(m.SupportsReasoning);
     }
 
-    // ---- weekly Sunday-midnight schedule -----------------------------------
+    // ---- daily midnight schedule -------------------------------------------
 
     [Theory]
     [InlineData("2026-07-15T10:30:00")]
     [InlineData("2026-07-14T00:00:00")]
     [InlineData("2026-07-18T23:59:59")]
-    public void Schedule_AlwaysLandsOnStrictlyFutureSundayMidnight(string nowIso)
+    public void Schedule_AlwaysLandsOnStrictlyFutureMidnight(string nowIso)
     {
         var now = DateTime.Parse(nowIso, System.Globalization.CultureInfo.InvariantCulture);
-        var next = now + ModelCatalogEnrichmentService.TimeUntilNextSundayMidnight(now);
+        var next = now + ModelCatalogEnrichmentService.TimeUntilNextMidnight(now);
 
-        Assert.Equal(DayOfWeek.Sunday, next.DayOfWeek);
         Assert.Equal(TimeSpan.Zero, next.TimeOfDay);
         Assert.True(next > now);
-        Assert.True(next - now <= TimeSpan.FromDays(7));
+        Assert.True(next - now <= TimeSpan.FromDays(1));
     }
 
     [Fact]
-    public void Schedule_WhenExactlySundayMidnight_WaitsFullWeek()
+    public void Schedule_WhenExactlyMidnight_WaitsFullDay()
     {
-        var anchor = new DateTime(2026, 7, 15, 12, 0, 0);
-        var sundayMidnight = anchor + ModelCatalogEnrichmentService.TimeUntilNextSundayMidnight(anchor);
-        Assert.Equal(DayOfWeek.Sunday, sundayMidnight.DayOfWeek);
-        Assert.Equal(TimeSpan.Zero, sundayMidnight.TimeOfDay);
+        var midnight = new DateTime(2026, 7, 15, 0, 0, 0);
+        Assert.Equal(TimeSpan.FromDays(1), ModelCatalogEnrichmentService.TimeUntilNextMidnight(midnight));
 
-        Assert.Equal(TimeSpan.FromDays(7), ModelCatalogEnrichmentService.TimeUntilNextSundayMidnight(sundayMidnight));
+        var oneHourBefore = midnight.AddDays(1).AddHours(-1);
+        Assert.Equal(TimeSpan.FromHours(1), ModelCatalogEnrichmentService.TimeUntilNextMidnight(oneHourBefore));
+    }
 
-        var saturday2300 = sundayMidnight.AddHours(-1);
-        Assert.Equal(DayOfWeek.Saturday, saturday2300.DayOfWeek);
-        Assert.Equal(TimeSpan.FromHours(1), ModelCatalogEnrichmentService.TimeUntilNextSundayMidnight(saturday2300));
+    // ---- retire / revive against the live catalog ---------------------------
+
+    [Fact]
+    public void Status_RetiresCopilotModelTheLiveCatalogNoLongerServes()
+    {
+        var catalog = new[]
+        {
+            Model("gpt-5.4"), Model("gpt-5.2"), Model("claude-opus-4.6"),
+            Model("gpt-5.6-sol"), Model("gemini-3.8-flash"), Model("grok-4.6"),
+        };
+        var live = new[] { "gpt-5.4", "gpt-5.6-sol", "gemini-3.8-flash", "grok-4.6", "claude-opus-5" };
+
+        var changes = ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, live);
+
+        Assert.Equal(2, changes.Count);
+        Assert.Equal("retired", changes["gpt-5.2"]);
+        Assert.Equal("retired", changes["claude-opus-4.6"]);
+        Assert.False(changes.ContainsKey("gpt-5.4"));
+    }
+
+    [Fact]
+    public void Status_RevivesRetiredModelThatCameBack()
+    {
+        var catalog = new[]
+        {
+            Model("gpt-5.4"), Model("gpt-5.2", status: "retired"),
+            Model("gpt-5.6-sol"), Model("grok-4.6"), Model("gemini-3.8-flash"),
+        };
+        var live = new[] { "gpt-5.4", "gpt-5.2", "gpt-5.6-sol", "grok-4.6", "gemini-3.8-flash" };
+
+        var changes = ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, live);
+
+        Assert.Equal("live", Assert.Single(changes).Value);
+        Assert.True(changes.ContainsKey("gpt-5.2"));
+    }
+
+    [Fact]
+    public void Status_NeverRetiresNonCopilotVendors()
+    {
+        // anthropic models run through the Claude SDK and forge/local-stub
+        // bypasses every backend, so neither is ever in the Copilot catalog.
+        var catalog = new[]
+        {
+            Model("claude-opus-4-7", vendor: "anthropic"),
+            Model("local-stub", vendor: "forge"),
+            Model("gpt-5.4"), Model("gpt-5.6-sol"), Model("grok-4.6"), Model("gemini-3.8-flash"),
+        };
+        var live = new[] { "gpt-5.4", "gpt-5.6-sol", "grok-4.6", "gemini-3.8-flash", "claude-opus-5" };
+
+        Assert.Empty(ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, live));
+    }
+
+    [Fact]
+    public void Status_SkipsSuspiciouslySmallCatalog_SoAPartialFetchCannotMassRetire()
+    {
+        var catalog = new[] { Model("gpt-5.4"), Model("gpt-5.2"), Model("claude-opus-4.6") };
+
+        Assert.Empty(ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, new[] { "gpt-5.4" }));
+        Assert.Empty(ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, System.Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void Status_LeavesCuratedNonLiveNonRetiredStatusAlone()
+    {
+        var catalog = new[]
+        {
+            Model("gpt-5.9-preview", status: "preview"),
+            Model("gpt-5.4"), Model("gpt-5.6-sol"), Model("grok-4.6"), Model("gemini-3.8-flash"),
+        };
+        var live = new[] { "gpt-5.4", "gpt-5.6-sol", "grok-4.6", "gemini-3.8-flash", "claude-opus-5" };
+
+        Assert.Empty(ModelCatalogEnrichmentService.BuildStatusOverrides(catalog, live));
+    }
+
+    [Fact]
+    public void Registry_StatusOverrideRetiresModelAndBlocksAssignment()
+    {
+        var reg = BuildRegistry(SeedJson("gpt-5.4"), SeedJson("gpt-5.2"));
+        reg.RecordLiveCatalog(new[] { "gpt-5.4" });
+
+        reg.ApplyCatalogOverlay(
+            EmptyOverlay,
+            null,
+            new Dictionary<string, string> { ["gpt-5.2"] = "retired" });
+
+        Assert.Equal("retired", reg.Find("gpt-5.2")!.Status);
+        Assert.Equal("live", reg.Find("gpt-5.4")!.Status);
+        Assert.NotNull(reg.ValidateAssignable("gpt-5.2"));
+        Assert.Null(reg.ValidateAssignable("gpt-5.4"));
+    }
+
+    [Fact]
+    public void Registry_StatusOverrideIsRebuiltFromSeed_SoRevivalWorks()
+    {
+        var reg = BuildRegistry(SeedJson("gpt-5.4"), SeedJson("gpt-5.2"));
+
+        reg.ApplyCatalogOverlay(EmptyOverlay, null, new Dictionary<string, string> { ["gpt-5.2"] = "retired" });
+        Assert.Equal("retired", reg.Find("gpt-5.2")!.Status);
+
+        // Next cycle: the model is served again → no override → the immutable
+        // seed's "live" is restored rather than the retirement compounding.
+        reg.ApplyCatalogOverlay(EmptyOverlay, null, new Dictionary<string, string> { ["gpt-5.4"] = "retired" });
+        Assert.Equal("live", reg.Find("gpt-5.2")!.Status);
+        Assert.Equal("retired", reg.Find("gpt-5.4")!.Status);
     }
 
     // ---- persistence to the seed file --------------------------------------
@@ -340,11 +440,120 @@ public sealed class ModelCatalogEnrichmentTests : IDisposable
     }
 
     [Fact]
+    public void SeedWriter_RewritesStatusForRetiredAndRevivedModels()
+    {
+        var path = WriteTempSeed(
+            """{ "id": "gpt-5.4", "vendor": "copilot", "family": "gpt-5", "displayName": "GPT-5.4", "_note": "curated", "contextWindow": 1050000, "inputPricePerMTok": 3.0, "outputPricePerMTok": 15.0, "supportsTools": true, "supportsStreaming": true, "status": "live" }""",
+            """{ "id": "gpt-5.2", "vendor": "copilot", "family": "gpt-5", "displayName": "GPT-5.2", "contextWindow": 128000, "inputPricePerMTok": 3.0, "outputPricePerMTok": 15.0, "supportsTools": true, "supportsStreaming": true, "status": "live" }""",
+            """{ "id": "gpt-4.1", "vendor": "copilot", "family": "gpt-4", "displayName": "GPT-4.1", "contextWindow": 128000, "inputPricePerMTok": 1.0, "outputPricePerMTok": 5.0, "supportsTools": true, "supportsStreaming": true, "status": "retired" }""");
+
+        var result = ModelSeedFileWriter.Sync(
+            path,
+            null,
+            new Dictionary<string, string> { ["gpt-5.2"] = "retired", ["gpt-4.1"] = "live" });
+
+        Assert.Equal(1, result.Retired);
+        Assert.Equal(1, result.Revived);
+        Assert.Equal(0, result.Added);
+
+        var text = File.ReadAllText(path);
+        Assert.Contains("\"_note\": \"curated\"", text); // curated annotations preserved
+
+        var models = JsonSerializer.Deserialize<List<ModelInfo>>(text, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Equal("live", models.Single(m => m.Id == "gpt-5.4").Status);
+        Assert.Equal("retired", models.Single(m => m.Id == "gpt-5.2").Status);
+        Assert.Equal("live", models.Single(m => m.Id == "gpt-4.1").Status);
+
+        // Pricing survives retirement — crew history still resolves the model.
+        Assert.Equal(3m, models.Single(m => m.Id == "gpt-5.2").InputPricePerMTok);
+        Assert.Equal(3, models.Count); // retire never deletes
+    }
+
+    [Fact]
+    public void SeedWriter_IsIdempotent_WhenStatusAlreadyMatches()
+    {
+        var path = WriteTempSeed(
+            """{ "id": "gpt-5.4", "vendor": "copilot", "family": "gpt-5", "displayName": "GPT-5.4", "contextWindow": 1050000, "inputPricePerMTok": 3.0, "outputPricePerMTok": 15.0, "supportsTools": true, "supportsStreaming": true, "status": "live" }""");
+        var before = File.ReadAllText(path);
+
+        var result = ModelSeedFileWriter.Sync(path, null, new Dictionary<string, string> { ["gpt-5.4"] = "live" });
+
+        Assert.False(result.Changed);
+        Assert.Equal(before, File.ReadAllText(path)); // untouched, not reformatted
+    }
+
+    [Fact]
+    public void SeedWriter_AddsAndRetiresInOneCycle()
+    {
+        var path = WriteTempSeed(
+            """{ "id": "gpt-5.2", "vendor": "copilot", "family": "gpt-5", "displayName": "GPT-5.2", "contextWindow": 128000, "inputPricePerMTok": 3.0, "outputPricePerMTok": 15.0, "supportsTools": true, "supportsStreaming": true, "status": "live" }""");
+
+        var result = ModelSeedFileWriter.Sync(
+            path,
+            new[] { Discovered("gpt-6-astra", 872_000, true, "medium") },
+            new Dictionary<string, string> { ["gpt-5.2"] = "retired" });
+
+        Assert.Equal(1, result.Added);
+        Assert.Equal(1, result.Retired);
+
+        var models = JsonSerializer.Deserialize<List<ModelInfo>>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.Equal("retired", models.Single(m => m.Id == "gpt-5.2").Status);
+        Assert.Equal("live", models.Single(m => m.Id == "gpt-6-astra").Status);
+    }
+
+    [Fact]
     public void Registry_SeedFilePath_PointsToLoadedFile()
     {
         var reg = BuildRegistry(SeedJson("gpt-5.4"));
         Assert.True(File.Exists(reg.SeedFilePath));
         Assert.EndsWith(Path.Combine("Agents", "Models", "models.json"), reg.SeedFilePath);
+    }
+
+    /// <summary>
+    /// The launcher starts Forge.Api.exe out of bin\, so the content root is the
+    /// BUILD OUTPUT. Before this, the enrichment persisted every discovered model
+    /// there — invisible to the repo and silently discarded the next time MSBuild
+    /// re-copied the (newer) source seed. Read and write must both land on the
+    /// SOURCE file.
+    /// </summary>
+    [Fact]
+    public void Registry_ResolvesSourceSeed_WhenRunningFromProjectBinOutput()
+    {
+        var project = Path.Combine(Path.GetTempPath(), "forge-proj-" + System.Guid.NewGuid().ToString("N"));
+        this.tempDirs.Add(project);
+
+        var sourceSeedDir = Path.Combine(project, "Agents", "Models");
+        var binSeedDir = Path.Combine(project, "bin", "Debug", "net8.0", "win-x64", "Agents", "Models");
+        Directory.CreateDirectory(sourceSeedDir);
+        Directory.CreateDirectory(binSeedDir);
+        File.WriteAllText(Path.Combine(project, "Forge.Api.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(sourceSeedDir, "models.json"), "[" + SeedJson("gpt-5.4") + "]");
+        File.WriteAllText(Path.Combine(binSeedDir, "models.json"), "[" + SeedJson("stale-bin-copy") + "]");
+
+        var reg = new ModelRegistry(new FakeEnv
+        {
+            ContentRootPath = Path.Combine(project, "bin", "Debug", "net8.0", "win-x64"),
+        });
+
+        Assert.Equal(Path.Combine(sourceSeedDir, "models.json"), reg.SeedFilePath);
+        Assert.NotNull(reg.Find("gpt-5.4"));       // read came from the source seed
+        Assert.Null(reg.Find("stale-bin-copy"));   // not the build output
+    }
+
+    [Fact]
+    public void Registry_KeepsContentRootSeed_ForPublishedLayoutWithNoProjectFile()
+    {
+        // A published deployment has no .csproj above the binaries, so the
+        // operator-editable content-root copy must stay authoritative.
+        var deploy = Path.Combine(Path.GetTempPath(), "forge-publish-" + System.Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(deploy, "Agents", "Models"));
+        this.tempDirs.Add(deploy);
+        File.WriteAllText(Path.Combine(deploy, "Agents", "Models", "models.json"), "[" + SeedJson("gpt-5.4") + "]");
+
+        var reg = new ModelRegistry(new FakeEnv { ContentRootPath = deploy });
+
+        Assert.Equal(Path.Combine(deploy, "Agents", "Models", "models.json"), reg.SeedFilePath);
+        Assert.NotNull(reg.Find("gpt-5.4"));
     }
 
     // ---- helpers ----------------------------------------------------------
@@ -356,6 +565,10 @@ public sealed class ModelCatalogEnrichmentTests : IDisposable
 
     private static ModelInfo Discovered(string id, int ctx = 1_000_000, bool reasoning = true, string? effort = "medium")
         => ModelCatalogMapper.ToDiscovered(new ModelCatalogMapper.LiveCatalogModel(id, id, ctx, reasoning, effort));
+
+    /// <summary>A catalog entry as <see cref="ModelCatalogEnrichmentService.BuildStatusOverrides"/> sees it.</summary>
+    private static ModelInfo Model(string id, string vendor = "copilot", string status = "live")
+        => new(id, vendor, "gpt-5", id, 200_000, 3m, 15m, true, true, status);
 
     private string WriteTempSeed(params string[] seedObjects)
     {

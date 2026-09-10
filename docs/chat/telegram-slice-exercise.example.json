@@ -1,0 +1,8 @@
+{
+  "newTestBotConfirmed": false,
+  "isolatedDestinationConfirmed": false,
+  "botId": "REPLACE_WITH_NEW_TEST_BOT_ID",
+  "channelId": "REPLACE_WITH_CANONICAL_TEST_CHAT_ID",
+  "tokenEnvironmentVariable": "FORGE_CHAT_TEST_TELEGRAM_TOKEN",
+  "recordPath": "E:\\temp\\forge-chat-1s-live-record.jsonl"
+}

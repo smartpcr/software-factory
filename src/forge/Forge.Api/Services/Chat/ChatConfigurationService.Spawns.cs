@@ -31,6 +31,11 @@ public sealed partial class ChatConfigurationService
             reason = await this.DeliveryGateReasonAsync(subscriptions, ct);
             if (reason is not null) state = "paused";
         }
+        if (options.Value.TelegramSlice.Enabled)
+        {
+            var health = await slice.GetAsync(actor, product.Id, spawnId, ct);
+            state = health.State; reason = health.Reason;
+        }
         return new(product.Id, spawnId, row.Enabled, row.Revision, row.ActivationGeneration, row.SettingsVersion, row.CopyOrigin, state, reason, subscriptions);
     }
 
@@ -89,6 +94,7 @@ public sealed partial class ChatConfigurationService
         if (!write.Enabled || newRun || !row.Enabled)
             await this.RetireBindingsAsync(scope.Key, ct);
         row.Enabled = write.Enabled; row.SettingsVersion = write.SettingsVersion; row.SettingsJson = write.Settings.GetRawText();
+        row.RetiredAt = write.Enabled ? null : DateTimeOffset.UtcNow;
         row.RunIdentity = run; row.Revision++;
         if (source is not null)
         {

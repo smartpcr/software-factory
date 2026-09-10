@@ -407,6 +407,7 @@ builder.Services.AddScoped<Common.Chat.IChatInboundHandler>(sp => sp.GetRequired
 builder.Services.AddSingleton<Common.Chat.ChatInboundPump>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Common.Chat.ChatInboundPump>());
 Forge.Api.Services.Chat.ChatPluginRegistration.AddChatPlugins(builder.Services, builder.Configuration);
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatTelegramSliceWorker>());
 // Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
 // questions endpoints AND the chat-bridge inbound path).
 builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();
@@ -691,10 +692,13 @@ builder.Services.AddSingleton<CopilotServerManager>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
 // 2026-05-30 — overlays the authoritative Copilot model catalog (context
 // windows + reasoning support) onto the JSON-seeded IModelRegistry at boot +
-// every 6h, so the registry stops drifting from reality (hand-maintained
-// models.json windows were repeatedly wrong). Best-effort; JSON values stand
-// if the catalog is unreachable.
-builder.Services.AddHostedService<Forge.Api.Services.ModelCatalogEnrichmentService>();
+// daily at local midnight, so the registry stops drifting from reality
+// (hand-maintained models.json windows were repeatedly wrong). Also auto-adds
+// newly released models and retires ones the live catalog dropped. Registered
+// as a singleton as well so POST /api/models/refresh can force a cycle.
+// Best-effort; JSON values stand if the catalog is unreachable.
+builder.Services.AddSingleton<Forge.Api.Services.ModelCatalogEnrichmentService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.ModelCatalogEnrichmentService>());
 // Phase 55 / Phase E (docs/forge/sloppy_guard.md) -- Copilot SDK
 // session pool, keyed by (workItemId, agentId). Singleton so live
 // sessions span the gen-eval loop's iterations; disposed per-work-item

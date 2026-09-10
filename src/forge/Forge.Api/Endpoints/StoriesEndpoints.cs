@@ -1550,7 +1550,7 @@ public static class StoriesEndpoints
             q = q.Where(s => s.Phase == phase);
         }
         // SQLite can't ORDER BY DateTimeOffset — materialize then sort client-side.
-        List<StorySpawnRow> rows;
+        List<(StorySpawnRow Spawn, string ProductId)> rows;
         var requested = ProductScope.Read(ctx);
         if (string.IsNullOrEmpty(requested) || requested == ProductScope.AllScope)
         {
@@ -1562,13 +1562,17 @@ public static class StoriesEndpoints
                 var repo = RepoScope.Read(ctx);
                 if (!string.IsNullOrEmpty(repo) && repo != "all") query = query.Where(spawn => spawn.RepoId == repo);
                 if (!string.IsNullOrEmpty(phase) && phase != "all") query = query.Where(spawn => spawn.Phase == phase);
-                return await query.ToListAsync(ct);
+                return (await query.ToListAsync(ct)).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
             }, ctx.RequestAborted);
             rows = perProduct.Values.SelectMany(value => value).ToList();
         }
-        else rows = await q.ToListAsync();
-        rows.Sort((a, b) => b.UpdatedAt.CompareTo(a.UpdatedAt));
-        return Results.Ok(rows.Select(ToContract).ToList());
+        else
+        {
+            var productId = await control.Products.Where(p => p.Id == requested || p.Slug == requested).Select(p => p.Id).SingleAsync();
+            rows = (await q.ToListAsync()).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
+        }
+        rows.Sort((a, b) => b.Spawn.UpdatedAt.CompareTo(a.Spawn.UpdatedAt));
+        return Results.Ok(rows.Select(row => ToContract(row.Spawn, row.ProductId)).ToList());
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db)
@@ -3841,9 +3845,10 @@ public static class StoriesEndpoints
     private static Task<IResult> ResumeSpawn(HttpContext ctx, string storyId, StoryOperatorActionService actions) =>
         actions.ResumeSpawnAsync(storyId, ctx.RequestAborted);
 
-    internal static object ToContract(StorySpawnRow row) => new
+    internal static object ToContract(StorySpawnRow row, string? owningProductId = null) => new
     {
         id = row.Id,
+        productId = owningProductId,
         storyId = row.StoryId,
         storyTitle = row.StoryTitle,
         storyDescription = row.StoryDescription,

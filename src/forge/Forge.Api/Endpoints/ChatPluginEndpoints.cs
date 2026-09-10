@@ -34,6 +34,8 @@ public static class ChatPluginEndpoints
             options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
             InteractiveAvailable = ChatPluginInteractiveGate.IsAvailable,
         }).WithMetadata(host);
+        api.MapPost("/chat/retention/purge-content", async (ForgeActionContext action, ChatSliceRetention retention, CancellationToken ct)
+            => await retention.PurgeContentAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
 
         api.MapGet("/chat/connections", async (string? productId, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
             => await service.ListConnectionsAsync(await action.ActorAsync(ct), productId, ct)).WithMetadata(self);
@@ -59,6 +61,11 @@ public static class ChatPluginEndpoints
         }).WithMetadata(host);
 
         const string SpawnPath = "/products/{productId}/story-spawns/{spawnId}/plugins/chat";
+        api.MapGet(SpawnPath + "/notification-setup", async (string productId, string spawnId, ForgeActionContext action, ChatTelegramSliceService service, CancellationToken ct)
+            => await service.GetAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
+        api.MapPut(SpawnPath + "/notification-setup", async (string productId, string spawnId, ChatNotificationSetupWrite request,
+            ForgeActionContext action, ChatTelegramSliceService service, CancellationToken ct)
+            => await service.SaveAsync(await action.ActorAsync(ct), productId, spawnId, request, ct)).WithMetadata(write);
         api.MapGet(SpawnPath, async (string productId, string spawnId, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
             => await service.GetPluginAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
         api.MapPut(SpawnPath, async (string productId, string spawnId, ChatPluginWrite request, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)

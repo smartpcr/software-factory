@@ -28,6 +28,26 @@ public static class ModelsEndpoints
                 ? Results.Problem(title: $"Model {id} not found", statusCode: 404)
                 : Results.Ok(model with { Available = reg.ValidateAssignable(model.Id) is null });
         }).WithName("GetModel");
+
+        // 2026-09-10 — force a model-catalog enrichment cycle instead of waiting
+        // for the daily tick: re-fetches the live Copilot catalog, auto-adds
+        // newly released models, retires ones it no longer serves, and persists
+        // both to the models.json seed. Returns the refreshed catalog so the
+        // caller doesn't need a follow-up GET.
+        grp.MapPost("/refresh", async (
+            Forge.Api.Services.ModelCatalogEnrichmentService enrichment,
+            IModelRegistry reg,
+            CancellationToken ct) =>
+        {
+            await enrichment.RefreshNowAsync(ct);
+            return Results.Ok(new
+            {
+                enriched = reg.CatalogEnriched,
+                liveCatalogCount = reg.LiveCatalogIds.Count,
+                models = reg.All.Select(m => m with { Available = reg.ValidateAssignable(m.Id) is null }),
+            });
+        }).WithName("RefreshModels");
+
         return app;
     }
 }

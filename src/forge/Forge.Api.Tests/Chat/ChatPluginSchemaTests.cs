@@ -87,7 +87,7 @@ public sealed class ChatPluginSchemaTests
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var spec = PhaseMigrationCatalog.ByPhase[98];
         Assert.Equal(PhaseMigrationKind.Control, spec.Kind); Assert.Empty(spec.ProductTables); Assert.Equal(6, spec.ControlTables.Count);
-        Assert.Equal(98, PhaseMigrationRunner.ExecutionOrder.Last());
+        Assert.Equal(99, PhaseMigrationRunner.ExecutionOrder.Last());
         var report = await scope.ServiceProvider.GetRequiredService<SplitDryRunService>().AnalyzeAsync();
         foreach (var name in spec.ControlTables)
         {

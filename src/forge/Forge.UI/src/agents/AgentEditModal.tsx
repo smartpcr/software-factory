@@ -1,9 +1,10 @@
 import { operatorFetch } from '@/api/operatorSession';
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentDetail, Crew, ModelInfo, SoulPayload } from '@/types';
+import type { AgentDetail, Crew, SoulPayload } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useHasRole } from '@/state/useCurrentUserStore';
 import { useAgentEditorStore } from '@/state/useAgentEditorStore';
+import { useModelCatalog } from '@/state/useModelCatalogStore';
 import { avatarFor } from '@/agentAvatar';
 
 /**
@@ -36,7 +37,7 @@ function AgentEditModal({ agentId, onClose }: {
 
   const [original, setOriginal] = useState<AgentDetail | null>(null);
   const [crews, setCrews] = useState<Crew[]>([]);
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  const models = useModelCatalog();
   /**
    * Phase 47d — operator-controlled backend allow-list. Fetched from
    * `GET /api/settings/backend-policy` so we can grey out backend /
@@ -72,17 +73,17 @@ function AgentEditModal({ agentId, onClose }: {
   const [availableAvatars, setAvailableAvatars] = useState<string[]>([]);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
 
-  // Initial load — fetch agent, crews, models, soul in parallel.
+  // Initial load — fetch agent, crews, soul in parallel. Models come from the
+  // shared auto-refreshing catalog store.
   useEffect(() => {
     let cancelled = false;
     setError(null);
     setSoulLoading(true);
     void (async () => {
       try {
-        const [agent, crewList, modelList, policyResp] = await Promise.all([
+        const [agent, crewList, policyResp] = await Promise.all([
           forgeApi.getAgent(agentId),
           forgeApi.listCrews().catch(() => [] as Crew[]),
-          forgeApi.listModels().catch(() => [] as ModelInfo[]),
           operatorFetch('/api/settings/backend-policy', { credentials: 'include' })
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null),
@@ -90,7 +91,6 @@ function AgentEditModal({ agentId, onClose }: {
         if (cancelled) return;
         setOriginal(agent);
         setCrews(crewList);
-        setModels(modelList);
         setName(agent.name);
         setRole(agent.role);
         setSoulPath(agent.soulPath ?? '');
@@ -134,11 +134,26 @@ function AgentEditModal({ agentId, onClose }: {
   const eligibleModels = useMemo(
     () => models.filter((m) => {
       if (m.status !== 'live') return false;
+      // Hide models the live Copilot catalog no longer serves — assigning one
+      // makes the runner reject the session at create time.
+      if (m.available === false) return false;
       if (effectiveBackend === 'claude') return m.vendor === 'anthropic' || m.vendor === 'forge';
       return m.vendor === 'copilot' || m.vendor === 'forge';
     }),
     [models, effectiveBackend],
   );
+
+  // A value that survives in the DB but is no longer offered still needs an
+  // <option> (otherwise the <select> would silently render the first entry and
+  // a save would reassign the agent). Explain WHY it dropped out rather than
+  // always blaming a missing registry entry.
+  function staleModelLabel(id: string): string {
+    const known = models.find((m) => m.id === id);
+    if (!known) return `${id} (not in registry)`;
+    if (known.status === 'retired') return `${id} (retired)`;
+    if (known.available === false) return `${id} (not in live Copilot catalog)`;
+    return `${id} (not available for the ${effectiveBackend} backend)`;
+  }
 
   const metaDirty = !!original && (
     name !== original.name ||
@@ -478,7 +493,7 @@ function AgentEditModal({ agentId, onClose }: {
                       </option>
                     ))}
                     {generatorModel && !eligibleModels.some((m) => m.id === generatorModel) && (
-                      <option value={generatorModel}>{generatorModel} (not in registry)</option>
+                      <option value={generatorModel}>{staleModelLabel(generatorModel)}</option>
                     )}
                   </select>
                 </div>
@@ -496,7 +511,7 @@ function AgentEditModal({ agentId, onClose }: {
                       </option>
                     ))}
                     {evaluatorModel && !eligibleModels.some((m) => m.id === evaluatorModel) && (
-                      <option value={evaluatorModel}>{evaluatorModel} (not in registry)</option>
+                      <option value={evaluatorModel}>{staleModelLabel(evaluatorModel)}</option>
                     )}
                   </select>
                 </div>

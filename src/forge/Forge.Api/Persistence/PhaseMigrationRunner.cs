@@ -127,6 +127,7 @@ public sealed class PhaseMigrationRunner
         97,
         // Stage 1 — additive control-side chat configuration; legacy remains selected.
         98,
+        99,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

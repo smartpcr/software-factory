@@ -5,6 +5,7 @@ import { forgeApi } from '@/api/forgeApi';
 import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
 import { useHasRole } from '@/state/useCurrentUserStore';
 import { useAgentEditorStore } from '@/state/useAgentEditorStore';
+import { useModelCatalog, selectableModels } from '@/state/useModelCatalogStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { AGENT_ALLOCATION, type Team } from '@/agentAllocation';
 
@@ -90,7 +91,10 @@ export function CrewsView() {
 
   const [crews, setCrews] = useState<Crew[]>([]);
   const [agents, setAgents] = useState<AgentDetail[]>([]);
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  // Shared, self-refreshing model catalog — the API's daily enrichment job adds
+  // newly released models and retires dropped ones, so a one-shot fetch on mount
+  // left long-lived tabs offering a stale list.
+  const models = useModelCatalog();
   const [salaries, setSalaries] = useState<Record<string, CrewSalary>>({});
   // Phase 17.8 — per-crew queue stats (depth + ETA + strained flag).
   const [queueStats, setQueueStats] = useState<Record<string, CrewQueueStats>>({});
@@ -150,20 +154,19 @@ export function CrewsView() {
     setSelectedId(dayCrewId);
   }
 
-  // Initial load — crews, agents, models, salaries (parallel where possible).
+  // Initial load — crews, agents, salaries (parallel where possible). Models
+  // come from the shared auto-refreshing catalog store, not this one-shot init.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [crewList, agentList, modelList] = await Promise.all([
+        const [crewList, agentList] = await Promise.all([
           forgeApi.listCrews(),
           forgeApi.listAgents().catch(() => [] as AgentDetail[]),
-          forgeApi.listModels().catch(() => [] as ModelInfo[]),
         ]);
         if (cancelled) return;
         setCrews(crewList);
         setAgents(agentList);
-        setModels(modelList);
         if (crewList.length > 0 && !selectedId) setSelectedId(crewList[0].id);
         // Salaries best-effort; some crews may not have entries.
         const salaryEntries = await Promise.all(
@@ -928,6 +931,10 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
   const valueMissing = value !== '' && !selected;
   const valueUnsupported = !!selected && selected.available === false;
   const warn = valueMissing || valueUnsupported;
+  // Retired / no-longer-served models are hidden rather than listed as disabled
+  // "— unsupported" rows; the current value survives the filter so a stale
+  // assignment stays visible and warned about.
+  const shown = selectableModels(options, value);
   return (
     <div>
       <SectionHead label={label} />
@@ -941,7 +948,7 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
         {valueMissing && (
           <option value={value}>{value} — not in catalog (retired?)</option>
         )}
-        {options.map((m) => (
+        {shown.map((m) => (
           <option key={m.id} value={m.id} disabled={m.id === excludes || m.available === false}>
             {m.vendor} · {m.displayName}
             {m.id === excludes ? ' — already in pair' : m.available === false ? ' — unsupported' : ''}
@@ -1124,7 +1131,7 @@ function RuntimeTab({ crew, models, canEdit, onChange, onError }: {
           style={{ ...selectStyle, width: '100%' }}
         >
           {!models.some((m) => m.id === crew.model) && <option value={crew.model}>{crew.model} — not in catalog (retired?)</option>}
-          {models.map((m) => (
+          {selectableModels(models, crew.model).map((m) => (
             <option key={m.id} value={m.id} disabled={m.available === false}>
               {m.vendor} · {m.displayName}
               {m.available === false ? ' — unsupported' : m.status !== 'live' ? ` (${m.status})` : ''}
